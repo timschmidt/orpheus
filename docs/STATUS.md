@@ -21,7 +21,7 @@ of every session. Newest entries first in §3.
 | T-1 | done | Workspaces, toolchain pin, lints, `yoton-proto`, `budgets.toml`, `xtask build/size/test/gate` |
 | T-2 | done | `yoton-host` (nusb BOT, ADFU/ymon, SG_IO reboot, NOR payloads, PNG); `xtask dev state/adfu/ram/results/peek/poke/dump/shot/nordump/backup-verify/save-rockbox/restore rockbox [--verify]/reset`. Rockbox screenshot, NOR dump identical to `yoton.py`, restore dry run verified. Still uses the reference repo's C `ymon.bin`/`nordump.bin`/`norprog.bin` (T-6 replaces them) |
 | HAL-0 | done | `atj2157-pac` complete (worker); corrections in `docs/plan/01-hardware.md` §9 |
-| T-4a | in progress (worker) | Simulator + golden harness, with UI-1 |
+| T-4a | done | `sim/` (headless + optional window feature), key scripts, golden harness with contact sheet `target/yoton/golden.html`; fails on one changed pixel |
 | HAL-1 | done | crt0, vectors + IRQ dispatch, fault record, BASEPRI critical section, priorities, T0/T1 time driver at 1 MHz, main + RT executors, watchdog, GPIO |
 | T-5 | done (first part) | `xtask dev hil smoke` / `drivers`; result block, fault record, log ring, mailbox; gate runs `hil smoke` |
 | LCD-1 | done pending user check 7 | LCM PIO + DMA blit, ST7735S panel, backlight PWM4, GRAM read-back |
@@ -30,6 +30,13 @@ of every session. Newest entries first in §3.
 | SD-1 | done | Driver and `yoton-sdcard`; init, CID/CSD, MBR, multi/single read consistency; 9.3 MB/s sequential (64 KiB reads), 3.4 MB/s (4 KiB). Write path exercised only after FS-2 provides a scratch file |
 | AU-0 | done pending user check 10 (**blocking M5**) | DAC power-up, chained and reload DMA, SRAM3 ring, volume |
 | FM-0 | done | Soft I2C master; tuner and accelerometer ids |
+| UI-1 | done pending user check 1 (key legends) | `yoton-ui`: Gfx with dirty rects, themes, DejaVu Sans Condensed 12 px 2 bpp UI font, Fira numerals, Unifont fallback subset (OFL), KeyMapper, Shell/Screen/Nav, ListView, Menu, Dialog, Toast, VolumeOverlay, status bar, strip; 88 golden images; toolkit RAM ≈ 3.96 KiB |
+| UI-2 | in progress (worker) | Home, Settings, system screens, `yoton-apps` service traits |
+| PG-2 | in progress | `yoton-settings` KV store done on the host (power-cut tests); device front end next |
+| USB-1 | in progress | Driver + developer channel written; image enumerates as `1209:0001`; host access waits for `tools/udev/99-yotonrs.rules` to be installed by the user |
+| PWR-1 | in progress | Levels 24–192 MHz and the 1.0 V supply written; self-test image `clocks` not run yet |
+| PG-1 | in progress | NOR driver done; Rust stage 2 built (1000 B); stack guard; pager device side next; T-3 host side with a worker |
+| T-3 | in progress (worker) | pagelink, PagerCore, check-resident |
 | FS-1 | in progress (worker) | `yoton-fs` |
 | T-7, AU-1 (host), AU-2, AU-3, AU-4 | in progress (worker) | audio core and codecs |
 
@@ -62,6 +69,9 @@ of every session. Newest entries first in §3.
     card: init at the port's clocks, reads at 9.3 MB/s.
   * Stack overflow is silent without the MPU guard (a 64 KiB temporary on
     the stack jumped to address 0): PG-1 must add the guard region.
+* Vendor font: `UNICODE.FON` glyph table at offset `0x172C00` of
+  `nor_descrambled_8m.bin` (directory entry at `0xFC00`, length `0x210000`);
+  33-byte records verified, baseline row 13 (UI worker).
 * Scope changes from the owner, applied to the plan: no Bluetooth receiver,
   no mouse, no Remote app.
 
@@ -89,6 +99,7 @@ of every session. Newest entries first in §3.
 
 ## 5. Open questions for the user
 
+* Install the udev rule for the yotonrs USB id (command in `tools/udev/99-yotonrs.rules`).
 * User checks 7–10 in `docs/USER-CHECKS.md` (picture, keys, charge current,
   tones). 8 and 10 are blocking for M4 and M5.
 * Decisions D-1 … D-8 in `docs/PLAN.md` §5 (defaults assumed).
