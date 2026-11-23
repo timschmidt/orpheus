@@ -78,6 +78,11 @@ impl Results {
         }
     }
 
+    #[must_use]
+    pub fn get(&self, i: usize) -> u32 {
+        self.counters.get(i).copied().unwrap_or(0)
+    }
+
     /// Write everything with a verdict and message.
     pub fn flush(&self, verdict: result::Verdict, msg: &[u8]) {
         let b = result::BASE;

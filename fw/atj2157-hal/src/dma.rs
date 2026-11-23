@@ -116,6 +116,13 @@ impl Channel {
         interrupt::install(irq::DMA0 + self.n as u16, Level::Deadline, HANDLERS[self.n]);
     }
 
+    /// Bind an interrupt-level handler instead of the waker (audio refill).
+    /// The handler must clear this channel's pending bits ([`clear`]).
+    pub fn enable_irq_with(&self, handler: fn(), level: Level) {
+        DMAIE.set_bits((1 << self.n) | (1 << (self.n + 16)));
+        interrupt::install(irq::DMA0 + self.n as u16, level, handler);
+    }
+
     /// Program and start a transfer of `len` bytes. Addresses are CPU
     /// addresses (translated here).
     pub fn start(&self, mode_word: u32, src: u32, dst: u32, len: u32) {
@@ -162,6 +169,17 @@ impl Channel {
         }
         false
     }
+}
+
+/// Clear channel `n`'s complete and half-transfer pending bits; returns
+/// which were set (bit 0 complete, bit 1 half).
+pub fn clear(n: usize) -> u32 {
+    let ip = DMAIP.read();
+    let mine = ip & ((1 << n) | (1 << (n + 16)));
+    if mine != 0 {
+        DMAIP.write(mine);
+    }
+    u32::from(mine & (1 << n) != 0) | (u32::from(mine & (1 << (n + 16)) != 0) << 1)
 }
 
 #[must_use]

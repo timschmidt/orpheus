@@ -8,6 +8,7 @@
 
 pub mod clock;
 mod cs;
+pub mod dac;
 pub mod delay;
 pub mod dma;
 pub mod executor;

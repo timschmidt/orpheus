@@ -1,0 +1,19 @@
+[package]
+name = "bringup-audio"
+description = "AU-0 bring-up image: DAC power-up, DMA cadence at 44.1/48 kHz, reload mode, SRAM3 ring, volume steps, left/right tones"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+atj2157-hal = { path = "../../atj2157-hal" }
+yoton-proto.workspace = true
+yoton-bsp = { path = "../../yoton-bsp" }
+embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }
+embassy-time = "0.5"
+embassy-sync = "0.8"
+static_cell = "2"
+
+[lints]
+workspace = true
