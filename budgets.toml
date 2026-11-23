@@ -1,0 +1,24 @@
+# RAM and size budgets (docs/plan/02-architecture.md §1.2, 07 §4.2).
+# Enforced by `cargo xtask size --check`. Raising a number needs the measured
+# value and the reason in the same commit.
+
+[firmware]
+# Resident image: .text + .rodata + .data loaded at 0x100000.
+resident_bytes = 73728          # 72 KiB
+# Static RAM in SRAM0 (.bss + .uninit, excluding the mode pool and stack).
+bss_bytes = 20480               # 20 KiB
+caches_bytes = 8192
+mode_pool_bytes = 106496        # 104 KiB
+stack_bytes = 12288             # 12 KiB
+# Firmware partition in the dual-boot layout (slot A).
+slot_bytes_dual = 491520        # 480 KiB
+# Panic sites in the resident image (core::panicking callers). Growth needs
+# a STATUS.md entry.
+resident_panic_sites = 0
+
+[bringup]
+# RAM-loaded images end below ymon (0x118000).
+image_bytes = 98304             # 96 KiB
+
+[stage2]
+image_bytes = 1024

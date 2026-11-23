@@ -1,0 +1,33 @@
+# Device workspace: crates that only build for the player
+# (thumbv7em-none-eabihf, see .cargo/config.toml).
+[workspace]
+resolver = "3"
+members = ["firmware"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.98"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
+[workspace.dependencies]
+yoton-proto = { path = "../crates/yoton-proto" }
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = 2
+overflow-checks = false
+
+[profile.dev]
+panic = "abort"
+opt-level = "s"
+debug = 2

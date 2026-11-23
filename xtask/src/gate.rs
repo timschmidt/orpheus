@@ -1,0 +1,66 @@
+//! The milestone gate (07 §6). Each step reports passed / FAILED / not run.
+
+use anyhow::{Result, bail};
+
+use crate::args::Args;
+use crate::util::{cargo, log, root, run};
+
+pub fn cmd(args: &mut Args) -> Result<String> {
+    let skip_dev = args.flag("no-dev");
+    let mut results: Vec<(&str, String)> = Vec::new();
+    let mut failed = false;
+    let mut step = |name: &'static str, r: Result<String>| match r {
+        Ok(s) => results.push((name, format!("passed ({s})"))),
+        Err(e) => {
+            failed = true;
+            results.push((name, format!("FAILED: {e:#}")));
+        }
+    };
+    step("fmt", run(cargo().current_dir(root()).args(["fmt", "--all", "--check"])).map(|()| String::new()));
+    step(
+        "fmt (fw)",
+        run(cargo().current_dir(root().join("fw")).args(["fmt", "--all", "--check"])).map(|()| String::new()),
+    );
+    step(
+        "clippy",
+        run(cargo().current_dir(root()).args([
+            "clippy",
+            "--workspace",
+            "--all-targets",
+            "--quiet",
+            "--",
+            "-D",
+            "warnings",
+        ]))
+        .map(|()| String::new()),
+    );
+    step(
+        "clippy (fw)",
+        run(cargo().current_dir(root().join("fw")).args([
+            "clippy",
+            "--workspace",
+            "--quiet",
+            "--",
+            "-D",
+            "warnings",
+        ]))
+        .map(|()| String::new()),
+    );
+    step("test all", crate::test::cmd(&mut Args::from_vec(vec!["all".into()])));
+    step("build --release", crate::build::cmd_build(&mut Args::from_vec(vec![])));
+    step("size --check", crate::size::cmd(&mut Args::from_vec(vec!["--check".into()])));
+    results.push(("check-resident", "not run (WP-T-3 not done)".into()));
+    if skip_dev {
+        results.push(("dev hil smoke", "not run (--no-dev)".into()));
+    } else {
+        results.push(("dev hil smoke", "not run (WP-T-5 not done)".into()));
+    }
+    log("gate summary:");
+    for (n, r) in &results {
+        log(&format!("  {n:<16} {r}"));
+    }
+    if failed {
+        bail!("gate failed");
+    }
+    Ok("gate passed (steps marked `not run` did not run)".into())
+}

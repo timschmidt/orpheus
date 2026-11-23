@@ -1,0 +1,10 @@
+[package]
+name = "atj2157-pac"
+description = "Register definitions for the Actions ATJ2157 (hand-written from the datasheet and verified hardware facts)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true

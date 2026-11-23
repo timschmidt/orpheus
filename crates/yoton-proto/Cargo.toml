@@ -1,0 +1,10 @@
+[package]
+name = "yoton-proto"
+description = "Addresses and wire formats shared by the firmware, the boot stages and the host tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "firmware"
+description = "yotonrs firmware image for the Yoton YM03"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+yoton-proto.workspace = true
+
+[lints]
+workspace = true

@@ -11,3 +11,7 @@
 /tests/corpus/
 *.yfw
 .claude/settings.local.json
+
+# Local device state that must survive `cargo clean` but is not ours to
+# publish (saved Rockbox NOR region, vendor-derived data).
+/local/
