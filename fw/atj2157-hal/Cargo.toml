@@ -16,6 +16,7 @@ embassy-time-driver = { version = "0.2", features = ["tick-hz-1_000_000"] }
 embassy-time-queue-utils = "0.3"
 embassy-sync = "0.8"
 embassy-time = "0.5"
+embassy-usb-driver = "0.2"
 yoton-sdcard = { path = "../../crates/yoton-sdcard" }
 
 [lints]

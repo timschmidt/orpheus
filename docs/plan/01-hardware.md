@@ -464,6 +464,28 @@ run on the player.
 | U-AUD-8 | Hardware mixing of DAC FIFO1 (key clicks) | Second DMA stream on FIFO1 during playback | AU-1 |
 | U-AUD-9 | `DAC_FIFO0_CNT` as a playback-position counter | Compare with DMA bytes played | AU-1 |
 
+### Answered on the player by bring-up images, 2026-11-23
+
+Raw numbers are in `docs/STATUS.md` §4; each item names the bring-up image
+(`fw/bringup/<name>`, run with `cargo xtask dev ram <name> --test <name>`).
+
+| Id / topic | Answer | Image |
+|---|---|---|
+| Interrupt masking at start | crt0 leaves BASEPRI = `0x40`; levels 1–3 stay masked until `hal::init` lowers it. Priority bytes `0x00/0x40/0x80/0xC0` work as four levels | hello |
+| U-IRQ-2 | NVIC line 9 (no source) serves the software-pended RT executor at level 2 | hello |
+| Timers | `CMU_TIMERnCLK = 1` (CK24M/24) gives an exact 1 MHz count: 10 s of T0 = 10,000,025 µs; T1 one-shot alarms wake on time (worst 21 µs late at 1 kHz). The port's `0xC0000104 \|= 1` is `LOSC_CTL` (32 kHz crystal enable) per HAL-0 | hello |
+| U-WDT-1 (part) | Reboot = period code 0 + enable; the stage-2 mailbox `"ADFU"` then lands in USB recovery with SRAM0 intact | hello |
+| U-LCM-1/2 | DMA blit with `IN_BUS = 1`, `EMDE`, `RS`, `RGB565_FORMAT = 1`, `DISP_SIZE = (h−1)<<16 \| (w−1)`, `STARTT`, DMA mode `0x9600` to `LCD_DATA`: the little-endian frame buffer goes out unchanged; no HOSC detour needed (LCD clock CK24M, `LCDC_CLK = 0`). Panel id `7C 89 F0` (ST7735S); RAMRD read-back works in PIO mode | lcd |
+| Keys | Idle ladder 1 = 743, ladder 2 = 837 (±3) | keys |
+| Charger | `CHG_CTL` reset state `0x8C40073A`: CHGEN 0, `CHG_VLOT` 14 (4.1875 V), `STOPV` 1 (4.18 V), `ENCHGATDT` 1. Vendor sequence with code 4 gives `0x8C450738` and `CHG_DET = 0xB8` (CC phase, current > 87.5 %) | charge |
+| U-SD (no card) | With no card, CMD8 returns STATE `0xCB8`: bit 4 set without bit 0 means "no response" | sd |
+| SD speed | 24 MHz data clock (CK24M), 4-bit, multi-block DMA: 9.3 MB/s with 64 KiB requests | sd |
+| U-DMA-1 | The general DMA reads a PCM ring at `0x304000` through `0x18000000` | audio |
+| U-DMA-2 | Reload mode re-arms automatically; the half-transfer interrupt needs `DMAIE` bit n+16 (pending bit n+16); then half/complete interrupts alternate | audio |
+| DAC rate | Consumption measured against T0: 44,168 Hz for 44.1 kHz and 48,076 Hz for 48 kHz (≈ +0.15 %); open whether the audio PLL setting or the measurement is off (U-AUD-10, new) | audio |
+| U-FM-1 (part) / U-ACC-1 | Software I2C with released (open-drain) lines and the 10 kΩ pad pull-ups works at 100 kHz; devices at 0x10, 0x11, 0x60 (tuner, RDA5807 id `0x5804`) and 0x27 (accelerometer, id `0x13`) | i2c |
+| NOR | FAST READ by DMA: 175 µs per 1 KiB line at `CMU_SPI0CLK = 0x200`, 693 µs at `0x101`; 4 KiB erase + program + verify works in the free region | nor |
+
 ## 10. Rules for hardware discovery work
 
 1. One question per bring-up image or poke session; write the raw numbers into

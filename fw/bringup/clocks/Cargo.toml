@@ -1,0 +1,19 @@
+[package]
+name = "bringup-clocks"
+description = "PWR-1 bring-up image: core levels 24-192 MHz, 1.0 V supply, level self-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+atj2157-hal = { path = "../../atj2157-hal" }
+yoton-proto.workspace = true
+yoton-bsp = { path = "../../yoton-bsp" }
+embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }
+embassy-time = "0.5"
+embassy-sync = "0.8"
+static_cell = "2"
+
+[lints]
+workspace = true

@@ -8,6 +8,7 @@
 
 mod hil;
 mod ram;
+mod usbtest;
 
 use std::fs::File;
 use std::path::PathBuf;
@@ -34,6 +35,7 @@ cargo xtask dev <subcommand>
                                 NAME builds fw/bringup/NAME first; with --test,
                                 arm test mode and collect the results
   hil SUITE                     run an on-device suite (smoke)
+  usbtest [--cycles N]          USB-1 acceptance: enumerate, control sizes, re-enumeration
   results                       read result block, fault record and log ring
   peek ADDR [N]                 read words
   poke ADDR VALUE               write one word (ADFU/ymon)
@@ -80,6 +82,7 @@ pub fn cmd(args: &mut Args) -> Result<String> {
                 bail!("suite {name}: failed {failed:?}")
             }
         }
+        "usbtest" => usbtest::cmd(args),
         "results" => {
             let mut d = to_ymon()?;
             hil::print_results(&mut d, None)
