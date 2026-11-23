@@ -55,7 +55,7 @@ SECTIONS
         *(.uninit .uninit.*)
     } > SRAM0
 
-    .stack (NOLOAD) : ALIGN(8)
+    .stack (NOLOAD) : ALIGN(256)
     {
         __stack_bottom = .;
         . = ORIGIN(SRAM0) + LENGTH(SRAM0);

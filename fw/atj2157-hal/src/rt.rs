@@ -134,9 +134,52 @@ core::arch::global_asm!(
     "    mrsne r0, psp",
     "    mov r1, lr",
     "    mrs r2, ipsr",
+    // Continue on the emergency stack: the fault may be a stack overflow
+    // into the guard region, where pushing would fault again.
+    "    ldr r3, ={emerg}",
+    "    add r3, r3, #{emerg_size}",
+    "    mov sp, r3",
     "    b {fault}",
     fault = sym fault_entry,
+    emerg = sym EMERGENCY_STACK,
+    emerg_size = const EMERGENCY_STACK_BYTES,
 );
+
+const EMERGENCY_STACK_BYTES: usize = 512;
+
+/// Stack for the fault path (never used otherwise).
+#[unsafe(link_section = ".uninit.emergency_stack")]
+static mut EMERGENCY_STACK: [u64; EMERGENCY_STACK_BYTES / 8] = [0; EMERGENCY_STACK_BYTES / 8];
+
+/// Size of the MPU stack guard at the bottom of the stack.
+pub const STACK_GUARD_BYTES: u32 = 256;
+/// MPU region used for the guard (02 §1.2: region 7, highest precedence).
+const GUARD_REGION: u32 = 7;
+
+/// Arm the stack guard: a no-access MPU region over the lowest 256 bytes of
+/// the stack. Faults there are recorded as `StackGuard`.
+pub fn enable_stack_guard() {
+    let base = ((&raw const __stack_bottom) as u32 + 255) & !255;
+    let mpu = |off: usize, v: u32| {
+        // SAFETY: MPU registers of the core.
+        unsafe { core::ptr::write_volatile((0xE000_ED90 + off) as *mut u32, v) };
+    };
+    mpu(0x08, GUARD_REGION); // RNR
+    mpu(0x0C, base); // RBAR
+    // RASR: XN, AP = 0 (no access), SIZE = log2(256) - 1 = 7, ENABLE.
+    mpu(0x10, 1 << 28 | 7 << 1 | 1);
+    // CTRL: ENABLE | PRIVDEFENA (default map for everything else).
+    mpu(0x04, 0b101);
+    cortex_m::asm::dsb();
+    cortex_m::asm::isb();
+}
+
+/// Address range of the guard (for the fault record).
+#[must_use]
+pub fn stack_guard_range() -> (u32, u32) {
+    let base = ((&raw const __stack_bottom) as u32 + 255) & !255;
+    (base, base + STACK_GUARD_BYTES)
+}
 
 unsafe extern "C" {
     fn _start();

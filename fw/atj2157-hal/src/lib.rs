@@ -38,6 +38,7 @@ pub fn init() {
     interrupt::init_priorities();
     clock::rom_state();
     time::init();
+    rt::enable_stack_guard();
     // Start-up left BASEPRI masking levels 1-3; open them now.
     // SAFETY: handlers are bound and priorities set; unmasking is the
     // intended state for the rest of the run.

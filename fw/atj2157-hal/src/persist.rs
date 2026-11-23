@@ -114,7 +114,14 @@ pub fn record_fault(frame: usize, exc_return: u32, ipsr: u32) {
             0xDEAD_DEAD
         }
     };
+    let mmfar = scb(0x34);
+    let cfsr = scb(0x28);
+    let (g0, g1) = crate::rt::stack_guard_range();
+    let in_guard = |a: u32| a >= g0 && a < g1;
+    // MSTKERR/stacking errors or an MMFAR inside the guard: stack overflow.
+    let guard_hit = (cfsr & 0x80 != 0 && in_guard(mmfar)) || in_guard(frame as u32) || cfsr & 0x10 != 0;
     let kind = match ipsr & 0x1FF {
+        _ if guard_hit => fault::Kind::StackGuard,
         3 => fault::Kind::HardFault,
         4 => fault::Kind::MemManage,
         5 => fault::Kind::BusFault,
