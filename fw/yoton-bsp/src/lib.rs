@@ -9,4 +9,5 @@ pub mod charger;
 pub mod display;
 pub mod keys;
 pub mod pins;
+pub mod settings;
 pub mod tiny;

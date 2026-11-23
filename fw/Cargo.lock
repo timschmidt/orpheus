@@ -955,10 +955,12 @@ name = "yoton-bsp"
 version = "0.1.0"
 dependencies = [
  "atj2157-hal",
+ "embassy-futures",
  "embassy-time",
  "yoton-input",
  "yoton-power",
  "yoton-proto",
+ "yoton-settings",
 ]
 
 [[package]]
@@ -975,6 +977,10 @@ version = "0.1.0"
 
 [[package]]
 name = "yoton-sdcard"
+version = "0.1.0"
+
+[[package]]
+name = "yoton-settings"
 version = "0.1.0"
 
 [[package]]
