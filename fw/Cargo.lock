@@ -57,6 +57,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "bringup-lcd"
+version = "0.1.0"
+dependencies = [
+ "atj2157-hal",
+ "embassy-executor",
+ "embassy-sync",
+ "embassy-time",
+ "static_cell",
+ "yoton-bsp",
+ "yoton-proto",
+]
+
+[[package]]
 name = "byteorder"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -748,6 +761,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
 dependencies = [
  "windows-link 0.2.1",
+]
+
+[[package]]
+name = "yoton-bsp"
+version = "0.1.0"
+dependencies = [
+ "atj2157-hal",
+ "embassy-time",
+ "yoton-proto",
 ]
 
 [[package]]

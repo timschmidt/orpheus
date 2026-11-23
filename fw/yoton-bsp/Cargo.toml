@@ -1,0 +1,15 @@
+[package]
+name = "yoton-bsp"
+description = "Yoton YM03 board support: pins, panel, keys, backlight, board peripherals"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+atj2157-hal = { path = "../atj2157-hal" }
+yoton-proto.workspace = true
+embassy-time = "0.5"
+
+[lints]
+workspace = true

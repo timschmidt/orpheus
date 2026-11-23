@@ -25,16 +25,19 @@ impl Output {
 
     pub fn set(self, high: bool) {
         let (b, m) = self.bank_bit();
+        // Set/clear registers, as the port drives outputs [HW].
         if high {
-            gpio::odat(b).set_bits(m);
+            gpio::bsr(b).write(m);
         } else {
-            gpio::odat(b).clear_bits(m);
+            gpio::brr(b).write(m);
         }
     }
 
+    /// Toggle, using the pin's input data as the current level (U-GPIO-1:
+    /// whether `+0x200` is the output latch is unconfirmed).
     pub fn toggle(self) {
         let (b, m) = self.bank_bit();
-        gpio::odat(b).modify(|v| v ^ m);
+        self.set(gpio::idat(b).read() & m == 0);
     }
 }
 

@@ -132,8 +132,10 @@ pub fn suite(name: &str) -> Option<&'static [Case]> {
         Case { image: "hello", test: "hello", expect: Expect::Pass, wait_s: 40 },
         Case { image: "hello", test: "fault", expect: Expect::Fault(Kind::UsageFault), wait_s: 20 },
     ];
+    const DRIVERS: &[Case] = &[Case { image: "lcd", test: "lcd", expect: Expect::Pass, wait_s: 30 }];
     match name {
         "smoke" => Some(SMOKE),
+        "drivers" => Some(DRIVERS),
         _ => None,
     }
 }

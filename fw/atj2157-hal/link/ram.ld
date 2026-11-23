@@ -16,6 +16,7 @@ ENTRY(_start)
 MEMORY
 {
     SRAM0 (rwx) : ORIGIN = 0x00100000, LENGTH = 0x37400
+    SRAM1 (rw)  : ORIGIN = 0x00158000, LENGTH = 0x8000
 }
 
 SECTIONS
@@ -60,6 +61,9 @@ SECTIONS
         . = ORIGIN(SRAM0) + LENGTH(SRAM0);
         __stack_top = .;
     } > SRAM0
+
+    /* Frame buffer: not zeroed, not loaded (the host reads it). */
+    .framebuffer (NOLOAD) : { KEEP(*(.framebuffer)) } > SRAM1
 
     /DISCARD/ : { *(.ARM.exidx .ARM.exidx.*) *(.ARM.extab .ARM.extab.*) }
 }

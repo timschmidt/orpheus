@@ -9,11 +9,14 @@
 pub mod clock;
 mod cs;
 pub mod delay;
+pub mod dma;
 pub mod executor;
 pub mod gpio;
 pub mod interrupt;
+pub mod lcm;
 pub mod log;
 pub mod persist;
+pub mod pwm;
 pub mod rt;
 pub mod time;
 pub mod wdt;
