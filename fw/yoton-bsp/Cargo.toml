@@ -10,6 +10,7 @@ publish = false
 atj2157-hal = { path = "../atj2157-hal" }
 yoton-proto.workspace = true
 embassy-time = "0.5"
+yoton-power = { path = "../../crates/yoton-power" }
 yoton-input = { path = "../../crates/yoton-input" }
 
 [lints]

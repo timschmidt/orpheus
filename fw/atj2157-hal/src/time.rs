@@ -42,7 +42,9 @@ pub fn init() {
     crate::delay::spin_us(5);
     rmu::RST0.set_bits(rmu::rst0::TIMER);
     cmu::CLKEN0.set_bits(cmu::clken0::TIMER);
-    cmu::HOSC_CTL.set_bits(1);
+    // The port's `0xC0000104 |= 1`: LOSC (32 kHz crystal) enable per the
+    // datasheet (HAL-0 correction), kept as verified.
+    cmu::LOSC_CTL.set_bits(1);
     rtc::CTL.set_bits(rtc::ctl::RTC32K_DIV_EN);
     rtc_update_handshake();
 

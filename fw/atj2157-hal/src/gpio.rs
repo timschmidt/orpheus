@@ -15,7 +15,12 @@ impl Output {
     pub fn new(pin: u8, high: bool) -> Self {
         let p = Self { pin };
         p.set(high);
-        gpio::mfp(usize::from(pin)).write(gpio::mfp_bits::FUNC_GPIO | gpio::mfp_bits::OUT_EN);
+        // Function and enables only: keep drive strength, pulls and Schmitt.
+        gpio::mfp(usize::from(pin)).modify(|v| {
+            (v & !(gpio::mfp_bits::FUNC.mask() | gpio::mfp_bits::IN_EN))
+                | gpio::mfp_bits::FUNC_GPIO
+                | gpio::mfp_bits::OUT_EN
+        });
         p
     }
 
@@ -49,7 +54,11 @@ pub struct Input {
 impl Input {
     #[must_use]
     pub fn new(pin: u8) -> Self {
-        gpio::mfp(usize::from(pin)).write(gpio::mfp_bits::FUNC_GPIO | gpio::mfp_bits::IN_EN);
+        gpio::mfp(usize::from(pin)).modify(|v| {
+            (v & !(gpio::mfp_bits::FUNC.mask() | gpio::mfp_bits::OUT_EN))
+                | gpio::mfp_bits::FUNC_GPIO
+                | gpio::mfp_bits::IN_EN
+        });
         Self { pin }
     }
 

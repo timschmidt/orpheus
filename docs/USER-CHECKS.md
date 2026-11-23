@@ -21,6 +21,7 @@ the result and date. "Blocking" entries hold up the package named.
 | # | For | Blocking? | What to do | Expect | Result (user) |
 |---|---|---|---|---|---|
 | 7 | LCD-1 | no | With the player on USB, run `cargo xtask dev ram lcd --test lcd` and look at the screen after it finishes (the picture stays until the player is switched off) | White frame; colour bars left→right white, yellow, cyan, green, magenta, red, blue, black; a grey ramp dark→light; below, a gradient red→ to the right, green downwards, blue on the left; no tearing, sharp edges, upright (text-free) | |
+| 9 | PWR-2 | no | If a USB power meter is at hand: run `cargo xtask dev ram charge --test charge --arg 120` with a part-empty battery and read the meter during the 2 minutes (the screen says CHARGING 200MA) | Charge current about 200 mA (never clearly above); the screen shows battery mV rising slowly | |
 | 8 | INPUT-1 | **yes, for M4** | Run `cargo xtask dev ram keys --test keys --arg 60`, then press each of the ten keys once, one at a time, within the 60 s | Each key's box turns yellow while held and stays outlined green afterwards; the screen labels are PWR BCK MNU OK PRV / NXT UP DN V+ V-; report any key that lights the wrong box or none. Also say which physical key is which (e.g. "the key marked ⏮ lights PRV") | |
 
 ## Template for workers

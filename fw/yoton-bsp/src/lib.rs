@@ -5,6 +5,7 @@
 
 #![no_std]
 
+pub mod charger;
 pub mod display;
 pub mod keys;
 pub mod pins;
