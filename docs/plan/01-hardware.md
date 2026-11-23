@@ -348,6 +348,122 @@ that. Added:
 | U-BT-3 … | bluetooth.md §8 questions 7–10 (unknown commands, incoming connections, upgrade image, enable pin) | 06 §4.3 | BT-3 |
 | U-IMG-1 | What the image/video block at `0xC0090000` does (JPEG acceleration?) | Read `MMM_VP.AL`/`MMM_ID.AL` register use; only pursue if it decodes JPEG | later |
 
+### HAL-0 reconciliation (datasheet vs. reports and port), 2026-11-23
+
+Written while building `atj2157-pac` (details and tags in each module's doc
+comments; module list in `crates/atj2157-pac/README.md`). Nothing here was
+run on the player.
+
+**Corrections to the lead's PAC modules**
+
+* `cmu::HOSC_CTL` was at `0xC0000104`; per DS §4.2 `HOSC_CTL` is `0xC0000100`
+  and `0xC0000104` is `LOSC_CTL`. So the port's timer start-up
+  `0xC0000104 |= 1` enables the **32 kHz crystal oscillator** (LOSC_EN), not
+  HOSC. New `cmu::LOSC_CTL`; `HOSC_CTL` moved.
+* `gpio::mfp_bits::PULL` (`[11:8]`) removed: DS §10.4 has three separate
+  pulls (bit 8 10K up, bit 9 100K down, bit 11 50K up) and bit 5 = Schmitt
+  trigger (`SMIT`); new names added.
+* `pmu::onoff::SHORT_PD` kept as an alias of `PRESS`: DS calls bit 1 a
+  read-only live "being pressed" status, the vendor and port write 1 back as
+  if it were a latch (works [HW]); INPUT-1 settles which.
+* `pmu::pmuadc::lradc_en(n)` = bit 3 + n confirmed [DS] §9.3.4.1 (no longer
+  [inferred]); `BAT_EN` bit 1 confirmed; bit 0 is `DC5V_EN`.
+* `irq`: added `MPU` = 48, `SDMA` = 50, `dma(n)`; `UNUSED` extended to all
+  "NC" lines (9, 25, 37, 38, 44, 46, 47).
+* `rtc::tctl`: added `CAPTURE_SE` `[7:6]` and `LEVEL` bit 12 (T2/T3).
+* All other existing addresses and bit positions matched the datasheet.
+
+**Corrections to plan facts**
+
+* 03 §10 "Battery: ADC enable `PMU+0x38` bit 0": bit 0 is DC5VADC_EN; the
+  battery ADC is **bit 1** (reset 1). [DS]
+* 03 §2.3 / system.md §1.5: SPI0 clock source codes are 0 HCLK, 1 CK24M,
+  2 COREPLL, 3 DEVPLL; divider codes 0 ÷1, 1 ÷2, n ÷2n, 14 ÷1.5, 15 ÷2.5 [DS
+  §4.3.3.5]. The ROM's `0x101` is therefore CK24M ÷2, not COREPLL; the port's
+  `0x200` = COREPLL ÷1 = 48 MHz; the vendor's `0x303` is DEVPLL ÷6 = 30 MHz
+  (its "90·d > DEVPLL" rule keeps SPI below 45 MHz). U-PWR-3 narrows to: why
+  `0x101` measured ≈ 46 Mbit/s.
+* Audio PLLs: by the `CMU_DACCLK` coding [DS], AudioPLL0 = 49.152 MHz
+  (48 kHz family) and AudioPLL1 = 45.1584 MHz; `0xC0000118` / `0xC000011C`
+  are presumably PLL0 / PLL1 [inferred].
+* §7 power key: the vendor's running value `ONOFF_CTL[5:2]` = 8 decodes as
+  **long press → restart after 8 s** ([5:4] = 2, [3:2] = 0), `[8:6]` = 3 = 1 s
+  threshold. `VOUT_CTL[12:10]` = 4 (vendor MANAGER) is the reset default
+  3.1 V, not a change.
+* §6 / system.md §6: the special DMA channel at `0xC0071000` is the
+  datasheet's **SDMA** (YUV/RGB LCD channel), interrupt **IRQ 50** (36 is
+  EXTIRQ); its pending bits are `DMAIP` bits 10/26; `DMAIE` has no SDMA bits.
+* §6 DMA: bit n + 16 of `DMAIP`/`DMAIE` is **half-transfer**, bit n complete
+  [DS] (`payloads/dmatest.c` labels them the other way round). Only one of the
+  ten channels moves data at a time (§5.1): pager and audio share one engine.
+  `BC` is 18 bits (≤ 256 KiB − 1). UART1 RX `0x00200082` has no reload bit
+  (circular only in software). SRAM2/3 DMA aliases are [HW] only (not in
+  the datasheet memory map).
+* §6 DMA selectors: DS names 5 "SDIO" and 6 "SD/MMC", but SD0 at
+  `0xC0160000` (map: "SD/MMC") works with 5 [HW]: the pair is swapped in one
+  of the two tables (U-SD-3).
+* §4: UART2 `0xC00F0000`, UART3 `0xC0100000`, SPI1 `0xC00B0000`, SPI2
+  `0xC00C0000`, SD1/SDIO `0xC0170000` (CLKEN0/RST0 b3, `CMU+0x18`), NAND
+  `0xC0150000` [DS §3.4]. USB: RST0 b16 is pulsed first, then b15.
+* §5: GPIO17 function 27 is **LRADC6** (ladder 2); `0xC01C0304` is
+  **WIO1_CTL** (pin 63 "WIO1/LRADC1"), and `0x3001` there selects LRADC1 —
+  it belongs to the ladder-1 row, whose "dedicated" pad is WIO1. GPIO24/25
+  function 14 = TWI1_CLK/TWI1_DAT [DS §10.4]; GPIO38 function 10 = UART1_TX,
+  GPIO39 = UART1_RX (SoC side of U-BT-1). GPIO48, 62 and 63 have no CTL
+  register and no pad in the QFN68 list, so SWD group 0 probably cannot
+  reach a pad (U-GPIO-3).
+* U-GPIO-1 **answered [DS]**: `+0x200` is `GPIO_ODAT0`, the output latch; the
+  output enable is bit 6 of each pin's CTL word.
+* bluetooth.md §2: the UART BR value is `0x00D000D0` (disassembly), `[31:16]`
+  TX divisor and `[15:0]` RX divisor = HOSC / baud [DS §7.4.5.5] (U-BT-1 baud
+  half answered).
+* system.md §1.5 / 03 §2.3 (LCM HOSC detour): the vendor switches to HOSC
+  only around the PIO writer and GRAM read, not around the DMA blit. AHB/PIO
+  strobes are timed by `EXT_CLK` in bus clocks, DMA strobes by `LCDC_CLK` in
+  LCD-clock cycles [DS §9.1], so a DMA blit should not need the detour
+  (U-LCM-1). The port's `LCM_RS` (`+0x10`) is `DEFAULT_COLOR`; RS is
+  `LCD_CTL` bit 6. In DMA mode with `RGB565_FORMAT` = 1 a little-endian u16
+  frame buffer needs no swap (U-LCM-2, to confirm by read-back).
+* CMU_SD0CLK `0x41` decodes as CK24M ÷128 ÷2 = 93.75 kHz [DS], not ≈ 400 kHz.
+* Audio (DS ch. 8 vs. audio.md): digital volume is 0.375 dB/step, `0xBF` =
+  0 dB, `0xFF` = +24 dB, 0 = mute [DS] — so the port's `0xC0` is +0.375 dB,
+  not a neutral level, and U-AUD-1 narrows to the PA gain steps and ramp
+  timing. `DAC_FIFOCTL`/`ADC01_FIFOCTL`: bit 1 DRQ enable, bit 2 IRQ enable,
+  `[5:4]` input select (audio.md had them shifted). `DIGCTL` bit 1 is dither.
+  The FIFOs are 24-bit (`[31:8]`). A second DAC FIFO (`+0x10`, DMA selector
+  0x0C) is summed into the output in hardware (`DIGCTL` bit 5) — a hardware
+  path for key clicks. ADC: mic L/R and FD-buffer L/R fields are the reverse
+  of audio.md; mic bias is `VMIC_CTL` (`+0x54`), never written by the vendor;
+  the vendor does enable the ADC high-pass filter. The DAC supports up to
+  96 kHz and the ADC 48 kHz in the datasheet; the IC-type gate is vendor
+  software policy (U-AUD-2 remains a hardware try). `PA_CTL` (`+0x28`),
+  `PA_ANTIPOP` (`+0x2C`) and `+0x30` are not in the datasheet ([HW]/[code]).
+* For `CMU_DACCLK` bit 6 the "44.1 kHz family" reading holds only because of
+  the vendor's audio-PLL values; either PLL can run at either frequency [DS].
+
+**New unknowns** (tests in the module docs)
+
+| Id | Question | Test | WP |
+|---|---|---|---|
+| U-DMA-3 | How the SDMA interrupt (IRQ 50) is enabled (no `DMAIE` bit) | SDMA transfer with NVIC 50 enabled; watch `DMAIP` bit 10 | LCD-1 |
+| U-DMA-4 | "DMA0–7 can be triggered on selected events" (§5.1): no register describes it | Read-only search of vendor code | later |
+| U-DMA-5 | Selectors 0x11, 0x1D (DSP) printed "-" | DSP bring-up | DSP-1 |
+| U-SD-3 | Which of IRQ 17/18 and DMA selector 5/6 belongs to SD0 | SD0 read with mode `0x86` vs `0x85`; enable the SD0 interrupt and read `NVIC_ISPR` | SD-1 |
+| U-SD-4 | Does `SD_STATE` DAT0 show card busy (replacing CMD13 polling) | Sample STATE after CMD24 | SD-1 |
+| U-USB-13 | Registers `+0x000…0x0FC` (FOTG210 keeps OTG/EHCI registers there) | Read-only dump after init | USB-5 |
+| U-SPI-1 | SPI0 `+0x14`, `+0x20…0x2C` (descrambler seed?) | Read-only dump in ROM state and after a descrambled read | UI-1 |
+| U-TWI-1 | TWI SCL source (HOSC per formula; CMU+0x28 named "SPTWILK") | Time a 32-byte transfer at CLKDIV 15 against T0 | FM-1 |
+| U-GPIO-2 | What `DNMOS` (bit 15) does (open drain?) | Spare pin with OUTEN+DNMOS, ODAT = 1, read IDAT | HAL-1 |
+| U-GPIO-3 | SWD routing via `0xC01C0000` given that GPIO62/63 have no pad | **User check** with a probe on GPIO55/56 | later |
+| U-GPIO-4 | Undocumented `+0x21C` and `+0x400` bit 6 toggled by vendor code | Read-only dump | HAL-1 |
+| U-LCM-3 | Effect of `AHB_CFG_DATA` = 0 on the port's first command write | Send `0x11` in each mode, read display status | LCD-1 |
+| U-PWM-1 | Does a `DUTY` write take effect while the channel runs | Change duty with and without the vendor's stop/start | LCD-1 |
+| U-PWM-2 | Breath and programmable (DMA) PWM modes | Bring-up on PWM4 | later |
+| U-PMU-5 | `ONOFF_CTL` bit 1: live status (DS) or latch (vendor) | Hold the key, read without clearing, release, read again | INPUT-1 |
+| U-AUD-7 | `FIFOCTL.DMAWIDTH` with 16-bit DMA (vendor sets it, the port does not) | Toggle; compare level and channel order | AU-1 |
+| U-AUD-8 | Hardware mixing of DAC FIFO1 (key clicks) | Second DMA stream on FIFO1 during playback | AU-1 |
+| U-AUD-9 | `DAC_FIFO0_CNT` as a playback-position counter | Compare with DMA bytes played | AU-1 |
+
 ## 10. Rules for hardware discovery work
 
 1. One question per bring-up image or poke session; write the raw numbers into
