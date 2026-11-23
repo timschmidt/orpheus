@@ -1,0 +1,21 @@
+[package]
+name = "yoton-sim"
+description = "Desktop simulator for the yoton UI: headless frame buffer, optional window, key scripts, golden images (07 §3.2)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+# A 4x window (X11 via minifb, loaded at run time; builds without X headers).
+window = ["dep:minifb"]
+
+[dependencies]
+yoton-ui = { path = "../crates/yoton-ui" }
+yoton-host = { path = "../crates/yoton-host" }
+anyhow = "1"
+minifb = { version = "0.29", optional = true, default-features = false, features = ["x11"] }
+
+[lints]
+workspace = true
