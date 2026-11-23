@@ -1,0 +1,367 @@
+//! SD card host (SD0, `0xC0160000`) with DMA (03-hal-drivers §9).
+//!
+//! Command engine as the Rockbox port drives it [HW]: argument, index,
+//! control word with response type and `TS` (start), wait for `TS` to
+//! clear, check `STATE` errors. Data phases go through a DMA channel (the
+//! port uses channel 4, mode `0x85` read / `0x8500` write). After writes the
+//! controller does not wait for the card's busy signal, so the driver polls
+//! CMD13 until the card is back in `tran` and ready for data.
+//!
+//! The card protocol (initialisation, CSD parsing) uses `yoton-sdcard`.
+
+use atj2157_pac::{cmu, dma as pdma, gpio, rmu, sd};
+use embassy_time::{Duration, Instant, Timer};
+use yoton_sdcard::{self as card, Cid, Csd, Ocr, R128, Status, cmd};
+
+use crate::dma::Channel;
+
+/// Driver errors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Error {
+    Timeout,
+    Crc,
+    Controller(u32),
+    Card(u32),
+    NoCard,
+    Unsupported,
+    Dma,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Resp {
+    None,
+    R1,
+    R1b,
+    R2,
+    R3,
+}
+
+/// Board wiring of the SD0 pads: (pin, drive) for CLK, CMD, D0..D3.
+pub struct Pins<'a> {
+    pub pads: &'a [(u8, u32)],
+    /// Function word of the SD pads (`0x804` [HW]).
+    pub func: u32,
+}
+
+/// Counters for diagnostics.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Stats {
+    pub commands: u32,
+    pub timeouts: u32,
+    pub crc_errors: u32,
+    pub blocks_read: u32,
+    pub blocks_written: u32,
+    pub busy_polls: u32,
+    /// `STATE` and command index of the last failed command.
+    pub last_err_state: u32,
+    pub last_err_cmd: u32,
+}
+
+pub struct Sd {
+    dma: Channel,
+    rca: u32,
+    pub csd: Option<Csd>,
+    pub cid: Option<Cid>,
+    pub ocr: Ocr,
+    high_capacity: bool,
+    pub stats: Stats,
+}
+
+/// Identification clock and fast clock words of `CMU_SD0CLK` [HW].
+pub const CLK_IDENT: u32 = 0x41;
+pub const CLK_FAST: u32 = 0x00;
+
+/// Largest blocks per multi-block transfer this driver issues.
+pub const MAX_BLOCKS: u32 = 128;
+
+impl Sd {
+    /// Power the controller and send the initialisation clocks.
+    pub fn new(pins: &Pins<'_>, dma: Channel) -> Self {
+        cmu::CLKEN0.set_bits(cmu::clken0::SD0 | cmu::clken0::DMA);
+        rmu::RST0.clear_bits(rmu::rst0::SD0);
+        crate::delay::spin_us(10);
+        rmu::RST0.set_bits(rmu::rst0::SD0);
+        for &(p, drive) in pins.pads {
+            gpio::mfp(usize::from(p)).write(pins.func | (drive << 12));
+        }
+        cmu::SD0CLK.write(CLK_IDENT);
+        sd::EN.write(sd::VENDOR_EN_INIT);
+        dma.enable_irq();
+        let s = Self {
+            dma,
+            rca: 0,
+            csd: None,
+            cid: None,
+            ocr: Ocr(0),
+            high_capacity: false,
+            stats: Stats::default(),
+        };
+        sd::CTL.write(sd::VENDOR_CTL_INIT);
+        s.wait_ts_blocking();
+        s
+    }
+
+    fn wait_ts_blocking(&self) -> bool {
+        for _ in 0..2_000_000 {
+            if sd::CTL.read() & sd::ctl::TS == 0 {
+                return true;
+            }
+        }
+        false
+    }
+
+    async fn wait_ts(&self, timeout: Duration) -> bool {
+        let end = Instant::now() + timeout;
+        // Commands finish in tens of µs: spin briefly, then yield.
+        for _ in 0..2000 {
+            if sd::CTL.read() & sd::ctl::TS == 0 {
+                return true;
+            }
+        }
+        while Instant::now() < end {
+            if sd::CTL.read() & sd::ctl::TS == 0 {
+                return true;
+            }
+            Timer::after_micros(50).await;
+        }
+        false
+    }
+
+    fn check_state(&mut self, resp: Resp) -> Result<(), Error> {
+        let st = sd::STATE.read();
+        let mut mask = sd::state::ERR_MASK;
+        if resp == Resp::R3 {
+            mask &= !sd::state::NOCRC_IGNORE;
+        }
+        if st & mask == 0 {
+            return Ok(());
+        }
+        self.stats.last_err_state = st;
+        self.stats.last_err_cmd = sd::CMD.read();
+        // CLNR without a CRC7 error: the card did not answer at all.
+        if st & sd::state::TOUTE != 0 || (st & sd::state::CLNR != 0 && st & sd::state::CRC7ER == 0) {
+            self.stats.timeouts += 1;
+            return Err(Error::Timeout);
+        }
+        if st & 0x13 != 0 {
+            self.stats.crc_errors += 1;
+            return Err(Error::Crc);
+        }
+        Err(Error::Controller(st))
+    }
+
+    fn short_resp() -> u32 {
+        ((sd::rspbuf(0, 1).read() & 0xFF) << 24) | (sd::rspbuf(0, 0).read() >> 8)
+    }
+
+    fn long_resp() -> R128 {
+        R128([
+            sd::rspbuf(0, 3).read(),
+            sd::rspbuf(0, 2).read(),
+            sd::rspbuf(0, 1).read(),
+            sd::rspbuf(0, 0).read(),
+        ])
+    }
+
+    /// A command without data. Returns the short response (0 for none).
+    async fn command(&mut self, index: u8, arg: u32, resp: Resp) -> Result<u32, Error> {
+        self.stats.commands += 1;
+        let tm = match resp {
+            Resp::None => sd::ctl::TM_NONE,
+            Resp::R1 => sd::ctl::TM_R1,
+            Resp::R2 => sd::ctl::TM_R2,
+            Resp::R1b | Resp::R3 => sd::ctl::TM_R3,
+        };
+        sd::ARG.write(arg);
+        sd::CMD.write(u32::from(index));
+        sd::CTL.write(sd::VENDOR_CTL_TIMING | tm | sd::ctl::TS);
+        if !self.wait_ts(Duration::from_millis(500)).await {
+            self.stats.timeouts += 1;
+            return Err(Error::Timeout);
+        }
+        self.check_state(resp)?;
+        if resp == Resp::R1b {
+            // Give the card time to release DAT0, then confirm via CMD13.
+            Timer::after_micros(500).await;
+        }
+        Ok(if resp == Resp::None { 0 } else { Self::short_resp() })
+    }
+
+    async fn app_command(&mut self, index: u8, arg: u32, resp: Resp) -> Result<u32, Error> {
+        self.command(cmd::APP_CMD, self.rca, Resp::R1).await?;
+        self.command(index, arg, resp).await
+    }
+
+    /// Card initialisation: identification, addressing, 4-bit bus, fast
+    /// clock.
+    pub async fn init_card(&mut self) -> Result<(), Error> {
+        self.rca = 0;
+        // A card left active by the previous firmware sometimes misses the
+        // first CMD0/CMD8 pair: retry the pair a few times.
+        let mut if_cond = Err(Error::Timeout);
+        for _ in 0..4 {
+            self.command(cmd::GO_IDLE, 0, Resp::None).await?;
+            Timer::after_millis(2).await;
+            if_cond = self.command(cmd::SEND_IF_COND, card::IF_COND_ARG, Resp::R1).await;
+            if if_cond.is_ok() {
+                break;
+            }
+            Timer::after_millis(10).await;
+        }
+        let v2 = match if_cond {
+            Ok(r) if r & 0xFFF == card::IF_COND_ARG => true,
+            Ok(_) => return Err(Error::Unsupported),
+            Err(Error::Timeout) => false,
+            Err(e) => return Err(e),
+        };
+        let arg = if v2 { card::OP_COND_ARG } else { card::OP_COND_ARG & !(1 << 30) };
+        let end = Instant::now() + Duration::from_secs(1);
+        loop {
+            let ocr = match self.app_command(cmd::ACMD_SEND_OP_COND, arg, Resp::R3).await {
+                Ok(o) => Ocr(o),
+                Err(Error::Timeout) if !v2 => return Err(Error::NoCard),
+                Err(e) => return Err(e),
+            };
+            if ocr.ready() {
+                self.ocr = ocr;
+                self.high_capacity = ocr.high_capacity();
+                break;
+            }
+            if Instant::now() > end {
+                return Err(Error::Timeout);
+            }
+            Timer::after_millis(10).await;
+        }
+        self.command(cmd::ALL_SEND_CID, 0, Resp::R2).await?;
+        self.cid = Some(Cid::parse(&Self::long_resp()));
+        let r6 = self.command(cmd::SEND_RELATIVE_ADDR, 0, Resp::R1).await?;
+        self.rca = r6 & 0xFFFF_0000;
+        self.command(cmd::SEND_CSD, self.rca, Resp::R2).await?;
+        self.csd = Csd::parse(&Self::long_resp());
+        self.command(cmd::SELECT_CARD, self.rca, Resp::R1b).await?;
+        self.wait_ready().await?;
+        self.app_command(cmd::ACMD_SET_BUS_WIDTH, 2, Resp::R1).await?;
+        sd::EN.modify(|v| sd::en::DATAWID.set(v, sd::en::DATAWID_4BIT));
+        if !self.high_capacity {
+            self.command(cmd::SET_BLOCKLEN, 512, Resp::R1).await?;
+        }
+        cmu::SD0CLK.write(CLK_FAST);
+        Ok(())
+    }
+
+    /// Poll CMD13 until the card is in `tran` and ready for data.
+    async fn wait_ready(&mut self) -> Result<(), Error> {
+        let end = Instant::now() + Duration::from_secs(1);
+        loop {
+            self.stats.busy_polls += 1;
+            let st = Status(self.command(cmd::SEND_STATUS, self.rca, Resp::R1).await?);
+            if st.has_error() {
+                return Err(Error::Card(st.0));
+            }
+            if st.ready_for_data() && st.state() == card::State::Tran {
+                return Ok(());
+            }
+            if Instant::now() > end {
+                return Err(Error::Timeout);
+            }
+            Timer::after_micros(200).await;
+        }
+    }
+
+    fn addr(&self, lba: u32) -> u32 {
+        if self.high_capacity { lba } else { lba.wrapping_mul(512) }
+    }
+
+    async fn data_command(
+        &mut self,
+        index: u8,
+        lba: u32,
+        buf: *mut u8,
+        blocks: u32,
+        write: bool,
+    ) -> Result<(), Error> {
+        self.stats.commands += 1;
+        let len = blocks * 512;
+        sd::ARG.write(self.addr(lba));
+        sd::CMD.write(u32::from(index));
+        sd::EN.set_bits(sd::en::AHB_DMA_SEL);
+        let fifo = sd::DAT.addr() as u32;
+        if write {
+            self.dma.start(pdma::VENDOR_MODE_SD_WRITE, buf as u32, fifo, len);
+        } else {
+            self.dma.start(pdma::VENDOR_MODE_SD_READ, fifo, buf as u32, len);
+        }
+        sd::BLK_SIZE.write(512);
+        sd::BLK_NUM.write(blocks);
+        let tm = if write { sd::ctl::TM_WRITE } else { sd::ctl::TM_READ };
+        sd::CTL.write(sd::VENDOR_CTL_DATA | sd::VENDOR_CTL_TIMING | tm);
+        sd::CTL.set_bits(sd::ctl::TS);
+        if !self.wait_ts(Duration::from_millis(1000)).await {
+            self.dma.abort();
+            self.stats.timeouts += 1;
+            return Err(Error::Timeout);
+        }
+        let r = self.check_state(Resp::R1);
+        // The DMA finishes on its own after the controller's last word.
+        let end = Instant::now() + Duration::from_millis(500);
+        while self.dma.busy() {
+            if Instant::now() > end {
+                self.dma.abort();
+                return Err(Error::Dma);
+            }
+            Timer::after_micros(20).await;
+        }
+        r
+    }
+
+    /// Read `buf.len() / 512` blocks starting at `lba`. `buf` must be word
+    /// aligned and in DMA-reachable RAM.
+    pub async fn read(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), Error> {
+        let mut done = 0u32;
+        let total = (buf.len() / 512) as u32;
+        while done < total {
+            let n = (total - done).min(MAX_BLOCKS);
+            let p = buf[(done * 512) as usize..].as_mut_ptr();
+            if n == 1 {
+                self.data_command(cmd::READ_SINGLE, lba + done, p, 1, false).await?;
+            } else {
+                let r = self.data_command(cmd::READ_MULTIPLE, lba + done, p, n, false).await;
+                let stop = self.command(cmd::STOP_TRANSMISSION, 0, Resp::R1b).await;
+                r?;
+                stop?;
+            }
+            self.stats.blocks_read += n;
+            done += n;
+        }
+        Ok(())
+    }
+
+    /// Write blocks. Raw writes are only for files the caller created
+    /// (CLAUDE.md rule 5); the file system enforces where.
+    pub async fn write(&mut self, lba: u32, buf: &[u8]) -> Result<(), Error> {
+        let mut done = 0u32;
+        let total = (buf.len() / 512) as u32;
+        while done < total {
+            let n = (total - done).min(MAX_BLOCKS);
+            let p = buf[(done * 512) as usize..].as_ptr().cast_mut();
+            if n == 1 {
+                self.data_command(cmd::WRITE_SINGLE, lba + done, p, 1, true).await?;
+            } else {
+                let r = self.data_command(cmd::WRITE_MULTIPLE, lba + done, p, n, true).await;
+                let stop = self.command(cmd::STOP_TRANSMISSION, 0, Resp::R1b).await;
+                r?;
+                stop?;
+            }
+            self.wait_ready().await?;
+            self.stats.blocks_written += n;
+            done += n;
+        }
+        Ok(())
+    }
+
+    /// Capacity in blocks (0 before init).
+    #[must_use]
+    pub fn blocks(&self) -> u64 {
+        self.csd.map_or(0, |c| c.blocks)
+    }
+}

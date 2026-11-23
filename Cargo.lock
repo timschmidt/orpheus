@@ -617,6 +617,10 @@ name = "yoton-proto"
 version = "0.1.0"
 
 [[package]]
+name = "yoton-sdcard"
+version = "0.1.0"
+
+[[package]]
 name = "zlib-rs"
 version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"

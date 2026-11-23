@@ -22,3 +22,8 @@ pub const I2C_SCL: u8 = 24;
 pub const I2C_SDA: u8 = 25;
 /// Bluetooth host-busy output [code].
 pub const BT_HOST_BUSY: u8 = 31;
+
+/// SD0 pads: (pin, drive) for CLK, CMD, D0, D1, D2, D3; function word
+/// `0x804` [HW].
+pub const SD_PADS: [(u8, u32); 6] = [(30, 5), (32, 3), (33, 3), (29, 3), (28, 3), (27, 3)];
+pub const SD_FUNC: u32 = 0x804;

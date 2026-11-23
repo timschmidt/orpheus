@@ -18,6 +18,7 @@ pub mod log;
 pub mod persist;
 pub mod pwm;
 pub mod rt;
+pub mod sd;
 pub mod time;
 pub mod wdt;
 

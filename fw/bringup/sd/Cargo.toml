@@ -1,0 +1,20 @@
+[package]
+name = "bringup-sd"
+description = "SD-1 bring-up image: card init, CID/CSD, MBR, read consistency and speed (read-only)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+atj2157-hal = { path = "../../atj2157-hal" }
+yoton-proto.workspace = true
+yoton-bsp = { path = "../../yoton-bsp" }
+yoton-sdcard = { path = "../../../crates/yoton-sdcard" }
+embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }
+embassy-time = "0.5"
+embassy-sync = "0.8"
+static_cell = "2"
+
+[lints]
+workspace = true
