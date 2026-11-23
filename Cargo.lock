@@ -843,6 +843,13 @@ name = "yoton-sdcard"
 version = "0.1.0"
 
 [[package]]
+name = "yoton-settings"
+version = "0.1.0"
+dependencies = [
+ "embassy-futures",
+]
+
+[[package]]
 name = "yoton-usb"
 version = "0.1.0"
 dependencies = [
