@@ -12,7 +12,10 @@
 //!
 //! Access model: a [`Reg`] is a fixed MMIO address with volatile `read`,
 //! `write` and `modify`. Fields are [`Field`] constants (shift + width) or
-//! plain bit masks (`u32` constants). The crate has no notion of ownership;
+//! plain bit masks (`u32` constants). [`RoReg`] is a read-only register for
+//! blocks yotonrs must never write (the eFuse controller). Vendor and port
+//! values are named `VENDOR_*` / `PORT_*` constants with their provenance;
+//! the crate contains no driver code. The crate has no notion of ownership;
 //! the HAL (`fw/atj2157-hal`) decides who may touch which block.
 //!
 //! On the host the crate compiles (its constants are unit-tested), but
@@ -23,13 +26,27 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod adc;
 pub mod cmu;
+pub mod dac;
+pub mod dma;
+pub mod dsp;
+pub mod efuse;
 pub mod gpio;
+pub mod i2s;
 pub mod irq;
+pub mod lcm;
 pub mod memctl;
 pub mod pmu;
+pub mod pwm;
 pub mod rmu;
 pub mod rtc;
+pub mod sd;
+pub mod spi;
+pub mod spicache;
+pub mod twi;
+pub mod uart;
+pub mod usb;
 
 /// A 32-bit memory-mapped register.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,6 +114,37 @@ impl Reg {
     }
 }
 
+/// A 32-bit memory-mapped register that this crate only lets you read (used
+/// for blocks yotonrs must never write, such as the eFuse controller).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct RoReg(usize);
+
+impl RoReg {
+    #[must_use]
+    pub const fn at(addr: usize) -> Self {
+        Self(addr)
+    }
+
+    #[must_use]
+    pub const fn addr(self) -> usize {
+        self.0
+    }
+
+    #[inline(always)]
+    #[must_use]
+    pub fn read(self) -> u32 {
+        // SAFETY: as in `Reg::read`.
+        unsafe { core::ptr::read_volatile(self.0 as *const u32) }
+    }
+
+    #[inline(always)]
+    #[must_use]
+    pub fn get(self, f: Field) -> u32 {
+        f.get(self.read())
+    }
+}
+
 /// A bit field: `width` bits starting at `shift`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Field {
@@ -145,9 +193,41 @@ pub const fn bit(n: u8) -> u32 {
     1 << n
 }
 
+/// Test helpers shared by the module tests.
+#[cfg(test)]
+pub(crate) mod testutil {
+    /// Panics if any two masks share a bit (fields of one register that must
+    /// not overlap).
+    #[track_caller]
+    pub fn assert_disjoint(masks: &[u32]) {
+        let mut seen = 0u32;
+        for (i, &m) in masks.iter().enumerate() {
+            assert!(m != 0, "mask #{i} is empty");
+            assert!(seen & m == 0, "mask #{i} ({m:#010x}) overlaps earlier masks ({seen:#010x})");
+            seen |= m;
+        }
+    }
+
+    /// Panics if the register addresses are not strictly increasing (a
+    /// register list copied from the datasheet in offset order).
+    #[track_caller]
+    pub fn assert_increasing(addrs: &[usize]) {
+        for w in addrs.windows(2) {
+            assert!(w[0] < w[1], "{:#x} is not below {:#x}", w[0], w[1]);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disjoint_helper() {
+        testutil::assert_disjoint(&[Field::bits(3, 0).mask(), bit(4), Field::bits(31, 5).mask()]);
+        let r = std::panic::catch_unwind(|| testutil::assert_disjoint(&[bit(3), Field::bits(3, 2).mask()]));
+        assert!(r.is_err());
+    }
 
     #[test]
     fn fields() {
