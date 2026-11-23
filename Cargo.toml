@@ -4,7 +4,7 @@
 # thumbv7em-none-eabihf. Shared no_std crates under crates/ are used by both.
 [workspace]
 resolver = "3"
-members = ["crates/*", "xtask"]
+members = ["crates/*", "crates/codecs/*", "xtask"]
 exclude = ["fw"]
 
 [workspace.package]

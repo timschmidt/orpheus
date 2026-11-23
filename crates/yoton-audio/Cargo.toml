@@ -1,0 +1,14 @@
+[package]
+name = "yoton-audio"
+description = "Audio pipeline core: byte sources, the decoder trait, the codec arena, format probing and the stream model"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# Safe casts between the arena's bytes and typed buffers (`Pod` types only).
+bytemuck = { version = "1.25", default-features = false, features = ["derive", "min_const_generics"] }
+
+[lints]
+workspace = true

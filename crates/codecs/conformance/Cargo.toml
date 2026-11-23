@@ -1,0 +1,16 @@
+[package]
+name = "yoton-codec-conformance"
+description = "Host conformance harness, robustness checks, fuzz-target bodies and benchmark for the codecs (07 §3.3–3.4)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+yoton-audio = { path = "../../yoton-audio" }
+yoton-codecs = { path = ".." }
+md-5 = "0.10"
+
+[lints]
+workspace = true
