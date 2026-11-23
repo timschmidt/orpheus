@@ -13,6 +13,7 @@ pub mod delay;
 pub mod dma;
 pub mod executor;
 pub mod gpio;
+pub mod i2c_soft;
 pub mod interrupt;
 pub mod lcm;
 pub mod log;
