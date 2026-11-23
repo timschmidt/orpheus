@@ -9,7 +9,7 @@ of every session. Newest entries first in §3.
 |---|---|
 | Plan | `docs/PLAN.md`, `docs/plan/` (scope changes of 2026-11-23 applied) |
 | Code | Git repository since 2026-11-23. Host workspace (`crates/*`, `xtask`) and device workspace (`fw/`: `atj2157-hal`, `yoton-bsp`, `firmware`, `bringup/*`) |
-| Player | Attached; Rockbox port installed in NOR and untouched; all yotonrs code so far runs as RAM images through ymon. **No microSD card answers** (Rockbox reports "Media removed" too): SD-1 on-device tests and everything after FS-2 wait for a card |
+| Player | Attached; Rockbox port installed in NOR and untouched; all yotonrs code so far runs as RAM images through ymon. microSD card inserted by the user at about 19:00: SanDisk, 499,744,768 blocks, MBR, one FAT32-LBA partition (type 0x0C) at LBA 2048. Whether it holds the owner's music is not known: treat it as precious (writes only in `/.yoton/`) |
 | NOR | Stage 1 + C stage 2 + Rockbox. Vendor backups verified (`ad45687e…`). The whole free region `0x762000–0x7DFFFF` as installed is saved in `local/rockbox-nor-0x762000.bin` (sha256 in the `.sha256` next to it); `cargo xtask dev restore rockbox --verify` matches |
 | Host | Fedora 43, Rust 1.98.1 pinned (`rust-toolchain.toml`), `thumbv7em-none-eabihf` installed |
 | Current milestone | M1 (bring-up in RAM) nearly complete; M0 done except T-4a (worker running) |
@@ -27,7 +27,7 @@ of every session. Newest entries first in §3.
 | LCD-1 | done pending user check 7 | LCM PIO + DMA blit, ST7735S panel, backlight PWM4, GRAM read-back |
 | INPUT-1 | done pending user check 8 (**blocking M4**) | `yoton-input` decoder/debouncer; live key screen |
 | PWR-2 | done pending user check 9 + full-charge termination | `yoton-power` vendor charge algorithm, `yoton-bsp::charger`; charges at code 4 (200 mA) |
-| SD-1 | blocked (no card in the slot) | Driver and `yoton-sdcard` done; read test reports SKIP until a card is inserted |
+| SD-1 | done | Driver and `yoton-sdcard`; init, CID/CSD, MBR, multi/single read consistency; 9.3 MB/s sequential (64 KiB reads), 3.4 MB/s (4 KiB). Write path exercised only after FS-2 provides a scratch file |
 | AU-0 | done pending user check 10 (**blocking M5**) | DAC power-up, chained and reload DMA, SRAM3 ring, volume |
 | FM-0 | done | Soft I2C master; tuner and accelerometer ids |
 | FS-1 | in progress (worker) | `yoton-fs` |
@@ -58,7 +58,8 @@ of every session. Newest entries first in §3.
     T0 (open: audio PLL value vs measurement).
   * I2C: devices at 0x10/0x11 (tuner, also 0x60), 0x27 (accelerometer);
     tuner id 0x5804, accelerometer id 0x13; lines idle high.
-  * SD: no card answers (CMD8 "no response", STATE bit 4).
+  * SD: with no card, CMD8 gets "no response" (STATE bit 4). With the
+    card: init at the port's clocks, reads at 9.3 MB/s.
   * Stack overflow is silent without the MPU guard (a 64 KiB temporary on
     the stack jumped to address 0): PG-1 must add the guard region.
 * Scope changes from the owner, applied to the plan: no Bluetooth receiver,
@@ -83,12 +84,11 @@ of every session. Newest entries first in §3.
 | 2026-11-23 | Main executor idle share at rest | 99.9 % | `hil smoke/hello` |
 | 2026-11-23 | LCD full-screen DMA blit / PIO fill | 2.77 ms / 6.85 ms | `hil drivers/lcd` |
 | 2026-11-23 | DAC consumption at 44.1 / 48 kHz | 44,168–44,229 / 48,076 Hz | `hil drivers/audio` |
+| 2026-11-23 | SD sequential read, 64 KiB / 4 KiB requests | 9,294 / 3,432 KiB/s | `hil drivers/sd` |
 | 2026-11-23 | Battery raw at rest / charging | 801 / 828 (≈ 3.74 V) | `hil drivers/charge` |
 
 ## 5. Open questions for the user
 
-* **Insert the microSD card** (any card; contents are only read until the
-  file-system package confines writes to `/.yoton/`).
 * User checks 7–10 in `docs/USER-CHECKS.md` (picture, keys, charge current,
   tones). 8 and 10 are blocking for M4 and M5.
 * Decisions D-1 … D-8 in `docs/PLAN.md` §5 (defaults assumed).
