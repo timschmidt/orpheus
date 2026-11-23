@@ -95,7 +95,12 @@ async fn run(test_id: u32) {
     }
     clock::set_level(Level::Base);
     let mut msg = log::LineBuf::new();
-    msg.push_str("vdd0=").push_hex(r.get(24)).push_str(" base_us=").push_u32(base_us).push_str(" turbo_us=").push_u32(r.get(16));
+    msg.push_str("vdd0=")
+        .push_hex(r.get(24))
+        .push_str(" base_us=")
+        .push_u32(base_us)
+        .push_str(" turbo_us=")
+        .push_u32(r.get(16));
     r.flush(if ok { Verdict::Pass } else { Verdict::Fail }, msg.as_bytes());
     wdt::reboot(wdt::Target::Adfu);
 }

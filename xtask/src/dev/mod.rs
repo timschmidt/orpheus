@@ -8,6 +8,7 @@
 
 mod hil;
 mod ram;
+mod stage;
 mod usbtest;
 
 use std::fs::File;
@@ -36,6 +37,8 @@ cargo xtask dev <subcommand>
                                 arm test mode and collect the results
   hil SUITE                     run an on-device suite (smoke)
   usbtest [--cycles N]          USB-1 acceptance: enumerate, control sizes, re-enumeration
+  stage IMAGE|NAME|FILE.yfw      write a YFW1 slot to slot A (0x762000)
+  install-stage2                 replace stage 2 at 0x7DF400 (keeps the vendor record copy)
   results                       read result block, fault record and log ring
   peek ADDR [N]                 read words
   poke ADDR VALUE               write one word (ADFU/ymon)
@@ -83,6 +86,8 @@ pub fn cmd(args: &mut Args) -> Result<String> {
             }
         }
         "usbtest" => usbtest::cmd(args),
+        "stage" => stage::cmd_stage(args),
+        "install-stage2" => stage::cmd_install_stage2(args),
         "results" => {
             let mut d = to_ymon()?;
             hil::print_results(&mut d, None)
@@ -181,7 +186,7 @@ fn guard_poke(addr: u32) -> Result<()> {
     Ok(())
 }
 
-pub fn backup_verify() -> Result<String> {
+pub(crate) fn backup_verify() -> Result<String> {
     let dumps = yoton_dir().join("dumps");
     let raw = dumps.join("nor_backup_8m.bin");
     let desc = dumps.join("nor_descrambled_8m.bin");

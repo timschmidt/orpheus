@@ -18,10 +18,13 @@ use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use core::task::Poll;
 
 use atj2157_pac::{Reg, cmu, irq, memctl, rmu};
+use drv::{
+    Direction, EndpointAddress, EndpointAllocError, EndpointError, EndpointInfo, EndpointType, Event,
+    Unsupported,
+};
 use embassy_sync::waitqueue::AtomicWaker;
 use embassy_time::{Duration, Instant, Timer};
 use embassy_usb_driver as drv;
-use drv::{Direction, EndpointAddress, EndpointAllocError, EndpointError, EndpointInfo, EndpointType, Event, Unsupported};
 
 use crate::interrupt::{self, Level};
 
@@ -137,12 +140,12 @@ fn on_irq() {
     }
     if g & 2 != 0 {
         let s = GISR1.read() & !GIMR1.read();
-        for k in 0..FIFOS {
+        for (k, waker) in FIFO_WAKERS.iter().enumerate() {
             let bits = 3u32 << (2 * k);
             if s & bits != 0 {
                 GIMR1.set_bits(bits);
                 FIFO_OUT_READY.fetch_or(1 << k, Ordering::Release);
-                FIFO_WAKERS[k].wake();
+                waker.wake();
             }
         }
     }
@@ -635,7 +638,11 @@ impl drv::EndpointOut for EndpointOut {
             if !CONFIGURED.load(Ordering::Acquire) {
                 return Poll::Ready(Err(EndpointError::Disabled));
             }
-            if FIFO_OUT_READY.load(Ordering::Acquire) & (1 << k) != 0 { Poll::Ready(Ok(())) } else { Poll::Pending }
+            if FIFO_OUT_READY.load(Ordering::Acquire) & (1 << k) != 0 {
+                Poll::Ready(Ok(()))
+            } else {
+                Poll::Pending
+            }
         })
         .await?;
         let n = (fibc(k).read() & 0x7FF) as usize;

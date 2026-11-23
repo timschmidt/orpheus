@@ -20,13 +20,19 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     let d = DevChannel::open(Duration::from_secs(15))?;
     log(&format!("enumerated after {:.2} s, speed {:?}", t0.elapsed().as_secs_f32(), d.speed()));
     let info = d.info()?;
-    log(&format!("INFO: version {} uptime {} ms flags {:#x} setups {}", info.version, info.uptime_ms, info.flags, info.reserved));
+    log(&format!(
+        "INFO: version {} uptime {} ms flags {:#x} setups {}",
+        info.version, info.uptime_ms, info.flags, info.reserved
+    ));
     if !matches!(d.speed(), Some(nusb::Speed::High)) {
         bail!("not high speed: {:?}", d.speed());
     }
     // Control IN transfers of every size class against the loaded image.
     let mut fails = 0;
-    for &n in &[1usize, 2, 7, 8, 63, 64, 65, 127, 128, 129, 255, 256, 511, 512, 513, 1000, 1023, 1024, 2048, 4095, 4096] {
+    for &n in &[
+        1usize, 2, 7, 8, 63, 64, 65, 127, 128, 129, 255, 256, 511, 512, 513, 1000, 1023, 1024, 2048, 4095,
+        4096,
+    ] {
         let got = d.control_in(yoton_proto::devchan::REQ_PEEK, 0x0000, 0x0010, n as u16)?;
         if got.len() != n || got[..] != blob[..n] {
             log(&format!("  PEEK {n} bytes: MISMATCH (got {})", got.len()));

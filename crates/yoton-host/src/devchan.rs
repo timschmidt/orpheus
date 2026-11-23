@@ -5,7 +5,9 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 use nusb::MaybeFuture;
 use nusb::transfer::{ControlIn, ControlOut, ControlType, Recipient};
-use yoton_proto::devchan::{DEV_PID, DEV_VID, Info, REQ_FRAME, REQ_INFO, REQ_LOG, REQ_PEEK, REQ_REBOOT, REQ_STATS};
+use yoton_proto::devchan::{
+    DEV_PID, DEV_VID, Info, REQ_FRAME, REQ_INFO, REQ_LOG, REQ_PEEK, REQ_REBOOT, REQ_STATS,
+};
 
 use crate::bot;
 
@@ -34,7 +36,14 @@ impl DevChannel {
         let r = self
             .dev
             .control_in(
-                ControlIn { control_type: ControlType::Vendor, recipient: Recipient::Device, request, value, index, length: len },
+                ControlIn {
+                    control_type: ControlType::Vendor,
+                    recipient: Recipient::Device,
+                    request,
+                    value,
+                    index,
+                    length: len,
+                },
                 T,
             )
             .wait()
@@ -45,7 +54,14 @@ impl DevChannel {
     pub fn control_out(&self, request: u8, value: u16, index: u16, data: &[u8]) -> Result<()> {
         self.dev
             .control_out(
-                ControlOut { control_type: ControlType::Vendor, recipient: Recipient::Device, request, value, index, data },
+                ControlOut {
+                    control_type: ControlType::Vendor,
+                    recipient: Recipient::Device,
+                    request,
+                    value,
+                    index,
+                    data,
+                },
                 T,
             )
             .wait()
@@ -85,7 +101,7 @@ impl DevChannel {
 
     pub fn stats(&self, group: u16) -> Result<Vec<u32>> {
         let b = self.control_in(REQ_STATS, group, 0, 256)?;
-        Ok(b.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+        Ok(b.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect())
     }
 
     /// Ask for a reboot (target per `devchan::REBOOT_*`); the device may

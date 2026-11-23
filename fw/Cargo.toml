@@ -2,7 +2,7 @@
 # (thumbv7em-none-eabihf, see .cargo/config.toml).
 [workspace]
 resolver = "3"
-members = ["firmware", "atj2157-hal", "yoton-bsp", "bringup/*"]
+members = ["firmware", "atj2157-hal", "yoton-bsp", "bringup/*", "boot/stage2"]
 
 [workspace.package]
 version = "0.1.0"
@@ -15,6 +15,7 @@ unsafe_op_in_unsafe_fn = "deny"
 
 [workspace.lints.clippy]
 undocumented_unsafe_blocks = "deny"
+chunks_exact_to_as_chunks = "allow"
 
 [workspace.dependencies]
 yoton-proto = { path = "../crates/yoton-proto" }
@@ -26,6 +27,9 @@ codegen-units = 1
 panic = "abort"
 debug = 2
 overflow-checks = false
+
+[profile.release.package.stage2]
+opt-level = "z"
 
 [profile.dev]
 panic = "abort"

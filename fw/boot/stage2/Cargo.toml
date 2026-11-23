@@ -1,0 +1,12 @@
+[package]
+name = "stage2"
+description = "Boot stage 2 (1 KiB, loaded by stage 1 from NOR 0x7DF400 to 0x102400): picks ADFU, the stock firmware or the yotonrs slot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true

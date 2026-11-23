@@ -23,6 +23,7 @@ undocumented_unsafe_blocks = "deny"
 cast_lossless = "warn"
 manual_let_else = "warn"
 semicolon_if_nothing_returned = "warn"
+chunks_exact_to_as_chunks = "allow"
 
 [workspace.dependencies]
 yoton-proto = { path = "crates/yoton-proto" }

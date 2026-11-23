@@ -5,6 +5,9 @@
 //! Knows the SoC, not the board: pin assignments live in `yoton-bsp`.
 
 #![no_std]
+// `&*(&raw const STATIC)` is how 2024-edition code borrows a `static mut`
+// buffer that a DMA engine also writes.
+#![allow(clippy::deref_addrof)]
 
 pub mod clock;
 mod cs;

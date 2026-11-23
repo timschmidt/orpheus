@@ -9,8 +9,8 @@
 
 pub mod adfu;
 pub mod bot;
-pub mod device;
 pub mod devchan;
+pub mod device;
 pub mod image;
 pub mod nor;
 pub mod sg;

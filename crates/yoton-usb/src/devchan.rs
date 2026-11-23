@@ -10,8 +10,8 @@
 //! | REBOOT 0x07 | OUT | target | — |
 //! | PEEK 0x0A | IN | address (wIndex:wValue) | memory bytes (development builds) |
 
-use embassy_usb::control::{InResponse, OutResponse, Recipient, Request, RequestType};
 use embassy_usb::Handler;
+use embassy_usb::control::{InResponse, OutResponse, Recipient, Request, RequestType};
 use yoton_proto::devchan::{
     self as dc, Info, REQ_FRAME, REQ_INFO, REQ_KEYS, REQ_LOG, REQ_PEEK, REQ_REBOOT, REQ_STATS,
 };
@@ -210,7 +210,10 @@ mod tests {
         let mut d = DevChannel::new(Fake::default());
         assert!(matches!(d.control_out(req(false, REQ_REBOOT, 1, 0, 0), &[]), Some(OutResponse::Accepted)));
         assert_eq!(d.target.reboot, Some(1));
-        assert!(matches!(d.control_out(req(false, REQ_KEYS, 0, 0, 4), &[3, 1, 3, 0]), Some(OutResponse::Accepted)));
+        assert!(matches!(
+            d.control_out(req(false, REQ_KEYS, 0, 0, 4), &[3, 1, 3, 0]),
+            Some(OutResponse::Accepted)
+        ));
         assert_eq!(d.target.keys, [(3, true), (3, false)]);
         let mut raw = [0u8; 8];
         raw[0] = 0x80; // standard request: not ours
