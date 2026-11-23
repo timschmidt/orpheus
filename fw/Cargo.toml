@@ -2,7 +2,7 @@
 # (thumbv7em-none-eabihf, see .cargo/config.toml).
 [workspace]
 resolver = "3"
-members = ["firmware"]
+members = ["firmware", "atj2157-hal", "bringup/*"]
 
 [workspace.package]
 version = "0.1.0"

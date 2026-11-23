@@ -1,0 +1,57 @@
+//! GPIO (docs/plan/03-hal-drivers.md §3, 01-hardware §5). Minimal typed
+//! output and input pins; alternate functions are set by the drivers that
+//! own them.
+
+use atj2157_pac::gpio;
+
+#[derive(Clone, Copy, Debug)]
+pub struct Output {
+    pin: u8,
+}
+
+impl Output {
+    /// Configure `pin` as a plain GPIO output with initial level `high`.
+    #[must_use]
+    pub fn new(pin: u8, high: bool) -> Self {
+        let p = Self { pin };
+        p.set(high);
+        gpio::mfp(usize::from(pin)).write(gpio::mfp_bits::FUNC_GPIO | gpio::mfp_bits::OUT_EN);
+        p
+    }
+
+    fn bank_bit(self) -> (usize, u32) {
+        (usize::from(self.pin / 32), 1 << (self.pin % 32))
+    }
+
+    pub fn set(self, high: bool) {
+        let (b, m) = self.bank_bit();
+        if high {
+            gpio::odat(b).set_bits(m);
+        } else {
+            gpio::odat(b).clear_bits(m);
+        }
+    }
+
+    pub fn toggle(self) {
+        let (b, m) = self.bank_bit();
+        gpio::odat(b).modify(|v| v ^ m);
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Input {
+    pin: u8,
+}
+
+impl Input {
+    #[must_use]
+    pub fn new(pin: u8) -> Self {
+        gpio::mfp(usize::from(pin)).write(gpio::mfp_bits::FUNC_GPIO | gpio::mfp_bits::IN_EN);
+        Self { pin }
+    }
+
+    #[must_use]
+    pub fn is_high(self) -> bool {
+        gpio::idat(usize::from(self.pin / 32)).read() & (1 << (self.pin % 32)) != 0
+    }
+}

@@ -1,0 +1,20 @@
+[package]
+name = "atj2157-hal"
+description = "ATJ2157 drivers and Embassy glue: start-up, clocks, interrupts, critical section, time driver, watchdog, GPIO"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+atj2157-pac = { path = "../../crates/atj2157-pac" }
+yoton-proto.workspace = true
+cortex-m = { version = "0.7", default-features = false, features = ["inline-asm"] }
+critical-section = { version = "1.2", features = ["restore-state-u32"] }
+embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }
+embassy-time-driver = { version = "0.2", features = ["tick-hz-1_000_000"] }
+embassy-time-queue-utils = "0.3"
+embassy-sync = "0.8"
+
+[lints]
+workspace = true

@@ -108,3 +108,59 @@ fn symbolise(elf: &Path, addr: u32) {
         log(&format!("  {addr:#010x}: {}", s.split_whitespace().collect::<Vec<_>>().join(" ")));
     }
 }
+
+/// What a HIL test must produce.
+#[derive(Clone, Copy)]
+pub enum Expect {
+    /// Result block with verdict PASS and no fault record.
+    Pass,
+    /// A fault record of this kind (deliberate-fault tests).
+    Fault(yoton_proto::fault::Kind),
+}
+
+pub struct Case {
+    pub image: &'static str,
+    pub test: &'static str,
+    pub expect: Expect,
+    pub wait_s: u64,
+}
+
+/// Suites (07 §5.4). Grows with every driver; `smoke` is the gate's suite.
+pub fn suite(name: &str) -> Option<&'static [Case]> {
+    use yoton_proto::fault::Kind;
+    const SMOKE: &[Case] = &[
+        Case { image: "hello", test: "hello", expect: Expect::Pass, wait_s: 40 },
+        Case { image: "hello", test: "fault", expect: Expect::Fault(Kind::UsageFault), wait_s: 20 },
+    ];
+    match name {
+        "smoke" => Some(SMOKE),
+        _ => None,
+    }
+}
+
+/// Run one case end to end; Ok(summary) when the expectation holds.
+pub fn run_case(c: &Case) -> Result<String> {
+    let b = crate::build::build_bringup(c.image, true)?;
+    let blob = std::fs::read(&b.bin)?;
+    let r = super::ram::run_image(
+        &blob,
+        Some((c.test, &[])),
+        std::time::Duration::from_secs(c.wait_s),
+        Some(b.elf.clone()),
+        c.test,
+    );
+    match c.expect {
+        Expect::Pass => r,
+        Expect::Fault(kind) => {
+            let mut d = super::to_ymon()?;
+            let (_, f, _) = read_persistent(&mut d)?;
+            match f {
+                Some(f) if f.kind() == Some(kind) => {
+                    Ok(format!("expected {} recorded at {:#010x}", kind.name(), f.pc))
+                }
+                Some(f) => bail!("expected {}, got {}", kind.name(), describe_fault(&f)),
+                None => bail!("expected a {} fault record, found none", kind.name()),
+            }
+        }
+    }
+}

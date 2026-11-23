@@ -53,7 +53,18 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     if skip_dev {
         results.push(("dev hil smoke", "not run (--no-dev)".into()));
     } else {
-        results.push(("dev hil smoke", "not run (WP-T-5 not done)".into()));
+        match crate::dev::cmd(&mut Args::from_vec(vec!["hil".into(), "smoke".into()])) {
+            Ok(s) => results.push(("dev hil smoke", format!("passed ({s})"))),
+            Err(e)
+                if format!("{e:#}").contains("did not reach ADFU") || format!("{e:#}").contains("absent") =>
+            {
+                results.push(("dev hil smoke", format!("not run (player not reachable: {e:#})")));
+            }
+            Err(e) => {
+                failed = true;
+                results.push(("dev hil smoke", format!("FAILED: {e:#}")));
+            }
+        }
     }
     log("gate summary:");
     for (n, r) in &results {

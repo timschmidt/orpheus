@@ -33,6 +33,7 @@ cargo xtask dev <subcommand>
                                 load a RAM image at 0x100000 and start it;
                                 NAME builds fw/bringup/NAME first; with --test,
                                 arm test mode and collect the results
+  hil SUITE                     run an on-device suite (smoke)
   results                       read result block, fault record and log ring
   peek ADDR [N]                 read words
   poke ADDR VALUE               write one word (ADFU/ymon)
@@ -59,6 +60,26 @@ pub fn cmd(args: &mut Args) -> Result<String> {
             Ok("ymon running".into())
         }
         "ram" => ram::cmd(args),
+        "hil" => {
+            let name = args.positional("suite")?;
+            let cases = hil::suite(&name).ok_or_else(|| anyhow::anyhow!("unknown suite `{name}`"))?;
+            let mut failed = Vec::new();
+            for c in cases {
+                log(&format!("== {name}/{}", c.test));
+                match hil::run_case(c) {
+                    Ok(s) => log(&format!("   ok: {s}")),
+                    Err(e) => {
+                        log(&format!("   FAILED: {e:#}"));
+                        failed.push(c.test);
+                    }
+                }
+            }
+            if failed.is_empty() {
+                Ok(format!("suite {name}: {} tests passed", cases.len()))
+            } else {
+                bail!("suite {name}: failed {failed:?}")
+            }
+        }
         "results" => {
             let mut d = to_ymon()?;
             hil::print_results(&mut d, None)
