@@ -41,7 +41,15 @@ pub fn init() {
 pub fn panic(info: &core::panic::PanicInfo) -> ! {
     let mut buf = log::LineBuf::new();
     if let Some(loc) = info.location() {
-        buf.push_str(loc.file());
+        let f = loc.file();
+        // Keep the tail of the path so the line number fits.
+        let mut parts = f.rsplit('/');
+        let file = parts.next().unwrap_or(f);
+        if let Some(dir) = parts.next() {
+            buf.push_str(dir);
+            buf.push_str("/");
+        }
+        buf.push_str(file);
         buf.push_str(":");
         buf.push_u32(loc.line());
     }

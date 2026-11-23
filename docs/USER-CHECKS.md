@@ -16,6 +16,13 @@ the result and date. "Blocking" entries hold up the package named.
 | 5 | PWR-4 (optional) | If a USB power meter is at hand: charging current under the stock firmware with a part-empty battery | About 200 mA expected from the datasheet | |
 | 6 | D-5 (optional) | Decide whether the case may be opened for a board inspection | See `docs/PLAN.md` §5 | |
 
+## Requested by work packages
+
+| # | For | Blocking? | What to do | Expect | Result (user) |
+|---|---|---|---|---|---|
+| 7 | LCD-1 | no | With the player on USB, run `cargo xtask dev ram lcd --test lcd` and look at the screen after it finishes (the picture stays until the player is switched off) | White frame; colour bars left→right white, yellow, cyan, green, magenta, red, blue, black; a grey ramp dark→light; below, a gradient red→ to the right, green downwards, blue on the left; no tearing, sharp edges, upright (text-free) | |
+| 8 | INPUT-1 | **yes, for M4** | Run `cargo xtask dev ram keys --test keys --arg 60`, then press each of the ten keys once, one at a time, within the 60 s | Each key's box turns yellow while held and stays outlined green afterwards; the screen labels are PWR BCK MNU OK PRV / NXT UP DN V+ V-; report any key that lights the wrong box or none. Also say which physical key is which (e.g. "the key marked ⏮ lights PRV") | |
+
 ## Template for workers
 
 | # | For | Blocking? | What to do | Expect | Result (user) |

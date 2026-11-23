@@ -6,4 +6,6 @@
 #![no_std]
 
 pub mod display;
+pub mod keys;
 pub mod pins;
+pub mod tiny;

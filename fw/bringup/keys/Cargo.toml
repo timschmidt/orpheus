@@ -1,0 +1,20 @@
+[package]
+name = "bringup-keys"
+description = "INPUT-1 bring-up image: live key ladder values and decoded keys"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+atj2157-hal = { path = "../../atj2157-hal" }
+yoton-proto.workspace = true
+yoton-bsp = { path = "../../yoton-bsp" }
+yoton-input = { path = "../../../crates/yoton-input" }
+embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }
+embassy-time = "0.5"
+embassy-sync = "0.8"
+static_cell = "2"
+
+[lints]
+workspace = true

@@ -1,0 +1,10 @@
+[package]
+name = "yoton-input"
+description = "Key ladder decoding and debouncing for the YM03 (host-testable)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true

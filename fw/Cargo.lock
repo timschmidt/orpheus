@@ -57,6 +57,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "bringup-keys"
+version = "0.1.0"
+dependencies = [
+ "atj2157-hal",
+ "embassy-executor",
+ "embassy-sync",
+ "embassy-time",
+ "static_cell",
+ "yoton-bsp",
+ "yoton-input",
+ "yoton-proto",
+]
+
+[[package]]
 name = "bringup-lcd"
 version = "0.1.0"
 dependencies = [
@@ -769,8 +783,13 @@ version = "0.1.0"
 dependencies = [
  "atj2157-hal",
  "embassy-time",
+ "yoton-input",
  "yoton-proto",
 ]
+
+[[package]]
+name = "yoton-input"
+version = "0.1.0"
 
 [[package]]
 name = "yoton-proto"
