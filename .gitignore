@@ -1,0 +1,13 @@
+# Analysis derived from the vendor firmware, and vendor documents: local
+# reference only (same policy as the companion yoton repository; decision D-7
+# in docs/PLAN.md). Remove the first line to publish the reverse-engineering
+# reports.
+/docs/hw/
+/docs/vendor/
+
+# Build outputs and local state
+/target/
+**/target/
+/tests/corpus/
+*.yfw
+.claude/settings.local.json

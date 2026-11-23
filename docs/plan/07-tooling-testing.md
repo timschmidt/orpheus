@@ -1,0 +1,377 @@
+# 07 — Tooling, testing and verification
+
+The worker building this firmware cannot see the screen, hear the headphones or
+press a key. Everything in this document exists so that progress can still be
+**proved**: on the desktop wherever possible, and on the real player through
+USB with no human in the loop. Build this tooling first (milestone M0) and
+extend it with every driver; a feature without an automated check is not done.
+
+## 1. What already exists (reuse, then replace)
+
+In `/home/tim/Documents/GitHub/yoton/` (the research repository; treat it as
+read-only reference, do not commit to it):
+
+| Item | What it does | Fate in yotonrs |
+|---|---|---|
+| `yoton.py`, `actions_probe.py` | ADFU (boot-ROM recovery) transport over USB, `ymon` RAM monitor upload, read/write any address, run payloads, NOR dump/program, reboot helpers, RGB565 → PNG | Port to Rust as the `yoton-host` library + `cargo xtask dev …` (WP-T-2). Until the port passes its tests, call the Python through `/home/tim/Documents/GitHub/yoton/.venv/bin/python` |
+| `payloads/ymon.c` (+ `ymon_s.S`) | The monitor that runs in RAM at `0x118000` under the boot ROM: memory access, fault-protected calls, host abort | Use the built `ymon.bin` at first; rewrite as a `no_std` Rust payload in WP-T-6 so that no C remains in the tree |
+| `payloads/norprog.c`, `norprog0.c`, `nordump.c`, `spinor.h` | NOR erase/program/read payloads; `norprog` refuses addresses outside `0x762000–0x7DFFFF`, `norprog0` handles sector 0 | Same: reuse, then port. **Keep the address guards** |
+| `payloads/ym03boot1.c`, `ym03stub.c` | The two-stage NOR boot stub now installed on the player (it boots Rockbox) | Replaced by Rust stages in 02-architecture §"Boot chain" |
+| `tools/ym03_pagelink.py` | Two-pass link that splits Rockbox into a resident image and 8 KiB pages | Model for `xtask pagelink` (02 §"Demand paging") |
+| `tools/ym03_maintest.py` | Boots a build from RAM in "test mode", lets it run, reads results and the frame buffer back after the self-reboot | Model for the HIL harness (§5) |
+| `tools/ym03_prof.py`, `ym03_cpuprof.py`, `ym03_hot.txt` | Fault-log and PC-sample profiling, hot-section list for page packing | Model for `xtask dev prof` / `hot.toml` |
+| `dumps/nor_backup_8m.bin` (sha256 `ad45687e…`), `dumps/nor_descrambled_8m.bin` | Full backups of the vendor NOR image | **Never delete.** `xtask dev backup-verify` checks they exist before any NOR write |
+| `99-actions-yoton.rules` | udev rule giving the user access to `10d6:10d6` | Already installed on this host |
+
+Host facts (checked 2026-11-23): Fedora 43; `rustc 1.98.1` stable, `cargo`,
+`probe-rs` (no probe attached; SWD pads unknown), `arm-none-eabi-gcc/objdump`,
+`ffmpeg`, `sox`, `openocd`, Python 3.14 with pyusb in the yoton venv. The
+`thumbv7em-none-eabihf` target is **not** installed yet
+(`rustup target add thumbv7em-none-eabihf`).
+
+Device state at the time of writing: attached over USB, running the Rockbox
+port in mass-storage mode (`10d6:1157`, 256 GB card with the owner's music —
+**treat the card contents as precious**, see §7).
+
+## 2. Repository tooling (`cargo xtask`)
+
+One entry point; every sub-command is non-interactive, returns a non-zero exit
+code on failure and prints a one-line verdict last. Sub-commands marked *(dev)*
+talk to the player.
+
+| Command | Purpose |
+|---|---|
+| `xtask build [--release] [--layout dual\|full] [--features …]` | Build the firmware ELF, then run `pagelink`; outputs `target/yoton/firmware.yfw` (partition image), `resident.bin`, `pages.bin`, `firmware.map`, `layout.json` |
+| `xtask pagelink` | The two-pass link and page packing (02 §"Demand paging") |
+| `xtask size [--check]` | Size report: resident text/rodata/data/bss per crate, paged code/rodata per crate, RAM map by region and by mode pool; `--check` fails when a budget in `budgets.toml` is exceeded |
+| `xtask check-resident` | Static proof that nothing reachable from an interrupt or fault handler lives in a paged section (§4.3) |
+| `xtask sim [--script file] [--shot dir]` | Run the desktop simulator, optionally scripted and headless |
+| `xtask test [host\|golden\|codecs\|fuzz-smoke\|all]` | Host test suites (§3) |
+| `xtask bringup <name>` | Build one bring-up image (small RAM-only binary under `bringup/`) |
+| `xtask dev state` *(dev)* | Which mode the player is in: ADFU ROM, ymon, yotonrs (any personality), Rockbox, stock; battery voltage if readable |
+| `xtask dev adfu` *(dev)* | Bring the player to ADFU + ymon from whatever is running (vendor SCSI reboot command for Rockbox/stock, EP0 request for yotonrs, nothing if already there) |
+| `xtask dev ram <image> [--test name] [--wait s]` *(dev)* | Load a resident-only image to `0x100000` through ymon and start it; with `--test`, arm test mode, wait for the self-reboot, collect the result block, log ring and screenshot |
+| `xtask dev stage [--layout …]` *(dev)* | Write the firmware partition (and page store) to NOR with verify; refuses without verified backups; never touches sector 0 |
+| `xtask dev install-boot --i-have-a-backup` *(dev)* | Install or update the boot stages; the only command that writes sector 0 |
+| `xtask dev install-full --i-have-a-backup` *(dev)* | Switch to the full-flash layout (02 §2.4); user decision D-2 only |
+| `xtask dev log [--follow]` *(dev)* | Fetch and decode the defmt ring (running firmware via EP0, or post-mortem via ADFU) |
+| `xtask dev shot out.png` *(dev)* | Screenshot: EP0 frame-buffer read when yotonrs runs, RAM read at `0x158000` in ADFU |
+| `xtask dev keys "ok wait:500 down down hold:menu"` *(dev)* | Inject key events into the running firmware |
+| `xtask dev hil <suite>` *(dev)* | Run an on-device test suite end to end (§5) |
+| `xtask dev prof [--faults\|--pc]` *(dev)* | Collect a page-fault or PC-sample profile and symbolise it; `--update-hot` rewrites `hot.toml` |
+| `xtask dev peek/poke/dump` *(dev)* | Register and memory access for hardware discovery (ADFU/ymon only for poke) |
+| `xtask dev restore rockbox\|vendor-boot` *(dev)* | Put the previous state back: re-stage the Rockbox port from `yoton/build/ym03-main`, or restore the vendor sector 0 from the backup |
+
+`xtask` uses `nusb` (pure Rust, no libusb) for USB. The ADFU protocol and ymon
+commands are documented in `yoton.py` and FINDINGS.md §3, §11.
+
+## 3. Host-side testing (no device)
+
+Design rule that makes this possible: **only `atj2157-hal`, `yoton-bsp` and the
+`firmware` binary depend on the hardware.** Every other crate (`yoton-fs`,
+`yoton-audio`, all codecs, `yoton-ui`, `yoton-apps`, `yoton-usb` classes,
+`yoton-bt` protocol logic, `yoton-otp`, `yoton-pager`'s policy code) is
+`#![no_std]` with a `std` test configuration and takes its I/O through traits
+(`embedded-storage-async`-style block device, `embedded-io-async`, the service
+traits in 05 §5.1, `embassy-usb-driver`).
+
+### 3.1 Unit and property tests
+
+`cargo test --workspace` on the host. Expectations per area:
+
+| Area | Tests |
+|---|---|
+| File systems | Operate on image files created by `mkfs.vfat` (FAT12/16/32, several cluster sizes) and `mkfs.exfat`; after every mutating test the image must pass `fsck.vfat -n` / `fsck.exfat -n`; power-cut simulation (block device that stops accepting writes at a random point) must leave a mountable volume; directory with 5000 long Unicode names; file > 4 GiB on exFAT; fragmented-file extent mapping |
+| Codecs | §3.3 |
+| DSP | Biquad responses against analytic curves; resampler SNR; volume/dither bit-exactness; no overflow at full scale |
+| UI | §3.2 |
+| USB classes | Mock `embassy-usb-driver` (or the class logic factored behind a transport trait): descriptor bytes, SCSI command/response sequences for disk and CD-ROM, error/sense handling, HID report streams |
+| Authenticator | RFC 4226 / RFC 6238 vectors, vault encryption round trip, PIN back-off schedule |
+| Settings store | Wear-levelled KV on a simulated NOR (4 KiB erase, bit-clear-only programming), power-cut at every write step |
+| Pager policy | The line cache / LRU / region allocation logic compiled for the host against a simulated MPU: random access traces must never map two pages onto one physical line, and must reproduce the fault counts of the reference trace |
+| Step counter | Recorded accelerometer traces with labelled step counts |
+| Protocol codecs | Bluetooth frames (whatever docs/hw/bluetooth.md specifies), SD response parsing (CID/CSD/SCR), ID3/Vorbis-comment/MP4 parsers; all parsers fuzzed (§3.4) |
+
+### 3.2 Simulator and golden images
+
+`sim/` is a desktop binary that links the same `yoton-ui` and `yoton-apps`
+crates as the firmware and provides host implementations of the service traits:
+
+* display → an in-memory 128 × 128 RGB565 buffer; optional SDL2 window through
+  `embedded-graphics-simulator` at 4× scale; PNG export;
+* keys → keyboard in the window, or a script (`ok`, `down*5`, `hold:menu`,
+  `wait:300`, `shot:name`, `expect-screen:NowPlaying`);
+* storage → a host directory or a FAT/exFAT image file through `yoton-fs`;
+* audio → the real `yoton-audio` pipeline and codecs writing to a WAV file or
+  the sound card; timing simulated so buffer logic is exercised;
+* time → `embassy-time` std driver with a controllable mock clock for tests;
+* radio, Bluetooth, sensors, USB, power → scriptable fakes that produce the
+  `ServiceEvent`s the UI must handle (station found, device connected, battery
+  at 4 %, card removed…).
+
+Golden-image tests: each scripted journey ends in `shot:` commands; the PNGs
+are compared byte-for-byte with `sim/golden/*.png`. `xtask test golden
+--bless` rewrites them; a human-readable contact sheet
+(`target/yoton/golden.html`) shows old/new/diff for review. **Every screen in
+05-ui-apps has at least one golden image**, in the Dark theme and one in
+Light, with Latin, Cyrillic and CJK sample text.
+
+The worker must actually look at the rendered PNGs (the Read tool displays
+images) when creating or changing a screen: alignment, clipping and contrast
+problems are not visible in a diff of numbers.
+
+### 3.3 Codec conformance
+
+`tests/corpus/` is generated, not committed: `xtask test codecs --gen` builds
+it with `ffmpeg`/`sox` from synthetic sources (sine sweeps, pink noise,
+impulses, multitone, silence, a 20 s music-like mix) at every supported sample
+rate, channel layout and a spread of bitrates and encoder modes (CBR/VBR/joint
+stereo; FLAC levels 0–8 and block sizes; Vorbis q0–q10; Opus 16–256 kbit/s in
+SILK, CELT and hybrid ranges; ADPCM variants; with and without tags, gapless
+info and seek tables). Reference decodes come from `ffmpeg`.
+
+| Check | Threshold |
+|---|---|
+| Lossless formats (WAV, FLAC, ALAC, APE, WavPack lossless) | Bit-exact; FLAC also verifies the MD5 in STREAMINFO |
+| Lossy formats | RMS difference to the reference ≤ −80 dBFS for float-reference codecs (MP3: ISO compliance "limited accuracy" at minimum), no sample offset (gapless trims exact to the sample) |
+| Seeking | After seeking to 20 random positions, output from the seek point matches the linear decode from the same frame boundary |
+| Robustness | Truncated and bit-flipped files: decoder returns an error or resynchronises; never panics, never loops forever (iteration budget), never reads out of bounds (run under Miri for the small codecs, plain tests + fuzzing for the rest) |
+| Memory | Each decoder runs inside its fixed arena size (04-audio table); the test harness arena fails the test on exhaustion and reports the high-water mark |
+| Speed (host proxy) | Instruction-count proxy is not reliable; real numbers come from the on-device benchmark (§5.4) |
+
+### 3.4 Fuzzing
+
+`cargo fuzz` targets (host, nightly toolchain only for this job): every
+container/tag parser, every decoder's frame entry, the FAT/exFAT mount and
+directory iteration on mutated images, the SCSI command handler, image
+decoders, `otpauth` import, the Bluetooth frame parser. `xtask test fuzz-smoke`
+runs each target for 60 s as part of the milestone gate; findings are fixed and
+kept as regression inputs under `tests/regress/`.
+
+## 4. Build-time guarantees
+
+### 4.1 Lints and style
+
+`cargo fmt --check`; `cargo clippy --workspace --all-targets -- -D warnings`
+with `clippy::pedantic` selectively enabled; `#![forbid(unsafe_code)]` in every
+crate except `atj2157-pac`, `atj2157-hal`, `yoton-pager`, `firmware` and the
+boot stages, where each `unsafe` block carries a `// SAFETY:` line. No `alloc`
+anywhere in firmware crates (the `firmware` binary does not define a global
+allocator, so a dependency that needs one fails to link — keep it that way).
+Panics: `panic = "abort"`; firmware crates use checked operations and return
+errors; `xtask size` reports the number of panic sites (`core::panicking`
+callers) in the resident image and the gate fails if it grows without an entry
+in `docs/STATUS.md` explaining why.
+
+### 4.2 Size and RAM budgets
+
+`budgets.toml` (initial values in 02-architecture §"Memory budget") is enforced
+by `xtask size --check`:
+
+* resident image bytes (text + rodata + data);
+* static RAM (`.bss` + `.data`) per region;
+* each mode pool partition;
+* stack: painted at boot, high-water mark reported by the HIL suite; the
+  budget is the measured maximum + 25 %;
+* total firmware partition size per layout.
+
+A change that exceeds a budget must either shrink something or raise the
+budget in the same commit with the measured numbers and the reason.
+
+### 4.3 Resident-set proof
+
+A page fault inside an interrupt handler stalls the system for the duration of
+a NOR read; a page fault inside the pager, or with the NOR busy, is fatal. So
+the set of functions and data reachable from exception vectors must be
+resident. `xtask check-resident`:
+
+1. takes the final ELF and `layout.json`;
+2. disassembles the resident image (the `yaxpeax-arm` or `capstone` crate),
+   builds the call graph from direct branches (`bl`, `b`, `b.w`, tail calls)
+   and literal-pool/`movw+movt` address loads;
+3. starting from every vector-table entry and every function registered in the
+   `#[resident_root]` list (wakers, the executor's poll entry, time-driver
+   callbacks, DMA completion handlers), walks the graph;
+4. fails if any reachable code or referenced rodata lies in a paged section,
+   printing the chain `vector → … → offender`;
+5. lists indirect calls (`blx rN`) found in the walk so that a human or the
+   worker can confirm their targets are covered by `#[resident_root]`.
+
+The run-time counterpart: the fault handler records "fault taken while an
+exception was active" with the stacked PC in the persistent trace (02
+§"Faults"); the HIL gate requires that counter to be zero.
+
+## 5. On-device testing (hardware in the loop)
+
+### 5.1 Transport and control without keys
+
+| State of the player | How the host talks to it |
+|---|---|
+| Boot ROM ADFU (`10d6:10d6`) | Native ADFU commands; upload `ymon`, then full memory access |
+| yotonrs running, any USB personality | **Developer channel on endpoint 0** (vendor requests, 06 §"Developer channel"): log ring read, frame-buffer read, key injection, settings/stat queries, test-command mailbox, reboot (normal, ADFU, stock) |
+| yotonrs running, USB personality with no host function or hung | Watchdog → boot counter → ADFU after 3 failed starts (boot stage 2); then post-mortem reads |
+| Rockbox / stock mass storage | Vendor SCSI `CC` identify + `CB 21` → reboots into ADFU |
+| Powered off | Needs a human (Power key) unless wake-on-VBUS is confirmed (01-hardware unknown U-PMU-3). **Automated tests must never power the player off** until that is known; use reboot instead |
+
+After any reset, RAM in SRAM0/SRAM1/SRAM3 keeps its contents (the boot ROM and
+the stub touch only `0x100000–0x102800` and the top words of SRAM0). The
+harness relies on this: the **result block**, the **log ring** and the **frame
+buffer** are read back through ADFU after the firmware under test has rebooted
+itself.
+
+### 5.2 Persistent areas (fixed addresses, shared by firmware and host)
+
+Defined once in the `yoton-proto` crate (used by firmware, boot stages and
+xtask):
+
+| Area | Address | Content |
+|---|---|---|
+| Boot mailbox | `0x137FC0–0x137FFF` | Reboot reason/request ("ADFU", "STOCK", "TEST"), boot-attempt counter, test-mode word and test arguments. Stage 2 reads it before anything else. Layout kept compatible with the existing stub's `0x137FF4` ("ADFU") and `0x137FF8` (counter) words so either stub understands both firmwares |
+| Result block | `0x137E00–0x137FBF` | `"YRES"` magic, test name hash, verdict, up to 64 counters, 128-byte message |
+| Fault record | `0x137D00–0x137DFF` | Last fault: kind, PC, LR, CFSR, HFSR, MMFAR/BFAR, active exception, pager state, build id |
+| Log ring | 2 KiB at the top of the SRAM3 RAM half | defmt frames, write index, wrap count, build id |
+| Frame buffer | `0x158000–0x15FFFF` | RGB565, row-major |
+
+(The exact addresses are fixed in WP-T-1 after the memory map in 02 is
+implemented; the table gives the intended placement.)
+
+### 5.3 Test-mode flow
+
+```
+xtask dev hil <suite>
+  for each test:
+    dev adfu                      # ROM + ymon
+    (if the build changed) dev stage | dev ram
+    write boot mailbox: TEST, test id, args, "return to ADFU on exit"
+    start (jump to image, or watchdog reset to boot from NOR)
+    wait for the device to re-enumerate as ADFU (timeout per test)
+    read result block, fault record, log ring, frame buffer
+    decode, compare, archive under target/yoton/hil/<suite>/<test>/
+```
+
+In test mode the firmware runs the named test task instead of (or beside) the
+normal UI, writes the result block, and reboots to ADFU. Tests can also be
+driven live through the developer channel when the firmware stays up (key
+scripts, screenshots, statistics polling); live mode is preferred once the USB
+driver exists because it is much faster than reboot cycles.
+
+### 5.4 Suites
+
+| Suite | Content | Pass criteria |
+|---|---|---|
+| `smoke` | Boot to Home, screenshot, key round trip, log fetch, reboot | Screenshot equals the simulator golden image for Home (exact); no fault record; boot time reported |
+| `drivers` | One test per driver: timer accuracy vs host clock, LCD pattern + read-back of panel ID, key ADC idle values, SD init + CMD18/CMD25 pattern test on a **scratch file region** (§7), NOR read/erase/program in the scratch sector, DAC DMA cadence (interrupt gap histogram), ADC capture statistics, I2C device scan, RTC set/read/alarm, PMU readings, UART loopback if pins allow | Per-test thresholds in the test source |
+| `pager` | Fault-rate and latency statistics under scripted UI load; forced eviction storm; fault-in-exception counter | Zero fatal faults; counter zero; latency ≤ 300 µs per line |
+| `audio` | Decode each corpus file from the card: PCM **CRC over the stream handed to the DAC DMA** compared with the host reference CRC; underrun counter; CPU % per clock level; gapless join check | CRC equal for lossless, tolerance check via captured PCM window for lossy; zero underruns incl. during scripted UI stress |
+| `fs` | On-device create/write/read/rename/delete in `/.yoton/test/`, then host-side `fsck` after switching to card-reader mode | Clean fsck, content hashes equal |
+| `usb` | Enumerate each personality; MSC read/write speed and data integrity on the scratch area; CD-ROM image hash; HID reports captured on the host; suspend/resume; cable reconnect via soft detach | Hashes equal; no enumeration errors in the host's kernel log (`journalctl -k` snapshot before/after) |
+| `power` | Clock-level sweep with a CPU benchmark; idle statistics (time in WFI); battery ADC logging; charger state transitions | Benchmark scales with clock; WFI share ≥ 95 % at idle Home screen |
+| `soak` | 2 h playlist playback with periodic UI scripts and seeks | No fault, no underrun, no drift between played samples and wall clock beyond crystal tolerance |
+
+### 5.5 Audio verification without ears
+
+1. **Digital tap**: in test builds the PCM sink computes a CRC-32 and a running
+   sample count over exactly the bytes queued to the DAC DMA; the host has the
+   reference decode. This proves the decoder + DSP + buffering path.
+2. **DMA cadence**: interrupt timestamps prove the DAC consumes at the expected
+   rate (catches clock-tree errors: a wrong divider shows as a wrong rate).
+3. **Analogue loop, if the hardware allows**: record the DAC output through an
+   internal analogue path into the ADC (docs/hw/audio.md says whether one
+   exists) and check the tone frequency and level. If not available, analogue
+   correctness (pops, hiss, channel swap, level) is a **user-assisted check**.
+4. User-assisted checks are collected in `docs/USER-CHECKS.md` with exact
+   instructions ("play `/yoton-test/lr.wav`; expect a 1 kHz tone on the left
+   only, then the right only"). A worker adds entries; the user ticks them off.
+   Milestone gates list which user checks they need.
+
+### 5.6 Profiling
+
+* **PC sampling**: a timer interrupt (1 kHz, hardware timer T1) stores the
+  interrupted PC into a ring in spare RAM while a test runs; `xtask dev prof
+  --pc` symbolises against the ELF and prints a flat profile by function and
+  by crate, split into resident/paged.
+* **Fault log**: the pager can log `{address, pc}` per fault (ring, test builds
+  only); `xtask dev prof --faults` aggregates by section. `--update-hot`
+  regenerates `hot.toml`, the ordered list of sections that `pagelink` packs
+  together (browser path, directory scan path, each codec's frame loop, the
+  Now Playing redraw path…), so working sets do not evict each other.
+* **Stack**: painted at boot; high-water mark exposed through the developer
+  channel and the Diagnostics screen.
+* **Power proxy**: per-level time accounting in the clock governor (seconds
+  spent at each frequency and in WFI) plus the battery-voltage log. Real
+  current needs a meter: listed as a user-assisted measurement with a table to
+  fill in (idle, MP3 screen off, FLAC screen off, radio, Bluetooth, recording).
+
+## 6. Milestone gate (run before declaring any work package done)
+
+```
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+xtask test all                 # host unit, golden, codecs, fuzz-smoke
+xtask build --release          # both layouts once the full layout exists
+xtask size --check
+xtask check-resident
+xtask dev hil smoke            # plus the suites named by the work package
+```
+
+Then update `docs/STATUS.md` (what was done, measured numbers, new unknowns,
+user checks requested) and commit. A gate that cannot run (for example the
+player is unplugged) is reported as **not run**, never as passed.
+
+## 7. Safety rules for anything that touches the player
+
+These are repeated in `CLAUDE.md`; they are here with their reasons.
+
+1. **NOR sector 0 and the vendor area are off limits.** Only `xtask dev
+   install-boot --i-have-a-backup` writes sector 0, and only bytes
+   `0x000–0x1FF`. In the dual-boot layout nothing below `0x762000` is ever
+   erased or programmed. Reason: the mask ROM boots from sector 0; the ROM
+   falls back to USB recovery if the record is invalid, so the player is hard
+   to brick, but a half-written vendor area cannot be re-created without the
+   backup.
+2. **Verify the backups before the first NOR write of a session** (`sha256sum`
+   of `dumps/nor_backup_8m.bin` begins `ad45687e`). If the files are missing,
+   stop and tell the user.
+3. **Program-and-verify always**; a failed verify stops the command.
+4. **Do not change regulator voltages, charger current or charger voltage
+   beyond values the vendor firmware itself uses** (docs/hw/system.md lists
+   them). A lithium cell is attached. Any experiment that writes a PMU
+   regulator or charger field for the first time needs the value's provenance
+   written in the commit message.
+5. **Do not power the player off from an automated test** (see §5.1), and do
+   not leave it in a state that needs a key press: every test ends in a reboot
+   to ADFU or to the installed firmware.
+6. **The card holds the owner's music.** Automated tests write only inside
+   `/.yoton/` (create it if needed) and never format, repartition, or run raw
+   block writes outside files they created. Raw-block driver tests use the LBA
+   range of a pre-allocated scratch file (`/.yoton/test/scratch.bin`, located
+   through the file system, extents verified contiguous). MSC write tests from
+   the host go through the mounted file system into the same directory.
+7. **Rockbox is the working reference on the device** until milestone M2
+   replaces it in the free NOR region. Before that, run only RAM-loaded
+   bring-up images. After that, `xtask dev restore rockbox` must work (test it
+   once) so the reference can be brought back.
+8. **One process talks to the player at a time.** Parallel workers must not
+   share the device; hardware work packages are serialised (08-milestones).
+9. If the player stops responding: wait for the watchdog (boot stage counts
+   three failed starts, then enters ADFU); if it does not come back within two
+   minutes, stop and ask the user to unplug, press the reset pinhole next to
+   the earphone jack, and hold **Next** (stock "Right") while plugging in to
+   force USB recovery. Do not keep retrying blind.
+
+## 8. Tooling work packages
+
+* **WP-T-1 Workspace and proto**: Cargo workspace, toolchain pin, lint config,
+  `yoton-proto` (addresses, mailbox, result block, developer-channel request
+  numbers), `budgets.toml`, `xtask` skeleton with `build`, `size`, `test`.
+* **WP-T-2 Host transport**: `yoton-host` (ADFU, ymon protocol, NOR payload
+  drivers, PNG), `xtask dev state/adfu/ram/peek/poke/dump/shot/backup-verify`.
+  Acceptance: byte-identical NOR dump of the scratch sector vs `yoton.py`;
+  screenshot of the running Rockbox frame buffer.
+* **WP-T-3 Pagelink + check-resident** (with 02's pager work package).
+* **WP-T-4 Simulator + golden harness** (with WP-UI-1).
+* **WP-T-5 HIL harness**: test mode, result block, suites `smoke`, `drivers`.
+* **WP-T-6 Rust payloads**: ymon, NOR programmer/dumper as `no_std` Rust
+  binaries; remove the dependency on the C payloads.
+* **WP-T-7 Codec corpus + conformance harness + fuzz targets.**
+* **WP-T-8 Profilers and `hot.toml` loop.**

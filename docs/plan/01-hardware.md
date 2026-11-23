@@ -1,0 +1,362 @@
+# 01 — Hardware reference and unknowns register
+
+One page to find any hardware fact, how far it can be trusted, and what is
+still unknown. Register-level detail lives in the documents this page points
+to; do not copy tables from them into code comments, cite them.
+
+## 1. Sources and how far to trust them
+
+| Tag | Meaning | Where |
+|---|---|---|
+| **[DS]** | Stated in the vendor datasheet (ATJ2157 Datasheet V1.2, 2022-04-30, 336 pages). Local text copy: `docs/vendor/atj2157-datasheet-v1.2.txt` (not for redistribution; public source: datasheet4u.com, part ATJ2157). Chapters: PMU, oscillators, CMU, RMU, RTC/watchdog/timers, DMA, SPI, UART, TWI, DAC, ADC, I2S, LCD, PWM, LRADC, GPIO/MFP, pin list, interrupt table, memory map. **No register chapters for SD, USB, NAND, the cache controllers, the memory controller or the hardware engines** | `docs/vendor/` |
+| **[HW]** | Exercised on this player by the Rockbox port or a test payload | `/home/tim/Documents/GitHub/yoton/` — `FINDINGS.md`; `ext/rockbox/firmware/export/atj2157.h`; `ext/rockbox/firmware/target/arm/atj2157/**`; `payloads/*.c` |
+| **[code]** | Read from vendor or ROM code, never run by us | `docs/hw/system.md`, `audio.md`, `bluetooth.md`, `fm-i2c-imu.md`; `yoton/re/usb_controller.md` |
+| **[inferred]** | Deduced; treat as a hypothesis with a test | same documents, marked in place |
+| **[unknown]** | Listed in §9 with the test that settles it | |
+
+For every block the datasheet covers, **the datasheet is the primary source**
+for register names, fields and reset values; the reverse-engineering reports
+then tell which fields the stock firmware actually uses and in what order.
+Where the two disagree, test, and record the outcome here. The reports in
+`docs/hw/` were written before the datasheet was found: their "[unknown]" and
+"[inferred]" marks on documented blocks are superseded by it (first PAC task:
+reconcile them, block by block).
+
+Rule: a driver may rely on **[HW]** facts; it may start from **[DS]** and
+**[code]** facts but its bring-up image must demonstrate them; it must not depend on an
+**[inferred]** fact without running the test first and recording the result
+here and in the source document.
+
+Raw material for further reverse engineering (vendor files in
+`yoton/re/fw/`, ROM and NOR dumps in `yoton/dumps/`, module/bank layout in
+each `docs/hw/*.md` appendix A). Ghidra headless does not run on this host
+(needs a full JDK 25); the reports were made with `objdump`/capstone scripts.
+
+## 2. The device
+
+| Item | Value | Trust |
+|---|---|---|
+| Product | Yoton YM03 clip-on player, 370 mAh Li-ion, microSD slot (no internal storage), 3.5 mm jack, USB | vendor |
+| SoC | Actions ATJ2157: Cortex-M4 r0p1 with FPU (single precision), MPU, no cache; boot-ROM id `0x3051` | [HW] |
+| Core clock | 48 MHz as left by the ROM; datasheet "up to 288 MHz"; vendor table goes to 300 MHz with core-voltage codes | 48: [HW]; rest [DS]/[code] |
+| Interrupts | 64 lines, **4 priority levels** (2 bits) | [DS] |
+| RAM | 320 KiB in four blocks (02 §1.1). The datasheet lists 224 KiB RAM + a 32 KiB "HW RAM" + a **32 KiB I-cache and 32 KiB D-cache (4 ways × 8 KiB)**; the measured SRAM2/SRAM3 blocks, which alias in 8 KiB slots, are almost certainly those cache RAMs used as plain memory | [HW] / [DS] |
+| ROM | 64 KiB mask ROM at 0; USB recovery ("ADFU") always available | [HW] |
+| Flash | 8 MiB SPI NOR, JEDEC `5E 40 17` (Zbit), on SPI0; not memory-mapped; vendor data scrambled, hardware descrambler in the SPI block | [HW] |
+| Display | 128 × 128 RGB565, ST7735S-class, 8080 bus on the LCM controller, panel offset x+2 / y+3 with MADCTL `0xC8`, backlight on PWM4 | [HW] |
+| Keys | Power (PMU level) + 9 keys on two ADC ladders | [HW] |
+| Card | SD0 host, 4-bit, 24 MHz verified; card detect on GPIO18 (config) | [HW] / [code] |
+| USB | High-speed device, FOTG210-style core + Actions DMA, IRQ 12 | [HW] |
+| Audio out | Internal DAC + headphone amplifier at `0xC0180000`; 8–48 kHz native; 8-bit digital volume per channel, 3-bit amplifier gain | play: [HW]; volume: [code] |
+| Audio in | ADC and microphone/FM/line front end at `0xC0181000` | [code] |
+| FM | RDA5807-family tuner at I2C `0x10`, 24 MHz reference, analogue output into the headphone mixer | [code] |
+| Motion | MiraMEMS DA2xx-family 3-axis accelerometer at I2C `0x27`, polled; **no gyroscope** | [code] |
+| I2C | SCL = GPIO24, SDA = GPIO25. The stock firmware bit-bangs them, but the pin list gives these pads the functions **TWI1_CLK / TWI1_DAT**: the hardware controller TWI1 (`0xC0120000`, IRQ 20) can drive the bus | [code] / [DS] |
+| Bluetooth | Autonomous transmitter module ("ATS2851") on UART1, analogue audio feed | [code] + RAM dump |
+| RTC | SoC block at `0xC0030000`, binary calendar, alarm IRQ 6 | [code] |
+| Hardware engines | Datasheet feature list: "FFT/FIR/IIR hardware engine", AES, TRNG, chip unique id, Motion-JPEG decoder, scaler, thermal sensor — **none has a register chapter**. The vendor audio driver holds unused code for the FFT/IIR engine at `0xC0200000` | [DS] feature list; [code] |
+| Debug | UART0 TX disabled in the shipped configuration; SWD mappable to GPIO62/63, 55/56 or 16/17 by `0xC01C0000`; pads not located | [code] |
+
+## 3. Memory and SRAM2/3 bring-up
+
+Map: 02-architecture §1.1. After a cold boot through our boot stages SRAM2 and
+SRAM3 are **off**. Before any use (first instructions of crt0, as
+`crt0-atj2157.S` does) **[HW]**:
+
+```
+CMU_CLKEN0 (0xC0001008) |= 0x600            clocks for SRAM2, SRAM3
+RMU_RST0   (0xC0000000) : clear 0x600, set 0x600
+0xC0040010 = 0x00200000   0xC0040014 = 0x00207FFF      SRAM2 window
+0xC0040018 = 0x00300000   0xC004001C = 0x00307FFF      SRAM3 window
+0xC0040300 = 0x00200000   0xC0040304 = 0
+0xC0040308 = 0x00300000   0xC004030C = 0
+```
+
+Also needed after a cold boot before USB or DMA into RAM works **[HW]**
+(`atj_rom_usb_clock_setup` in the port): `PMU+0x00` bits 29 then 28,
+`0xC0000114 = 0x88` (COREPLL 48 MHz), `CMU_SYSCLK = 0x03000002`,
+`CMU_CLKEN0 |= 0x8001`, `0xC0040004 |= 0xFF` (bus-master memory enables).
+
+The memory controller also has **bank-tag registers** (`0xC0040080 + 4n`) with
+which the vendor OS maps virtual windows onto SRAM0 and pages on UsageFault
+(system.md §10). yotonrs does not use them in the baseline; they are a
+possible way to add SRAM0-backed code cache later (U-MEM-1).
+
+## 4. Peripheral blocks
+
+| Block | Base | Clock gate / reset | Reference | Status |
+|---|---|---|---|---|
+| RMU (resets) | `0xC0000000` | — | system.md §2 | partly [HW] |
+| Oscillator / PLLs | `0xC0000100–0x124` | — | system.md §1 | 48 MHz [HW], rest [code] |
+| CMU | `0xC0001000` | — | system.md §1–2 | partly [HW] |
+| PMU | `0xC0010000` | — | system.md §3 | partly [HW] |
+| eFuse controller | `0xC0020000` | CLKEN1 b31 | system.md §5.5 | **read-only for us** |
+| RTC, watchdog, timers T0–T3 | `0xC0030000` | CLKEN0/RST0 b24 (timers) | system.md §5 | T0, watchdog [HW] |
+| Memory controller | `0xC0040000` | — | system.md §10 | windows [HW] |
+| SPI cache controllers (hardware XIP) | `0xC0050000`, `0xC0060000` | datasheet CMU/RMU bits | **no register documentation**; §9 U-XIP-1 | unexplored |
+| DMA (10 channels + LCD special channel) | `0xC0070000`, `0xC0071000` | CLKEN0/RST0 b0 | datasheet ch. 5; audio.md §6 | ch 0, 4, 5 [HW] |
+| TWI0 / TWI1 | `0xC0110000` / `0xC0120000` | datasheet | datasheet §7.5 | unused by stock |
+| Image/video block | `0xC0090000` | CLKEN0/RST0 b12 | system.md §2 | not analysed (U-IMG-1) |
+| SPI0 (NOR) | `0xC00A0000` | b6 | system.md §9; `spinor.h`; pager | [HW] |
+| UART0 / UART1 | `0xC00D0000` / `0xC00E0000` | b20 / b21 | system.md §7; bluetooth.md §2 | [code] |
+| USB | `0xC0140000` | b15 (+RST0 b16), PHY clock `0xC0001100` | usb_controller.md; port driver | [HW] |
+| SD0 | `0xC0160000` | b2 | port `sdmmc-yotonym03.c` | [HW] |
+| DAC + amplifier + mixer | `0xC0180000` | CLKEN1 b0/2/11, RST1 b0/2 | audio.md §1–2, §4 | playback [HW] |
+| ADC + inputs | `0xC0181000` | CLKEN1 (audio.md) | audio.md §3 | [code] |
+| I2S TX / RX | `0xC0182000` / `0xC0183000` | — | audio.md §5 | pins taken on this board; unused |
+| PWM | `0xC0190000 + 0x100·n` | b25 | port backlight | PWM4 [HW] |
+| LCM (8080) | `0xC01A0000` | b13 | port `lcd-yotonym03.c`; system.md §1.5 | PIO [HW], DMA [code] |
+| GPIO / MFP | `0xC01C0000` | — | system.md §8; fm-i2c-imu.md §1.1 | partly [HW] |
+| DSP accelerator | `0xC0200000` | CLKEN1/RST1 b13, `CMU+0xAC` | audio.md §7.1 | untested |
+
+`atj2157-pac` gets one module per block; every field carries its trust tag in
+a doc comment and a pointer to the source section.
+
+## 5. Pins
+
+| GPIO | Use | MFP word / function | Trust |
+|---|---|---|---|
+| 0–7 | LCD D0–D7 | function 2 | [HW] |
+| 8, 10, 11 | LCD RS, RD, WR | function 2 | [HW] |
+| 43 | LCD CS | function 2, drive 2 | [HW] |
+| 21 | LCD reset | GPIO out | [HW] |
+| 22 | Backlight | PWM4 (function `0x10`) or GPIO out low = off | [HW] |
+| 12–15 | SPI0 to the NOR | `0x3027` | [HW] |
+| 17 | Key ladder 2 → ADC `PMU+0x64` | `0x303B`, with `0xC01C0304 = 0x3001` | [HW] |
+| (dedicated) | Key ladder 1 + earphone sense → LRADC1 `PMU+0x50` | — | [HW] / [code] |
+| 18 | SD card detect (config); stock UART0 TX option | — | [code] |
+| 20 | Bluetooth module enable (high = on) | GPIO out | [code] |
+| 24, 25 | I2C SCL, SDA (bit-bang; MFP bit 6 out-enable, bit 7 in-enable) | GPIO | [code] |
+| 27, 28, 29, 33 | SD D3, D2, D1, D0 | `0x804` + drive 3 | [HW] |
+| 30, 32 | SD CLK (drive 5), CMD | `0x804` | [HW] |
+| 31 | Bluetooth host-busy output | GPIO out | [code] |
+| 38, 39 | UART1 to the Bluetooth module (which is TX: U-BT-1) | `0x302A`; +`0x100` on RX | [code] |
+| 48 | UART0 RX (stock config) | — | [code] |
+| 62/63, 55/56, 16/17 | SWD options via `0xC01C0000` bits [1:0], enable bit 4 | — | [code] |
+
+GPIO registers: MFP word per pin at `0xC01C0004 + 4·pin` (function [4:0],
+out-enable bit 6, in-enable bit 7, drive [14:12]); data out `+0x200`
+(set `+0x210`, clear `+0x220`), data in `+0x230`, per 32-pin bank. Note the
+port's header names `+0x200` "OUTEN"; vendor use says it is the output latch
+(U-GPIO-1).
+
+Keys **[HW]** (idle values LRADC1 ≈ 742, ADC2 ≈ 838): ladder 1: Back ≈ 0,
+Next ≈ 125, Vol+ ≈ 245, Vol− ≈ 370; ladder 2: Menu ≈ 0, Prev ≈ 140,
+Down ≈ 280, OK ≈ 421, Up ≈ 561. Power: `PMU+0x2C` bit 1 (write 1 to clear the
+latch). Earphone present: LRADC1 in 385–591 with no key **[code]** (U-AUD-5).
+
+## 6. Interrupts and DMA
+
+| IRQ | Source | Trust |
+|---|---|---|
+| 1 | Watchdog (2 Hz / IRQ mode) | [DS] |
+| 2, 3, 4, 5 | Timers T0–T3 | [DS]; T0 [HW] |
+| 6 | RTC (alarm) | [DS] |
+| 7, 8 / 10, 11 | I2S RX0, RX1 / TX0, TX1 | [DS] |
+| 12 | USB | [DS], [HW] |
+| 13, 14, 15 | SPI0, SPI1, SPI2 | [DS] |
+| 16, 17, 18 | NAND, SD card, SDIO | [DS] |
+| 19, 20 | TWI0, TWI1 | [DS] |
+| 21–24 | UART0–UART3 | [DS] |
+| 26–35 | DMA channels 0–9 (5 → 31 [HW]) | [DS] |
+| 36 | External interrupt (GPIO) | [DS] |
+| 39, 40, 41 | DAC, ADC01, ADC23 | [DS] |
+| 42 | LCD | [DS] |
+| 48, 50 | "MPU", "SDMA" (as printed; meaning unclear) | [DS] |
+| 0, 9, 25, 37, 38, 43–47, 49, 51–63 | none / not connected: candidates for the software-pended RT executor line | [DS] |
+
+Design consequence: the table is from the datasheet; the stock firmware uses
+only a few of these lines (it polls keys, SD, UART and the charger), so each
+line yotonrs relies on beyond T0, USB and DMA 5 is confirmed in its driver's
+bring-up image before the driver depends on it.
+
+DMA channel plan (any channel can serve any device; the mode word selects it):
+
+| Ch | Use | Mode word | Trust |
+|---|---|---|---|
+| 0 | SPI0 RX → memory: **the pager and NOR driver only** | `0x00200088` | [HW] |
+| 1 | Frame buffer → LCM | `0x9600` | [code] |
+| 2 | Spare (SPI0 TX for programming if useful) | — | |
+| 3 | DSP accelerator (vendor uses 9; device codes `0x1D00` / `0x1D`) | [code] | |
+| 4 | SD0 | `0x85` read, `0x8500` write | [HW] |
+| 5 | DAC FIFO `0xC018000C` | `0x00148B00` (16-bit stereo) | [HW] |
+| 6 | ADC FIFO `0xC0181018` | `0x0014008B` | [code] |
+| 7 | Spare | — | |
+| 8 | UART1 RX, circular | `0x00200082` | [code] |
+| 9 | UART1 TX | `0x00228200` | [code] |
+
+Mode-word fields **[DS]** (datasheet §5.3 `DMAxCTL`): [4:0] source select and
+[12:8] destination select (0 memory, 1–4 UART0–3, 5 SDIO, 6 SD/MMC, 8–10
+SPI0–2, 0x0B DAC FIFO0 / ADC01, 0x0C DAC FIFO1 / ADC23, 0x0D–0x0E I2S, 0x13–
+0x14 TWI0–1, 0x15 PWM, 0x16 LCD, 0x18 NAND), bit 7 / bit 15 source /
+destination address constant, bit 16 planar audio layout, bit 17 single
+instead of burst-8 transfers, **bit 18 reload** (re-arm and restart when the
+count runs out), [21:20] width (0 = 32-bit, 1 = 16-bit, 2 = 8-bit). The
+start register's bit 0 clears itself on completion or error; writing 0 aborts.
+Channel registers: mode `+0x00`, control `+0x04` (bit 0 start/busy), source
+`+0x08`/`+0x0C`, destination `+0x10`/`+0x14`, length `+0x18`, remaining
+`+0x1C`. Pending/enable: bit n and bit n + 16.
+
+DMA addresses: SRAM0 and SRAM1 as CPU addresses; SRAM2 at `0x10000000`,
+SRAM3 at `0x18000000`.
+
+## 7. Clocks and power in brief
+
+HOSC 24 MHz; a 32.768 kHz oscillator and an internal 32 kHz RC; COREPLL and
+DEVPLL = 6 MHz × N. `CMU_SYSCLK` bits [1:0] select 32 kHz / HOSC / COREPLL /
+DEVPLL, [5:4] divide by 1–8. Peripheral clocks (SPI0, SD, LCD from DEVPLL or
+HOSC; UART and timers from HOSC; audio from the audio PLLs) do **not** follow
+the core clock. Detail: system.md §1; datasheet §4.2–4.3.
+
+Core supply: an on-chip buck converter (switchable to LDO mode), 0.7–1.35 V.
+`VOUT_CTL` (`PMU+0x00`) bits [4:0] set VDD in run state in 25 mV steps from
+0.7 V **[DS]**:
+
+| Code | VDD | Vendor uses it for |
+|---|---|---|
+| `0x0C` | 1.000 V | everything up to 144 MHz |
+| `0x10` | 1.100 V | 156–192 MHz |
+| `0x14` | 1.200 V (**reset default**) | 204–228 MHz |
+| `0x16` | 1.250 V | 240–276 MHz |
+| `0x18` | 1.300 V | 288–300 MHz |
+
+So the Rockbox port's 48 MHz at the reset default runs the core at 1.2 V where
+the stock firmware uses 1.0 V: lowering the code to `0x0C` is the first and
+largest power saving, and it is a vendor-used value. Bits [9:5] set VDD for
+the S3 standby state (default 0.9 V); [12:10] VCC (3.1 V default), [19:17]
+AVCC, bits 28/29 USB supplies.
+
+Power states **[DS]**: `POWER_CTL` (`PMU+0x20`) has `EN_S1` (bit 0, run) and
+`EN_S3` (bit 1, standby). The stock firmware only ever powers off (clears
+both). **S3 is a documented standby state the stock firmware does not use**;
+whether RAM survives it and how the SoC resumes is U-PMU-2. Wake sources
+(`WKEN_CTL`, `PMU+0x24`): bit 0 power key long press, bit 1 short press, bit 2
+DC5V inserted, bit 3 DC5V removed, **bit 4 RTC alarm**, bit 9 CPU interrupt,
+bit 11 WIO1 pin, bit 23 "remote key" on LRADC1; pending flags in the same
+positions in `WAKE_PD` (`PMU+0x28`), whose bit 30 is the live DC5V state. The
+vendor writes 5 (long press + DC5V in) before power-off.
+
+Power key **[DS]** (`ONOFF_CTL`, `PMU+0x2C`): bit 1 pressed; [8:6] long-press
+time (0.125–4 s); [5:4] long-press function (reset / restart) after [3:2]
+8/12/16/24 s — a hardware escape from a hung firmware.
+
+Charger **[DS]** (`CHG_CTL`, `PMU+0x10`): current codes 0–7 = 25, 50, 75, 100,
+200, 300, 400, 450 mA; the stock firmware uses code 4 = **200 mA** (0.54 C for
+the 370 mAh cell) and code 1 = 50 mA below 3.0 V-equivalent; end voltage and
+termination fields are documented; `CHG_DET` (`+0x14`) gives phase, current
+band and end-of-charge.
+
+Watchdog **[DS]** (`RTC+0x1C`): period codes 0–6 = 0.176, 0.352, 0.703, 1.4,
+2.8, 5.6, 11.2 s, code 7 = 10 ms; bit 4 enable; bit 5 selects interrupt
+instead of reset; bit 6 interrupt pending.
+
+## 8. Corrections to earlier notes
+
+* `0xC0020000` is the eFuse controller, not battery-backed registers. There
+  are no backup registers. Do not write to it. (`payloads/bkflag.c` and the
+  "persistent ADFU flag" in FINDINGS §10 act on a latch of eFuse word 3 whose
+  persistence is unverified: U-EFUSE-1.)
+* "GPIO24/25" in FINDINGS §9 are the I2C pins, not keys.
+* The port's comment "no FM tuner on this model" is wrong: the stock firmware
+  has a complete RDA5807 driver and the radio in its main menu.
+* `GPIO_OUTEN` in the port's header is probably the output data latch.
+* The strings `WAKE_PD`, `DC5V_ON`, `welcome s4` belong to the vendor's second
+  boot stage (NOR `0x200–0x71FF`), which our stage 1 bypasses: its work
+  (battery check, DEVPLL, SRAM2/3, pin table) is ours to do.
+
+## 9. Unknowns register
+
+Each entry: what is unknown, why it matters, the test, and the work package
+that runs it. Results are written back here (replace the test with the answer
+and date) and into the source document. Tests are bring-up images or `xtask
+dev poke/peek` sessions; anything needing instruments or the case open is a
+**user check** (docs/USER-CHECKS.md).
+
+### CPU, memory, interrupts
+
+| Id | Question | Why | Test | WP |
+|---|---|---|---|---|
+| U-CPU-1 | ~~NVIC priority bits~~ **Answered [DS]: 4 levels.** Confirm by read-back | Exactly the four levels of 02 §4.1 | Write `0xFF` to an IPR byte, read back (expect `0xC0`) | HAL-1 |
+| U-CPU-2 | Does WFI stop the core clock; which sources wake it | Idle power | `payloads/wfitest.c` result; repeat with timer-only wake; idle counter vs wall time | HAL-1 |
+| U-IRQ-1 | Interrupt table of §6 is from the datasheet; each line is unproven until used | Interrupt-driven SD, TWI, UART, key wake | Per driver: enable the block's interrupt with the NVIC line masked, cause the event, read `NVIC_ISPR` | each driver |
+| U-IRQ-2 | Which unconnected NVIC line (0, 9, 25, 37, 38, 43–47 …) can be pended in software for the RT executor | 02 §4.1 | Set its `ISPR` bit, confirm the handler runs and nothing else raises it | HAL-1 |
+| U-XIP-1 | **Hardware execute-in-place**: the datasheet says code can run directly from SPI NOR through a 32 KiB 4-way I-cache with an "SPI Cache" controller at `0xC0050000`, but documents no registers; the stock firmware does not use it (it pages in software) | If it can be made to work it replaces the software pager with hardware and removes page-fault latency | **Time-boxed investigation (two sessions), not on the critical path**: dump `0xC0050000–0xC00500FF` and `0xC0060000…` in ROM state and under the stock firmware; look in the datasheet's CMU/RMU chapters for the cache clock/reset bits; search the ROM and the leaked ATJ2127 SDK header (`gl5110.h`, docs/research/rust-ecosystem.md §10) for the block; try enabling it with SRAM2 windows disabled and a known pattern at NOR offset 0x762000. Stop at the first dead end and record what was learned | XIP-1 |
+| U-MEM-1 | Bank-tag windows: size, count, usable beside the MPU pager | Extra code cache | system.md T8 | later |
+| U-EFUSE-1 | Is the word-3 latch volatile | Safety of existing tools | system.md T7 (read only) | T-2 |
+| U-GPIO-1 | Is `0xC01C0200` the output data latch (vendor use, datasheet GPIO chapter) rather than an output enable (name in the port's header) | Correct GPIO driver | Read datasheet §10; toggle a spare pin and read it back | HAL-1 |
+
+### Clocks and power
+
+| Id | Question | Why | Test | WP |
+|---|---|---|---|---|
+| U-PWR-1 | ~~Core voltage per code~~ **Answered [DS]** (§7 table; reset default `0x14` = 1.2 V). Remaining: read `PMU+0x00` after a cold boot through our stages; confirm the player is stable at `0x0C` (1.0 V) for every level ≤ 144 MHz | Power saving; safe levels | Level self-test (03 §2.2) at each level and code; optional **user check** of the VDD rail with a meter | PWR-1 |
+| U-PWR-2 | `CMU_SYSCLK` bit 8 and [25:24] | Bus clock at high levels | system.md T2 | PWR-1 |
+| U-PWR-3 | SPI0 clock source/divisor encoding | Pager read speed at each configuration | system.md T3 | PG-1 |
+| U-PWR-4 | Can DEVPLL / COREPLL be off, HOSC divided, 32 kHz selected, with what wake-up | Deep idle | Stepwise in a bring-up image with timer wake; current needs a meter (**user check**), software proxy = battery ADC slope | PWR-3b |
+| U-PMU-1 | ~~Charge current per code~~ **Answered [DS]** (code 4 = 200 mA, code 1 = 50 mA). Remaining: end-voltage field (`CHG_VLOT`, `STOPV`) values the stock firmware leaves; behaviour of `CHG_DET` during a full charge | Safety, UI | Dump `CHG_CTL`/`CHG_DET` under the stock firmware while charging (boot stock, then ADFU read is not possible — read them from yotonrs right after a stock session with charger running, or decode the vendor writes); log a full charge cycle | PWR-2 |
+| U-PMU-2 | **S3 standby** (`POWER_CTL` bit 1, `VOUT_CTL[9:5]`): does RAM survive; does the SoC resume in place or restart through the ROM; which wake sources work; current drawn | Standby with alarms, background step counting, instant resume | Bring-up image: write a RAM pattern and a mailbox marker, arm the RTC alarm 10 s ahead with `WKEN_CTL` bit 4, enter S3 (clear `EN_S1` with `EN_S3` set — derive the exact sequence from the datasheet text first), observe over USB what comes back and whether the pattern survived. Needs a person only if nothing wakes it (reset pinhole) | PWR-3c |
+| U-PMU-3 | Wake from **off**: bits are documented (§7); confirm DC5V-insert, alarm and key wake on this board | Alarms, charging screen, unattended tests | Alarm case is fully automatic (arm alarm, power off, watch USB re-enumerate); DC5V case needs a re-plug (**user check**) | PWR-3a |
+| U-PMU-4 | ~~Long-press timing~~ **Answered [DS]** (§7). Choose values: long press 1.5 s, hardware reset after 8 s | Recovery UX | **User check**: hold Power 8 s on a deliberately hung test image | PWR-3a |
+| U-RTC-1 | RTC keeps time when off; oscillator-stopped flag; LOSC accuracy | Clock, TOTP | system.md T6, T13 | RTC-1 |
+| U-WDT-1 | ~~Watchdog periods~~ **Answered [DS]** (§7). Remaining: interrupt mode (IRQ 1) behaviour | Early-warning dump before a watchdog reset | Set bit 5, let it expire, observe IRQ 1 | HAL-1 |
+
+### Storage, display, DMA
+
+| Id | Question | Why | Test | WP |
+|---|---|---|---|---|
+| U-NOR-1 | What the 4 KiB erase (`0x20`) and 64 KiB erase do on this chip; status-register protection bits | Settings store geometry | 4 KiB erase is used by `norprog.c` **[HW]**; read SFDP and status registers | PG-1 |
+| U-NOR-2 | Program/erase suspend and resume (`0x75`/`0x7A`) and their latencies | Paging during NOR writes (02 §3.2 rule 5) | In the scratch sector: start an erase, suspend, read another sector, resume, verify | PG-2 |
+| U-NOR-3 | Descrambler: is the key stream position-dependent only (random-offset reads of vendor data equal the dump) | In-place use of the vendor font | Read 100 random 33-byte spans with CTL bit 12, compare with `nor_descrambled_8m.bin` | UI-1 |
+| U-SD-1 | High-speed (50 MHz class) operation with DEVPLL clock; CMD6 switch; controller timing bits | Card-reader speed | Bring-up test on the scratch file region with CRC | SD-2 |
+| U-SD-2 | Card-detect polarity on GPIO18; hot-plug behaviour | Hot-plug | Read the pin with and without a card (**user check** for the removal) | SD-1 |
+| U-LCM-1 | LCM timing fields (`0xC01A0008/0C`, CTL bits) versus core clock; can a blit run without dropping the core to HOSC as the vendor does | Display at high clock levels | Blit at 48, 96, 144 MHz with timing swept; verify by panel read-back of a test pattern (the panel supports RAM read; `payloads/lcdread.c`) | LCD-1 |
+| U-LCM-2 | DMA blit: channel 1 mode `0x9600` vs the special channel; RGB565 byte order in DMA mode | Zero-CPU flush | Bring-up with read-back | LCD-1 |
+| U-DMA-1 | DAC DMA from SRAM3 (`0x18000000`) | PCM ring placement | Tone test with the ring in SRAM3; cadence counters | AU-1 |
+| U-DMA-2 | Reload mode is documented (bit 18); remaining: what the second pending bit (n + 16) signals, whether the remaining-count register is readable while running, whether source/length can be changed for the *next* lap while a lap runs | Circular audio/UART buffers without refill deadlines | Loop a buffer on the DAC channel, sample the count, observe both pending bits; read datasheet §5.3 `DMAIP` first | AU-1 |
+
+### USB
+
+U-USB-1 … U-USB-10 are questions 1–10 of `usb_controller.md` §10 (short packet
+ending a multi-packet OUT DMA; control transfers > 64 bytes and zero-length
+packets; DMA interrupts; unexplained registers; reset bits; DMA reach beyond
+SRAM0; meaning of "IN done"; clearing of `CX_SETUP`; exact VBUS bit; endpoint
+halt mapping). The port's working driver answers 8 and 10 in practice; record
+that. Added:
+
+| Id | Question | Test | WP |
+|---|---|---|---|
+| U-USB-11 | Interrupt-type endpoint/FIFO configuration (FIFO type field) and timing | HID keyboard enumerates and types on the host | USB-5 |
+| U-USB-12 | Isochronous FIFOs with the Actions DMA; feedback endpoint | UAC1 speaker plays a tone (stretch) | USB-7 |
+
+### Audio, radio, sensor, Bluetooth
+
+| Id | Question | Test | WP |
+|---|---|---|---|
+| U-AUD-1 | Digital volume scale (is `0xBF` 0 dB, 0.375 dB/step), ramp behaviour, PA gain steps | Digital loopback or ADC capture of a tone at several settings; else **user check** by ear with a reference table | AU-1 |
+| U-AUD-2 | IC-type gate for > 48 kHz and 24/32-bit FIFO format (audio.md §1.4) | Read the IC type; try 96 kHz and the wide format with cadence counters | AU-1 |
+| U-AUD-3 | Power-down anti-pop sequence | **User check** by ear | AU-1 |
+| U-AUD-4 | ADC path: input select, gains, microphone bias, capture DMA | Record silence, speech, FM; inspect files on the host | AU-13 |
+| U-AUD-5 | Earphone-sense window on this unit; behaviour with 4-pole headsets | Log LRADC1 with/without earphones (**user check** to plug) | INPUT-1 |
+| U-AUD-6 | Any analogue or digital loop from DAC to ADC for self-test | audio.md §4; try the routes | AU-13 |
+| U-DSP-1 | Does the accelerator at `0xC0200000` work; number formats, scaling, speed | Bring-up: FFT of known vectors, biquad impulse responses, compare with software | DSP-1 |
+| U-FM-1 | Tuner present; chip id; pull-ups on GPIO24/25; **does hardware TWI1 work on these pads** (pin functions TWI1_CLK/TWI1_DAT per datasheet) | Hardware I2C instead of bit-banging | Bit-bang scan first (known-good method), then the same scan through TWI1 | FM-1 |
+| U-FM-2 | Tuner reference clock present without further set-up | Tune a strong local station, read RSSI/stereo flags | FM-1 |
+| U-FM-3 | Meaning of mixer bits `+0x2C[23:16]`; FM → ADC route | Toggle with a station tuned; capture through the ADC | FM-1 |
+| U-ACC-1 | Accelerometer id (register `0x01`), exact part, INT pin wiring | Read; enable an interrupt and scan GPIO inputs while the user taps (**user check**) | SENS-1 |
+| U-BT-1 | Which of GPIO38/39 is TX; BAUD register halves | Identity command both ways round (06 §4.2) | BT-1 |
+| U-BT-2 | Analogue tap point; headphone output live while streaming | **User check** (listen) | BT-2 |
+| U-BT-3 … | bluetooth.md §8 questions 7–10 (unknown commands, incoming connections, upgrade image, enable pin) | 06 §4.3 | BT-3 |
+| U-IMG-1 | What the image/video block at `0xC0090000` does (JPEG acceleration?) | Read `MMM_VP.AL`/`MMM_ID.AL` register use; only pursue if it decodes JPEG | later |
+
+## 10. Rules for hardware discovery work
+
+1. One question per bring-up image or poke session; write the raw numbers into
+   the log, then the conclusion here.
+2. Read before write. Dump the block's registers first; keep the dump in
+   `docs/hw/dumps/` (text) so the reset state is known.
+3. Never write a register in the PMU regulator/charger group, the eFuse block
+   or NOR sector 0 as an experiment (07 §7).
+4. A test that could leave the player needing a key press says so and is
+   scheduled as a user check.
+5. When a vendor sequence is copied without understanding, mark it `VERBATIM`
+   (02 §10 rule 8) and add an entry here.
