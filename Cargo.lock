@@ -609,6 +609,10 @@ name = "yoton-input"
 version = "0.1.0"
 
 [[package]]
+name = "yoton-power"
+version = "0.1.0"
+
+[[package]]
 name = "yoton-proto"
 version = "0.1.0"
 
