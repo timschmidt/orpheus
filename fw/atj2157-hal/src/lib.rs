@@ -17,6 +17,7 @@ pub mod i2c_soft;
 pub mod interrupt;
 pub mod lcm;
 pub mod log;
+pub mod nor;
 pub mod persist;
 pub mod pwm;
 pub mod rt;

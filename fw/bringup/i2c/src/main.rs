@@ -50,7 +50,10 @@ async fn run(test_id: u32) {
     let mut b = [0u8; 2];
     r.set(5, bus.write_read(0x11, &[0x00], &mut b).map_or_else(code, |()| u32::from(u16::from_be_bytes(b))));
     let mut seq = [0u8; 10];
-    r.set(6, bus.read(0x10, &mut seq).map_or_else(code, |()| u32::from(u16::from_be_bytes([seq[8], seq[9]]))));
+    r.set(
+        6,
+        bus.read(0x10, &mut seq).map_or_else(code, |()| u32::from(u16::from_be_bytes([seq[8], seq[9]]))),
+    );
     let mut id = [0u8; 1];
     r.set(7, bus.write_read(0x27, &[0x01], &mut id).map_or_else(code, |()| u32::from(id[0])));
     let mut raw = [0u8; 4];
