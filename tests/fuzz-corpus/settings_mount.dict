@@ -1,0 +1,6 @@
+# Settings sector: magic, states, commit, deletion marker
+"YSET"
+"\xff\xff\x00\x00"
+"\x00\x00\x00\x00"
+"\xff\xff\xff\xff"
+"\x04\x03"

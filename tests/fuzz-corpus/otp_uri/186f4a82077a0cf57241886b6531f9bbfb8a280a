@@ -1,0 +1,1 @@
+otpauth://totp/ACME%20Co:john.doe@email.com?secret=HXDMVJECJJWSRBOZ&issuer=ACME%20Co&algorithm=SHA1&digits=6&period=30

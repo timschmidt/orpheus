@@ -1,0 +1,1 @@
+otpauth://hotp/A%3Ab?secret=GEZDGNBV&counter=7&digits=8&algorithm=SHA256
