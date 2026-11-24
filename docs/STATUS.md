@@ -158,6 +158,20 @@ of every session. Newest entries first in §3.
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — implementation session 2, part 7 (lead)
+
+* Merged AU-12 firmware (worker): Files lists through `/.yoton/index/`. On
+  the player: the root (35 entries) is sorted at once; a 231-entry folder
+  shows on-disk order first and re-sorts in the background within ~20 s;
+  playing from it, seeking and browsing while playing work.
+* MP3 open/seek code (`Mp3Decoder::find`, `parse_head`, `parse_vbr_tag`)
+  excluded from residency: resident −2.5 KB, stack 24.9 → 27.4 KB (peak
+  ≈ 21.5 KB measured after browse + play + seek).
+* Browsing during playback caused up to 6 underruns (counting pass + index
+  open between refills), close to the too-slow abort (8). Underruns within
+  500 ms after a served request no longer count towards the abort; Opus is
+  still detected as too slow.
+
 ### 2026-11-24 — implementation session 2, part 6 (lead)
 
 * Merged AU-12 host (`yoton-index`, worker) and AU-5 firmware (yoton-player

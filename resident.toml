@@ -67,6 +67,11 @@ sections = [".text.resident.*", ".rodata.resident.*"]
 files = ["*libcompiler_builtins-*"]
 exclude = [
     "embassy_executor::raw::TaskStorage<*>::poll*",
+    # MP3 code that runs once per open or seek, not per frame: paged
+    # (it gives ~2.5 KiB of RAM back to the stack).
+    "yoton_codec_mp3::Mp3Decoder>::find*",
+    "yoton_codec_mp3::parse_head*",
+    "yoton_codec_mp3::parse_vbr_tag*",
     "embassy_executor::raw::util::UninitCell<*",
 ]
 

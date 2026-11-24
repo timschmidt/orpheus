@@ -343,6 +343,10 @@ impl PcmOut {
                 let played = PLAYED.load(Ordering::Acquire);
                 if played > self.written {
                     UNDERRUNS.fetch_add(played - self.written, Ordering::Relaxed);
+                    let now = (time::now_us() / 1000) as u32;
+                    if now.wrapping_sub(LAST_SERVE_MS.load(Ordering::Relaxed)) > 500 {
+                        SLOW_UNDERRUNS.fetch_add(played - self.written, Ordering::Relaxed);
+                    }
                     // Re-sync one half ahead of the DMA: the next push then
                     // waits for a DMA interrupt, so a decoder that cannot
                     // keep up still yields (otherwise the RT executor never
@@ -484,10 +488,21 @@ fn codec_name(ext: Option<&[u8]>) -> &'static str {
 /// for the idle loop arrived (card hand-over, power-off); the file ends.
 async fn serve_one(vol: &mut Volume<'static, Card>, srv: &mut Server, scratch: &mut [u8]) -> bool {
     match media::REQS.try_receive() {
-        Ok(r) => srv.serve(vol, r, scratch, false).await,
+        Ok(r) => {
+            let done = srv.serve(vol, r, scratch, false).await;
+            LAST_SERVE_MS.store((time::now_us() / 1000) as u32, Ordering::Relaxed);
+            done
+        }
         Err(_) => true,
     }
 }
+
+/// When the card task last served a media request while playing (ms):
+/// underruns right after one are caused by the request, not by a decoder
+/// that cannot keep up, and do not count towards the too-slow abort.
+static LAST_SERVE_MS: AtomicU32 = AtomicU32::new(0);
+/// Underruns that count towards [`MAX_UNDERRUNS`].
+static SLOW_UNDERRUNS: AtomicU32 = AtomicU32::new(0);
 
 /// Seek the decoder to `frame`, refilling the ring from the new position.
 /// Returns the frame it landed on.
@@ -724,7 +739,7 @@ async fn play_file(
             last_tick = time::now_us();
             media::player_update(|p| p.source = Source::Playing);
         }
-        if UNDERRUNS.load(Ordering::Relaxed) >= MAX_UNDERRUNS {
+        if SLOW_UNDERRUNS.load(Ordering::Relaxed) >= MAX_UNDERRUNS {
             // The decoder cannot keep up (Opus on paged code): stop the
             // track rather than starve the rest of the system.
             break 'play failed(srv, driven, b"decoder too slow for this player");
@@ -966,7 +981,7 @@ async fn run_player(
 ) {
     let mut next = Some(first);
     while let Some(o) = next.take() {
-        for c in [&FRAMES, &UNDERRUNS, &CORRUPT] {
+        for c in [&FRAMES, &UNDERRUNS, &SLOW_UNDERRUNS, &CORRUPT] {
             c.store(0, Ordering::Relaxed);
         }
         STOP.store(false, Ordering::Relaxed);
@@ -1406,7 +1421,7 @@ pub async fn audio() {
         } else if let Some(p) = text.strip_prefix("ls ") {
             ls(&mut vol, p.trim()).await;
         } else if let Some(p) = text.strip_prefix("play ") {
-            for s in [&FRAMES, &UNDERRUNS, &CORRUPT] {
+            for s in [&FRAMES, &UNDERRUNS, &SLOW_UNDERRUNS, &CORRUPT] {
                 s.store(0, Ordering::Relaxed);
             }
             let r =
