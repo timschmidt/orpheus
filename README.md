@@ -2,55 +2,69 @@
 
 # Orpheus
 
-A pure-Rust, [Embassy](https://embassy.dev)-based firmware for the Yoton YM03
-MP3 player (Actions ATJ2157: Cortex-M4F, 320 KiB RAM, 8 MiB SPI NOR, microSD,
-128 × 128 LCD, FM tuner, accelerometer, Bluetooth transmitter module).
+A new firmware for the **Yoton YM03** MP3 player, written from scratch in
+Rust on [Embassy](https://embassy.dev). It plays MP3, FLAC, Ogg Vorbis,
+Opus, Speex and WAV with gapless joins and an equaliser, sorts folders of
+thousands of files, builds a music library, shows pictures and sends music to
+Bluetooth headphones, on a 128 × 128 screen with 320 KiB of RAM.
 
-**State (2026-11-24): running on the player** in the full-flash layout
-(the stock firmware is replaced): demand-paged firmware with Home, Files
-(sorted through an on-card index), Music (queue, resume, bookmarks, shuffle,
-A–B), Now Playing, Pictures, Settings; MP3/FLAC/WAV/Vorbis/Speex playback
-with the DSP chain; USB card reader; Bluetooth module control; power-off.
-See `docs/STATUS.md` for details and open items. The plan was written on
-2026-11-23 from the research and the Rockbox port in the companion repository
-(`../yoton`, mirrored at https://github.com/timschmidt/yoton-rockbox).
+<p align="center">
+  <img src="docs/shots/media_np_dark_latin.png" alt="Now Playing: cover, title, artist, format and progress" width="256">
+  <img src="docs/shots/media_files_root_dark_latin.png" alt="Files: the card's folders" width="256">
+  <img src="docs/shots/bt_connected_dark_latin.png" alt="Bluetooth: devices found, connected to headphones" width="256">
+</p>
 
-## Start here
+**Status (2026-11-24):** runs every day on the reference player: Music,
+Files, Now Playing, Pictures, Bluetooth audio and Settings work. Radio,
+recorder, the authenticator, USB disk images and the Bluetooth presenter
+remote are planned. Not released yet; see the [changelog](CHANGELOG.md)
+and the [detailed log](docs/STATUS.md).
 
-| Read | For |
+## Try it
+
+**In your browser: coming.** A build of the real UI and music code for the
+web is in progress. Until then the desktop simulator runs the same
+screens (see Build below):
+
+```sh
+cargo run -p orpheus-sim --features window -- --window
+```
+
+## Install
+
+**From the browser: coming** (a backup-first installer for Chromium-based
+browsers). **From the command line** today, on Linux, with the steps,
+the backup and the way back to the original firmware in the manual:
+[install, update and restore](docs/user/install.md). Read it first: the
+tools are still set up for the project's reference player.
+
+## Build
+
+```sh
+git clone https://github.com/timschmidt/orpheus && cd orpheus
+cargo test --workspace      # host crates, simulator and golden images
+cargo xtask build           # firmware image: target/orpheus/firmware.yfw
+cargo xtask gate --no-dev   # everything a change must pass
+```
+
+The toolchain is pinned in `rust-toolchain.toml`; nothing else is needed.
+More in [getting started](docs/dev/getting-started.md).
+
+## Documentation
+
+| For | Read |
 |---|---|
-| [docs/PLAN.md](docs/PLAN.md) | Scope, findings, decisions, open decisions for the owner, document map |
-| [docs/plan/08-milestones.md](docs/plan/08-milestones.md) | Milestones and work packages, in order |
-| [docs/STATUS.md](docs/STATUS.md) | What has been done so far |
-| [CLAUDE.md](CLAUDE.md) | Rules for anyone (human or AI) working on the tree or touching the player |
-| [docs/USER-CHECKS.md](docs/USER-CHECKS.md) | Checks only a person can make |
+| Using the player | [Manual](docs/user/README.md) · [FAQ](docs/user/faq.md) · [Troubleshooting](docs/user/troubleshooting.md) |
+| Developing | [Getting started](docs/dev/getting-started.md) · [Architecture](docs/dev/architecture.md) · [How-to guides](docs/dev/how-to/README.md) |
+| The plan | [PLAN.md](docs/PLAN.md) · [Milestones](docs/plan/08-milestones.md) · [STATUS.md](docs/STATUS.md) |
+| Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) · [Code of Conduct](CODE_OF_CONDUCT.md) · [Security](SECURITY.md) |
+| Brand | [Logo, palette and rules](docs/brand/README.md) |
 
-## Layout of the documentation
-
-```
-docs/
-├── PLAN.md                 master plan
-├── STATUS.md               living progress log
-├── USER-CHECKS.md          checks that need eyes, ears or hands
-├── plan/
-│   ├── 01-hardware.md      hardware reference and unknowns register
-│   ├── 02-architecture.md  memory, boot, demand paging, tasks, power, storage, crates
-│   ├── 03-hal-drivers.md   driver specifications
-│   ├── 04-audio.md         pipeline, codecs, DSP, recording, indexes, pictures
-│   ├── 05-ui-apps.md       UI grammar, toolkit, every screen and app
-│   ├── 06-connectivity.md  USB, disk/CD emulation, Bluetooth, authenticator
-│   ├── 07-tooling-testing.md  host tools, simulator, on-device tests, safety rules
-│   └── 08-milestones.md    work packages, dependencies, risks
-├── hw/                     reverse-engineering reports (kept out of git by default)
-├── research/               Rust ecosystem survey
-└── vendor/                 datasheet text and SDK register header (local reference; out of git)
-```
-
-`docs/hw/` and `docs/vendor/` are listed in `.gitignore`, following the
-companion repository's policy of not publishing analysis derived from vendor
-firmware. Whether to publish `docs/hw/` is the owner's call (decision D-7 in
-the plan); a fresh clone without those directories is missing reference
-material the work packages cite.
+The reverse-engineering notes on the hardware (`docs/hw/`) and the vendor
+documents stay out of the repository (decision D-7 in the plan). The
+Rockbox port in the companion repository
+([yoton-rockbox](https://github.com/timschmidt/yoton-rockbox)) is a
+hardware reference only.
 
 ## Licence
 

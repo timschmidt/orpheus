@@ -4,6 +4,8 @@ The player changes its processor speed by itself: slow while it waits for
 you, faster while it decodes music or draws a busy screen. **Performance**
 chooses how far it may go.
 
+![Performance](../shots/app_performance_choice_dark_latin.png)
+
 | Setting | Fastest speed | Core voltage | Use it for |
 |---|---|---|---|
 | **Normal** (default) | 144 MHz | 1.0 V | Everything. Every codec the player supports plays at this speed |

@@ -1,0 +1,53 @@
+# Settings
+
+Settings are grouped by topic. Changes apply at once and are kept when the
+player is switched off; there is no Save button. Up and Down move, OK opens
+or changes, Back goes up a level.
+
+![Settings](../shots/app_settings_dark_latin.png)
+
+## Groups
+
+| Group | What is in it | State |
+|---|---|---|
+| **Sound** | Equaliser (Flat, Rock, Pop, Jazz, Classical, Electronic, Hip-hop, Bass boost, Vocal, two custom curves), balance, bass, crossfeed, channel mode (stereo, mono, swapped), volume limit | Works |
+| **Playback** | Shuffle, repeat, gapless, ReplayGain, resume at start, seek step | Works; speed and fades are **in progress** |
+| **Display** | Brightness, backlight time, auto-lock, theme (Dark, Light, Amber), accent colour, clock in the status bar, Home screen apps | Works; rotation, wallpaper and screen saver are **in progress** |
+| **Power** | Sleep timer, auto-off, what the keys do when locked, battery | Auto-off and low-battery switch-off are **being checked** on the player |
+| **Date & time** | Time, date, 24-hour clock, date format | Works; the clock has stopped after some restarts (known issue: set it again) |
+| **Bluetooth** | Device list, reconnect | See [Bluetooth](bluetooth.md) |
+| **USB** | What happens when you plug into a computer: ask, charge only, file transfer (card reader) | Charge only and file transfer work; the other choices are **in progress** |
+| **Language** | English; Russian and Japanese | English works; the other languages run in the simulator and are **in progress** on the player |
+| **Storage** | Card info, rebuild library, clear caches | Works |
+| **System** | About, Performance, Diagnostics, Factory reset, Recovery mode | Works |
+
+Radio and Recording groups belong to apps that are not built yet; their
+settings are stored but do nothing.
+
+![Display](../shots/app_display_dark_latin.png)
+
+## Equaliser
+
+Sound › Equaliser lists the presets. The custom curves have five bands
+(60 Hz, 230 Hz, 910 Hz, 3.6 kHz, 14 kHz, ±12 dB): Prev and Next choose a
+band, Up and Down change it. The pre-amp follows by itself so the sound
+does not clip.
+
+![Equaliser](../shots/media_eq_dark_latin.png)
+
+While any sound effect is on, the player runs its processor a little
+faster during playback; that costs a little battery.
+
+## System
+
+* **About**: version, build, serial number, hardware.
+* **[Performance](performance.md)**: Normal or Maximum processor speed.
+* **Factory reset**: every setting back to its default. Music, the library
+  and your bookmarks on the card are not touched.
+* **Recovery mode**: restarts into the chip's USB recovery mode, for the
+  install tools ([troubleshooting](troubleshooting.md)).
+* **Start original firmware**, if shown, does nothing useful: the original
+  firmware is no longer on the player.
+
+Pressing OK five times on About shows a **Developer** group until the next
+restart (battery logging for tests). It is not needed for normal use.
