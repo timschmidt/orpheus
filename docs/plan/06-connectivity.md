@@ -362,6 +362,14 @@ press/release sequencing with auto-release on link loss, and a transport
 trait with three implementations: Bluetooth module (BT-4), USB (USB-5), and
 the simulator/WASM back end that renders what the computer would see.
 
+**Step 1 continued (2026-11-24, lead)**: with the module connected for
+audio, BlueZ's `ConnectProfile(0x1124)` **succeeds**: the host gets a HID
+keyboard `ZS285AH_TARNS` (`/dev/hidraw*`, HID id `0005:10D6:B009`, input
+device "ZS285AH_TARNS Keyboard"). The HID channel works alongside A2DP;
+only the command that makes the module send reports is unknown (step 2).
+The project udev rule grants raw access to it and tells libinput to ignore
+it, so probes never type into the desktop.
+
 #### 4.3.2 Tilt pointer engine (WP SENS-2) — conditional (D-10)
 
 Built **only if** §4.3.1 finds a Bluetooth transport for mouse data; if not,
