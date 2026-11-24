@@ -571,6 +571,18 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — AU-5 gapless/queue merged; first device run (lead)
+
+* Merged AU-5 (gapless, queue editing). Fixed the `orpheus-img` "fixture
+  race": test threads of one binary shared `gen-<pid>`; fixtures are now
+  generated once per process (`OnceLock`), verified from an empty folder.
+* On the player (Bluetooth off): the corpus MP3 album split from Files →
+  OK on part 0 — part 0 clean, then **6 underruns after the first join and
+  1 more later**, and a fourth track with part 1's length appears to play
+  after part 2. Gapless is therefore **not yet working on the device**; sent
+  back to the AU-5 worker with a request for a `playdir` developer command
+  and queue position/title in `status` for HIL tests.
+
 ### 2026-11-24 — UI-6a merged and tested on the player; Bluetooth volume policy changed (lead)
 
 * Merged UI-6a (Bluetooth app). On the player: Home → Bluetooth → on →
