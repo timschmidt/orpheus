@@ -1861,6 +1861,23 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — USB keyboard works; recorder captures silence (lead)
+
+* Merged AU-13/UI-5b (recorder) and USB-5/OTP-2 (USB keyboard,
+  authenticator); firmware builds now remap source paths (resident
+  77,428 B with both merged, was 79.4 KB before them).
+* **USB keyboard on the player**: `kbd on` → interfaces vendor + HID boot
+  keyboard (03/01/01, EP 0x81 interrupt IN, 8 B, bInterval 4); the desktop
+  ignores it through the project udev rule (`LIBINPUT_IGNORE_DEVICE=1`);
+  `kbd type Hello, 2026!` → 24 reports read on hidraw, decoded exactly
+  `Hello, 2026!` (U-USB-11: interrupt IN works). Authenticator on the device
+  not yet exercised (user check 24).
+* **Recorder**: files are written correctly (`rec start mic wav 10` →
+  442,368 frames, 0 drops), but every sample is silent (`level=-60/-60`
+  while speaking; DMA events advance, ADC registers configured). Suspect
+  the FIFO sample layout (U-AUD-12) or the mic path (U-AUD-13); a worker is
+  adding `rec raw` and fixing it.
+
 ### 2026-11-24 — CI green; website published (lead)
 
 * GitHub Actions Gate, Docs and Site all pass (runner fixes: test-image
