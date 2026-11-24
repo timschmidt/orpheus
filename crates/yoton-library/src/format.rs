@@ -228,7 +228,7 @@ impl StrRef {
 /// | 36 | 1 | format ([`crate::FileFormat`]) |
 /// | 37 | 1 | flags ([`crate::flags`]) |
 /// | 38 | … | title, artist, album, album artist (as tagged), genre |
-pub(crate) mod cat {
+pub mod cat {
     pub const FIXED: usize = 38;
     pub const FIELDS: usize = 5;
     /// Largest item.
@@ -330,7 +330,7 @@ pub const TRK_ROW: usize = 64;
 /// | 55 | 1 | flags |
 /// | 56 | 4 | size (low 32 bits) |
 /// | 60 | 4 | mtime |
-pub(crate) mod trk {
+pub mod trk {
     pub const TITLE: usize = 12;
     pub const ARTIST: usize = 16;
     pub const ALBUM: usize = 20;
@@ -367,7 +367,7 @@ pub const GRP_ROW: usize = 32;
 /// | 28 | 2 | year (albums: earliest non-zero) |
 /// | 30 | 1 | flags: bit 0 tracks by several artists |
 /// | 31 | 1 | discs (highest disc number, saturated) |
-pub(crate) mod grp {
+pub mod grp {
     pub const NAME: usize = 0;
     pub const SUB: usize = 4;
     pub const FIRST: usize = 8;
