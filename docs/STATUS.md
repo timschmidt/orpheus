@@ -304,6 +304,25 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 
 ### 2026-11-24 — implementation session 3 (lead)
 
+* Merged AU-14 (device): Pictures app and album art. On the player: Home
+  shows Pictures; Show hidden → `/.yoton/test`: a 1600×1200 JPEG letterboxed,
+  a truncated JPEG shows "Cannot show this picture", BMP and PNG render, Down
+  rotates by 90°. Album art not yet tried on the player.
+* **Second NOR-write crash fixed**: LLVM had inlined `nor::program_page`
+  (its busy-polling loop) into the paged `NorRegion::program`, so the
+  resident-root rule protected only the unused out-of-line copy; toggling
+  Show hidden crashed at a line boundary (UsageFault UNDEFINSTR at
+  0x231000). All NOR entry points are now `#[inline(never)]`; no paged code
+  calls `nor::status` any more. `check-resident` cannot see inlined copies:
+  any function that must run resident while the chip is busy needs
+  `#[inline(never)]` as well as a root.
+* Stack: with Pictures merged only 872 B of 23.1 KB stayed free at the peak
+  (picture decoding in the card task over the UI). The USB control buffer
+  went from 4 to 1 KiB (the host now moves ≤ 1 KiB per control transfer):
+  stack 26.2 KB, 3.9 KB free after pictures + playback. Follow-up: shrink
+  the UI task (6.0 KB frame) and card-task frames (5.1 KB; 5.7 KB during card
+  hand-over).
+
 * Resumed the two interrupted workers from WIP snapshots. Merged BT-2
   (device). On the player: `bt status` (off at boot), `bt listen` (module TX
   pad toggles 13×, RX pad quiet: wiring as documented), `bt probe` (identity

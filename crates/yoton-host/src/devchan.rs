@@ -36,7 +36,7 @@ impl DevChannel {
                 Err(e) => return Err(e).context("open 1209:0001"),
             }
         };
-        Ok(Self { dev, info, chunk: 4096 })
+        Ok(Self { dev, info, chunk: 1024 })
     }
 
     pub fn speed(&self) -> Option<nusb::Speed> {

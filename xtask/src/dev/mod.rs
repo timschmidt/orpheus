@@ -187,7 +187,7 @@ pub fn cmd(args: &mut Args) -> Result<String> {
             wait_for(&d, "put 0")?;
             let t0 = std::time::Instant::now();
             let mut sent = 0usize;
-            for chunk in data.chunks(4096) {
+            for chunk in data.chunks(1024) {
                 d.control_out(yoton_proto::devchan::REQ_PUT, 0, 0, chunk)?;
                 sent += chunk.len();
                 wait_for(&d, &format!("put {sent}"))?;

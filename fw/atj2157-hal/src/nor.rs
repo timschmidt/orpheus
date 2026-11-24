@@ -118,6 +118,9 @@ fn recv(dst: &mut [u8]) -> bool {
 }
 
 /// SPI0 set-up as the boot ROM does it (port `nor_init`) [HW].
+// Never inlined into (paged) callers: the code that runs while the
+// chip is busy must be this resident copy.
+#[inline(never)]
 pub fn init() {
     cmu::SPI0CLK.modify(|v| (v & !0x3FF) | 0x101);
     cmu::CLKEN0.set_bits(cmu::clken0::SPI0);
@@ -137,15 +140,24 @@ pub fn init() {
 
 /// SPI0 clock word (`CMU_SPI0CLK[9:0]`): `0x101` ROM default, `0x200` the
 /// port's fast setting (48 MHz) [HW].
+// Never inlined into (paged) callers: the code that runs while the
+// chip is busy must be this resident copy.
+#[inline(never)]
 pub fn set_clock(word: u32) {
     cmu::SPI0CLK.modify(|v| (v & !0x3FF) | (word & 0x3FF));
 }
 
 #[must_use]
+// Never inlined into (paged) callers: the code that runs while the
+// chip is busy must be this resident copy.
+#[inline(never)]
 pub fn clock() -> u32 {
     cmu::SPI0CLK.read() & 0x3FF
 }
 
+// Never inlined into (paged) callers: the code that runs while the
+// chip is busy must be this resident copy.
+#[inline(never)]
 fn command(c: u8) -> bool {
     let ok = send(&[c]);
     cs_high();
@@ -154,6 +166,9 @@ fn command(c: u8) -> bool {
 
 /// JEDEC id (manufacturer, type, capacity) packed little-endian.
 #[must_use]
+// Never inlined into (paged) callers: the code that runs while the
+// chip is busy must be this resident copy.
+#[inline(never)]
 pub fn jedec_id() -> u32 {
     let mut id = [0u8; 3];
     let ok = send(&[0x9F]) && recv(&mut id);
@@ -218,6 +233,9 @@ pub unsafe fn read_dma(addr: u32, dst: u32, len: u32, poll: Option<fn()>) -> Res
 
 /// Status register 1.
 #[must_use]
+// Never inlined into (paged) callers: the code that runs while the
+// chip is busy must be this resident copy.
+#[inline(never)]
 pub fn status() -> u8 {
     let mut s = [0xFFu8];
     let _ = send(&[0x05]) && recv(&mut s);
@@ -225,6 +243,9 @@ pub fn status() -> u8 {
     s[0]
 }
 
+// Never inlined into (paged) callers: the code that runs while the
+// chip is busy must be this resident copy.
+#[inline(never)]
 fn wait_ready(max_polls: u32) -> Result<(), Error> {
     for _ in 0..max_polls {
         if status() & 1 == 0 {
@@ -235,6 +256,9 @@ fn wait_ready(max_polls: u32) -> Result<(), Error> {
 }
 
 /// Erase the 4 KiB sector at `addr` (aligned) inside the writable region.
+// Never inlined into (paged) callers: the code that runs while the
+// chip is busy must be this resident copy.
+#[inline(never)]
 pub fn erase_sector(addr: u32) -> Result<(), Error> {
     if !addr.is_multiple_of(4096) || !writable(addr, 4096) {
         return Err(Error::Refused);
@@ -251,6 +275,9 @@ pub fn erase_sector(addr: u32) -> Result<(), Error> {
 }
 
 /// Program up to 256 bytes within one NOR page.
+// Never inlined into (paged) callers: the code that runs while the
+// chip is busy must be this resident copy.
+#[inline(never)]
 pub fn program_page(addr: u32, data: &[u8]) -> Result<(), Error> {
     let len = data.len() as u32;
     if len == 0 || len > 256 || (addr & 0xFF) + len > 256 || !writable(addr, len) {
@@ -281,12 +308,18 @@ pub fn program_page(addr: u32, data: &[u8]) -> Result<(), Error> {
 }
 
 /// Continue a transmit phase with CS still low.
+// Never inlined into (paged) callers: the code that runs while the
+// chip is busy must be this resident copy.
+#[inline(never)]
 fn cs_low_continue() {
     mode(0);
     mode(2);
 }
 
 /// Erase, program and verify a sector-aligned range.
+// Never inlined into (paged) callers: the code that runs while the
+// chip is busy must be this resident copy.
+#[inline(never)]
 pub fn write(addr: u32, data: &[u8], scratch: &mut [u8; 256]) -> Result<(), Error> {
     if !addr.is_multiple_of(4096) || !writable(addr, data.len().div_ceil(4096) as u32 * 4096) {
         return Err(Error::Refused);

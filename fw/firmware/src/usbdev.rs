@@ -238,7 +238,8 @@ pub async fn supervisor() {
 static mut CONFIG_DESC: [u8; 256] = [0; 256];
 static mut BOS_DESC: [u8; 256] = [0; 256];
 static mut MSOS_DESC: [u8; 256] = [0; 256];
-static mut CONTROL_BUF: [u8; 4096] = [0; 4096];
+/// 1 KiB: the host moves at most 1 KiB per control transfer (stack room, 2026-11-24).
+static mut CONTROL_BUF: [u8; 1024] = [0; 1024];
 static mut DEVCHAN: DevChannel<Fw> = DevChannel { target: Fw, requests: 0 };
 static mut MSC_CLASS: MscClass = MscClass;
 
