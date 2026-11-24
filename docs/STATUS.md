@@ -1482,6 +1482,15 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — the radio works on the player (lead)
+
+* Merged FM-1 fix `ebc145a5` (SRAM3 blocks chained; the step counter had
+  overwritten the radio's state). On the player with earphones as antenna:
+  `fm on` → chip 0x5804, RSSI 39 at 87.5 MHz; `fm scan` → 13 stations
+  (92.9/26, 104.7/22, 100.7/20, 90.5/19, 99.1/19, …). Listening (stereo,
+  volume, RDS) is user check 20. Not yet re-checked: `acc read` at the
+  moved SRAM3 address, `fm on` during music.
+
 ### 2026-11-24 — user check 10 (test tones) done by the owner
 
 * Owner, earphones: left/right/both and the 8 level steps as described.
