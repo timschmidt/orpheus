@@ -47,9 +47,111 @@ of every session. Newest entries first in §3.
 | DOC-2 | done (host) | README rewrite, `docs/user/` (manual index, install/update/restore, keys, Music, Now Playing, Files, Pictures, Bluetooth, Settings, Performance, troubleshooting, FAQ; each ≤ 600 words, checked by `site --check`), screenshots `docs/shots/` from goldens (`xtask site shots`). User: read the manual once |
 | DOC-3 | done (host), except the clean-container CI run | `docs/dev/getting-started.md`, `architecture.md` (SVG diagrams in `docs/dev/img/`), `how-to/` (8 guides). `#![warn(missing_docs)]` on `orpheus-codecs`, the wav/mp3/flac/vorbis/speex codecs, `orpheus-fs`, `orpheus-settings` |
 | DOC-4 | done (host); workflows not run (no CI here) | CONTRIBUTING, CODE_OF_CONDUCT (Contributor Covenant 2.1), SECURITY, CHANGELOG, issue/PR templates, workflows `gate.yml`, `docs.yml`, `pages.yml` (actions pinned by SHA) |
+| WEB-2 | done (host); not yet on the live site (the lead pushes) | `cargo xtask wasm [--test] [--record] [--demo]` → `target/orpheus/site/try/pkg/`: `sim/web` (`orpheus-web`) = the `orpheus-apps` screens over the simulator's services, a FAT32 card built in the browser (synthesised demo set, the visitor's files, the saved library), the firmware's codecs + DSP chain into an AudioWorklet, key recorder/replayer in the `ui_keys` corpus format. Try-it page (`site/pages/try.md`, `site/try/`): SVG player with clickable keys, integer-scaled pixelated canvas, IndexedDB state and files, Factory reset, developer panel. Self-test `tests/web/try.mjs` passes in Chromium 155 and Firefox 157 (headless); in `pages.yml`. Safari not tested: user check 23 |
 | WEB-1 | done (host); not published | `cargo xtask site [--check]` → `target/orpheus/site/`; Home, Manual, Developers, Hardware, Changelog, FAQ, Try it and Install (placeholders for WEB-2/WEB-3). Deploy only with repository variable `PAGES_ENABLED=true`. User: review the site |
 
 ## 3. Session log
+
+### 2026-11-24 — WEB-2: Orpheus in the browser (worker, no hardware)
+
+* **`sim/web` (`orpheus-web`, new workspace member, cdylib + rlib,
+  `#![deny(unsafe_code)]`)**: the real `orpheus-apps` screens over the
+  simulator's `HostServices`, compiled to `wasm32-unknown-unknown` and bound
+  with `wasm-bindgen` (no `js-sys`/`web-sys`; the page drives it: wall-clock
+  ms in, key edges in, RGBA frames and stereo `f32` PCM out, state as text).
+  * **Card**: FAT32 formatted here (`mkfs_fat32`, one sector per cluster,
+    ≥ 36 MiB so FAT32 has its 65,525 clusters) and filled through
+    `orpheus-fs`: the demo set, `/Your files/…` (names cleaned, duplicates
+    numbered), and the library files of the previous visit when the card's
+    fingerprint (demo version + the visitor's file names and sizes) matches.
+    `orpheus-library` then opens that library instead of building (new:
+    `SimLib::build` tries `Library::open` first; the sim's own card has no
+    library, so the desktop simulator and goldens are unchanged).
+  * **Sound**: the simulator's player decides what plays and where; the
+    engine (`audio.rs`) follows it: probe (skipping ID3), `orpheus_codecs`
+    inspect/open/seek, `orpheus_dsp::Chain` set from the Sound settings
+    exactly as the firmware's `apply_sound`, mono → stereo, `f32` out. A new
+    track, pause, or a position that leaves the decoded window restarts the
+    decoder there and tells the page to flush. The decode loop is an
+    `async` block polled on demand, so it owns the file, arena and decoder
+    without `unsafe`. Volume: the firmware's DAC curve (−3 dB at 30,
+    1.5 dB/step) as a GainNode. Track lengths are the files' own
+    (`Media::duration_probe`): stream frame count or a full decode, cached.
+  * **Demo set** (all the project's own; nothing to attribute): four
+    tracks synthesised by `synth.rs` (Karplus–Strong lyre with an `.lrc`,
+    filtered-noise waves, FM bells, a drum machine) and encoded once by
+    `cargo xtask wasm --demo` with ffmpeg into `sim/web/demo/` (MP3 96k
+    361 KB, Vorbis q1 295 KB, Opus 48k 248 KB, FLAC 22.05 kHz mono 312 KB,
+    Lyra night-sky JPEG 4 KB); WAV test tones (log sweep, left/right),
+    BMP/QOI pictures and two texts made at run time.
+  * **Recorder/replayer**: key edges → `ui_keys` corpus bytes (taps, holds
+    200 + 20·b ms, press/release when keys overlap, waits 37·b + 1 ms; at
+    most 48 operations replay); replay decodes with the fuzz target's own
+    `command` (included from `sim/fuzz/src/lib.rs`, now `pub`) on a fresh
+    session with default settings, as the target starts.
+* **Simulator changes (host only, firmware untouched)**: `orpheus-host`
+  (USB) is not a dependency on wasm32 (PNG export and the card's PNG are
+  cfg-gated); `Sim::with_sys`, `HostServices::with_media`,
+  `Media::with_card` (any image, `orpheus_fs::host::Base` = borrowed or
+  `Arc` base for `OverlayDisk`), `Media::now_audio/read_file/volume/
+  resume_point/set_resume_at`; tags are read with the file's own format
+  (FileFormat::tag_format) instead of always MPEG.
+* **Page** (`site/pages/try.md`, `site/try/{app.js,worklet.js,try.css}`;
+  `xtask site` copies them and keeps `try/pkg`): an SVG drawing of a player
+  (not the YM03's exact shape) with pointer/touch keys, hold = long press,
+  keyboard map shown and in each key's tooltip; 128 × 128 canvas scaled
+  ×1–3 with `image-rendering: pixelated`; the module loads only on this
+  page; sound starts at the first key press (browser rule); drop or choose
+  files → IndexedDB → the card is rebuilt; settings, volume, resume point
+  and library in IndexedDB, saved every 3 s and on hide; Factory reset
+  deletes the database; developer panel: frame time, wasm memory, card,
+  screen, clock, track/codec/arena, output buffer and dropouts, screenshot
+  (native 128 × 128 PNG), key recorder (downloads `ui_keys-*.bin`) and
+  replayer. Home, nav and README: "coming" removed.
+* **`cargo xtask wasm`** (`xtask/src/wasm.rs`): `cargo build -p
+  orpheus-web --lib --target wasm32-unknown-unknown --profile web` (new
+  profile: release, opt-level 3, no debug info), `wasm-bindgen --target
+  web` **0.2.130** (= the crate in `Cargo.lock`, which nusb's WebUSB back
+  end already pins), `wasm-opt -O3` **0.116.1** (Binaryen 116) with the
+  target's default features; tools taken from `PATH` only at those
+  versions, else `cargo install --locked --root target/orpheus/tools`.
+  Gzip sizes against `budgets.toml [web] total_gzip_bytes`; `--record`
+  writes `metrics/static.csv` rows (build id `web`; `xtask metrics` keeps
+  them); `--test` runs the self-test. `wasm32-unknown-unknown` added to
+  `rust-toolchain.toml`.
+* **Test** (`tests/web/try.mjs`, Node ≥ 22 or 20 with
+  `--experimental-websocket`, no packages): serves the site and
+  `sim/golden/`, drives headless Chromium over the DevTools protocol or
+  Firefox over WebDriver BiDi. `try.html?selftest` (no stored state):
+  Home and Settings (reached by real key events) equal
+  `app_home_dark_latin` / `app_settings_dark_latin` pixel for pixel; Files
+  › Music › Orpheus demo › Lyre Study by keys; 4 s of playback with no
+  dropout; first screen < 2 s; frame budget. Chromium also runs the normal
+  page: theme and volume and a chosen file survive a reload, the library
+  is restored, developer panel, recorder (3 operations), replay of the
+  first committed `ui_keys` corpus input (13 operations, none refused),
+  Factory reset. The same screens and the key path are host tests
+  (`cargo test -p orpheus-web`, 22 tests).
+* **CI**: `pages.yml` builds the module after the site and runs `xtask
+  wasm --test` (headless Chrome with `--no-sandbox --disable-audio-output`
+  when `CI` is set: the fake sink still runs the audio graph; checked
+  locally); `gate.yml` runs `xtask wasm`; both cache
+  `target/orpheus/tools` (actions/cache v6.1.0, pinned by SHA). Workflows
+  not run here; YAML parsed, actionlint not available.
+* **Looked at**: `target/orpheus/try-selftest-{chromium,firefox}.png`
+  (Now Playing of Lyre Study with art, 0:04 of 0:30), `try-dev-chromium.png`
+  (light theme restored after reload, your file listed, developer panel),
+  the page at 390 px (dark) and 1280 px; `sim/web/demo/lyra.jpg`.
+* **Not done / open**: Safari (user check 23); a phone; the second
+  self-test golden set in light theme; real level meters (the Levels view
+  still shows the simulator's synthetic meters; the firmware has no meter
+  feed either); album art from tags (the simulator's generated art);
+  ReplayGain tags are not read into the chain; gapless joins (the page
+  plays the tail of one track and starts the next).
+* Gate: fmt, clippy (workspace, all targets; and `orpheus-web` for
+  wasm32), `cargo test --workspace`, `xtask site --check`, `xtask wasm
+  --test` (Chromium) and the Firefox self-test passed; YAML parsed. Not
+  run: device steps (host-only package), CI.
 
 ### 2026-11-24 — FM-1 fix after the first device run: radio RAM overlapped the step counter's, id read fallback, `fm on` stops music (worker, no hardware)
 
@@ -2231,6 +2333,8 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 | 2026-11-24 | Step detector on synthetic traces (25 Hz, 8 seeds × walk/slow/brisk/pocket 120 s, run 90 s) | all within ± 5 %; 0 steps: table 10 min, handling, bus 10 min, shaking 3.8–8 Hz | `cargo test -p orpheus-steps` |
 | 2026-11-24 | ASan host tests | 63 binaries, 586 tests, 0 memory errors; LSan: 4 binaries (1 fixed) | `xtask test asan --lean` |
 | 2026-11-24 | Miri | 14 crates, 232 tests, no UB; full run ≈ 35 min | `xtask test miri` |
+| 2026-11-24 | Browser build (WEB-2) | module 2,677,523 B (1,816,547 gzip; 1,219,820 B of it the committed demo files), glue 19,664 B, page scripts and styles ≈ 26 KB; 1,830 KB gzip in all (budget 4,000 KB; also under it uncompressed) | `xtask wasm` |
+| 2026-11-24 | Browser build in headless Chromium 155 / Firefox 157 (localhost) | first screen 155–220 ms; per-frame simulation + draw 0.08–0.11 ms mean, ≤ 1 ms worst; 230 frames in 4 s; 4.0 s of Lyre Study played with 0 dropouts (also with Chromium's fake sink); wasm memory 80 MiB with the 36 MiB card | `xtask wasm --test`, `tests/web/try.mjs --browser firefox` |
 
 ## 5. Open questions for the user
 

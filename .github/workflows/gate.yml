@@ -19,7 +19,7 @@ env:
 
 jobs:
   host:
-    name: Host (fmt, clippy, tests, goldens, brand, site)
+    name: Host (fmt, clippy, tests, goldens, brand, site, browser build)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -40,6 +40,13 @@ jobs:
         run: cargo xtask brand --check
       - name: Site builds, links and screenshots check
         run: cargo xtask site --check
+      - name: Browser build tools (wasm-bindgen, wasm-opt; pinned in xtask/src/wasm.rs)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/orpheus/tools
+          key: webtools-${{ runner.os }}-${{ hashFiles('xtask/src/wasm.rs', 'Cargo.lock') }}
+      - name: Browser build and its size budget (WEB-2)
+        run: cargo xtask wasm
 
   firmware:
     # Optional: the device workspace builds with the pinned toolchain alone,

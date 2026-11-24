@@ -46,10 +46,19 @@ pub struct SimLib {
 }
 
 impl SimLib {
-    /// Build the library (as the firmware does: steps in sessions that
-    /// are suspended in between) and open it.
+    /// Open the library on the card if it has a complete one (a browser
+    /// session restores the previous visit's), else build it (as the
+    /// firmware does: steps in sessions that are suspended in between).
     #[must_use]
     pub fn build(vol: &mut Vol) -> Option<SimLib> {
+        let lib = match with_io(vol, Mode::Read, |io| Library::open(&mut io.store()).ok().flatten()) {
+            Some(l) => l,
+            None => Self::build_new(vol)?,
+        };
+        Some(Self::with(vol, lib))
+    }
+
+    fn build_new(vol: &mut Vol) -> Option<Library> {
         let cfg = Config { serial: vol.serial(), ..Config::default() };
         let mut scratch = vec![0u8; 16 * 1024];
         let mut st: Option<Suspended> = None;
@@ -74,6 +83,10 @@ impl SimLib {
                 Err(s) => st = Some(s),
             }
         };
+        Some(lib)
+    }
+
+    fn with(vol: &mut Vol, lib: Library) -> SimLib {
         let mut now = HashMap::new();
         with_io(vol, Mode::Read, |io| {
             for id in 0..lib.tracks() {
@@ -83,13 +96,13 @@ impl SimLib {
                 }
             }
         });
-        Some(SimLib {
+        SimLib {
             lib,
             listing: LibListing { list: LibList::Artists, count: 0, complete: false },
             rows: Vec::new(),
             letters: Vec::new(),
             now,
-        })
+        }
     }
 
     /// Make `list` current (all its rows, Recently added capped).

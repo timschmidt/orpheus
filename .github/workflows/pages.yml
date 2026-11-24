@@ -1,5 +1,6 @@
 # The website (09 §3, WEB-1): built by `cargo xtask site` into
-# target/orpheus/site/. Pull requests get the built site as an artefact
+# target/orpheus/site/, with Orpheus in the browser (WEB-2, `cargo xtask
+# wasm`) in try/pkg/ and its self-test in headless Chrome. Pull requests get the built site as an artefact
 # (download it to preview). Pushes to main deploy to GitHub Pages only when
 # the repository variable PAGES_ENABLED is "true" (Settings › Secrets and
 # variables › Actions › Variables) and Pages is set to "GitHub Actions";
@@ -25,10 +26,17 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Toolchain from rust-toolchain.toml
+      - name: Toolchain from rust-toolchain.toml (with the wasm32 target)
         run: rustup toolchain install
       - name: Build and check
         run: cargo xtask site --check
+      - name: Browser build tools (wasm-bindgen, wasm-opt; pinned in xtask/src/wasm.rs)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/orpheus/tools
+          key: webtools-${{ runner.os }}-${{ hashFiles('xtask/src/wasm.rs', 'Cargo.lock') }}
+      - name: Orpheus in the browser, size budget, self-test (WEB-2)
+        run: cargo xtask wasm --test
       - name: Preview artefact (pull requests)
         if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

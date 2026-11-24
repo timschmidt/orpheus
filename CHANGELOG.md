@@ -51,6 +51,11 @@ replaced).
   assets (`cargo xtask brand`); user and developer documentation; website
   generator (`cargo xtask site`); contribution guide, code of conduct,
   security policy, issue templates and CI workflows.
+- **Orpheus in the browser**: the Try it page runs the real screens, file
+  system, library, decoders and sound settings compiled to WebAssembly
+  (`cargo xtask wasm`), with a synthesised demo card, your own files kept
+  in the browser, saved settings and resume point, and a developer panel
+  with a key recorder in the fuzz-corpus format.
 
 ### Known issues
 

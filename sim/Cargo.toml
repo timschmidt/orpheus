@@ -20,12 +20,16 @@ orpheus-fs = { path = "../crates/orpheus-fs", features = ["std"] }
 orpheus-meta = { path = "../crates/orpheus-meta" }
 orpheus-audio = { path = "../crates/orpheus-audio" }
 orpheus-img = { path = "../crates/orpheus-img" }
-orpheus-host = { path = "../crates/orpheus-host" }
 orpheus-index = { path = "../crates/orpheus-index" }
 orpheus-library = { path = "../crates/orpheus-library" }
 orpheus-steps = { path = "../crates/orpheus-steps" }
 anyhow = "1"
 minifb = { version = "0.29", optional = true, default-features = false, features = ["x11"] }
+
+# PNG export and the card's PNG picture. Not in the browser build (WEB-2,
+# `sim/web`): orpheus-host also carries the USB transport.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+orpheus-host = { path = "../crates/orpheus-host" }
 
 [lints]
 workspace = true

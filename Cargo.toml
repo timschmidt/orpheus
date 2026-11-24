@@ -4,7 +4,7 @@
 # thumbv7em-none-eabihf. Shared no_std crates under crates/ are used by both.
 [workspace]
 resolver = "3"
-members = ["crates/*", "crates/codecs/*", "sim", "xtask"]
+members = ["crates/*", "crates/codecs/*", "sim", "sim/web", "xtask"]
 exclude = ["fw"]
 
 [workspace.package]
@@ -36,6 +36,12 @@ codegen-units = 1
 panic = "abort"
 debug = 2
 overflow-checks = false
+
+# The browser build (`cargo xtask wasm`, WEB-2): no debug info in the module.
+[profile.web]
+inherits = "release"
+opt-level = 3
+debug = 0
 
 [profile.dev]
 panic = "abort"

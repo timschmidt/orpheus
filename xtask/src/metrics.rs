@@ -99,8 +99,10 @@ pub fn cmd(args: &mut Args) -> Result<String> {
             })
             .collect();
         let n = rows.len();
+        // The browser build's rows (build id `web`, `xtask wasm --record`) stay.
         upsert(&dir.join("static.csv"), STATIC_HEADER, &rows, |row| {
-            row.split(',').next() == Some(commit.as_str())
+            let f: Vec<&str> = row.split(',').collect();
+            f.first() == Some(&commit.as_str()) && f.get(2) != Some(&"web")
         })?;
         done.push(format!("static: {n} rows ({commit}, {})", elf.display()));
     } else {
@@ -116,7 +118,7 @@ pub fn cmd(args: &mut Args) -> Result<String> {
 }
 
 /// Replace the rows `stale` matches, append `rows`.
-fn upsert(path: &Path, header: &str, rows: &[String], stale: impl Fn(&str) -> bool) -> Result<()> {
+pub fn upsert(path: &Path, header: &str, rows: &[String], stale: impl Fn(&str) -> bool) -> Result<()> {
     let old = std::fs::read_to_string(path).unwrap_or_default();
     let mut out = String::from(header);
     out.push('\n');

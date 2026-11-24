@@ -1,0 +1,31 @@
+[package]
+name = "orpheus-web"
+description = "Orpheus in the browser (WEB-2, 09 §4): the simulator's apps and services, the real codecs and DSP chain and a FAT32 card, for wasm32 through wasm-bindgen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+orpheus-sim = { path = ".." }
+orpheus-apps = { path = "../../crates/orpheus-apps" }
+orpheus-ui = { path = "../../crates/orpheus-ui" }
+orpheus-audio = { path = "../../crates/orpheus-audio" }
+orpheus-codecs = { path = "../../crates/codecs" }
+orpheus-dsp = { path = "../../crates/orpheus-dsp" }
+orpheus-fs = { path = "../../crates/orpheus-fs", features = ["std"] }
+orpheus-library = { path = "../../crates/orpheus-library" }
+# The version the lockfile has (nusb's WebUSB back end uses it too); the
+# `wasm-bindgen` CLI must be the same version (`xtask/src/wasm.rs`).
+wasm-bindgen = "=0.2.130"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+# Golden images of sim/golden (the browser self-test compares two of them).
+png = "0.18"

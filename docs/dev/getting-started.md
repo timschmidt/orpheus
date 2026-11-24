@@ -50,6 +50,7 @@ prints a one-line verdict last and fails with a non-zero exit code.
 | `build`, `size --check`, `check-resident` | Firmware image, RAM/size budgets, the resident-code proof |
 | `gate --no-dev` | Everything a change must pass, without the player |
 | `brand`, `site` | Brand assets, the website and its screenshots |
+| `wasm [--test]` | The simulator in the browser (the website's Try it page), its size budget and self-test |
 | `dev …` | Talk to the player (below) |
 
 ## 4. The simulator
@@ -65,6 +66,13 @@ In the window: arrows are Up/Down/Prev/Next, Enter is OK, Backspace is
 Back, M is Menu, + and − are volume, P is Power, S takes a screenshot.
 Scripts use the same key names plus `hold:KEY`, `wait:MS`,
 `expect-screen:NAME` and `shot:NAME`.
+
+The same apps also run in the browser (`sim/web`, the site's Try it
+page): `cargo xtask site` then `cargo xtask wasm` builds the page into
+`target/orpheus/site/`; serve that directory with any static web server.
+`xtask wasm` pins `wasm-bindgen` and `wasm-opt` and installs them into
+`target/orpheus/tools/` if they are missing; `--test` runs the page's
+self-test in headless Chromium (Node and Chromium needed).
 
 ## 5. Golden images
 

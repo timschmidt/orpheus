@@ -270,10 +270,30 @@ pub fn exercise<D: BlockDevice>(
     })
 }
 
+/// The read-only base of an [`OverlayDisk`]: borrowed, or shared and owned
+/// (a simulator that builds its card at run time, e.g. the browser build).
+#[derive(Clone, Debug)]
+pub enum Base<'a> {
+    /// A borrowed image.
+    Borrowed(&'a [u8]),
+    /// An image owned by everyone holding a clone.
+    Shared(std::sync::Arc<[u8]>),
+}
+
+impl core::ops::Deref for Base<'_> {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            Base::Borrowed(b) => b,
+            Base::Shared(b) => b,
+        }
+    }
+}
+
 /// A read-only base image plus an in-memory overlay of written sectors.
 /// Cheap to create per fuzz run even for large bases.
 pub struct OverlayDisk<'a> {
-    base: &'a [u8],
+    base: Base<'a>,
     sectors: u32,
     written: std::collections::HashMap<u32, Sector>,
 }
@@ -282,9 +302,15 @@ impl<'a> OverlayDisk<'a> {
     /// Overlay over `base` (its length is rounded down to whole sectors).
     #[must_use]
     pub fn new(base: &'a [u8]) -> Self {
+        Self::over(Base::Borrowed(base))
+    }
+
+    /// Overlay over a borrowed or shared base.
+    #[must_use]
+    pub fn over(base: Base<'a>) -> Self {
         OverlayDisk {
-            base,
             sectors: u32::try_from(base.len() / SECTOR_SIZE).unwrap_or(u32::MAX),
+            base,
             written: std::collections::HashMap::new(),
         }
     }

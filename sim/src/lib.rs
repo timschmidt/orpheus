@@ -55,6 +55,7 @@ pub struct Shot {
     pub fb: Vec<u16>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Shot {
     /// The frame as PNG bytes (RGB, 8 bit; deterministic for a given frame).
     pub fn png(&self) -> Result<Vec<u8>> {
@@ -63,6 +64,7 @@ impl Shot {
 }
 
 /// RGB565 frame to PNG bytes through the host image helpers.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn png_bytes(fb: &[u16]) -> Result<Vec<u8>> {
     let bytes: Vec<u8> = fb.iter().flat_map(|p| p.to_le_bytes()).collect();
     orpheus_host::image::rgb565_png_bytes(&bytes, 128, 128)
@@ -150,7 +152,13 @@ impl<H: Host> Sim<H> {
 
     #[must_use]
     pub fn with_font(font: Box<dyn GlyphSource>) -> Self {
-        let mut sys = H::default();
+        Self::with_sys(H::default(), font)
+    }
+
+    /// A simulator over services built by the caller (the browser build
+    /// brings its own card).
+    #[must_use]
+    pub fn with_sys(mut sys: H, font: Box<dyn GlyphSource>) -> Self {
         let (root, arg) = H::root();
         let shell = Shell::with_root(&mut sys, root, arg, Instant(0));
         let mut s = Sim {

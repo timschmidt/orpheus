@@ -43,3 +43,16 @@ slot_bytes_dual = 491520
 
 [stage2]
 image_bytes = 1024
+
+[web]
+# The browser build (WEB-2, 09 §4; `cargo xtask wasm` enforces the first).
+# Module with its embedded data (demo card), wasm-bindgen glue and the
+# page's own scripts and styles, gzip as GitHub Pages serves them.
+total_gzip_bytes = 4000000      # 4 MB
+# Checked by the page's self-test (`xtask wasm --test`, tests/web/try.mjs):
+# first frame after navigation, mean and worst simulation + draw time per
+# animation frame, audio underruns while playing.
+first_screen_ms = 2000
+frame_mean_ms = 4
+frame_worst_ms = 16
+audio_underruns = 0

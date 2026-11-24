@@ -98,6 +98,14 @@ pub struct HostServices {
 
 impl Default for HostServices {
     fn default() -> Self {
+        Self::with_media(Media::new())
+    }
+}
+
+impl HostServices {
+    /// The services over another card (the browser build's).
+    #[must_use]
+    pub fn with_media(media: Media) -> Self {
         HostServices {
             settings: SettingsCache::new(),
             battery: BatteryInfo { percent: 72, millivolts: 3912, charge: ChargeState::NotPresent },
@@ -119,7 +127,7 @@ impl Default for HostServices {
             lock_request: false,
             root: (screens::HOME, Arg(0)),
             log: Vec::new(),
-            media: Media::new(),
+            media,
             events: Vec::new(),
             picture: Cell::new(PicState::Nothing),
             developer: false,

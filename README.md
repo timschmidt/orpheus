@@ -24,9 +24,11 @@ and the [detailed log](docs/STATUS.md).
 
 ## Try it
 
-**In your browser: coming.** A build of the real UI and music code for the
-web is in progress. Until then the desktop simulator runs the same
-screens (see Build below):
+**In your browser:** [timschmidt.github.io/orpheus/try.html](https://timschmidt.github.io/orpheus/try.html)
+runs the real screens, file system, library, decoders and sound settings
+compiled to WebAssembly, with a demo card and room for your own files
+(they stay in your browser). The desktop simulator runs the same screens
+(see Build below):
 
 ```sh
 cargo run -p orpheus-sim --features window -- --window

@@ -49,3 +49,14 @@ deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"firmware::
 deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"firmware::bt::driver",988
 deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"<firmware::media::Server>::fill_rows",960
 deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"firmware::audio::save_queue::{closure#0}",952
+c91d659fbdf6-dirty,2026-11-24,web,web_file_gzip_bytes,"orpheus_web.js",4226
+c91d659fbdf6-dirty,2026-11-24,web,web_file_bytes,"orpheus_web.js",19664
+c91d659fbdf6-dirty,2026-11-24,web,web_file_gzip_bytes,"orpheus_web_bg.wasm",1816416
+c91d659fbdf6-dirty,2026-11-24,web,web_file_bytes,"orpheus_web_bg.wasm",2677742
+c91d659fbdf6-dirty,2026-11-24,web,web_file_gzip_bytes,"app.js",6883
+c91d659fbdf6-dirty,2026-11-24,web,web_file_bytes,"app.js",19645
+c91d659fbdf6-dirty,2026-11-24,web,web_file_gzip_bytes,"try.css",1312
+c91d659fbdf6-dirty,2026-11-24,web,web_file_bytes,"try.css",3680
+c91d659fbdf6-dirty,2026-11-24,web,web_file_gzip_bytes,"worklet.js",952
+c91d659fbdf6-dirty,2026-11-24,web,web_file_bytes,"worklet.js",2421
+c91d659fbdf6-dirty,2026-11-24,web,web_total_gzip_bytes,"",1829789

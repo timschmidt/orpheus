@@ -1153,6 +1153,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "orpheus-web"
+version = "0.1.0"
+dependencies = [
+ "orpheus-apps",
+ "orpheus-audio",
+ "orpheus-codecs",
+ "orpheus-dsp",
+ "orpheus-fs",
+ "orpheus-library",
+ "orpheus-sim",
+ "orpheus-ui",
+ "png",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "pbkdf2"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1790,6 +1806,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "flate2",
  "object",
  "orpheus-host",
  "orpheus-pager",

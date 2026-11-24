@@ -1,6 +1,7 @@
 [toolchain]
 # Pinned stable. Update deliberately (one commit, whole tree rebuilt and gated).
 channel = "1.98.1"
-targets = ["thumbv7em-none-eabihf"]
+# wasm32: the browser build of the simulator (WEB-2, `cargo xtask wasm`).
+targets = ["thumbv7em-none-eabihf", "wasm32-unknown-unknown"]
 components = ["rustfmt", "clippy", "llvm-tools"]
 profile = "minimal"

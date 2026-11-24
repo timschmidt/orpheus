@@ -491,10 +491,21 @@ fn copy_dir(out: &Path, from: &str, to: &str) -> Result<usize> {
 
 fn build(out: &Path) -> Result<Built> {
     let r = root();
+    // The browser build (`xtask wasm`, WEB-2) survives a site rebuild.
+    let pkg = out.join("try/pkg");
+    let kept = out.with_file_name("site-try-pkg");
+    if pkg.is_dir() {
+        let _ = std::fs::remove_dir_all(&kept);
+        std::fs::rename(&pkg, &kept)?;
+    }
     if out.exists() {
         std::fs::remove_dir_all(out)?;
     }
     std::fs::create_dir_all(out)?;
+    if kept.is_dir() {
+        std::fs::create_dir_all(out.join("try"))?;
+        std::fs::rename(&kept, &pkg)?;
+    }
     let template = std::fs::read_to_string(r.join("site/template.html")).context("site/template.html")?;
     let wordmark = std::fs::read_to_string(r.join(crate::brand::GENERATED).join("wordmark.svg"))
         .context("wordmark.svg (run `cargo xtask brand`)")?
@@ -573,6 +584,8 @@ fn build(out: &Path) -> Result<Built> {
     files += copy_dir(out, crate::brand::GENERATED, "brand")?;
     write(out, "brand/orpheus-lyre.svg", &std::fs::read(r.join("docs/logo/orpheus-lyre.svg"))?)?;
     files += copy_dir(out, "docs/dev/img", "dev/img")?;
+    // The Try-it page's script, worklet and styles (the module: `xtask wasm`).
+    files += copy_dir(out, "site/try", "try")?;
     for (name, data) in shots_generate()? {
         write(out, &format!("shots/{name}.png"), &data)?;
         files += 1;

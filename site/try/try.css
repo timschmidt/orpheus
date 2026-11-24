@@ -1,0 +1,35 @@
+/* The Try-it page (WEB-2): the player drawing, its screen and the panels.
+   The screen is a 128 x 128 canvas scaled by a whole number (app.js sets
+   --k) and drawn without smoothing. */
+
+.try { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 1.5rem 2rem; margin: 1.5rem 0 2rem; }
+.try-player { --k: 2; position: relative; flex: 0 0 auto; width: calc(176px * var(--k)); height: calc(340px * var(--k)); touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; border-radius: 12px; }
+.try-player:focus-visible { outline-offset: 4px; }
+.try-body { display: block; width: 100%; height: 100%; overflow: visible; }
+.try-screen { position: absolute; left: calc(24px * var(--k)); top: calc(30px * var(--k)); width: calc(128px * var(--k)); height: calc(128px * var(--k)); image-rendering: pixelated; image-rendering: crisp-edges; background: #000; }
+.try-key { cursor: pointer; }
+.try-cap { fill: #2b2f38; stroke: #5d6572; stroke-width: 0.8; transition: fill 60ms; }
+.try-key:hover .try-cap, .try-key.try-cap:hover { fill: #363b46; }
+.try-key.down .try-cap, .try-key.try-cap.down { fill: var(--o-primary); }
+.try-key text { fill: #c9ced8; font: 600 7px system-ui, sans-serif; text-anchor: middle; pointer-events: none; }
+.try-glyph { fill: #c9ced8; pointer-events: none; }
+.try-brand { fill: #8a92a0; font: 600 8px system-ui, sans-serif; letter-spacing: 2px; text-anchor: middle; }
+.try-overlay { position: absolute; left: calc(24px * var(--k)); top: calc(30px * var(--k)); width: calc(128px * var(--k)); height: calc(128px * var(--k)); display: flex; align-items: center; justify-content: center; padding: 1rem; text-align: center; color: #e8eaee; background: rgb(0 0 0 / 0.75); font-size: 0.9rem; }
+.try[data-state="running"] .try-overlay { display: none; }
+.try-player.dragging::after { content: "Drop to add to Your files"; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; border: 3px dashed var(--o-primary); border-radius: 20px; background: color-mix(in srgb, var(--o-bg) 75%, transparent); color: var(--o-text); font-weight: 600; text-align: center; padding: 2rem; }
+.try-side { flex: 1 1 18rem; min-width: 0; }
+.try-side kbd { font: 0.85em ui-monospace, Menlo, Consolas, monospace; padding: 0.05em 0.35em; border: 1px solid var(--o-text-dim); border-bottom-width: 2px; border-radius: 4px; background: var(--o-surface); }
+.try-drop { padding: 0.75rem 1rem; border: 2px dashed color-mix(in srgb, var(--o-text-dim) 60%, transparent); border-radius: 10px; margin-bottom: 1rem; }
+.try-drop p { margin: 0; }
+.try-drop ul { margin: 0.5rem 0 0; padding-left: 1.2rem; }
+.try-drop ul:empty { display: none; }
+.try-drop li button { margin-left: 0.5rem; font-size: 0.8rem; padding: 0.05rem 0.4rem; }
+.try-pick { color: var(--o-link); text-decoration: underline; cursor: pointer; }
+.try-buttons button, .try-dev button { padding: 0.35rem 0.8rem; border: 1px solid var(--o-text-dim); border-radius: 6px; background: var(--o-surface); color: var(--o-text); font: inherit; cursor: pointer; }
+.try-buttons button:hover, .try-dev button:hover { border-color: var(--o-primary); }
+#try-rec.recording { background: var(--o-warning); color: #fff; border-color: var(--o-warning); }
+.try-note, .try-sound { color: var(--o-text-dim); font-size: 0.9rem; }
+.try-dev { padding: 0.75rem 1rem; border-radius: 10px; background: var(--o-surface); }
+.try-stats { display: grid; grid-template-columns: max-content 1fr; gap: 0.15rem 1rem; margin: 0 0 0.75rem; font: 0.85rem/1.4 ui-monospace, Menlo, Consolas, monospace; }
+.try-stats dt { color: var(--o-text-dim); }
+.try-stats dd { margin: 0; overflow-wrap: anywhere; }

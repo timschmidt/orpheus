@@ -14,5 +14,11 @@ their notices travel with the code.
 | `crates/orpheus-ui/fonts/` | DejaVu and Fira glyph data | DejaVu (Bitstream Vera) licence; SIL OFL 1.1 | `LICENSE-DejaVu.txt`, `LICENSE-Fira.txt` |
 | `sim/assets/unifont-subset.hex` | GNU Unifont glyph subset | SIL OFL 1.1 | `sim/assets/OFL-unifont.txt` |
 
+The browser build (`sim/web`, the website's Try it page) contains the
+codecs, fonts and glyphs above in compiled form; the page links this file.
+Its demo card (`sim/web/demo/`, `sim/web/src/demo.rs`) is the project's own
+work: music synthesised by `sim/web/src/synth.rs` (encoded with `ffmpeg`),
+texts written for it, pictures drawn by code; no third-party content.
+
 The Rockbox port in the companion repository is GPL and is used only as a
 hardware reference; no Rockbox code is copied (decision D-1).

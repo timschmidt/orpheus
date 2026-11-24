@@ -16,7 +16,7 @@ use orpheus_apps::services::{
     QueueEntry, SortBy, TrackInfo, data,
 };
 use orpheus_audio::{Format, SliceSource};
-use orpheus_fs::host::{OverlayDisk, block_on};
+use orpheus_fs::host::{Base, OverlayDisk, block_on};
 use orpheus_fs::{CacheSlot, DirEntry, MountOptions, OpenMode, Volume};
 use orpheus_ui::event::{DataReady, Event, Source};
 use orpheus_ui::geom::Rect;
@@ -26,9 +26,9 @@ use crate::library::SimLib;
 use crate::{card, pictures};
 
 /// A file of the card image as it was built (pictures for the viewer).
-fn read_card_file(path: &str) -> Option<Vec<u8>> {
+fn read_card_file(base: &Base<'static>, path: &str) -> Option<Vec<u8>> {
     let cache: &mut [CacheSlot] = &mut [CacheSlot::EMPTY; 4];
-    let disk = OverlayDisk::new(card::image());
+    let disk = OverlayDisk::over(base.clone());
     let opts = MountOptions { read_only: true, ..MountOptions::default() };
     let mut vol = block_on(Volume::mount(disk, cache, opts)).ok()?;
     let mut f = block_on(vol.open(path, OpenMode::Read)).ok()?;
@@ -124,9 +124,31 @@ pub fn make_art(seed: u32, size: usize) -> Vec<u16> {
 /// input does not leak a cache each (VER-5 LeakSanitizer finding).
 static CACHES: Mutex<Vec<&'static mut [CacheSlot]>> = Mutex::new(Vec::new());
 
+/// Real audio files instead of tagged stand-ins (the browser build, WEB-2):
+/// a track's length in milliseconds from its bytes and path, `None` if it
+/// does not decode.
+pub type DurationProbe = fn(&[u8], &str) -> Option<u32>;
+
+/// What the audio output follows (the browser build decodes it for real).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NowAudio {
+    pub path: String,
+    /// Place in the queue.
+    pub index: usize,
+    pub position_ms: u32,
+    pub duration_ms: u32,
+    pub playing: bool,
+}
+
 pub struct Media {
     /// `None` only while dropping.
     vol: Option<Volume<'static, OverlayDisk<'static>>>,
+    /// The image the volume overlays (pictures are read from a second mount).
+    base: Base<'static>,
+    /// Set: durations and sizes are the files' own (see [`DurationProbe`]).
+    pub duration_probe: Option<DurationProbe>,
+    /// Where `Resume` starts (a resume point restored from storage).
+    resume_at: Option<u32>,
     dir_paths: HashMap<u32, String>,
     file_paths: HashMap<FileRef, String>,
     listing: Listing,
@@ -183,18 +205,27 @@ impl Default for Media {
 impl Media {
     #[must_use]
     pub fn new() -> Media {
+        Self::with_card(Base::Borrowed(card::image())).expect("mount the card image")
+    }
+
+    /// Mount another card image (copy-on-write); `None` if it does not mount.
+    #[must_use]
+    pub fn with_card(base: Base<'static>) -> Option<Media> {
         let cache: &'static mut [CacheSlot] = CACHES
             .lock()
             .ok()
             .and_then(|mut p| p.pop())
             .unwrap_or_else(|| Box::leak(vec![CacheSlot::EMPTY; 16].into_boxed_slice()));
-        let disk = OverlayDisk::new(card::image());
-        let vol =
-            block_on(Volume::mount(disk, cache, MountOptions::default())).expect("mount the card image");
+        let disk = OverlayDisk::over(base.clone());
+        // A card that does not mount keeps its cache (16 slots, once).
+        let vol = block_on(Volume::mount(disk, cache, MountOptions::default())).ok()?;
         let mut dir_paths = HashMap::new();
         dir_paths.insert(0, String::new());
-        Media {
+        Some(Media {
             vol: Some(vol),
+            base,
+            duration_probe: None,
+            resume_at: None,
             dir_paths,
             file_paths: HashMap::new(),
             listing: Listing::default(),
@@ -226,7 +257,41 @@ impl Media {
             log: Vec::new(),
             queue_pending: None,
             events: Vec::new(),
+        })
+    }
+
+    /// The mounted volume (the browser build reads its size and free space).
+    pub fn volume(&mut self) -> &mut Volume<'static, OverlayDisk<'static>> {
+        self.vol.as_mut().expect("mounted")
+    }
+
+    /// What is loaded for the audio output: the current queue entry.
+    #[must_use]
+    pub fn now_audio(&self) -> Option<NowAudio> {
+        let q = self.current()?;
+        Some(NowAudio {
+            path: q.path.clone(),
+            index: self.pos,
+            position_ms: self.position,
+            duration_ms: q.duration,
+            playing: self.playing,
+        })
+    }
+
+    /// The resume point to keep: the current track and position, else a
+    /// restored one not yet used.
+    #[must_use]
+    pub fn resume_point(&self) -> Option<(String, u32)> {
+        if let Some(q) = self.current() {
+            return Some((q.path.clone(), self.position));
         }
+        self.resume.as_ref().map(|q| (q.path.clone(), self.resume_at.unwrap_or(0)))
+    }
+
+    /// A resume point restored from storage: `Resume` starts at `ms`.
+    pub fn set_resume_at(&mut self, path: &str, ms: u32) {
+        self.set_resume(path);
+        self.resume_at = Some(ms);
     }
 
     pub fn take_events(&mut self) -> Vec<Event> {
@@ -397,7 +462,8 @@ impl Media {
         ok
     }
 
-    fn read_file(&mut self, path: &str) -> Vec<u8> {
+    /// A whole file of the card (empty if it cannot be read).
+    pub fn read_file(&mut self, path: &str) -> Vec<u8> {
         let Ok(mut f) = block_on(self.vol.as_mut().expect("mounted").open(path, OpenMode::Read)) else {
             return Vec::new();
         };
@@ -463,8 +529,13 @@ impl Media {
             lyrics: Vec::new(),
             art: None,
         };
+        if let Some(probe) = self.duration_probe {
+            item.size = data.len() as u64;
+            item.duration = probe(&data, path).unwrap_or(0);
+        }
+        let tags = orpheus_library::FileFormat::of(path).tag_format().unwrap_or(Format::Mpeg);
         if let Ok(t) =
-            orpheus_meta::read_all(&mut SliceSource::new(&data), Format::Mpeg, orpheus_meta::Opts::default())
+            orpheus_meta::read_all(&mut SliceSource::new(&data), tags, orpheus_meta::Opts::default())
         {
             if !t.title.is_empty() {
                 item.title = t.title.as_str().to_string();
@@ -686,6 +757,9 @@ impl Media {
                     self.queue = vec![q];
                     self.pos = 0;
                     self.playing = true;
+                    if let Some(at) = self.resume_at.take() {
+                        self.position = at;
+                    }
                 }
             }
         }
@@ -830,7 +904,7 @@ impl Media {
             // loaded (as on the player).
             PicSource::File(_) if self.current().is_some() => PicState::Busy,
             PicSource::File(f) => {
-                let Some(data) = self.file_paths.get(&f).and_then(|p| read_card_file(p)) else {
+                let Some(data) = self.file_paths.get(&f).and_then(|p| read_card_file(&self.base, p)) else {
                     return PicState::Failed(PicError::Io);
                 };
                 match pictures::decode(&data, w, h, req.fill, req.turns) {

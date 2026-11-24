@@ -25,6 +25,7 @@ mod size;
 mod test;
 mod thumb;
 mod util;
+mod wasm;
 
 use std::process::ExitCode;
 
@@ -70,6 +71,12 @@ usage: cargo xtask <command> [options]
                                    internal links, screenshots, page limits
   site shots [--check]             docs/shots/: the golden images the documentation
                                    references, scaled x2 (DOC-2)
+  wasm [--demo] [--record] [--test [--browser chromium|firefox]]
+                                   Orpheus in the browser (WEB-2) into
+                                   target/orpheus/site/try/pkg/ (pinned wasm-bindgen
+                                   and wasm-opt), size budget; --demo regenerates
+                                   sim/web/demo/ (ffmpeg), --record adds the sizes to
+                                   metrics/static.csv, --test runs the page's self-test
 ";
 
 fn main() -> ExitCode {
@@ -92,6 +99,7 @@ fn main() -> ExitCode {
         "drain" => drain::cmd(&mut args),
         "brand" => brand::cmd(&mut args),
         "site" => site::cmd(&mut args),
+        "wasm" => wasm::cmd(&mut args),
         "help" | "-h" | "--help" => {
             print!("{USAGE}");
             return ExitCode::SUCCESS;

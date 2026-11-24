@@ -1,0 +1,519 @@
+//! Sound for the browser: the current track decoded by the firmware's
+//! codecs (`orpheus-codecs`) and run through its DSP chain
+//! (`orpheus-dsp`, set from the Sound settings as the firmware does), as
+//! interleaved stereo `f32` for the page's AudioWorklet.
+//!
+//! The simulator's player decides what plays and where (queue, position,
+//! pause, seek, A–B, next track); the engine follows it: a new track, a
+//! pause, or a position that jumps away from what was decoded restarts the
+//! decoder there (and tells the page to drop what it buffered). The decode
+//! loop is an `async` block polled on demand: it owns the file, the codec
+//! arena and the decoder that borrows them, without `unsafe`.
+
+use std::cell::RefCell;
+use std::future::Future;
+use std::pin::Pin;
+use std::rc::Rc;
+use std::task::{Context, Poll, Waker};
+
+use orpheus_audio::probe::Probe;
+use orpheus_audio::{
+    ByteSource, ContainerInfo, DecodeError, PcmBlock, SeekSource, SeekStep, SliceSource, Step,
+};
+use orpheus_dsp::{Chain, OutWidth};
+use orpheus_sim::media::NowAudio;
+
+/// The Sound settings the chain takes (the firmware's `media::Sound`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Sound {
+    pub eq: [i8; 5],
+    pub bass: i8,
+    pub balance: i8,
+    pub crossfeed: u8,
+    pub channels: u8,
+    pub replaygain: u8,
+}
+
+impl Sound {
+    /// From the settings, as the firmware's UI task publishes them.
+    #[must_use]
+    pub fn from_settings(get: impl Fn(u16) -> i16) -> Sound {
+        let eq = orpheus_apps::settings::eq_gains(get(0x0101), |id| get(id.0));
+        Sound {
+            eq,
+            bass: get(0x0103) as i8,
+            balance: get(0x0102) as i8,
+            crossfeed: get(0x0104) as u8,
+            channels: get(0x0105) as u8,
+            replaygain: get(0x0106) as u8,
+        }
+    }
+
+    /// Set a chain (the firmware's `media::apply_sound`).
+    pub fn apply(&self, chain: &mut Chain) {
+        use orpheus_dsp::eq::{EQ5_FREQS, EQ5_Q100};
+        use orpheus_dsp::{Band, ChannelMode, CrossfeedParams, RgMode, RgSettings};
+        let bands: [Band; 5] =
+            core::array::from_fn(|i| Band::peaking(EQ5_FREQS[i], EQ5_Q100, i16::from(self.eq[i]) * 100));
+        chain.set_eq(&bands);
+        chain.set_bass(i16::from(self.bass) * 100);
+        chain.set_balance(self.balance.saturating_mul(10));
+        chain.set_crossfeed(match self.crossfeed {
+            1 => Some(CrossfeedParams::DEFAULT),
+            2 => Some(CrossfeedParams::CHU_MOY),
+            3 => Some(CrossfeedParams::MEIER),
+            _ => None,
+        });
+        chain.set_channel_mode(match self.channels {
+            1 => ChannelMode::Mono,
+            2 => ChannelMode::Swap,
+            _ => ChannelMode::Stereo,
+        });
+        let mode = match self.replaygain {
+            1 => RgMode::Track,
+            2 | 3 => RgMode::Album,
+            _ => RgMode::Off,
+        };
+        chain.set_replaygain(RgSettings { mode, ..RgSettings::default() });
+    }
+}
+
+/// The player's volume step (0–30) as a linear gain: the firmware's DAC
+/// code `0xBF − (8 + 4 × (30 − v))` at 0.375 dB per code (01-hardware §9),
+/// so −3 dB at 30, 1.5 dB per step, 0 muted.
+#[must_use]
+pub fn volume_gain(v: u8) -> f32 {
+    if v == 0 {
+        return 0.0;
+    }
+    let codes = 8 + 4 * u32::from(30u8.saturating_sub(v.min(30)));
+    10f32.powf(-(codes as f32 * 0.375) / 20.0)
+}
+
+/// What the decode loop and the engine share.
+#[derive(Default)]
+struct Shared {
+    /// Decoded, processed frames (stereo, interleaved) not yet taken.
+    pcm: Vec<f32>,
+    /// Samples wanted in `pcm` before the loop yields.
+    want: usize,
+    /// Output rate (after the chain's decimation).
+    rate: u32,
+    /// Frames handed out since the start position.
+    frames: u64,
+    /// Where decoding started (ms into the track).
+    start_ms: u32,
+    done: bool,
+    error: Option<&'static str>,
+    sound: Sound,
+    sound_gen: u32,
+    /// Codec and stream, for the developer panel.
+    desc: String,
+    arena: usize,
+}
+
+type Job = Pin<Box<dyn Future<Output = ()>>>;
+
+/// The audio output.
+pub struct Engine {
+    sh: Rc<RefCell<Shared>>,
+    job: Option<Job>,
+    /// Path and queue place of the loaded track.
+    cur: Option<(String, usize)>,
+    /// The page should drop what it has buffered.
+    flush: bool,
+    sound: Sound,
+    sound_gen: u32,
+    /// Tracks started and errors seen (developer panel, tests).
+    pub started: u32,
+    pub last_error: Option<&'static str>,
+}
+
+impl Default for Engine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Lead the engine may have over the player's position before a
+/// position change counts as a jump (it decodes ahead to fill the page's
+/// buffer).
+const LEAD_MS: i64 = 4000;
+const SLACK_MS: i64 = 700;
+
+impl Engine {
+    #[must_use]
+    pub fn new() -> Engine {
+        Engine {
+            sh: Rc::new(RefCell::new(Shared::default())),
+            job: None,
+            cur: None,
+            flush: false,
+            sound: Sound::default(),
+            sound_gen: 0,
+            started: 0,
+            last_error: None,
+        }
+    }
+
+    /// New Sound settings (applied at the next block).
+    pub fn set_sound(&mut self, s: Sound) {
+        if s != self.sound {
+            self.sound = s;
+            self.sound_gen += 1;
+            let mut sh = self.sh.borrow_mut();
+            sh.sound = s;
+            sh.sound_gen = self.sound_gen;
+        }
+    }
+
+    /// The position (ms) of the next frame the engine hands out.
+    fn decoded_ms(&self) -> i64 {
+        let sh = self.sh.borrow();
+        let rate = u64::from(sh.rate.max(1));
+        i64::from(sh.start_ms) + i64::try_from(sh.frames * 1000 / rate).unwrap_or(0)
+    }
+
+    /// Follow the player. `read` gives a file's bytes.
+    pub fn sync(&mut self, now: Option<NowAudio>, read: impl FnOnce(&str) -> Vec<u8>) {
+        let Some(now) = now.filter(|n| n.playing) else {
+            if self.job.is_some() {
+                // Paused or stopped: silence now.
+                self.flush = true;
+                self.job = None;
+            }
+            self.cur = None;
+            return;
+        };
+        let key = (now.path.clone(), now.index);
+        let same = self.cur.as_ref() == Some(&key);
+        if same && self.job.is_some() {
+            let d = i64::from(now.position_ms) - self.decoded_ms();
+            let done = self.sh.borrow().done;
+            // Within the lead, or past the end of a finished track.
+            if (-LEAD_MS - SLACK_MS..=SLACK_MS).contains(&d) || (done && d > SLACK_MS) {
+                return;
+            }
+        }
+        // Another track, a resume, or a jump: start decoding there. A
+        // track that finished plays out what the page still has.
+        let finished = self.job.is_none() || self.sh.borrow().done;
+        if !finished || same {
+            self.flush = true;
+        }
+        let data = read(&now.path);
+        self.start(data, now.path.clone(), now.position_ms);
+        self.cur = Some(key);
+    }
+
+    fn start(&mut self, data: Vec<u8>, path: String, start_ms: u32) {
+        let sh = Rc::new(RefCell::new(Shared {
+            start_ms,
+            sound: self.sound,
+            sound_gen: self.sound_gen,
+            ..Shared::default()
+        }));
+        self.sh = Rc::clone(&sh);
+        self.started += 1;
+        self.job = Some(Box::pin(async move {
+            let r = decode(&data, &path, start_ms, &sh).await;
+            let mut s = sh.borrow_mut();
+            s.done = true;
+            if let Err(e) = r {
+                s.error = Some(e);
+            }
+        }));
+        // Open and seek now: the rate is known before the first pull.
+        let _ = self.pull(0);
+    }
+
+    /// Up to `max_frames` frames of stereo PCM at [`Engine::rate`].
+    pub fn pull(&mut self, max_frames: usize) -> Vec<f32> {
+        let Some(job) = self.job.as_mut() else { return Vec::new() };
+        self.sh.borrow_mut().want = max_frames * 2;
+        if !self.sh.borrow().done {
+            let mut cx = Context::from_waker(Waker::noop());
+            // The loop yields once `want` samples are ready, or ends.
+            let _ = job.as_mut().poll(&mut cx);
+        }
+        let mut sh = self.sh.borrow_mut();
+        if let Some(e) = sh.error.take() {
+            self.last_error = Some(e);
+        }
+        let n = sh.pcm.len().min(max_frames * 2) & !1;
+        let out: Vec<f32> = sh.pcm.drain(..n).collect();
+        sh.frames += (n / 2) as u64;
+        out
+    }
+
+    /// The output rate of what [`Engine::pull`] returns (0: nothing loaded).
+    #[must_use]
+    pub fn rate(&self) -> u32 {
+        self.sh.borrow().rate
+    }
+
+    /// Whether the page should drop its buffer (cleared by reading).
+    pub fn take_flush(&mut self) -> bool {
+        std::mem::take(&mut self.flush)
+    }
+
+    /// Codec, rate, arena bytes and position, for the developer panel.
+    #[must_use]
+    pub fn describe(&self) -> (String, usize, i64) {
+        let sh = self.sh.borrow();
+        (sh.desc.clone(), sh.arena, self.decoded_ms())
+    }
+
+    /// Whether a track is being decoded.
+    #[must_use]
+    pub fn active(&self) -> bool {
+        self.job.is_some() && !self.sh.borrow().done
+    }
+}
+
+/// Yield to the engine once.
+#[derive(Default)]
+struct Yield(bool);
+
+impl Future for Yield {
+    type Output = ();
+    fn poll(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<()> {
+        if self.0 {
+            Poll::Ready(())
+        } else {
+            self.0 = true;
+            Poll::Pending
+        }
+    }
+}
+
+/// Probe (skipping leading tags), inspect, open, set up the chain, seek,
+/// then decode block by block into `sh.pcm`, yielding when enough is ready.
+async fn decode(
+    data: &[u8],
+    path: &str,
+    start_ms: u32,
+    sh: &Rc<RefCell<Shared>>,
+) -> Result<(), &'static str> {
+    let ext = path.rsplit_once('.').map(|(_, e)| e.as_bytes());
+    let mut src = SliceSource::new(data);
+    let mut format = None;
+    for _ in 0..1000 {
+        match orpheus_audio::probe(&src, ext) {
+            Probe::Found(f) => {
+                format = Some(f);
+                break;
+            }
+            Probe::Skip(n) => {
+                let to = src.position().saturating_add(n);
+                src.seek(to).map_err(|_| "bad tag")?;
+                src.refill();
+            }
+            Probe::NeedData(_) if !src.at_end() => src.refill(),
+            Probe::NeedData(_) | Probe::Unknown => break,
+        }
+    }
+    let format = format.ok_or("not a sound file")?;
+    let hint = ContainerInfo { format, ..ContainerInfo::default() };
+    let plan = loop {
+        match orpheus_codecs::inspect(format, &src, &hint) {
+            Ok(p) => break p,
+            Err(orpheus_audio::OpenError::NeedData(_)) if !src.at_end() => src.refill(),
+            Err(_) => return Err("format not supported"),
+        }
+    };
+    let mut arena = vec![0u8; plan.arena];
+    let (mut dec, info) =
+        orpheus_codecs::open(format, &mut src, &mut arena, &hint).map_err(|_| "decoder did not open")?;
+    if !(1..=2).contains(&info.channels) {
+        return Err("more than two channels");
+    }
+    let mut chain = Box::new(Chain::new(OutWidth::Bits16, false));
+    let rate = chain
+        .set_format(orpheus_dsp::Format {
+            rate: info.rate,
+            channels: info.channels,
+            kind: info.sample,
+            bits: info.bits,
+        })
+        .map_err(|_| "sample rate not supported")?;
+    let mut sgen = {
+        let mut s = sh.borrow_mut();
+        s.rate = rate;
+        s.desc = format!("{:?} {} Hz {} ch", info.codec, info.rate, info.channels);
+        s.arena = plan.arena;
+        s.sound.apply(&mut chain);
+        s.sound_gen
+    };
+    if start_ms > 0 {
+        let frame = u64::from(start_ms) * u64::from(info.rate) / 1000;
+        for _ in 0..10_000 {
+            match dec.seek(&mut src, frame) {
+                Ok(SeekStep::Done(at)) => {
+                    let mut s = sh.borrow_mut();
+                    s.start_ms = u32::try_from(at * 1000 / u64::from(info.rate.max(1))).unwrap_or(start_ms);
+                    break;
+                }
+                Ok(SeekStep::NeedData(_)) if !src.at_end() => src.refill(),
+                _ => return Err("seek failed"),
+            }
+        }
+    }
+    let ch = usize::from(info.channels);
+    let mut corrupt = 0;
+    loop {
+        while {
+            let s = sh.borrow();
+            s.pcm.len() >= s.want
+        } {
+            Yield::default().await;
+        }
+        {
+            let s = sh.borrow();
+            if s.sound_gen != sgen {
+                sgen = s.sound_gen;
+                s.sound.apply(&mut chain);
+            }
+        }
+        match dec.decode(&mut src) {
+            Ok(Step::Pcm(mut b)) => {
+                corrupt = 0;
+                let n = chain.process(&mut b);
+                let mut s = sh.borrow_mut();
+                push(&mut s.pcm, &b, n, ch);
+            }
+            Ok(Step::NeedData(_)) if !src.at_end() => src.refill(),
+            Ok(Step::NeedData(_) | Step::EndOfStream) => return Ok(()),
+            Err(DecodeError::Corrupt) => {
+                corrupt += 1;
+                if corrupt >= 10 {
+                    return Err("too many corrupt frames");
+                }
+            }
+            Err(_) => return Err("decode error"),
+        }
+    }
+}
+
+/// Append the first `n` samples of a processed block as stereo `f32`.
+fn push(out: &mut Vec<f32>, b: &PcmBlock<'_>, n: usize, ch: usize) {
+    let mut put = |it: &mut dyn Iterator<Item = f32>| {
+        if ch == 2 {
+            out.extend(it);
+        } else {
+            for x in it {
+                out.push(x);
+                out.push(x);
+            }
+        }
+    };
+    match b {
+        PcmBlock::I16(s) => put(&mut s[..n.min(s.len())].iter().map(|&x| f32::from(x) / 32768.0)),
+        PcmBlock::I32(s) => put(&mut s[..n.min(s.len())].iter().map(|&x| x as f32 / 2_147_483_648.0)),
+    }
+}
+
+/// A track's length in milliseconds: from the stream's frame count when
+/// the container states it, else by decoding it (results are kept).
+#[must_use]
+pub fn duration_ms(data: &[u8], path: &str) -> Option<u32> {
+    thread_local! {
+        static KNOWN: RefCell<std::collections::HashMap<(String, usize), Option<u32>>> = RefCell::default();
+    }
+    let key = (path.to_string(), data.len());
+    if let Some(d) = KNOWN.with(|k| k.borrow().get(&key).copied()) {
+        return d;
+    }
+    let d = measure(data, path);
+    KNOWN.with(|k| k.borrow_mut().insert(key, d));
+    d
+}
+
+fn measure(data: &[u8], path: &str) -> Option<u32> {
+    let mut e = Engine::new();
+    e.start(data.to_vec(), path.to_string(), 0);
+    // Run the loop to its first block: it states the stream.
+    let mut frames = 0u64;
+    let mut rate = 0;
+    loop {
+        let got = e.pull(1 << 16);
+        rate = rate.max(e.rate());
+        frames += (got.len() / 2) as u64;
+        if got.is_empty() && !e.active() {
+            break;
+        }
+    }
+    if e.last_error.is_some() && frames == 0 {
+        return None;
+    }
+    u32::try_from(frames * 1000 / u64::from(rate.max(1))).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{demo, synth};
+
+    #[test]
+    fn volume_curve() {
+        assert_eq!(volume_gain(0), 0.0);
+        assert!((20.0 * volume_gain(30).log10() + 3.0).abs() < 0.01);
+        assert!((20.0 * (volume_gain(29) / volume_gain(30)).log10() + 1.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn every_demo_track_decodes_to_its_length() {
+        for (t, data) in synth::TRACKS.iter().zip(demo::ENCODED) {
+            let d = duration_ms(data, t.path).unwrap_or_else(|| panic!("{} does not decode", t.path));
+            let want = (t.secs * 1000.0) as u32;
+            assert!(d.abs_diff(want) < 150, "{}: {d} ms, want {want}", t.path);
+        }
+    }
+
+    fn now(path: &str, pos: u32, playing: bool) -> Option<NowAudio> {
+        Some(NowAudio { path: path.into(), index: 0, position_ms: pos, duration_ms: 30_000, playing })
+    }
+
+    #[test]
+    fn follows_the_player() {
+        let t = &synth::TRACKS[0];
+        let data = demo::ENCODED[0];
+        let mut e = Engine::new();
+        e.sync(now(t.path, 0, true), |_| data.to_vec());
+        let a = e.pull(44_100);
+        assert_eq!(e.rate(), 44_100);
+        assert_eq!(a.len(), 88_200);
+        assert!(a.iter().any(|x| x.abs() > 0.01));
+        assert!(!e.take_flush());
+        // Small drift: nothing happens.
+        e.sync(now(t.path, 1150, true), |_| unreachable!());
+        // Seek ahead: restart, flush.
+        e.sync(now(t.path, 20_000, true), |_| data.to_vec());
+        assert!(e.take_flush());
+        let _ = e.pull(100);
+        let (_, _, ms) = e.describe();
+        assert!((19_500..20_500).contains(&ms), "{ms}");
+        // Pause: silence.
+        e.sync(now(t.path, 20_000, false), |_| unreachable!());
+        assert!(e.take_flush());
+        assert!(e.pull(100).is_empty());
+        assert_eq!(e.started, 2);
+    }
+
+    #[test]
+    fn eq_changes_the_output() {
+        let data = demo::ENCODED[3];
+        let path = synth::TRACKS[3].path;
+        let run = |s: Sound| {
+            let mut e = Engine::new();
+            e.set_sound(s);
+            e.sync(now(path, 0, true), |_| data.to_vec());
+            e.pull(22_050)
+        };
+        let flat = run(Sound::default());
+        let bass = run(Sound { bass: 6, ..Sound::default() });
+        assert_ne!(flat, bass);
+        let mono = run(Sound { channels: 1, ..Sound::default() });
+        assert!(mono.chunks(2).all(|p| p[0] == p[1]));
+    }
+}

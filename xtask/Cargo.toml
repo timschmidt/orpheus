@@ -24,6 +24,8 @@ orpheus-ui = { path = "../crates/orpheus-ui" }
 resvg = { version = "0.48", default-features = false }
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 png = "0.18"
+# WEB-2: gzip sizes of the browser build.
+flate2 = "1"
 
 [lints]
 workspace = true

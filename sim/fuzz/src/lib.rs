@@ -102,7 +102,7 @@ pub const MAX_OPS: usize = 48;
 pub const MAX_MS: u64 = 120_000;
 
 /// The script command for one operation (see [`ui_keys`]).
-fn command(op: u8, a: u8, b: u8) -> String {
+pub fn command(op: u8, a: u8, b: u8) -> String {
     let key = KEYS[usize::from(a) % KEYS.len()];
     match op % 16 {
         0..=5 => key.to_string(),
