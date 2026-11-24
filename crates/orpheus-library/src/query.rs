@@ -609,6 +609,28 @@ impl Library {
         Ok(None)
     }
 
+    /// [`Library::find`], trying `hint + 1` and `hint` first: tracks are in
+    /// album order, so the next track of an album is usually the row after
+    /// the current one (one read instead of a binary search; the firmware
+    /// does this at a gapless track change while the DAC runs).
+    pub fn find_near<S: Storage>(
+        &self,
+        store: &mut S,
+        loc: Locator,
+        hint: Option<u32>,
+    ) -> Result<Option<u32>, Error<S::Error>> {
+        let mut b = [0u8; 8];
+        for id in hint.into_iter().flat_map(|h| [h.wrapping_add(1), h]) {
+            if id < self.tracks {
+                self.read(store, Sec::Trk, id * TRK_ROW as u32, &mut b)?;
+                if (rd32(&b, 0), rd32(&b, 4)) == (loc.dir, loc.index) {
+                    return Ok(Some(id));
+                }
+            }
+        }
+        self.find(store, loc)
+    }
+
     /// Where table row `id` is in `list` (a track row for track lists, a
     /// group row otherwise): arithmetic for direct ranges, a sequential
     /// scan of the order otherwise.

@@ -68,6 +68,16 @@ use crate::media::{self, Flow, OpenReq, PlayReq, Req, Server, Target};
 
 // ---------------------------------------------------------------- commands
 
+/// A byte string in a paged `static` (a plain literal would land in the
+/// resident mergeable-string section).
+macro_rules! t {
+    ($s:literal) => {{
+        static S: [u8; $s.len()] = *$s;
+        let s: &'static [u8] = &S;
+        s
+    }};
+}
+
 pub const CMD_LEN: usize = 120;
 
 #[derive(Clone, Copy)]
@@ -191,6 +201,49 @@ static WRITTEN: AtomicU32 = AtomicU32::new(0);
 pub static T_DECODE: AtomicU32 = AtomicU32::new(0);
 pub static T_FILL: AtomicU32 = AtomicU32::new(0);
 pub static T_SERVE: AtomicU32 = AtomicU32::new(0);
+/// The last gapless track change (`status`, µs and counts): PCM frames
+/// queued when the decoder ended (the headroom), time from there to the
+/// next track's first block, pager line loads in that time, underruns of
+/// the new track after its first two halves (the join's), time of the
+/// library lookup and of the album-art lookup that follow, underruns after
+/// them, time of the read-ahead open. Plus the start time and pager count
+/// of the join in progress.
+static JOIN: [AtomicU32; 10] = [const { AtomicU32::new(0) }; 10];
+const J_HEAD: usize = 0;
+const J_OPEN_US: usize = 1;
+const J_LOADS: usize = 2;
+const J_UNDER: usize = 3;
+const J_LIB_US: usize = 4;
+const J_ART_US: usize = 5;
+const J_UNDER_META: usize = 6;
+const J_PREFETCH_US: usize = 7;
+const J_T0: usize = 8;
+const J_L0: usize = 9;
+
+fn jset(i: usize, v: u32) {
+    JOIN[i].store(v, Ordering::Relaxed);
+}
+
+fn jget(i: usize) -> u32 {
+    JOIN[i].load(Ordering::Relaxed)
+}
+
+fn now32() -> u32 {
+    time::now_us() as u32
+}
+
+fn pager_loads() -> u32 {
+    atj2157_hal::pager::stats().loads as u32
+}
+
+/// Card work besides the stream refill (UI requests, the read-ahead open,
+/// a gapless track's title, library place and art) waits until the PCM
+/// ring holds this many frames (≈ 52 ms at 44.1 kHz): each can take tens
+/// of ms while nothing feeds the DAC. After [`CHORE_WAIT_US`] it runs
+/// anyway (a decoder that never gets ahead must not starve the UI).
+const ROOMY: u32 = (HALF + HALF / 2) as u32;
+const CHORE_WAIT_US: u64 = 300_000;
+
 /// Developer `stop`: ends the current file at once (also inside a PCM
 /// wait).
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -219,6 +272,9 @@ pub(crate) struct Ring {
     /// file.
     next: Option<Next>,
     next_file: Option<File>,
+    /// The item handed over at the last gapless change, until its title is
+    /// shown (`play_file`'s chores: not while the next decoder opens).
+    shown: Option<Next>,
 }
 
 pub(crate) struct Next {
@@ -263,6 +319,7 @@ impl Ring {
     pub(crate) fn reset(&mut self, len: u64) {
         self.s.reset(Some(len));
         self.cancel_next();
+        self.shown = None;
     }
 
     /// The current file has been read to its end.
@@ -284,8 +341,9 @@ impl Ring {
 
     /// The decoder of the current file ended and the player opens `t`:
     /// if that is the file read ahead, it becomes the current one (its
-    /// bytes stay in the ring) and its title is published. Returns its
-    /// identity and extension.
+    /// bytes stay in the ring); its title waits in `shown` (published once
+    /// the next decoder runs: the UI's repaint then does not compete with
+    /// the open for the code cache). Returns its identity and extension.
     #[inline(never)]
     fn hand_over(&mut self, t: Target) -> Option<(TrackRef, [u8; 8], u8)> {
         let Target::Item(i) = t else { return None };
@@ -293,9 +351,17 @@ impl Ring {
             return None;
         }
         self.file = self.next_file.take();
-        let n = self.next.take()?;
-        publish_track(n.track, &n.title);
+        self.shown = self.next.take();
+        let n = self.shown.as_ref()?;
         Some((n.track, n.ext, n.ext_len))
+    }
+
+    /// Publish the title kept by [`Ring::hand_over`].
+    #[inline(never)]
+    fn show_handed(&mut self) {
+        if let Some(n) = self.shown.take() {
+            publish_track(n.track, &n.title);
+        }
     }
 
     /// Read into free space (sector-sized pieces where it can): the
@@ -417,6 +483,16 @@ impl PcmOut {
                 }
             }
         }
+    }
+
+    /// Frames queued for the DAC (`u32::MAX` while it is not running:
+    /// nothing has a deadline then).
+    fn queued(&self) -> u32 {
+        if !self.running {
+            return u32::MAX;
+        }
+        let halves = self.written.wrapping_sub(PLAYED.load(Ordering::Acquire)) as i32;
+        halves.max(0) as u32 * HALF as u32 + self.fill as u32
     }
 
     fn start(&mut self) {
@@ -641,14 +717,6 @@ async fn prefetch(vol: &mut Volume<'static, Card>, ring: &mut Ring, srv: &Server
     }
 }
 
-/// At a gapless track change, between ring refills: the track's place in
-/// the music library and its album art from the cache (the decoder holds
-/// the arena, nothing is made now).
-async fn track_meta(vol: &mut Volume<'static, Card>, srv: &mut Server, t: TrackRef) {
-    crate::library::find_now(vol, srv, t.locator()).await;
-    crate::pictures::track_art_cached(vol, srv, t.locator()).await;
-}
-
 /// Play the ring's file (`Ring::file`).
 #[allow(clippy::too_many_lines)]
 async fn play_file(
@@ -666,7 +734,11 @@ async fn play_file(
         ring.reset(size);
         out.crc = 0xFFFF_FFFF;
     }
-    ring.fill(vol, None).await;
+    // A gapless start has the file's head in the ring already: no card
+    // read before the decoder runs unless the probe asks for more.
+    if !st.gapless || ring.available() < 4096 {
+        ring.fill(vol, None).await;
+    }
     // Probe, skipping leading tags.
     let format = loop {
         match probe(ring, ext) {
@@ -757,16 +829,22 @@ async fn play_file(
     let ch = if stereo { 2 } else { 1 };
     let rate = u64::from(info.rate);
     let ms_of = move |frame: u64| (frame * 1000 / rate.max(1)) as u32;
-    media::player_update(|p| {
+    let (codec, start_ms) = (codec_name(ext), ms_of(pos));
+    let show = move |p: &mut media::PlayerSnap| {
         p.source = if st.paused { Source::Paused } else { Source::Playing };
-        p.position_ms = ms_of(pos);
+        p.position_ms = start_ms;
         p.duration_ms = info.frames.map_or(0, ms_of);
-        p.codec = codec_name(ext);
+        p.codec = codec;
         p.rate = info.rate;
         p.channels = info.channels;
         p.bits = info.bits;
         p.size = size;
-    });
+    };
+    // After a gapless change the UI hears of the new track once its
+    // decoder runs (chores below).
+    if !st.gapless {
+        media::player_update(show);
+    }
     let driven = st.track.is_some();
     if let Some(track) = st.track {
         srv.feed(Event::Opened { track, rate: info.rate, frames: info.frames });
@@ -776,8 +854,15 @@ async fn play_file(
             save_store(vol, srv, spare).await;
         }
     }
-    // Album art and library place of a track that came in gapless.
-    let mut meta_due = st.gapless;
+    // Chores (see `ROOMY`): a waiting request, the read-ahead open, the
+    // gapless track's title + library place (1) and art (2).
+    let mut serve_due = false;
+    let mut pf_due: Option<u32> = None;
+    let mut meta: u8 = if st.gapless { 1 } else { 0 };
+    let mut chore_since = 0u64;
+    // A gapless join being measured: 1 until the first block, 2 until two
+    // halves are out.
+    let mut join: u8 = if st.gapless { 1 } else { 0 };
     PLAYING.store(true, Ordering::Relaxed);
     STOP.store(false, Ordering::Relaxed);
     let t0 = time::now_us();
@@ -849,11 +934,11 @@ async fn play_file(
                 // The next track changed: whatever was read ahead goes, and
                 // the reader's end is reported again (a new `Prefetch`).
                 ring.cancel_next();
+                pf_due = None;
                 reader_end = false;
             }
             if let Some(item) = fl.prefetch() {
-                prefetch(vol, ring, srv, item).await;
-                LAST_SERVE_MS.store((time::now_us() / 1000) as u32, Ordering::Relaxed);
+                pf_due = Some(item);
             }
             if let Some(target) = fl.seek {
                 // Stop the DAC for the seek: the bisection reads the card for
@@ -951,6 +1036,16 @@ async fn play_file(
                 pos += (samples / ch) as u64;
                 FRAMES.store(frames, Ordering::Relaxed);
                 media::player_update(|p| p.position_ms = ms_of(pos));
+                if join == 1 {
+                    jset(J_OPEN_US, now32().wrapping_sub(jget(J_T0)));
+                    jset(J_LOADS, pager_loads().wrapping_sub(jget(J_L0)));
+                    join = 2;
+                } else if join == 2 && frames >= 2 * HALF as u32 {
+                    // Underruns are seen at half boundaries: by now the
+                    // join's are counted.
+                    jset(J_UNDER, UNDERRUNS.load(Ordering::Relaxed));
+                    join = 0;
+                }
                 if driven {
                     flow.merge(srv.feed(Event::Position { frame: pos }));
                     let now = time::now_us();
@@ -964,19 +1059,50 @@ async fn play_file(
                     let a = time::now_us();
                     mark(1);
                     ring.fill(vol, None).await;
-                    let b = time::now_us();
-                    mark(2);
-                    let go_on = serve_one(vol, srv, spare).await;
-                    if meta_due && let Some(t) = st.track {
-                        meta_due = false;
-                        track_meta(vol, srv, t).await;
-                        LAST_SERVE_MS.store((time::now_us() / 1000) as u32, Ordering::Relaxed);
-                    }
                     mark(0);
-                    T_FILL.fetch_add((b - a) as u32, Ordering::Relaxed);
-                    T_SERVE.fetch_add((time::now_us() - b) as u32, Ordering::Relaxed);
-                    if !go_on {
-                        break 'play Ok(End::Pending);
+                    T_FILL.fetch_add((time::now_us() - a) as u32, Ordering::Relaxed);
+                    // A request may be waiting: served as a chore.
+                    serve_due = true;
+                }
+                if serve_due || pf_due.is_some() || meta != 0 {
+                    let now = time::now_us();
+                    if chore_since == 0 {
+                        chore_since = now;
+                    }
+                    if out.queued() >= ROOMY || now - chore_since > CHORE_WAIT_US {
+                        chore_since = 0;
+                        mark(2);
+                        let t0 = now32();
+                        // The read-ahead first: the current file's last
+                        // bytes may last only ~0.15 s (FLAC).
+                        if let Some(item) = pf_due.take() {
+                            prefetch(vol, ring, srv, item).await;
+                            jset(J_PREFETCH_US, now32().wrapping_sub(t0));
+                        } else if serve_due {
+                            serve_due = false;
+                            let go_on = serve_one(vol, srv, spare).await;
+                            T_SERVE.fetch_add(now32().wrapping_sub(t0), Ordering::Relaxed);
+                            if !go_on {
+                                break 'play Ok(End::Pending);
+                            }
+                        } else if meta == 1 {
+                            meta = 2;
+                            ring.show_handed();
+                            media::player_update(show);
+                            if let Some(t) = st.track {
+                                crate::library::find_now(vol, srv, t.locator()).await;
+                            }
+                            jset(J_LIB_US, now32().wrapping_sub(t0));
+                        } else if meta == 2 {
+                            meta = 0;
+                            if let Some(t) = st.track {
+                                crate::pictures::track_art_cached(vol, srv, t.locator()).await;
+                            }
+                            jset(J_ART_US, now32().wrapping_sub(t0));
+                            jset(J_UNDER_META, UNDERRUNS.load(Ordering::Relaxed));
+                        }
+                        mark(0);
+                        LAST_SERVE_MS.store((time::now_us() / 1000) as u32, Ordering::Relaxed);
                     }
                 }
                 if driven && ring.eof() && !reader_end {
@@ -1025,6 +1151,9 @@ async fn play_file(
                 if o.gapless && !o.paused && ring.next.as_ref().is_some_and(|n| o.target.is_item(n.item)) =>
             {
                 gapless = true;
+                jset(J_HEAD, out.queued());
+                jset(J_T0, now32());
+                jset(J_L0, pager_loads());
                 // Underruns while the next decoder opens are not the
                 // decoder's (no too-slow abort).
                 LAST_SERVE_MS.store((time::now_us() / 1000) as u32, Ordering::Relaxed);
@@ -1066,6 +1195,55 @@ async fn play_file(
         dsp_clock_floor(false);
     }
     end
+}
+
+/// Developer `playdir PATH [START]`: the folder's own entry (`None`: the
+/// root) and the start file, as Files → OK passes them. `PATH` may also
+/// name a file (its folder, from that file); `START` is a file name in the
+/// folder.
+async fn resolve_dir(
+    vol: &mut Volume<'static, Card>,
+    arg: &str,
+) -> Option<(Option<orpheus_apps::services::FileRef>, Option<orpheus_apps::services::FileRef>)> {
+    let fref = |l: orpheus_fs::Locator| orpheus_apps::services::FileRef { dir: l.dir, index: l.index };
+    let mut e = DirEntry::new();
+    let (dir, name) = if arg.is_empty() || arg == "/" {
+        ("/", None)
+    } else if vol.stat(arg, &mut e).await.is_ok() {
+        if e.is_dir() {
+            (arg, None)
+        } else {
+            let (d, n) = arg.rsplit_once('/')?;
+            (if d.is_empty() { "/" } else { d }, Some(n))
+        }
+    } else {
+        let (d, n) = arg.rsplit_once(' ')?;
+        (d.trim_end(), Some(n))
+    };
+    let entry = if dir == "/" {
+        None
+    } else {
+        vol.stat(dir, &mut e).await.ok()?;
+        if !e.is_dir() {
+            return None;
+        }
+        Some(fref(e.locator()))
+    };
+    let start = match name {
+        None => None,
+        Some(n) => {
+            let mut cur = vol.open_dir(dir).await.ok()?;
+            loop {
+                if !vol.read_dir(&mut cur, &mut e).await.ok()? {
+                    return None;
+                }
+                if e.name() == n {
+                    break Some(fref(e.locator()));
+                }
+            }
+        }
+    };
+    Some((entry, start))
 }
 
 async fn ls(vol: &mut Volume<'static, Card>, path: &str) {
@@ -1178,6 +1356,7 @@ async fn run_player(
     }
     ring.cancel_next();
     ring.file = None;
+    ring.shown = None;
     PLAYING.store(false, Ordering::Relaxed);
     CODEC_FLOOR.store(0, Ordering::Relaxed);
     dsp_clock_floor(false);
@@ -1582,6 +1761,41 @@ pub fn status_reply() {
             .u(u64::from(media::Server::walk_progress().1 & 0xFF_FFFF))
             .s(b" d")
             .u(u64::from(media::Server::walk_progress().1 >> 24));
+        // The queue and the track (HIL tests need no key navigation).
+        let (pos, len, shuffled, title) = critical_section::with(|cs| {
+            let p = media::PLAYER.borrow(cs).borrow();
+            (p.queue_pos, p.queue_len, p.shuffled, p.title)
+        });
+        let t = title.as_str();
+        let mut n = t.len().min(24);
+        while !t.is_char_boundary(n) {
+            n -= 1;
+        }
+        w.s(t!(b" q="))
+            .u(u64::from(pos) + u64::from(len > 0))
+            .s(b"/")
+            .u(u64::from(len))
+            .s(t!(b" shuf="))
+            .u(u64::from(shuffled))
+            .s(t!(b" title="))
+            .s(&t.as_bytes()[..n]);
+        // The last gapless join.
+        w.s(t!(b" join: head="))
+            .u(u64::from(jget(J_HEAD)))
+            .s(t!(b" open_us="))
+            .u(u64::from(jget(J_OPEN_US)))
+            .s(t!(b" loads="))
+            .u(u64::from(jget(J_LOADS)))
+            .s(t!(b" u="))
+            .u(u64::from(jget(J_UNDER)))
+            .s(t!(b" lib_us="))
+            .u(u64::from(jget(J_LIB_US)))
+            .s(t!(b" art_us="))
+            .u(u64::from(jget(J_ART_US)))
+            .s(t!(b" u_meta="))
+            .u(u64::from(jget(J_UNDER_META)))
+            .s(t!(b" pf_us="))
+            .u(u64::from(jget(J_PREFETCH_US)));
     });
 }
 
@@ -1625,8 +1839,13 @@ pub async fn audio() {
     reply(|w| {
         w.s(b"card: mounted");
     });
-    let mut ring =
-        Ring { s: StreamRing::new(&mut RING_BUF.take().0), file: None, next: None, next_file: None };
+    let mut ring = Ring {
+        s: StreamRing::new(&mut RING_BUF.take().0),
+        file: None,
+        next: None,
+        next_file: None,
+        shown: None,
+    };
     // SAFETY: this task is the arena's owner; the USB task borrows it only
     // while this task waits for the card (`usb_buffer`).
     let full: &'static mut [u8] = unsafe { &mut (*(&raw mut ARENA_BUF)).0 };
@@ -1692,6 +1911,20 @@ pub async fn audio() {
                 None => return,
             }
             crate::library::card_back(&mut vol, srv).await;
+        } else if let Some(arg) = text.strip_prefix("playdir ") {
+            // The player's queue on a folder, as Files → OK (in folder
+            // order: shuffle off, for repeatable tests).
+            match resolve_dir(&mut vol, arg.trim()).await {
+                Some((entry, start)) => {
+                    reply(|w| {
+                        w.s(t!(b"playdir ok"));
+                    });
+                    srv.pending_play = Some(PlayReq::PlayDir { entry, start, shuffle: false });
+                }
+                None => reply(|w| {
+                    w.s(t!(b"playdir: no such folder or file"));
+                }),
+            }
         } else if let Some(p) = text.strip_prefix("ls ") {
             ls(&mut vol, p.trim()).await;
         } else if let Some(p) = text.strip_prefix("play ") {
@@ -1799,7 +2032,7 @@ pub async fn audio() {
             });
         } else {
             reply(|w| {
-                w.s(b"commands: ls PATH, play PATH, vol N");
+                w.s(t!(b"commands: ls PATH, play PATH, playdir PATH [START], vol N"));
             });
         }
     }

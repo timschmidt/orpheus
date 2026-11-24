@@ -341,6 +341,8 @@ pub struct PlayerSnap {
     pub duration_ms: u32,
     pub queue_pos: u32,
     pub queue_len: u32,
+    /// The queue plays shuffled (developer `status`).
+    pub shuffled: bool,
     /// The current track; while idle, the track a resume continues.
     pub title: Name,
     pub file: FileRef,
@@ -379,6 +381,7 @@ impl PlayerSnap {
         duration_ms: 0,
         queue_pos: 0,
         queue_len: 0,
+        shuffled: false,
         title: Name::EMPTY,
         file: FileRef { dir: 0, index: 0 },
         size: 0,
@@ -1491,11 +1494,12 @@ impl Server {
         let ms = move |f: u64| (f * 1000).checked_div(rate).unwrap_or(0) as u32;
         let (a, b) = pl.ab();
         let (left, after_track) = pl.sleep_timer();
-        let (pos, len) = (cur.map_or(0, |c| c.pos), pl.len());
+        let (pos, len, shuffled) = (cur.map_or(0, |c| c.pos), pl.len(), pl.shuffled());
         let (fired, resume, qgen, bm_gen) = (self.sleep_fired, self.can_resume, self.qgen, self.bm_gen);
         player_update(|p| {
             p.queue_pos = pos;
             p.queue_len = len;
+            p.shuffled = shuffled;
             p.a_ms = a.map(ms);
             p.b_ms = b.map(ms);
             p.sleep_min = left.map(|l| l.div_ceil(60_000) as u16).or(after_track.then_some(0));

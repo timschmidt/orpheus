@@ -590,7 +590,10 @@ pub async fn sample(vol: &mut Vol, srv: &mut Server, seed: u32) -> bool {
 fn find(io: &Io<'_, '_>, lib: &Library, loc: Locator) {
     let mut s = io.store();
     let mut now = None;
-    if let Ok(Some(id)) = lib.find(&mut s, loc)
+    // The track before is the hint: an album's next track is usually the
+    // next row (one read, not a binary search while the DAC runs).
+    let hint = critical_section::with(|cs| media::PLAYER.borrow(cs).borrow().lib_now.map(|n| n.track));
+    if let Ok(Some(id)) = lib.find_near(&mut s, loc, hint)
         && let Ok(t) = lib.track(&mut s, id)
     {
         now = Some(LibNow { track: id, album: t.album_id, artist: t.artist_id });
