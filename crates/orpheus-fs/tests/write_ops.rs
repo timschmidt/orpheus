@@ -172,7 +172,9 @@ fn scenario(fmt: Fmt) {
         for (p, data) in &model {
             assert!(mread(&img, p) == *data, "mtools reads {p} differently");
         }
-    } else {
+    } else if exfatprogs_at_least(1, 4) {
+        // `dump.exfat -s DIR` exists from exfatprogs 1.4 (not in the 1.2 of
+        // Ubuntu 24.04 CI runners); `fsck` already ran on this image.
         let listing = exfat_dump_dir(&img, "/music/Пётр Ильич");
         assert!(listing.contains(&unicode_name(0)), "dump.exfat listing:\n{listing}");
     }

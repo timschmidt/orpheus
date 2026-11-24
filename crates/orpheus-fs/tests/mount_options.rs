@@ -235,6 +235,11 @@ fn exfat_nonstandard_upcase() {
     }
     unmount(vol);
     assert_fsck(&img, true);
+    if !exfatprogs_at_least(1, 4) {
+        // `dump.exfat -s/-d` arrived in exfatprogs 1.4 (CI runners have 1.2).
+        eprintln!("skipped: dump.exfat cross-checks need exfatprogs >= 1.4");
+        return;
+    }
     let listing = exfat_dump_dir(&img, "/");
     for n in names {
         assert!(listing.contains(n), "{n} missing from dump:\n{listing}");
