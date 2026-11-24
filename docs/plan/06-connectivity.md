@@ -305,6 +305,19 @@ feed it reports is the open question.
 
 #### 4.3.1 Transport: staged with stop/go points (WP BT-3, then BT-4)
 
+**Step 1 done (2026-11-24, lead)**: the module's SDP HID record, read from
+the workstation with a raw SDP query: subclass `0xC0` (combo
+keyboard/pointing), country 33, virtual cable and normally-connectable set,
+supervision timeout 5000, 83-byte report descriptor with **report 1 = boot
+keyboard** (8 modifiers, LED output, 3 key slots over usages 0–255 — every
+presenter key: arrows, PageUp/PageDown, F5, Esc, B, W, Ctrl+L) and **report
+2 = consumer control** (Vol−, Vol+, Mute, Play/Pause, Scan next, Scan
+previous, 0x83 Recall last, Rewind). **No mouse report.** Consequence: the
+remote's keys fit the module as it is, if step 2 finds the command that
+feeds these reports; the **tilt pointer cannot be carried by this
+descriptor** and needs USB HID or module firmware work — that part of D-10
+can be decided now.
+
 1. **Read the HID record** (no risk, host side): with the module paired to
    the workstation, read its SDP HID attributes (report descriptor, subclass,
    `HIDVirtualCable`, `HIDReconnectInitiate`, boot device flag) through
