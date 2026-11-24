@@ -38,6 +38,17 @@ pub fn cargo_build(pkg: &str, bin: &str, release: bool, features: Option<&str>) 
     if let Some(f) = features {
         c.args(["--features", f]);
     }
+    // Short source paths in panic locations: they are linker-generated
+    // strings in the resident image (≈ 14.6 KB with full paths). Cargo
+    // concatenates this array with the rustflags of `fw/.cargo/config.toml`.
+    let cargo_home = std::env::var("CARGO_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".cargo"));
+    c.arg("--config").arg(format!(
+        "target.thumbv7em-none-eabihf.rustflags=[\"--remap-path-prefix={}=o\",\"--remap-path-prefix={}=c\"]",
+        root().display(),
+        cargo_home.display()
+    ));
     // Do not leak the host build's environment into the cross build.
     for (k, _) in std::env::vars() {
         if k.starts_with("CARGO_") && k != "CARGO_HOME" {
