@@ -934,6 +934,31 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — queue editing on the player; BT-3 offline analysis; new bugs (lead)
+
+* **Queue editing works on the player**: with a 231-track folder queue
+  playing, Files › file › Menu › Play next → 232 items and toast "Plays
+  next"; Add to queue → 233 and "Added to the queue"; order and shuffle
+  unchanged.
+* **BT-3**: the vendor host firmware has no path to the module's HID
+  service (no sender of `0x32`/`0x2D`, `0x27` dead code, no HID strings or
+  settings; `05 16/17` are play/pause notifications). The module's HID SDP
+  record is unchanged after the `0x32` restarts. Remaining options: the
+  safe experiments E2/E4/E5/E6 of `docs/hw/bt3-offline-2026-11-24.md`
+  (passive UART logging while the host drives HID; `0x27` in each link
+  state; a `0x05` sub sweep; an unknown-id scan with "all keys released"
+  payloads), then module firmware work only with the owner (D-6).
+* **Bugs found (open)**:
+  - Browsing Files during 48 kHz MP3 playback: 8–14 underruns per track,
+    all charged to `serve` (audible dropouts while browsing).
+  - After `usb msc ro` with the host still holding the mount ("busy") and
+    `usb dev`, the firmware reported `card: remount failed` (fresh boot
+    mounted fine).
+  - A watchdog reboot (no fault record, RT executor in `Timer::after`)
+    after `playdir` during playback followed by an unknown dev command;
+    `playdir` is ignored while a track plays.
+  - Now Playing › Info shows "Bitrate 0 kbit/s" for a 48 kHz MP3.
+
 ### 2026-11-24 — AU-5 gapless closed for now; PCM spill not adopted (lead)
 
 * Three attempts at a PCM spill (extra decoded audio lent from the decoder
