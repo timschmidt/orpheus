@@ -1,5 +1,6 @@
-//! SCSI command interpretation for a disk-type logical unit (SBC subset
-//! used by Linux, Windows, macOS and firmware boot menus).
+//! SCSI command interpretation for a logical unit: disk (SBC subset used
+//! by Linux, Windows, macOS and firmware boot menus) or CD/DVD-ROM (the MMC
+//! commands in [`super::mmc`], 06-connectivity §3.3).
 
 /// Sense key / ASC / ASCQ.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,12 +21,24 @@ impl Sense {
     pub const READ_ERROR: Sense = Sense { key: 0x03, asc: 0x11, ascq: 0 };
     pub const WRITE_ERROR: Sense = Sense { key: 0x03, asc: 0x0C, ascq: 0 };
     pub const REMOVAL_PREVENTED: Sense = Sense { key: 0x05, asc: 0x53, ascq: 0x02 };
+    pub const SAVING_NOT_SUPPORTED: Sense = Sense { key: 0x05, asc: 0x39, ascq: 0 };
+    /// CANNOT READ MEDIUM - INCOMPATIBLE FORMAT (a DVD-only command on a CD).
+    pub const INCOMPATIBLE_FORMAT: Sense = Sense { key: 0x05, asc: 0x30, ascq: 0x02 };
+}
+
+/// Peripheral device type of the unit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceKind {
+    /// Type 0, direct access (card reader, disk image).
+    Disk,
+    /// Type 5, CD/DVD-ROM with 2048-byte blocks (ISO image).
+    CdRom,
 }
 
 /// What the unit is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Unit {
-    /// Peripheral device type 0 (disk); CD-ROM (5) is WP-USB-6.
+    pub kind: DeviceKind,
     pub removable: bool,
     pub block_size: u32,
     pub blocks: u64,
@@ -47,6 +60,10 @@ pub enum Plan<'a> {
     Read { lba: u64, count: u32 },
     /// Receive `count` blocks and write them at `lba`.
     Write { lba: u64, count: u32 },
+    /// Send `head` followed by zeros up to `len` bytes in total (already
+    /// cut to the allocation length). Used for the 2052-byte DVD
+    /// structure without a 2 KiB buffer.
+    DataInPadded { head: &'a [u8], len: usize },
     /// Check condition (sense recorded).
     Fail,
 }
@@ -62,9 +79,12 @@ pub struct Events {
 }
 
 pub struct Scsi {
-    sense: Sense,
-    unit_attention: bool,
-    buf: [u8; 96],
+    pub(super) sense: Sense,
+    pub(super) unit_attention: bool,
+    /// Pending GET EVENT STATUS NOTIFICATION media event code (MMC: 0 none,
+    /// 2 new media, 3 media removal).
+    pub(super) media_event: u8,
+    pub(super) buf: [u8; 128],
     pub events: Events,
     pub commands: u32,
 }
@@ -75,11 +95,13 @@ impl Default for Scsi {
     }
 }
 
-fn be32(b: &[u8], o: usize) -> u32 {
-    u32::from_be_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
+/// Big-endian fields of a CDB; bytes past the end of a short CDB read as 0.
+pub(super) fn be32(b: &[u8], o: usize) -> u32 {
+    let g = |i: usize| b.get(o + i).copied().unwrap_or(0);
+    u32::from_be_bytes([g(0), g(1), g(2), g(3)])
 }
-fn be16(b: &[u8], o: usize) -> u16 {
-    u16::from_be_bytes([b[o], b[o + 1]])
+pub(super) fn be16(b: &[u8], o: usize) -> u16 {
+    u16::from_be_bytes([b.get(o).copied().unwrap_or(0), b.get(o + 1).copied().unwrap_or(0)])
 }
 
 impl Scsi {
@@ -88,15 +110,19 @@ impl Scsi {
         Self {
             sense: Sense::NONE,
             unit_attention: false,
-            buf: [0; 96],
+            media_event: 0,
+            buf: [0; 128],
             events: Events { eject: false, prevent_removal: false, reboot_adfu: false },
             commands: 0,
         }
     }
 
-    /// Report "medium may have changed" on the next media access.
+    /// Report "medium may have changed" on the next media access (and a
+    /// "new media" event to GET EVENT STATUS NOTIFICATION). Call after
+    /// attaching an image.
     pub fn medium_changed(&mut self) {
         self.unit_attention = true;
+        self.media_event = 2;
     }
 
     pub fn set_sense(&mut self, s: Sense) {
@@ -108,12 +134,12 @@ impl Scsi {
         self.sense
     }
 
-    fn fail(&mut self, s: Sense) -> Plan<'_> {
+    pub(super) fn fail(&mut self, s: Sense) -> Plan<'_> {
         self.sense = s;
         Plan::Fail
     }
 
-    fn data(&mut self, n: usize, alloc: usize) -> Plan<'_> {
+    pub(super) fn data(&mut self, n: usize, alloc: usize) -> Plan<'_> {
         Plan::DataIn(&self.buf[..n.min(alloc)])
     }
 
@@ -146,6 +172,10 @@ impl Scsi {
             }
             _ => {}
         }
+        let cd = u.kind == DeviceKind::CdRom;
+        if cd && super::mmc::medium_independent(op) {
+            return self.mmc(u, cdb);
+        }
         if !u.present {
             return self.fail(Sense::NOT_PRESENT);
         }
@@ -162,6 +192,7 @@ impl Scsi {
                         return self.fail(Sense::REMOVAL_PREVENTED);
                     }
                     self.events.eject = true;
+                    self.media_event = 3;
                 }
                 Plan::Done
             }
@@ -197,7 +228,9 @@ impl Scsi {
                 self.data(12, alloc)
             }
             0x1A | 0x5A => self.mode_sense(u, cdb),
+            0x2A | 0xAA | 0x8A if cd => self.fail(Sense::INVALID_OPCODE),
             0x28 | 0xA8 | 0x88 | 0x2A | 0xAA | 0x8A => self.rw(u, cdb),
+            _ if cd => self.mmc(u, cdb),
             _ => self.fail(Sense::INVALID_OPCODE),
         }
     }
@@ -255,7 +288,10 @@ impl Scsi {
             }
         }
         self.buf[..36].fill(0);
-        self.buf[0] = 0x00;
+        self.buf[0] = match u.kind {
+            DeviceKind::Disk => 0x00,
+            DeviceKind::CdRom => 0x05,
+        };
         self.buf[1] = if u.removable { 0x80 } else { 0 };
         self.buf[2] = 0x06; // SPC-4
         self.buf[3] = 0x02;
@@ -272,8 +308,11 @@ impl Scsi {
         let wp = if u.read_only { 0x80 } else { 0 };
         // Header plus, for pages 0x08 (caching) or 0x3F (all), a caching page
         // reporting write cache disabled.
-        let (hdr, alloc) =
-            if ten { (8usize, usize::from(be16(cdb, 7))) } else { (4usize, usize::from(cdb[4])) };
+        let (hdr, alloc) = if ten {
+            (8usize, usize::from(be16(cdb, 7)))
+        } else {
+            (4usize, usize::from(cdb.get(4).copied().unwrap_or(0)))
+        };
         self.buf[..hdr + 20].fill(0);
         let mut n = hdr;
         if page == 0x08 || page == 0x3F {
@@ -300,6 +339,7 @@ mod tests {
 
     fn unit() -> Unit {
         Unit {
+            kind: DeviceKind::Disk,
             removable: true,
             block_size: 512,
             blocks: 1000,

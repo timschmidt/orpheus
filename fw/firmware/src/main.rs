@@ -85,6 +85,15 @@ async fn power() {
 
 #[embassy_executor::task]
 async fn health() {
+    // Started by the HIL harness: return to USB recovery after args[0]
+    // seconds (default 120) whatever happens, so a test can never leave the
+    // player needing a hand.
+    if let Some((_, m)) = persist::test_request() {
+        let secs = if m.args[0] == 0 { 120 } else { m.args[0] };
+        Timer::after_secs(u64::from(secs)).await;
+        log::line(b"fw: test window over");
+        wdt::reboot(wdt::Target::Adfu);
+    }
     Timer::after_secs(30).await;
     persist::clear_boot_counter();
     log::line(b"fw: healthy start");

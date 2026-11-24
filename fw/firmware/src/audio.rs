@@ -432,6 +432,22 @@ async fn ls(vol: &mut Volume<'static, Card>, path: &str) {
     });
 }
 
+/// Write the playback counters as the reply (answers at once, from any
+/// task).
+pub fn status_reply() {
+    reply(|w| {
+        w.s(if PLAYING.load(Ordering::Relaxed) { b"playing" } else { b"idle" })
+            .s(b" frames=")
+            .u(u64::from(FRAMES.load(Ordering::Relaxed)))
+            .s(b" rate=")
+            .u(u64::from(RATE.load(Ordering::Relaxed)))
+            .s(b" underruns=")
+            .u(u64::from(UNDERRUNS.load(Ordering::Relaxed)))
+            .s(b" corrupt=")
+            .u(u64::from(CORRUPT.load(Ordering::Relaxed)));
+    });
+}
+
 /// Stop the current track (from another task).
 pub fn request_stop() {
     STOP.store(true, Ordering::Relaxed);

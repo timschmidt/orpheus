@@ -20,6 +20,7 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     let test = args.value("test");
     let wait = args.value("wait").map(|s| num(&s)).transpose()?.unwrap_or(60);
     let debug = args.flag("debug");
+    let no_wait = args.flag("no-wait");
     let mut targs = Vec::new();
     while let Some(a) = args.value("arg") {
         targs.push(num(&a)?);
@@ -40,6 +41,17 @@ pub fn cmd(args: &mut Args) -> Result<String> {
         );
     }
     let name = test.clone().unwrap_or_else(|| img.clone());
+    if no_wait {
+        // Arm the test mailbox (the image's safety window) but return at once.
+        let mut d = super::to_ymon()?;
+        d.write(result::BASE, &[0u8; result::SIZE])?;
+        d.write(fault::BASE, &[0u8; fault::SIZE])?;
+        let t = test.as_deref().unwrap_or("live");
+        d.write(mailbox::BASE, &Mailbox::test(fnv1a(t.as_bytes()), FLAG_RETURN_ADFU, &targs).to_bytes())?;
+        d.write_verify(IMAGE_BASE, &blob, 0x1000)?;
+        d.jump(IMAGE_BASE)?;
+        return Ok("started (test mailbox armed, not waiting)".into());
+    }
     run_image(
         &blob,
         test.as_deref().map(|t| (t, targs.as_slice())),

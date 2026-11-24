@@ -90,6 +90,10 @@ impl Target for Fw {
         if data == b"usb dev" {
             return MODE.try_send(Personality::Dev).is_ok();
         }
+        if data == b"status" {
+            crate::audio::status_reply();
+            return true;
+        }
         if data == b"stop" {
             crate::audio::request_stop();
             return true;
@@ -266,6 +270,7 @@ async fn run_msc() -> Personality {
         drop(func);
         let mut dev = b.build();
         let unit = yoton_usb::msc::scsi::Unit {
+            kind: yoton_usb::msc::scsi::DeviceKind::Disk,
             removable: true,
             block_size: 512,
             blocks,

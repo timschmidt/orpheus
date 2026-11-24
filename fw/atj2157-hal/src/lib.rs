@@ -54,15 +54,24 @@ pub fn panic(info: &core::panic::PanicInfo) -> ! {
     if let Some(loc) = info.location() {
         let f = loc.file();
         // Keep the tail of the path so the line number fits.
-        let mut parts = f.rsplit('/');
-        let file = parts.next().unwrap_or(f);
-        if let Some(dir) = parts.next() {
-            buf.push_str(dir);
-            buf.push_str("/");
+        // Keep the last three path components (crate/src/file).
+        let mut cut = f.len();
+        for _ in 0..3 {
+            match f[..cut].rfind('/') {
+                Some(i) => cut = i,
+                None => {
+                    cut = 0;
+                    break;
+                }
+            }
         }
-        buf.push_str(file);
+        buf.push_str(f[cut..].trim_start_matches('/'));
         buf.push_str(":");
         buf.push_u32(loc.line());
+    }
+    if let Some(m) = info.message().as_str() {
+        buf.push_str(" ");
+        buf.push_str(m);
     }
     persist::record_panic(buf.as_bytes(), 0);
     wdt::reboot_after_fault()
