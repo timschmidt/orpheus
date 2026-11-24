@@ -1057,6 +1057,19 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — AU-8: Opus plays on the player (lead)
+
+* Merged AU-8 (`cceac998` Ogg pages > 8 KiB read packet by packet; `730427ff`
+  Opus frame code/tables packed for the pager: `hot.toml` clusters
+  `opus-celt`/`opus-frame`/`opus-silk`, range decoder out of line, PVQ row
+  computed, 64-B CRC table; decoder stats in `status`). On the player:
+  `t_opus.opus` and `t_opus_p.opus` (48 kHz, 10 s) play with **0 underruns,
+  0 corrupt**, decode 6.75–6.80 s per 10 s at the governor's level.
+  Regression: Vorbis, Speex and MP3 CRCs unchanged (bit-identical),
+  `playdir` on a 231-track folder plays with 0 underruns, stack free 5,972 B,
+  pager ≈ 2,670 line loads/s during 48 kHz MP3 playback. Resident image
+  78,828 B. Open: hybrid-mode Opus still pages (≈ 20 lines too many).
+
 ### 2026-11-24 — queue editing on the player; BT-3 offline analysis; new bugs (lead)
 
 * **Queue editing works on the player**: with a 231-track folder queue
