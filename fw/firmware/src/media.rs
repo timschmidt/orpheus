@@ -26,8 +26,13 @@
 //! stop, track change, card hand-over, power-off). Formats:
 //! `orpheus_player::image`.
 //!
-//! Not yet: tags and art in the track info, queue edits (remove,
-//! move, play next, add), Shuffle all, persistence of text positions.
+//! Music-library lists (Artists, Albums, Songs, …; `crate::library`) share
+//! the listing window: `Req::LibList` makes one the listing, `Req::Want`
+//! moves its window; their queues (`PlayReq::PlayLib`) and Shuffle all come
+//! from the library too.
+//!
+//! Not yet: tags in the track info, queue edits (remove, move, play next,
+//! add), persistence of text positions.
 
 use core::cell::RefCell;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -36,7 +41,9 @@ use critical_section::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use orpheus_apps::browse::{EntryKind, is_hidden_name, kind_of};
-use orpheus_apps::services::{BrowseFilter, DateTime, DirId, FileRef, Listing, PicReq, PicState};
+use orpheus_apps::services::{
+    BrowseFilter, DateTime, DirId, FileRef, LibList, LibNow, LibraryState, Listing, PicReq, PicState,
+};
 use orpheus_index::LetterTable;
 use orpheus_player::image::StoreImage;
 use orpheus_player::{Action, Actions, Bookmark, Command, Config, Event, Player, Repeat, State, TrackRef};
@@ -78,7 +85,7 @@ pub const FOCUS_SCAN_PLAYING: u32 = 1024;
 pub const LETTER_RUNS: usize = 80;
 
 pub mod tag {
-    pub use orpheus_apps::services::data::{BROWSE, PICTURE, QUEUE, TEXT};
+    pub use orpheus_apps::services::data::{BROWSE, LIBRARY, PICTURE, QUEUE, TEXT};
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -96,6 +103,10 @@ pub enum Req {
     Release,
     /// Put a picture into the frame buffer the UI lent (`PicJob`).
     Picture(PicJob),
+    /// Make a music-library list the listing (`crate::library`).
+    LibList { list: LibList },
+    /// Update the music library at the next idle moment.
+    Rebuild,
 }
 
 /// A picture for a box of the frame buffer (`PictureService`). The UI
@@ -150,9 +161,15 @@ pub enum PlayReq {
         start: Option<FileRef>,
         shuffle: bool,
     },
-    /// Music → Shuffle all: a shuffled queue sampled from every visible
-    /// audio file on the card (until the library index exists).
+    /// Music → Shuffle all: a shuffled queue sampled from the library (or,
+    /// without one, from every visible audio file on the card).
     ShuffleAll,
+    /// Queue the tracks of a library list and play from row `start`.
+    PlayLib {
+        list: LibList,
+        start: Option<u32>,
+        shuffle: bool,
+    },
     Cmd(Command),
     /// Play queue position `n` (play order).
     JumpPos(u32),
@@ -195,7 +212,7 @@ pub fn play(r: PlayReq) {
     let _ = PLAY.try_send(r);
 }
 
-fn ready(t: u16) {
+pub(crate) fn ready(t: u16) {
     let _ = READY.try_send(t);
 }
 
@@ -338,6 +355,12 @@ pub struct PlayerSnap {
     /// Album art of the current track: 0 none, else changes with it
     /// (`Server::art`).
     pub art: u32,
+    /// The music library (`crate::library`): its state, a generation that
+    /// changes when another library is opened, and the current track in
+    /// it.
+    pub lib_state: LibraryState,
+    pub lib_gen: u32,
+    pub lib_now: Option<LibNow>,
 }
 
 impl PlayerSnap {
@@ -362,6 +385,9 @@ impl PlayerSnap {
         qgen: 0,
         bm_gen: 0,
         art: 0,
+        lib_state: LibraryState::Missing,
+        lib_gen: 0,
+        lib_now: None,
     };
 }
 
@@ -623,6 +649,8 @@ pub struct Server {
     /// The folder whose cover was looked for last (first cluster) and its
     /// art: the other tracks of the folder use it without a scan.
     pub folder_art: Option<(u32, Option<crate::pictures::ArtRef>)>,
+    /// The music library.
+    pub lib: crate::library::LibState,
 }
 
 impl Server {
@@ -658,6 +686,7 @@ impl Server {
             art: None,
             art_gen: 0,
             folder_art: None,
+            lib: crate::library::LibState::new(),
         }
     }
 
@@ -706,8 +735,20 @@ impl Server {
                 self.browse(vol, dir, entry, filter, idle.then_some(scratch)).await;
                 true
             }
+            Req::Want { first } if self.lib.list.is_some() => {
+                crate::library::window(vol, self, first).await;
+                true
+            }
             Req::Want { first } => {
                 self.window(vol, first).await;
+                true
+            }
+            Req::LibList { list } => {
+                crate::library::open_list(vol, self, list).await;
+                true
+            }
+            Req::Rebuild => {
+                crate::library::rebuild(self);
                 true
             }
             Req::Text { file, offset } => {
@@ -729,6 +770,32 @@ impl Server {
                 true
             }
         }
+    }
+
+    /// A listing that is not a folder (a music-library list, `dir`)
+    /// replaces the current one; returns its generation.
+    pub fn start_listing(&mut self, dir: DirId) -> u32 {
+        self.dir = dir;
+        self.entry = None;
+        self.count = 0;
+        self.index = None;
+        self.dircl = u32::MAX;
+        self.lgen = self.lgen.wrapping_add(1);
+        self.lgen
+    }
+
+    /// The current listing's generation.
+    #[must_use]
+    pub fn listing_gen(&self) -> u32 {
+        self.lgen
+    }
+
+    /// The queue was filled with `n` items (elsewhere): its identity and
+    /// generation follow.
+    pub fn set_queue_len(&mut self, serial: u32, n: u32) {
+        self.qlen = n.min(QUEUE as u32);
+        self.qgen = self.qgen.wrapping_add(1);
+        self.queue_id = orpheus_player::image::queue_id(serial, &self.queue[..self.qlen as usize]);
     }
 
     /// Set the current track's album art and publish it.
@@ -754,6 +821,7 @@ impl Server {
         self.filter = filter;
         self.count = 0;
         self.index = None;
+        self.lib.list = None;
         self.lgen = self.lgen.wrapping_add(1);
         let lgen = self.lgen;
         let listing_of = |count, sorted| Listing { dir, count, sorted, complete: true };
@@ -1036,6 +1104,7 @@ impl Server {
     /// Before the card goes to the USB host: no index is trusted after it
     /// comes back; a build in progress is given up and its files removed.
     pub async fn card_leaving(&mut self, vol: &mut Vol) {
+        crate::library::card_leaving(self);
         self.index = None;
         // The host may change the folder's pictures.
         self.folder_art = None;
@@ -1386,7 +1455,9 @@ impl Server {
         let Some(pl) = self.player.as_ref() else { return Flow::default() };
         let (state, cur, len, ab) = (pl.state(), pl.current(), pl.len(), pl.ab());
         match r {
-            PlayReq::PlayDir { .. } | PlayReq::ShuffleAll | PlayReq::Shutdown => Flow::default(),
+            PlayReq::PlayDir { .. } | PlayReq::PlayLib { .. } | PlayReq::ShuffleAll | PlayReq::Shutdown => {
+                Flow::default()
+            }
             PlayReq::Cmd(c) => {
                 match c {
                     Command::Repeat(rp) => self.repeat = rp,

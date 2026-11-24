@@ -15,7 +15,8 @@
 //! player.
 //!
 //! While idle, the task also builds directory indexes in the background
-//! (`build_slot`, AU-12) on the end of the decoder arena.
+//! (`build_slot`, AU-12) and the music library (`crate::library::slot`)
+//! on the end of the decoder arena.
 //!
 //! Not yet: gapless hand-over (the player's `Prefetch` is not carried out;
 //! the next track opens after the current one has played out), the fades
@@ -164,7 +165,7 @@ pub static DSP_ON: AtomicBool = AtomicBool::new(true);
 
 /// Breadcrumb that survives a watchdog reset: the last mailbox argument
 /// word (unused by the tests).
-fn mark(v: u32) {
+pub(crate) fn mark(v: u32) {
     WHERE.store(v, Ordering::Relaxed);
     // SAFETY: persistent-area word, written only here.
     unsafe { core::ptr::write_volatile(0x0013_7FEC as *mut u32, 0xB00D_0000 | v) };
@@ -403,6 +404,9 @@ const ARENA: usize = 64 * 1024;
 /// Arena bytes kept free of the decoder for file I/O while it plays (the
 /// text window, the player state image).
 const SPARE: usize = 2048;
+/// The largest decoder, the spare bytes and the music library's build
+/// state (the arena's last bytes, `crate::library::STATE`) fit.
+const _: () = assert!(59_488 + SPARE + crate::library::STATE <= ARENA);
 #[repr(C, align(8))]
 struct ArenaBuf([u8; ARENA]);
 static mut ARENA_BUF: ArenaBuf = ArenaBuf([0; ARENA]);
@@ -701,7 +705,13 @@ async fn play_file(
         match got {
             Some(Ok(r))
                 if driven
-                    && !matches!(r, PlayReq::PlayDir { .. } | PlayReq::ShuffleAll | PlayReq::Shutdown) =>
+                    && !matches!(
+                        r,
+                        PlayReq::PlayDir { .. }
+                            | PlayReq::PlayLib { .. }
+                            | PlayReq::ShuffleAll
+                            | PlayReq::Shutdown
+                    ) =>
             {
                 flow.merge(srv.play_req(r));
             }
@@ -1035,6 +1045,8 @@ async fn play_item(
     let Some((f, track, ext, n)) = open_target(vol, srv, o.target).await else {
         return after(srv.feed(Event::OpenFailed));
     };
+    // Its place in the music library ("Go to album / artist").
+    crate::library::find_now(vol, srv, track.locator()).await;
     // Album art while the arena is still free (AU-14).
     crate::pictures::track_art(vol, ring, arena, srv, track.locator()).await;
     let ext = (n > 0).then_some(&ext[..n]);
@@ -1151,6 +1163,7 @@ async fn load_state(vol: &mut Volume<'static, Card>, arena: &mut [u8], srv: &mut
     }
     srv.init_player(&arena[..n]);
     srv.load_titles(vol).await;
+    crate::library::mounted(vol, srv).await;
 }
 
 /// Before the card goes to the USB task: the player stops (the card is
@@ -1164,7 +1177,7 @@ async fn hand_over(vol: &mut Volume<'static, Card>, srv: &mut Server, scratch: &
 // ------------------------------------------------------------ index build
 
 /// Something for the idle loop is waiting.
-fn work_waiting() -> bool {
+pub(crate) fn work_waiting() -> bool {
     !CMDS.is_empty() || !media::REQS.is_empty() || !media::PLAY.is_empty()
 }
 
@@ -1259,9 +1272,19 @@ async fn player_request(
         }
         PlayReq::ShuffleAll => {
             let seed = time::now_us() as u32;
-            srv.build_all_queue(vol, seed).await;
+            // A sample of the library; without one, a walk of the card.
+            if !crate::library::sample(vol, srv, seed).await {
+                srv.build_all_queue(vol, seed).await;
+            }
             save_queue(vol, arena, srv).await;
             srv.start_queue(None, true, seed)
+        }
+        // Without a library (gone with the card) the old queue stays.
+        PlayReq::PlayLib { .. } if srv.lib.lib.is_none() => Flow::default(),
+        PlayReq::PlayLib { list, start, shuffle } => {
+            let s = crate::library::queue(vol, srv, list, start).await;
+            save_queue(vol, arena, srv).await;
+            srv.start_queue(s, shuffle, time::now_us() as u32)
         }
         r => srv.play_req(r),
     };
@@ -1418,7 +1441,10 @@ pub async fn audio() {
     let mut ring = Ring { buf: &mut RING_BUF.take().0, rd: 0, wr: 0, len: None, eof: true, reseek: false };
     // SAFETY: this task is the arena's owner; the USB task borrows it only
     // while this task waits for the card (`usb_buffer`).
-    let arena: &mut [u8] = unsafe { &mut (*(&raw mut ARENA_BUF)).0 };
+    let full: &'static mut [u8] = unsafe { &mut (*(&raw mut ARENA_BUF)).0 };
+    // Its last bytes hold the music library's build state (never lent out).
+    let (arena, lib_state) = full.split_at_mut(ARENA - crate::library::STATE);
+    crate::library::init(lib_state);
     let srv = SERVER.take();
     load_state(&mut vol, arena, srv).await;
     loop {
@@ -1431,7 +1457,18 @@ pub async fn audio() {
             if srv.wants_build() && !work_waiting() {
                 build_slot(&mut vol, srv, arena).await;
             }
-            select3(CMDS.receive(), media::REQS.receive(), media::PLAY.receive()).await
+            // The music library builds when it is due and nothing else waits.
+            if crate::library::wait_ms(srv) == Some(0) && !srv.wants_build() && !work_waiting() {
+                crate::library::slot(&mut vol, srv, arena).await;
+            }
+            let next = select3(CMDS.receive(), media::REQS.receive(), media::PLAY.receive());
+            match crate::library::wait_ms(srv) {
+                Some(ms) => match select(next, Timer::after_millis(ms.max(1))).await {
+                    Either::First(r) => r,
+                    Either::Second(()) => continue,
+                },
+                None => next.await,
+            }
         };
         let cmd = match r {
             Either3::First(c) => c,
@@ -1450,6 +1487,7 @@ pub async fn audio() {
                         Some(v) => vol = v,
                         None => return,
                     }
+                    crate::library::card_back(&mut vol, srv).await;
                 }
                 continue;
             }
@@ -1465,6 +1503,7 @@ pub async fn audio() {
                 Some(v) => vol = v,
                 None => return,
             }
+            crate::library::card_back(&mut vol, srv).await;
         } else if let Some(p) = text.strip_prefix("ls ") {
             ls(&mut vol, p.trim()).await;
         } else if let Some(p) = text.strip_prefix("play ") {

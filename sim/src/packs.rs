@@ -362,6 +362,14 @@ pub const RU: &[(Str, &str)] = &[
     (HintEq, "◂ ▸ полоса · OK набор"),
     (HintText, "◂ ▸ страница"),
     (Mins, "мин"),
+    (UnknownArtist, "Неизвестный исполнитель"),
+    (UnknownAlbum, "Неизвестный альбом"),
+    (UnknownGenre, "Неизвестный жанр"),
+    (GoToAlbum, "К альбому"),
+    (GoToArtist, "К исполнителю"),
+    (PlayItem, "Играть"),
+    (PlayAll, "Играть всё"),
+    (NoMusic, "Музыка не найдена"),
 ];
 
 pub const JA: &[(Str, &str)] = &[
@@ -674,4 +682,12 @@ pub const JA: &[(Str, &str)] = &[
     (HintEq, "◂ ▸ 帯域 · OK プリセット"),
     (HintText, "◂ ▸ ページ"),
     (Mins, "分"),
+    (UnknownArtist, "名前のないアーティスト"),
+    (UnknownAlbum, "名前のないアルバム"),
+    (UnknownGenre, "名前のないジャンル"),
+    (GoToAlbum, "アルバムへ"),
+    (GoToArtist, "アーティストへ"),
+    (PlayItem, "再生"),
+    (PlayAll, "すべて再生"),
+    (NoMusic, "音楽がありません"),
 ];

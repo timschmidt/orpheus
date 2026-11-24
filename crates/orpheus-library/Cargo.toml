@@ -15,5 +15,8 @@ orpheus-index = { path = "../orpheus-index" }
 orpheus-meta = { path = "../orpheus-meta" }
 orpheus-player = { path = "../orpheus-player" }
 
+[dev-dependencies]
+orpheus-fs = { path = "../orpheus-fs", features = ["std"] }
+
 [lints]
 workspace = true

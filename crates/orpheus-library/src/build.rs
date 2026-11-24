@@ -530,14 +530,17 @@ impl<C: TagSource> ReadAt for Rd<'_, C> {
     }
 }
 
-impl<'s> Builder<'s> {
-    /// Start a build (incremental when a library exists). `None` if
-    /// `scratch` is shorter than [`MIN_SCRATCH`].
-    pub fn new(scratch: &'s mut [u8], cfg: Config) -> Option<Builder<'s>> {
-        if scratch.len() < MIN_SCRATCH {
+impl Suspended {
+    /// The state of a new build (incremental when a library exists) for a
+    /// scratch buffer of `scratch_len` bytes, to drive in place with
+    /// [`Suspended::step_in`]. `None` if that is shorter than
+    /// [`MIN_SCRATCH`].
+    #[must_use]
+    pub fn new(scratch_len: usize, cfg: Config) -> Option<Suspended> {
+        if scratch_len < MIN_SCRATCH {
             return None;
         }
-        let len = scratch.len().clamp(MIN_SCRATCH, S_WIN + MAX_WIN);
+        let len = scratch_len.clamp(MIN_SCRATCH, S_WIN + MAX_WIN);
         let cur = Cur {
             loc: None,
             id: 0,
@@ -574,6 +577,46 @@ impl<'s> Builder<'s> {
             }),
             stats: ScanStats::default(),
         };
+        Some(st)
+    }
+
+    /// [`Builder::step`] on this state where it is (no copy of it is made:
+    /// the firmware keeps it in a static). `scratch` is at least as long
+    /// as the build's; it must hold what the previous `step_in` left in it,
+    /// unless [`Suspended::pause_in`] was called after that.
+    pub fn step_in<S, C, E>(
+        &mut self,
+        scratch: &mut [u8],
+        store: &mut S,
+        src: &mut C,
+        budget: u32,
+    ) -> Result<Progress, Error<E>>
+    where
+        S: Storage<Error = E>,
+        C: TagSource<Error = E>,
+    {
+        let Some(scratch) = scratch.get_mut(..self.scratch_len as usize) else {
+            return Err(Error::ScratchTooSmall);
+        };
+        Run { scratch, st: self }.step(store, src, budget)
+    }
+
+    /// [`Builder::suspend`] in place: after it the scratch may be used for
+    /// anything until the next [`Suspended::step_in`].
+    pub fn pause_in<S: Storage>(&mut self, scratch: &mut [u8], store: &mut S) -> Result<(), Error<S::Error>> {
+        let Some(scratch) = scratch.get_mut(..self.scratch_len as usize) else {
+            return Err(Error::ScratchTooSmall);
+        };
+        Run { scratch, st: self }.pause(store)
+    }
+}
+
+impl<'s> Builder<'s> {
+    /// Start a build (incremental when a library exists). `None` if
+    /// `scratch` is shorter than [`MIN_SCRATCH`].
+    pub fn new(scratch: &'s mut [u8], cfg: Config) -> Option<Builder<'s>> {
+        let st = Suspended::new(scratch.len(), cfg)?;
+        let len = st.scratch_len as usize;
         Some(Builder { scratch: &mut scratch[..len], st })
     }
 
@@ -588,6 +631,29 @@ impl<'s> Builder<'s> {
     /// blocks while indexing. A step may also sort and write one
     /// scratch-full run.
     pub fn step<S, C, E>(&mut self, store: &mut S, src: &mut C, budget: u32) -> Result<Progress, Error<E>>
+    where
+        S: Storage<Error = E>,
+        C: TagSource<Error = E>,
+    {
+        Run { scratch: &mut *self.scratch, st: &mut self.st }.step(store, src, budget)
+    }
+
+    /// Stop here and give the scratch back; nothing is lost.
+    pub fn suspend<S: Storage>(mut self, store: &mut S) -> Result<Suspended, Error<S::Error>> {
+        Run { scratch: &mut *self.scratch, st: &mut self.st }.pause(store)?;
+        Ok(self.st)
+    }
+}
+
+/// A build running on a state kept elsewhere ([`Builder`], or a
+/// [`Suspended`] driven in place).
+struct Run<'a> {
+    scratch: &'a mut [u8],
+    st: &'a mut Suspended,
+}
+
+impl Run<'_> {
+    fn step<S, C, E>(&mut self, store: &mut S, src: &mut C, budget: u32) -> Result<Progress, Error<E>>
     where
         S: Storage<Error = E>,
         C: TagSource<Error = E>,
@@ -623,9 +689,10 @@ impl<'s> Builder<'s> {
         }
     }
 
-    /// Stop here and give the scratch back; nothing is lost.
-    pub fn suspend<S: Storage>(mut self, store: &mut S) -> Result<Suspended, Error<S::Error>> {
-        let st = &mut self.st;
+    /// Flush the writers and rewind the readers: the scratch contents are
+    /// not needed any more.
+    fn pause<S: Storage>(&mut self, store: &mut S) -> Result<(), Error<S::Error>> {
+        let st = &mut *self.st;
         match (PLAN.get(usize::from(st.stage)), &mut st.w) {
             (Some(Stage::Scan), Work::Scan(sc)) if st.started => {
                 let (old, rest) = self.scratch.split_at_mut(S_OLD);
@@ -659,7 +726,7 @@ impl<'s> Builder<'s> {
             }
             _ => {}
         }
-        Ok(self.st)
+        Ok(())
     }
 
     // ------------------------------------------------------------ start

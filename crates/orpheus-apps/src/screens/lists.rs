@@ -14,11 +14,13 @@ use orpheus_ui::widgets::list::{Accessory, ListAction, ListView};
 
 use super::rows::Rows;
 use super::{
-    BOOKMARKS, CHOICE, GOODBYE, GROUP, HOME_APPS, INFO, MUSIC, MUSIC_FOLDERS, NOTICE, NOW_PLAYING, Notice,
-    PICKER, POWER_MENU, PROPERTIES, QUICK_PANEL, SETTINGS, SLIDER, USB_CONNECT,
+    BOOKMARKS, CHOICE, GOODBYE, GROUP, HOME_APPS, INFO, LIBRARY, LibraryScreen, MUSIC, MUSIC_FOLDERS, NOTICE,
+    NOW_PLAYING, Notice, PICKER, POWER_MENU, PROPERTIES, QUICK_PANEL, SETTINGS, SLIDER, USB_CONNECT,
 };
 use crate::App;
-use crate::services::{FsKind, LibraryState, PlayerCmd, PowerRequest, Services, StorageRequest, UsbMode};
+use crate::services::{
+    FsKind, LibList, LibraryState, PlayerCmd, PowerRequest, Services, StorageRequest, UsbMode,
+};
 use crate::settings::{self, Action, GROUPS, Info, Kind, SettingId, format_value, id};
 use crate::strings::{Lang, Str};
 
@@ -658,6 +660,22 @@ impl ListScreen {
                 T_FOLDERS => Nav::Push(MUSIC_FOLDERS, Arg(0)),
                 T_BOOKMARKS => Nav::Push(BOOKMARKS, Arg(0)),
                 T_BUILDING => Nav::Stay,
+                t if cx.svc.library() == LibraryState::Ready && (T_LIBRARY..T_LIBRARY + 6).contains(&t) => {
+                    let list = match t - T_LIBRARY {
+                        0 => LibList::Artists,
+                        1 => LibList::Albums,
+                        2 => LibList::Songs,
+                        3 => LibList::Genres,
+                        5 => LibList::Recent,
+                        // Playlists (later package).
+                        _ => return Nav::Push(NOTICE, Arg(Notice::NotYet(App::Music).arg())),
+                    };
+                    Nav::Push(LIBRARY, LibraryScreen::arg(list))
+                }
+                T_LIBRARY..T_FOLDERS if matches!(cx.svc.library(), LibraryState::Building { .. }) => {
+                    cx.ui.toast(lang.get(Str::BuildingLibrary));
+                    Nav::Stay
+                }
                 _ => Nav::Push(NOTICE, Arg(Notice::NotYet(App::Music).arg())),
             },
             ListKind::Bookmarks => {

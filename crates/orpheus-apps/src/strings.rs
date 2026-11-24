@@ -459,6 +459,15 @@ strings! {
     RotateRight = "Rotate right",
     FillScreen = "Fill the screen",
     NoPictures = "No pictures here",
+    // Music library (05 §7.1).
+    UnknownArtist = "Unknown artist",
+    UnknownAlbum = "Unknown album",
+    UnknownGenre = "Unknown genre",
+    GoToAlbum = "Go to album",
+    GoToArtist = "Go to artist",
+    PlayItem = "Play",
+    PlayAll = "Play all",
+    NoMusic = "No music found",
 }
 
 /// Number of strings.

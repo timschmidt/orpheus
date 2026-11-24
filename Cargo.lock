@@ -1047,6 +1047,8 @@ dependencies = [
  "orpheus-fs",
  "orpheus-host",
  "orpheus-img",
+ "orpheus-index",
+ "orpheus-library",
  "orpheus-meta",
  "orpheus-power",
  "orpheus-ui",

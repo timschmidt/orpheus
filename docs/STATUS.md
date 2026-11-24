@@ -34,12 +34,96 @@ of every session. Newest entries first in §3.
 | UI-1, UI-2, UI-3, UI-4 | done (host); running on the player | 457 golden images |
 | AU-1…AU-4, AU-7, AU-8, AU-9 | done (host); on the player: MP3/FLAC/WAV and Speex at 48 MHz, Vorbis at 144 MHz (clock floor), **Opus too slow** | Opus CELT touches more code per frame than the 32 KB code cache holds; ends with "decoder too slow for this player" (abort after 8 underruns) instead of a reset. Needs a bigger code cache or a resident hot path (RAM decision). Ogg pages over ~15.5 KB fail (16 KiB ring < `MAX_PEEK` 28 KiB; RAM) |
 | AU-6 | done (host); **working on the player** | `orpheus-dsp` chain between decoder and DAC, fed by the Sound settings; works on a scratch copy of the decoder output; while any stage is active during playback the clock floor is 96 MHz (EQ + bass + crossfeed: 0 underruns, ≈ 90 % idle). WSOLA not done; Levels meter not wired |
-| AU-12 (directory index) | host done; **firmware wired in (built, not yet run on the player)** | `orpheus-index` + its `card` adapters over `orpheus-fs` (host-tested on FAT32/exFAT images). Files/Music › Folders sorted (Name/Date/Size, hidden per setting), letter jump from the index's letter runs, play queue in listing order. Library index, tag browsing, playlists, Favourites: not started |
+| AU-12 (directory index, music library) | host done; **firmware wired in (built, not yet run on the player)** | `orpheus-index` + its `card` adapters over `orpheus-fs` (host-tested on FAT32/exFAT images). Files/Music › Folders sorted (Name/Date/Size, hidden per setting), letter jump from the index's letter runs, play queue in listing order. **Music library** (`orpheus-library`) built in the card task's idle loop, Music › Artists/Albums/Songs/Genres/Recently added, Play/Shuffle, Shuffle all from the library, Go to album/artist. Playlists, Favourites: not started. User check 16 |
 | AU-14 | done (host); **device: Pictures app and album art (built, not yet run on the player)** | `orpheus-img`. Pictures (folders + pictures, list mode), viewer (fit/fill, rotate, next/prev, slideshow), album art made at track open and cached in `/.orpheus/cache/art`. Not done: thumbnail grid, 100 % + pan, wallpaper, delete, per-file rotation memory. User check 14 |
 | OTP-1, BT-1, USB-6 | done (host) | `orpheus-otp`, `orpheus-bt`, MMC/CD-ROM in `orpheus-usb` |
 | BT-2 (device) | **built, not yet run on the player** | UART1 driver (`atj2157_hal::uart`, `yoton_bsp::bt`), `orpheus_bt::driver`, firmware `bt` task, `BluetoothService`, shutdown 0x24 on power-off. Module off at boot; `bt probe/on/off/status/scan/connect/listen/shutdown/rx/tx` test commands. Not done: volume policy, metadata at track change, pairing UI, U-BT-2 |
 
 ## 3. Session log
+
+### 2026-11-24 — AU-12 firmware: the music library on the player (worker, no hardware)
+
+* **Flow.** At mount the card task opens the newest complete library
+  (`/.orpheus/library/lib-a|b.ydb`). Without one a build is *due* 10 s
+  later; after a card-reader session an update is due 5 s after the card
+  comes back (unchanged folders are copied without a tag read); Settings ›
+  Storage › Rebuild library (`Req::Rebuild`, from the UI's storage action)
+  makes it due at once. A due build runs only in the idle loop (no track
+  loaded, after a waiting directory-index build) in steps of 32 units (a
+  tag read counts 8) on the last 20 KiB of the decoder arena, sleeping as
+  long as each step took (≥ 2 ms). Any request, command or player request
+  pauses it (`Suspended::pause_in`: buffers flushed, scratch free); the
+  idle loop resumes it (a timer wakes the loop when a build becomes due).
+  A card hand-over gives a build up (the next build empties its files).
+  The UI sees `LibraryState::Building { files }` while there is no library
+  yet, `Ready` once one is open (an update keeps the old one usable until
+  it is done, then the lists are asked for again).
+* **Build state in place.** `orpheus-library` gained `Suspended::new`,
+  `step_in`, `pause_in` (the builder's methods now run on a `Run` that
+  borrows the state; `Builder` is unchanged outside): the firmware keeps
+  the 1,096-B state in the **last bytes of the decoder arena** (no
+  playback uses them: Opus 59,488 B + 2 KiB spare leave 4 KiB; the arena
+  everything else is lent is shorter by that much; a const assert guards
+  it) and drives it where it is — no `Builder` moved through the stack
+  (the first version had 2.3 KB / 1.2 KB transient frames for
+  suspend/resume and a 1.1 KB static).
+* **Card adapters.** `orpheus_index::card::CardIo::new_in` (Storage files
+  flat in another folder); `orpheus_library::card::{CardTags, TagState}`
+  (TagSource over `orpheus-fs`: `open_dir` with `after` = seek to the
+  entry and read past it; `open_file` opens the entry just listed without
+  a directory seek). `LetterTable::begin/push` (letter runs from any
+  source). Host test (`orpheus-library/tests/card.rs`): FAT32 and exFAT
+  images (mkfs), 90 tracks of the mock card written as files, first build
+  in 1–7-step sessions with suspends, names identical to a mock-card
+  build, `find`, album queue, an update driven in place reads 0 tags,
+  only the slot file left, `fsck` clean.
+* **Screens → queries.** New `LibraryService` (in `Services`) and
+  `LibraryScreen` (screen 26, one per level, resume record = list code +
+  focused row id): Music › Artists → `List::Artists` → OK → `ArtistAlbums`
+  → `AlbumTracks`; Albums → `Albums`; Songs → `Songs`; Genres → `Genres` →
+  `GenreArtists` → `GenreArtistAlbums` → `GenreAlbumTracks`; Recently
+  added → `Recent` (100 rows). OK on a track: `PlayerCmd::PlayLib { list,
+  start: row }` → `Library::queue` of up to 256 tracks around the row;
+  Menu → Play / Shuffle (focused container's tracks, or the track list),
+  Play all / Shuffle all (an artist's or genre's tracks). Shuffle all:
+  `Library::sample` (256, library order, played shuffled); the card walk
+  stays as the fallback without a library. Now Playing menu: Go to album /
+  Go to artist (when the track is in the library: `Library::find` at track
+  open → `PlayerSnap::lib_now`), landing on the track / album. Unknown
+  artist/album/genre strings (en/ru/ja). Library lists share the browse
+  window (pseudo directory `0xF…`, rows carry kind, row id, duration;
+  `tag::LIBRARY`), letter runs go into `media::LETTERS`.
+* **Simulator**: `set:library=ready` builds a real library from the card
+  image through the same adapters (sessions of 64 steps); 26 new goldens
+  `library_*` (root, artists, an artist's albums, album tracks, albums,
+  songs, genres, recent, menu, play, Now Playing menu, Go to album / artist;
+  dark/Latin and light/CJK), looked at; all 479 older goldens unchanged.
+* **RAM** (`xtask build`, this worktree): `__stack_bottom` `0x1320c8` →
+  `0x132600`, main stack 21,304 → 19,968 B (**−1,336 B**): resident
+  +1,248 (rodata +976 — the panic-location paths of 9 newly linked files,
+  `orpheus-library` ×5, `orpheus-meta` window/length, `orpheus-index`
+  extsort…, ≈ 42 B shorter each in the main checkout, so ≈ −380 B there;
+  data +280: `SERVER` +256 = `LibState` with the open `Library`, `PLAYER`
+  +24), bss +88 (UI future +80). Expect ≈ −960 B in the main checkout.
+  `xtask size --check` fails **in a worktree** (resident 83,244 > 81,920;
+  the base was already 81,996 here); 103 paths × 42 B ⇒ ≈ 78.9 KB in the
+  main checkout.
+* **Stack frames** (`sub sp`/`subw`): audio task poll 5,088 → 5,024 B,
+  UI task poll 6,016 → 5,984 B. New: `library::step` 2,036 (the builder's
+  scan with `orpheus_meta::Tags` inlined), `Run::sort` 1,100,
+  `Library::open` 1,340 (mount/hand-back only), `CardTags::open_dir`
+  1,044, `publish_list` 860, `fill_queue` 628, `begin` 620,
+  `fill_sample` 580, `load_letters` 508, `session` ≈ 320, `pause` 116.
+  Deepest new RT path ≈ audio poll + step + `Out::put` → `CardStore::
+  write_at` 640 → `Inner::slot` 2,500 → FS open ≈ 11.6 KB, below the
+  playing-and-serving path (≈ 13.6 KB) — check the stack high-water mark
+  during a first build.
+* Not done: an update at every mount (a card changed in a computer while
+  the player was off is only picked up by Rebuild or a card-reader
+  session); Playlists; "Rebuild" is always an update (never from
+  scratch); Ogg/MP4 tags (names from files/folders); no build progress
+  in percent (the row says "Building library…"); a build that fails is
+  not retried until the next mount, card-reader session or Rebuild.
 
 ### 2026-11-24 — BT-2 device side: UART driver, Bluetooth task, shutdown on power-off (worker, no hardware)
 
@@ -697,6 +781,7 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 | 2026-11-24 | Firmware with orpheus-player (AU-5 firmware) | resident 80,724 B (was 79,084), bss 122,608 B, main stack 22,968 B (was 24,752), 48 code + 14 rodata pages | `xtask build`, `llvm-nm` `__stack_bottom` |
 | 2026-11-24 | Firmware with BT-2 device side (worktree build) | resident +160 B, bss +2,136 B, main stack −2,288 B; `orpheus_bt::driver::Driver` 1,328 B | `xtask build`, `llvm-nm` `__stack_bottom` |
 | 2026-11-24 | Firmware with Pictures and album art (AU-14 device), worker worktree build | resident 81,444 B (was 79,532), bss 123,160 B (was 123,000), main stack 21,696 B (was 23,768), 62 code + 16 rodata pages (was 52 + 14), slot 724,992 B | `xtask build`, `nm` `__stack_bottom` |
+| 2026-11-24 | Firmware with the music library (AU-12 firmware), worker worktree build | resident 83,244 B (was 81,996), bss 123,088 B (was 123,000), main stack 19,968 B (was 21,304), 71 code + 16 rodata pages (was 66 + 16), slot 802,816 B (was 761,856); audio task poll frame 5,024 B (was 5,088) | `xtask build`, `llvm-nm` `__stack_bottom`, `llvm-objdump` `sub sp` |
 
 
 ## 5. Open questions for the user

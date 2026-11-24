@@ -12,9 +12,9 @@ use orpheus_apps::services::{
     SystemService, UsbMode, UsbService, UsbState,
 };
 use orpheus_apps::services::{
-    Bookmark, BrowseFilter, BrowseService, DirId, Entry, FileOp, FileRef, Levels, LibraryState, Listing,
-    LyricLine, PicReq, PicState, PictureService, PlayerCmd, PlayerService, PlayerState, QueueEntry,
-    TextService, TrackInfo,
+    Bookmark, BrowseFilter, BrowseService, DirId, Entry, FileOp, FileRef, Levels, LibList, LibListing,
+    LibNow, LibRow, LibraryService, LibraryState, Listing, LyricLine, PicReq, PicState, PictureService,
+    PlayerCmd, PlayerService, PlayerState, QueueEntry, TextService, TrackInfo,
 };
 use orpheus_apps::settings::{SettingId, SettingsCache, id, lang_code};
 use orpheus_apps::{App, Lang};
@@ -387,11 +387,12 @@ impl Host for HostServices {
                 evs.push(Event::Service(ServiceEvent::Minute));
             }
             "library" => {
-                self.media.library = match v {
+                self.media.set_library(match v {
                     "ready" => LibraryState::Ready,
                     "missing" => LibraryState::Missing,
                     _ => LibraryState::Building { files: 1287 },
-                };
+                });
+                evs.push(Event::Service(ServiceEvent::Other { kind: services::other::LIBRARY, value: 0 }));
             }
             "queue" => {
                 // Start an album: takk, kino, yoasobi, podcast.
@@ -584,6 +585,31 @@ impl PlayerService for HostServices {
     fn command(&mut self, c: PlayerCmd) {
         let repeat = self.settings.get(id::REPEAT);
         self.media.command(c, repeat);
+    }
+}
+
+impl LibraryService for HostServices {
+    fn lib_open(&mut self, list: LibList) -> LibListing {
+        self.media.lib_open(list)
+    }
+    fn lib_listing(&self) -> LibListing {
+        self.media.lib_listing()
+    }
+    fn lib_row(&self, i: u32) -> Option<LibRow<'_>> {
+        self.media.lib_row(i)
+    }
+    fn lib_want(&mut self, _first: u32, _count: u32) {}
+    fn lib_position(&self, id: u32) -> Option<u32> {
+        self.media.lib_position(id)
+    }
+    fn lib_letter(&self, i: u32) -> Option<char> {
+        self.media.lib_letter(i)
+    }
+    fn lib_seek_letter(&self, from: u32, forward: bool) -> Option<(u32, char)> {
+        self.media.lib_seek_letter(from, forward)
+    }
+    fn lib_now(&self) -> Option<LibNow> {
+        self.media.lib_now()
     }
 }
 

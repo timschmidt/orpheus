@@ -10,9 +10,9 @@ use orpheus_apps::services::{
     UsbMode, UsbService, UsbState,
 };
 use orpheus_apps::services::{
-    Bookmark, BrowseFilter, BrowseService, DirId, Entry, FileOp, FileRef, Levels, LibraryState, Listing,
-    LyricLine, PicReq, PicSource, PicState, PictureService, PlayerCmd, PlayerService, PlayerState,
-    QueueEntry, TextService, TrackInfo,
+    Bookmark, BrowseFilter, BrowseService, DirId, Entry, FileOp, FileRef, Levels, LibList, LibListing,
+    LibNow, LibRow, LibraryService, LibraryState, Listing, LyricLine, PicReq, PicSource, PicState,
+    PictureService, PlayerCmd, PlayerService, PlayerState, QueueEntry, TextService, TrackInfo,
 };
 use orpheus_apps::settings::{SettingId, SettingsCache, id};
 use orpheus_apps::{App, Lang};
@@ -81,10 +81,14 @@ pub struct Fw {
     /// A picture was not asked for because something covered the screen:
     /// redraw once it is gone.
     pub pic_after_overlay: bool,
+    /// The music library's state and generation last seen.
+    lib_seen: (LibraryState, u32),
 }
 
 /// "Reconnect automatically" (Settings › Bluetooth).
 const BT_RECONNECT: SettingId = SettingId(0x0603);
+/// "Tag code page" (Settings › Playback).
+const TAG_CODE_PAGE: SettingId = SettingId(0x0208);
 
 /// A tiny fixed queue (no external dependency, no allocation).
 pub mod heapless_queue {
@@ -171,6 +175,7 @@ impl Fw {
             pic_since: 0,
             pic_seq: 0,
             pic_after_overlay: false,
+            lib_seen: (LibraryState::Missing, 0),
         }
     }
 
@@ -259,7 +264,7 @@ impl Fw {
     /// `Event::Data`).
     pub fn sync(&mut self, tag: u16) {
         let again = critical_section::with(|cs| match tag {
-            media::tag::BROWSE => {
+            media::tag::BROWSE | media::tag::LIBRARY => {
                 let w = media::BROWSE.borrow(cs).borrow();
                 // Only the folder this side asked for.
                 if w.listing.dir != self.browse.listing.dir {
@@ -329,6 +334,16 @@ impl Fw {
         if let Some(off) = self.qwant {
             self.want_rows(p.queue_pos.saturating_add(off), 7);
         }
+        let lib = (p.lib_state, p.lib_gen);
+        if lib != self.lib_seen {
+            if lib.1 != self.lib_seen.1 && crate::library::dir_list(self.browse.listing.dir).is_some() {
+                // Another library: the list shown is asked for again.
+                self.browse.listing.complete = false;
+            }
+            self.lib_seen = lib;
+            self.pending
+                .push(Event::Service(ServiceEvent::Other { kind: services::other::LIBRARY, value: 0 }));
+        }
     }
 
     /// Ask for the Up-next window at `first` unless it is loaded (or was
@@ -376,11 +391,20 @@ impl Fw {
 
     /// After the settings are loaded: what the player follows from them.
     pub fn init_player(&mut self) {
+        self.setting_to_library(TAG_CODE_PAGE);
         // A sleep timer does not survive a restart.
         if self.settings.get(id::SLEEP_TIMER) != 0 {
             self.settings.set(id::SLEEP_TIMER, 0);
         }
         self.setting_to_player(id::REPEAT);
+    }
+
+    /// The tag code page goes to the library builder.
+    fn setting_to_library(&self, sid: SettingId) {
+        if sid == TAG_CODE_PAGE {
+            let v = u8::try_from(self.settings.get(sid)).unwrap_or(0);
+            crate::library::CODE_PAGE.store(v, Ordering::Relaxed);
+        }
     }
 
     /// Player settings go to the player when they change.
@@ -437,6 +461,7 @@ impl SettingsService for Fw {
             self.pending.push(Event::Service(ServiceEvent::SettingChanged(sid.0)));
             self.setting_to_player(sid);
             self.setting_to_bt(sid);
+            self.setting_to_library(sid);
         }
     }
     fn factory_reset(&mut self) {
@@ -718,7 +743,7 @@ impl PlayerService for Fw {
         Some(Bookmark { title: r.title.as_str(), position_ms: r.ms })
     }
     fn library(&self) -> LibraryState {
-        LibraryState::Missing
+        self.player.lib_state
     }
     fn command(&mut self, c: PlayerCmd) {
         use media::PlayReq;
@@ -745,8 +770,12 @@ impl PlayerService for Fw {
             }
             PlayerCmd::Resume => PlayReq::Resume,
             PlayerCmd::ShuffleAll => PlayReq::ShuffleAll,
-            // Queue edits, favourites and Shuffle all need an editable
-            // queue file and the library index (later packages).
+            PlayerCmd::PlayLib { list, start, shuffle } => {
+                let shuffle = shuffle || self.settings.get(id::SHUFFLE) != 0;
+                PlayReq::PlayLib { list, start, shuffle }
+            }
+            // Queue edits and favourites need an editable queue file
+            // (later packages).
             PlayerCmd::Remove(_)
             | PlayerCmd::MoveUp(_)
             | PlayerCmd::MoveDown(_)
@@ -755,6 +784,63 @@ impl PlayerService for Fw {
             | PlayerCmd::Favourite => return,
         };
         media::play(r);
+    }
+}
+
+/// Library lists share the browse window (`crate::library`).
+impl LibraryService for Fw {
+    fn lib_open(&mut self, list: LibList) -> LibListing {
+        let dir = crate::library::list_dir(list);
+        let w = &*self.browse;
+        if w.listing.dir == dir && w.listing.complete {
+            return LibListing { list, count: w.listing.count, complete: true };
+        }
+        if w.listing.dir != dir {
+            media::set_focus(None);
+        }
+        self.wanted = None;
+        *self.browse = media::BrowseWin::EMPTY;
+        self.browse.listing = Listing { dir, count: 0, sorted: true, complete: false };
+        media::request(media::Req::LibList { list });
+        LibListing { list, count: 0, complete: false }
+    }
+    fn lib_listing(&self) -> LibListing {
+        let l = self.browse.listing;
+        match crate::library::dir_list(l.dir) {
+            Some(list) => LibListing { list, count: l.count, complete: l.complete },
+            None => LibListing { list: LibList::Artists, count: 0, complete: false },
+        }
+    }
+    fn lib_row(&self, i: u32) -> Option<LibRow<'_>> {
+        crate::library::dir_list(self.browse.listing.dir)?;
+        let r = self.browse.row(i)?;
+        Some(LibRow {
+            kind: crate::library::kind_of_code(r.file.dir),
+            id: r.file.index,
+            name: r.name.as_str(),
+            duration_ms: u32::try_from(r.size).unwrap_or(0),
+        })
+    }
+    fn lib_want(&mut self, first: u32, count: u32) {
+        BrowseService::want(self, first, count);
+    }
+    fn lib_position(&self, id: u32) -> Option<u32> {
+        crate::library::dir_list(self.browse.listing.dir)?;
+        let w = &*self.browse;
+        w.rows[..w.n as usize].iter().position(|r| r.file.index == id).map(|i| w.first + i as u32)
+    }
+    fn lib_letter(&self, i: u32) -> Option<char> {
+        BrowseService::letter(self, i)
+    }
+    fn lib_seek_letter(&self, from: u32, forward: bool) -> Option<(u32, char)> {
+        BrowseService::seek_letter(self, from, forward)
+    }
+    fn lib_now(&self) -> Option<LibNow> {
+        let p = &self.player;
+        if p.source == Source::Idle || p.lib_state != LibraryState::Ready {
+            return None;
+        }
+        p.lib_now
     }
 }
 

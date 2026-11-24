@@ -54,6 +54,36 @@ impl<const N: usize> LetterTable<N> {
         Ok(true)
     }
 
+    /// Start a table for a listing of `rows` rows from runs given one by
+    /// one ([`LetterTable::push`]), e.g. the music library's. `false` (and
+    /// no table) if the rows do not fit.
+    pub fn begin(&mut self, rows: u32) -> bool {
+        *self = Self::EMPTY;
+        if rows > u32::from(u16::MAX) || N > usize::from(u16::MAX) {
+            return false;
+        }
+        self.rows = rows;
+        true
+    }
+
+    /// Append the run starting at row `first` (runs in row order, the
+    /// first at 0). `false` (and the table emptied) if it does not fit.
+    pub fn push(&mut self, first: u32, letter: Option<char>) -> bool {
+        let n = usize::from(self.n);
+        let l = letter.map_or(0, u32::from);
+        match (u16::try_from(first), u16::try_from(l)) {
+            (Ok(f), Ok(l)) if n < N && self.rows > 0 => {
+                self.runs[n] = (f, l);
+                self.n += 1;
+                true
+            }
+            _ => {
+                *self = Self::EMPTY;
+                false
+            }
+        }
+    }
+
     /// A table is loaded (an empty listing loads none).
     #[must_use]
     pub fn is_loaded(&self) -> bool {
