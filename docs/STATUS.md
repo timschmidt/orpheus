@@ -619,6 +619,16 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — D-1, D-4, D-6 decided by the owner
+
+* **D-1**: MIT OR Apache-2.0. Added `LICENSE-MIT`, `LICENSE-APACHE` (the
+  standard Apache text), `THIRD-PARTY.md`; the Opus and Speex port crates
+  now declare `BSD-3-Clause` (Xiph originals), README licence section.
+* **D-4**: the 288 MHz / 1.3 V level is to be tested, verified, its battery
+  drain characterised, documented and kept as an option → new WP PWR-5.
+* **D-6**: module firmware work gated for now; ask again once the other
+  development is complete.
+
 ### 2026-11-24 — D-10 decided by the owner
 
 * The presenter remote is a Bluetooth remote (the module's keyboard +

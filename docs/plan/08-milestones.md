@@ -184,6 +184,7 @@ per codec: one listening pass with real files of that format.
 |---|---|---|---|---|
 | UI-7 | Icons/themes pass, animations, rotation, wallpaper, screen saver, language packs, on-device acceptance sweep with archived screenshots | 05 §9 | H+D | L |
 | PWR-4 | Battery-life campaign: scenario table (idle, MP3/FLAC screen off, radio, Bluetooth, recording), tuning of levels, gating, read-ahead; comparison with stock | 02 §5 | D | M |
+| PWR-5 | **Max level (D-4)**: `Level::Max` 288 MHz / VDD `0x18` / `SYSCLK` bit 8 (vendor row, VERBATIM) / NOR ÷6 = 48 MHz; functional verification at Turbo and Max (level self-test, FPU and DSP benchmarks, decode CRC against references for every codec, pager stress, USB and card throughput, 30-min soak); battery-drain characterisation against High for the PWR-4 scenarios (energy per decoded hour and per UI hour); documented in 03 §2 and the manual; offered as a setting (Settings › System › Performance: Normal / Maximum), never chosen by the governor on its own | 03 §2.1 | D | M |
 | UPD-1 | Firmware file format, RAM installer, Update screen, slot handling | 02 §2.5 | D | M |
 | LAY-1 | Full-flash layout option, Unifont pack, `install-full`, `restore vendor` (decision D-2) | 02 §2.4 | D | M |
 | T-6 | Rust payloads (ymon, NOR tools), optional Rust stage 1 | 07 §8 | D | S |

@@ -3,7 +3,7 @@ name = "orpheus-codec-speex"
 description = "Speex decoder (Ogg Speex; narrowband, wideband, ultra-wideband, intensity stereo) in the codec arena: the libspeex 1.2.1 float decoder ported to Rust in f32"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "BSD-3-Clause"
 rust-version.workspace = true
 
 [dependencies]

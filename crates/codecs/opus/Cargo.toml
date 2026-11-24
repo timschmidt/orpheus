@@ -3,7 +3,7 @@ name = "orpheus-codec-opus"
 description = "Opus decoder (RFC 6716, Ogg mapping RFC 7845) in the codec arena: libopus 1.5.2 ported to Rust (integer SILK, f32 CELT)"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "BSD-3-Clause"
 rust-version.workspace = true
 
 [dependencies]

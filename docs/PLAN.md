@@ -138,12 +138,12 @@ Defaults are what workers assume until told otherwise.
 
 | Id | Decision | Default | Why it matters |
 |---|---|---|---|
-| D-1 | Licence of Orpheus | MIT OR Apache-2.0; only permissively licensed sources may be ported; the GPL Rockbox tree is a hardware reference only | A GPL choice would allow porting Rockbox's codecs directly |
+| D-1 | Licence of Orpheus | **Decided 2026-11-24 by the owner: MIT OR Apache-2.0** (`LICENSE-MIT`, `LICENSE-APACHE`; the Opus and Speex ports keep Xiph's BSD-3-Clause, fonts keep theirs: `THIRD-PARTY.md`). Only permissively licensed sources may be ported; the GPL Rockbox tree is a hardware reference only | — |
 | D-2 | When to give up the stock firmware for the full-flash layout | **Decided 2026-11-24 by the user: now** (stock firmware erased, full layout installed) | Dual-boot limited the firmware to 480 KiB |
 | D-3 | USB identity | pid.codes test id `1209:0001` in development; apply for a product id before release | The Rockbox port borrows Actions' vendor id |
-| D-4 | Use of the 288 MHz / 1.3 V level | No | Above the reset-default core voltage; vendor-used, but probably unnecessary |
+| D-4 | Use of the 288 MHz / 1.3 V level | **Decided 2026-11-24 by the owner: test and verify it, characterise the battery-drain difference, document it, and keep it available as an option** (not chosen by the governor on its own; WP PWR-5) | Above the reset-default core voltage; vendor-used (stock level 29, VDD code `0x18`) |
 | D-5 | Open the case for a board inspection (Bluetooth chip marking, analogue tap, debug pads) | Not required | Would identify the Bluetooth chip, locate its audio tap and might expose SWD |
-| D-6 | Experiments with the Bluetooth module's own firmware | No | Recovery from a failed module upgrade is unknown |
+| D-6 | Experiments with the Bluetooth module's own firmware | **Decided 2026-11-24 by the owner: gated for now** — no module firmware reads, writes or upgrade commands; may be approved after the other development is complete (ask again then) | Recovery from a failed module upgrade is unknown |
 | D-7 | Publishing `docs/hw/` and `docs/vendor/` | Kept out of git by `.gitignore` (the `yoton` repository treats vendor-derived analysis the same way) | Remove the ignore lines to publish the reverse-engineering reports; the datasheet copy should stay local |
 | D-8 | Rockbox on the player | Replaced by Orpheus at milestone M2; restorable with one command | The player is the Rockbox reference until then |
 | D-9 | Coverage exclusions (M11) | None; each proposed exclusion (provably unreachable code only) is listed in `coverage-exclusions.toml` with its reason and needs the owner's approval | The 100 % coverage requirement is otherwise absolute |
