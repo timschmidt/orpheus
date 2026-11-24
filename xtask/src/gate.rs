@@ -1,4 +1,9 @@
 //! The milestone gate (07 §6). Each step reports passed / FAILED / not run.
+//!
+//! `--coverage` adds `xtask cover` as a report-only step (the numbers, never
+//! a failure for being below 100 %). `--m11` (the M11 gate, VER-1) adds
+//! coverage with the fuzz corpora and fails below 100 % of the non-excluded
+//! regions. Without these flags the gate is unchanged.
 
 use anyhow::{Result, bail};
 
@@ -7,6 +12,8 @@ use crate::util::{cargo, log, root, run};
 
 pub fn cmd(args: &mut Args) -> Result<String> {
     let skip_dev = args.flag("no-dev");
+    let m11 = args.flag("m11");
+    let coverage = args.flag("coverage") || m11;
     let mut results: Vec<(&str, String)> = Vec::new();
     let mut failed = false;
     let mut step = |name: &'static str, r: Result<String>| match r {
@@ -50,6 +57,9 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     step("build --release", crate::build::cmd_build(&mut Args::from_vec(vec![])));
     step("size --check", crate::size::cmd(&mut Args::from_vec(vec!["--check".into()])));
     step("check-resident", crate::resident::cmd(&mut Args::from_vec(vec![])));
+    if coverage {
+        step("coverage", crate::cover::gate_step(m11));
+    }
     if skip_dev {
         results.push(("dev hil smoke", "not run (--no-dev)".into()));
     } else {

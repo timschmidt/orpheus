@@ -6,10 +6,12 @@
 
 mod args;
 mod build;
+mod cover;
 mod dev;
 mod gate;
 mod linkgraph;
 mod linkmap;
+mod metrics;
 mod pagelink;
 mod resident;
 mod rules;
@@ -37,8 +39,16 @@ usage: cargo xtask <command> [options]
   bringup NAME [--debug]           build a RAM-only bring-up image (fw/bringup/NAME)
   size [--check] [--bin NAME] [--elf PATH]
                                    size report; --check enforces budgets.toml
-  test [host|golden|pagelink|all]  host test suites (pagelink: the paged toy end to end)
-  gate                             the milestone gate (07 §6)
+  test [host|golden|pagelink|codecs|fuzz-smoke|codec-size|all]
+                                   host test suites (pagelink: the paged toy end to end)
+  cover [--crate NAME] [--fuzz] [--html] [--clean] [--report-only]
+                                   LLVM source-based coverage (line, region, branch)
+                                   of crates/, sim/, xtask/: target/orpheus/coverage/
+  metrics [--elf PATH]             append this commit's coverage and firmware
+                                   size/stack rows to metrics/*.csv
+  gate [--no-dev] [--coverage] [--m11]
+                                   the milestone gate (07 §6); --coverage adds the
+                                   coverage report, --m11 enforces 100 %
   dev <subcommand>                 talk to the player (see `cargo xtask dev help`)
 ";
 
@@ -56,6 +66,8 @@ fn main() -> ExitCode {
         "size" => size::cmd(&mut args),
         "test" => test::cmd(&mut args),
         "gate" => gate::cmd(&mut args),
+        "cover" => cover::cmd(&mut args),
+        "metrics" => metrics::cmd(&mut args),
         "dev" => dev::cmd(&mut args),
         "help" | "-h" | "--help" => {
             print!("{USAGE}");

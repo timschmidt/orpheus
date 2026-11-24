@@ -1,0 +1,26 @@
+# Coverage exclusions (docs/plan/07-tooling-testing.md §3.6; user decision D-9
+# in docs/PLAN.md §5). Read by `cargo xtask cover` and the M11 gate
+# (`cargo xtask gate --m11`), which requires 100 % of the regions that are
+# not excluded here.
+#
+# Only code PROVEN unreachable qualifies (for example an arm the compiler
+# requires in an exhaustive match that no input can reach, with the proof in
+# `reason`). Untested code is not a reason: write the test.
+#
+# Each entry:
+#
+#   [[exclude]]
+#   path = "crates/orpheus-x/src/file.rs"   # relative to the repository root
+#   function = "orpheus_x::file::name"      # optional: a substring of the
+#                                           # demangled function path; without
+#                                           # it the whole file is excluded
+#   reason = "why this code cannot run (the proof)"
+#   approved-by = "pending owner"           # the owner replaces this after review
+#
+# Entries whose `approved-by` is still "pending owner" are listed by
+# `xtask cover` but NOT applied: they count as uncovered until the owner
+# approves them. An approved exclusion removes the function's (or file's)
+# regions and branches from the totals; `regions_excluded` in
+# target/orpheus/coverage/summary.csv and metrics/coverage.csv shows how many.
+#
+# Initially empty.
