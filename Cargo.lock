@@ -1444,6 +1444,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "yoton-index"
+version = "0.1.0"
+dependencies = [
+ "yoton-apps",
+ "yoton-fs",
+]
+
+[[package]]
 name = "yoton-input"
 version = "0.1.0"
 
