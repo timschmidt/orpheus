@@ -9,6 +9,7 @@ use orpheus_ui::event::{BtState, Source};
 use orpheus_ui::geom::Rect;
 use orpheus_ui::gfx::Gfx;
 use orpheus_ui::shell::System;
+use orpheus_ui::text::StrBuf;
 use orpheus_ui::theme::{Accent, Palette, Theme};
 use orpheus_ui::widgets::bars::{MiniPlayer, Status};
 
@@ -172,10 +173,217 @@ pub trait UsbService {
     fn select_usb(&mut self, mode: UsbMode);
 }
 
+/// What the Bluetooth module is doing (06 §4.2), finer than the status
+/// bar's [`BtState`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum BtPhase {
+    /// Bluetooth is off (enable line low).
+    #[default]
+    Off,
+    /// Powering up and reading the paired list (or due to, shortly after
+    /// boot).
+    Starting,
+    /// Up, not connected.
+    Ready,
+    /// Inquiry running (Pair new device).
+    Scanning,
+    Connecting,
+    Connected,
+    /// Connected and audio is playing.
+    Streaming,
+    /// The module stopped answering and was given up on after its
+    /// bounded restarts; switching Bluetooth off and on tries again.
+    NotResponding,
+}
+
+impl BtPhase {
+    /// The module takes requests (scan, connect, forget).
+    #[must_use]
+    pub const fn is_up(self) -> bool {
+        matches!(
+            self,
+            BtPhase::Ready
+                | BtPhase::Scanning
+                | BtPhase::Connecting
+                | BtPhase::Connected
+                | BtPhase::Streaming
+        )
+    }
+
+    #[must_use]
+    pub const fn is_connected(self) -> bool {
+        matches!(self, BtPhase::Connected | BtPhase::Streaming)
+    }
+}
+
+/// A device address as the module sends it: least-significant byte first
+/// (HCI order, seen on the player). Compared and sent back as is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct BtAddr(pub [u8; 6]);
+
+impl BtAddr {
+    /// `XX:XX:XX:XX:XX:XX` as addresses are written (most-significant
+    /// byte first, so the stored bytes reversed); shown for a device
+    /// without a name, as the vendor does.
+    pub fn push_text<const N: usize>(&self, out: &mut StrBuf<N>) {
+        const HEX: &[u8; 16] = b"0123456789ABCDEF";
+        for (i, b) in self.0.iter().rev().enumerate() {
+            if i > 0 {
+                out.push(':');
+            }
+            out.push(char::from(HEX[usize::from(b >> 4)]));
+            out.push(char::from(HEX[usize::from(b & 15)]));
+        }
+    }
+}
+
+/// What a device is, from its class of device (inquiry results only).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum BtKind {
+    /// No class known (paired-list records carry none).
+    #[default]
+    Unknown,
+    Headphones,
+    Speaker,
+    Phone,
+    Computer,
+    Other,
+}
+
+impl BtKind {
+    /// From the three class-of-device bytes as the module sends them.
+    /// The byte order is unknown (docs/hw/bluetooth.md §3.5), but the
+    /// major class (bits 8–12) is in the middle byte either way; the
+    /// minor class is taken from the first byte (HCI order, *inferred*):
+    /// in the other order it would read the service bits, which only
+    /// picks the speaker icon for an audio device instead of headphones.
+    #[must_use]
+    pub const fn from_cod(cod: [u8; 3]) -> BtKind {
+        match cod[1] & 0x1F {
+            0x01 => BtKind::Computer,
+            0x02 => BtKind::Phone,
+            0x04 => match (cod[0] >> 2) & 0x3F {
+                // Loudspeaker, portable audio, car audio, set-top, HiFi.
+                0x05 | 0x07 | 0x08 | 0x09 | 0x0A => BtKind::Speaker,
+                _ => BtKind::Headphones,
+            },
+            _ => BtKind::Other,
+        }
+    }
+}
+
+/// Longest device name kept (bytes; the driver keeps as many).
+pub const BT_NAME: usize = 24;
+/// Devices per list (found or paired).
+pub const BT_DEVICES: usize = 8;
+
+/// A found or paired device, by value (no borrowed state: the firmware
+/// copies it out of the Bluetooth task's published lists).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct BtDevice {
+    pub addr: BtAddr,
+    pub kind: BtKind,
+    /// The device the player is connected to (or connecting to).
+    pub connected: bool,
+    name: [u8; BT_NAME],
+    name_len: u8,
+}
+
+impl BtDevice {
+    pub const EMPTY: BtDevice = BtDevice {
+        addr: BtAddr([0; 6]),
+        kind: BtKind::Unknown,
+        connected: false,
+        name: [0; BT_NAME],
+        name_len: 0,
+    };
+
+    /// `name` as the module sent it (normally UTF-8), cut to [`BT_NAME`].
+    #[must_use]
+    pub fn new(addr: BtAddr, kind: BtKind, name: &[u8], connected: bool) -> BtDevice {
+        let mut d = BtDevice { addr, kind, connected, ..BtDevice::default() };
+        // Without slicing: no panic site (resident in the firmware).
+        for (o, c) in d.name.iter_mut().zip(name) {
+            *o = *c;
+        }
+        d.name_len = name.len().min(BT_NAME) as u8;
+        d
+    }
+
+    /// The name; `""` if none arrived (yet). A name cut inside a
+    /// character ends before it.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        let b = self.name.get(..usize::from(self.name_len)).unwrap_or(&[]);
+        match core::str::from_utf8(b) {
+            Ok(s) => s,
+            Err(e) => core::str::from_utf8(b.get(..e.valid_up_to()).unwrap_or(&[])).unwrap_or(""),
+        }
+    }
+
+    /// The name, or the address in text form without one.
+    pub fn push_label<const N: usize>(&self, out: &mut StrBuf<N>) {
+        let n = self.name();
+        if n.is_empty() {
+            self.addr.push_text(out);
+        } else {
+            out.push_str_or_ellipsis(n);
+        }
+    }
+}
+
+/// The module's two device lists.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BtList {
+    /// Found by the last inquiry, in the order they answered.
+    Found,
+    /// Paired in the module.
+    Paired,
+}
+
+/// Bluetooth requests from the screens (none of them is a restricted
+/// module command: CLAUDE.md rule 6).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BtRequest {
+    /// Start an inquiry (empties the found list).
+    Scan,
+    StopScan,
+    /// Connect (pairing if needed); a running inquiry is stopped first,
+    /// another connection is closed first.
+    Connect(BtAddr),
+    CancelConnect,
+    Disconnect,
+    /// Remove a pairing from the module.
+    Forget(BtAddr),
+}
+
+/// `ServiceEvent::Other { kind: other::BLUETOOTH, value }` values.
+pub mod bt_event {
+    /// A device list changed (found, name resolved, paired, forgotten).
+    pub const LISTS: u32 = 1;
+    /// [`super::BtPhase`] changed.
+    pub const PHASE: u32 = 2;
+    /// A connection attempt failed (or was cancelled).
+    pub const CONNECT_FAILED: u32 = 3;
+    /// A device connected (the user's request or a reconnect).
+    pub const CONNECTED: u32 = 4;
+    /// The connected device went away.
+    pub const DISCONNECTED: u32 = 5;
+}
+
+/// The Bluetooth transmitter (06 §4, 05 §7.4). Lists are small (at most
+/// [`BT_DEVICES`] each) and answered by value.
 pub trait BluetoothService {
     fn bt(&self) -> BtState;
     /// Name of the connected (or last) device, `""` if none.
     fn bt_device(&self) -> &str;
+    fn bt_phase(&self) -> BtPhase;
+    fn bt_count(&self, list: BtList) -> usize;
+    fn bt_entry(&self, list: BtList, i: usize) -> Option<BtDevice>;
+    /// Carried out by the Bluetooth task; results arrive as
+    /// `ServiceEvent::Other { kind: other::BLUETOOTH, .. }` and
+    /// `ServiceEvent::Bluetooth`.
+    fn bt_request(&mut self, r: BtRequest);
 }
 
 pub trait SystemService {
@@ -321,6 +529,8 @@ pub mod other {
     /// The music library changed state (`PlayerService::library`): it
     /// was opened, is being built, or a build finished.
     pub const LIBRARY: u16 = 1;
+    /// Bluetooth: `value` is one of [`super::bt_event`].
+    pub const BLUETOOTH: u16 = 2;
 }
 
 /// Browser order (Files menu › Sort).
@@ -885,4 +1095,39 @@ pub trait PictureService {
     /// The outcome of the last `show_picture` (after `Event::Data(PICTURE)`;
     /// `Pending` before).
     fn picture_state(&self) -> PicState;
+}
+
+#[cfg(test)]
+mod bt_tests {
+    use super::*;
+
+    #[test]
+    fn kind_from_class_of_device() {
+        // Headphones (minor 6), wearable headset (1), loudspeaker (5), car
+        // audio (8), phone, computer, uncategorised.
+        assert_eq!(BtKind::from_cod([0x18, 0x04, 0x24]), BtKind::Headphones);
+        assert_eq!(BtKind::from_cod([0x04, 0x04, 0x20]), BtKind::Headphones);
+        assert_eq!(BtKind::from_cod([0x14, 0x04, 0x24]), BtKind::Speaker);
+        assert_eq!(BtKind::from_cod([0x20, 0x04, 0x24]), BtKind::Speaker);
+        assert_eq!(BtKind::from_cod([0x0C, 0x02, 0x5A]), BtKind::Phone);
+        assert_eq!(BtKind::from_cod([0x0C, 0x01, 0x1C]), BtKind::Computer);
+        assert_eq!(BtKind::from_cod([0x00, 0x1F, 0x00]), BtKind::Other);
+        // The other byte order keeps the major class.
+        assert!(matches!(BtKind::from_cod([0x24, 0x04, 0x18]), BtKind::Headphones | BtKind::Speaker));
+    }
+
+    #[test]
+    fn device_names_are_cut_on_characters() {
+        let a = BtAddr([0x00, 0xE0, 0x4C, 0x12, 0x34, 0xAB]);
+        // Longer than 24 bytes; byte 24 falls inside a two-byte character.
+        let n = "Наушники Соня ж".as_bytes();
+        assert!(n.len() > BT_NAME);
+        let d = BtDevice::new(a, BtKind::Unknown, n, false);
+        assert_eq!(d.name(), "Наушники Сон");
+        let mut t = StrBuf::<24>::new();
+        BtDevice::new(a, BtKind::Unknown, b"", false).push_label(&mut t);
+        assert_eq!(t.as_str(), "AB:34:12:4C:E0:00");
+        let bad = BtDevice::new(a, BtKind::Unknown, b"ok\xFFno", false);
+        assert_eq!(bad.name(), "ok");
+    }
 }

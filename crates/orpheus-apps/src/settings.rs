@@ -195,6 +195,7 @@ pub mod id {
     pub const DATE_FORMAT: SettingId = SettingId(0x0504);
     pub const UTC_OFFSET: SettingId = SettingId(0x0505);
     pub const BLUETOOTH: SettingId = SettingId(0x0601);
+    pub const BT_RECONNECT: SettingId = SettingId(0x0603);
     pub const OUTPUT: SettingId = SettingId(0x0604);
     pub const USB_WHEN_CONNECTED: SettingId = SettingId(0x0901);
     pub const LANGUAGE: SettingId = SettingId(0x0A01);

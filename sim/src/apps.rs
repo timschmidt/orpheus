@@ -16,6 +16,7 @@ use orpheus_apps::services::{
     LibNow, LibRow, LibraryService, LibraryState, Listing, LyricLine, PicReq, PicState, PictureService,
     PlayerCmd, PlayerService, PlayerState, QueueEntry, TextService, TrackInfo,
 };
+use orpheus_apps::services::{BtDevice, BtList, BtPhase, BtRequest};
 use orpheus_apps::settings::{SettingId, SettingsCache, id, lang_code};
 use orpheus_apps::{App, Lang};
 use orpheus_power::charger::ChargeState;
@@ -28,6 +29,7 @@ use orpheus_ui::shell::System;
 use orpheus_ui::theme::{Accent, Palette, Theme};
 use orpheus_ui::widgets::bars::{MiniPlayer, Status};
 
+use crate::bt::FakeBt;
 use crate::media::Media;
 use crate::{Host, packs};
 
@@ -51,8 +53,8 @@ pub struct HostServices {
     pub playing: Option<(&'static str, &'static str, Source, u16)>,
     pub volume: u8,
     pub usb: UsbState,
-    pub bt: BtState,
-    pub bt_device: &'static str,
+    pub bt: FakeBt,
+    bt_seen: BtState,
     pub langs: Vec<Lang>,
     pub lang: Lang,
     pub dual_boot: bool,
@@ -77,8 +79,8 @@ impl Default for HostServices {
             playing: None,
             volume: 12,
             usb: UsbState::Detached,
-            bt: BtState::Off,
-            bt_device: "",
+            bt: FakeBt::default(),
+            bt_seen: BtState::Off,
             langs: vec![Lang::ENGLISH, packs::russian(), packs::japanese()],
             lang: Lang::ENGLISH,
             dual_boot: true,
@@ -105,7 +107,11 @@ impl SettingsService for HostServices {
                 self.lang = self.langs.iter().copied().find(|l| lang_code(l.code()) == v).unwrap_or_default();
             }
             if sid == id::BLUETOOTH {
-                self.bt = if value != 0 { BtState::On } else { BtState::Off };
+                self.bt.power(value != 0);
+                self.bt_events();
+            }
+            if sid == id::BT_RECONNECT {
+                self.bt.reconnect = value != 0;
             }
             if sid == id::SLEEP_TIMER {
                 self.sleep_left = match value {
@@ -201,11 +207,28 @@ impl UsbService for HostServices {
 
 impl BluetoothService for HostServices {
     fn bt(&self) -> BtState {
-        self.bt
+        self.bt.state()
     }
 
     fn bt_device(&self) -> &str {
-        self.bt_device
+        self.bt.device_name()
+    }
+
+    fn bt_phase(&self) -> BtPhase {
+        self.bt.phase()
+    }
+
+    fn bt_count(&self, list: BtList) -> usize {
+        self.bt.count(list)
+    }
+
+    fn bt_entry(&self, list: BtList, i: usize) -> Option<BtDevice> {
+        self.bt.entry(list, i)
+    }
+
+    fn bt_request(&mut self, r: BtRequest) {
+        self.bt.request(r);
+        self.bt_events();
     }
 }
 
@@ -359,15 +382,24 @@ impl Host for HostServices {
                 evs.push(Event::Service(ServiceEvent::Usb { host: self.usb == UsbState::Host }));
             }
             "bt" => {
-                (self.bt, self.bt_device) = match v {
-                    "off" => (BtState::Off, ""),
-                    "on" => (BtState::On, ""),
-                    "connected" => (BtState::Connected, "Sport Buds"),
-                    "streaming" => (BtState::Streaming, "Sport Buds"),
-                    _ => bail!("bt: off, on, connected, streaming"),
+                let p = match v {
+                    "off" => BtPhase::Off,
+                    "starting" => BtPhase::Starting,
+                    "on" => BtPhase::Ready,
+                    "scanning" => BtPhase::Scanning,
+                    "connecting" => BtPhase::Connecting,
+                    "connected" => BtPhase::Connected,
+                    "streaming" => BtPhase::Streaming,
+                    "dead" => BtPhase::NotResponding,
+                    _ => bail!("bt: off, starting, on, scanning, connecting, connected, streaming, dead"),
                 };
-                self.settings.set(id::BLUETOOTH, i16::from(self.bt != BtState::Off));
-                evs.push(Event::Service(ServiceEvent::Bluetooth(self.bt)));
+                self.bt.force(p);
+                self.settings.set(id::BLUETOOTH, i16::from(p != BtPhase::Off));
+                self.bt_events();
+            }
+            "btfound" => {
+                self.bt.force_found(v.parse()?);
+                self.bt_events();
             }
             "playing" => {
                 self.playing = on.then(|| {
@@ -462,6 +494,9 @@ impl Host for HostServices {
             "UsbConnect" => screens::USB_CONNECT,
             "Goodbye" => screens::GOODBYE,
             "HomeApps" => screens::HOME_APPS,
+            "Bluetooth" => screens::BLUETOOTH,
+            "BtScan" => screens::BT_SCAN,
+            "BtPaired" => screens::BT_PAIRED,
             _ => return None,
         })
     }
@@ -497,6 +532,8 @@ impl Host for HostServices {
     fn advance(&mut self, ms: u64) {
         let repeat = self.settings.get(id::REPEAT);
         self.media.advance(ms, repeat);
+        self.bt.advance(ms);
+        self.bt_events();
     }
 }
 
@@ -625,6 +662,20 @@ impl PictureService for HostServices {
 }
 
 impl HostServices {
+    /// The fake module's events as service events (and the status bar's
+    /// state when it changed).
+    fn bt_events(&mut self) {
+        for v in self.bt.take_events() {
+            self.events
+                .push(Event::Service(ServiceEvent::Other { kind: services::other::BLUETOOTH, value: v }));
+        }
+        let st = self.bt.state();
+        if st != self.bt_seen {
+            self.bt_seen = st;
+            self.events.push(Event::Service(ServiceEvent::Bluetooth(st)));
+        }
+    }
+
     fn lang_index(&self) -> usize {
         match self.lang.code() {
             "ru" => 1,

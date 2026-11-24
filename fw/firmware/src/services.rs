@@ -14,6 +14,7 @@ use orpheus_apps::services::{
     LibNow, LibRow, LibraryService, LibraryState, Listing, LyricLine, PicReq, PicSource, PicState,
     PictureService, PlayerCmd, PlayerService, PlayerState, QueueEntry, TextService, TrackInfo,
 };
+use orpheus_apps::services::{BtDevice, BtList, BtPhase, BtRequest};
 use orpheus_apps::settings::{SettingId, SettingsCache, id};
 use orpheus_apps::{App, Lang};
 use orpheus_ui::event::Source;
@@ -69,6 +70,10 @@ pub struct Fw {
     /// connected device for the UI to save.
     bt: crate::bt::Snap,
     pub bt_to_save: Option<orpheus_bt::Addr>,
+    /// Connected to a sink with absolute volume: the volume is the
+    /// sink's (sent as command 0x26), the DAC stays at [`BT_DAC_REF`]
+    /// (06 §4.2).
+    bt_abs: bool,
     /// The picture asked for in the frame being drawn (panel box), lent
     /// to the card task after the frame (`ui`); the state of the last one.
     pub pic_want: core::cell::Cell<Option<(Rect, PicReq)>>,
@@ -86,7 +91,16 @@ pub struct Fw {
 }
 
 /// "Reconnect automatically" (Settings › Bluetooth).
-const BT_RECONNECT: SettingId = SettingId(0x0603);
+const BT_RECONNECT: SettingId = id::BT_RECONNECT;
+/// DAC level (UI steps 0–30) while a Bluetooth sink with absolute
+/// volume is connected (06 §4.2: a fixed reference, the sink scales):
+/// step 30 = −3 dB, a little headroom below `dac::VOL_0DB`. Measured on
+/// the player (lead, 2026-11-24, PA volume 7): the module's feed tracks
+/// the DAC's digital volume exactly (−30 dB → −53.6 dBFS, 0 dB → −23.5
+/// dBFS), so the tap is after the volume. Not capped by Volume limit:
+/// the limit caps the sink's volume; wired headphones left plugged in
+/// while streaming play at this level (U-BT-2, user check).
+const BT_DAC_REF: u8 = 30;
 /// "Tag code page" (Settings › Playback).
 const TAG_CODE_PAGE: SettingId = SettingId(0x0208);
 
@@ -169,6 +183,7 @@ impl Fw {
             wanted: None,
             bt: crate::bt::Snap::OFF,
             bt_to_save: None,
+            bt_abs: false,
             pic_want: core::cell::Cell::new(None),
             pic_state: core::cell::Cell::new(PicState::Nothing),
             pic_lent: None,
@@ -362,21 +377,65 @@ impl Fw {
     /// After the settings are loaded: the Bluetooth task gets them. The
     /// module stays off in a host test whatever the setting says.
     pub fn bt_boot(&mut self, last: Option<orpheus_bt::Addr>) {
+        crate::bt::VOLUME.store(orpheus_bt::proto::local_from_ui(self.volume), Ordering::Relaxed);
         let on = self.settings.get(id::BLUETOOTH) != 0 && atj2157_hal::persist::test_request().is_none();
         let reconnect = self.settings.get(BT_RECONNECT) != 0;
         crate::bt::request(crate::bt::Req::Boot { on, reconnect, last });
     }
 
-    /// Copy the Bluetooth task's snapshot (every UI loop).
+    /// Copy the Bluetooth task's snapshot (every UI loop); changes become
+    /// service events, the sink's volume takes over the volume keys.
     pub fn sync_bt(&mut self) {
+        use orpheus_apps::services::bt_event;
         let n = critical_section::with(|cs| *crate::bt::SNAP.borrow(cs).borrow());
-        if n.state != self.bt.state {
+        let o = self.bt;
+        if n.state != o.state {
             self.pending.push(Event::Service(ServiceEvent::Bluetooth(n.state)));
         }
-        if n.last_gen != self.bt.last_gen {
+        if n.last_gen != o.last_gen {
             self.bt_to_save = n.last;
         }
+        let other = |v| Event::Service(ServiceEvent::Other { kind: services::other::BLUETOOTH, value: v });
+        for (changed, v) in [
+            (n.lists_gen != o.lists_gen, bt_event::LISTS),
+            (n.phase != o.phase, bt_event::PHASE),
+            (n.fails != o.fails, bt_event::CONNECT_FAILED),
+            (n.connects != o.connects, bt_event::CONNECTED),
+            (n.drops != o.drops, bt_event::DISCONNECTED),
+        ] {
+            if changed {
+                self.pending.push(other(v));
+            }
+        }
+        if n.sink_gen != o.sink_gen {
+            // Changed on the sink: the player's volume follows.
+            let limit = u8::try_from(self.settings.get(id::VOLUME_LIMIT)).unwrap_or(30);
+            self.set_volume(orpheus_bt::proto::ui_from_local(n.sink_local).min(limit));
+        }
+        if n.sink_abs != self.bt_abs {
+            self.bt_abs = n.sink_abs;
+            self.apply_dac();
+        }
         self.bt = n;
+    }
+
+    /// The player's volume (0–30): the DAC (unless a sink with absolute
+    /// volume owns it) and the Bluetooth task (which sends it to a
+    /// connected sink, and again at every connection).
+    pub fn set_volume(&mut self, v: u8) {
+        self.volume = v;
+        crate::bt::VOLUME.store(orpheus_bt::proto::local_from_ui(v), Ordering::Relaxed);
+        self.apply_dac();
+    }
+
+    /// Volume policy (06 §4.2): while connected to a sink that takes
+    /// absolute volume, the sink scales (it gets the player's volume as
+    /// command 0x26) and the DAC plays at the fixed reference level;
+    /// otherwise (not connected, the sink said it has no absolute volume,
+    /// or 0x26 was never acknowledged) the DAC plays at the player's
+    /// volume.
+    fn apply_dac(&self) {
+        apply_volume(if self.bt_abs { BT_DAC_REF } else { self.volume });
     }
 
     /// Bluetooth settings go to the Bluetooth task when they change.
@@ -544,8 +603,7 @@ impl PlaybackService for Fw {
     fn volume_step(&mut self, delta: i8) -> (u8, u8) {
         let max = u8::try_from(self.settings.get(id::VOLUME_LIMIT)).unwrap_or(30);
         let v = i16::from(self.volume) + i16::from(delta);
-        self.volume = u8::try_from(v.clamp(0, i16::from(max))).unwrap_or(0);
-        apply_volume(self.volume);
+        self.set_volume(u8::try_from(v.clamp(0, i16::from(max))).unwrap_or(0));
         (self.volume, max)
     }
 }
@@ -884,6 +942,27 @@ impl BluetoothService for Fw {
     fn bt_device(&self) -> &str {
         self.bt.name()
     }
+    fn bt_phase(&self) -> BtPhase {
+        self.bt.phase
+    }
+    fn bt_count(&self, list: BtList) -> usize {
+        critical_section::with(|cs| crate::bt::LISTS.borrow(cs).borrow().count(list))
+    }
+    fn bt_entry(&self, list: BtList, i: usize) -> Option<BtDevice> {
+        critical_section::with(|cs| crate::bt::LISTS.borrow(cs).borrow().get(list, i))
+    }
+    fn bt_request(&mut self, r: BtRequest) {
+        use crate::bt::Req;
+        let addr = |a: orpheus_apps::services::BtAddr| orpheus_bt::Addr(a.0);
+        crate::bt::request(match r {
+            BtRequest::Scan => Req::Scan,
+            BtRequest::StopScan => Req::StopScan,
+            BtRequest::Connect(a) => Req::ConnectTo(addr(a)),
+            BtRequest::CancelConnect => Req::CancelConnect,
+            BtRequest::Disconnect => Req::Disconnect,
+            BtRequest::Forget(a) => Req::Forget(addr(a)),
+        });
+    }
 }
 
 impl SystemService for Fw {
@@ -909,7 +988,9 @@ impl SystemService for Fw {
         "Yoton YM03 (ATJ2157)"
     }
     fn app_available(&self, app: App) -> bool {
-        matches!(app, App::Settings | App::Files | App::Music | App::Pictures)
+        // The transmitter module is fitted on every YM03 (06 §4.1); a
+        // module that does not answer shows "Not responding" in the app.
+        matches!(app, App::Settings | App::Files | App::Music | App::Pictures | App::Bluetooth)
     }
     fn dual_boot(&self) -> bool {
         true

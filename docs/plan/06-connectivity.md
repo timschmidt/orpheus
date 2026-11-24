@@ -263,7 +263,13 @@ Crate `orpheus-bt` (protocol, host-testable) + `yoton-bsp::bt` (UART, pins).
   streaming: keep the DAC at a fixed reference level and send absolute volume
   to the sink (command 0x26), falling back to local volume for sinks without
   absolute volume. Find the reference level by test (highest level without
-  clipping at the module's input). Whether to mute the wired headphone output
+  clipping at the module's input). *As built (UI-6a): the player's volume
+  goes to the sink as 0x26 at every connection and on every change (a
+  BlueZ sink starts at 0), sink changes (event 0x26) become the player's
+  volume; once the module acknowledges 0x26 (or the sink reports a volume)
+  the DAC is held at −3 dB (the tap is after the DAC volume, U-BT-2), back
+  to the player's volume on disconnect or when the sink says it has no
+  absolute volume.* Whether to mute the wired headphone output
   while streaming depends on where the tap is (bluetooth.md Q2); make it a
   setting until known.
 * **Remote control**: headset keys (event 0x01: play, pause, stop, next,
