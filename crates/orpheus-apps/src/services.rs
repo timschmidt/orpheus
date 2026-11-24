@@ -252,7 +252,9 @@ where
     let b = s.battery();
     let t = s.now();
     Status {
-        clock: (s.setting(id::CLOCK_IN_BAR) != 0).then(|| {
+        // No time while the clock is not set (the RTC can stop): the bar
+        // shows the screen title rather than a misleading 00:00.
+        clock: (s.setting(id::CLOCK_IN_BAR) != 0 && s.clock_valid()).then(|| {
             let h = if s.setting(id::CLOCK_24H) != 0 { t.hour } else { (t.hour + 11) % 12 + 1 };
             (h, t.minute)
         }),
