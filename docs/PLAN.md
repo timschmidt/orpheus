@@ -114,6 +114,17 @@ Written up in `docs/hw/` (four reverse-engineering reports),
    receiver role, a mouse and a remote-control app are out of scope.
 10. **Order of work**: shortest path to a daily-usable player (M5), then
     breadth (08).
+11. **Last stage: verification (M11, owner's requirement 2026-11-24).**
+    Before release the project's own source (dependencies excluded) reaches
+    **100 % coverage** by unit tests, adversarial-input tests and fuzzing,
+    with every test and fuzz target clean under **AddressSanitizer** (and
+    Miri where `unsafe` code runs on the host); **every on-device function
+    and every interaction of every screen and app** is tested on the player,
+    also in **fuzzed key sequences**; **every bug found by fuzzing stays in
+    the test corpus** as a regression test; **memory use and performance**
+    are tracked per commit as thoroughly as coverage (08 M11, 07 §3.5–3.8,
+    §4.4, §5.7–5.9). Exclusions from the 100 % are an owner-reviewed list
+    of provably unreachable code only.
 
 ## 5. Decisions that are the user's
 
@@ -129,6 +140,7 @@ Defaults are what workers assume until told otherwise.
 | D-6 | Experiments with the Bluetooth module's own firmware | No | Recovery from a failed module upgrade is unknown |
 | D-7 | Publishing `docs/hw/` and `docs/vendor/` | Kept out of git by `.gitignore` (the `yoton` repository treats vendor-derived analysis the same way) | Remove the ignore lines to publish the reverse-engineering reports; the datasheet copy should stay local |
 | D-8 | Rockbox on the player | Replaced by Orpheus at milestone M2; restorable with one command | The player is the Rockbox reference until then |
+| D-9 | Coverage exclusions (M11) | None; each proposed exclusion (provably unreachable code only) is listed in `coverage-exclusions.toml` with its reason and needs the owner's approval | The 100 % coverage requirement is otherwise absolute |
 
 Also needed from the user along the way: the checks in
 [USER-CHECKS.md](USER-CHECKS.md) (listening, looking, pressing keys,

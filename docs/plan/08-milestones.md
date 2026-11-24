@@ -42,6 +42,7 @@ Two tracks run side by side from the start:
 | M8 | Bluetooth | Transmitter role with remote control; investigation report on whether the module can do HID | |
 | M9 | USB extras and authenticator | HID keyboard, authenticator, disk/CD emulation, (USB audio) | All requested extras that the hardware allows |
 | M10 | Polish and release | Battery-life tuning, self-update, full-flash layout option, languages, manual, release | 1.0 |
+| M11 | **Verification** (last stage) | 100 % coverage of the project's own source by unit, adversarial-input and fuzz tests under sanitizers; every on-device function and every screen/app interaction exercised in fuzzed sequences on the player; memory use and performance tracked as thoroughly as coverage; every fuzz finding kept as a regression test | Release only after M11 is green |
 
 M5 is the first point where the user can live with the player. Everything
 before it is the shortest path there; do not pull later features forward.
@@ -186,6 +187,28 @@ per codec: one listening pass with real files of that format.
 | DOC-1 | User manual (one page per app), developer guide, hardware notes cleaned up, release notes | — | H | M |
 | REL-1 | Release checklist: all gates, all HIL suites, soak ×3, all user checks ticked or waived by the user, tagged build for each layout | 07 §6 | D | S |
 
+### M11 — Verification (the last stage; owner's requirement 2026-11-24)
+
+Scope: **the project's own source** — every crate in `crates/`, `sim/`,
+`xtask/`, `fw/` (firmware, `atj2157-hal`, `atj2157-pac`, `yoton-bsp`, boot
+stages, payloads) and every build/tool script. Third-party dependencies are
+out of scope (their behaviour is exercised only through our code). Method and
+tooling: 07 §3.5–3.8, §4.4, §5.7–5.9.
+
+| WP | Content | Spec | Dev | Size |
+|---|---|---|---|---|
+| VER-1 | Coverage tooling: `xtask cover` (LLVM source-based coverage, line + region + branch, per crate and total, dependencies excluded), HTML/LCOV reports archived per commit, coverage gate in `xtask gate` (fails below 100 % of non-excluded regions); exclusion list `coverage-exclusions.toml` (each entry: file/function, reason, reviewer) — only for code proven unreachable (e.g. compiler-required arms of exhaustive matches); **the list is a user decision, reviewed by the owner** | 07 §3.6 | H | M |
+| VER-2 | Unit tests to 100 % on every host-testable crate (`orpheus-*`, `sim`, `xtask` logic): every public function, every error path, every branch; mocks for the HAL seams so firmware logic (`firmware` crate services, card task logic, governor, power policy, media server) also runs on the host | 07 §3.1 | H | L (split per crate) |
+| VER-3 | Adversarial-input tests: for every parser, decoder, protocol handler, file-format reader, state machine and public API taking external data — boundary values, truncation at every byte, oversized/zero lengths, wrong magic/version/CRC, deep nesting, hostile names (Unicode, overlong, control characters), resource exhaustion (arena/RAM too small), concurrency/order abuse (requests in every order); property tests (`proptest`) with shrinking, seeds recorded | 07 §3.1 | H | L |
+| VER-4 | Fuzzing campaign: a `cargo fuzz` target for every parser/decoder/protocol/state machine and for UI key sequences in the simulator; coverage-guided runs until coverage plateaus (≥ 24 h per target, re-run after changes), dictionaries and seed corpora from real files; per-target fuzz coverage reported by `xtask cover --fuzz` | 07 §3.4 | H | L |
+| VER-5 | Sanitizers: every host test and every fuzz target under **AddressSanitizer** (nightly `-Zsanitizer=address`), plus LeakSanitizer and UndefinedBehaviorSanitizer where Rust supports them; **Miri** for the crates with `unsafe` that compile on the host (`orpheus-pager` core, `orpheus-usb` buffers, …); zero findings required | 07 §3.5 | H | M |
+| VER-6 | Device coverage: instrumented firmware builds (LLVM coverage counters with a minimal `no_std` runtime, counters dumped over the developer channel), instrumented one crate/module group at a time to fit RAM, merged on the host; HIL suites (VER-7, VER-8) must reach 100 % of firmware/HAL/BSP/boot-stage regions or carry a reviewed exclusion | 07 §5.8 | D | L |
+| VER-7 | On-device functional suite: every on-device function (each driver, each service, each developer-channel request, power/USB/card/Bluetooth paths) and **every interaction of every screen and app** (each key, long press, repeat, menu item, dialog, list action, setting) has an automated HIL test with an oracle (screenshot vs simulator, state over the developer channel, audio CRC, card image diff) | 07 §5.4, 5.7 | D | L |
+| VER-8 | On-device fuzzing: `xtask dev fuzz-ui` drives random and model-guided **key sequences** (with timing, long presses, interleaved USB requests, card hand-over, playback, low-battery/time events injected through test commands) over all screens and apps; oracles: no fault record, no watchdog reset, no stack-guard hit, stack high-water above budget, no underruns beyond limits, card writes only under `/.orpheus/` (test-card image diff), UI state matches the simulator replaying the same sequence; failing sequences minimised automatically | 07 §5.7 | D | L |
+| VER-9 | Regression corpus: **every bug found by fuzzing, adversarial tests or on-device fuzzing is kept** — the minimised input or key sequence goes to `tests/regress/<area>/` with a test that replays it (host and, for device sequences, HIL), forever; corpus growth and replay time tracked | 07 §3.4 | H+D | S (+ ongoing) |
+| VER-10 | Memory and performance tracking as thorough as coverage: per commit — resident/bss/stack per crate, the 40 largest stack frames, stack high-water per HIL suite and per fuzz session, arena high-water per codec and picture format, CPU per scenario and clock level (decode µs/frame per codec, DSP cost, idle %), pager loads/s, boot time, UI frame time, card and USB throughput, battery drain per scenario; stored as a versioned history (`metrics/*.csv`), thresholds in `budgets.toml`, regressions fail the gate, trends plotted in the verification report | 07 §4.4 | H+D | M |
+| VER-11 | Verification report: coverage (host, fuzz, device) per crate with the reviewed exclusions, sanitizer results, fuzz hours and findings, regression-corpus inventory, memory/performance trends, open risks; the release (REL-1) depends on it | — | H | S |
+
 ## 4. Dependencies that matter
 
 ```
@@ -243,3 +266,10 @@ Rules of thumb for whoever assigns sessions:
   stable Rust.
 * The user has used the player daily for two weeks on a release candidate
   without a fault record.
+* **M11 complete**: 100 % coverage of the project's own source (host unit and
+  adversarial tests, fuzzing, device HIL coverage) except the owner-reviewed
+  exclusion list; all tests and fuzz targets clean under AddressSanitizer
+  (and Miri where applicable); every on-device function and every screen/app
+  interaction covered by automated tests and fuzzed key sequences; every
+  fuzz finding kept as a regression test; memory and performance tracked per
+  commit with no unexplained regressions.

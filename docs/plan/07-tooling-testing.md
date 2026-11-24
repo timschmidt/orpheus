@@ -146,7 +146,58 @@ container/tag parser, every decoder's frame entry, the FAT/exFAT mount and
 directory iteration on mutated images, the SCSI command handler, image
 decoders, `otpauth` import, the Bluetooth frame parser. `xtask test fuzz-smoke`
 runs each target for 60 s as part of the milestone gate; findings are fixed and
-kept as regression inputs under `tests/regress/`.
+kept as regression inputs under `tests/regress/`. **Every finding stays in the
+corpus permanently** (owner's requirement): the minimised input is committed
+with a test that replays it on every gate run, and the coverage-guided
+corpora of all targets are kept in the repository (`tests/fuzz-corpus/<target>/`,
+pruned only by `cargo fuzz cmin`, never by deleting crash inputs). In M11
+(VER-4) every target runs until its coverage plateaus.
+
+### 3.5 Sanitizers (M11, VER-5)
+
+* Host tests and fuzz targets also run under **AddressSanitizer** (nightly,
+  `RUSTFLAGS=-Zsanitizer=address`, `--target x86_64-unknown-linux-gnu`),
+  LeakSanitizer and, where the toolchain supports it, UBSan for the C-ABI
+  boundaries; `xtask test asan` runs the whole host workspace and every fuzz
+  target's corpus under ASan.
+* **Miri** (`cargo +nightly miri test`) for every host-compilable crate with
+  `unsafe` (the pager core, buffer code), and for the pure crates as a second
+  oracle on undefined behaviour.
+* Zero findings is the requirement; each finding becomes a regression test.
+
+### 3.6 Coverage (M11, VER-1/2/6)
+
+* `xtask cover` uses LLVM source-based coverage (`-Cinstrument-coverage`,
+  `llvm-profdata`, `llvm-cov`): line, region and branch coverage per crate and
+  for the whole project; dependencies are excluded by path. Reports (HTML,
+  LCOV, summary CSV) are archived per commit under `target/orpheus/coverage/`
+  and the summary goes into the metrics history (§4.4).
+* Sources: host unit/property/adversarial tests, the simulator and golden
+  tests, fuzz-corpus replays (`xtask cover --fuzz`), and device coverage
+  (§5.8) merged into one report.
+* The gate requires **100 % of non-excluded regions**. Exclusions live in
+  `coverage-exclusions.toml` with a reason each and are reviewed by the owner
+  (a user decision); only code proven unreachable qualifies.
+* The firmware's logic is made host-testable behind small HAL seams (traits or
+  `cfg(test)` mocks) so that it is covered on the host first; the device runs
+  cover what only the hardware can reach (drivers, interrupt paths, pager).
+
+### 3.7 Adversarial inputs (M11, VER-3)
+
+Every function that takes data from outside (card files, tags, pictures, USB
+requests, SCSI commands, Bluetooth frames, settings records, NOR contents,
+`otpauth` URIs, the developer channel) gets a table-driven adversarial suite:
+truncation at every byte, every length field at 0 / max / max+1, corrupted
+magic/version/CRC, deep or cyclic structures, hostile names, arenas one byte
+too small, and requests in every order; plus `proptest` properties with
+recorded seeds.
+
+### 3.8 UI sequence fuzzing on the host
+
+A fuzz target drives the simulator with arbitrary key/timing/event sequences
+over every screen and app (oracles: no panic, invariants of the shell and
+services, golden-consistent redraws); its corpus seeds the on-device fuzzer
+(§5.7), and sequences found on either side are replayed on both.
 
 ## 4. Build-time guarantees
 
@@ -200,6 +251,23 @@ resident. `xtask check-resident`:
 The run-time counterpart: the fault handler records "fault taken while an
 exception was active" with the stacked PC in the persistent trace (02
 §"Faults"); the HIL gate requires that counter to be zero.
+
+### 4.4 Memory and performance history (M11, VER-10)
+
+Tracked per commit as thoroughly as coverage, in `metrics/*.csv` (one row per
+commit and measurement), with thresholds in `budgets.toml` and the gate
+failing on a regression that is not explained in the same commit:
+
+* static: resident image, `.data`/`.bss` per crate, page counts, the 40
+  largest stack frames (`sub sp` from the disassembly), task future sizes;
+* dynamic (from HIL and fuzz sessions): main-stack high-water, arena
+  high-water per codec and picture format, pager loads/s, executor idle %,
+  RT-task time per block, decode µs per frame per codec at each clock level,
+  DSP cost, UI frame time, boot time, card/USB throughput, battery drain per
+  PWR-4 scenario;
+* host: per-crate benchmark timings (`cargo bench`), simulator frame time.
+
+The verification report (VER-11) plots the history.
 
 ## 5. On-device testing (hardware in the loop)
 
@@ -301,6 +369,40 @@ driver exists because it is much faster than reboot cycles.
   spent at each frequency and in WFI) plus the battery-voltage log. Real
   current needs a meter: listed as a user-assisted measurement with a table to
   fill in (idle, MP3 screen off, FLAC screen off, radio, Bluetooth, recording).
+
+### 5.7 On-device interaction and fuzz testing (M11, VER-7/8)
+
+* **Functional suite**: one automated test per on-device function and per
+  interaction of every screen and app (key, long press, repeat, every menu
+  item, dialog and setting), driven by injected keys and developer-channel
+  commands, with oracles: screenshot compared with the simulator in the same
+  state, service state read back over the developer channel, audio CRC, and a
+  diff of the test card image (writes only under `/.orpheus/`).
+* **Fuzzed sequences**: `xtask dev fuzz-ui` sends random and model-guided key
+  sequences (timing, long presses, repeats) interleaved with USB requests,
+  card hand-over, playback, injected low-battery/clock/cable events; it
+  checks for fault records, watchdog resets, stack-guard hits, the stack
+  high-water budget, underruns, card writes outside `/.orpheus/`, and
+  divergence from the simulator replaying the same sequence. Failures are
+  minimised (delta debugging) and committed to `tests/regress/ui/` for both
+  the HIL replay and the simulator.
+* Sessions run on a dedicated test card image, never the owner's music card,
+  and end in a reboot (§7).
+
+### 5.8 Device coverage (M11, VER-6)
+
+Instrumented firmware builds carry LLVM coverage counters and a minimal
+`no_std` profile runtime; after a HIL or fuzz session the counters are read
+over the developer channel and merged on the host with the host coverage.
+Counters cost RAM, so the instrumentation is applied to one crate or module
+group per build (selected by a build flag) and the runs are merged.
+
+### 5.9 Sanitizers for device code
+
+Device code is checked for memory errors where it can run on the host (logic
+behind the HAL seams, under ASan and Miri, §3.5); on the device the stack
+guard, the MPU deny regions, fault records and the per-session stack
+high-water play that role, and every fuzz session reports them.
 
 ## 6. Milestone gate (run before declaring any work package done)
 

@@ -386,6 +386,19 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — plan: final verification stage M11 (lead, owner's request)
+
+* Added milestone **M11 Verification** (08: VER-1…VER-11; 07 §3.5–3.8 sanitizers,
+  coverage, adversarial inputs, host UI-sequence fuzzing; §4.4 memory and
+  performance history; §5.7–5.9 on-device interaction/fuzz testing, device
+  coverage, sanitizers for device code; PLAN.md §4 item 11, decision D-9 for
+  coverage exclusions; definition of done extended). Fuzz findings are kept
+  in the corpus permanently.
+* RTC: measured against the host, 0 s off after 30 s and after an ADFU
+  round trip + reset, and it kept running through a firmware reboot to ADFU,
+  a RAM start and a watchdog reset; the earlier stop is not reproduced
+  (open, U-RTC). The status bar now hides the clock while it is not running.
+
 ### 2026-11-24 — AU-12 library on the player (lead)
 
 * Merged AU-12 (firmware, library) (worker). On the player with the owner's
