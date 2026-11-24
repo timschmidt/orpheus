@@ -1440,6 +1440,18 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — user check 10 (test tones) done by the owner
+
+* Owner, earphones: left/right/both and the 8 level steps as described.
+  **Open issue AU-0b**: faint clicking/ticking at regular intervals, maybe
+  also in music; heard on the Rockbox port too but not with the stock
+  firmware. Suspects: PA settings the vendor uses and Orpheus does not
+  (`PA_CTL` bit 27, bit 10 at enable; 01-hardware/audio.md §2.4), or
+  periodic activity coupling into the amplifier (NOR page loads, SD
+  reads, LCD/backlight PWM). Next: look for periodic transients in the
+  post-PA Bluetooth capture (null-sink method) with a pure tone, and
+  correlate their period with refill/paging/LCD timing.
+
 ### 2026-11-24 — M7: radio, steps, tools merged; device smoke test (lead)
 
 * Merged FM-1/UI-5a (radio) and SENS-1/UI-5c/UI-5d (steps, stopwatch,
