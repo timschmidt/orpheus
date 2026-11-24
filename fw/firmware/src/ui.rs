@@ -117,6 +117,9 @@ impl Ui {
                 crate::usbdev::MSC_READ_ONLY.store(false, core::sync::atomic::Ordering::Relaxed);
                 crate::usbdev::MODE.signal(p);
             }
+            if let Action::Storage(orpheus_apps::services::StorageRequest::RebuildLibrary) = a {
+                crate::media::request(crate::media::Req::Rebuild);
+            }
             if let Action::Power(p) = a {
                 match p {
                     PowerRequest::Restart => atj2157_hal::wdt::reboot(atj2157_hal::wdt::Target::Normal),

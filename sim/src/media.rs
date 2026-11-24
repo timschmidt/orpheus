@@ -10,8 +10,9 @@ use std::collections::{HashMap, HashSet};
 
 use orpheus_apps::browse::{DirId, EntryKind, FileRef, is_hidden_name, kind_of, letter_of, natural_cmp};
 use orpheus_apps::services::{
-    ArtSize, Bookmark, BrowseFilter, DateTime, Entry, Levels, LibraryState, Listing, LyricLine, PicError,
-    PicInfo, PicReq, PicSource, PicState, PlayerCmd, PlayerState, QueueEntry, SortBy, TrackInfo, data,
+    ArtSize, Bookmark, BrowseFilter, DateTime, Entry, Levels, LibList, LibListing, LibNow, LibRow,
+    LibraryState, Listing, LyricLine, PicError, PicInfo, PicReq, PicSource, PicState, PlayerCmd, PlayerState,
+    QueueEntry, SortBy, TrackInfo, data,
 };
 use orpheus_audio::{Format, SliceSource};
 use orpheus_fs::host::{OverlayDisk, block_on};
@@ -20,6 +21,7 @@ use orpheus_ui::event::{DataReady, Event, Source};
 use orpheus_ui::geom::Rect;
 use orpheus_ui::gfx::Gfx;
 
+use crate::library::SimLib;
 use crate::{card, pictures};
 
 /// A file of the card image as it was built (pictures for the viewer).
@@ -142,6 +144,10 @@ pub struct Media {
     bookmarks: Vec<(String, u32)>,
     resume: Option<QItem>,
     pub library: LibraryState,
+    /// The library, once built (`set:library=ready`).
+    lib: Option<SimLib>,
+    /// Every folder has been read (paths of the library's tracks).
+    learnt_all: bool,
     art_small: Vec<u16>,
     art_full: Vec<u16>,
     art_for: Option<u32>,
@@ -190,6 +196,8 @@ impl Media {
             bookmarks: Vec::new(),
             resume: None,
             library: LibraryState::Building { files: 1287 },
+            lib: None,
+            learnt_all: false,
             art_small: Vec::new(),
             art_full: Vec::new(),
             art_for: None,
@@ -576,6 +584,13 @@ impl Media {
                 }
                 self.set_queue(files, at);
             }
+            PlayerCmd::ShuffleAll if self.lib.is_some() => {
+                let locs =
+                    self.lib.as_ref().map(|l| l.sample(&mut self.vol, 0xC0FFEE, 256)).unwrap_or_default();
+                let mut files = self.paths_of(&locs);
+                Self::shuffle(&mut files, 0xC0FFEE);
+                self.set_queue(files, 0);
+            }
             PlayerCmd::ShuffleAll => {
                 let mut files = Vec::new();
                 let music =
@@ -594,6 +609,17 @@ impl Media {
                 files.retain(|_| k.next().unwrap_or(true));
                 Self::shuffle(&mut files, 0xC0FFEE);
                 self.set_queue(files, 0);
+            }
+            PlayerCmd::PlayLib { list, start, shuffle } => {
+                let Some(lib) = self.lib.as_ref() else { return };
+                let (locs, at) = lib.queue(&mut self.vol, list, start, 256);
+                let mut files = self.paths_of(&locs);
+                let mut at = at.min(files.len().saturating_sub(1));
+                if shuffle {
+                    Self::shuffle(&mut files, 0x5EED);
+                    at = 0;
+                }
+                self.set_queue(files, at);
             }
             PlayerCmd::PlayNext(f) | PlayerCmd::AddToQueue(f) => {
                 if let Some(p) = self.file_paths.get(&f).cloned() {
@@ -822,6 +848,69 @@ impl Media {
         self.resume = Some(item);
         self.queue.clear();
         self.playing = false;
+    }
+
+    /// Paths of library tracks (every folder is read once).
+    fn paths_of(&mut self, locs: &[orpheus_fs::Locator]) -> Vec<(FileRef, String)> {
+        if !self.learnt_all {
+            self.learnt_all = true;
+            let mut q = vec![DirId::ROOT];
+            while let Some(d) = q.pop() {
+                for e in self.read_dir(d) {
+                    if e.kind == EntryKind::Dir && !e.hidden {
+                        q.push(e.child);
+                    }
+                }
+            }
+        }
+        locs.iter()
+            .filter_map(|l| {
+                let f = FileRef { dir: l.dir, index: l.index };
+                Some((f, self.file_paths.get(&f)?.clone()))
+            })
+            .collect()
+    }
+
+    /// `set:library=…`: `ready` builds the library from the card.
+    pub fn set_library(&mut self, st: LibraryState) {
+        self.library = st;
+        if st == LibraryState::Ready && self.lib.is_none() {
+            self.lib = SimLib::build(&mut self.vol);
+            if self.lib.is_none() {
+                self.library = LibraryState::Missing;
+            }
+        }
+    }
+
+    pub fn lib_open(&mut self, list: LibList) -> LibListing {
+        let l = self.lib.as_mut().map(|lib| lib.open(&mut self.vol, list));
+        l.unwrap_or(LibListing { list, count: 0, complete: true })
+    }
+
+    pub fn lib_listing(&self) -> LibListing {
+        self.lib
+            .as_ref()
+            .map_or(LibListing { list: LibList::Artists, count: 0, complete: false }, SimLib::listing)
+    }
+
+    pub fn lib_row(&self, i: u32) -> Option<LibRow<'_>> {
+        self.lib.as_ref()?.row(i)
+    }
+
+    pub fn lib_position(&self, id: u32) -> Option<u32> {
+        self.lib.as_ref()?.position(id)
+    }
+
+    pub fn lib_letter(&self, i: u32) -> Option<char> {
+        self.lib.as_ref()?.letter(i)
+    }
+
+    pub fn lib_seek_letter(&self, from: u32, forward: bool) -> Option<(u32, char)> {
+        self.lib.as_ref()?.seek_letter(from, forward)
+    }
+
+    pub fn lib_now(&self) -> Option<LibNow> {
+        self.lib.as_ref()?.now(self.current()?.file)
     }
 
     /// Make sure the paths under `dir_path` are known (scripts).

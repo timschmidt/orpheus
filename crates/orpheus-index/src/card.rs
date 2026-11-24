@@ -20,7 +20,9 @@
 //! directories are created on first use; `orpheus-fs` refuses writes outside
 //! `/.orpheus/` anyway. Open files are kept in a [`Handles`] table that the
 //! caller owns, so they survive between calls; [`CardIo::close_all`] writes
-//! their directory entries back.
+//! their directory entries back. [`CardIo::new_in`] puts the [`Storage`]
+//! files flat into another folder instead (the music library's
+//! `/.orpheus/library`).
 
 use core::cell::RefCell;
 use core::future::Future;
@@ -106,8 +108,9 @@ pub fn is_dot(e: &DirEntry) -> bool {
     matches!(e.name(), "." | "..")
 }
 
-/// Where a file of the index lives.
-fn path(f: FileName, alt: bool, buf: &mut [u8; PATH]) -> &str {
+/// Where a file of the index lives (`base`: flat in that directory
+/// instead, [`CardIo::new_in`]).
+fn path<'b>(f: FileName, alt: bool, base: Option<&str>, buf: &'b mut [u8; PATH]) -> &'b str {
     let name = f.as_str();
     let mut n = 0;
     let mut put = |s: &[u8]| {
@@ -118,9 +121,11 @@ fn path(f: FileName, alt: bool, buf: &mut [u8; PATH]) -> &str {
             }
         }
     };
-    put(INDEX_DIR.as_bytes());
+    put(base.unwrap_or(INDEX_DIR).as_bytes());
     put(b"/");
-    if f == FileName::TEMP_A || f == FileName::TEMP_B {
+    if base.is_some() {
+        put(name.as_bytes());
+    } else if f == FileName::TEMP_A || f == FileName::TEMP_B {
         if alt {
             put(if f == FileName::TEMP_A { b"sort-c.tmp" } else { b"sort-d.tmp" });
         } else {
@@ -141,6 +146,7 @@ struct Inner<'a, 'v, 'c, D: BlockDevice> {
     cx: &'a mut Context<'c>,
     h: &'a mut Handles,
     mode: Mode,
+    base: Option<&'static str>,
 }
 
 impl<'v, 'c, D: BlockDevice> Inner<'_, 'v, 'c, D> {
@@ -155,12 +161,13 @@ impl<'v, 'c, D: BlockDevice> Inner<'_, 'v, 'c, D> {
             Mode::Write { alt } => (true, alt),
         };
         let mut pb = [0u8; PATH];
-        let p = path(f, alt, &mut pb);
+        let p = path(f, alt, self.base, &mut pb);
         let file =
             match spin(self.cx, self.vol.open(p, if write { OpenMode::ReadWrite } else { OpenMode::Read })) {
                 Ok(file) => file,
                 Err(orpheus_fs::Error::NotFound) if create && write => {
-                    // Parents one by one (`/.orpheus`, `/.orpheus/index`, the shard).
+                    // Parents one by one (`/.orpheus`, `/.orpheus/index`, the shard;
+                    // or the base directory's).
                     for (i, _) in p.match_indices('/').skip(1) {
                         let _ = spin(self.cx, self.vol.create_dir(&p[..i]));
                     }
@@ -208,7 +215,20 @@ pub struct CardIo<'a, 'v, 'c, D: BlockDevice> {
 
 impl<'a, 'v, 'c, D: BlockDevice> CardIo<'a, 'v, 'c, D> {
     pub fn new(vol: &'a mut Volume<'v, D>, cx: &'a mut Context<'c>, h: &'a mut Handles, mode: Mode) -> Self {
-        CardIo { inner: RefCell::new(Inner { vol, cx, h, mode }) }
+        CardIo { inner: RefCell::new(Inner { vol, cx, h, mode, base: None }) }
+    }
+
+    /// A session whose [`Storage`] files live flat in `dir` (at most 22
+    /// bytes, e.g. `/.orpheus/library`) instead of the index directory: no
+    /// shards; [`Mode::Write`]'s `alt` has no effect.
+    pub fn new_in(
+        vol: &'a mut Volume<'v, D>,
+        cx: &'a mut Context<'c>,
+        h: &'a mut Handles,
+        mode: Mode,
+        dir: &'static str,
+    ) -> Self {
+        CardIo { inner: RefCell::new(Inner { vol, cx, h, mode, base: Some(dir) }) }
     }
 
     /// The index files.
@@ -311,7 +331,7 @@ impl<D: BlockDevice> Storage for CardStore<'_, '_, '_, '_, D> {
         }
         let alt = matches!(io.mode, Mode::Write { alt: true });
         let mut pb = [0u8; PATH];
-        let p = path(file, alt, &mut pb);
+        let p = path(file, alt, io.base, &mut pb);
         match spin(io.cx, io.vol.remove(p)) {
             Ok(()) | Err(orpheus_fs::Error::NotFound) => Ok(()),
             Err(e) => Err(e),

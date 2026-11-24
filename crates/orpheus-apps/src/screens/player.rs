@@ -18,9 +18,9 @@ use orpheus_ui::widgets::misc::draw_progress;
 
 use super::files::push_size;
 use super::rows::Rows;
-use super::{CHOICE, EQUALISER, FILES};
+use super::{CHOICE, EQUALISER, FILES, LIBRARY, LibraryScreen};
 use crate::icons;
-use crate::services::{ArtSize, FileOp, PicReq, PicState, PlayerCmd, PlayerService, Services, data};
+use crate::services::{ArtSize, FileOp, LibList, PicReq, PicState, PlayerCmd, PlayerService, Services, data};
 use crate::settings::{self, EQ_BANDS_HZ, NP_VIEWS, SettingId, id};
 use crate::strings::{Lang, Str};
 
@@ -118,6 +118,8 @@ const M_DETAILS: u16 = 12;
 const M_REMOVE: u16 = 13;
 const M_UP: u16 = 14;
 const M_DOWN: u16 = 15;
+const M_ALBUM: u16 = 16;
+const M_ARTIST: u16 = 17;
 const DLG_DELETE: u16 = 11;
 
 impl NowPlayingScreen {
@@ -767,6 +769,10 @@ impl<S: Services + ?Sized> Screen<S> for NowPlayingScreen {
                 out.action(M_EQ, l.get(Str::EqualiserDots));
                 out.action(M_SLEEP, l.get(Str::SleepTimerDots));
                 if self.view != V_UP_NEXT || self.list.focus == 0 {
+                    if svc.lib_now().is_some() {
+                        out.action(M_ALBUM, l.get(Str::GoToAlbum));
+                        out.action(M_ARTIST, l.get(Str::GoToArtist));
+                    }
                     out.action(M_FOLDER, l.get(Str::GoToFolder));
                     out.action(M_DELETE, l.get(Str::DeleteFile));
                 }
@@ -838,6 +844,16 @@ impl NowPlayingScreen {
             M_EQ => return Nav::Push(EQUALISER, Arg(0)),
             M_SLEEP => return Nav::Push(CHOICE, Arg(u32::from(id::SLEEP_TIMER.0))),
             M_OUTPUT => return Nav::Push(CHOICE, Arg(u32::from(id::OUTPUT.0))),
+            M_ALBUM | M_ARTIST => {
+                if let Some(n) = cx.svc.lib_now() {
+                    let list = if mid == M_ALBUM {
+                        LibList::AlbumTracks(n.album)
+                    } else {
+                        LibList::ArtistAlbums(n.artist)
+                    };
+                    return Nav::Push(LIBRARY, LibraryScreen::arg(list));
+                }
+            }
             M_FOLDER => {
                 if let Some(t) = cx.svc.track() {
                     return Nav::Push(FILES, Arg(t.file.dir));

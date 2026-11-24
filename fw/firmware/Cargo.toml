@@ -23,6 +23,7 @@ orpheus-dsp = { path = "../../crates/orpheus-dsp" }
 orpheus-fs = { path = "../../crates/orpheus-fs" }
 orpheus-player = { path = "../../crates/orpheus-player" }
 orpheus-index = { path = "../../crates/orpheus-index" }
+orpheus-library = { path = "../../crates/orpheus-library" }
 orpheus-bt = { path = "../../crates/orpheus-bt" }
 orpheus-img = { path = "../../crates/orpheus-img" }
 orpheus-meta = { path = "../../crates/orpheus-meta" }

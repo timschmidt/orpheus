@@ -4,6 +4,7 @@
 mod edit;
 mod files;
 mod home;
+mod library;
 mod lists;
 mod pictures;
 mod player;
@@ -14,6 +15,7 @@ mod text;
 pub use edit::{PickerScreen, SliderScreen};
 pub use files::{BrowseMode, FilesScreen, kind_icon, kind_label, push_size};
 pub use home::HomeScreen;
+pub use library::LibraryScreen;
 pub use lists::{ListKind, ListScreen};
 pub use pictures::PictureScreen;
 pub use player::{EqualiserScreen, NowPlayingScreen};
@@ -68,6 +70,9 @@ pub const BOOKMARKS: ScreenId = ScreenId(23);
 pub const PICTURES: ScreenId = ScreenId(24);
 /// The picture viewer. Arg: [`PictureScreen::arg`].
 pub const PICTURE_VIEW: ScreenId = ScreenId(25);
+/// A music-library list (Artists, an artist's albums, …). Arg:
+/// [`LibraryScreen::arg`].
+pub const LIBRARY: ScreenId = ScreenId(26);
 
 /// One variant per screen. Only the top screen exists, so the enum's size
 /// (its largest variant, the list screen) is the UI's screen RAM.
@@ -87,6 +92,7 @@ pub enum AppScreen {
     NowPlaying(NowPlayingScreen),
     Equaliser(EqualiserScreen),
     Picture(PictureScreen),
+    Library(LibraryScreen),
 }
 
 macro_rules! each {
@@ -106,6 +112,7 @@ macro_rules! each {
             AppScreen::NowPlaying($s) => $e,
             AppScreen::Equaliser($s) => $e,
             AppScreen::Picture($s) => $e,
+            AppScreen::Library($s) => $e,
         }
     };
 }
@@ -167,6 +174,7 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             EQUALISER => AppScreen::Equaliser(EqualiserScreen::default()),
             PROPERTIES => AppScreen::List(ListScreen::new(ListKind::Properties(0))),
             BOOKMARKS => AppScreen::List(ListScreen::new(ListKind::Bookmarks)),
+            LIBRARY => AppScreen::Library(LibraryScreen::default()),
             _ => AppScreen::Home(HomeScreen::default()),
         }
     }
@@ -191,6 +199,7 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             AppScreen::NowPlaying(_) => NOW_PLAYING,
             AppScreen::Equaliser(_) => EQUALISER,
             AppScreen::Picture(_) => PICTURE_VIEW,
+            AppScreen::Library(_) => LIBRARY,
         }
     }
 
@@ -214,6 +223,7 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             AppScreen::NowPlaying(_) => "NowPlaying",
             AppScreen::Equaliser(_) => "Equaliser",
             AppScreen::Picture(_) => "PictureViewer",
+            AppScreen::Library(_) => "MusicLibrary",
         }
     }
 

@@ -39,10 +39,16 @@
 //! # Firmware integration
 //!
 //! * [`Storage`] over `/.orpheus/library/` ([`LIBRARY_DIR`]; the file names
-//!   are at most 10 bytes, no sharding needed) and [`TagSource`] over the
-//!   volume: `open_dir` = `open_locator` + the entry's cursor (root: the
-//!   root cursor; `after`: `seek_dir` to the entry and read past it),
-//!   `open_file` = `open_locator` + `open_entry`, `read_at` = seek + read.
+//!   are at most 10 bytes, no sharding needed: `orpheus_index::card::
+//!   CardIo::new_in`) and [`TagSource`] over the volume ([`card::CardTags`]):
+//!   `open_dir` = `open_locator` + the entry's cursor (root: the root
+//!   cursor; `after`: `seek_dir` to the entry and read past it),
+//!   `open_file` = `open_entry` of the entry just listed (else
+//!   `open_locator` first), `read_at` = seek + read.
+//! * The firmware keeps the build state in place instead of moving a
+//!   [`Builder`] around: [`Suspended::new`], then [`Suspended::step_in`]
+//!   with the lent scratch, [`Suspended::pause_in`] before the scratch goes
+//!   elsewhere (no 1 KiB copies on the stack).
 //! * Scheduling as the directory index: [`Builder::step`] in the idle loop
 //!   on the lent scratch (8 KiB minimum, 12–16 KiB for whole tag windows),
 //!   [`Builder::suspend`] as soon as anything else needs the card or the
@@ -66,6 +72,7 @@
 #![forbid(unsafe_code)]
 
 mod build;
+pub mod card;
 mod collate;
 pub mod format;
 mod io;
@@ -195,6 +202,42 @@ impl FileFormat {
             FileFormat::WavPack => F::WavPack,
             _ => return None,
         })
+    }
+}
+
+/// The UI's names of the lists ([`orpheus_apps::services::LibList`]).
+impl From<orpheus_apps::services::LibList> for List {
+    fn from(l: orpheus_apps::services::LibList) -> List {
+        use orpheus_apps::services::LibList as U;
+        match l {
+            U::Artists => List::Artists,
+            U::ArtistAlbums(i) => List::ArtistAlbums(i),
+            U::ArtistTracks(i) => List::ArtistTracks(i),
+            U::Albums => List::Albums,
+            U::AlbumTracks(i) => List::AlbumTracks(i),
+            U::Songs => List::Songs,
+            U::Genres => List::Genres,
+            U::GenreArtists(i) => List::GenreArtists(i),
+            U::GenreArtistAlbums(i) => List::GenreArtistAlbums(i),
+            U::GenreAlbumTracks(i) => List::GenreAlbumTracks(i),
+            U::GenreTracks(i) => List::GenreTracks(i),
+            U::GenreArtistTracks(i) => List::GenreArtistTracks(i),
+            U::Recent => List::Recent,
+        }
+    }
+}
+
+impl From<ItemKind> for orpheus_apps::services::LibKind {
+    fn from(k: ItemKind) -> Self {
+        use orpheus_apps::services::LibKind as U;
+        match k {
+            ItemKind::Artist => U::Artist,
+            ItemKind::Album => U::Album,
+            ItemKind::Genre => U::Genre,
+            ItemKind::GenreArtist => U::GenreArtist,
+            ItemKind::GenreAlbum => U::GenreAlbum,
+            ItemKind::Track => U::Track,
+        }
     }
 }
 

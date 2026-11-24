@@ -157,6 +157,40 @@ fn media_cases(add: &mut dyn FnMut(String, String)) {
         }
     }
     pictures_cases(add);
+    library_cases(add);
+}
+
+/// AU-12: the music library, built for real from the card image
+/// (`set:library=ready`). Music root rows: Shuffle all, Artists, Albums,
+/// Songs, Genres, Playlists, Recently added, Folders, Bookmarks.
+fn library_cases(add: &mut dyn FnMut(String, String)) {
+    let lib = "set:library=ready ok wait:100";
+    let journeys: &[(&str, String)] = &[
+        ("root", format!("{lib} expect-screen:Music")),
+        ("artists", format!("{lib} down ok wait:100 expect-screen:MusicLibrary")),
+        ("artist_albums", format!("{lib} down ok wait:100 down*2 ok wait:100")),
+        ("album_tracks", format!("{lib} down ok wait:100 down*2 ok wait:100 ok wait:100 down")),
+        ("albums", format!("{lib} down*2 ok wait:100 down*3")),
+        ("songs", format!("{lib} down*3 ok wait:100")),
+        ("genres", format!("{lib} down*4 ok wait:100")),
+        ("recent", format!("{lib} down*6 ok wait:100")),
+        ("menu", format!("{lib} down ok wait:100 menu")),
+        ("play", format!("{lib} down ok wait:100 down*2 ok wait:100 ok wait:100 down ok wait:100")),
+        ("np_menu", "set:library=ready set:queue=kino goto:NowPlaying wait:100 menu down*8".into()),
+        (
+            "goto_album",
+            "set:library=ready set:queue=kino goto:NowPlaying wait:100 menu down*8 ok wait:100".into(),
+        ),
+        (
+            "goto_artist",
+            "set:library=ready set:queue=kino goto:NowPlaying wait:100 menu down*9 ok wait:100".into(),
+        ),
+    ];
+    for (t, l) in [("dark", "latin"), ("light", "cjk")] {
+        for (name, script) in journeys {
+            add(format!("library_{name}_{t}_{l}"), format!("@apps theme:{t} lang:{l} {script}"));
+        }
+    }
 }
 
 /// AU-14: Pictures (folders and pictures only) and the viewer, on the

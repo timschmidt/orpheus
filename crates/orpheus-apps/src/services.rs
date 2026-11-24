@@ -207,6 +207,7 @@ pub trait Services:
     + BrowseService
     + TextService
     + PlayerService
+    + LibraryService
     + PictureService
     + SettingsService
     + PowerService
@@ -224,6 +225,7 @@ impl<T> Services for T where
         + BrowseService
         + TextService
         + PlayerService
+        + LibraryService
         + PictureService
         + SettingsService
         + PowerService
@@ -308,6 +310,15 @@ pub mod data {
     /// The picture asked for with `PictureService::show_picture` is in the
     /// frame buffer (or could not be shown): see `picture_state`.
     pub const PICTURE: u16 = 5;
+    /// Rows of the current music-library list arrived (`LibraryService`).
+    pub const LIBRARY: u16 = 6;
+}
+
+/// `ServiceEvent::Other { kind, .. }` kinds the services send.
+pub mod other {
+    /// The music library changed state (`PlayerService::library`): it
+    /// was opened, is being built, or a build finished.
+    pub const LIBRARY: u16 = 1;
 }
 
 /// Browser order (Files menu › Sort).
@@ -530,6 +541,14 @@ pub enum PlayerCmd {
         shuffle: bool,
     },
     ShuffleAll,
+    /// Queue the tracks of a music-library track list (05 §7.1) and play,
+    /// from list row `start` if given (else the first, or a random one
+    /// when shuffled).
+    PlayLib {
+        list: LibList,
+        start: Option<u32>,
+        shuffle: bool,
+    },
     PlayNext(FileRef),
     AddToQueue(FileRef),
     SetA,
@@ -561,6 +580,201 @@ pub trait PlayerService {
     fn bookmark(&self, i: u32) -> Option<Bookmark<'_>>;
     fn library(&self) -> LibraryState;
     fn command(&mut self, c: PlayerCmd);
+}
+
+// ---------------------------------------------------------------- Library
+
+/// A list of the music library (05 §7.1; `orpheus_library::List`). The
+/// number is a row of the parent's table (an artist, album, genre, …).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LibList {
+    Artists,
+    /// Albums of an artist (by year).
+    ArtistAlbums(u32),
+    /// Every track of an artist.
+    ArtistTracks(u32),
+    Albums,
+    AlbumTracks(u32),
+    /// All tracks by title.
+    Songs,
+    Genres,
+    GenreArtists(u32),
+    GenreArtistAlbums(u32),
+    GenreAlbumTracks(u32),
+    GenreTracks(u32),
+    GenreArtistTracks(u32),
+    /// Newest first.
+    Recent,
+}
+
+/// Rows of Recently added the services show (the newest).
+pub const RECENT_ROWS: u32 = 100;
+
+/// What a library row is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LibKind {
+    Artist,
+    Album,
+    Genre,
+    GenreArtist,
+    GenreAlbum,
+    Track,
+}
+
+/// Bits of a table row in [`LibList::code`] (16 M rows).
+const LIB_ID_BITS: u32 = 24;
+const LIB_ID_MASK: u32 = (1 << LIB_ID_BITS) - 1;
+
+impl LibList {
+    /// A number for navigation arguments and resume records: the kind in
+    /// bits 24..28, the row below.
+    #[must_use]
+    pub const fn code(self) -> u32 {
+        let (k, id) = match self {
+            LibList::Artists => (0, 0),
+            LibList::ArtistAlbums(i) => (1, i),
+            LibList::ArtistTracks(i) => (2, i),
+            LibList::Albums => (3, 0),
+            LibList::AlbumTracks(i) => (4, i),
+            LibList::Songs => (5, 0),
+            LibList::Genres => (6, 0),
+            LibList::GenreArtists(i) => (7, i),
+            LibList::GenreArtistAlbums(i) => (8, i),
+            LibList::GenreAlbumTracks(i) => (9, i),
+            LibList::GenreTracks(i) => (10, i),
+            LibList::GenreArtistTracks(i) => (11, i),
+            LibList::Recent => (12, 0),
+        };
+        (k << LIB_ID_BITS) | (id & LIB_ID_MASK)
+    }
+
+    /// The list of [`LibList::code`]`(c)`.
+    #[must_use]
+    pub const fn from_code(c: u32) -> Option<LibList> {
+        let id = c & LIB_ID_MASK;
+        Some(match c >> LIB_ID_BITS {
+            0 => LibList::Artists,
+            1 => LibList::ArtistAlbums(id),
+            2 => LibList::ArtistTracks(id),
+            3 => LibList::Albums,
+            4 => LibList::AlbumTracks(id),
+            5 => LibList::Songs,
+            6 => LibList::Genres,
+            7 => LibList::GenreArtists(id),
+            8 => LibList::GenreArtistAlbums(id),
+            9 => LibList::GenreAlbumTracks(id),
+            10 => LibList::GenreTracks(id),
+            11 => LibList::GenreArtistTracks(id),
+            12 => LibList::Recent,
+            _ => return None,
+        })
+    }
+
+    /// The list that opens from a row of kind `kind` and table row `id`
+    /// (`None` for a track).
+    #[must_use]
+    pub const fn open(kind: LibKind, id: u32) -> Option<LibList> {
+        Some(match kind {
+            LibKind::Artist => LibList::ArtistAlbums(id),
+            LibKind::Album => LibList::AlbumTracks(id),
+            LibKind::Genre => LibList::GenreArtists(id),
+            LibKind::GenreArtist => LibList::GenreArtistAlbums(id),
+            LibKind::GenreAlbum => LibList::GenreAlbumTracks(id),
+            LibKind::Track => return None,
+        })
+    }
+
+    /// The tracks of a row (Play / Shuffle on an artist, album, genre).
+    #[must_use]
+    pub const fn tracks_of(kind: LibKind, id: u32) -> Option<LibList> {
+        Some(match kind {
+            LibKind::Artist => LibList::ArtistTracks(id),
+            LibKind::Album => LibList::AlbumTracks(id),
+            LibKind::Genre => LibList::GenreTracks(id),
+            LibKind::GenreArtist => LibList::GenreArtistTracks(id),
+            LibKind::GenreAlbum => LibList::GenreAlbumTracks(id),
+            LibKind::Track => return None,
+        })
+    }
+
+    /// Every track under this list's parent (Play all in an artist's
+    /// albums, a genre's artists, …); a track list is its own.
+    #[must_use]
+    pub const fn all_tracks(self) -> Option<LibList> {
+        match self {
+            LibList::ArtistAlbums(a) => Some(LibList::ArtistTracks(a)),
+            LibList::GenreArtists(g) => Some(LibList::GenreTracks(g)),
+            LibList::GenreArtistAlbums(g) => Some(LibList::GenreArtistTracks(g)),
+            l if l.is_tracks() => Some(l),
+            _ => None,
+        }
+    }
+
+    /// Whether the rows are tracks.
+    #[must_use]
+    pub const fn is_tracks(self) -> bool {
+        matches!(
+            self,
+            LibList::ArtistTracks(_)
+                | LibList::AlbumTracks(_)
+                | LibList::Songs
+                | LibList::GenreAlbumTracks(_)
+                | LibList::GenreTracks(_)
+                | LibList::GenreArtistTracks(_)
+                | LibList::Recent
+        )
+    }
+}
+
+/// One row of a library list.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct LibRow<'a> {
+    pub kind: LibKind,
+    /// Row of its table ([`LibList::open`]).
+    pub id: u32,
+    /// Artist, album or genre name, or track title; `""` for an unknown
+    /// artist, album or genre.
+    pub name: &'a str,
+    /// Tracks: playing time in ms (0 = unknown).
+    pub duration_ms: u32,
+}
+
+/// The library list the service holds.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct LibListing {
+    pub list: LibList,
+    pub count: u32,
+    /// False until the count is known.
+    pub complete: bool,
+}
+
+/// The current track's place in the library ("Go to album / artist").
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct LibNow {
+    pub track: u32,
+    pub album: u32,
+    pub artist: u32,
+}
+
+/// The music library (04 §6.4, 05 §7.1) through a window of rows, like
+/// [`BrowseService`]: `lib_row` answers from the rows the service keeps,
+/// `lib_want` moves the window (`Event::Data(data::LIBRARY)` follows).
+/// Only while `PlayerService::library` is `Ready`.
+pub trait LibraryService {
+    /// Make `list` the current library list (cheap if it already is).
+    fn lib_open(&mut self, list: LibList) -> LibListing;
+    fn lib_listing(&self) -> LibListing;
+    /// Row `i`, if loaded.
+    fn lib_row(&self, i: u32) -> Option<LibRow<'_>>;
+    fn lib_want(&mut self, first: u32, count: u32);
+    /// Where table row `id` is in the current list, if it is in the rows
+    /// loaded.
+    fn lib_position(&self, id: u32) -> Option<u32>;
+    /// Letter-jump letter of row `i` (Artists, Albums, Songs, Genres).
+    fn lib_letter(&self, i: u32) -> Option<char>;
+    fn lib_seek_letter(&self, from: u32, forward: bool) -> Option<(u32, char)>;
+    /// The current track in the library, once it is known.
+    fn lib_now(&self) -> Option<LibNow>;
 }
 
 // ---------------------------------------------------------------- Pictures

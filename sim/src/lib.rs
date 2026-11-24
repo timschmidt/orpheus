@@ -26,6 +26,7 @@ pub mod apps;
 pub mod card;
 pub mod demo;
 pub mod fallback;
+pub mod library;
 pub mod media;
 pub mod packs;
 pub mod pictures;

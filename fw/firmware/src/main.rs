@@ -21,6 +21,7 @@
 
 mod audio;
 mod bt;
+mod library;
 mod media;
 mod pictures;
 mod services;
