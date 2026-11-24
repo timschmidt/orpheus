@@ -838,8 +838,9 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     let no_build = args.flag("no-build");
     let bin = args.value("bin").unwrap_or_else(|| "firmware".into());
     let layout = match args.value("layout").as_deref() {
-        None | Some("dual") => LAYOUT_DUAL,
-        Some("full") => LAYOUT_FULL,
+        // The player runs the full layout since 2026-11-24 (D-2).
+        Some("dual") => LAYOUT_DUAL,
+        None | Some("full") => LAYOUT_FULL,
         Some(o) => bail!("unknown layout `{o}` (dual, full)"),
     };
     let force_paged: Vec<String> =

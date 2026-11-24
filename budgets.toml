@@ -4,15 +4,28 @@
 
 [firmware]
 # Resident image: .text + .rodata + .data loaded at 0x100000.
-resident_bytes = 73728          # 72 KiB
-# Static RAM in SRAM0 (.bss + .uninit, excluding the mode pool and stack).
-bss_bytes = 20480               # 20 KiB
+# 2026-11-24: 72 -> 80 KiB. Measured 76,130 B. Reason: the per-block audio
+# path (MP3 decoder incl. its 17.8 KB Huffman tables, the DSP stages'
+# process functions; resident.toml) is resident because paged it thrashed
+# the 4-slot code cache into the watchdog, and the NOR driver is a residency
+# root because a page fault while the chip programs executed garbage.
+resident_bytes = 81920          # 80 KiB
+# Static RAM in SRAM0 (.bss + .uninit, excluding the stack).
+# 2026-11-24: 20 -> 124 KiB. Measured 123,000 B. Reason: the mode pool is
+# not a separate region yet; the decoder arena (64 KiB) and the stream ring
+# (16 KiB) live in .bss (80 KiB of the planned 104 KiB pool), plus ~43 KiB of
+# statics (UI task 9.4 KiB, browse/text windows ~9 KiB, DSP chain 4 KiB, FS
+# cache 4 KiB, USB 6 KiB, card task 6 KiB, ...). The stack takes the rest of
+# SRAM0 (27 KiB; measured peak ~21.5 KiB).
+bss_bytes = 126976              # 124 KiB
 caches_bytes = 8192
 mode_pool_bytes = 106496        # 104 KiB
 stack_bytes = 12288             # 12 KiB
 # Firmware partition in the dual-boot layout (slot A): the whole "YFW1"
 # image (header sector, resident image, page store).
 slot_bytes_dual = 491520        # 480 KiB
+# Full layout (02 §2.4, D-2 decided 2026-11-24): slot A 0x1000..0x200000.
+slot_bytes_full = 2093056       # 2044 KiB
 # Page store (02 §3.1): what the alias windows can address.
 code_pages = 128
 rodata_pages = 48
