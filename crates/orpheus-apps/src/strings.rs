@@ -506,7 +506,6 @@ strings! {
     Developer = "Developer",
     BatteryLog = "Battery log",
     KeepAwake = "Keep awake",
-    LogFile = "Log file",
     LogRows = "Rows written",
     DeveloperOn = "Developer on",
 }

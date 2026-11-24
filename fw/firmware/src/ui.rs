@@ -151,7 +151,7 @@ impl Ui {
             }
         }
         // Settings › System › Performance for the governor (D-4).
-        crate::PERF_MAX.store(
+        crate::drain::shared().perf_max.store(
             self.fw.settings.get(orpheus_apps::settings::id::PERFORMANCE) == 1,
             core::sync::atomic::Ordering::Relaxed,
         );
@@ -162,8 +162,9 @@ impl Ui {
             self.disp.sleep(!on);
             let level: u8 = if on { 12 } else { 0 };
             self.bl.set(u32::from(level));
-            BACKLIGHT.store(level, core::sync::atomic::Ordering::Relaxed);
-            SCREEN_ON.store(on, core::sync::atomic::Ordering::Relaxed);
+            let sh = crate::drain::shared();
+            sh.backlight.store(level, core::sync::atomic::Ordering::Relaxed);
+            sh.screen_on.store(on, core::sync::atomic::Ordering::Relaxed);
             if on {
                 self.shell.invalidate();
             }
@@ -257,9 +258,6 @@ pub static T_FLUSH: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU3
 /// Set by the developer channel while a screenshot is read (ms deadline,
 /// 0 = none): the UI does not draw until then.
 pub static SHOT_HOLD_UNTIL_MS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-/// Backlight level (0–16) and panel on, for the battery logger (PWR-5).
-pub static BACKLIGHT: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(12);
-pub static SCREEN_ON: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
 pub static SET_WRITES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 pub static SET_LAST: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 

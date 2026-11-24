@@ -1168,7 +1168,7 @@ async fn play_file(
             }
             // The battery log while the DAC is stopped (PWR-5).
             if crate::drain::due() {
-                crate::drain::flush_rows(vol, spare).await;
+                drain_flush_rows(vol, spare).await;
             }
             continue;
         }
@@ -1369,7 +1369,7 @@ async fn play_file(
                 // forced like the chores above.
                 if crate::drain::due() && out.headroom() >= ROOMY {
                     let t0 = now32();
-                    crate::drain::flush_rows(vol, spare).await;
+                    drain_flush_rows(vol, spare).await;
                     note(UB_SERVE, t0);
                 }
                 if driven && !reader_end && ring.s.file_left().is_some_and(|l| l <= READ_AHEAD_LEAD) {
@@ -1619,6 +1619,9 @@ static mut CHAIN: core::mem::MaybeUninit<orpheus_dsp::Chain> = core::mem::MaybeU
 pub fn init_chain() {
     // SAFETY: before any task runs; afterwards only the audio task uses it.
     unsafe { (*(&raw mut CHAIN)).write(orpheus_dsp::Chain::new(orpheus_dsp::OutWidth::Bits16, false)) };
+    // The battery logger's state in SRAM3, before any task runs (here,
+    // not in the resident `main`).
+    crate::drain::init();
 }
 
 static SERVER: ConstStaticCell<Server> = ConstStaticCell::new(Server::new());
@@ -1802,6 +1805,64 @@ async fn save_store(vol: &mut Volume<'static, Card>, srv: &mut Server, scratch: 
     mark(0);
 }
 
+// ------------------------------------------------------------ battery log
+
+/// Choose the battery log's file number if not done yet: one more than the
+/// largest `drain-<n>` in `/.orpheus/test/` (created if missing). Reads
+/// only, apart from creating the folder once (PWR-5, `crate::drain`).
+pub(crate) async fn drain_prepare(vol: &mut Volume<'static, Card>) {
+    if !crate::drain::needs_file() {
+        return;
+    }
+    let dir = orpheus_power::drain::dir();
+    let mut cur = match vol.open_dir(dir).await {
+        Ok(c) => c,
+        Err(_) => {
+            // "/.orpheus", then "/.orpheus/test".
+            let _ = vol.create_dir(dir.get(..9).unwrap_or(dir)).await;
+            let _ = vol.create_dir(dir).await;
+            match vol.open_dir(dir).await {
+                Ok(c) => c,
+                Err(_) => return,
+            }
+        }
+    };
+    let mut e = DirEntry::new();
+    let mut max = 0u16;
+    while let Ok(true) = vol.read_dir(&mut cur, &mut e).await {
+        if let Some(n) = orpheus_power::drain::file_number(e.name()) {
+            max = max.max(n);
+        }
+    }
+    crate::drain::set_file(max);
+}
+
+/// [`drain_prepare`], then [`drain_flush_rows`] (idle loop, power-off,
+/// hand-over).
+pub(crate) async fn drain_flush(vol: &mut Volume<'static, Card>, buf: &mut [u8]) {
+    drain_prepare(vol).await;
+    drain_flush_rows(vol, buf).await;
+}
+
+/// Append what the battery log has due to its file, formatted in `buf`
+/// (2 KiB or more). Nothing before [`drain_prepare`] chose the file.
+pub(crate) async fn drain_flush_rows(vol: &mut Volume<'static, Card>, buf: &mut [u8]) {
+    let mut path = [0u8; 64];
+    let Some((n, rows, pl)) = crate::drain::begin_write(buf, &mut path) else { return };
+    let ok = match path.get(..pl).map(core::str::from_utf8) {
+        Some(Ok(p)) => match vol.open(p, OpenMode::Create).await {
+            Ok(mut f) => {
+                f.set_position(f.size());
+                let wrote = vol.write(&mut f, buf.get(..n).unwrap_or(&[])).await.is_ok();
+                vol.close(f).await.is_ok() && wrote && vol.flush().await.is_ok()
+            }
+            Err(_) => false,
+        },
+        _ => false,
+    };
+    crate::drain::end_write(ok, rows);
+}
+
 /// Write the queue to `/.orpheus/queue.bin` (encoded in `arena`, free
 /// decoder-arena memory: 2,068 bytes for 256 items). True if written.
 async fn save_queue(vol: &mut Volume<'static, Card>, arena: &mut [u8], srv: &Server) -> bool {
@@ -1842,7 +1903,7 @@ async fn hand_over(vol: &mut Volume<'static, Card>, srv: &mut Server, scratch: &
     srv.play_req(PlayReq::Cmd(Command::Stop));
     save_store(vol, srv, scratch).await;
     if crate::drain::due() {
-        crate::drain::flush(vol, scratch).await;
+        drain_flush(vol, scratch).await;
     }
     srv.card_leaving(vol).await;
 }
@@ -1935,7 +1996,7 @@ async fn player_request(
             srv.feed(Event::Shutdown);
             save_store(vol, srv, arena).await;
             // The battery log's last rows (the UI ended it).
-            crate::drain::flush(vol, arena).await;
+            drain_flush(vol, arena).await;
             let _ = vol.flush().await;
             media::SHUT_DOWN.store(true, Ordering::Release);
             return;
@@ -2209,7 +2270,7 @@ pub async fn audio() {
         } else {
             // The battery log (PWR-5) first: a minute's rows are small.
             if crate::drain::due() && !work_waiting() {
-                crate::drain::flush(&mut vol, arena).await;
+                drain_flush(&mut vol, arena).await;
             }
             if srv.wants_build() && !work_waiting() {
                 build_slot(&mut vol, srv, arena).await;
@@ -2278,7 +2339,9 @@ pub async fn audio() {
         } else if let Some(p) = text.strip_prefix("ls ") {
             ls(&mut vol, p.trim()).await;
         } else if let Some(p) = text.strip_prefix("play ") {
-            for s in [&FRAMES, &UNDERRUNS, &SLOW_UNDERRUNS, &CORRUPT, &DEC_N, &DEC_US, &DEC_MAX_US, &DEC_LOADS] {
+            for s in
+                [&FRAMES, &UNDERRUNS, &SLOW_UNDERRUNS, &CORRUPT, &DEC_N, &DEC_US, &DEC_MAX_US, &DEC_LOADS]
+            {
                 s.store(0, Ordering::Relaxed);
             }
             let r =

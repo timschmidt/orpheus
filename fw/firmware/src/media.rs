@@ -825,9 +825,9 @@ impl Server {
             }
             Req::Drain => {
                 if idle {
-                    crate::drain::flush(vol, scratch).await;
+                    crate::audio::drain_flush(vol, scratch).await;
                 } else {
-                    crate::drain::prepare(vol).await;
+                    crate::audio::drain_prepare(vol).await;
                 }
                 true
             }

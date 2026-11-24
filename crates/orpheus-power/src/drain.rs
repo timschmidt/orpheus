@@ -27,6 +27,9 @@
 //! * `card_io`: card read/write operations since the last row.
 //! * Lines starting with `#` are comments: the header, rows lost while the
 //!   card was away (`# lost N rows`), and `# stop` / `# power-off` at the end.
+//!
+//! No panic sites: in the firmware every one keeps a file-path string in a
+//! resident section (`.rodata.str1.1`), so indexing goes through `get`.
 
 use crate::charger::ChargeState;
 use crate::governor::Level;
@@ -263,17 +266,37 @@ impl Log {
     /// Start a new log (a running one is replaced: its unwritten rows go).
     /// `label` is cleaned up with [`clean_label`]; empty means `run`.
     pub fn start(&mut self, label: &[u8], stay: bool, perf_max: bool) {
-        *self = Log::new();
+        self.reset();
         let n = clean_label(label, &mut self.label);
         self.label_len = if n == 0 {
-            self.label[..3].copy_from_slice(bs!(b"run"));
-            3
+            let run = bs!(b"run");
+            for (o, c) in self.label.iter_mut().zip(run) {
+                *o = *c;
+            }
+            run.len() as u8
         } else {
             n as u8
         };
         self.on = true;
         self.stay = stay;
         self.perf_max = perf_max;
+    }
+
+    /// Back to [`Log::new`] in place (no 250-byte temporary on the stack).
+    fn reset(&mut self) {
+        self.on = false;
+        self.stay = false;
+        self.perf_max = false;
+        self.label = [0; LABEL_MAX];
+        self.label_len = 0;
+        self.file = 0;
+        self.header_done = false;
+        self.sampler = Sampler::new();
+        self.head = 0;
+        self.n = 0;
+        self.written = 0;
+        self.lost = 0;
+        self.ending = 0;
     }
 
     /// Running (or ending: rows still to write).
@@ -316,7 +339,7 @@ impl Log {
 
     #[must_use]
     pub fn label(&self) -> &[u8] {
-        &self.label[..usize::from(self.label_len)]
+        self.label.get(..usize::from(self.label_len)).unwrap_or(&[])
     }
 
     /// Rows waiting for the card.
@@ -325,11 +348,16 @@ impl Log {
         usize::from(self.n)
     }
 
-    /// Something for the card task: the header, [`FLUSH_ROWS`] rows, or
+    /// Something for the card task: the header, the first row (so a new
+    /// log shows data after a minute), then every [`FLUSH_ROWS`] rows, or
     /// the end.
     #[must_use]
     pub fn due(&self) -> bool {
-        self.on && (!self.header_done || usize::from(self.n) >= FLUSH_ROWS || self.ending != 0)
+        self.on
+            && (!self.header_done
+                || usize::from(self.n) >= FLUSH_ROWS
+                || self.written == 0 && self.n > 0
+                || self.ending != 0)
     }
 
     /// A second's sample (ignored when off or ending). True if a write is
@@ -365,8 +393,10 @@ impl Log {
             self.lost += 1;
         }
         let slot = (usize::from(self.head) + usize::from(self.n)) % LOG_ROWS;
-        self.rows[slot] = r;
-        self.n += 1;
+        if let Some(x) = self.rows.get_mut(slot) {
+            *x = r;
+            self.n += 1;
+        }
     }
 
     /// The oldest row not yet written.
@@ -374,10 +404,10 @@ impl Log {
         if self.n == 0 {
             return None;
         }
-        let r = self.rows[usize::from(self.head)];
+        let r = self.rows.get(usize::from(self.head)).copied();
         self.head = ((usize::from(self.head) + 1) % LOG_ROWS) as u8;
         self.n -= 1;
-        Some(r)
+        r
     }
 
     /// After the card task has written everything popped: if the log was
@@ -417,7 +447,9 @@ impl Log {
 /// `drain-<n>-<label>.csv` into `out`; its length.
 pub fn file_name(n: u16, label: &[u8], out: &mut [u8]) -> usize {
     let mut w = Writer::new(out);
-    w.s(bs!(b"drain-")).u(u32::from(n)).b(b'-').s(label).s(bs!(b".csv"));
+    // `.` and `csv` apart: a 4-byte constant would be merged into a
+    // resident `.rodata.cst4` in the firmware.
+    w.s(bs!(b"drain-")).u(u32::from(n)).b(b'-').s(label).b(b'.').s(bs!(b"csv"));
     w.len()
 }
 
@@ -425,7 +457,7 @@ pub fn file_name(n: u16, label: &[u8], out: &mut [u8]) -> usize {
 #[must_use]
 pub fn file_number(name: &str) -> Option<u16> {
     let b = name.as_bytes();
-    let rest = b.get(..6).filter(|p| p.eq_ignore_ascii_case(bs!(b"drain-"))).map(|_| &b[6..])?;
+    let rest = b.get(..6).filter(|p| p.eq_ignore_ascii_case(bs!(b"drain-"))).and_then(|_| b.get(6..))?;
     let digits = rest.iter().take_while(|c| c.is_ascii_digit()).count();
     if digits == 0 || digits > 5 {
         return None;
@@ -434,7 +466,7 @@ pub fn file_number(name: &str) -> Option<u16> {
         return None;
     }
     let mut v = 0u32;
-    for d in &rest[..digits] {
+    for d in rest.iter().take(digits) {
         v = v * 10 + u32::from(d - b'0');
     }
     u16::try_from(v).ok()
@@ -446,8 +478,8 @@ pub fn file_number(name: &str) -> Option<u16> {
 pub fn clean_label(input: &[u8], out: &mut [u8; LABEL_MAX]) -> usize {
     let t = trim(input);
     let mut n = 0;
-    for &c in t.iter().take(LABEL_MAX) {
-        out[n] = match c {
+    for (o, &c) in out.iter_mut().zip(t) {
+        *o = match c {
             b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-' => c,
             b'A'..=b'Z' => c.to_ascii_lowercase(),
             _ => b'_',
@@ -460,7 +492,7 @@ pub fn clean_label(input: &[u8], out: &mut [u8; LABEL_MAX]) -> usize {
 fn trim(b: &[u8]) -> &[u8] {
     let s = b.iter().position(|c| !c.is_ascii_whitespace()).unwrap_or(b.len());
     let e = b.iter().rposition(|c| !c.is_ascii_whitespace()).map_or(s, |i| i + 1);
-    &b[s..e.max(s)]
+    b.get(s..e.max(s)).unwrap_or(&[])
 }
 
 /// The charge state as a word.
@@ -580,17 +612,21 @@ impl<'a> Writer<'a> {
     }
 
     pub fn u(&mut self, mut v: u32) -> &mut Self {
+        // Digits backwards into a small array, then out in order.
         let mut d = [0u8; 10];
-        let mut i = d.len();
-        loop {
-            i -= 1;
-            d[i] = b'0' + (v % 10) as u8;
+        let mut n = 0;
+        for slot in &mut d {
+            *slot = b'0' + (v % 10) as u8;
+            n += 1;
             v /= 10;
             if v == 0 {
                 break;
             }
         }
-        self.s(&d[i..])
+        for c in d.iter().take(n).rev() {
+            self.b(*c);
+        }
+        self
     }
 
     fn c(&mut self) -> &mut Self {
@@ -713,6 +749,15 @@ mod tests {
         l.header_done = true;
         assert!(!l.due());
         let mut t = 0;
+        // The first row is due at once (a new log shows data after a
+        // minute).
+        for i in 0..60 {
+            t += 1;
+            assert_eq!(l.second(sample(t, Level::Base, true, t)), i == 59, "first row due");
+        }
+        assert_eq!(l.pop().map(|r| r.uptime_s), Some(60));
+        l.written_out(1);
+        assert!(!l.due());
         for _ in 0..4 {
             for _ in 0..60 {
                 t += 1;
@@ -722,14 +767,14 @@ mod tests {
         assert_eq!(l.pending(), 4);
         for i in 0..60 {
             t += 1;
-            assert_eq!(l.second(sample(t, Level::Base, true, t)), i == 59, "due at the fifth row");
+            assert_eq!(l.second(sample(t, Level::Base, true, t)), i == 59, "then due every fifth row");
         }
-        let mut k = 0;
+        let mut k = 1;
         while let Some(r) = l.pop() {
             k += 1;
             assert_eq!(r.uptime_s, 60 * k);
         }
-        assert_eq!(k, 5);
+        assert_eq!(k, 6);
         l.written_out(5);
         assert!(l.on() && !l.due());
         // Stop: a partial row, then off once written.
@@ -745,7 +790,7 @@ mod tests {
         assert_eq!(l.pop(), None);
         l.written_out(1);
         assert!(!l.on() && !l.due());
-        assert_eq!(l.written, 6);
+        assert_eq!(l.written, 7);
     }
 
     #[test]

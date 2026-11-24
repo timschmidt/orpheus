@@ -132,10 +132,10 @@ fn drain_sample(
         cable: i.cable,
         level: governor::Level::from_index(clock::current() as u8),
         playing: audio::PLAYING.load(Relaxed),
-        backlight: ui::BACKLIGHT.load(Relaxed),
-        screen: ui::SCREEN_ON.load(Relaxed),
+        backlight: drain::shared().backlight.load(Relaxed),
+        screen: drain::shared().screen_on.load(Relaxed),
         bt: drain::bt_code(),
-        card_io: yoton_bsp::card::IO.load(Relaxed),
+        card_io: yoton_bsp::card::io_count(),
     });
 }
 
@@ -162,10 +162,6 @@ pub static CLOCK_FLOOR: core::sync::atomic::AtomicU8 = core::sync::atomic::Atomi
 
 /// Governor on/off (test command `gov on|off`).
 pub static GOV_ON: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
-
-/// Settings › System › Performance = Maximum (D-4, PWR-5), published by
-/// the UI: the governor's step above High is `Max` (288 MHz).
-pub static PERF_MAX: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// Clock governor (PWR-2, PWR-5): from the main executor's idle share over
 /// the last second, one level up when idle < 25 %, one level down after
@@ -212,7 +208,8 @@ impl Governor {
         let idle_pct = governor::idle_percent(u64::from(idle.wrapping_sub(self.last_idle)), t - self.last_t);
         self.last_idle = idle;
         self.last_t = t;
-        let perf = if PERF_MAX.load(Relaxed) {
+        // Settings › System › Performance (D-4), published by the UI.
+        let perf = if drain::shared().perf_max.load(Relaxed) {
             governor::Performance::Maximum
         } else {
             governor::Performance::Normal
@@ -320,6 +317,8 @@ extern "C" fn main() -> ! {
     hal::init();
     clock::set_level(Level::Base);
     log::line(if paged { b"fw: start (paged)" } else { b"fw: start (no pages)" });
+    // Also the battery logger's shared state (`drain::init`): main is
+    // resident, its callees here are not.
     audio::init_chain();
     let rt = executor::start_rt();
     rt.spawn(audio::audio().unwrap());

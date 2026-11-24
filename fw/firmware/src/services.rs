@@ -38,10 +38,6 @@ pub struct Fw {
     pub settings: SettingsCache,
     pub volume: u8,
     pub locked: bool,
-    /// Settings › System › Developer is shown (About × 5; until restart).
-    pub developer: bool,
-    /// The Developer row's Keep awake choice for the next battery log.
-    pub drain_stay: bool,
     pub pending: heapless_queue::Queue<Event, 8>,
     pub actions: heapless_queue::Queue<Action, 8>,
     /// Copies of the card task's windows (see `media`); in statics so `Fw`
@@ -166,8 +162,6 @@ impl Fw {
             settings: SettingsCache::new(),
             volume: 12,
             locked: false,
-            developer: false,
-            drain_stay: false,
             pending: heapless_queue::Queue::new(),
             actions: heapless_queue::Queue::new(),
             browse: UI_BROWSE.take(),
@@ -556,18 +550,20 @@ impl PowerService for Fw {
         }
         self.actions.push(Action::Power(req));
     }
+    // Developer rows and the battery logger (PWR-5): state in
+    // `crate::drain::Shared` (SRAM3), not in `Fw`.
     fn developer(&self) -> bool {
-        self.developer
+        crate::drain::shared().developer.load(Ordering::Relaxed)
     }
     fn show_developer(&mut self) {
-        self.developer = true;
+        crate::drain::shared().developer.store(true, Ordering::Relaxed);
     }
     fn drain_log(&self) -> orpheus_apps::services::DrainLog {
-        crate::drain::info(self.drain_stay)
+        crate::drain::info()
     }
     fn set_drain_log(&mut self, on: bool, stay: bool) {
-        self.drain_stay = stay;
-        let d = crate::drain::info(stay);
+        crate::drain::shared().stay_pref.store(stay, Ordering::Relaxed);
+        let d = crate::drain::info();
         if on && !d.on {
             // Labelled by the Performance setting: one file per run.
             let max = self.settings.get(id::PERFORMANCE) == 1;

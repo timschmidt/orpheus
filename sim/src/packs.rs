@@ -406,7 +406,6 @@ pub const RU: &[(Str, &str)] = &[
     (Developer, "Разработчик"),
     (BatteryLog, "Журнал батареи"),
     (KeepAwake, "Не выключать"),
-    (LogFile, "Файл журнала"),
     (LogRows, "Записано строк"),
     (DeveloperOn, "Разработчик: вкл."),
 ];
@@ -764,7 +763,6 @@ pub const JA: &[(Str, &str)] = &[
     (Developer, "開発者"),
     (BatteryLog, "バッテリーログ"),
     (KeepAwake, "自動オフしない"),
-    (LogFile, "ログファイル"),
     (LogRows, "行数"),
     (DeveloperOn, "開発者: オン"),
 ];

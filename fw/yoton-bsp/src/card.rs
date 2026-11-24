@@ -4,12 +4,27 @@ use atj2157_hal::dma;
 use atj2157_hal::sd::{self, Error, Sd};
 pub use orpheus_fs::BlockDevice;
 
-/// Card read and write operations since boot (wrapping): the battery
-/// logger's `card_io` column (PWR-5).
-pub static IO: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// Card read and write operations (wrapping; only differences mean
+/// anything: the word is not cleared at boot): the battery logger's
+/// `card_io` column (PWR-5). The last word of SRAM3, outside SRAM0, whose
+/// every byte comes off the stack (02 §1 memory map).
+pub const IO_ADDR: usize = 0x0030_7FFC;
+
+fn io() -> &'static core::sync::atomic::AtomicU32 {
+    // SAFETY: the last word of SRAM3 (enabled in crt0, inside the MPU's
+    // RAM sub-region), aligned, used for nothing else; any bit pattern is
+    // a valid `AtomicU32`.
+    unsafe { &*(IO_ADDR as *const core::sync::atomic::AtomicU32) }
+}
 
 fn count_io() {
-    IO.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    io().fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// The operation count (see [`IO_ADDR`]).
+#[must_use]
+pub fn io_count() -> u32 {
+    io().load(core::sync::atomic::Ordering::Relaxed)
 }
 
 use crate::pins;

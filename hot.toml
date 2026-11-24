@@ -176,6 +176,49 @@ symbols = [
     "orpheus_codec_opus::silk::*",
 ]
 
+# The per-block path of playback through the player (MP3 measured on
+# `2e9bf3a4`: about 2,700 line loads/s, 18 loads per decode call, close to
+# the edge). Packed here so that its place no longer moves with unrelated
+# code: on `33b9db6e` (PWR-5, ~8 KiB of new code before them in link
+# order) `play_file` and `AnyDecoder::decode` moved by 8-13 KiB and
+# `playdir` of a 48 kHz MP3 thrashed into the watchdog with the logger off
+# (2026-11-24). `AnyDecoder::decode` holds the MP3 frame code inlined
+# (about 8 lines per frame, paged although `orpheus_codec_mp3::*` is
+# resident). The order of the five groups was chosen offline from the
+# call sites into the per-block targets (decoder, PCM push, player
+# update, refill, card read): about 40 hot lines for 32 physical ones,
+# 8 sharing a line in this order (11 with the small functions first;
+# about 27 on `2e9bf3a4` and 30 on `33b9db6e`, unpacked). `play_file`,
+# edited most often, is last: its changes move nothing else here.
+[[cluster]]
+name = "play-block"
+bins = ["firmware"]
+symbols = [
+    "orpheus_codecs::AnyDecoder>::decode",
+    "firmware::audio::__audio_task::__audio_task_inner_function::{closure#0}",
+    # A ring refill: the card read path.
+    "firmware::audio::Ring>::fill_in::*",
+    "orpheus_fs::volume::Volume<yoton_bsp::card::Card>>::read::*",
+    "orpheus_fs::volume::Volume<yoton_bsp::card::Card>>::cluster_at::*",
+    "orpheus_fs::volume::Volume<yoton_bsp::card::Card>>::fat_get::*",
+    "orpheus_fs::cache::Cache>::load::<yoton_bsp::card::Card>::*",
+    "yoton_bsp::card::Card as orpheus_fs::block::BlockDevice>::read::*",
+    "atj2157_hal::sd::Sd>::read::*",
+    "atj2157_hal::sd::Sd>::data_command::*",
+    "atj2157_hal::sd::Sd>::command::*",
+    "atj2157_hal::sd::Sd>::wait_ts::*",
+    "atj2157_hal::sd::Sd>::check_state",
+    # Every DAC half and every block.
+    "embassy_executor::raw::TaskStorage<firmware::audio::__audio_task::*>::poll",
+    "firmware::audio::PcmOut>::push::*",
+    "firmware::audio::PcmOut>::headroom",
+    "firmware::audio::note",
+    "firmware::media::player_update::<firmware::audio::play_file::*",
+    "firmware::media::Server>::feed",
+    "orpheus_player::Player>::handle",
+    "firmware::audio::play_file::{closure#0}",
+]
+
 # The paged toy: three functions spread over the generated code, packed
 # together (checked by `cargo xtask test pagelink`).
 [[cluster]]

@@ -147,7 +147,7 @@ fn developer_rows<S: Services + ?Sized>(svc: &S, l: Lang, rows: &mut Rows) {
     if let Some(r) = rows.push(l.get(Str::KeepAwake), T_STAY) {
         r.acc = Accessory::Toggle(d.stay);
     }
-    if let Some(r) = rows.push(l.get(Str::LogFile), T_LOG_FILE) {
+    if let Some(r) = rows.push(l.get(Str::FileLabel), T_LOG_FILE) {
         if d.on && d.file != 0 {
             r.value.push_str("drain-");
             r.value.push_u32(u32::from(d.file));
@@ -662,23 +662,12 @@ impl ListScreen {
                 Nav::Pop
             }
             ListKind::Info(Info::About) => {
-                // Five OK presses show the developer rows (until restart).
-                self.taps = self.taps.saturating_add(1);
-                if self.taps >= DEV_TAPS {
-                    cx.svc.show_developer();
-                    cx.ui.toast(lang.get(Str::DeveloperOn));
-                }
+                self.about_ok(cx);
                 Nav::Stay
             }
             ListKind::Info(_) => Nav::Stay,
             ListKind::Developer => {
-                let d = cx.svc.drain_log();
-                match tag {
-                    T_DRAIN => cx.svc.set_drain_log(!d.on, d.stay),
-                    T_STAY => cx.svc.set_drain_log(d.on, !d.stay),
-                    _ => return Nav::Stay,
-                }
-                self.refresh(cx.svc);
+                self.developer_ok(cx, tag);
                 Nav::Stay
             }
             ListKind::HomeApps => {
@@ -786,6 +775,29 @@ impl ListScreen {
                 Nav::Pop
             }
         }
+    }
+
+    /// OK in About: five presses show the developer rows (until restart).
+    /// Not inlined: its frame stays out of the screen dispatch's.
+    #[inline(never)]
+    fn about_ok<S: Services + ?Sized>(&mut self, cx: &mut Cx<'_, S>) {
+        self.taps = self.taps.saturating_add(1);
+        if self.taps >= DEV_TAPS {
+            cx.svc.show_developer();
+            cx.ui.toast(self.lang.get(Str::DeveloperOn));
+        }
+    }
+
+    /// OK on a Developer row (PWR-5): the battery logger on/off, Keep awake.
+    #[inline(never)]
+    fn developer_ok<S: Services + ?Sized>(&mut self, cx: &mut Cx<'_, S>, tag: u16) {
+        let d = cx.svc.drain_log();
+        match tag {
+            T_DRAIN => cx.svc.set_drain_log(!d.on, d.stay),
+            T_STAY => cx.svc.set_drain_log(d.on, !d.stay),
+            _ => return,
+        }
+        self.refresh(cx.svc);
     }
 
     fn dialog_done<S: Services + ?Sized>(&mut self, cx: &mut Cx<'_, S>, dlg: u16, button: u8) {

@@ -1,13 +1,13 @@
 //! Battery logger (WP PWR-5, the PWR-4 measurement tool): while it runs,
 //! the power task feeds it a sample every second and every minute a row
-//! goes into a small RAM log (`orpheus_power::drain::Log`, 8 rows); the
+//! goes into a small RAM log (`orpheus_power::drain::Log`, 6 rows); the
 //! card task appends the rows to `/.orpheus/test/drain-<n>-<label>.csv`
 //! (next free `n`) every 5 rows, when the log stops and at power-off.
 //!
 //! The card writes are a low-priority chore of the card task, through its
 //! normal file API:
 //!
-//! * idle: at once (a [`media::Req::Drain`] wakes the idle loop);
+//! * idle: at once (a `media::Req::Drain` wakes the idle loop);
 //! * playing: only between ring refills while the DAC has room to spare
 //!   (`audio::ROOMY`), never forced like the other chores; while paused,
 //!   with the DAC stopped;
@@ -20,17 +20,26 @@
 //! or out; with USB connected the battery is not discharging (the player
 //! runs from VBUS), which the `cable` and `charge` columns show.
 //!
+//! **RAM**: its state ([`Shared`]: the log and the flags the UI, the power
+//! task and the governor share) lives in SRAM3 at [`SHARED_ADDR`], not in
+//! SRAM0: every byte of SRAM0 statics comes off the stack, which has no
+//! margin left during playback (a 424-byte build reached the RT executor's
+//! state below the stack, 2026-11-24). Entry points the UI calls are not
+//! inlined, so their frames are not added to the UI's.
+//!
 //! Developer commands (`usbdev`): `drain start [LABEL] [stay]`,
 //! `drain stop`, `drain status`. UI: Settings › System › Developer.
+//!
+//! No panic sites (each would keep this file's path in a resident string);
+//! the card task's part (async, so with an implicit one) is in `audio`
+//! (`drain_prepare`, `drain_flush`, `drain_flush_rows`).
 
 use core::cell::RefCell;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use critical_section::Mutex;
 use orpheus_apps::services::DrainLog;
-use orpheus_fs::{DirEntry, OpenMode, Volume};
 use orpheus_power::drain::{self, End, Log, Sample};
-use yoton_bsp::card::Card;
 
 use crate::media;
 
@@ -44,24 +53,76 @@ macro_rules! t {
     }};
 }
 
-static LOG: Mutex<RefCell<Log>> = Mutex::new(RefCell::new(Log::new()));
-/// Mirror of `Log::due()` for the card task's hot loop (no critical
-/// section per decoded block).
-static DUE: AtomicBool = AtomicBool::new(false);
-/// Running and not ending: the power task samples.
-static ACTIVE: AtomicBool = AtomicBool::new(false);
+/// SRAM3 above the PCM ring (`0x304000–0x306FFF`) and the 2 KiB reserved
+/// for the persistent log ring (`orpheus_proto::logring::BASE`,
+/// `0x307000`): `0x307800–0x307FFF` is free plain RAM (02 §1 memory map).
+pub const SHARED_ADDR: usize = 0x0030_7800;
 
-fn with<R>(f: impl FnOnce(&mut Log) -> R) -> R {
-    critical_section::with(|cs| f(&mut LOG.borrow(cs).borrow_mut()))
+/// State shared by the logger, the UI, the power task and the governor.
+#[repr(C)]
+pub struct Shared {
+    log: Mutex<RefCell<Log>>,
+    /// Mirror of `Log::due()` for the card task's hot loop.
+    due: AtomicBool,
+    /// Running and not ending: the power task samples.
+    active: AtomicBool,
+    /// Settings › System › Performance = Maximum (D-4), from the UI.
+    pub perf_max: AtomicBool,
+    /// Backlight level (0–16) and panel on, from the UI.
+    pub backlight: AtomicU8,
+    pub screen_on: AtomicBool,
+    /// Developer rows shown; Keep awake chosen for the next log.
+    pub developer: AtomicBool,
+    pub stay_pref: AtomicBool,
+}
+
+/// Below the card's I/O counter (`yoton_bsp::card::IO_ADDR`).
+const _: () = assert!(SHARED_ADDR + core::mem::size_of::<Shared>() <= yoton_bsp::card::IO_ADDR);
+
+/// Once, from `audio::init_chain` (in `main`) before the tasks start (not inlined: `main` is
+/// resident).
+#[inline(never)]
+pub fn init() {
+    let s = Shared {
+        log: Mutex::new(RefCell::new(Log::new())),
+        due: AtomicBool::new(false),
+        active: AtomicBool::new(false),
+        perf_max: AtomicBool::new(false),
+        backlight: AtomicU8::new(12),
+        screen_on: AtomicBool::new(true),
+        developer: AtomicBool::new(false),
+        stay_pref: AtomicBool::new(false),
+    };
+    // SAFETY: `SHARED_ADDR` is plain SRAM3 (enabled in crt0, inside the
+    // MPU's RAM sub-region), aligned, used by nothing else; written once
+    // before any task runs.
+    unsafe { core::ptr::write(SHARED_ADDR as *mut Shared, s) };
+}
+
+/// The shared state.
+#[must_use]
+pub fn shared() -> &'static Shared {
+    // SAFETY: initialised by `init` before any task runs; only accessed
+    // through atomics and the critical-section mutex.
+    unsafe { &*(SHARED_ADDR as *const Shared) }
+}
+
+/// `f` on the log (inside a critical section nothing else holds it; a
+/// nested call would get the default instead of a panic site).
+fn with<R: Default>(f: impl FnOnce(&mut Log) -> R) -> R {
+    critical_section::with(|cs| match shared().log.borrow(cs).try_borrow_mut() {
+        Ok(mut l) => f(&mut l),
+        Err(_) => R::default(),
+    })
 }
 
 /// Mirror the log's state; wake the card task when something is due.
 fn publish((due, active): (bool, bool)) {
-    DUE.store(due, Ordering::Release);
-    ACTIVE.store(active, Ordering::Release);
+    shared().due.store(due, Ordering::Release);
+    shared().active.store(active, Ordering::Release);
     if due {
         // A full queue: the idle loop also looks before it waits, and the
-        // next second asks again.
+        // next row asks again.
         let _ = media::try_request(media::Req::Drain);
     }
 }
@@ -74,27 +135,32 @@ fn update(f: impl FnOnce(&mut Log)) {
 }
 
 /// Start a new log (a running one ends without its unwritten rows).
+#[inline(never)]
 pub fn start(label: &[u8], stay: bool) {
-    let perf_max = crate::PERF_MAX.load(Ordering::Relaxed);
+    let perf_max = shared().perf_max.load(Ordering::Relaxed);
     update(|l| l.start(label, stay, perf_max));
 }
 
 /// Stop: the partial row and `# stop` are written, then it is off.
+#[inline(never)]
 pub fn stop() {
     update(|l| l.end(End::Stop));
 }
 
 /// Power-off (UI, before the card task's shutdown flush).
+#[inline(never)]
 pub fn power_off() {
     update(|l| l.end(End::PowerOff));
 }
 
+#[inline(never)]
 pub fn set_stay(stay: bool) {
     with(|l| l.set_stay(stay));
 }
 
 /// Auto-off is suppressed (`drain start … stay`).
 #[must_use]
+#[inline(never)]
 pub fn stay() -> bool {
     with(|l| l.stay())
 }
@@ -102,29 +168,36 @@ pub fn stay() -> bool {
 /// The power task samples.
 #[must_use]
 pub fn active() -> bool {
-    ACTIVE.load(Ordering::Acquire)
+    shared().active.load(Ordering::Acquire)
 }
 
 /// Something for the card.
 #[must_use]
 pub fn due() -> bool {
-    DUE.load(Ordering::Acquire)
+    shared().due.load(Ordering::Acquire)
 }
 
 /// A second's sample (power task).
+#[inline(never)]
 pub fn second(s: Sample) {
-    let minute = s.uptime_s.is_multiple_of(60);
-    // The card task is asked when a write becomes due, and again once a
-    // minute while it stays due (the request queue may have been full);
-    // not every second, which would fill the queue the UI uses.
-    if with(|l| l.second(s)) && (!DUE.load(Ordering::Acquire) || minute) {
+    let (due, new_row) = with(|l| {
+        let before = l.pending();
+        let due = l.second(s);
+        (due, l.pending() != before)
+    });
+    // The card task is asked when a write becomes due, and again with
+    // every new row while it stays due (the request queue may have been
+    // full); not every second, which would fill the queue the UI uses.
+    if due && (!shared().due.load(Ordering::Acquire) || new_row) {
         publish((true, true));
     }
 }
 
 /// For the Developer rows.
 #[must_use]
-pub fn info(stay_pref: bool) -> DrainLog {
+#[inline(never)]
+pub fn info() -> DrainLog {
+    let stay_pref = shared().stay_pref.load(Ordering::Relaxed);
     with(|l| DrainLog {
         on: l.on(),
         stay: if l.sampling() { l.stay_choice() } else { stay_pref },
@@ -137,7 +210,8 @@ pub fn info(stay_pref: bool) -> DrainLog {
 #[must_use]
 pub fn bt_code() -> u8 {
     use orpheus_apps::services::BtPhase;
-    match critical_section::with(|cs| crate::bt::SNAP.borrow(cs).borrow().phase) {
+    let phase = critical_section::with(|cs| crate::bt::SNAP.borrow(cs).try_borrow().map(|s| s.phase));
+    match phase.unwrap_or(BtPhase::Off) {
         BtPhase::Off => 0,
         BtPhase::Starting => 1,
         BtPhase::Ready => 2,
@@ -149,88 +223,52 @@ pub fn bt_code() -> u8 {
     }
 }
 
-/// Choose the file's number if not done yet: one more than the largest
-/// `drain-<n>` in the folder (created if missing). Reads only, apart from
-/// creating the folder once. Idle loop, or a request served while playing.
-pub async fn prepare(vol: &mut Volume<'static, Card>) {
-    if with(|l| !l.on() || l.file != 0) {
-        return;
-    }
-    let dir = drain::dir();
-    let mut cur = match vol.open_dir(dir).await {
-        Ok(c) => c,
-        Err(_) => {
-            // "/.orpheus", then "/.orpheus/test".
-            let _ = vol.create_dir(dir.get(..9).unwrap_or(dir)).await;
-            let _ = vol.create_dir(dir).await;
-            match vol.open_dir(dir).await {
-                Ok(c) => c,
-                Err(_) => return,
-            }
-        }
-    };
-    let mut e = DirEntry::new();
-    let mut max = 0u16;
-    while let Ok(true) = vol.read_dir(&mut cur, &mut e).await {
-        if let Some(n) = drain::file_number(e.name()) {
-            max = max.max(n);
-        }
-    }
-    with(|l| l.file = max.saturating_add(1).max(1));
+/// The file's number is still to be chosen (`audio::drain_prepare`).
+#[must_use]
+pub fn needs_file() -> bool {
+    with(|l| l.on() && l.file == 0)
 }
 
-/// [`prepare`], then [`flush_rows`] (idle loop, power-off, hand-over).
-pub async fn flush(vol: &mut Volume<'static, Card>, buf: &mut [u8]) {
-    prepare(vol).await;
-    flush_rows(vol, buf).await;
+/// The file's number: one more than `largest` found in the folder.
+pub fn set_file(largest: u16) {
+    with(|l| l.file = largest.saturating_add(1).max(1));
 }
 
-/// Append what is due (header, rows, lost-row note, end) to the file,
-/// formatted in `buf` (the decoder arena's spare bytes: 2 KiB or more).
-/// Does nothing before [`prepare`] has chosen the file.
-pub async fn flush_rows(vol: &mut Volume<'static, Card>, buf: &mut [u8]) {
+/// Start a write (`audio::drain_flush_rows`): what is due formatted into
+/// `buf` (header, lost-row note, rows, end) and the file's path into
+/// `path`. Returns (bytes, rows, path length); `None` if nothing can be
+/// written (off, no file yet, `buf` too small).
+pub fn begin_write(buf: &mut [u8], path: &mut [u8; 64]) -> Option<(usize, u32, usize)> {
     let (on, file, header_done, lost) = with(|l| (l.on(), l.file, l.header_done, l.lost));
     if !on || file == 0 || buf.len() < drain::HEADER_MAX + drain::ROW_MAX + 32 {
-        return;
+        return None;
     }
-    DUE.store(false, Ordering::Release);
+    shared().due.store(false, Ordering::Release);
     let mut n = 0;
     if !header_done {
         n += with(|l| l.header(buf));
     }
     if lost > 0 {
-        n += drain::format_lost(lost, &mut buf[n..]);
+        n += drain::format_lost(lost, buf.get_mut(n..).unwrap_or(&mut []));
         with(|l| l.lost = l.lost.saturating_sub(lost));
     }
     let mut rows = 0u32;
-    while buf.len() - n >= drain::ROW_MAX + 16 {
+    while buf.len().saturating_sub(n) >= drain::ROW_MAX + 16 {
         let Some(r) = with(Log::pop) else { break };
-        n += drain::format_row(&r, &mut buf[n..]);
+        n += drain::format_row(&r, buf.get_mut(n..).unwrap_or(&mut []));
         rows += 1;
     }
-    let end = with(|l| l.ending().filter(|_| l.pending() == 0));
-    if let Some(e) = end {
-        n += drain::format_end(e, &mut buf[n..]);
+    if let Some(e) = with(|l| l.ending().filter(|_| l.pending() == 0)) {
+        n += drain::format_end(e, buf.get_mut(n..).unwrap_or(&mut []));
     }
-    // "/.orpheus/test/" + "drain-<n>-<label>.csv"
-    let mut path = [0u8; 64];
-    let dir = drain::dir().as_bytes();
-    let d = dir.len();
-    path[..d].copy_from_slice(dir);
-    path[d] = b'/';
-    let pl = d + 1 + with(|l| l.file_name(&mut path[d + 1..]));
-    let ok = match core::str::from_utf8(&path[..pl]) {
-        Ok(p) => match vol.open(p, OpenMode::Create).await {
-            Ok(mut f) => {
-                f.set_position(f.size());
-                let wrote = vol.write(&mut f, &buf[..n]).await.is_ok();
-                vol.close(f).await.is_ok() && wrote && vol.flush().await.is_ok()
-            }
-            Err(_) => false,
-        },
-        Err(_) => false,
-    };
+    let pl = with(|l| file_path_of(l, path));
+    Some((n, rows, pl))
+}
+
+/// The write started by [`begin_write`] is over.
+pub fn end_write(ok: bool, rows: u32) {
     update(|l| {
+        let mut rows = rows;
         if ok {
             l.header_done = true;
         } else {
@@ -261,17 +299,17 @@ pub fn test_command(rest: &[u8]) -> bool {
     } else if rest != t!(b"status") {
         return false;
     }
-    status_reply();
+    critical_section::with(|cs| {
+        if let Ok(l) = shared().log.borrow(cs).try_borrow() {
+            status_text(&l);
+        }
+    });
     true
 }
 
-fn status_reply() {
-    critical_section::with(|cs| status_text(&LOG.borrow(cs).borrow()));
-}
-
 fn status_text(l: &Log) {
-    let mut name = [0u8; 48];
-    let nl = l.file_name(&mut name);
+    let mut path = [0u8; 64];
+    let pl = if l.file == 0 { 0 } else { file_path_of(l, &mut path) };
     crate::audio::reply(|w| {
         w.s(t!(b"drain "))
             .s(if !l.on() {
@@ -285,9 +323,9 @@ fn status_text(l: &Log) {
             .s(l.label())
             .s(t!(b" file="));
         if l.file == 0 {
-            w.s(t!(b"(not chosen yet)"));
+            w.s(t!(b"(not yet)"));
         } else {
-            w.s(drain::dir().as_bytes()).s(t!(b"/")).s(&name[..nl]);
+            w.s(path.get(..pl).unwrap_or(&[]));
         }
         w.s(t!(b" written="))
             .u(u64::from(l.written))
@@ -298,4 +336,12 @@ fn status_text(l: &Log) {
             .s(t!(b" stay="))
             .u(u64::from(l.stay()));
     });
+}
+
+/// As [`file_path`], for a log already borrowed.
+fn file_path_of(l: &Log, out: &mut [u8; 64]) -> usize {
+    let mut w = drain::Writer::new(out);
+    w.s(drain::dir().as_bytes()).b(b'/');
+    let n = w.len();
+    n + l.file_name(out.get_mut(n..).unwrap_or(&mut []))
 }
