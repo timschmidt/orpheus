@@ -490,6 +490,9 @@ pub struct OpenReq {
     /// The previous track ended and this one was read ahead: hand over
     /// without stopping the DAC (`audio::play_item`).
     pub gapless: bool,
+    /// Started before the player heard of the previous track's end
+    /// (`Player::gapless_next`); it hears after the first block.
+    pub early: bool,
 }
 
 /// The player's actions for one event, as the playback loop carries them
@@ -514,8 +517,13 @@ impl Flow {
         for a in out.iter() {
             match a {
                 Action::Open { item, start_frame, paused, gapless } => {
-                    f.open =
-                        Some(OpenReq { target: Target::Item(item), frame: start_frame, paused, gapless });
+                    f.open = Some(OpenReq {
+                        target: Target::Item(item),
+                        frame: start_frame,
+                        paused,
+                        gapless,
+                        early: false,
+                    });
                 }
                 Action::OpenTrack { track, start_frame, paused } => {
                     f.open = Some(OpenReq {
@@ -523,6 +531,7 @@ impl Flow {
                         frame: start_frame,
                         paused,
                         gapless: false,
+                        early: false,
                     });
                 }
                 Action::Seek { frame } => f.seek = Some(frame),

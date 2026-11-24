@@ -368,6 +368,17 @@ impl Player {
         self.shuffle
     }
 
+    /// The queue item `DecoderEnded` will open gapless now (read ahead,
+    /// playing, no stop after this track), so the firmware can start it
+    /// before it tells the player.
+    #[must_use]
+    pub fn gapless_next(&self) -> Option<u32> {
+        if self.state != State::Playing || self.sleep_after_track {
+            return None;
+        }
+        self.prefetch.map(|p| self.item_at(p))
+    }
+
     /// Queue item at play position `pos`.
     #[must_use]
     pub fn item_at(&self, pos: u32) -> u32 {

@@ -184,7 +184,13 @@ impl Sim {
             }
             if dec == len && self.cur.is_some_and(|c| c.0 == item && c.1 == len) {
                 self.cur = None;
+                // What the firmware starts before telling the player.
+                let early = p.gapless_next();
+                let n = self.opens.len();
                 self.run(p, st, Event::DecoderEnded);
+                if let Some(i) = early {
+                    assert_eq!(self.opens.get(n), Some(&(i, true)), "gapless_next");
+                }
             }
         }
     }

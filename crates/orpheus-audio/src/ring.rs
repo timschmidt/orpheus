@@ -19,7 +19,11 @@
 //! The reader asks [`StreamRing::space`] where to read next: into the
 //! current stream until its end, then into the next one. A seek in the
 //! current stream drops what was read of the next one (it is read again,
-//! from its start, once the current one is at its end again).
+//! from where its reader was, once the current one is at its end again).
+//!
+//! The next stream can be looked at before the hand-over
+//! ([`StreamRing::next_source`]: probe, tag skip, inspect), so that work is
+//! done while the current stream still plays.
 //!
 //! The ring's length must be a power of two. Host-tested here; the firmware
 //! wraps it with its card reads (`fw/firmware/src/audio.rs`). No panic
@@ -32,6 +36,10 @@ use crate::source::{ByteSource, SeekSource, SourceError};
 struct Part {
     rd: u64,
     wr: u64,
+    /// The next stream: the offset of its first byte in the ring (it
+    /// follows the current stream's last byte). Unused for the current
+    /// stream (`base` places it).
+    first: u64,
     len: Option<u64>,
     /// The reader reached the end of the file.
     eof: bool,
@@ -41,7 +49,7 @@ struct Part {
 
 impl Part {
     const fn new(len: Option<u64>) -> Self {
-        Self { rd: 0, wr: 0, len, eof: false, reseek: false }
+        Self { rd: 0, wr: 0, first: 0, len, eof: false, reseek: false }
     }
 }
 
@@ -125,10 +133,11 @@ impl<'a> StreamRing<'a> {
     }
 
     /// The bytes of the next stream are no longer where they were (the
-    /// current stream's end moved): read them again from its start.
+    /// current stream's end moved): read them again from its read position.
     fn drop_next_data(&mut self) {
         if let Some(n) = &mut self.next {
-            *n = Part { reseek: true, ..Part::new(n.len) };
+            *n = Part { rd: n.rd, wr: n.rd, first: n.rd, reseek: true, ..Part::new(n.len) };
+            n.eof = n.len.is_some_and(|l| n.rd >= l);
         }
     }
 
@@ -156,20 +165,40 @@ impl<'a> StreamRing<'a> {
         self.next.map_or(0, |n| (n.wr - n.rd) as usize)
     }
 
-    /// Make the next stream the current one: its read position is its
-    /// offset 0, what it has buffered stays; the old stream's unread bytes
-    /// are dropped. False (nothing changes) without a next stream.
+    /// Bytes from `counter` on, `n` of them, as one or two slices.
+    fn view(&self, counter: u64, n: usize) -> Option<(&[u8], &[u8])> {
+        let start = (counter & self.mask) as usize;
+        let first = n.min(self.buf.len() - start);
+        Some((self.buf.get(start..start + first)?, self.buf.get(..n - first)?))
+    }
+
+    /// Make the next stream the current one: its read position stays where
+    /// [`StreamRing::next_source`] left it (offset 0 if untouched), what it
+    /// has buffered stays; the old stream's unread bytes are dropped. False
+    /// (nothing changes) without a next stream.
     pub fn hand_over(&mut self) -> bool {
         let Some(n) = self.next.take() else { return false };
-        self.base += self.cur.wr;
-        self.cur = n;
+        self.base = self.base.wrapping_add(self.cur.wr).wrapping_sub(n.first);
+        self.cur = Part { first: 0, ..n };
         true
+    }
+
+    /// The next stream as a byte source (probe, tag skip, inspect before
+    /// the hand-over). Consuming does not free ring space; the bytes stay
+    /// until the hand-over.
+    pub fn next_source(&mut self) -> Option<NextSource<'_, 'a>> {
+        self.next.is_some().then_some(NextSource { r: self })
+    }
+
+    /// Ring counter of the next stream's offset `o`.
+    fn next_counter(&self, n: &Part, o: u64) -> u64 {
+        self.base.wrapping_add(self.cur.wr).wrapping_add(o - n.first)
     }
 
     // ------------------------------------------------------------ reader
 
     fn used(&self) -> u64 {
-        (self.cur.wr - self.cur.rd) + self.next.map_or(0, |n| n.wr - n.rd)
+        (self.cur.wr - self.cur.rd) + self.next.map_or(0, |n| n.wr - n.first)
     }
 
     /// Where the reader reads next: free space of at least `min` bytes (a
@@ -189,10 +218,10 @@ impl<'a> StreamRing<'a> {
             self.cur.reseek = false;
         }
         let (target, counter) = if !self.cur.eof {
-            (Target::Current, self.base + self.cur.wr)
+            (Target::Current, self.base.wrapping_add(self.cur.wr))
         } else {
             let n = self.next.filter(|n| next && !n.eof)?;
-            (Target::Next, self.base + self.cur.wr + n.wr)
+            (Target::Next, self.next_counter(&n, n.wr))
         };
         let cap = self.buf.len() as u64;
         let free = cap - self.used();
@@ -242,9 +271,7 @@ impl ByteSource for StreamRing<'_> {
         if self.available() < n {
             return None;
         }
-        let start = ((self.base + self.cur.rd) & self.mask) as usize;
-        let first = n.min(self.buf.len() - start);
-        Some((self.buf.get(start..start + first)?, self.buf.get(..n - first)?))
+        self.view(self.base.wrapping_add(self.cur.rd), n)
     }
     fn available(&self) -> usize {
         (self.cur.wr - self.cur.rd) as usize
@@ -260,6 +287,58 @@ impl ByteSource for StreamRing<'_> {
     }
     fn at_end(&self) -> bool {
         self.cur.eof
+    }
+}
+
+/// The next stream of a [`StreamRing`] ([`StreamRing::next_source`]).
+pub struct NextSource<'r, 'a> {
+    r: &'r mut StreamRing<'a>,
+}
+
+impl NextSource<'_, '_> {
+    fn part(&self) -> Part {
+        self.r.next.unwrap_or(Part::new(Some(0)))
+    }
+
+    /// Move the read position to `pos` (a tag larger than what is
+    /// buffered): what was read is dropped, the reader goes on from `pos`.
+    pub fn skip_to(&mut self, pos: u64) {
+        if let Some(n) = &mut self.r.next {
+            n.rd = pos;
+            n.wr = pos;
+            n.first = pos;
+            n.eof = n.len.is_some_and(|l| pos >= l);
+            n.reseek = true;
+        }
+    }
+}
+
+impl ByteSource for NextSource<'_, '_> {
+    fn peek(&self, n: usize) -> Option<(&[u8], &[u8])> {
+        let p = self.r.next.as_ref()?;
+        if ((p.wr - p.rd) as usize) < n {
+            return None;
+        }
+        self.r.view(self.r.next_counter(p, p.rd), n)
+    }
+    fn available(&self) -> usize {
+        let p = self.part();
+        (p.wr - p.rd) as usize
+    }
+    fn consume(&mut self, n: usize) {
+        let a = self.available() as u64;
+        if let Some(p) = &mut self.r.next {
+            p.rd += (n as u64).min(a);
+        }
+    }
+    fn position(&self) -> u64 {
+        self.part().rd
+    }
+    fn len(&self) -> Option<u64> {
+        self.part().len
+    }
+    fn at_end(&self) -> bool {
+        self.part().eof
     }
 }
 
@@ -418,6 +497,61 @@ mod tests {
         let mut out = Vec::new();
         drain(&mut r, &mut f, 77, &mut out);
         assert_eq!(out, b);
+    }
+
+    #[test]
+    fn next_stream_read_and_skipped_before_the_hand_over() {
+        let (a, b) = (data(5000, 8), data(9000, 9));
+        let mut buf = std::vec![0u8; 2048];
+        let mut r = StreamRing::new(&mut buf);
+        r.reset(Some(5000));
+        let mut f = Files { cur: &a, next: Some(&b), pos: [0, 0], chunk: 700 };
+        r.begin_next(Some(9000));
+        let mut out = Vec::new();
+        while r.next_buffered() < 300 {
+            f.fill(&mut r);
+            let n = r.available().min(400);
+            let (x, y) = r.peek(n).unwrap();
+            out.extend_from_slice(x);
+            out.extend_from_slice(y);
+            r.consume(n);
+        }
+        {
+            // A 100-byte tag consumed, then a skip past what is buffered.
+            let mut n = r.next_source().unwrap();
+            let (x, y) = n.peek(100).unwrap();
+            assert_eq!([x, y].concat(), b[..100]);
+            n.consume(100);
+            assert_eq!(n.position(), 100);
+            n.skip_to(4000);
+            assert_eq!(n.available(), 0);
+        }
+        // A seek in the current stream keeps the next stream's position.
+        r.seek(out.len() as u64).unwrap();
+        loop {
+            f.fill(&mut r);
+            let n = r.available().min(333);
+            if n == 0 && r.at_end() {
+                break;
+            }
+            let (x, y) = r.peek(n).unwrap();
+            out.extend_from_slice(x);
+            out.extend_from_slice(y);
+            r.consume(n);
+        }
+        assert_eq!(out, a);
+        {
+            let n = r.next_source().unwrap();
+            assert_eq!(n.position(), 4000);
+            let k = n.available().min(50);
+            let (x, y) = n.peek(k).unwrap();
+            assert_eq!([x, y].concat(), b[4000..4000 + k]);
+        }
+        f.hand_over(&mut r);
+        assert_eq!(r.position(), 4000);
+        let mut rest = Vec::new();
+        drain(&mut r, &mut f, 123, &mut rest);
+        assert_eq!(rest, b[4000..]);
     }
 
     #[test]

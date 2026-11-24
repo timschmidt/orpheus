@@ -208,7 +208,7 @@ pub static T_SERVE: AtomicU32 = AtomicU32::new(0);
 /// library lookup and of the album-art lookup that follow, underruns after
 /// them, time of the read-ahead open. Plus the start time and pager count
 /// of the join in progress.
-static JOIN: [AtomicU32; 10] = [const { AtomicU32::new(0) }; 10];
+static JOIN: [AtomicU32; 12] = [const { AtomicU32::new(0) }; 12];
 const J_HEAD: usize = 0;
 const J_OPEN_US: usize = 1;
 const J_LOADS: usize = 2;
@@ -219,6 +219,8 @@ const J_UNDER_META: usize = 6;
 const J_PREFETCH_US: usize = 7;
 const J_T0: usize = 8;
 const J_L0: usize = 9;
+const J_PREP_US: usize = 10;
+const J_PREP_LOADS: usize = 11;
 
 fn jset(i: usize, v: u32) {
     JOIN[i].store(v, Ordering::Relaxed);
@@ -248,30 +250,26 @@ const CHORE_WAIT_US: u64 = 300_000;
 /// of it has played (its first seconds stay free of card work).
 const META_AFTER_MS: u64 = 2000;
 
-/// Underruns of the current track by cause (halves lost; reset with
-/// [`UNDERRUNS`]): an operation that took longer than the DAC had queued
-/// when it started is charged with the difference (`charge`). What no
-/// operation explains is the decoder's (`status`: `dec=`).
-static UNDER_BY: [AtomicU32; 6] = [const { AtomicU32::new(0) }; 6];
+/// Underruns of the current track by cause (`orpheus_audio::Ledger`,
+/// reset with [`UNDERRUNS`]): every operation that keeps the writer from
+/// the DAC is noted with its length; halves the writer finds missed go to
+/// the longest one noted since its last half boundary, else to the decoder.
+/// The causes add up to [`UNDERRUNS`] exactly.
+static LEDGER: critical_section::Mutex<core::cell::RefCell<orpheus_audio::Ledger<8>>> =
+    critical_section::Mutex::new(core::cell::RefCell::new(orpheus_audio::Ledger::new()));
 const UB_JOIN: usize = 0;
 const UB_FILL: usize = 1;
 const UB_SERVE: usize = 2;
 const UB_PREFETCH: usize = 3;
-const UB_LIB: usize = 4;
-const UB_ART: usize = 5;
+const UB_PREPARE: usize = 4;
+const UB_LIB: usize = 5;
+const UB_ART: usize = 6;
+const UB_DECODER: usize = 7;
 
-/// Charge `cause` with the halves an operation that started at `t0` (µs)
-/// with `head` frames queued made the DAC miss.
-fn charge(cause: usize, head: i32, t0: u32) {
-    if head == i32::MAX {
-        return;
-    }
-    let us = u64::from(now32().wrapping_sub(t0));
-    let frames = (us * u64::from(RATE.load(Ordering::Relaxed)) / 1_000_000) as i64;
-    let short = frames - i64::from(head.max(0));
-    if short > 0 {
-        UNDER_BY[cause].fetch_add((short as u64).div_ceil(HALF as u64) as u32, Ordering::Relaxed);
-    }
+/// An operation of `cause` that started at `t0` (µs) has ended.
+fn note(cause: usize, t0: u32) {
+    let us = now32().wrapping_sub(t0);
+    critical_section::with(|cs| LEDGER.borrow(cs).borrow_mut().note(cause, us));
 }
 
 /// Developer `stop`: ends the current file at once (also inside a PCM
@@ -305,6 +303,8 @@ pub(crate) struct Ring {
     /// The item handed over at the last gapless change, until its title is
     /// shown (`play_file`'s chores: not while the next decoder opens).
     shown: Option<Next>,
+    /// Its stream as prepared (taken by `play_file`).
+    prepared: Option<(orpheus_audio::Format, orpheus_audio::Plan)>,
 }
 
 pub(crate) struct Next {
@@ -313,6 +313,10 @@ pub(crate) struct Next {
     ext: [u8; 8],
     ext_len: u8,
     title: media::Name,
+    /// Probed and inspected while the current file still plays (the next
+    /// stream's read position is then at its codec data): `Some(Ok)` ready,
+    /// `Some(Err)` gave up (the hand-over does it the ordinary way).
+    prep: Option<Result<(orpheus_audio::Format, orpheus_audio::Plan), ()>>,
 }
 
 impl ByteSource for Ring {
@@ -350,6 +354,7 @@ impl Ring {
         self.s.reset(Some(len));
         self.cancel_next();
         self.shown = None;
+        self.prepared = None;
     }
 
     /// The current file has been read to its end.
@@ -382,8 +387,53 @@ impl Ring {
         }
         self.file = self.next_file.take();
         self.shown = self.next.take();
-        let n = self.shown.as_ref()?;
+        let n = self.shown.as_mut()?;
+        self.prepared = n.prep.take().and_then(Result::ok);
         Some((n.track, n.ext, n.ext_len))
+    }
+
+    /// Probe (skipping leading tags) and inspect the stream read ahead,
+    /// while the current one plays: the hand-over then only opens the
+    /// decoder. True once it is decided (ready or given up); false: more of
+    /// it must be read first.
+    #[inline(never)]
+    fn prepare(&mut self) -> bool {
+        let Some(n) = self.next.as_mut() else { return true };
+        if n.prep.is_some() {
+            return true;
+        }
+        let ext = n.ext.get(..usize::from(n.ext_len)).filter(|e| !e.is_empty());
+        let Some(mut src) = self.s.next_source() else { return true };
+        let mut r = None;
+        for _ in 0..8 {
+            match probe(&src, ext) {
+                Probe::Found(format) => {
+                    let hint = ContainerInfo { format, gapless: None, stream_len: None };
+                    r = match orpheus_codecs::inspect(format, &src, &hint) {
+                        Ok(plan) => Some(Ok((format, plan))),
+                        Err(OpenError::NeedData(_)) if !src.at_end() => None,
+                        Err(_) => Some(Err(())),
+                    };
+                    break;
+                }
+                Probe::Skip(k) if (k as usize) <= src.available() => src.consume(k as usize),
+                Probe::Skip(k) => {
+                    let to = src.position() + k;
+                    src.skip_to(to);
+                    break;
+                }
+                Probe::NeedData(_) if !src.at_end() => break,
+                _ => {
+                    r = Some(Err(()));
+                    break;
+                }
+            }
+        }
+        let done = r.is_some();
+        if let Some(n) = self.next.as_mut() {
+            n.prep = r;
+        }
+        done
     }
 
     /// Publish the title kept by [`Ring::hand_over`].
@@ -510,6 +560,11 @@ impl PcmOut {
                 })
                 .await;
                 let played = PLAYED.load(Ordering::Acquire);
+                let lost = played.saturating_sub(self.written);
+                critical_section::with(|cs| {
+                    let mut l = LEDGER.borrow(cs).borrow_mut();
+                    if lost > 0 { l.missed(lost, UB_DECODER) } else { l.kept_up() }
+                });
                 if played > self.written {
                     UNDERRUNS.fetch_add(played - self.written, Ordering::Relaxed);
                     let now = (time::now_us() / 1000) as u32;
@@ -651,6 +706,10 @@ struct Start {
     /// already (handed over): the DAC is still running with the previous
     /// track's last samples.
     gapless: bool,
+    /// The player has not been told that the previous track ended
+    /// (`OpenReq::early`; the queue item started): told after this one's
+    /// first block.
+    early: Option<u32>,
 }
 
 /// How a file's playback ended.
@@ -681,7 +740,7 @@ async fn play_path(
 ) -> Result<End, &'static [u8]> {
     ring.file = Some(vol.open(path, OpenMode::Read).await.map_err(|_| &b"open failed"[..])?);
     let mut out = PcmOut::new();
-    let st = Start { frame: 0, paused: false, track: None, gapless: false };
+    let st = Start { frame: 0, paused: false, track: None, gapless: false, early: None };
     play_file(vol, ring, arena, ext_of(path), srv, &mut out, st).await
 }
 
@@ -749,6 +808,17 @@ async fn seek_to(
     None
 }
 
+/// The current track's decoder ended and the next one is handed over:
+/// the join's statistics start, and its underruns are no decoder's.
+fn handed_over(out: &PcmOut) {
+    jset(J_HEAD, out.headroom().max(0) as u32);
+    jset(J_T0, now32());
+    jset(J_L0, pager_loads());
+    // Underruns while the next decoder opens are not the decoder's (no
+    // too-slow abort).
+    LAST_SERVE_MS.store((time::now_us() / 1000) as u32, Ordering::Relaxed);
+}
+
 /// A decoder failure: the player moves on (driven), or the developer
 /// command gets `why`.
 fn failed(srv: &mut Server, driven: bool, why: &'static [u8]) -> Result<End, &'static [u8]> {
@@ -765,7 +835,7 @@ async fn prefetch(vol: &mut Volume<'static, Card>, ring: &mut Ring, srv: &Server
     let got = open_target(vol, srv, Target::Item(item), Some(&mut title), &mut ring.next_file).await;
     if let (Some((track, ext, ext_len)), Some(f)) = (got, ring.next_file.as_ref()) {
         ring.s.begin_next(Some(f.size()));
-        ring.next = Some(Next { item, track, ext, ext_len, title });
+        ring.next = Some(Next { item, track, ext, ext_len, title, prep: None });
     }
 }
 
@@ -788,35 +858,44 @@ async fn play_file(
     }
     // A gapless start has the file's head in the ring already: no card
     // read before the decoder runs unless the probe asks for more.
-    if !st.gapless || ring.available() < 4096 {
+    let prepared = if st.gapless { ring.prepared.take() } else { None };
+    if !st.gapless || (prepared.is_none() && ring.available() < 4096) {
         ring.fill(vol, None).await;
     }
-    // Probe, skipping leading tags.
-    let format = loop {
-        match probe(ring, ext) {
-            Probe::Found(fm) => break fm,
-            Probe::Skip(n) => {
-                if (n as usize) <= ring.available() {
-                    ring.consume(n as usize);
-                } else {
-                    ring.s.skip_to(ring.position() + n);
+    // Probe, skipping leading tags (done already for a prepared stream).
+    let format = if let Some((fm, _)) = prepared {
+        fm
+    } else {
+        loop {
+            match probe(ring, ext) {
+                Probe::Found(fm) => break fm,
+                Probe::Skip(n) => {
+                    if (n as usize) <= ring.available() {
+                        ring.consume(n as usize);
+                    } else {
+                        ring.s.skip_to(ring.position() + n);
+                        ring.fill(vol, None).await;
+                    }
+                }
+                Probe::NeedData(_) if !ring.eof() => {
                     ring.fill(vol, None).await;
                 }
+                _ => return Err(b"unknown format"),
             }
-            Probe::NeedData(_) if !ring.eof() => {
-                ring.fill(vol, None).await;
-            }
-            _ => return Err(b"unknown format"),
         }
     };
     let hint = ContainerInfo { format, gapless: None, stream_len: None };
-    let plan = loop {
-        match orpheus_codecs::inspect(format, ring, &hint) {
-            Ok(p) => break p,
-            Err(OpenError::NeedData(_)) if !ring.eof() => {
-                ring.fill(vol, None).await;
+    let plan = if let Some((_, p)) = prepared {
+        p
+    } else {
+        loop {
+            match orpheus_codecs::inspect(format, ring, &hint) {
+                Ok(p) => break p,
+                Err(OpenError::NeedData(_)) if !ring.eof() => {
+                    ring.fill(vol, None).await;
+                }
+                Err(_) => return Err(b"unsupported stream"),
             }
-            Err(_) => return Err(b"unsupported stream"),
         }
     };
     if plan.arena + SPARE > arena.len() {
@@ -898,7 +977,7 @@ async fn play_file(
         media::player_update(show);
     }
     let driven = st.track.is_some();
-    if let Some(track) = st.track {
+    if let Some(track) = st.track.filter(|_| st.early.is_none()) {
         srv.feed(Event::Opened { track, rate: info.rate, frames: info.frames });
         // A track change: save while the DAC is not running yet (at a
         // gapless one it runs: the next safe moment saves).
@@ -919,6 +998,7 @@ async fn play_file(
     // A gapless join being measured: 1 until the first block, 2 until two
     // halves are out.
     let mut join: u8 = if st.gapless { 1 } else { 0 };
+    let mut early = st.early;
     PLAYING.store(true, Ordering::Relaxed);
     STOP.store(false, Ordering::Relaxed);
     let t0 = time::now_us();
@@ -1042,6 +1122,14 @@ async fn play_file(
         T_DECODE.fetch_add(dt as u32, Ordering::Relaxed);
         match step {
             Ok(Step::Pcm(block)) => {
+                if join == 1 {
+                    // The hand-over is over when the new decoder has a
+                    // block: noted before its first pushes see the result.
+                    jset(J_OPEN_US, now32().wrapping_sub(jget(J_T0)));
+                    jset(J_LOADS, pager_loads().wrapping_sub(jget(J_L0)));
+                    note(UB_JOIN, jget(J_T0));
+                    join = 2;
+                }
                 let g = media::SOUND_GEN.load(Ordering::Acquire);
                 if g != sound_gen {
                     sound_gen = g;
@@ -1092,12 +1180,17 @@ async fn play_file(
                 pos += (samples / ch) as u64;
                 FRAMES.store(frames, Ordering::Relaxed);
                 media::player_update(|p| p.position_ms = ms_of(pos));
-                if join == 1 {
-                    jset(J_OPEN_US, now32().wrapping_sub(jget(J_T0)));
-                    jset(J_LOADS, pager_loads().wrapping_sub(jget(J_L0)));
-                    charge(UB_JOIN, jget(J_HEAD) as i32, jget(J_T0));
-                    join = 2;
-                } else if join == 2 && frames >= 2 * HALF as u32 {
+                if let (Some(item), Some(track)) = (early.take(), st.track) {
+                    // Now the player hears that the previous track ended
+                    // (it answers with this item) and that this one opened.
+                    let mut fl = srv.feed(Event::DecoderEnded);
+                    if fl.open.is_some_and(|o| o.target.is_item(item)) {
+                        srv.feed(Event::Opened { track, rate: info.rate, frames: info.frames });
+                        fl.open = None;
+                    }
+                    flow.merge(fl);
+                }
+                if join == 2 && frames >= 2 * HALF as u32 {
                     // Underruns are seen at half boundaries: by now the
                     // join's are counted. The UI hears of the new track now
                     // (no card work: the title came with the read-ahead).
@@ -1123,7 +1216,7 @@ async fn play_file(
                     // file's end the decoder must stay ahead of the DAC.
                     ring.fill_in(vol, None, head >= ROOMY).await;
                     mark(0);
-                    charge(UB_FILL, head, a);
+                    note(UB_FILL, a);
                     T_FILL.fetch_add(now32().wrapping_sub(a), Ordering::Relaxed);
                     // A request may be waiting: served as a chore.
                     serve_due = true;
@@ -1134,7 +1227,10 @@ async fn play_file(
                 // Requests wait while the current file's last bytes play
                 // (≤ 0.7 s: the hand-over comes first).
                 let serve_now = serve_due && !(ring.eof() && reader_end);
-                if pf_due.is_some() || serve_now || meta_now {
+                // The stream read ahead, probed and inspected before the end.
+                let prep_now = ring.next.as_ref().is_some_and(|n| n.prep.is_none())
+                    && (ring.s.next_buffered() >= 2048 || ring.s.next_source().is_some_and(|n| n.at_end()));
+                if pf_due.is_some() || serve_now || meta_now || prep_now {
                     let now = time::now_us();
                     if chore_since == 0 {
                         chore_since = now;
@@ -1149,12 +1245,19 @@ async fn play_file(
                         if let Some(item) = pf_due.take() {
                             prefetch(vol, ring, srv, item).await;
                             jset(J_PREFETCH_US, now32().wrapping_sub(t0));
-                            charge(UB_PREFETCH, head, t0);
+                            note(UB_PREFETCH, t0);
+                        } else if prep_now {
+                            let l0 = pager_loads();
+                            if ring.prepare() {
+                                jset(J_PREP_US, now32().wrapping_sub(t0));
+                                jset(J_PREP_LOADS, pager_loads().wrapping_sub(l0));
+                            }
+                            note(UB_PREPARE, t0);
                         } else if serve_now {
                             serve_due = false;
                             let go_on = serve_one(vol, srv, spare).await;
                             T_SERVE.fetch_add(now32().wrapping_sub(t0), Ordering::Relaxed);
-                            charge(UB_SERVE, head, t0);
+                            note(UB_SERVE, t0);
                             if !go_on {
                                 break 'play Ok(End::Pending);
                             }
@@ -1176,7 +1279,7 @@ async fn play_file(
                                 meta = 3;
                             }
                             jset(J_LIB_US, jget(J_LIB_US).max(now32().wrapping_sub(t0)));
-                            charge(UB_LIB, head, t0);
+                            note(UB_LIB, t0);
                         } else {
                             meta = 0;
                             // An album's next track keeps the cover shown.
@@ -1184,7 +1287,7 @@ async fn play_file(
                                 crate::pictures::track_art_cached(vol, srv, t.locator()).await;
                             }
                             jset(J_ART_US, now32().wrapping_sub(t0));
-                            charge(UB_ART, head, t0);
+                            note(UB_ART, t0);
                             jset(J_UNDER_META, UNDERRUNS.load(Ordering::Relaxed));
                         }
                         mark(0);
@@ -1204,14 +1307,15 @@ async fn play_file(
                     break 'play Ok(End::Idle);
                 }
                 let (a, head) = (now32(), out.headroom());
-                if !ring.fill_in(vol, None, head >= ROOMY).await {
+                let filled = ring.fill_in(vol, None, head >= ROOMY).await;
+                note(UB_FILL, a);
+                if !filled {
                     // The ring is full and the decoder still wants more:
                     // it can never be satisfied; end the track instead of
                     // spinning.
                     CORRUPT.fetch_add(1, Ordering::Relaxed);
                     break 'play failed(srv, driven, b"stream needs a larger ring");
                 }
-                charge(UB_FILL, head, a);
                 // A request may be waiting: served as a chore.
                 serve_due = true;
             }
@@ -1227,6 +1331,13 @@ async fn play_file(
             }
         }
     };
+    if let (Some(item), Some(track)) = (early, st.track) {
+        // Ended before its first block (a request for the idle loop, a
+        // stop): the player still hears of the change.
+        if srv.feed(Event::DecoderEnded).open.is_some_and(|o| o.target.is_item(item)) {
+            srv.feed(Event::Opened { track, rate: info.rate, frames: info.frames });
+        }
+    }
     if join != 0 {
         // A gapless track shorter than two halves: show it anyway.
         ring.show_handed();
@@ -1236,19 +1347,34 @@ async fn play_file(
     // ahead is handed over with the DAC running (gapless), anything else
     // first plays out what is queued.
     let mut gapless = false;
-    let end = if natural && driven {
+    // The item read ahead is next (the player's answer to `DecoderEnded`
+    // is known): start it before telling the player, so its decoder opens
+    // first (the player's code pages in after the new track's first block).
+    let early = natural
+        && driven
+        && ring
+            .next
+            .as_ref()
+            .is_some_and(|n| srv.player.as_ref().and_then(|p| p.gapless_next()) == Some(n.item));
+    let end = if early {
+        gapless = true;
+        handed_over(out);
+        let item = ring.next.as_ref().map_or(0, |n| n.item);
+        Ok(End::Open(OpenReq {
+            target: Target::Item(item),
+            frame: 0,
+            paused: false,
+            gapless: true,
+            early: true,
+        }))
+    } else if natural && driven {
         let fl = srv.feed(Event::DecoderEnded);
         match fl.open {
             Some(o)
                 if o.gapless && !o.paused && ring.next.as_ref().is_some_and(|n| o.target.is_item(n.item)) =>
             {
                 gapless = true;
-                jset(J_HEAD, out.headroom().max(0) as u32);
-                jset(J_T0, now32());
-                jset(J_L0, pager_loads());
-                // Underruns while the next decoder opens are not the
-                // decoder's (no too-slow abort).
-                LAST_SERVE_MS.store((time::now_us() / 1000) as u32, Ordering::Relaxed);
+                handed_over(out);
                 Ok(End::Open(o))
             }
             Some(mut o) => {
@@ -1434,9 +1560,10 @@ async fn run_player(
     let mut out = PcmOut::new();
     let mut next = Some(first);
     while let Some(o) = next.take() {
-        for c in [&FRAMES, &UNDERRUNS, &SLOW_UNDERRUNS, &CORRUPT].into_iter().chain(&UNDER_BY) {
+        for c in [&FRAMES, &UNDERRUNS, &SLOW_UNDERRUNS, &CORRUPT] {
             c.store(0, Ordering::Relaxed);
         }
+        critical_section::with(|cs| LEDGER.borrow(cs).borrow_mut().reset());
         STOP.store(false, Ordering::Relaxed);
         next = match play_item(vol, ring, arena, srv, &mut out, o).await {
             End::Open(o) => Some(o),
@@ -1490,15 +1617,23 @@ async fn play_item(
         };
         let ext = ext.get(..usize::from(n)).filter(|e| !e.is_empty());
         let st = if gapless {
-            Start { frame: 0, paused: false, track: Some(track), gapless }
+            let early = if let (true, Target::Item(i)) = (o.early, o.target) { Some(i) } else { None };
+            Start { frame: 0, paused: false, track: Some(track), gapless, early }
         } else {
-            Start { frame: o.frame, paused: o.paused, track: Some(track), gapless }
+            Start { frame: o.frame, paused: o.paused, track: Some(track), gapless, early: None }
         };
         match play_file(vol, ring, arena, ext, srv, out, st).await {
             // Another rate, or the file read ahead cannot be played: open
             // it again after the previous track has played out (a broken
             // file then fails as usual).
-            Ok(End::Again) | Err(_) if gapless => o.gapless = false,
+            Ok(End::Again) | Err(_) if gapless => {
+                if o.early {
+                    // The player learns of the end first (it opens this item).
+                    o.early = false;
+                    srv.feed(Event::DecoderEnded);
+                }
+                o.gapless = false;
+            }
             Ok(end) => return end,
             Err(_) => return after(srv.feed(Event::OpenFailed)),
         }
@@ -1888,9 +2023,12 @@ pub fn status_reply() {
             .u(u64::from(jget(J_UNDER_META)))
             .s(t!(b" pf_us="))
             .u(u64::from(jget(J_PREFETCH_US)));
-        // This track's underruns by cause; `dec`: not explained by one.
-        let ub: [u32; 6] = core::array::from_fn(|i| UNDER_BY[i].load(Ordering::Relaxed));
-        let dec = UNDERRUNS.load(Ordering::Relaxed).saturating_sub(ub.iter().sum());
+        w.s(t!(b" prep_us="))
+            .u(u64::from(jget(J_PREP_US)))
+            .s(t!(b" prep_loads="))
+            .u(u64::from(jget(J_PREP_LOADS)));
+        // This track's underruns by cause (they add up to `underruns`).
+        let ub = critical_section::with(|cs| LEDGER.borrow(cs).borrow().by());
         w.s(t!(b" ub: join="))
             .u(u64::from(ub[UB_JOIN]))
             .s(t!(b" fill="))
@@ -1899,12 +2037,14 @@ pub fn status_reply() {
             .u(u64::from(ub[UB_SERVE]))
             .s(t!(b" pf="))
             .u(u64::from(ub[UB_PREFETCH]))
+            .s(t!(b" prep="))
+            .u(u64::from(ub[UB_PREPARE]))
             .s(t!(b" lib="))
             .u(u64::from(ub[UB_LIB]))
             .s(t!(b" art="))
             .u(u64::from(ub[UB_ART]))
             .s(t!(b" dec="))
-            .u(u64::from(dec));
+            .u(u64::from(ub[UB_DECODER]));
     });
 }
 
@@ -1954,6 +2094,7 @@ pub async fn audio() {
         next: None,
         next_file: None,
         shown: None,
+        prepared: None,
     };
     // SAFETY: this task is the arena's owner; the USB task borrows it only
     // while this task waits for the card (`usb_buffer`).

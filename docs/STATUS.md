@@ -42,6 +42,57 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-24 — AU-5 (gapless): the next stream prepared before the join, the player told after it, exact underrun ledger (worker, no hardware)
+
+From the lead's run of `879d967`: MP3 joins clean. The FLAC split's 2nd join
+took 104 ms with 372 page loads (the 1st, 13.9 ms with 38). The open path
+had been evicted during part 1, most likely by the UI repaint of the new
+title. `ub:` did not add up to `underruns`.
+
+* **Less paged code at the join (option a, as far as RAM allows).** A
+  second decoder cannot be built beside the playing one: two FLAC
+  decoders need ≈ 2 × 34–38 KiB, and the arena is 62 KiB. So the parts
+  that can move out of the join window do:
+  * The stream read ahead is **probed (tags skipped) and inspected while
+    the current one plays**: `Ring::prepare`, a chore when ≥ 2 KiB of it
+    is buffered and the DAC has headroom. It uses the new
+    `StreamRing::next_source` (a byte source over the next stream: probe,
+    consume, `skip_to` past a tag larger than the ring; host-tested). The
+    format and plan travel with the read-ahead, and the hand-over only
+    opens the decoder.
+  * The **player is told after the new track's first block**:
+    `Player::gapless_next` (host-tested against the simulation: it is what
+    `DecoderEnded` opens) says which item comes, so the decoder ends,
+    hands over, opens and decodes first. `DecoderEnded` + `Opened` (player,
+    store image, snapshot code) follow. On every way out before that
+    block (another rate, an open error, a stop, a card hand-over) the
+    player is told first.
+  * The join window is now: hand-over, decoder open, first decode. The
+    title, the info snapshot, the library place and the art come later
+    (unchanged).
+  * `status` adds `prep_us=` / `prep_loads=` (the preparation's time and
+    pager line loads).
+* **Exact underrun ledger** (`orpheus_audio::Ledger`, host-tested with a
+  writer/DAC simulation). Every operation that keeps the writer from the
+  DAC is noted with its length. The halves `PcmOut::push` finds missed at
+  a half boundary go to the longest operation noted since its last
+  boundary, else to the decoder; a boundary with nothing missed forgets
+  them. The causes (`ub: join= fill= serve= pf= prep= lib= art= dec=`)
+  add up to `underruns` by construction. The old rule charged the time an
+  operation exceeded its starting headroom (halves at risk), which
+  overcounted.
+* RAM/stack (`xtask build`; base = main `a4b4045` in this worktree):
+  `__stack_bottom` `0x1321d0` → `0x1322a0` (main stack −208 B: the ledger,
+  the prepared stream with the read-ahead and its copy at the hand-over,
+  2 statistics). Resident 83,508 → 83,508 B. Frames: audio task poll
+  4,992 B (unchanged), `play_file` 2,324 → 2,244 B.
+* Not verified on the player. Open: whether the remaining window (decoder
+  open + first decode + `play_file`'s set-up code) still pages too much
+  after a UI repaint. The next options are a `hot.toml` cluster for the
+  FLAC/MP3 open paths (not touched here: the package brief said not to
+  edit `hot.toml`/`resident.toml`) or warming those lines by a dummy
+  open just before the end.
+
 ### 2026-11-24 — AU-5 (gapless): bounded lookups after a join, path-walk cache, underruns by cause (worker, no hardware)
 
 From the lead's run of `0b7ac9a`: the joins are almost clean (`u=0`,
@@ -1321,6 +1372,7 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 | 2026-11-24 | Firmware with gapless hand-over and queue edits (AU-5), worker worktree build | resident 83,252 B (unchanged), main stack −312 B (`__stack_bottom` 0x131c00 → 0x131d38); audio task poll frame 5,024 → 4,992 B, `play_file` 2,380 → 2,332 B | `xtask build`, `llvm-nm`, `llvm-objdump` `sub sp` |
 | 2026-11-24 | AU-5 join fixes (chores gated on PCM headroom, deferred title, `find_near`, `playdir`, join statistics), worker worktree build | resident 83,500 B (was 83,468), main stack −184 B (`__stack_bottom` 0x132070 → 0x132128); audio task poll 4,992 B, `play_file` 2,332 B (unchanged) | `xtask build`, `llvm-nm`, `llvm-objdump` `sub sp` |
 | 2026-11-24 | AU-5 bounded lookups (walk cache, stepwise library search, DMA headroom, underruns by cause), worker worktree build | resident 83,508 B (was 83,500), main stack −168 B (`__stack_bottom` 0x132128 → 0x1321d0); audio task poll 4,992 B, `play_file` 2,324 B (was 2,332) | `xtask build`, `llvm-nm`, `llvm-objdump` `sub sp` |
+| 2026-11-24 | AU-5 prepared next stream, player told after the join, underrun ledger, worker worktree build | resident 83,508 B (unchanged), main stack −208 B (`__stack_bottom` 0x1321d0 → 0x1322a0); audio task poll 4,992 B, `play_file` 2,244 B (was 2,324) | `xtask build`, `llvm-nm`, `llvm-objdump` `sub sp` |
 
 | 2026-11-24 | Host coverage baseline (host tests + 1 fuzz regression input), regions / lines / branches | 72.16 % (60,678 / 84,088) / 71.78 % / 65.09 % | `xtask cover --fuzz` (+ `--add` re-runs), nightly-2026-11-05 |
 | 2026-11-24 | Instrumented coverage build of the host workspace, no debug info | ≈ 0.4 GB build + ≈ 1.1 GB test images in `target/cover/…/tmp` | `du` |

@@ -14,6 +14,8 @@
 //! * [`decoder`]: the [`Decoder`] trait (inspect → open → decode/seek).
 //! * [`probe`]: format detection by content (and extension as a tie-break).
 //! * [`rate`]: what the DAC path does with a stream's rate and word length.
+//! * [`ledger`]: [`Ledger`], underruns charged to the operation that caused
+//!   them.
 //! * [`ring`]: [`StreamRing`], the stream ring with gapless read-ahead into
 //!   the next file (04 §2.2).
 //! * [`bits`], [`crc`]: bit reader over a ring view, the CRCs the formats use.
@@ -30,6 +32,7 @@ pub mod arena;
 pub mod bits;
 pub mod crc;
 pub mod decoder;
+pub mod ledger;
 pub mod probe;
 pub mod rate;
 pub mod ring;
@@ -38,6 +41,7 @@ pub mod stream;
 
 pub use arena::{Arena, ArenaFull};
 pub use decoder::{Decoder, Plan, SeekStep};
+pub use ledger::Ledger;
 pub use probe::{Format, OggCodec, Probe, probe};
 pub use ring::StreamRing;
 pub use source::{ByteSource, SeekSource, SliceSource, SourceError, View};
