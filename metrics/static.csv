@@ -1,0 +1,51 @@
+commit,date,build_id,metric,key,value
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,resident_bytes,"",79087
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,bss_bytes,"",121440
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_bytes,"",25768
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,panic_sites,"",7
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,region_bytes,"sram1",32768
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,region_bytes,"sram2/paged-code",590694
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,region_bytes,"sram3/paged-rodata",124566
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,code_pages,"",73
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,rodata_pages,"",16
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,slot_bytes,"full",815104
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"firmware::audio::init_chain",11192
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"firmware::audio::__audio_task::__audio_task_inner_function::{closure#0}",5080
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"<embassy_executor::raw::TaskStorage<firmware::ui::__ui_task::__ui_task_inner_function::{closure#0}>>::poll",4776
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"firmware::ui::new_ui",4504
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"firmware::audio::release::{closure#0}",2760
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"firmware::audio::mount::{closure#0}",2624
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"orpheus_codec_vorbis::setup::setup",2576
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"<orpheus_index::card::Inner<yoton_bsp::card::Card>>::slot",2536
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"firmware::audio::play_file::{closure#0}",2368
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"<firmware::media::Server>::init_player",2232
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"firmware::library::step",2072
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"<orpheus_index::card::CardStore<yoton_bsp::card::Card> as orpheus_index::Storage>::remove",1968
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"<orpheus_codec_vorbis::VorbisDecoder>::step",1904
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"orpheus_codecs::open",1856
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"<orpheus_apps::screens::AppScreen as orpheus_ui::nav::Screen<firmware::services::Fw>>::event",1776
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"<orpheus_codec_vorbis::VorbisDecoder>::header_packets",1592
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"<orpheus_index::card::CardIo<yoton_bsp::card::Card>>::close_all",1592
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"<orpheus_ogg::ranges::Reader>::next",1592
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"firmware::ui::new_fw",1544
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"firmware::audio::seek_to::{closure#0}",1496
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"<orpheus_library::query::Library>::open::<orpheus_index::card::CardStore<yoton_bsp::card::Card>>",1376
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"orpheus_codec_opus::celt::decoder::decode",1296
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"<orpheus_apps::screens::lists::ListScreen>::refresh::<firmware::services::Fw>",1288
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"firmware::pictures::store::{closure#0}",1288
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"orpheus_ogg::ranges::assemble",1256
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"<orpheus_apps::screens::AppScreen as orpheus_ui::nav::ScreenSet<firmware::services::Fw>>::create",1248
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"<orpheus_apps::screens::player::NowPlayingScreen>::details::<firmware::services::Fw>",1248
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"<orpheus_apps::screens::bluetooth::BluetoothScreen>::refresh::<firmware::services::Fw>",1240
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"firmware::pictures::show_cached::{closure#0}",1240
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"orpheus_ogg::ranges::peek_packets",1240
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"<orpheus_library::build::Run>::sort::<orpheus_index::card::CardStore<yoton_bsp::card::Card>>",1136
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"<orpheus_codecs::AnyDecoder>::decode",1128
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"firmware::pictures::make_art::{closure#0}",1112
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"<orpheus_library::card::CardTags<yoton_bsp::card::Card> as orpheus_library::TagSource>::open_dir",1080
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"orpheus_codec_speex::sb::decode",1016
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"<embassy_executor::raw::TaskStorage<firmware::usbdev::__usb_task::__usb_task_inner_function::{closure#0}>>::poll",1000
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"firmware::pictures::cached_meta::{closure#0}",1000
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"firmware::bt::driver",988
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"<firmware::media::Server>::fill_rows",960
+deac5f96df1e,2026-11-24,3ed98285c9fa04084894976a21df42ec,stack_frame,"firmware::audio::save_queue::{closure#0}",952

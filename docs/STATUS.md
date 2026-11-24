@@ -225,6 +225,54 @@ of every session. Newest entries first in §3.
   follow gapless), Files → Menu → Play next / Add to queue, and 256+ adds
   for the toast; after each edit `cargo xtask dev cmd status` and a
   power-off/on: Music → Resume continues in the edited queue.
+| VER-1 (host), VER-5 (host) | **tooling done; baseline measured** | `xtask cover` (line/region/branch, per crate, `--fuzz`, `--html`, `--add`, `--report-only`), `coverage-exclusions.toml` (empty; D-9), `xtask gate --coverage` (report only) / `--m11` (100 % + ASan + Miri), `xtask metrics` → `metrics/*.csv`, `xtask test asan [--lean]`, `xtask test miri`. Baseline: `docs/verification/baseline-2026-11.md` (regions 72.16 %). Not done: corpora (VER-4), conformance corpus inside `cover`, device coverage (VER-6) |
+
+## 3. Session log
+
+### 2026-11-24 — VER-1 + VER-5 (host side): coverage, sanitizers, metrics, baseline (worker, no hardware)
+
+* **`cargo xtask cover [--crate NAME] [--fuzz] [--html] [--clean]
+  [--report-only] [--add]`** (07 §3.6): host tests built by
+  `nightly-2026-11-05` with `-Cinstrument-coverage
+  -Zcoverage-options=branch` in `target/cover/`, the toolchain's own
+  `llvm-profdata`/`llvm-cov` (installed: `llvm-tools`, `miri`, `rust-src`
+  components for that nightly). Only `crates/`, `sim/`, `xtask/` count,
+  without `tests/` and `tests.rs`; regions/branches are the union over all
+  instantiations and binaries (computed in `xtask` from the JSON export).
+  `--fuzz` replays every cargo-fuzz target's corpus files through
+  instrumented builds of the fuzz projects. Reports in
+  `target/orpheus/coverage/` (CSV per crate/file/function, LCOV, HTML,
+  `no-data.txt`, `history/<commit>/`).
+* **`coverage-exclusions.toml`** (empty; format documented there and in 07
+  §3.6): entries stay unapplied while `approved-by = "pending owner"`.
+* **Gate**: `xtask gate --coverage` adds the coverage report without
+  failing; `xtask gate --m11` fails below 100 % of non-excluded regions or
+  on files without data, and runs ASan and Miri. Default gate unchanged.
+* **`xtask test asan [--fuzz-only] [--lean]`** (07 §3.5): workspace tests
+  with `-Zsanitizer=address -Zbuild-std` (LSan included), then each fuzz
+  target over its corpora under `cargo fuzz run … -runs=0`. **`xtask test
+  miri [--crate NAME]`**: the crate list in `xtask/src/sanitize.rs` with
+  time boxes and named skips.
+* **`xtask metrics [--elf PATH]`** (07 §4.4, columns defined there):
+  `metrics/coverage.csv` (per crate, per commit and source) and
+  `metrics/static.csv` (resident/bss/stack/pages/slot, 40 largest
+  prologue stack frames via `llvm-objdump`).
+* **Baseline** (`docs/verification/baseline-2026-11.md`): regions
+  72.16 %, lines 71.78 %, branches 65.09 % over 84,088 regions; worst:
+  `orpheus-host` 8.4 %, `orpheus-codec-vorbis` 9.6 % (needs the
+  conformance corpus), conformance binary 10.7 %, `xtask` 16.1 %,
+  `orpheus-codecs` 29.2 %, `orpheus-codec-opus` 37.1 % (needs the RFC
+  vectors). No fuzz corpus is committed (only `tests/regress/flac/`), so
+  fuzz coverage is ≈ 0. ASan: no memory error in 586 tests; LSan: a
+  test-only leak in `orpheus-apps` (fixed) and the simulator's per-`Media`
+  FS cache leak (open, needs an `orpheus-fs` API change). Miri: no UB in 14 crates / 232 tests (16 slow or file-touching tests skipped by name; ASan runs them).
+* **Fixed**: `orpheus-img` conformance tests raced generating their
+  pictures in a fresh target directory (5 failures); `orpheus-apps`
+  strings test leaked its packs.
+* Disk: the root disk went down to 0.9 GB free during the session (parallel
+  workers); one coverage run died with ENOSPC. `--add` (merge a re-run into
+  the last profile) and `asan --lean` exist because of that. All
+  instrumented build directories were deleted afterwards.
 
 ### 2026-11-24 — AU-12 firmware: the music library on the player (worker, no hardware)
 
@@ -1106,9 +1154,15 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 | 2026-11-24 | Firmware with the music library (AU-12 firmware), worker worktree build | resident 83,244 B (was 81,996), bss 123,088 B (was 123,000), main stack 19,968 B (was 21,304), 71 code + 16 rodata pages (was 66 + 16), slot 802,816 B (was 761,856); audio task poll frame 5,024 B (was 5,088) | `xtask build`, `llvm-nm` `__stack_bottom`, `llvm-objdump` `sub sp` |
 | 2026-11-24 | Firmware with gapless hand-over and queue edits (AU-5), worker worktree build | resident 83,252 B (unchanged), main stack −312 B (`__stack_bottom` 0x131c00 → 0x131d38); audio task poll frame 5,024 → 4,992 B, `play_file` 2,380 → 2,332 B | `xtask build`, `llvm-nm`, `llvm-objdump` `sub sp` |
 
+| 2026-11-24 | Host coverage baseline (host tests + 1 fuzz regression input), regions / lines / branches | 72.16 % (60,678 / 84,088) / 71.78 % / 65.09 % | `xtask cover --fuzz` (+ `--add` re-runs), nightly-2026-11-05 |
+| 2026-11-24 | Instrumented coverage build of the host workspace, no debug info | ≈ 0.4 GB build + ≈ 1.1 GB test images in `target/cover/…/tmp` | `du` |
+| 2026-11-24 | ASan host tests | 63 binaries, 586 tests, 0 memory errors; LSan: 4 binaries (1 fixed) | `xtask test asan --lean` |
+| 2026-11-24 | Miri | 14 crates, 232 tests, no UB; full run ≈ 35 min | `xtask test miri` |
 
 ## 5. Open questions for the user
 
+* D-9 (coverage exclusions): the list is empty; workers will propose
+  entries with `approved-by = "pending owner"` for the owner to review.
 * User checks 7–10 in `docs/USER-CHECKS.md` (picture, keys, charge current,
   tones). 8 and 10 are blocking for M4 and M5.
 * Decisions D-1, D-3 … D-8 in `docs/PLAN.md` §5 (defaults assumed); D-2 decided (full layout).

@@ -14,6 +14,8 @@
 //!   under `tests/regress/<target>/` are replayed first.
 //! * `codec-size`: build each codec crate for `thumbv7em-none-eabihf`
 //!   (release) and report its code and data size.
+//! * `asan [--fuzz-only] [--lean]`, `miri [--crate NAME]`: sanitizers (07 §3.5,
+//!   VER-5; `sanitize.rs`). Not part of `all`.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -30,6 +32,9 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     let quick = args.flag("quick");
     let filter = args.value("filter");
     let secs: u64 = args.value("secs").and_then(|s| s.parse().ok()).unwrap_or(60);
+    let fuzz_only = args.flag("fuzz-only");
+    let lean = args.flag("lean");
+    let krate = args.value("crate");
     let which = args.next_positional().unwrap_or_else(|| "all".into());
     match which.as_str() {
         "host" => host(),
@@ -38,6 +43,8 @@ pub fn cmd(args: &mut Args) -> Result<String> {
         "codecs" => codecs(gen_corpus, filter.as_deref(), quick),
         "fuzz-smoke" => fuzz_smoke(secs),
         "codec-size" => codec_size(),
+        "asan" => crate::sanitize::asan(fuzz_only, lean),
+        "miri" => crate::sanitize::miri(krate.as_deref()),
         "all" => {
             host()?;
             golden(false)?;
@@ -47,7 +54,7 @@ pub fn cmd(args: &mut Args) -> Result<String> {
             Ok(format!("host, golden and pagelink tests passed; {c}; {f}"))
         }
         other => bail!(
-            "unknown test suite `{other}` (host, golden, pagelink, codecs, fuzz-smoke, codec-size, all)"
+            "unknown test suite `{other}` (host, golden, pagelink, codecs, fuzz-smoke, codec-size, asan, miri, all)"
         ),
     }
 }
