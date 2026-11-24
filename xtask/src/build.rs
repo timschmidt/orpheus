@@ -3,7 +3,6 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use object::{Object, ObjectSegment};
 
 use crate::args::Args;
 use crate::util::{cargo, log, out_dir, root, run};
@@ -48,16 +47,21 @@ pub fn build_fw(pkg: &str, bin: &str, release: bool, features: Option<&str>) -> 
 /// physical address.
 pub fn flatten(elf: &Path) -> Result<(Vec<u8>, u32)> {
     let data = std::fs::read(elf).with_context(|| format!("read {}", elf.display()))?;
-    let file = object::File::parse(&*data)?;
+    use object::read::elf::{ElfFile32, ProgramHeader};
+    let file = ElfFile32::<object::Endianness>::parse(&*data)?;
+    let endian = file.endian();
     let mut segs: Vec<(u64, &[u8])> = Vec::new();
-    for s in file.segments() {
-        let d = s.data()?;
+    for ph in file.elf_program_headers() {
+        if ph.p_type(endian) != object::elf::PT_LOAD {
+            continue;
+        }
+        let d = ph.data(endian, &*data).map_err(|()| anyhow::anyhow!("bad segment"))?;
         if d.is_empty() {
             continue;
         }
-        // Physical (load) address: ELF segments expose it via file range +
-        // address; for our images LMA == VMA for loaded data.
-        segs.push((s.address(), d));
+        // Load (physical) address: differs from the run address for code
+        // copied at run time (stage 2's trampoline).
+        segs.push((u64::from(ph.p_paddr(endian)), d));
     }
     if segs.is_empty() {
         bail!("{}: no loadable data", elf.display());

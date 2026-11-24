@@ -88,6 +88,7 @@ pub fn cmd(args: &mut Args) -> Result<String> {
         "usbtest" => usbtest::cmd(args),
         "stage" => stage::cmd_stage(args),
         "install-stage2" => stage::cmd_install_stage2(args),
+        "stage2-ramtest" => stage::cmd_stage2_ramtest(args),
         "results" => {
             let mut d = to_ymon()?;
             hil::print_results(&mut d, None)

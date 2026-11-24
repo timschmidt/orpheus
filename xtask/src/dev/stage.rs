@@ -94,3 +94,34 @@ pub fn cmd_install_stage2(_args: &mut Args) -> Result<String> {
         img.len()
     ))
 }
+
+/// Run the freshly built stage 2 from RAM (as stage 1 would: loaded at
+/// 0x102400, entered at +0x11) to prove its paths before it goes to NOR.
+/// `--adfu` sets the mailbox ADFU word first.
+pub fn cmd_stage2_ramtest(args: &mut Args) -> Result<String> {
+    let adfu = args.flag("adfu");
+    let b = crate::build::build_fw("stage2", "stage2", true, None)?;
+    let (img, base) = crate::build::flatten(&b.elf)?;
+    if base != yoton_proto::layout::STAGE2_LOAD || img.len() > 1024 {
+        bail!("stage 2 image invalid");
+    }
+    let mut d = to_ymon()?;
+    if adfu {
+        d.write_u32(yoton_proto::mailbox::ADDR_ADFU, yoton_proto::mailbox::ADFU_MAGIC)?;
+    }
+    d.write_verify(base, &img, 0x200)?;
+    d.jump(base + 0x10)?;
+    d.close();
+    log("stage 2 started from RAM; watching the bus");
+    let t0 = std::time::Instant::now();
+    let mut last = yoton_host::device::State::Ymon;
+    while t0.elapsed() < std::time::Duration::from_secs(40) {
+        let s = yoton_host::device::state();
+        if s != last {
+            log(&format!("  {:5.1} s: {}", t0.elapsed().as_secs_f32(), s.name()));
+            last = s;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    Ok(format!("final state: {}", last.name()))
+}
