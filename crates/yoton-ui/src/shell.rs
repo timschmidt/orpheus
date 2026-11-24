@@ -149,6 +149,13 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
         self.stack.len()
     }
 
+    /// Something is drawn over the screen (menu, dialog, toast, volume):
+    /// pixels written into the frame buffer by a service would cover it.
+    #[must_use]
+    pub fn overlay_shown(&self) -> bool {
+        self.sheet.is_some() || self.dialog.is_some() || self.toast.is_some() || self.volume.is_some()
+    }
+
     #[must_use]
     pub fn menu_open(&self) -> bool {
         self.sheet.is_some()

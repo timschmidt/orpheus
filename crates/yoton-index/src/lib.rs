@@ -76,11 +76,13 @@ pub struct Spec {
     pub show_hidden: bool,
     /// Directories, audio and playlists only (Music › Folders).
     pub audio_only: bool,
+    /// Directories and pictures only (Pictures).
+    pub images_only: bool,
 }
 
 impl From<BrowseFilter> for Spec {
     fn from(f: BrowseFilter) -> Spec {
-        Spec { sort: f.sort, show_hidden: f.hidden, audio_only: f.audio_only }
+        Spec { sort: f.sort, show_hidden: f.hidden, audio_only: f.audio_only, images_only: f.images_only }
     }
 }
 
@@ -91,7 +93,9 @@ impl Spec {
             SortBy::Date => 1,
             SortBy::Size => 2,
         };
-        s | (u8::from(self.show_hidden) << 2) | (u8::from(self.audio_only) << 3)
+        s | (u8::from(self.show_hidden) << 2)
+            | (u8::from(self.audio_only) << 3)
+            | (u8::from(self.images_only) << 4)
     }
 
     pub(crate) fn from_code(c: u8) -> Option<Spec> {
@@ -101,7 +105,12 @@ impl Spec {
             2 => SortBy::Size,
             _ => return None,
         };
-        (c & !0xF == 0).then_some(Spec { sort, show_hidden: c & 4 != 0, audio_only: c & 8 != 0 })
+        (c & !0x1F == 0).then_some(Spec {
+            sort,
+            show_hidden: c & 4 != 0,
+            audio_only: c & 8 != 0,
+            images_only: c & 0x10 != 0,
+        })
     }
 
     /// Whether an entry appears in this listing.
@@ -111,6 +120,7 @@ impl Spec {
         let kind = kind_of(name, e.is_dir);
         (self.show_hidden || !hidden)
             && (!self.audio_only || matches!(kind, EntryKind::Dir | EntryKind::Audio | EntryKind::Playlist))
+            && (!self.images_only || matches!(kind, EntryKind::Dir | EntryKind::Image))
     }
 }
 

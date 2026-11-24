@@ -212,7 +212,7 @@ fn scenario(exfat: bool) {
     let mut vol = mount(disk, &mut cache, true);
     let start = music(&mut vol);
     let dir = start.dir_cluster();
-    let spec = Spec { sort: SortBy::Name, show_hidden: false, audio_only: false };
+    let spec = Spec { sort: SortBy::Name, show_hidden: false, audio_only: false, images_only: false };
 
     // Nothing yet: a read-only session finds no index and creates nothing.
     assert_eq!(query(&mut vol, |io| Index::open(&mut io.store(), dir, spec).unwrap()), None);

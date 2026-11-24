@@ -8,7 +8,7 @@ use yoton_index::{
     Verifier,
 };
 
-const NAME: Spec = Spec { sort: SortBy::Name, show_hidden: false, audio_only: false };
+const NAME: Spec = Spec { sort: SortBy::Name, show_hidden: false, audio_only: false, images_only: false };
 
 fn signature_of(src: &mut MockDir) -> yoton_index::Signature {
     let mut v = Verifier::new();
@@ -309,7 +309,8 @@ fn queries_positions_find_and_letters() {
             };
             let mut with = want.clone();
             with.push(e.clone());
-            let sorted = oracle(&with, Spec { show_hidden: true, audio_only: false, ..spec });
+            let sorted =
+                oracle(&with, Spec { show_hidden: true, audio_only: false, images_only: false, ..spec });
             let sorted: Vec<_> = sorted
                 .into_iter()
                 .filter(|x| want.iter().any(|w| w.loc == x.loc) || x.loc == e.loc)
@@ -462,7 +463,7 @@ fn letter_table_answers_like_the_index() {
     }
     // Too many runs: not loaded.
     let entries = random_dir(&mut r, 3000);
-    let spec = Spec { sort: SortBy::Size, show_hidden: true, audio_only: false };
+    let spec = Spec { sort: SortBy::Size, show_hidden: true, audio_only: false, images_only: false };
     let mut store = MemStore::new();
     let ix = build(&mut store, &mut MockDir::new(entries), spec, 4096);
     assert!(ix.letter_runs() > 128);

@@ -140,6 +140,13 @@ fn dsp_clock_floor(dsp_active: bool) {
     }
 }
 
+/// Clock floor High while the card task decodes a picture (no track is
+/// loaded then; `play_file` sets the codec's floor when a track starts).
+pub(crate) fn boost(on: bool) {
+    CODEC_FLOOR.store(if on { 2 } else { 0 }, Ordering::Relaxed);
+    dsp_clock_floor(false);
+}
+
 fn sound_active() -> bool {
     DSP_ON.load(Ordering::Relaxed)
         && critical_section::with(|cs| *media::SOUND.borrow(cs).borrow() != media::Sound::default())
@@ -182,15 +189,17 @@ const RING: usize = 16 * 1024;
 struct RingBuf([u8; RING]);
 static RING_BUF: ConstStaticCell<RingBuf> = ConstStaticCell::new(RingBuf([0; RING]));
 
-struct Ring {
+/// The stream ring over one file (also the picture decoders' source while
+/// no track is loaded, `pictures`).
+pub(crate) struct Ring {
     buf: &'static mut [u8; RING],
     rd: u64,
     wr: u64,
     len: Option<u64>,
-    eof: bool,
+    pub(crate) eof: bool,
     /// A decoder seek moved the read position: the next `fill` reads the
     /// file from `wr`.
-    reseek: bool,
+    pub(crate) reseek: bool,
 }
 
 impl ByteSource for Ring {
@@ -236,7 +245,7 @@ impl SeekSource for Ring {
 }
 
 impl Ring {
-    fn reset(&mut self, len: u64) {
+    pub(crate) fn reset(&mut self, len: u64) {
         self.rd = 0;
         self.wr = 0;
         self.len = Some(len);
@@ -245,7 +254,7 @@ impl Ring {
     }
 
     /// Read from the file into free space (sector-sized pieces where it can).
-    async fn fill(&mut self, vol: &mut Volume<'static, Card>, f: &mut File) -> bool {
+    pub(crate) async fn fill(&mut self, vol: &mut Volume<'static, Card>, f: &mut File) -> bool {
         if self.reseek {
             self.reseek = false;
             f.set_position(self.wr);
@@ -1007,6 +1016,8 @@ async fn play_item(
     let Some((f, track, ext, n)) = open_target(vol, srv, o.target).await else {
         return after(srv.feed(Event::OpenFailed));
     };
+    // Album art while the arena is still free (AU-14).
+    crate::pictures::track_art(vol, ring, arena, srv, track.locator()).await;
     let ext = (n > 0).then_some(&ext[..n]);
     match play_file(
         vol,
@@ -1393,6 +1404,11 @@ pub async fn audio() {
         };
         let cmd = match r {
             Either3::First(c) => c,
+            Either3::Second(Req::Picture(j)) => {
+                // No track loaded: the whole arena for the picture.
+                crate::pictures::serve_idle(&mut vol, &mut ring, arena, srv, &j).await;
+                continue;
+            }
             Either3::Second(r) => {
                 if srv.serve(&mut vol, r, arena, true).await {
                     continue;

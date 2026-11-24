@@ -250,7 +250,7 @@ fn album_art_from_tag_to_cache() {
         let pic = tags.picture.expect("picture");
         assert_eq!(pic.at.unsync, unsync);
         // The art path: seek to the picture, narrow the source, decode into
-        // a 56 × 56 thumbnail.
+        // a 52 × 52 thumbnail.
         let mut src = SliceSource::new(&file);
         yoton_audio::SeekSource::seek(&mut src, pic.at.offset).unwrap();
         let mut mem = vec![0u8; 40 * 1024];
@@ -261,9 +261,9 @@ fn album_art_from_tag_to_cache() {
             yoton_img::source::ArtSource::plain(&mut src, u64::from(pic.at.len))
         };
         let p = Placement { fit: Fit::Cover, ..Placement::fit(thumb::ART.w.into(), thumb::ART.h.into()) };
-        let mut px = vec![0u16; 56 * 56];
-        let mut work = vec![0u32; Scaler::need_words(56)];
-        let mut sc = Scaler::new(&mut work, p, Target { buf: &mut px, stride: 56, x: 0, y: 0 }).unwrap();
+        let mut px = vec![0u16; 52 * 52];
+        let mut work = vec![0u32; Scaler::need_words(52)];
+        let mut sc = Scaler::new(&mut work, p, Target { buf: &mut px, stride: 52, x: 0, y: 0 }).unwrap();
         let mut dec = Decoder::new(arena, Options::default());
         loop {
             art.pump();
@@ -275,7 +275,7 @@ fn album_art_from_tag_to_cache() {
         }
         assert!(sc.complete());
         drop(sc);
-        // 333×221 for 56×56 → decoded at 1/2 or 1/4 with a small arena.
+        // 333×221 for 52×52 → decoded at 1/2 or 1/4 with a small arena.
         let used = dec.arena_used();
         assert!(used < 40 * 1024 - yoton_img::MAX_PEEK, "{used}");
         let reference_px = {
@@ -290,15 +290,15 @@ fn album_art_from_tag_to_cache() {
             file_size: file.len() as u64,
             mtime: 0x5A5A_0001,
             part: pic.at.offset as u32,
-            w: 56,
-            h: 56,
+            w: 52,
+            h: 52,
             rotation: 1,
             reserved: 0,
         };
         let mut bucket = MemFile::default();
         let meta = ThumbMeta { orig_w: c.w as u16, orig_h: c.h as u16, approximate: false };
         thumb::ART.store(&mut bucket, &key, &meta, &px).unwrap();
-        let mut back = vec![0u16; 56 * 56];
+        let mut back = vec![0u16; 52 * 52];
         assert_eq!(thumb::ART.lookup(&mut bucket, &key, &mut back), Ok(Some(meta)));
         assert_eq!(back, px);
     }

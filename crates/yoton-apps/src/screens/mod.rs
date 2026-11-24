@@ -5,15 +5,17 @@ mod edit;
 mod files;
 mod home;
 mod lists;
+mod pictures;
 mod player;
 mod rows;
 mod system;
 mod text;
 
 pub use edit::{PickerScreen, SliderScreen};
-pub use files::{FilesScreen, kind_icon, kind_label, push_size};
+pub use files::{BrowseMode, FilesScreen, kind_icon, kind_label, push_size};
 pub use home::HomeScreen;
 pub use lists::{ListKind, ListScreen};
+pub use pictures::PictureScreen;
 pub use player::{EqualiserScreen, NowPlayingScreen};
 pub use rows::{MAX_ROWS, RowData, Rows};
 pub use system::{BootScreen, ChargingScreen, GoodbyeScreen, LockScreen, Notice, NoticeScreen};
@@ -62,6 +64,10 @@ pub const EQUALISER: ScreenId = ScreenId(21);
 /// Arg: row in the current listing.
 pub const PROPERTIES: ScreenId = ScreenId(22);
 pub const BOOKMARKS: ScreenId = ScreenId(23);
+/// Pictures (folders and pictures). Arg: `DirId`.
+pub const PICTURES: ScreenId = ScreenId(24);
+/// The picture viewer. Arg: [`PictureScreen::arg`].
+pub const PICTURE_VIEW: ScreenId = ScreenId(25);
 
 /// One variant per screen. Only the top screen exists, so the enum's size
 /// (its largest variant, the list screen) is the UI's screen RAM.
@@ -80,6 +86,7 @@ pub enum AppScreen {
     Text(TextScreen),
     NowPlaying(NowPlayingScreen),
     Equaliser(EqualiserScreen),
+    Picture(PictureScreen),
 }
 
 macro_rules! each {
@@ -98,6 +105,7 @@ macro_rules! each {
             AppScreen::Text($s) => $e,
             AppScreen::NowPlaying($s) => $e,
             AppScreen::Equaliser($s) => $e,
+            AppScreen::Picture($s) => $e,
         }
     };
 }
@@ -149,8 +157,10 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             NOTICE => AppScreen::Notice(NoticeScreen::default()),
             CHARGING => AppScreen::Charging(ChargingScreen::default()),
             GOODBYE => AppScreen::Goodbye(GoodbyeScreen::default()),
-            FILES => AppScreen::Files(FilesScreen::new(false)),
-            MUSIC_FOLDERS => AppScreen::Files(FilesScreen::new(true)),
+            FILES => AppScreen::Files(FilesScreen::new(BrowseMode::Files)),
+            MUSIC_FOLDERS => AppScreen::Files(FilesScreen::new(BrowseMode::Music)),
+            PICTURES => AppScreen::Files(FilesScreen::new(BrowseMode::Pictures)),
+            PICTURE_VIEW => AppScreen::Picture(PictureScreen::default()),
             TEXT_VIEW => AppScreen::Text(TextScreen::default()),
             MUSIC => AppScreen::List(ListScreen::new(ListKind::MusicRoot)),
             NOW_PLAYING => AppScreen::NowPlaying(NowPlayingScreen::default()),
@@ -172,16 +182,15 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             AppScreen::Notice(_) => NOTICE,
             AppScreen::Charging(_) => CHARGING,
             AppScreen::Goodbye(_) => GOODBYE,
-            AppScreen::Files(f) => {
-                if f.music() {
-                    MUSIC_FOLDERS
-                } else {
-                    FILES
-                }
-            }
+            AppScreen::Files(f) => match f.mode() {
+                BrowseMode::Files => FILES,
+                BrowseMode::Music => MUSIC_FOLDERS,
+                BrowseMode::Pictures => PICTURES,
+            },
             AppScreen::Text(_) => TEXT_VIEW,
             AppScreen::NowPlaying(_) => NOW_PLAYING,
             AppScreen::Equaliser(_) => EQUALISER,
+            AppScreen::Picture(_) => PICTURE_VIEW,
         }
     }
 
@@ -196,16 +205,15 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             AppScreen::Notice(_) => "Notice",
             AppScreen::Charging(_) => "Charging",
             AppScreen::Goodbye(_) => "Goodbye",
-            AppScreen::Files(f) => {
-                if f.music() {
-                    "Folders"
-                } else {
-                    "Files"
-                }
-            }
+            AppScreen::Files(f) => match f.mode() {
+                BrowseMode::Files => "Files",
+                BrowseMode::Music => "Folders",
+                BrowseMode::Pictures => "Pictures",
+            },
             AppScreen::Text(_) => "TextViewer",
             AppScreen::NowPlaying(_) => "NowPlaying",
             AppScreen::Equaliser(_) => "Equaliser",
+            AppScreen::Picture(_) => "PictureViewer",
         }
     }
 

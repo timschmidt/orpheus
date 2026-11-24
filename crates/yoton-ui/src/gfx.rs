@@ -215,6 +215,13 @@ impl<'a> Gfx<'a> {
         r.translate(self.org_x, self.org_y).intersect(&self.clip)
     }
 
+    /// A local rectangle in panel coordinates, clipped (for services that
+    /// write pixels into the frame buffer themselves, then [`Gfx::mark`]).
+    #[must_use]
+    pub fn to_screen(&self, r: Rect) -> Rect {
+        self.abs(r)
+    }
+
     fn idx(x: i16, y: i16) -> usize {
         // Callers clip to the panel first, so both are in 0..128.
         usize::try_from(y).unwrap_or(0) * 128 + usize::try_from(x).unwrap_or(0)

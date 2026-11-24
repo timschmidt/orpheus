@@ -15,12 +15,16 @@ use yoton_ui::theme::Role;
 use yoton_ui::widgets::dialog::DialogSpec;
 use yoton_ui::widgets::list::{Accessory, Item, ListAction, ListSource, ListView, Row};
 
-use super::{FILES, INFO, MUSIC_FOLDERS, NOTICE, NOW_PLAYING, Notice, PROPERTIES, TEXT_VIEW};
+use super::{
+    FILES, INFO, MUSIC_FOLDERS, NOTICE, NOW_PLAYING, Notice, PICTURE_VIEW, PICTURES, PROPERTIES,
+    PictureScreen, TEXT_VIEW,
+};
 use crate::App;
 use crate::browse::{DirId, EntryKind, FileRef};
 use crate::services::{BrowseFilter, BrowseService, PlayerCmd, Services, SortBy, data};
 use crate::settings::id;
 use crate::strings::{Lang, Str};
+use yoton_ui::nav::ScreenId;
 
 const ROWS: u32 = 5;
 
@@ -121,10 +125,22 @@ impl<S: BrowseService + ?Sized> ListSource for DirSource<'_, S> {
     }
 }
 
+/// Which app the browser belongs to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum BrowseMode {
+    /// Files: everything.
+    #[default]
+    Files,
+    /// Music › Folders: folders, audio, playlists.
+    Music,
+    /// Pictures: folders and pictures.
+    Pictures,
+}
+
 /// One folder.
 #[derive(Default)]
 pub struct FilesScreen {
-    music: bool,
+    mode: BrowseMode,
     dir: DirId,
     list: ListView,
     lang: Lang,
@@ -145,17 +161,27 @@ const M_SORT: u16 = 7;
 const M_SORT_BY: u16 = 70;
 const M_HIDDEN: u16 = 8;
 const M_CARD: u16 = 9;
+const M_SLIDESHOW: u16 = 10;
 const DLG_DELETE: u16 = 6;
 
 impl FilesScreen {
     #[must_use]
-    pub fn new(music: bool) -> FilesScreen {
-        FilesScreen { music, ..FilesScreen::default() }
+    pub fn new(mode: BrowseMode) -> FilesScreen {
+        FilesScreen { mode, ..FilesScreen::default() }
     }
 
     #[must_use]
-    pub fn music(&self) -> bool {
-        self.music
+    pub fn mode(&self) -> BrowseMode {
+        self.mode
+    }
+
+    /// The screen a sub-folder opens in.
+    fn same_screen(&self) -> ScreenId {
+        match self.mode {
+            BrowseMode::Files => FILES,
+            BrowseMode::Music => MUSIC_FOLDERS,
+            BrowseMode::Pictures => PICTURES,
+        }
     }
 
     /// The focused row (tests, diagnostics).
@@ -170,7 +196,12 @@ impl FilesScreen {
             2 => SortBy::Size,
             _ => SortBy::Name,
         };
-        BrowseFilter { sort, hidden: svc.setting(id::SHOW_HIDDEN) != 0, audio_only: self.music }
+        BrowseFilter {
+            sort,
+            hidden: svc.setting(id::SHOW_HIDDEN) != 0,
+            audio_only: self.mode == BrowseMode::Music,
+            images_only: self.mode == BrowseMode::Pictures,
+        }
     }
 
     fn browse<S: Services + ?Sized>(&mut self, svc: &mut S) {
@@ -205,7 +236,7 @@ impl FilesScreen {
         let Some(e) = cx.svc.entry(i) else { return Nav::Stay };
         let notice = |n: Notice| Nav::Push(NOTICE, Arg(n.arg()));
         match e.kind {
-            EntryKind::Dir => Nav::Push(if self.music { MUSIC_FOLDERS } else { FILES }, Arg(e.child.0)),
+            EntryKind::Dir => Nav::Push(self.same_screen(), Arg(e.child.0)),
             EntryKind::Audio => {
                 let file = e.file;
                 cx.svc.command(PlayerCmd::PlayDir { dir: self.dir, start: Some(file), shuffle: false });
@@ -213,7 +244,7 @@ impl FilesScreen {
             }
             EntryKind::Text => Nav::Push(TEXT_VIEW, Arg(i)),
             EntryKind::Playlist => notice(Notice::NotYet(App::Music)),
-            EntryKind::Image => notice(Notice::NotYet(App::Pictures)),
+            EntryKind::Image => Nav::Push(PICTURE_VIEW, Arg(PictureScreen::arg(i, false))),
             EntryKind::DiskImage => notice(Notice::NotYet(App::UsbDrive)),
             EntryKind::OtpImport => notice(Notice::NotYet(App::Authenticator)),
             EntryKind::Firmware => notice(Notice::NotYetSettings),
@@ -241,6 +272,7 @@ impl FilesScreen {
                 }
                 Nav::Stay
             }
+            M_SLIDESHOW => Nav::Push(PICTURE_VIEW, Arg(PictureScreen::arg(self.list.focus, true))),
             M_PROPS => Nav::Push(PROPERTIES, Arg(self.list.focus)),
             M_DELETE => {
                 cx.ui.dialog(DialogSpec::destructive(
@@ -357,8 +389,12 @@ impl<S: Services + ?Sized> Screen<S> for FilesScreen {
         let focused = cx.svc.entry(self.list.focus).map(|e| e.kind);
         match out.parent() {
             None => {
-                out.action(M_PLAY, l.get(Str::PlayFolder));
-                out.action(M_SHUFFLE, l.get(Str::ShuffleFolder));
+                if self.mode == BrowseMode::Pictures {
+                    out.action(M_SLIDESHOW, l.get(Str::Slideshow));
+                } else {
+                    out.action(M_PLAY, l.get(Str::PlayFolder));
+                    out.action(M_SHUFFLE, l.get(Str::ShuffleFolder));
+                }
                 if focused == Some(EntryKind::Audio) {
                     out.action(M_NEXT, l.get(Str::PlayNext));
                     out.action(M_QUEUE, l.get(Str::AddToQueue));
@@ -388,7 +424,11 @@ impl<S: Services + ?Sized> Screen<S> for FilesScreen {
     fn wants(&self) -> Wants {
         Wants {
             ticks: self.list.wants_ticks(),
-            title: Some(self.lang.get(if self.music { Str::Folders } else { Str::AppFiles })),
+            title: Some(self.lang.get(match self.mode {
+                BrowseMode::Files => Str::AppFiles,
+                BrowseMode::Music => Str::Folders,
+                BrowseMode::Pictures => Str::AppPictures,
+            })),
             strip: StripUse::Auto,
             ..Wants::default()
         }

@@ -5,12 +5,15 @@
 //!
 //! Contents: music in Latin, Cyrillic and Japanese folders with ID3v2 tags
 //! and `.lrc` lyrics, a 5000-file folder, text files, other file types the
-//! browser recognises, an 8.3-only name, hidden entries.
+//! browser recognises (pictures that decode, and two that do not), an
+//! 8.3-only name, hidden entries.
 
 use std::sync::OnceLock;
 
 use yoton_fs::host::{RamDisk, block_on};
 use yoton_fs::{CacheSlot, MountOptions, OpenMode, Volume};
+
+use crate::pictures;
 
 /// Image size: 16 MiB, FAT16 with 2 KiB clusters.
 pub const SECTORS: u32 = 32 * 1024;
@@ -222,6 +225,12 @@ fn build() -> Vec<u8> {
     write(&mut vol, "/Books/枕草子.txt", BOOK_JA.repeat(6).as_bytes());
     write(&mut vol, "/Books/Lyrics.lrc", b"[00:01.00]la la la\n");
     write(&mut vol, "/Pictures/Iceland.jpg", &[0xFF, 0xD8, 0xFF, 0xE0]);
+    let (w, h) = (240, 160);
+    let png = yoton_host::image::rgb565_png_bytes(&pictures::to_rgb565_le(&pictures::aurora(w, h)), w, h)
+        .expect("png");
+    write(&mut vol, "/Pictures/Aurora.png", &png);
+    write(&mut vol, "/Pictures/Lake.bmp", &pictures::bmp(160, 96, &pictures::lake(160, 96)));
+    write(&mut vol, "/Pictures/Sunset.qoi", &pictures::qoi(72, 120, &pictures::tree(72, 120)));
     write(&mut vol, "/Pictures/Москва.png", b"\x89PNG\r\n\x1a\n");
     write(&mut vol, "/Images/rescue.iso", &[0u8; 2048]);
     write(&mut vol, "/Images/boot.img", &[0u8; 512]);
@@ -240,8 +249,10 @@ fn build() -> Vec<u8> {
 pub fn image() -> &'static [u8] {
     static IMG: OnceLock<Vec<u8>> = OnceLock::new();
     IMG.get_or_init(|| {
+        // The pictures on the card are made by `pictures.rs`: part of the key.
         let key = include_str!("card.rs")
             .bytes()
+            .chain(include_str!("pictures.rs").bytes())
             .fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
         let target = std::env::var_os("CARGO_TARGET_DIR").map_or_else(
             || std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("target"),

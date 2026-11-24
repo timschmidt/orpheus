@@ -30,12 +30,13 @@
 //! move, play next, add), Shuffle all, persistence of text positions.
 
 use core::cell::RefCell;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use critical_section::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use yoton_apps::browse::{EntryKind, is_hidden_name, kind_of};
-use yoton_apps::services::{BrowseFilter, DateTime, DirId, FileRef, Listing};
+use yoton_apps::services::{BrowseFilter, DateTime, DirId, FileRef, Listing, PicReq, PicState};
 use yoton_index::LetterTable;
 use yoton_player::image::StoreImage;
 use yoton_player::{Action, Actions, Bookmark, Command, Config, Event, Player, Repeat, State, TrackRef};
@@ -77,7 +78,7 @@ pub const FOCUS_SCAN_PLAYING: u32 = 1024;
 pub const LETTER_RUNS: usize = 80;
 
 pub mod tag {
-    pub use yoton_apps::services::data::{BROWSE, QUEUE, TEXT};
+    pub use yoton_apps::services::data::{BROWSE, PICTURE, QUEUE, TEXT};
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -93,6 +94,50 @@ pub enum Req {
     QueueWin { first: u32 },
     /// Hand the card to the USB task (stops playback first).
     Release,
+    /// Put a picture into the frame buffer the UI lent (`PicJob`).
+    Picture(PicJob),
+}
+
+/// A picture for a box of the frame buffer (`PictureService`). The UI
+/// draws nothing while a job is out: the card task writes the box, then
+/// answers with `tag::PICTURE` ([`picture_done`]).
+#[derive(Clone, Copy, Debug)]
+pub struct PicJob {
+    /// Number of this job ([`PIC_SLOT`]).
+    pub seq: u32,
+    /// The frame buffer (128 × 128 RGB565), lent by the UI.
+    pub fb: usize,
+    /// The box, in panel pixels.
+    pub x: u8,
+    pub y: u8,
+    pub w: u8,
+    pub h: u8,
+    pub req: PicReq,
+}
+
+/// The job the UI lent the frame buffer for: 0 none, `seq` queued,
+/// `seq | PIC_RUNNING` being carried out. The UI takes a queued job back
+/// (key, timeout) by swapping its number for 0; the card task starts a job
+/// only by swapping `seq` for `seq | PIC_RUNNING`, so a job taken back (or
+/// replaced) is never started.
+pub static PIC_SLOT: AtomicU32 = AtomicU32::new(0);
+pub const PIC_RUNNING: u32 = 0x8000_0000;
+/// Set by the UI (a key): the running job ends early with `Pending`.
+pub static PIC_CANCEL: AtomicBool = AtomicBool::new(false);
+/// The last job's number and outcome.
+pub static PIC_RESULT: Mutex<core::cell::Cell<(u32, PicState)>> =
+    Mutex::new(core::cell::Cell::new((0, PicState::Nothing)));
+
+/// The card task: start job `j` unless the UI took it back.
+pub fn picture_start(j: &PicJob) -> bool {
+    PIC_SLOT.compare_exchange(j.seq, j.seq | PIC_RUNNING, Ordering::AcqRel, Ordering::Acquire).is_ok()
+}
+
+/// The card task: job `j` is done (the frame buffer goes back to the UI).
+pub fn picture_done(j: &PicJob, st: PicState) {
+    critical_section::with(|cs| PIC_RESULT.borrow(cs).set((j.seq, st)));
+    PIC_SLOT.store(0, Ordering::Release);
+    ready(tag::PICTURE);
 }
 
 /// Requests for the player (from `Fw::command` and the developer channel).
@@ -132,6 +177,11 @@ pub static READY: Channel<CriticalSectionRawMutex, u16, 4> = Channel::new();
 /// simply retried by the screen (it asks again on its next draw).
 pub fn request(r: Req) {
     let _ = REQS.try_send(r);
+}
+
+/// Send a request; false if the queue is full.
+pub fn try_request(r: Req) -> bool {
+    REQS.try_send(r).is_ok()
 }
 
 /// Send a player request.
@@ -279,6 +329,9 @@ pub struct PlayerSnap {
     pub qgen: u32,
     /// Changes when the bookmarks change ([`BMS`]).
     pub bm_gen: u32,
+    /// Album art of the current track: 0 none, else changes with it
+    /// (`Server::art`).
+    pub art: u32,
 }
 
 impl PlayerSnap {
@@ -302,6 +355,7 @@ impl PlayerSnap {
         resume: false,
         qgen: 0,
         bm_gen: 0,
+        art: 0,
     };
 }
 
@@ -556,6 +610,13 @@ pub struct Server {
     can_resume: bool,
     sleep_fired: u16,
     bm_gen: u32,
+    /// Album art of the current track (in the art cache), and its
+    /// generation ([`PlayerSnap::art`]).
+    pub art: Option<crate::pictures::ArtRef>,
+    pub art_gen: u32,
+    /// The folder whose cover was looked for last (first cluster) and its
+    /// art: the other tracks of the folder use it without a scan.
+    pub folder_art: Option<(u32, Option<crate::pictures::ArtRef>)>,
 }
 
 impl Server {
@@ -567,6 +628,7 @@ impl Server {
                 sort: yoton_apps::services::SortBy::Name,
                 hidden: false,
                 audio_only: false,
+                images_only: false,
             },
             count: 0,
             checkpoints: [0; CHECKPOINTS],
@@ -587,6 +649,9 @@ impl Server {
             can_resume: false,
             sleep_fired: 0,
             bm_gen: 0,
+            art: None,
+            art_gen: 0,
+            folder_art: None,
         }
     }
 
@@ -609,8 +674,7 @@ impl Server {
         if !filter.hidden && (is_hidden_name(name) || e.attributes() & 0x06 != 0) {
             return false;
         }
-        !filter.audio_only
-            || matches!(kind_of(name, e.is_dir()), EntryKind::Dir | EntryKind::Audio | EntryKind::Playlist)
+        filter.keeps(kind_of(name, e.is_dir()))
     }
 
     fn row(e: &DirEntry) -> Row {
@@ -652,7 +716,23 @@ impl Server {
                 self.pending = Some(r);
                 false
             }
+            // While a track is loaded (the idle loop serves pictures with
+            // the whole arena itself): album art from the cache only.
+            Req::Picture(j) => {
+                crate::pictures::serve_playing(vol, self, &j).await;
+                true
+            }
         }
+    }
+
+    /// Set the current track's album art and publish it.
+    pub fn set_art(&mut self, art: Option<crate::pictures::ArtRef>) {
+        self.art = art;
+        if art.is_some() {
+            self.art_gen = self.art_gen.wrapping_add(1).max(1);
+        }
+        let g = if art.is_some() { self.art_gen } else { 0 };
+        player_update(|p| p.art = g);
     }
 
     async fn browse(
@@ -951,6 +1031,8 @@ impl Server {
     /// comes back; a build in progress is given up and its files removed.
     pub async fn card_leaving(&mut self, vol: &mut Vol) {
         self.index = None;
+        // The host may change the folder's pictures.
+        self.folder_art = None;
         self.dircl = u32::MAX;
         if self.build.is_some_and(|b| b.st.is_some()) {
             self.abandon_build();

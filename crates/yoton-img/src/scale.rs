@@ -37,6 +37,17 @@ impl Orient {
     pub const CCW90: Self = Self { swap: true, flip_x: false, flip_y: true };
     pub const MIRROR_Y: Self = Self { swap: false, flip_x: false, flip_y: true };
 
+    /// `n` quarter turns clockwise (`n` mod 4): the viewer's rotate key.
+    #[must_use]
+    pub const fn quarter_turns(n: u8) -> Self {
+        match n % 4 {
+            1 => Self::CW90,
+            2 => Self::R180,
+            3 => Self::CCW90,
+            _ => Self::NORMAL,
+        }
+    }
+
     /// From the EXIF/TIFF `Orientation` tag (1–8; anything else is normal).
     #[must_use]
     pub const fn from_exif(v: u16) -> Self {

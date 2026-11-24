@@ -555,8 +555,10 @@ dependencies = [
  "yoton-codecs",
  "yoton-dsp",
  "yoton-fs",
+ "yoton-img",
  "yoton-index",
  "yoton-input",
+ "yoton-meta",
  "yoton-pager",
  "yoton-player",
  "yoton-power",
@@ -1148,6 +1150,14 @@ name = "yoton-fs"
 version = "0.1.0"
 
 [[package]]
+name = "yoton-img"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "yoton-audio",
+]
+
+[[package]]
 name = "yoton-index"
 version = "0.1.0"
 dependencies = [
@@ -1158,6 +1168,13 @@ dependencies = [
 [[package]]
 name = "yoton-input"
 version = "0.1.0"
+
+[[package]]
+name = "yoton-meta"
+version = "0.1.0"
+dependencies = [
+ "yoton-audio",
+]
 
 [[package]]
 name = "yoton-ogg"
