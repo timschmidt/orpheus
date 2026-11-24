@@ -115,6 +115,89 @@ of every session. Newest entries first in §3.
   battery-life table on Home after user check 19; WEB-2 and WEB-3.
 * Gate (host): see the commit messages. Not run: device steps (no
   hardware in this package), CI workflows.
+| FM-1 | **built, not yet run on the player** | `orpheus-fm` (host-tested: RDA5807 register model, the vendor's init tables VERBATIM, tune, hardware seek with region limits / wrap / Wide's two bands / the 96 MHz harmonic, auto-scan, RDS PS/RT, volume pairs, presets) and the firmware `fm` task over the software I2C (writes only to `0x10`), FM bypass into the amplifier (`dac::fm_*`, VERBATIM, without the vendor's amplifier power cycle), tuner in standby whenever the radio is off. `fm on/off/tune/seek/scan/status/route` developer commands. User check 20 |
+| UI-5a | **built (host); on the player with FM-1** | Radio app (frequency, band, signal bars, ST, preset, RDS name and text, Prev/Next step and hold-seek, Up/Down presets, OK mute / hold stop, Menu: Save/Remove preset, Presets…, Auto-scan with its question, Force mono, Region, Stop), Presets list (move, delete), antenna note, FM source in the status bar and mini-player; on Home. Not done: preset rename, Record, Output (05 §7.3) |
+
+## 3. Session log
+
+### 2026-11-24 — FM-1 + UI-5a: tuner driver, FM bypass, radio service, Radio app (worker, no hardware)
+
+* **`orpheus-fm`** (new host crate, `no_std`, no `unsafe`, 38 tests with a
+  register-level fake tuner, `fake` feature for the simulator):
+  * `chip`: RDA5807 sequential access at `0x10` (writes from 02h, reads
+    from 0Ah), the vendor's three init tables VERBATIM (id 0x5804 → table
+    A, 104 bytes), our fields patched in: start muted, RDS on for the
+    0x5804 class, region band/spacing, de-emphasis 50 µs outside the
+    United States (the vendor leaves 75 µs), soft mute, seek threshold.
+    Only 02h–05h for volume (no stray ninth byte).
+  * `region`: Europe 87.5–108 / 100 kHz, United States 87.9–107.9 /
+    200 kHz (75 µs), World 87.5–108 / 50 kHz, Japan 76–95, Wide 65–108
+    (two hardware bands; 65 not 64: 07h bit 9 is set in every vendor
+    table).
+  * `radio`: the service as a time-driven state machine. Start in the
+    vendor's order: soft reset, 10 ms, identify + table, 500 ms
+    (VERBATIM), gain 0, bypass pre-charge/connect/release with 100 ms
+    waits, tune, volume, unmute, gain ramp 1 step / 5 ms. Stop: mute, ramp
+    to 0, bypass off, gain back to 7 (music), tuner standby. Hardware seek
+    stopping at the band edge; the region's limits, wrap, Wide's band
+    crossing and the 95.9–96.1 MHz harmonic in software. Auto-scan by
+    hardware seeks, 30 strongest, strongest first. Writes of 02h wait
+    while a hardware seek runs (they would stop it). 5 failed status
+    reads end the radio.
+  * `rds`: PS (each pair confirmed twice), RT 2A/2B (contiguous, A/B flag
+    clears), block-B error gate, duplicate groups once, RDS charset → UTF-8
+    (upper half from memory of Annex E, **[inferred]**).
+  * `presets`: 30 × (frequency, RDS name) in their stored form (332 B,
+    settings-store key `0x0710`).
+  * `volume`: the vendor's 32 (tuner volume, amplifier gain) pairs on the
+    UI's 0–30 scale.
+* **Firmware** (`fw/firmware/src/fm.rs`, main executor): the radio, the
+  presets and the UI's radio text in SRAM3 at `0x307C00` (848 B, between
+  the battery logger's state and the card I/O counter), shared by the
+  `fm` task, the UI and the USB task through synchronous closures only.
+  At boot one 2-byte write puts a tuner left running into standby.
+  Music and radio exclusive: the UI stops the music first; the task holds
+  a starting radio until the DAC stopped (≤ 2 s) and stops the radio when
+  music starts. `atj2157_hal::dac::fm_precharge/connect/release/
+  disconnect` (VERBATIM steps of `AUD_DEV` API 15/16 type 1) **without**
+  the vendor's amplifier power cycle and DIGCTL[3:2] write (the DAC path
+  is unchanged; first suspects if FM is silent, U-FM-3). Earphone sense
+  (key ladder 1 idle level, 11 samples) → antenna note. Volume keys set
+  the radio's pairs. The last frequency is saved after 5 s of playing.
+  Auto-off counts the radio as playing; power-off (and low battery) stops
+  the radio first (tuner standby, ≤ 300 ms).
+* **Developer commands** (`cargo xtask dev cmd "fm …"`): `fm on`,
+  `fm off`, `fm tune 101900`, `fm seek up|down`, `fm scan`, `fm status`,
+  `fm route on|off` (the bypass alone, for U-FM-3). Replies wait for the
+  operation (≤ 25 s): phase, kHz, RSSI, stereo, mute, volume, gain, chip
+  id, RDS PS/RT/PI/groups/bad, errors, registers 02h–07h (shadow) and
+  0Ah–0Fh (last read), `PA_ANTIPOP`, `PA_CTL`; `fm scan` lists kHz/RSSI.
+* **Radio app (UI-5a)**: `RadioService` in `orpheus-apps`, screens
+  `Radio` and `RadioPresets`, strings (en; ru/ja test packs), Home opens
+  it. Simulator back end: the same `orpheus_fm::Radio` over the fake
+  tuner (`sim/src/radio.rs`; `set:radio=KHZ|off`, `set:presets=demo`,
+  `set:antenna=0`, `set:tuner=absent`, `set:seekreads=N`).
+* **Tests**: `orpheus-fm` 38; `sim/tests/radio.rs` 13 (music/radio
+  exclusive, start where it was, mute/stop and the ramp order, steps and
+  wrap per region with the register read-back, seek, presets, list
+  reorder/delete, auto-scan question and result, region/mono, RDS,
+  volume pairs, antenna note, missing tuner). Goldens: 110 new (18
+  journeys × dark/light × latin/cyrillic/cjk + 2 amber; looked at),
+  6 changed (`app_not_yet_*` now opens the Recorder: Radio is an app).
+  Unifont subset +9 glyphs for the new Japanese strings.
+* **RAM**: `__stack_bottom` 0x132238 → 0x132400 (**+456 B**): resident
+  83,316 → 83,604 B (+288: text +176, mostly `__aeabi_memset8`, newly
+  linked by the radio's 8-byte-aligned state; merged constants and
+  strings in `.rodata` +112), `.bss` +168 B (`fm` task pool 112 B, its
+  signal and flags, `Fw` fields). SRAM3: 848 B at `0x307C00` (radio
+  360 B, presets 332 B, the UI's radio text 155 B). Paged: 78 code pages
+  (was 75). Gate: host fmt, clippy, `cargo test --workspace`, `xtask
+  test golden`; fw fmt, clippy; `xtask build`, `check-resident` pass.
+  `size --check` not run (worktree path length).
+* **Not run on the player.** Open: U-FM-2/3, whether the 0x5804 part
+  decodes RDS, the earphone window (U-AUD-5), TWI1 (U-FM-1 rest), the
+  shared bus with the accelerometer (SENS-1 adds a lock; nothing else
+  uses the bus yet). User check 20.
 
 ### 2026-11-24 — PWR-5 rework and AU-5 fixes: playdir reboot, browsing while playing, remount, playdir during playback, bit rate (worker, no hardware)
 

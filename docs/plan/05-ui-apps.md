@@ -422,6 +422,19 @@ simulated stations; **[HIL]** tuner register read-back matches the displayed
 frequency; audio present on the output path (level meter on the ADC loop if the
 hardware has one).
 
+**As built (UI-5a, 2026-11-24).** Screens `Radio` and `RadioPresets`
+(`orpheus-apps/src/screens/radio.rs`) over `RadioService`; opening the app
+starts the radio at its last frequency (music stops). Top line: FM, three
+signal bars, ST, the preset number; the caption under the frequency is the
+state or the RDS name; the text line is the radio text (scrolling) or, with
+no earphones, the antenna note. While seeking or scanning a Prev/Next tap
+(and Back while scanning) stops it. Presets: 30, named from RDS, listed in
+order (Move up/down, Remove). Auto-scan asks only when presets exist; its
+stations replace them strongest first and a toast gives the count. Region
+Wide is 65–108 MHz (tuner limit). Not built: preset rename (no text entry
+yet), Record (recorder, M7 later), Output (FM is analogue only), RDS
+clock.
+
 ### 7.4 Bluetooth
 
 The fitted module is an audio transmitter (06 §4): this app sends audio out.

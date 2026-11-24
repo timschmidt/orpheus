@@ -9,6 +9,7 @@ mod library;
 mod lists;
 mod pictures;
 mod player;
+mod radio;
 mod rows;
 mod system;
 mod text;
@@ -21,6 +22,7 @@ pub use library::LibraryScreen;
 pub use lists::{ListKind, ListScreen};
 pub use pictures::PictureScreen;
 pub use player::{EqualiserScreen, NowPlayingScreen};
+pub use radio::{PresetsScreen, RadioScreen};
 pub use rows::{MAX_ROWS, RowData, Rows};
 pub use system::{BootScreen, ChargingScreen, GoodbyeScreen, LockScreen, Notice, NoticeScreen};
 pub use text::TextScreen;
@@ -30,7 +32,7 @@ use orpheus_ui::gfx::Gfx;
 use orpheus_ui::menu::MenuBuilder;
 use orpheus_ui::nav::{Arg, Cx, Dirty, Nav, Resume, Screen, ScreenId, ScreenSet, Wants};
 
-use crate::services::{Services, UsbMode, bt_event, other};
+use crate::services::{Services, UsbMode, bt_event, other, radio_event};
 use crate::settings::id;
 use crate::strings::Str;
 
@@ -84,6 +86,10 @@ pub const BT_PAIRED: ScreenId = ScreenId(29);
 pub const BT_CONNECT: ScreenId = ScreenId(30);
 /// Settings › System › Developer (hidden until unlocked in About; PWR-5).
 pub const DEVELOPER: ScreenId = ScreenId(31);
+/// The Radio app (05 §7.3).
+pub const RADIO: ScreenId = ScreenId(32);
+/// Radio › Presets….
+pub const RADIO_PRESETS: ScreenId = ScreenId(33);
 
 /// One variant per screen. Only the top screen exists, so the enum's size
 /// (its largest variant, the list screen) is the UI's screen RAM.
@@ -106,6 +112,8 @@ pub enum AppScreen {
     Library(LibraryScreen),
     Bluetooth(BluetoothScreen),
     BtConnect(BtConnectScreen),
+    Radio(RadioScreen),
+    RadioPresets(PresetsScreen),
 }
 
 macro_rules! each {
@@ -128,6 +136,8 @@ macro_rules! each {
             AppScreen::Library($s) => $e,
             AppScreen::Bluetooth($s) => $e,
             AppScreen::BtConnect($s) => $e,
+            AppScreen::Radio($s) => $e,
+            AppScreen::RadioPresets($s) => $e,
         }
     };
 }
@@ -195,6 +205,8 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             BT_SCAN => AppScreen::Bluetooth(BluetoothScreen::new(BtView::Scan)),
             BT_PAIRED => AppScreen::Bluetooth(BluetoothScreen::new(BtView::Paired)),
             BT_CONNECT => AppScreen::BtConnect(BtConnectScreen::default()),
+            RADIO => AppScreen::Radio(RadioScreen::default()),
+            RADIO_PRESETS => AppScreen::RadioPresets(PresetsScreen::default()),
             _ => AppScreen::Home(HomeScreen::default()),
         }
     }
@@ -222,6 +234,8 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             AppScreen::Library(_) => LIBRARY,
             AppScreen::Bluetooth(b) => b.screen_id(),
             AppScreen::BtConnect(_) => BT_CONNECT,
+            AppScreen::Radio(_) => RADIO,
+            AppScreen::RadioPresets(_) => RADIO_PRESETS,
         }
     }
 
@@ -248,6 +262,8 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             AppScreen::Library(_) => "MusicLibrary",
             AppScreen::Bluetooth(b) => b.name(),
             AppScreen::BtConnect(_) => "BtConnect",
+            AppScreen::Radio(_) => "Radio",
+            AppScreen::RadioPresets(_) => "RadioPresets",
         }
     }
 
@@ -299,6 +315,20 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
                     }
                     bt_event::DISCONNECTED => cx.ui.toast(lang.get(Str::BtDisconnected)),
                     _ => {}
+                }
+                Nav::Stay
+            }
+            ServiceEvent::Other { kind: other::RADIO, value: radio_event::SCANNED } => {
+                // An auto-scan ended (also when the user left the app).
+                let n = cx.svc.presets().len();
+                if n == 0 {
+                    cx.ui.toast(lang.get(Str::NoStations));
+                } else {
+                    let mut b = orpheus_ui::text::StrBuf::<48>::new();
+                    b.push_u32(u32::try_from(n).unwrap_or(0));
+                    b.push(' ');
+                    b.push_str(lang.get(Str::StationsFound));
+                    cx.ui.toast(b.as_str());
                 }
                 Nav::Stay
             }

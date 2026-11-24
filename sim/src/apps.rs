@@ -17,6 +17,7 @@ use orpheus_apps::services::{
     PlayerCmd, PlayerService, PlayerState, QueueEntry, TextService, TrackInfo,
 };
 use orpheus_apps::services::{BtDevice, BtList, BtPhase, BtRequest};
+use orpheus_apps::services::{PresetOp, Presets, RadioInfo, RadioRequest, RadioService, Region};
 use orpheus_apps::settings::{SettingId, SettingsCache, id, lang_code};
 use orpheus_apps::{App, Lang};
 use orpheus_power::charger::ChargeState;
@@ -31,6 +32,7 @@ use orpheus_ui::widgets::bars::{MiniPlayer, Status};
 
 use crate::bt::FakeBt;
 use crate::media::Media;
+use crate::radio::SimRadio;
 use crate::{Host, packs};
 
 /// Something the screens asked the services to do.
@@ -55,6 +57,9 @@ pub struct HostServices {
     pub usb: UsbState,
     pub bt: FakeBt,
     bt_seen: BtState,
+    /// The radio (UI-5a): the firmware's service over the fake tuner.
+    pub radio: SimRadio,
+    radio_on: bool,
     pub langs: Vec<Lang>,
     pub lang: Lang,
     pub dual_boot: bool,
@@ -87,6 +92,8 @@ impl Default for HostServices {
             usb: UsbState::Detached,
             bt: FakeBt::default(),
             bt_seen: BtState::Off,
+            radio: SimRadio::default(),
+            radio_on: false,
             langs: vec![Lang::ENGLISH, packs::russian(), packs::japanese()],
             lang: Lang::ENGLISH,
             dual_boot: true,
@@ -121,6 +128,10 @@ impl SettingsService for HostServices {
             }
             if sid == id::BT_RECONNECT {
                 self.bt.reconnect = value != 0;
+            }
+            if [id::RADIO_REGION, id::FORCE_MONO, id::SEEK_SENSITIVITY].contains(&sid) {
+                let c = self.radio_config();
+                self.radio.config(c);
             }
             if sid == id::SLEEP_TIMER {
                 self.sleep_left = match value {
@@ -210,6 +221,15 @@ impl StorageService for HostServices {
 
 impl PlaybackService for HostServices {
     fn playing(&self) -> Option<Playing<'_>> {
+        // The radio plays only while the music is stopped (05 §7.3).
+        if self.radio.info().phase.is_on() {
+            return Some(Playing {
+                source: Source::Radio,
+                title: self.radio.title(),
+                artist: "",
+                progress: 0,
+            });
+        }
         if let Some((title, artist, playing, progress)) = self.media.title_artist() {
             let source = if playing { Source::Playing } else { Source::Paused };
             return Some(Playing { source, title, artist, progress });
@@ -221,6 +241,7 @@ impl PlaybackService for HostServices {
         let max = u8::try_from(self.settings.get(id::VOLUME_LIMIT)).unwrap_or(30);
         let v = i16::from(self.volume) + i16::from(delta);
         self.volume = u8::try_from(v.clamp(0, i16::from(max))).unwrap_or(0);
+        self.radio.volume(self.volume);
         (self.volume, max)
     }
 }
@@ -232,6 +253,49 @@ impl UsbService for HostServices {
 
     fn select_usb(&mut self, mode: UsbMode) {
         self.log.push(Logged::Usb(mode));
+    }
+}
+
+impl RadioService for HostServices {
+    fn radio(&self) -> RadioInfo {
+        self.radio.info()
+    }
+
+    fn radio_ps(&self) -> &str {
+        self.radio.ps()
+    }
+
+    fn radio_rt(&self) -> &str {
+        self.radio.rt()
+    }
+
+    fn radio_request(&mut self, r: RadioRequest) {
+        // Starting the radio stops the music (05 §7.3).
+        let starts = matches!(r, RadioRequest::Start | RadioRequest::Tune(_));
+        if starts && self.media.state().source == Source::Playing {
+            PlayerService::command(self, PlayerCmd::Stop);
+        }
+        if starts {
+            self.playing = None;
+        }
+        // The radio starts where it was last (Settings, 10 kHz units).
+        let r = if r == RadioRequest::Start {
+            RadioRequest::Tune(u32::try_from(self.settings.get(id::RADIO_FREQ)).unwrap_or(8750) * 10)
+        } else {
+            r
+        };
+        self.radio.request(r);
+        self.radio_events();
+    }
+
+    fn presets(&self) -> &Presets {
+        &self.radio.presets
+    }
+
+    fn preset_op(&mut self, op: PresetOp) -> bool {
+        let ok = self.radio.preset_op(op);
+        self.radio_events();
+        ok
     }
 }
 
@@ -428,6 +492,36 @@ impl Host for HostServices {
                 self.bt_events();
             }
             "developer" => self.developer = on,
+            // Radio (UI-5a): `radio=off`, `radio=101900` (playing there),
+            // `presets=demo|none`, `antenna=0`, `tuner=absent`.
+            "radio" => {
+                if v == "off" {
+                    self.radio.request(RadioRequest::Stop);
+                    self.radio.advance(500);
+                } else {
+                    self.radio.play_at(v.parse()?);
+                }
+                self.radio.log.clear();
+                self.radio_events();
+            }
+            "presets" => {
+                if v == "demo" {
+                    self.radio.demo_presets();
+                } else {
+                    self.radio.presets = Presets::new();
+                }
+                self.radio_events();
+            }
+            "antenna" => {
+                self.radio.antenna = on;
+                self.events.push(Event::Service(ServiceEvent::Other {
+                    kind: services::other::RADIO,
+                    value: services::radio_event::STATE,
+                }));
+            }
+            "tuner" => self.radio.chip.absent = v == "absent",
+            // A slow hardware seek (status reads it takes), for shots of it.
+            "seekreads" => self.radio.chip.seek_reads = v.parse()?,
             "drain" => self.set_drain_log(on, self.drain.stay),
             "drainrows" => self.drain.rows = v.parse()?,
             "btfound" => {
@@ -530,6 +624,8 @@ impl Host for HostServices {
             "Bluetooth" => screens::BLUETOOTH,
             "BtScan" => screens::BT_SCAN,
             "BtPaired" => screens::BT_PAIRED,
+            "Radio" => screens::RADIO,
+            "RadioPresets" => screens::RADIO_PRESETS,
             _ => return None,
         })
     }
@@ -567,6 +663,12 @@ impl Host for HostServices {
         self.media.advance(ms, repeat);
         self.bt.advance(ms);
         self.bt_events();
+        // Music started while the radio plays: the radio stops.
+        if self.media.state().source == Source::Playing && self.radio.info().phase.is_on() {
+            self.radio.request(RadioRequest::Stop);
+        }
+        self.radio.advance(ms);
+        self.radio_events();
     }
 }
 
@@ -706,6 +808,42 @@ impl HostServices {
         if st != self.bt_seen {
             self.bt_seen = st;
             self.events.push(Event::Service(ServiceEvent::Bluetooth(st)));
+        }
+    }
+
+    /// The radio's events as service events, and the status bar's source
+    /// when the radio started or stopped.
+    fn radio_events(&mut self) {
+        for v in self.radio.take_events() {
+            self.events.push(Event::Service(ServiceEvent::Other { kind: services::other::RADIO, value: v }));
+        }
+        let info = self.radio.info();
+        // The last frequency is kept (the firmware saves it once it has
+        // been stable for a while).
+        if info.phase == services::RadioPhase::Playing {
+            let k = i16::try_from(info.khz / 10).unwrap_or(8750);
+            if self.settings.get(id::RADIO_FREQ) != k {
+                self.settings.set(id::RADIO_FREQ, k);
+                let _ = self.settings.take_dirty().count();
+            }
+        }
+        let on = info.phase.is_on();
+        if on != self.radio_on {
+            self.radio_on = on;
+            self.events.push(Event::Service(ServiceEvent::Playback(if on {
+                Source::Radio
+            } else {
+                Source::Idle
+            })));
+        }
+    }
+
+    fn radio_config(&self) -> orpheus_fm::radio::Config {
+        orpheus_fm::radio::Config {
+            region: Region::from_index(self.settings.get(id::RADIO_REGION)),
+            mono: self.settings.get(id::FORCE_MONO) != 0,
+            sensitivity: u8::try_from(self.settings.get(id::SEEK_SENSITIVITY)).unwrap_or(1),
+            ..orpheus_fm::radio::Config::DEFAULT
         }
     }
 

@@ -146,8 +146,13 @@ fn quick_panel_changes_values_in_row() {
 #[test]
 fn home_grid_and_hidden_apps() {
     let mut s = sim("set:card=absent ok expect-screen:Notice back");
-    // With a card, Music opens (UI-4); Radio is not built yet.
-    run(&mut s, "set:card=ready ok expect-screen:Music back next*2 ok expect-screen:Notice back prev*2");
+    // With a card, Music opens (UI-4); Radio opens (UI-5a); the Recorder
+    // is not built yet.
+    run(
+        &mut s,
+        "set:card=ready ok expect-screen:Music back next*2 ok expect-screen:Radio back prev*2 \
+         down ok expect-screen:Notice back up",
+    );
     // Hide Radio (bit 2) in Settings > Display > Home screen.
     run(&mut s, "prev ok down*2 ok down*10 ok expect-screen:HomeApps down*2 ok");
     assert_eq!(s.sys.settings.get(id::HOME_APPS) & (1 << 2), 0);

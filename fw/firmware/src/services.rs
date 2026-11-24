@@ -15,6 +15,7 @@ use orpheus_apps::services::{
     PictureService, PlayerCmd, PlayerService, PlayerState, QueueEntry, TextService, TrackInfo,
 };
 use orpheus_apps::services::{BtDevice, BtList, BtPhase, BtRequest};
+use orpheus_apps::services::{PresetOp, Presets, RadioInfo, RadioPhase, RadioRequest, RadioService, Region};
 use orpheus_apps::settings::{SettingId, SettingsCache, id};
 use orpheus_apps::{App, Lang};
 use orpheus_ui::event::Source;
@@ -22,6 +23,7 @@ use orpheus_ui::event::{BtState, Event, ServiceEvent};
 use orpheus_ui::geom::Rect;
 use orpheus_ui::gfx::Gfx;
 use orpheus_ui::shell::System;
+use orpheus_ui::text::StrBuf;
 use orpheus_ui::widgets::bars::{MiniPlayer, Status};
 
 use crate::{media, state};
@@ -88,7 +90,25 @@ pub struct Fw {
     pub pic_after_overlay: bool,
     /// The music library's state and generation last seen.
     lib_seen: (LibraryState, u32),
+    /// The radio (`crate::fm`) as last seen; its RDS name and text as
+    /// UTF-8; the mini-player's title.
+    radio: RadioInfo,
+    /// The radio's change counters last seen (state, RDS, auto-scans).
+    radio_seen: (u16, u16, u16),
+    /// RDS name and text as UTF-8, the mini-player's title (SRAM3,
+    /// `fm::RadioText`).
+    radio_text: &'static mut crate::fm::RadioText,
+    /// Since when (ms) the radio plays a frequency other than the one
+    /// saved (saved after [`RADIO_FREQ_SAVE_MS`]).
+    radio_freq_since: u64,
+    /// The presets (SRAM3, in their stored form); changed since saved.
+    pub presets: &'static mut Presets,
+    pub presets_dirty: bool,
 }
+
+/// A frequency is saved as the radio's last one after playing this long
+/// (not at every step: each save is a NOR write).
+const RADIO_FREQ_SAVE_MS: u64 = 5000;
 
 /// The volume sent to a connected sink (module scale 0–31): full scale,
 /// the player's volume is applied at the DAC (see `apply_dac`).
@@ -158,6 +178,7 @@ impl Fw {
     /// Once (takes the window statics).
     #[must_use]
     pub fn new() -> Self {
+        let (presets, radio_text) = crate::fm::ui_parts();
         Self {
             settings: SettingsCache::new(),
             volume: 12,
@@ -194,6 +215,21 @@ impl Fw {
             pic_seq: 0,
             pic_after_overlay: false,
             lib_seen: (LibraryState::Missing, 0),
+            radio: RadioInfo {
+                phase: RadioPhase::Off,
+                khz: 87_500,
+                rssi: 0,
+                stereo: false,
+                muted: false,
+                antenna: false,
+                progress: 0,
+                found: 0,
+            },
+            radio_seen: (0, 0, 0),
+            radio_text,
+            radio_freq_since: 0,
+            presets,
+            presets_dirty: false,
         }
     }
 
@@ -455,6 +491,131 @@ impl Fw {
         }
     }
 
+    /// The radio plays (or is starting, seeking, scanning).
+    #[must_use]
+    pub fn radio_on(&self) -> bool {
+        self.radio.phase.is_on()
+    }
+
+    /// After the settings are loaded: the radio's settings and volume.
+    pub fn radio_boot(&mut self) {
+        crate::fm::request(orpheus_fm::Req::Config(self.radio_config()));
+        crate::fm::request(orpheus_fm::Req::Volume(self.volume));
+    }
+
+    fn radio_config(&self) -> orpheus_fm::radio::Config {
+        orpheus_fm::radio::Config {
+            region: Region::from_index(self.settings.get(id::RADIO_REGION)),
+            mono: self.settings.get(id::FORCE_MONO) != 0,
+            sensitivity: u8::try_from(self.settings.get(id::SEEK_SENSITIVITY)).unwrap_or(1),
+            ..orpheus_fm::radio::Config::DEFAULT
+        }
+    }
+
+    /// Settings › Radio goes to the radio when it changes.
+    fn setting_to_radio(&self, sid: SettingId) {
+        if [id::RADIO_REGION, id::FORCE_MONO, id::SEEK_SENSITIVITY].contains(&sid) {
+            crate::fm::request(orpheus_fm::Req::Config(self.radio_config()));
+        }
+    }
+
+    /// Copy the radio's state (every UI loop, and after a request): changes
+    /// become service events; new RDS text is converted to UTF-8; a
+    /// finished auto-scan replaces the presets; a frequency played for a
+    /// while becomes the one the radio starts at.
+    pub fn sync_radio(&mut self, now_ms: u64) {
+        use orpheus_apps::services::radio_event;
+        use orpheus_fm::Phase;
+        let (seen_seq, seen_rds, seen_scan) = self.radio_seen;
+        let mut ps = [0u8; 8];
+        let mut ps_len = 0;
+        let text = &mut *self.radio_text;
+        let i = crate::fm::with(|r| {
+            let i = r.info();
+            if i.rds_seq != seen_rds {
+                let mut b = [0u8; 96];
+                let n = orpheus_fm::rds::to_utf8(r.rds().rt(), &mut b);
+                text.rt = StrBuf::from(core::str::from_utf8(b.get(..n).unwrap_or(&[])).unwrap_or(""));
+                let n = orpheus_fm::rds::to_utf8(r.rds().ps(), &mut b);
+                text.ps = StrBuf::from(core::str::from_utf8(b.get(..n).unwrap_or(&[])).unwrap_or(""));
+                for (o, &c) in ps.iter_mut().zip(r.rds().ps()) {
+                    *o = c;
+                    ps_len += 1;
+                }
+            }
+            if i.scan_seq != seen_scan && !r.scan_results().is_empty() {
+                self.presets.replace(r.scan_results().iter().map(orpheus_fm::radio::Station::khz));
+                self.presets_dirty = true;
+            }
+            i
+        });
+        let phase = match i.phase {
+            Phase::Off | Phase::Stopping => RadioPhase::Off,
+            Phase::Starting => RadioPhase::Starting,
+            Phase::Playing => RadioPhase::Playing,
+            Phase::Seeking => RadioPhase::Seeking,
+            Phase::Scanning => RadioPhase::Scanning,
+            Phase::Failed => RadioPhase::NotResponding,
+        };
+        let info = RadioInfo {
+            phase,
+            khz: i.khz,
+            rssi: i.rssi,
+            stereo: i.stereo,
+            muted: i.muted,
+            antenna: state::EARPHONES.load(Ordering::Relaxed),
+            progress: i.progress,
+            found: i.found,
+        };
+        let other = |v| Event::Service(ServiceEvent::Other { kind: services::other::RADIO, value: v });
+        if i.rds_seq != seen_rds {
+            // A preset without a name takes the station's.
+            if ps_len > 0
+                && let Some(p) = self.presets.find(i.khz)
+                && self.presets.get(p).is_some_and(|x| x.name().is_empty())
+                && self.presets.set_name(p, ps.get(..ps_len).unwrap_or(&[]))
+            {
+                self.presets_dirty = true;
+            }
+            self.pending.push(other(radio_event::RDS));
+        }
+        if i.scan_seq != seen_scan {
+            self.pending.push(other(radio_event::SCANNED));
+        }
+        if i.seq != seen_seq || i.rds_seq != seen_rds || info != self.radio {
+            let t = &mut self.radio_text;
+            t.title.clear();
+            if phase.is_on() {
+                t.title.push_str("FM ");
+                services::push_mhz(i.khz, &mut t.title);
+                if !t.ps.is_empty() {
+                    t.title.push_str(" · ");
+                    let ps = t.ps;
+                    t.title.push_str(ps.as_str());
+                }
+            }
+            self.pending.push(other(radio_event::STATE));
+        }
+        if phase.is_on() != self.radio.phase.is_on() {
+            let src = if phase.is_on() { Source::Radio } else { Source::Idle };
+            self.pending.push(Event::Service(ServiceEvent::Playback(src)));
+        }
+        // The last frequency, once it has played a while.
+        let k = i16::try_from(i.khz / 10).unwrap_or(8750);
+        if phase == RadioPhase::Playing && self.settings.get(id::RADIO_FREQ) != k {
+            if self.radio_freq_since == 0 {
+                self.radio_freq_since = now_ms.max(1);
+            } else if now_ms.saturating_sub(self.radio_freq_since) >= RADIO_FREQ_SAVE_MS {
+                self.settings.set(id::RADIO_FREQ, k);
+                self.radio_freq_since = 0;
+            }
+        } else {
+            self.radio_freq_since = 0;
+        }
+        self.radio = info;
+        self.radio_seen = (i.seq, i.rds_seq, i.scan_seq);
+    }
+
     /// After the settings are loaded: what the player follows from them.
     pub fn init_player(&mut self) {
         self.setting_to_library(TAG_CODE_PAGE);
@@ -528,6 +689,7 @@ impl SettingsService for Fw {
             self.setting_to_player(sid);
             self.setting_to_bt(sid);
             self.setting_to_library(sid);
+            self.setting_to_radio(sid);
         }
     }
     fn factory_reset(&mut self) {
@@ -620,6 +782,15 @@ impl StorageService for Fw {
 
 impl PlaybackService for Fw {
     fn playing(&self) -> Option<Playing<'_>> {
+        // The radio plays only while the music is stopped (05 §7.3).
+        if self.radio.phase.is_on() {
+            return Some(Playing {
+                source: Source::Radio,
+                title: self.radio_text.title.as_str(),
+                artist: "",
+                progress: 0,
+            });
+        }
         let p = &self.player;
         if p.source == Source::Idle {
             return None;
@@ -635,6 +806,8 @@ impl PlaybackService for Fw {
         let max = u8::try_from(self.settings.get(id::VOLUME_LIMIT)).unwrap_or(30);
         let v = i16::from(self.volume) + i16::from(delta);
         self.set_volume(u8::try_from(v.clamp(0, i16::from(max))).unwrap_or(0));
+        // The radio's volume: tuner volume and amplifier gain pairs.
+        crate::fm::request(orpheus_fm::Req::Volume(self.volume));
         (self.volume, max)
     }
 }
@@ -998,6 +1171,74 @@ impl BluetoothService for Fw {
     }
 }
 
+impl RadioService for Fw {
+    fn radio(&self) -> RadioInfo {
+        self.radio
+    }
+    fn radio_ps(&self) -> &str {
+        self.radio_text.ps.as_str()
+    }
+    fn radio_rt(&self) -> &str {
+        self.radio_text.rt.as_str()
+    }
+    fn radio_request(&mut self, r: RadioRequest) {
+        use orpheus_fm::Req;
+        let starts = matches!(r, RadioRequest::Start | RadioRequest::Tune(_));
+        // Starting the radio stops the music (the fm task waits for the
+        // DAC to stop before it switches the bypass on).
+        if starts && matches!(self.player.source, Source::Playing | Source::Paused) {
+            PlayerService::command(self, PlayerCmd::Stop);
+        }
+        let req = match r {
+            // The radio starts where it was last.
+            RadioRequest::Start => {
+                Req::Tune(u32::try_from(self.settings.get(id::RADIO_FREQ)).unwrap_or(8750) * 10)
+            }
+            RadioRequest::Stop => Req::Off,
+            RadioRequest::Tune(k) => Req::Tune(k),
+            RadioRequest::Step { up } => Req::Step(up),
+            RadioRequest::Seek { up } => Req::Seek(up),
+            RadioRequest::Cancel => Req::Cancel,
+            RadioRequest::Mute(m) => Req::Mute(m),
+            RadioRequest::Scan => Req::Scan,
+        };
+        crate::fm::request(req);
+        self.sync_radio(embassy_time::Instant::now().as_millis());
+    }
+    fn presets(&self) -> &Presets {
+        self.presets
+    }
+    fn preset_op(&mut self, op: PresetOp) -> bool {
+        let ok = match op {
+            PresetOp::Save(khz) => {
+                // Named after the station when it is the one playing.
+                let mut name = [0u8; 8];
+                let mut n = 0;
+                crate::fm::with(|r| {
+                    if r.info().khz == khz {
+                        for (o, &c) in name.iter_mut().zip(r.rds().ps()) {
+                            *o = c;
+                            n += 1;
+                        }
+                    }
+                });
+                self.presets.save(khz, name.get(..n).unwrap_or(&[])).is_some()
+            }
+            PresetOp::Remove(i) => self.presets.remove(i),
+            PresetOp::MoveUp(i) => i > 0 && self.presets.swap(i, i - 1),
+            PresetOp::MoveDown(i) => self.presets.swap(i, i + 1),
+        };
+        if ok {
+            self.presets_dirty = true;
+            self.pending.push(Event::Service(ServiceEvent::Other {
+                kind: services::other::RADIO,
+                value: services::radio_event::PRESETS,
+            }));
+        }
+        ok
+    }
+}
+
 impl SystemService for Fw {
     fn lang(&self) -> Lang {
         Lang::ENGLISH
@@ -1023,7 +1264,9 @@ impl SystemService for Fw {
     fn app_available(&self, app: App) -> bool {
         // The transmitter module is fitted on every YM03 (06 §4.1); a
         // module that does not answer shows "Not responding" in the app.
-        matches!(app, App::Settings | App::Files | App::Music | App::Pictures | App::Bluetooth)
+        // The tuner answers at 0x10 on every YM03 seen (01-hardware §9); a
+        // tuner that does not shows "Tuner not responding" in the app.
+        matches!(app, App::Settings | App::Files | App::Music | App::Pictures | App::Bluetooth | App::Radio)
     }
     fn dual_boot(&self) -> bool {
         // "Start original firmware" only exists in the dual-boot layout; in

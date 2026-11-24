@@ -209,6 +209,13 @@ pub mod id {
     pub const SPEED: SettingId = SettingId(0x0206);
     /// Settings › System › Performance (D-4): 0 Normal, 1 Maximum.
     pub const PERFORMANCE: SettingId = SettingId(0x0C07);
+    /// Settings › Radio (UI-5a): region (`orpheus_fm::Region` order),
+    /// forced mono, seek sensitivity (low, medium, high).
+    pub const RADIO_REGION: SettingId = SettingId(0x0701);
+    pub const FORCE_MONO: SettingId = SettingId(0x0702);
+    pub const SEEK_SENSITIVITY: SettingId = SettingId(0x0703);
+    /// The radio's last frequency, in 10 kHz (UI-5a).
+    pub const RADIO_FREQ: SettingId = SettingId(0x0D20);
 }
 
 const SOUND: &[Setting] = &[
@@ -391,6 +398,7 @@ pub const APP_ITEMS: &[Setting] = &[
     r(0x0D17, Str::EqCustom2, -12, 12, 1, Unit::Db, 0),
     r(0x0D18, Str::EqCustom2, -12, 12, 1, Unit::Db, 0),
     r(0x0D19, Str::EqCustom2, -12, 12, 1, Unit::Db, 0),
+    r(0x0D20, Str::AppRadio, 6500, 10800, 5, Unit::None, 8750),
 ];
 
 /// The five band gains (dB) of equaliser preset `preset` (an
@@ -446,7 +454,7 @@ pub fn def(id: SettingId) -> Option<&'static Setting> {
 }
 
 /// Number of stored items.
-pub const STORED: usize = 65;
+pub const STORED: usize = 66;
 
 /// Position among stored items (cache index).
 #[must_use]

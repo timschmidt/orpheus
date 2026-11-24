@@ -125,6 +125,9 @@ impl<S: Services + ?Sized> Screen<S> for HomeScreen {
                 if app == App::Bluetooth {
                     return Nav::Push(super::BLUETOOTH, Arg(0));
                 }
+                if app == App::Radio {
+                    return Nav::Push(super::RADIO, Arg(0));
+                }
                 let notice = if app.needs_card() {
                     match cx.svc.card() {
                         CardState::Absent => Notice::NoCard,
