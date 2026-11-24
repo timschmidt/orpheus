@@ -343,6 +343,12 @@ try {
 } finally {
   if (b) b.close();
   server.close();
-  rmSync(profile, { recursive: true, force: true });
+  // The browser may still be writing its profile after exit: retry, and
+  // never fail the run on cleanup.
+  try {
+    rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  } catch (e) {
+    console.warn(`could not remove ${profile}: ${e.message}`);
+  }
 }
 process.exit(code);
