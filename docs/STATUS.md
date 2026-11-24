@@ -1482,6 +1482,17 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — CI green; website published (lead)
+
+* GitHub Actions Gate, Docs and Site all pass (runner fixes: test-image
+  tools installed; exfatprogs 1.2 lacks `mkfs -q/-P` and `dump.exfat -s/-d`
+  → those cross-checks run only from 1.4; ImageMagick 6 `convert` as well
+  as 7 `magick` for the picture fixtures).
+* The owner turned GitHub Pages on (legacy branch build); switched it to
+  the project's Site workflow (`build_type=workflow`, repository variable
+  `PAGES_ENABLED=true`) as planned in 09 §3. **Site live at
+  https://timschmidt.github.io/orpheus/** (D-11).
+
 ### 2026-11-24 — the radio works on the player (lead)
 
 * Merged FM-1 fix `ebc145a5` (SRAM3 blocks chained; the step counter had

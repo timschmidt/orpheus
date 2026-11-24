@@ -2,6 +2,8 @@
 
 # Orpheus
 
+**Website:** <https://timschmidt.github.io/orpheus/>
+
 A new firmware for the **Yoton YM03** MP3 player, written from scratch in
 Rust on [Embassy](https://embassy.dev). It plays MP3, FLAC, Ogg Vorbis,
 Opus, Speex and WAV with gapless joins and an equaliser, sorts folders of
