@@ -98,7 +98,9 @@ fn scenario(fmt: Fmt) {
     });
     unmount(vol);
     assert_fsck(&img, fmt.is_exfat());
-    if fmt.is_exfat() {
+    // `dump.exfat` lists non-ASCII names only from exfatprogs 1.4 (the
+    // 1.2 of Ubuntu 24.04 does not); `fsck` above already validated it.
+    if fmt.is_exfat() && common::exfatprogs_at_least(1, 4) {
         let listing = exfat_dump_dir(&img, "/big");
         assert!(listing.contains(&names[1]), "dump.exfat does not list {}", names[1]);
     }

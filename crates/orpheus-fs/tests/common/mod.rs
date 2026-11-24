@@ -28,6 +28,19 @@ pub fn have(tool: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// The installed exfatprogs is at least `major.minor` (`mkfs.exfat -V`).
+#[allow(dead_code)]
+pub fn exfatprogs_at_least(major: u32, minor: u32) -> bool {
+    let Ok(o) = Command::new("mkfs.exfat").arg("-V").output() else { return false };
+    let text = String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr);
+    let Some(v) = text.split("version").nth(1) else { return false };
+    let mut nums =
+        v.trim_start_matches([' ', ':']).split(|c: char| !c.is_ascii_digit()).filter(|s| !s.is_empty());
+    let (Some(a), Some(b)) = (nums.next(), nums.next()) else { return false };
+    let (a, b): (u32, u32) = (a.parse().unwrap_or(0), b.parse().unwrap_or(0));
+    (a, b) >= (major, minor)
+}
+
 fn run(cmd: &mut Command) -> (bool, String) {
     let o = cmd.output().expect("spawn");
     let mut s = String::from_utf8_lossy(&o.stdout).into_owned();
