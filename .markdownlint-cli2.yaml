@@ -22,3 +22,5 @@ config:
     siblings_only: true
   # Fenced code without a language: plain output samples.
   MD040: false
+  # Table pipe spacing (new in markdownlint 0.42): the tables are compact.
+  MD060: false
