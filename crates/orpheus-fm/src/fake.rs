@@ -47,7 +47,14 @@ pub struct FakeChip {
     pub stations: Vec<FakeStation>,
     /// Nothing answers on the bus.
     pub absent: bool,
-    pub id: u16,
+    /// What registers 0Dh–0Fh hold when they carry no RDS (bytes 8–9 of
+    /// the vendor's id read are 0Eh), and what register 00h holds (random
+    /// access at 0x11).
+    pub seq_id: u16,
+    pub random_id: u16,
+    /// Random-access reads, and the address of every read in order.
+    pub random_reads: u32,
+    pub read_addrs: Vec<u8>,
     /// Every write, as sent (the oldest are dropped past 512).
     pub writes: Vec<Vec<u8>>,
     /// Every analogue call (the oldest are dropped past 512).
@@ -79,7 +86,10 @@ impl FakeChip {
         FakeChip {
             stations: STATIONS.to_vec(),
             absent: false,
-            id: crate::chip::ID_A,
+            seq_id: crate::chip::ID_A,
+            random_id: crate::chip::ID_A,
+            random_reads: 0,
+            read_addrs: Vec::new(),
             writes: Vec::new(),
             analog: Vec::new(),
             tune_reads: 2,
@@ -271,10 +281,24 @@ impl Port for FakeChip {
         true
     }
 
+    fn read_reg(&mut self, reg: u8, out: &mut [u8]) -> bool {
+        if self.absent {
+            return false;
+        }
+        self.random_reads += 1;
+        Self::log(&mut self.read_addrs, crate::chip::ADDR_RANDOM);
+        let v = if reg == crate::chip::REG_CHIP_ID { self.random_id } else { 0 };
+        for (o, b) in out.iter_mut().zip(v.to_be_bytes()) {
+            *o = b;
+        }
+        true
+    }
+
     fn read(&mut self, out: &mut [u8]) -> bool {
         if self.absent {
             return false;
         }
+        Self::log(&mut self.read_addrs, crate::chip::ADDR);
         self.reads += 1;
         if self.busy > 0 {
             self.busy -= 1;
@@ -298,7 +322,7 @@ impl Port for FakeChip {
         if self.sf {
             r0a |= 1 << 13;
         }
-        let mut blocks = [0x5803, self.id, self.id, self.id];
+        let mut blocks = [0x5803, self.seq_id, self.seq_id, self.seq_id];
         let rssi = station.map_or(NOISE, |s| s.rssi);
         let mut r0b = u16::from(rssi) << 9 | 1 << 7;
         if let Some(s) = station.filter(|_| tuned) {

@@ -102,7 +102,7 @@ pub struct Fw {
     /// Since when (ms) the radio plays a frequency other than the one
     /// saved (saved after [`RADIO_FREQ_SAVE_MS`]).
     radio_freq_since: u64,
-    /// The presets (SRAM3, in their stored form); changed since saved.
+    /// The presets (a static, in their stored form); changed since saved.
     pub presets: &'static mut Presets,
     pub presets_dirty: bool,
     /// Stopwatch, timer, alarms (UI-5d).
@@ -120,6 +120,18 @@ pub struct Fw {
 /// A frequency is saved as the radio's last one after playing this long
 /// (not at every step: each save is a NOR write).
 const RADIO_FREQ_SAVE_MS: u64 = 5000;
+
+/// The radio presets (332 B, `.bss`: no initial image in the resident
+/// copy; SRAM3 has no room left beside the logger, the step counter and
+/// the radio).
+static mut UI_PRESETS: core::mem::MaybeUninit<Presets> = core::mem::MaybeUninit::uninit();
+
+/// Once, from `Fw::new`.
+fn ui_presets() -> &'static mut Presets {
+    // SAFETY: called once (`Fw::new` runs once, in the UI task), so this is
+    // the only reference to the static.
+    unsafe { (*(&raw mut UI_PRESETS)).write(Presets::new()) }
+}
 
 /// Alarms can switch the player on from off: PWR-3c (U-PMU-3) has not
 /// shown that the RTC alarm wakes this board, nor how a start knows it was
@@ -195,7 +207,8 @@ impl Fw {
     /// Once (takes the window statics).
     #[must_use]
     pub fn new() -> Self {
-        let (presets, radio_text) = crate::fm::ui_parts();
+        let presets = ui_presets();
+        let radio_text = crate::fm::ui_text();
         Self {
             settings: SettingsCache::new(),
             volume: 12,

@@ -1670,14 +1670,12 @@ static mut CHAIN: core::mem::MaybeUninit<orpheus_dsp::Chain> = core::mem::MaybeU
 pub fn init_chain() {
     // SAFETY: before any task runs; afterwards only the audio task uses it.
     unsafe { (*(&raw mut CHAIN)).write(orpheus_dsp::Chain::new(orpheus_dsp::OutWidth::Bits16, false)) };
-    // The battery logger's state in SRAM3, before any task runs (here,
-    // not in the resident `main`); the radio's (FM-1) next to it.
-    crate::drain::init();
-    crate::fm::init();
-    // The battery logger's and the step counter's state in SRAM3, before
-    // any task runs (here, not in the resident `main`).
+    // The battery logger's, the step counter's and the radio's state in
+    // SRAM3, one after the other, before any task runs (here, not in the
+    // resident `main`).
     crate::drain::init();
     crate::sensor::init();
+    crate::fm::init();
 }
 
 static SERVER: ConstStaticCell<Server> = ConstStaticCell::new(Server::new());

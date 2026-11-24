@@ -6,9 +6,9 @@
 //! `0x10`) and the FM bypass into the headphone amplifier
 //! (`atj2157_hal::dac::fm_*`, the vendor's steps marked VERBATIM there).
 //!
-//! * The radio, the presets and the UI's radio text live in SRAM3 at
-//!   [`FM_ADDR`] ([`FmRam`], 02 §1), not in SRAM0, whose statics come off
-//!   the stack. The radio is touched only from tasks of the main
+//! * The radio and the UI's radio text live in SRAM3 at [`FM_ADDR`]
+//!   ([`FmRam`], 02 §1, after the step counter's state), not in SRAM0,
+//!   whose statics come off the stack. The radio is touched only from tasks of the main
 //!   (thread-mode) executor, in synchronous closures ([`with`]): this task
 //!   polls it, the UI (`services::Fw`) reads its state, RDS text and scan
 //!   results and makes requests ([`request`]), and the developer channel
@@ -18,9 +18,10 @@
 //!   standby; stopping the radio ramps the amplifier gain down, switches
 //!   the bypass off, restores the music gain (7) and puts the tuner into
 //!   standby.
-//! * Music and radio are exclusive: the UI stops the music before it
-//!   starts the radio; this task holds a starting radio until the DAC has
-//!   stopped (at most 2 s), and stops the radio when music starts.
+//! * Music and radio are exclusive: a starting radio stops the music (the
+//!   UI asks first; this task asks again for a developer `fm on|tune`) and
+//!   is held until the DAC has stopped (at most 2 s); music starting while
+//!   the radio plays stops the radio.
 //! * Nothing here runs in an interrupt or on the playback path; while the
 //!   radio is off this task sleeps on [`WAKE`].
 //! * Developer channel ([`test_command`]): `fm on|off|status|scan`,
@@ -38,8 +39,7 @@ use embassy_futures::select::select;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Instant, Timer};
-use orpheus_fm::Presets;
-use orpheus_fm::chip::{ADDR, Analog, Port};
+use orpheus_fm::chip::{ADDR, ADDR_RANDOM, Analog, Port};
 use orpheus_fm::radio::{Phase, Radio, Req};
 use orpheus_ui::text::StrBuf;
 use yoton_bsp::pins;
@@ -62,20 +62,20 @@ pub struct RadioText {
     pub title: StrBuf<32>,
 }
 
-/// The radio's RAM (about 860 bytes).
+/// The radio's RAM (520 bytes).
 #[repr(C)]
 pub struct FmRam {
     radio: Radio,
-    presets: Presets,
     text: RadioText,
 }
 
-/// SRAM3 between the battery logger's state (`drain::SHARED_END`) and the
-/// card I/O counter (`yoton_bsp::card::IO_ADDR`): plain RAM, outside
-/// SRAM0 (02 §1 memory map).
-pub const FM_ADDR: usize = 0x0030_7C00;
+/// SRAM3 after the step counter's state (`sensor::SHARED_END`, which
+/// follows the battery logger's), below the card I/O counter
+/// (`yoton_bsp::card::IO_ADDR`): plain RAM, outside SRAM0 (02 §1).
+pub const FM_ADDR: usize = (crate::sensor::SHARED_END + 7) & !7;
 
-const _: () = assert!(crate::drain::SHARED_END <= FM_ADDR);
+const _: () = assert!(crate::sensor::SHARED_END <= FM_ADDR);
+const _: () = assert!(crate::drain::SHARED_END <= crate::sensor::SHARED_ADDR);
 const _: () = assert!(FM_ADDR + core::mem::size_of::<FmRam>() <= yoton_bsp::card::IO_ADDR);
 const _: () = assert!(FM_ADDR % core::mem::align_of::<FmRam>() == 0);
 
@@ -85,7 +85,6 @@ const _: () = assert!(FM_ADDR % core::mem::align_of::<FmRam>() == 0);
 pub fn init() {
     let ram = FmRam {
         radio: Radio::new(),
-        presets: Presets::new(),
         text: RadioText { ps: StrBuf::new(), rt: StrBuf::new(), title: StrBuf::new() },
     };
     // SAFETY: `FM_ADDR` is plain SRAM3 (enabled in crt0, inside the MPU's
@@ -94,14 +93,14 @@ pub fn init() {
     unsafe { core::ptr::write(FM_ADDR as *mut FmRam, ram) };
 }
 
-/// The presets and the radio text, for the UI (`services::Fw::new`,
-/// called once; the UI task is their only user).
-pub fn ui_parts() -> (&'static mut Presets, &'static mut RadioText) {
+/// The radio text, for the UI (`services::Fw::new`, called once; the UI
+/// task is its only user).
+pub fn ui_text() -> &'static mut RadioText {
     let p = FM_ADDR as *mut FmRam;
     // SAFETY: initialised by `init`; called once (the UI task's `Fw`), so
-    // these are the only references to the two fields, which `with` (the
-    // `radio` field only) never touches.
-    unsafe { (&mut (*p).presets, &mut (*p).text) }
+    // this is the only reference to the field, which `with` (the `radio`
+    // field only) never touches.
+    unsafe { &mut (*p).text }
 }
 
 /// Wakes this task after a request.
@@ -252,6 +251,18 @@ impl Port for HwPort {
         false
     }
 
+    fn read_reg(&mut self, reg: u8, out: &mut [u8]) -> bool {
+        // Random access at 0x11 (register index, repeated start, read):
+        // the chip id when the sequential method gives none.
+        for _ in 0..3 {
+            if self.i2c.write_read(ADDR_RANDOM, &[reg], out).is_ok() {
+                return true;
+            }
+            self.i2c.recover();
+        }
+        false
+    }
+
     fn analog(&mut self, a: Analog) {
         match a {
             Analog::Precharge => dac::fm_precharge(),
@@ -277,6 +288,7 @@ pub async fn fm() {
     atj2157_hal::log::line(if parked { t!(b"fm: tuner parked") } else { t!(b"fm: no answer at 0x10") });
     let mut report_at = 0u64;
     let mut hold_since: Option<u64> = None;
+    let mut stop_asked = false;
     loop {
         let now = now_ms();
         // Music and radio are exclusive.
@@ -284,7 +296,13 @@ pub async fn fm() {
         let mut hold = false;
         if music_on() && phase.is_on() {
             if phase == Phase::Starting {
-                // The UI stopped the music just before: wait for the DAC.
+                // Starting the radio stops the music (the UI asked
+                // already; a developer `fm on|tune` did not): ask once,
+                // then wait for the DAC.
+                if !stop_asked {
+                    stop_asked = true;
+                    crate::media::play(crate::media::PlayReq::Stop);
+                }
                 let since = *hold_since.get_or_insert(now);
                 if now.saturating_sub(since) > 2000 {
                     with(|r| r.request(Req::Off, now));
@@ -296,6 +314,7 @@ pub async fn fm() {
             }
         } else {
             hold_since = None;
+            stop_asked = false;
         }
         // `fm route on|off`: the bypass alone (with the vendor's waits).
         match REPORT_ROUTE.swap(0, Ordering::Relaxed) {

@@ -51,6 +51,48 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-24 — FM-1 fix after the first device run: radio RAM overlapped the step counter's, id read fallback, `fm on` stops music (worker, no hardware)
+
+From the lead's run of `97e60988` (earphones in, music stopped): `fm on`
+gave `phase=playing khz=0 chip=0000`, shadow 02h `0x4000` (ENABLE clear),
+04h `0x0000`, `groups=2097152`, RSSI 0, `fm scan` 0 stations; with music
+playing `fm on` ended `phase=off` and the music went on.
+
+* **Cause: two SRAM3 blocks on top of each other.** The merge placed the
+  step counter's state at a fixed `0x307A00` (1,144 B, to `0x307E78`) and
+  the radio's at a fixed `0x307C00` (848 B); `init_chain` initialised the
+  sensor after the radio, and the sensor task kept writing its state over
+  the radio: `khz=0`, the garbage RDS counter, a shadow that was never the
+  loaded table (04h would hold DE = 50 µs after any load), chip 0. The
+  register sequence itself ends with ENABLE set (now a test). The three
+  blocks did not fit the 2,044 B window together (252 + 1,144 + 848).
+* **Fix**: the window is chained, each address computed from the end of
+  the previous block and asserted: battery logger `0x307800` (252 B),
+  step counter `0x307900` (1,144 B), radio `0x307D78` (radio 360 B + the
+  UI's radio text 155 B = 520 B, to `0x307F80`), card I/O counter
+  `0x307FFC`. The presets (332 B) moved back to SRAM0 `.bss`.
+  `init_chain`'s duplicated `drain::init()` (merge) removed.
+* **Chip id**: the driver never read at 0x11; it reads the vendor's way
+  (bytes 8–9 = register 0Eh of a sequential read at 0x10 after the soft
+  reset). Now, if those bytes are not 0x5804/0x5801, register 00h is read
+  by random access at 0x11 (as the bring-up image did) and used if it is a
+  0x58xx id. `Port::read_reg` (write of one index byte to 0x11, repeated
+  start, read).
+* **`fm on|tune` with music playing**: the task now asks the card task to
+  stop the music (once) while a start waits on the DAC, then starts.
+* Tests: `orpheus-fm` 42 (+4: every write after the table keeps ENABLE and
+  DHIZ and the playing 02h has DHIZ/DMUTE/RDS/ENABLE; identify uses 0x10
+  first; falls back to 00h at 0x11; a radio start with no id in 0Eh loads
+  table A). Gate: see the commit.
+* **RAM**: `__stack_bottom` `0x132678` (main `bd32f17d`) → `0x1327C0`
+  (+328 B, the presets). Against the base before FM-1 the radio now costs
+  about +784 B of SRAM0, and 520 B of SRAM3.
+* Lead's re-run: `fm status` after boot (`phase=off`), `fm on` → expect
+  `chip=5804`, shadow 02h `0xC459` or so (DHIZ, DMUTE, RDS, ENABLE + 24 MHz
+  bits `0x0450`), 04h `0x0C00`; `fm tune <local>` → RSSI > 0; `fm scan`;
+  `playdir …` then `fm on` → music stops, radio plays; `acc read` still
+  works (step counter's state moved); end with `fm off`.
+
 ### 2026-11-24 — M12: BRAND-1, DOC-2, DOC-3, DOC-4, WEB-1 (worker, no hardware)
 
 * **Brand** (`docs/brand/`): one palette with roles; the dark and light
@@ -118,7 +160,7 @@ of every session. Newest entries first in §3.
   battery-life table on Home after user check 19; WEB-2 and WEB-3.
 * Gate (host): see the commit messages. Not run: device steps (no
   hardware in this package), CI workflows.
-| FM-1 | **built, not yet run on the player** | `orpheus-fm` (host-tested: RDA5807 register model, the vendor's init tables VERBATIM, tune, hardware seek with region limits / wrap / Wide's two bands / the 96 MHz harmonic, auto-scan, RDS PS/RT, volume pairs, presets) and the firmware `fm` task over the software I2C (writes only to `0x10`), FM bypass into the amplifier (`dac::fm_*`, VERBATIM, without the vendor's amplifier power cycle), tuner in standby whenever the radio is off. `fm on/off/tune/seek/scan/status/route` developer commands. User check 20 |
+| FM-1 | **first device run 2026-11-24: radio RAM overwritten by the step counter's (fixed, not yet re-run)** | `orpheus-fm` (host-tested: RDA5807 register model, the vendor's init tables VERBATIM, tune, hardware seek with region limits / wrap / Wide's two bands / the 96 MHz harmonic, auto-scan, RDS PS/RT, volume pairs, presets) and the firmware `fm` task over the software I2C (writes only to `0x10`), FM bypass into the amplifier (`dac::fm_*`, VERBATIM, without the vendor's amplifier power cycle), tuner in standby whenever the radio is off. `fm on/off/tune/seek/scan/status/route` developer commands. User check 20 |
 | UI-5a | **built (host); on the player with FM-1** | Radio app (frequency, band, signal bars, ST, preset, RDS name and text, Prev/Next step and hold-seek, Up/Down presets, OK mute / hold stop, Menu: Save/Remove preset, Presets…, Auto-scan with its question, Force mono, Region, Stop), Presets list (move, delete), antenna note, FM source in the status bar and mini-player; on Home. Not done: preset rename, Record, Output (05 §7.3) |
 
 ## 3. Session log

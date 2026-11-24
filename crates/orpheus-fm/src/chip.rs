@@ -14,6 +14,12 @@ use crate::region::Region;
 
 /// 7-bit I2C address of sequential access (bytes `0x20` / `0x21`).
 pub const ADDR: u8 = 0x10;
+/// 7-bit I2C address of random access (RDA5807M class): a register index
+/// byte, then the register's 16 bits. Used only to read the chip id from
+/// register 00h when the vendor's sequential method gives none.
+pub const ADDR_RANDOM: u8 = 0x11;
+/// Register 00h (random access): the chip id.
+pub const REG_CHIP_ID: u8 = 0x00;
 
 /// The board around the tuner: the bus (sequential mode at [`ADDR`]) and
 /// the analogue route into the headphone amplifier.
@@ -23,6 +29,9 @@ pub trait Port {
     fn write(&mut self, data: &[u8]) -> bool;
     /// Read `out.len()` bytes from register 0Ah on.
     fn read(&mut self, out: &mut [u8]) -> bool;
+    /// Random access at [`ADDR_RANDOM`]: send the register index `reg`,
+    /// repeated start, read `out.len()` bytes.
+    fn read_reg(&mut self, reg: u8, out: &mut [u8]) -> bool;
     /// Switch the FM input of the amplifier mixer, or set its gain.
     fn analog(&mut self, a: Analog);
 }
@@ -306,14 +315,28 @@ impl Tuner {
         p.write(&r02::SOFT_RESET.to_be_bytes())
     }
 
-    /// The chip id: bytes 8–9 of a 10-byte read after the reset (the
-    /// vendor's method, fm-i2c-imu.md §2.1).
+    /// The chip id: bytes 8–9 of a 10-byte sequential read after the
+    /// reset (the vendor's method, fm-i2c-imu.md §2.1); if that is not an
+    /// id the vendor knows, register 00h by random access at 0x11 (where
+    /// the bring-up image read `0x5804`, 01-hardware §9). `None` if the
+    /// chip does not answer at 0x10.
     pub fn identify<P: Port>(&mut self, p: &mut P) -> Option<u16> {
         let mut b = [0u8; 10];
         if !p.read(&mut b) {
             return None;
         }
-        Some(u16::from_be_bytes([b[8], b[9]]))
+        let seq = u16::from_be_bytes([b[8], b[9]]);
+        if matches!(seq, ID_A | ID_B) {
+            return Some(seq);
+        }
+        let mut r = [0u8; 2];
+        if p.read_reg(REG_CHIP_ID, &mut r) {
+            let id = u16::from_be_bytes(r);
+            if id >> 8 == 0x58 {
+                return Some(id);
+            }
+        }
+        Some(seq)
     }
 
     /// 03h for `khz` (channel, band, spacing; no `TUNE`).
@@ -577,6 +600,31 @@ mod tests {
         assert!(s.fm_true());
         assert!(s.with_blocks);
         assert_eq!(Status::from_bytes(&[0xC0, 0, 0, 0x0B]).bler(), (2, 3));
+    }
+
+    #[test]
+    fn identify_uses_the_sequential_read_at_0x10_first() {
+        let mut chip = FakeChip::new();
+        let mut t = Tuner::new();
+        t.soft_reset(&mut chip);
+        assert_eq!(t.identify(&mut chip), Some(ID_A));
+        assert_eq!(chip.random_reads, 0, "0x11 is not needed when 0Eh holds the id");
+        assert_eq!(chip.read_addrs.last(), Some(&ADDR));
+    }
+
+    #[test]
+    fn identify_falls_back_to_register_00_at_0x11() {
+        // 0Eh after the reset holds no id (seen as 0x0000 on the player).
+        let mut chip = FakeChip::new();
+        chip.seq_id = 0;
+        let mut t = Tuner::new();
+        t.soft_reset(&mut chip);
+        assert_eq!(t.identify(&mut chip), Some(ID_A));
+        assert_eq!(chip.random_reads, 1);
+        assert_eq!(chip.read_addrs.last(), Some(&ADDR_RANDOM));
+        // Neither method gives an id: the sequential value (fallback table).
+        chip.random_id = 0;
+        assert_eq!(t.identify(&mut chip), Some(0));
     }
 
     #[test]

@@ -463,8 +463,9 @@ Facts: fm-i2c-imu.md.
   detector, the day check and the history once a second over the batch;
   the per-sample code is the `steps-sample` cluster of `hot.toml` (4 lines;
   the read path touches about 2). No FIFO and no interrupt (U-ACC-1 open:
-  `acc regs` dumps the map). State in SRAM3 (`0x307A00`, beside the
-  battery logger's). Developer commands: `acc read`, `acc regs`,
+  `acc regs` dumps the map). State in SRAM3 right after the battery
+  logger's (`sensor::SHARED_ADDR`, `0x307900` as built; the radio's
+  follows, the three chained by asserts). Developer commands: `acc read`, `acc regs`,
   `acc trace <secs>` / `acc trace stop` (CSV to
   `/.orpheus/test/acc-<n>.csv`, `orpheus_steps::trace`), `steps status`.
 * **Step detector** (`orpheus-apps::steps`, host-tested): magnitude of the

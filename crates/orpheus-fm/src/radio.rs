@@ -1028,6 +1028,49 @@ mod tests {
     }
 
     #[test]
+    fn every_write_after_the_table_keeps_the_tuner_enabled() {
+        use crate::chip::r02;
+        let (mut r, mut chip, t) = started(Region::Europe, 101_900);
+        // Exercise the writes of a session: volume, mute, mono, step, seek.
+        r.request(Req::Volume(20), t);
+        r.request(Req::Mute(true), t);
+        let t = run(&mut r, &mut chip, t, 100);
+        r.request(Req::Mute(false), t);
+        r.request(Req::Config(Config { mono: true, ..Config::DEFAULT }), t);
+        let t = run(&mut r, &mut chip, t, 100);
+        r.request(Req::Step(true), t);
+        let t = run(&mut r, &mut chip, t, 200);
+        r.request(Req::Seek(true), t);
+        run(&mut r, &mut chip, t, 2000);
+        let table = chip.writes.iter().position(|w| w.len() == 104).unwrap();
+        assert_eq!(table, 1, "soft reset, then the table");
+        assert_eq!(chip.writes[0], [0x00, 0x02], "the reset write is the only one without ENABLE");
+        for (i, w) in chip.writes.iter().enumerate().skip(table) {
+            let r02v = u16::from_be_bytes([w[0], w[1]]);
+            assert_ne!(r02v & r02::ENABLE, 0, "write {i} ({w:02X?}) clears ENABLE");
+            assert_ne!(r02v & r02::DHIZ, 0, "write {i} puts the outputs in high-Z");
+        }
+        // Playing: 02h has DHIZ, DMUTE (audible), RDS and ENABLE.
+        let shadow = r.tuner().regs()[0];
+        assert_eq!(shadow & (r02::DHIZ | r02::DMUTE | r02::ENABLE), r02::DHIZ | r02::DMUTE | r02::ENABLE);
+        assert_ne!(shadow & r02::RDS_EN, 0);
+        assert!(chip.enabled() && chip.audible());
+        assert_eq!(r.info().chip, 0x5804);
+    }
+
+    #[test]
+    fn the_chip_id_comes_from_register_00_when_0eh_has_none() {
+        let mut r = Radio::new();
+        let mut chip = FakeChip::new();
+        chip.seq_id = 0;
+        r.request(Req::Tune(94_700), 0);
+        run(&mut r, &mut chip, 0, 2000);
+        assert_eq!(r.info().chip, 0x5804);
+        assert_eq!(chip.writes[1].len(), 104, "table A, not the fallback table");
+        assert_eq!(r.phase(), Phase::Playing);
+    }
+
+    #[test]
     fn stop_ramps_down_restores_music_gain_and_parks_the_tuner() {
         let (mut r, mut chip, t) = started(Region::Europe, 94_700);
         chip.analog.clear();
