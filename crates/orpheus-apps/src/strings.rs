@@ -598,6 +598,14 @@ strings! {
     SecondsField = "Seconds",
     Duration = "Duration",
     ResetTodayText = "Today's count goes back to 0.",
+    // USB keyboard (USB-5) and the Authenticator (OTP-2, 05 §7.9).
+    KbdLayout = "Keyboard layout",
+    KbdUs = "US",
+    KbdUk = "UK",
+    KbdDe = "German",
+    KbdFr = "French",
+    KeypadDigits = "Digits from keypad",
+    EnterAfterCode = "Enter after code",
 }
 
 /// Number of strings.

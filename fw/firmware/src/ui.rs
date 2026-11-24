@@ -84,7 +84,7 @@ impl Ui {
         }
     }
 
-    async fn after(&mut self) {
+    async fn after(&mut self, _fb: &mut [u16]) {
         self.settle();
         // Settings changed by the screens go to NOR.
         if let Some(store) = self.store.as_mut() {
@@ -116,6 +116,7 @@ impl Ui {
             if let Action::Usb(m) = a {
                 let p = match m {
                     orpheus_apps::services::UsbMode::FileTransfer => crate::usbdev::Personality::FileTransfer,
+                    orpheus_apps::services::UsbMode::Keyboard => crate::usbdev::Personality::Keyboard,
                     _ => crate::usbdev::Personality::Dev,
                 };
                 crate::usbdev::MSC_READ_ONLY.store(false, core::sync::atomic::Ordering::Relaxed);
@@ -440,7 +441,7 @@ pub async fn ui() {
             let r = ui.shell.tick(&mut *ui.fw, t);
             ui.handle(r);
         }
-        ui.after().await;
+        ui.after(fb).await;
         // PWR-3a: auto-off and low battery (both through `power_off`, which
         // reboots instead under a host test).
         {

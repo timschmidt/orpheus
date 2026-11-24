@@ -496,6 +496,14 @@ pub const RU: &[(Str, &str)] = &[
     (AlarmOnlyOn, "Звонит, только если включён"),
     (SecondsField, "Секунды"),
     (Duration, "Длительность"),
+    // USB keyboard and Authenticator (USB-5, OTP-2).
+    (KbdLayout, "Раскладка"),
+    (KbdUs, "США"),
+    (KbdUk, "Британия"),
+    (KbdDe, "Немецкая"),
+    (KbdFr, "Французская"),
+    (KeypadDigits, "Цифры с цифр. блока"),
+    (EnterAfterCode, "Enter после кода"),
 ];
 
 pub const JA: &[(Str, &str)] = &[
@@ -921,4 +929,12 @@ pub const JA: &[(Str, &str)] = &[
     (AlarmOnlyOn, "電源オン中のみ"),
     (SecondsField, "秒"),
     (Duration, "時間"),
+    // USB keyboard and Authenticator (USB-5, OTP-2).
+    (KbdLayout, "キーボードの言語"),
+    (KbdUs, "US"),
+    (KbdUk, "UK"),
+    (KbdDe, "Deutsch"),
+    (KbdFr, "フランス語"),
+    (KeypadDigits, "テンキーで数字"),
+    (EnterAfterCode, "コードの後にEnter"),
 ];

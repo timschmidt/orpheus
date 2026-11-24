@@ -1004,6 +1004,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "orpheus-hid"
+version = "0.1.0"
+dependencies = [
+ "embassy-futures",
+]
+
+[[package]]
 name = "orpheus-host"
 version = "0.1.0"
 dependencies = [

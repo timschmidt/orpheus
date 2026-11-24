@@ -25,6 +25,7 @@ mod audio;
 mod bt;
 mod drain;
 mod fm;
+mod kbd;
 mod library;
 mod media;
 mod pictures;

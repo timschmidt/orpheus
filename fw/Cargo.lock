@@ -554,6 +554,7 @@ dependencies = [
  "orpheus-dsp",
  "orpheus-fm",
  "orpheus-fs",
+ "orpheus-hid",
  "orpheus-img",
  "orpheus-index",
  "orpheus-input",
@@ -806,6 +807,10 @@ version = "0.1.0"
 
 [[package]]
 name = "orpheus-fs"
+version = "0.1.0"
+
+[[package]]
+name = "orpheus-hid"
 version = "0.1.0"
 
 [[package]]

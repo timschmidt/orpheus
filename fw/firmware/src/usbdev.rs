@@ -1,4 +1,5 @@
-//! USB: the developer channel on EP0 (personalities come with USB-4).
+//! USB: the developer channel on EP0 in every personality (USB-4):
+//! developer only, card reader, and the keyboard (USB-5, `crate::kbd`).
 
 use core::sync::atomic::{AtomicU16, Ordering};
 
@@ -19,7 +20,7 @@ impl Target for Fw {
         Info {
             version: dc::VERSION,
             layout: 0,
-            personality: 0,
+            personality: CURRENT.load(Ordering::Relaxed),
             uptime_ms: (time::now_us() / 1000) as u32,
             battery_mv: crate::state::snapshot().millivolts,
             flags: u16::from(usb::high_speed()),
@@ -146,6 +147,14 @@ impl Target for Fw {
         if data == b"usb dev" {
             MODE.signal(Personality::Dev);
             return true;
+        }
+        if data == b"usb kbd" {
+            MODE.signal(Personality::Keyboard);
+            return true;
+        }
+        // USB-5: the HID keyboard (`kbd type <text>`, `kbd status`, …).
+        if let Some(rest) = data.strip_prefix(b"kbd ") {
+            return crate::kbd::test_command(rest);
         }
         if data == b"hang" {
             // Watchdog test: block the main executor; the watchdog task
@@ -292,6 +301,12 @@ static mut MSOS_DESC: [u8; 256] = [0; 256];
 static mut CONTROL_BUF: [u8; 1024] = [0; 1024];
 static mut DEVCHAN: DevChannel<Fw> = DevChannel { target: Fw, requests: 0 };
 static mut MSC_CLASS: MscClass = MscClass;
+static mut HID_STATE: embassy_usb::class::hid::State<'static> = embassy_usb::class::hid::State::new();
+static mut KBD_REQUESTS: crate::kbd::Requests = crate::kbd::Requests;
+static mut KBD_BUS: crate::kbd::Bus = crate::kbd::Bus;
+/// The personality presented (INFO): 0 developer, 1 card reader, 2 keyboard.
+pub static CURRENT: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+pub const CURRENT_CARD_READER: u8 = 1;
 
 /// Personality requests (from the UI's USB dialog or the TEST channel).
 /// Latest request wins; sending never fails.
@@ -313,6 +328,8 @@ pub enum Personality {
     Dev,
     /// Card reader (+ developer channel).
     FileTransfer,
+    /// HID boot keyboard (+ developer channel): USB-5.
+    Keyboard,
 }
 
 /// Class requests of the mass-storage interface: GET MAX LUN = 0, reset.
@@ -467,13 +484,62 @@ async fn run_msc() -> Personality {
     next
 }
 
+/// The keyboard personality: the developer channel's interface and a HID
+/// boot keyboard (1 interrupt IN endpoint, 8-byte reports, 4 ms interval:
+/// bInterval 4 is 4 ms at full speed and 2^3 microframes = 1 ms at high
+/// speed). Back to the developer personality when no computer configures
+/// it within `kbd::CONFIGURE_TIMEOUT`.
+async fn run_kbd() -> Personality {
+    use embassy_usb::class::hid::{Config as HidConfig, HidBootProtocol, HidSubclass, HidWriter};
+    let mut b = builder("YM03 keyboard");
+    let mut func = b.function(0xFF, 0, 0);
+    let mut iface = func.interface();
+    let _alt = iface.alt_setting(0xFF, 0, 0, None);
+    drop(func);
+    // SAFETY: as in `builder`: one device at a time; the previous one
+    // (and its borrows of these statics) is gone.
+    b.handler(unsafe { &mut *(&raw mut KBD_BUS) });
+    let config = HidConfig {
+        report_descriptor: &orpheus_hid::descriptor::BOOT_KEYBOARD,
+        // SAFETY: as above.
+        request_handler: Some(unsafe { &mut *(&raw mut KBD_REQUESTS) }),
+        poll_ms: 4,
+        max_packet_size: 8,
+        hid_subclass: HidSubclass::Boot,
+        hid_boot_protocol: HidBootProtocol::Keyboard,
+    };
+    // SAFETY: as above.
+    let mut w = HidWriter::<_, 8>::new(&mut b, unsafe { &mut *(&raw mut HID_STATE) }, config);
+    let mut dev = b.build();
+    let pump = async {
+        crate::kbd::pump(&mut w).await;
+        Personality::Dev
+    };
+    let r = embassy_futures::select::select4(dev.run(), supervisor(), MODE.wait(), pump).await;
+    usb::set_attached(false);
+    crate::kbd::ended();
+    match r {
+        embassy_futures::select::Either4::Third(p) | embassy_futures::select::Either4::Fourth(p) => p,
+        _ => Personality::Dev,
+    }
+}
+
 #[embassy_executor::task]
 pub async fn usb() {
     let mut mode = Personality::Dev;
     loop {
+        CURRENT.store(
+            match mode {
+                Personality::Dev => 0,
+                Personality::FileTransfer => 1,
+                Personality::Keyboard => 2,
+            },
+            Ordering::Relaxed,
+        );
         mode = match mode {
             Personality::Dev => run_dev().await,
             Personality::FileTransfer => run_msc().await,
+            Personality::Keyboard => run_kbd().await,
         };
         usb::shutdown();
         Timer::after_millis(200).await;
