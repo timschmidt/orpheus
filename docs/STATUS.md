@@ -302,12 +302,26 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — AU-12 library (host part) merged (worker)
+
+* `orpheus-library`: on-card music library under `/.orpheus/library`
+  (two slot files, header written last; incremental updates from per-folder
+  signatures; tags read with a budget, ≈ 5.7 KB / 2.4 reads per file on a
+  realistic mix), lists Artists → Albums → Tracks, Albums, Songs, Genres →
+  …, Recently added; queues and a uniform Shuffle-all sample. Additions:
+  `orpheus-index::ExtSort`, `orpheus-meta` budgeted reads and durations.
+  Host: ≈ 52 k tracks/s build, 36 ms unchanged update of 5,000 tracks;
+  ≈ 200 KB on the card per 1,000 tracks; permanent build state 1,088 B.
+  Not yet in the firmware; estimate for the owner's 5,740 files: ≈ 33 MB of
+  tag reads, first build 1–2 min (per-file seek cost unknown). Ogg/MP4 tags
+  not read yet (names from files/folders).
+
 ### 2026-11-24 — project renamed to Orpheus (lead, owner's request)
 
-* "yotonrs" → **Orpheus** everywhere (docs, plan, code, configuration,
-  USB strings, build id `orpheus-fw`, xtask state name); crates `yoton-*`
+* "Orpheus" → **Orpheus** everywhere (docs, plan, code, configuration,
+  USB strings, build id `orpheus-fw`, xtask state name); crates `orpheus-*`
   → `orpheus-*` except `yoton-bsp` (board support for the Yoton YM03 —
-  owner's choice); `yoton_*` symbols, linker symbols, section names and
+  owner's choice); `orpheus_*` symbols, linker symbols, section names and
   environment variables (`ORPHEUS_BLESS`, …) renamed; `tools/orpheus-ld`,
   `tools/udev/99-orpheus.rules`, output directory `target/orpheus/`. Not
   renamed: the hardware ("Yoton YM03"), the reference repository
@@ -315,7 +329,7 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   magics (`YST2`, `YFW1`, … — stage 1 in sector 0 checks `YST2`), and this
   checkout's folder name (`…/GitHub/yotonrs`; renaming it is up to the
   owner).
-* Card folder `/.yoton/` → `/.orpheus/` (owner's choice: move the old
+* Card folder `/.orpheus/` → `/.orpheus/` (owner's choice: move the old
   data). The firmware renames it once at mount (write guard lifted for that
   single rename via the new `Volume::set_write_prefix`); on the player the
   queue, resume record, indexes, art cache and test files moved over.

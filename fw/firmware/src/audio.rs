@@ -431,19 +431,19 @@ async fn mount(card: Card) -> Option<Volume<'static, Card>> {
     // unmounted (consumed) before this borrow is created.
     let cache = unsafe { &mut *(&raw mut CACHE) };
     let mut vol = Volume::mount(card, cache, opts).await.ok()?;
-    // The project was renamed (yotonrs → Orpheus, 2026-11-24): its card
-    // folder moves from `/.yoton` to `/.orpheus` once, keeping the queue,
+    // The project was renamed (orpheus → Orpheus, 2026-11-24): its card
+    // folder moves from `/.orpheus` to `/.orpheus` once, keeping the queue,
     // resume point, indexes and caches (owner's decision). Only this one
     // directory rename runs without the write prefix.
-    if vol.exists("/.yoton").await == Ok(true) && vol.exists("/.orpheus").await == Ok(false) {
+    if vol.exists("/.orpheus").await == Ok(true) && vol.exists("/.orpheus").await == Ok(false) {
         vol.set_write_prefix(None);
-        let ok = vol.rename("/.yoton", "/.orpheus").await.is_ok();
+        let ok = vol.rename("/.orpheus", "/.orpheus").await.is_ok();
         vol.set_write_prefix(Some("/.orpheus"));
         let _ = vol.flush().await;
         atj2157_hal::log::line(if ok {
-            b"card: /.yoton moved to /.orpheus"
+            b"card: /.orpheus moved to /.orpheus"
         } else {
-            b"card: moving /.yoton failed"
+            b"card: moving /.orpheus failed"
         });
     }
     Some(vol)

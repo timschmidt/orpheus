@@ -1,0 +1,19 @@
+[package]
+name = "orpheus-library"
+description = "Music library index on the card: tag scan, sorted tables, bounded-RAM queries (04 §6.4, 05 §7.1)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+orpheus-apps = { path = "../orpheus-apps" }
+orpheus-audio = { path = "../orpheus-audio" }
+orpheus-fs = { path = "../orpheus-fs" }
+orpheus-index = { path = "../orpheus-index" }
+orpheus-meta = { path = "../orpheus-meta" }
+orpheus-player = { path = "../orpheus-player" }
+
+[lints]
+workspace = true

@@ -51,17 +51,20 @@
 
 mod build;
 pub mod card;
+pub mod extsort;
 pub mod key;
 mod letters;
 mod query;
 pub mod record;
 
 pub use build::{Builder, MAX_K, MIN_SCRATCH, Progress, Suspended, Verifier};
+pub use extsort::{ExtSort, MAX_SORT_ITEM, MIN_SORT_SCRATCH};
 pub use letters::LetterTable;
 pub use orpheus_apps::browse::{EntryKind, is_hidden_name, kind_of, letter_of, natural_cmp};
 pub use orpheus_apps::services::{BrowseFilter, SortBy};
 pub use orpheus_fs::{Locator, MAX_NAME_UTF8};
 pub use query::{Index, Probe};
+pub use record::crc32_update;
 pub use record::{HEADER, LETTER_RUN, RECORD, Row, Signature, VERSION};
 
 /// Longest name (UTF-8 bytes) an entry may have: 255 UTF-16 units.
@@ -133,6 +136,23 @@ pub struct FileName {
 }
 
 impl FileName {
+    /// A file name of at most 16 ASCII bytes (no `/`), `None` otherwise.
+    #[must_use]
+    pub const fn new(s: &str) -> Option<FileName> {
+        let b = s.as_bytes();
+        if b.is_empty() || b.len() > 16 {
+            return None;
+        }
+        let mut i = 0;
+        while i < b.len() {
+            if !b[i].is_ascii() || b[i] == b'/' || b[i] < 0x20 {
+                return None;
+            }
+            i += 1;
+        }
+        Some(FileName::lit(s))
+    }
+
     const fn lit(s: &str) -> FileName {
         let b = s.as_bytes();
         let mut buf = [0u8; 16];

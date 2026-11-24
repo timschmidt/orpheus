@@ -964,6 +964,18 @@ name = "orpheus-input"
 version = "0.1.0"
 
 [[package]]
+name = "orpheus-library"
+version = "0.1.0"
+dependencies = [
+ "orpheus-apps",
+ "orpheus-audio",
+ "orpheus-fs",
+ "orpheus-index",
+ "orpheus-meta",
+ "orpheus-player",
+]
+
+[[package]]
 name = "orpheus-meta"
 version = "0.1.0"
 dependencies = [
