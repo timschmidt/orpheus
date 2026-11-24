@@ -14,11 +14,11 @@ use yoton_ui::widgets::list::{Accessory, ListAction, ListView};
 
 use super::rows::Rows;
 use super::{
-    CHOICE, GOODBYE, GROUP, HOME_APPS, INFO, NOTICE, Notice, PICKER, POWER_MENU, QUICK_PANEL, SETTINGS,
-    SLIDER, USB_CONNECT,
+    BOOKMARKS, CHOICE, GOODBYE, GROUP, HOME_APPS, INFO, MUSIC, MUSIC_FOLDERS, NOTICE, NOW_PLAYING, Notice,
+    PICKER, POWER_MENU, PROPERTIES, QUICK_PANEL, SETTINGS, SLIDER, USB_CONNECT,
 };
 use crate::App;
-use crate::services::{FsKind, PowerRequest, Services, StorageRequest, UsbMode};
+use crate::services::{FsKind, LibraryState, PlayerCmd, PowerRequest, Services, StorageRequest, UsbMode};
 use crate::settings::{self, Action, GROUPS, Info, Kind, SettingId, format_value, id};
 use crate::strings::{Lang, Str};
 
@@ -33,6 +33,11 @@ pub enum ListKind {
     PowerMenu,
     Quick,
     Usb,
+    /// Music root (05 §7.1).
+    MusicRoot,
+    Bookmarks,
+    /// Properties of row `n` of the current listing.
+    Properties(u32),
 }
 
 // Row tags that are not setting keys.
@@ -43,6 +48,84 @@ const T_ORIGINAL: u16 = 4;
 const T_RECOVERY: u16 = 5;
 const T_NOW_PLAYING: u16 = 6;
 const T_ALWAYS: u16 = 100;
+const T_NP: u16 = 200;
+const T_RESUME: u16 = 201;
+const T_SHUFFLE_ALL: u16 = 202;
+const T_LIBRARY: u16 = 210;
+const T_FOLDERS: u16 = 220;
+const T_BOOKMARKS: u16 = 221;
+const T_BUILDING: u16 = 222;
+
+/// Music root (05 §7.1): Now Playing, Resume, Shuffle all, the library
+/// lists (usable once the tag index exists), Folders, Bookmarks.
+fn music_rows<S: Services + ?Sized>(svc: &S, l: Lang, rows: &mut Rows) {
+    let p = svc.player();
+    if p.queue_len > 0
+        && let Some(r) = rows.push(l.get(Str::NowPlaying), T_NP)
+    {
+        r.icon = Some(&yoton_ui::icons::PLAY);
+        r.acc = Accessory::Chevron;
+    }
+    if p.source == yoton_ui::event::Source::Idle
+        && let Some(t) = svc.resume_title()
+        && let Some(r) = rows.push(l.get(Str::ResumeTitle), T_RESUME)
+    {
+        r.value.push_str_or_ellipsis(t);
+        r.wide_value = true;
+    }
+    rows.push(l.get(Str::ShuffleAll), T_SHUFFLE_ALL);
+    let lib = svc.library();
+    // The file count does not fit a 128 px row in every language; the row
+    // says that the index is being built.
+    if let LibraryState::Building { .. } = lib
+        && let Some(r) = rows.push(l.get(Str::BuildingLibrary), T_BUILDING)
+    {
+        r.dim = true;
+    }
+    let ready = lib == LibraryState::Ready;
+    for (i, s) in [Str::Artists, Str::Albums, Str::Songs, Str::Genres, Str::Playlists, Str::RecentlyAdded]
+        .iter()
+        .enumerate()
+    {
+        if let Some(r) = rows.push(l.get(*s), T_LIBRARY + u16::try_from(i).unwrap_or(0)) {
+            r.dim = !ready;
+            r.acc = Accessory::Chevron;
+        }
+    }
+    if let Some(r) = rows.push(l.get(Str::Folders), T_FOLDERS) {
+        r.acc = Accessory::Chevron;
+        r.icon = Some(&yoton_ui::icons::FOLDER);
+    }
+    if let Some(r) = rows.push(l.get(Str::Bookmarks), T_BOOKMARKS) {
+        r.acc = Accessory::Chevron;
+    }
+}
+
+/// Properties of a listing row (05 §7.2).
+fn properties_rows<S: Services + ?Sized>(svc: &S, l: Lang, row: u32, rows: &mut Rows) {
+    let Some(e) = svc.entry(row) else { return };
+    let mut add = |label: Str, f: &dyn Fn(&mut StrBuf<24>)| {
+        if let Some(r) = rows.push(l.get(label), 0) {
+            f(&mut r.value);
+            r.wide_value = true;
+        }
+    };
+    add(Str::Name, &|v| {
+        v.push_str_or_ellipsis(e.name);
+    });
+    add(Str::Type, &|v| {
+        v.push_str_or_ellipsis(l.get(super::kind_label(e.kind)));
+    });
+    if e.kind != crate::browse::EntryKind::Dir {
+        add(Str::Size, &|v| super::push_size(v, e.size));
+    }
+    let fmt = svc.setting(id::DATE_FORMAT);
+    add(Str::Modified, &|v| {
+        let mut d = StrBuf::<24>::new();
+        super::system::push_date(&mut d, &e.modified, fmt);
+        v.push_str(d.as_str());
+    });
+}
 /// Dialog ids: action number + this.
 const DLG: u16 = 0x100;
 
@@ -126,6 +209,9 @@ impl ListScreen {
             ListKind::PowerMenu => POWER_MENU,
             ListKind::Quick => QUICK_PANEL,
             ListKind::Usb => USB_CONNECT,
+            ListKind::MusicRoot => MUSIC,
+            ListKind::Bookmarks => BOOKMARKS,
+            ListKind::Properties(_) => PROPERTIES,
         }
     }
 
@@ -140,6 +226,9 @@ impl ListScreen {
             ListKind::PowerMenu => "PowerMenu",
             ListKind::Quick => "QuickPanel",
             ListKind::Usb => "UsbConnect",
+            ListKind::MusicRoot => "Music",
+            ListKind::Bookmarks => "Bookmarks",
+            ListKind::Properties(_) => "Properties",
         }
     }
 
@@ -156,6 +245,9 @@ impl ListScreen {
             ListKind::PowerMenu => l.get(Str::GPower),
             ListKind::Quick => l.get(Str::QuickSettings),
             ListKind::Usb => l.get(Str::ComputerConnected),
+            ListKind::MusicRoot => l.get(Str::AppMusic),
+            ListKind::Bookmarks => l.get(Str::Bookmarks),
+            ListKind::Properties(_) => l.get(Str::Properties),
         }
     }
 
@@ -331,6 +423,24 @@ impl ListScreen {
                     r.acc = Accessory::Toggle(self.always);
                 }
             }
+            ListKind::MusicRoot => music_rows(svc, l, &mut rows),
+            ListKind::Bookmarks => {
+                let n = svc.bookmark_count();
+                if n == 0
+                    && let Some(r) = rows.push(l.get(Str::NoBookmarks), u16::MAX)
+                {
+                    r.dim = true;
+                }
+                for i in 0..n.min(u32::try_from(super::MAX_ROWS - 1).unwrap_or(0)) {
+                    let Some(b) = svc.bookmark(i) else { break };
+                    let Some(r) = rows.push("", u16::try_from(i).unwrap_or(0)) else { break };
+                    r.value.push_duration(b.position_ms / 1000);
+                    r.value.push_str("  ");
+                    r.value.push_str_or_ellipsis(b.title);
+                    r.icon = Some(&yoton_ui::icons::NOTE);
+                }
+            }
+            ListKind::Properties(row) => properties_rows(svc, l, row, &mut rows),
         }
         self.rows = rows;
         self.list.invalidate();
@@ -535,6 +645,29 @@ impl ListScreen {
                     Nav::Stay
                 }
             },
+            ListKind::MusicRoot => match tag {
+                T_NP => Nav::Push(NOW_PLAYING, Arg(0)),
+                T_RESUME => {
+                    cx.svc.command(PlayerCmd::Resume);
+                    Nav::Push(NOW_PLAYING, Arg(0))
+                }
+                T_SHUFFLE_ALL => {
+                    cx.svc.command(PlayerCmd::ShuffleAll);
+                    Nav::Push(NOW_PLAYING, Arg(0))
+                }
+                T_FOLDERS => Nav::Push(MUSIC_FOLDERS, Arg(0)),
+                T_BOOKMARKS => Nav::Push(BOOKMARKS, Arg(0)),
+                T_BUILDING => Nav::Stay,
+                _ => Nav::Push(NOTICE, Arg(Notice::NotYet(App::Music).arg())),
+            },
+            ListKind::Bookmarks => {
+                if tag == u16::MAX {
+                    return Nav::Stay;
+                }
+                cx.svc.command(PlayerCmd::PlayBookmark(u32::from(tag)));
+                Nav::Push(NOW_PLAYING, Arg(0))
+            }
+            ListKind::Properties(_) => Nav::Stay,
             ListKind::Usb => {
                 if tag == T_ALWAYS {
                     self.always = !self.always;
@@ -603,6 +736,7 @@ impl<S: Services + ?Sized> Screen<S> for ListScreen {
             ListKind::Group(_) => ListKind::Group(u8::try_from(arg.0).unwrap_or(0)),
             ListKind::Choice(_) => ListKind::Choice(SettingId(u16::try_from(arg.0).unwrap_or(0))),
             ListKind::Info(_) => ListKind::Info(info_from(arg.0)),
+            ListKind::Properties(_) => ListKind::Properties(arg.0),
             k => k,
         };
         self.refresh(cx.svc);

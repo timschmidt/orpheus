@@ -98,6 +98,66 @@ fn run_case(script: &str) -> Vec<Shot> {
     r.unwrap_or_else(|e| panic!("script `{script}`: {e:#}"))
 }
 
+/// UI-3 / UI-4: Files, text viewer, Music root, Now Playing views,
+/// equaliser. `{album}` is the script's album (`set:queue=`), `{artist}`
+/// the rows down to its artist folder in /Music, `{book}` the rows down to
+/// its book in /Books, `{lyr}` the track with lyrics, `{track}` the rows
+/// down to the first `.mp3` in the album folder (an `.lrc` may sort first).
+fn media_cases(add: &mut dyn FnMut(String, String)) {
+    let journeys: &[(&str, &str)] = &[
+        ("files_root", "next ok wait:100 expect-screen:Files"),
+        ("files_music", "next ok down*2 ok wait:100"),
+        ("files_album", "next ok down*2 ok down*{artist} ok ok wait:100 down*{track}"),
+        ("files_big", "next ok down*2 ok ok wait:150"),
+        ("files_big_sorted", "next ok down*2 ok ok wait:600 down*3 wait:100"),
+        ("files_letter", "next ok down*2 ok ok wait:600 press:next wait:700"),
+        ("files_menu", "next ok down*2 ok down*{artist} ok ok wait:100 down*{track} menu"),
+        ("files_sort", "next ok down*2 ok down*{artist} ok ok wait:100 down*{track} menu down*6 ok"),
+        ("files_props", "next ok down*2 ok down*{artist} ok ok wait:100 down*{track} menu down*4 ok"),
+        ("files_delete", "next ok down*2 ok down*{artist} ok ok wait:100 down*{track} menu down*5 ok"),
+        ("files_hidden", "next ok menu down*4 ok menu wait:100"),
+        ("files_notice", "next ok down*3 ok wait:100 ok expect-screen:Notice"),
+        ("text", "next ok ok wait:100 down*{book} ok wait:200 expect-screen:TextViewer"),
+        ("text_page", "next ok ok wait:100 down*{book} ok wait:200 next wait:200 next wait:200"),
+        ("music", "ok wait:100 expect-screen:Music"),
+        ("music_playing", "set:queue={album} ok wait:100"),
+        ("music_resume", "set:resume=1 ok wait:100"),
+        ("music_folders", "ok down*8 ok wait:100 expect-screen:Folders"),
+        ("bookmarks", "set:queue={album} set:pos=61000 set:bookmark=1 ok down*10 ok wait:100"),
+        ("np", "set:queue={album} set:track=1 set:pos=47000 goto:NowPlaying wait:100"),
+        ("np_paused", "set:queue={album} set:track=1 set:pos=47000 goto:NowPlaying ok wait:100"),
+        ("np_bigart", "set:0x0d03=1 set:queue={album} goto:NowPlaying wait:100"),
+        ("np_bigart_clean", "set:0x0d03=1 set:queue={album} goto:NowPlaying wait:3200"),
+        (
+            "np_lyrics",
+            "set:0x0d03=2 set:queue={album} set:track={lyr} set:pos=25000 goto:NowPlaying wait:100",
+        ),
+        ("np_upnext", "set:0x0d03=3 set:queue={album} goto:NowPlaying wait:100 down"),
+        ("np_details", "set:0x0d03=4 set:queue={album} set:track=1 goto:NowPlaying wait:100"),
+        ("np_levels", "set:0x0d03=5 set:queue={album} set:pos=12000 goto:NowPlaying wait:100"),
+        ("np_menu", "set:queue={album} goto:NowPlaying wait:100 menu"),
+        ("np_idle", "goto:NowPlaying wait:100"),
+        ("eq", "set:queue={album} goto:Equaliser wait:100"),
+        ("eq_custom", "set:queue={album} goto:Equaliser up*3 next up*2 next down*2 wait:100"),
+        ("eq_presets", "goto:Equaliser ok wait:100 expect-screen:Choice"),
+    ];
+    for t in ["dark", "light"] {
+        for (l, album, artist, book, lyr, track) in
+            [("latin", "takk", 2, 0, 1, 0), ("cyrillic", "kino", 4, 2, 0, 1), ("cjk", "yoasobi", 3, 3, 0, 1)]
+        {
+            for (name, script) in journeys {
+                let script = script
+                    .replace("{album}", album)
+                    .replace("{artist}", &artist.to_string())
+                    .replace("{book}", &book.to_string())
+                    .replace("{lyr}", &lyr.to_string())
+                    .replace("{track}", &track.to_string());
+                add(format!("media_{name}_{t}_{l}"), format!("@apps theme:{t} lang:{l} {script}"));
+            }
+        }
+    }
+}
+
 /// UI-2: Home, Settings and the system screens, through the real apps.
 /// Settings is the last app on Home: `prev ok` opens it.
 fn app_cases(add: &mut dyn FnMut(String, String)) {
@@ -140,6 +200,7 @@ fn app_cases(add: &mut dyn FnMut(String, String)) {
         add(format!("app_group{g:02}_dark_latin"), format!("@apps prev ok down*{g} ok"));
         add(format!("app_group{g:02}_light_cjk"), format!("@apps theme:light lang:cjk prev ok down*{g} ok"));
     }
+    media_cases(add);
     add("app_amber_home".into(), "@apps theme:amber".into());
     add("app_amber_settings".into(), "@apps theme:amber prev ok".into());
     add("app_accent_red_home".into(), "@apps accent:red".into());

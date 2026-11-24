@@ -202,6 +202,9 @@ pub trait SystemService {
 /// `PlaybackService::volume_step`.
 pub trait Services:
     System
+    + BrowseService
+    + TextService
+    + PlayerService
     + SettingsService
     + PowerService
     + ClockService
@@ -215,6 +218,9 @@ pub trait Services:
 
 impl<T> Services for T where
     T: System
+        + BrowseService
+        + TextService
+        + PlayerService
         + SettingsService
         + PowerService
         + ClockService
@@ -279,4 +285,255 @@ pub fn palette<S: SettingsService + ?Sized>(s: &S) -> Palette {
         _ => Accent::Blue,
     };
     theme.palette(accent)
+}
+
+// ---------------------------------------------------------------- Files
+
+pub use crate::browse::{DirId, EntryKind, FileRef};
+
+/// `Event::Data` tags the services answer with.
+pub mod data {
+    /// Rows of the current listing arrived, or it was re-sorted.
+    pub const BROWSE: u16 = 1;
+    /// Queue rows arrived.
+    pub const QUEUE: u16 = 2;
+    /// The text window moved.
+    pub const TEXT: u16 = 3;
+    /// Lyrics of the current track were loaded.
+    pub const LYRICS: u16 = 4;
+}
+
+/// Browser order (Files menu › Sort).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum SortBy {
+    #[default]
+    Name,
+    Date,
+    Size,
+}
+
+/// What a listing shows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct BrowseFilter {
+    pub sort: SortBy,
+    pub hidden: bool,
+    /// Music › Folders: directories, audio and playlists only.
+    pub audio_only: bool,
+}
+
+/// One row of a listing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Entry<'a> {
+    pub name: &'a str,
+    pub kind: EntryKind,
+    pub size: u64,
+    pub modified: DateTime,
+    pub file: FileRef,
+    /// For directories: the id to browse into.
+    pub child: DirId,
+}
+
+/// The current listing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Listing {
+    pub dir: DirId,
+    /// Entries (after filtering) known so far.
+    pub count: u32,
+    /// False while the rows are in on-disk order (directory index being
+    /// built, 04 §6.2); an `Event::Data(BROWSE)` follows when sorted.
+    pub sorted: bool,
+    /// False while `count` may still grow.
+    pub complete: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FileOp {
+    Delete(FileRef),
+}
+
+/// Directory browsing over a windowed, indexed listing (05 §7.2, 04 §6.2).
+/// Nothing here holds a whole directory: `entry` answers from a window of
+/// rows the service keeps, `want` moves the window.
+pub trait BrowseService {
+    /// Make `dir` the current listing (cheap if it already is).
+    fn browse(&mut self, dir: DirId, filter: BrowseFilter) -> Listing;
+    fn listing(&self) -> Listing;
+    /// Row `i` in display order, if loaded (else draw a placeholder).
+    fn entry(&self, i: u32) -> Option<Entry<'_>>;
+    /// The UI shows rows `[first, first + count)`; load around them and
+    /// answer with `Event::Data { tag: data::BROWSE, .. }`.
+    fn want(&mut self, first: u32, count: u32);
+    /// Where `f` is in the current listing (focus survives re-sorting).
+    fn position(&self, f: FileRef) -> Option<u32>;
+    /// Letter of row `i` ([`crate::browse::letter_of`]), if loaded.
+    fn letter(&self, i: u32) -> Option<char>;
+    /// Letter jump from row `from` (see `ListSource::seek_letter`),
+    /// answered from the index, not by scanning.
+    fn seek_letter(&self, from: u32, forward: bool) -> Option<(u32, char)>;
+    /// Name of a directory (`""` for the root).
+    fn dir_name(&self, dir: DirId) -> &str;
+    fn file_op(&mut self, op: FileOp) -> bool;
+}
+
+/// Plain-text files for the text viewer, read through a window.
+pub trait TextService {
+    /// Open `f` (closing the previous one); `None` if it cannot be read.
+    /// Returns the file size.
+    fn text_open(&mut self, f: FileRef) -> Option<u32>;
+    /// The loaded window: (file offset of `data[0]`, data).
+    fn text_window(&self) -> (u32, &[u8]);
+    /// Load the window around `offset`; answer with `Event::Data(TEXT)`.
+    fn want_text(&mut self, offset: u32);
+    /// Reading position remembered for `f` (05 §7.2), 0 if none.
+    fn text_position(&self, f: FileRef) -> u32;
+    fn set_text_position(&mut self, f: FileRef, offset: u32);
+}
+
+// ---------------------------------------------------------------- Player
+
+/// Playback state for Now Playing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct PlayerState {
+    /// `Idle` when nothing is queued.
+    pub source: Source,
+    pub position_ms: u32,
+    pub duration_ms: u32,
+    /// Position of the current track in the queue (play order).
+    pub queue_pos: u32,
+    pub queue_len: u32,
+    /// A–B repeat points.
+    pub a_ms: Option<u32>,
+    pub b_ms: Option<u32>,
+    /// Stream ring fill and decoder CPU load, percent (Details view).
+    pub buffer_pct: u8,
+    pub cpu_pct: u8,
+}
+
+/// The current track.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct TrackInfo<'a> {
+    pub title: &'a str,
+    pub artist: &'a str,
+    pub album: &'a str,
+    pub file: FileRef,
+    pub path: &'a str,
+    pub size: u64,
+    /// "MP3", "FLAC", …
+    pub codec: &'a str,
+    pub sample_rate: u32,
+    pub bits: u8,
+    pub channels: u8,
+    pub bitrate_kbps: u16,
+    /// ReplayGain applied, hundredths of a dB.
+    pub gain_cdb: Option<i32>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct QueueEntry<'a> {
+    pub title: &'a str,
+    pub artist: &'a str,
+    pub duration_ms: u32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct LyricLine<'a> {
+    /// `None` for unsynchronised lyrics.
+    pub time_ms: Option<u32>,
+    pub text: &'a str,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Bookmark<'a> {
+    pub title: &'a str,
+    pub position_ms: u32,
+}
+
+/// Peak meters and spectrum, 0..=255 (FFT engine, 04 §5).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Levels {
+    pub peak: [u8; 2],
+    pub hold: [u8; 2],
+    pub bands: [u8; 16],
+}
+
+/// Album art sizes the player provides, decoded and scaled (RGB565).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ArtSize {
+    /// 52 × 52 (Standard view).
+    Small,
+    /// 128 × 128 (Big art).
+    Full,
+}
+
+impl ArtSize {
+    #[must_use]
+    pub const fn px(self) -> i16 {
+        match self {
+            ArtSize::Small => 52,
+            ArtSize::Full => 128,
+        }
+    }
+}
+
+/// The tag library (04 §6.4).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LibraryState {
+    Missing,
+    Building { files: u32 },
+    Ready,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PlayerCmd {
+    PlayPause,
+    /// Stop and forget the resume point (OK held).
+    Stop,
+    Next,
+    Prev,
+    SeekTo(u32),
+    SeekBy(i32),
+    /// Play queue position `n`.
+    Jump(u32),
+    Remove(u32),
+    MoveUp(u32),
+    MoveDown(u32),
+    /// Queue a directory (Files order) and play, from `start` if given.
+    PlayDir {
+        dir: DirId,
+        start: Option<FileRef>,
+        shuffle: bool,
+    },
+    ShuffleAll,
+    PlayNext(FileRef),
+    AddToQueue(FileRef),
+    SetA,
+    SetB,
+    ClearAb,
+    Bookmark,
+    Favourite,
+    PlayBookmark(u32),
+    Resume,
+}
+
+/// The audio task's state as the UI sees it (04 §2, §6.5). Shuffle,
+/// repeat, speed and EQ are settings; the player follows them.
+pub trait PlayerService {
+    fn player(&self) -> PlayerState;
+    fn track(&self) -> Option<TrackInfo<'_>>;
+    /// Queue row `i` (play order), if loaded.
+    fn queue_entry(&self, i: u32) -> Option<QueueEntry<'_>>;
+    /// Answer with `Event::Data(QUEUE)`.
+    fn want_queue(&mut self, first: u32, count: u32);
+    fn art(&self, size: ArtSize) -> Option<&[u16]>;
+    /// Lines of the current track's lyrics (`.lrc` beside the file or
+    /// embedded); 0 if none.
+    fn lyrics_count(&self) -> u32;
+    fn lyric(&self, i: u32) -> Option<LyricLine<'_>>;
+    fn levels(&self) -> Levels;
+    /// Title of the resume point when stopped ("Resume ‹title›").
+    fn resume_title(&self) -> Option<&str>;
+    fn bookmark_count(&self) -> u32;
+    fn bookmark(&self, i: u32) -> Option<Bookmark<'_>>;
+    fn library(&self) -> LibraryState;
+    fn command(&mut self, c: PlayerCmd);
 }
