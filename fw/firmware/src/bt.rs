@@ -94,6 +94,9 @@ pub enum Req {
         index: u8,
     },
     Disconnect,
+    /// BT-3 investigation: send command `id` with up to 4 parameter bytes
+    /// (restricted ids are refused by the encoder).
+    Cmd { id: u8, params: [u8; 4], len: u8 },
     /// The Bluetooth app (UI-6a): stop the inquiry; connect to an address
     /// (a running inquiry is stopped first); cancel an attempt; forget a
     /// pairing.
@@ -249,6 +252,34 @@ pub fn test_command(rest: &[u8]) -> bool {
         b"tx dma" => Req::SetTx(true),
         b"tx cpu" => Req::SetTx(false),
         _ => {
+            // `bt cmd ID [P0 P1 P2 P3]` (hex): BT-3 investigation command.
+            if let Some(a) = rest.strip_prefix(b"cmd ") {
+                let mut v = [0u8; 5];
+                let mut n = 0usize;
+                for tok in a.split(|&c| c == b' ').filter(|t| !t.is_empty()) {
+                    if n == 5 || tok.len() > 2 {
+                        return false;
+                    }
+                    let mut x = 0u8;
+                    for &c in tok {
+                        let d = match c {
+                            b'0'..=b'9' => c - b'0',
+                            b'a'..=b'f' => c - b'a' + 10,
+                            b'A'..=b'F' => c - b'A' + 10,
+                            _ => return false,
+                        };
+                        x = x * 16 + d;
+                    }
+                    v[n] = x;
+                    n += 1;
+                }
+                if n == 0 {
+                    return false;
+                }
+                let mut params = [0u8; 4];
+                params[..n - 1].copy_from_slice(&v[1..n]);
+                return REQS.try_send((Req::Cmd { id: v[0], params, len: (n - 1) as u8 }, false)).is_ok();
+            }
             // `bt vol N`: the player volume (0–31) the task sends as 0x26.
             if let Some(n) = rest.strip_prefix(b"vol ") {
                 if n.is_empty() || n.len() > 2 || !n.iter().all(u8::is_ascii_digit) {
@@ -663,6 +694,14 @@ fn handle(r: Req, test: bool, d: &mut Driver, port: &mut HwPort, s: &mut Session
                 s.start_report(Report::Connect, now);
             }
         }
+        Req::Cmd { id, params, len } => {
+            let p = params;
+            refused = d
+                .request(now, port, &mut |o| s.on_output(o), |t, now, tx| {
+                    t.probe(id, &p[..usize::from(len.min(4))], now, tx)
+                })
+                .is_err();
+        }
         Req::Disconnect => {
             refused =
                 d.request(now, port, &mut |o| s.on_output(o), |t, now, tx| t.disconnect(now, tx)).is_err();
@@ -1001,6 +1040,18 @@ fn status_reply(d: &Driver, port: &HwPort, s: &Session, head: &[u8]) {
         }
         if let Some(a) = s.connected {
             w.s(t!(b"\nconnected ")).s(&a.to_text());
+        }
+        w.s(t!(b"\nrx:"));
+        for (id, len, head) in t.seen() {
+            w.s(t!(b" "));
+            hex(w, u32::from(id), 2);
+            w.s(t!(b"/"));
+            w.u(u64::from(len));
+            w.s(t!(b"["));
+            for b in head.iter().take(usize::from(len.min(6))) {
+                hex(w, u32::from(*b), 2);
+            }
+            w.s(t!(b"]"));
         }
         counter(w, t!(b"\npaired="), t.paired().len() as u32);
         for (i, x) in t.paired().iter().enumerate() {

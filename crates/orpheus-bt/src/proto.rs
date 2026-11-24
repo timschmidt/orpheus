@@ -86,6 +86,10 @@ pub enum Command<'a> {
     MetaField(u8, &'a str),
     /// 0x31 `FF`: commit metadata.
     MetaEnd,
+    /// BT-3 investigation only (06 §4.3.1 step 2): an arbitrary command id
+    /// with up to 4 parameter bytes, sent by the developer command
+    /// `bt cmd`. The frame encoder still refuses the restricted ids.
+    Probe { id: u8, params: [u8; 4], len: u8 },
 }
 
 impl Command<'_> {
@@ -106,6 +110,7 @@ impl Command<'_> {
             Command::Forget(_) | Command::ForgetAll => 0x2B,
             Command::StartupMagic => 0x30,
             Command::MetaBegin | Command::MetaLength(_) | Command::MetaField(..) | Command::MetaEnd => 0x31,
+            Command::Probe { id, .. } => *id,
         }
     }
 
@@ -168,6 +173,11 @@ impl Command<'_> {
             Command::MetaEnd => {
                 p[0] = 0xFF;
                 1
+            }
+            Command::Probe { params, len, .. } => {
+                let n = usize::from(len.min(4));
+                p[..n].copy_from_slice(&params[..n]);
+                n
             }
         };
         frame::encode(self.id(), p.get(..n).unwrap_or(&[]), out)
@@ -366,6 +376,12 @@ mod tests {
     fn command_bytes() {
         assert_eq!(bytes(Command::Identity(2)), [0xAA, 0, 2, 0x06, 0x02, 0xF6]);
         assert_eq!(bytes(Command::StartupMagic), [0xAA, 0, 3, 0x30, 1, 1, 0xCB]);
+        // BT-3 probes: arbitrary ids, but never a restricted one.
+        let mut out = [0u8; 64];
+        for id in [0x20u8, 0x21, 0x22, 0x23, 0x24, 0x28, 0x2C, 0x7F] {
+            assert!(Command::Probe { id, params: [0; 4], len: 0 }.encode(&mut out).is_err(), "{id:#x}");
+        }
+        assert!(Command::Probe { id: 0x32, params: [1, 2, 0, 0], len: 2 }.encode(&mut out).is_ok());
         assert_eq!(bytes(Command::ReadPaired), [0xAA, 0, 2, 0x2A, 0xFF, 0xD5]);
         assert_eq!(bytes(Command::StartInquiry), [0xAA, 0, 4, 0, 0x0F, 0x0C, 0x03, 0xDE]);
         assert_eq!(bytes(Command::StopInquiry), [0xAA, 0, 2, 1, 0, 0xFD]);

@@ -16,5 +16,7 @@ SUBSYSTEMS=="usb", ATTRS{idVendor}=="10d6", SUBSYSTEM=="scsi_generic", MODE="066
 # vendor 10D6, product B009 from its PnP record): raw reports readable for
 # the HIL tests (06 §4.3.3), and ignored by the desktop so test key reports
 # never type into the user's windows.
-SUBSYSTEM=="hidraw", KERNELS=="0005:10D6:B009.*", MODE="0660", TAG+="uaccess"
+# (uaccess is applied by 73-seat-late.rules, before this file runs, so the
+# mode is opened like the USB rules above; only this device's reports.)
+SUBSYSTEM=="hidraw", KERNELS=="0005:10D6:B009.*", MODE="0666"
 SUBSYSTEM=="input", KERNELS=="0005:10D6:B009.*", ENV{LIBINPUT_IGNORE_DEVICE}="1"

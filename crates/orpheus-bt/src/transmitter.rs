@@ -261,6 +261,10 @@ pub struct Transmitter {
     link: CommandLayer,
     decoder: Decoder,
     queue: Queue,
+    /// The last frames received (id, length, first 6 parameter bytes),
+    /// newest at `seen_at - 1`; for the BT-3 investigation.
+    seen: [(u8, u8, [u8; 6]); 8],
+    seen_at: u8,
     out: [Output; OUTPUTS],
     o_head: usize,
     o_len: usize,
@@ -305,6 +309,8 @@ impl Transmitter {
             link: CommandLayer::new(),
             decoder: Decoder::new(),
             queue: Queue::new(),
+            seen: [(0, 0, [0; 6]); 8],
+            seen_at: 0,
             out: [Output::Disconnected; OUTPUTS],
             o_head: 0,
             o_len: 0,
@@ -400,6 +406,23 @@ impl Transmitter {
             self.state = s;
             self.emit(Output::State(s));
         }
+    }
+
+    /// The last received frames, oldest first (BT-3 investigation).
+    pub fn seen(&self) -> impl Iterator<Item = (u8, u8, [u8; 6])> + '_ {
+        let start = usize::from(self.seen_at);
+        (0..8).map(move |i| self.seen[(start + i) % 8]).filter(|f| f.1 != 0 || f.0 != 0)
+    }
+
+    /// Send an investigation command (06 §4.3.1 step 2); restricted ids are
+    /// refused by the encoder.
+    pub fn probe(&mut self, id: u8, params: &[u8], now: u64, tx: &mut impl Transport) -> Result<(), Refused> {
+        let mut p = [0u8; 4];
+        let n = params.len().min(4);
+        p[..n].copy_from_slice(&params[..n]);
+        self.enqueue(&Command::Probe { id, params: p, len: n as u8 }, 0)?;
+        self.pump(now, tx);
+        Ok(())
     }
 
     fn enqueue(&mut self, c: &Command<'_>, retries: u8) -> Result<(), Refused> {
@@ -523,6 +546,12 @@ impl Transmitter {
     }
 
     fn on_frame(&mut self, f: &Frame, now: u64) {
+        let mut head = [0u8; 6];
+        let p = f.params();
+        let n = p.len().min(6);
+        head[..n].copy_from_slice(&p[..n]);
+        self.seen[usize::from(self.seen_at % 8)] = (f.id, p.len().min(255) as u8, head);
+        self.seen_at = self.seen_at.wrapping_add(1);
         if let Some(id) = self.link.on_frame(f) {
             self.on_ack(id, now);
             return;
