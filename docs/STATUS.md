@@ -42,69 +42,6 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
-### 2026-11-24 — AU-5 (gapless): PCM spill across the join (worker, no hardware)
-
-From the lead's runs of `28d4520` (three per split, consistent):
-
-| Join | head (frames) | open | loads | u |
-|---|---|---|---|---|
-| FLAC 1 | 1,189 | 71.3 ms | 233 | 3 |
-| FLAC 2 | 1,501 | 29.0 ms | 82 | 0 |
-| MP3 1 | 957–1,277 | 27.2 ms | 90 | 0 |
-| MP3 2 | 1,461 | 13.2 ms | 36 | 0 |
-
-The first FLAC join pages 233 lines (the first track's decode set, the UI
-of a new Now Playing and the preparation all compete for the 32-line
-cache). A 71-ms open does not fit the ≈ 27 ms queued (1,189 frames), and
-more clustering will not close that gap. So the change is structural
-(option A): more PCM ahead of the DAC at the join.
-
-* **Spill (`orpheus_audio::Spill`, host-tested).** When the current file
-  has been read to its end and the next one is prepared, `play_file` lends
-  the decoder arena beyond both decoders' plans to the PCM output
-  (`PcmOut::spill_into`; at most 8,192 frames ≈ 186 ms). FLAC→FLAC leaves
-  ≈ 24 KiB, ≈ 6,000 frames.
-  * At the next moment the DMA ring is full, the writer stops waiting and
-    appends the decoded frames to that buffer instead.
-  * The DAC's half-transfer interrupt (resident) moves one whole half from
-    the buffer into the ring half that just finished playing.
-  * So the old track's last ≈ 140 ms (FLAC: the rest of its stream ring)
-    to 186 ms are decoded ahead before its decoder ends. The DAC has ring
-    + spill queued, ≈ 200 ms instead of ≤ 70 ms, while the next decoder
-    opens.
-  * Nothing about the DMA changes (same ring, same reload mode, same
-    interrupts); only the interrupt's copy is new.
-* **Leaving the spill.** 0.5 s into the new track the writer lets the
-  spill drain to less than a half (the DAC keeps playing). It then writes
-  the rest into the ring half after the playing one and goes on as usual.
-  * A stop, seek or pause drops the spill.
-  * A non-gapless end plays it out (`finish`).
-  * A spill a short track did not start ends before that track's own
-    hand-over (its buffer was measured against that track's decoder).
-* **Spill-mode rules.**
-  * While spilling, nothing else uses the lent memory: requests and the
-    preparation wait (`PcmOut::spill_busy`), and the state is not saved
-    while the DAC runs anyway.
-  * `headroom` counts the spill.
-  * Halves the interrupt could not fill in time are counted as underruns
-    (and in the ledger).
-* **Host tests** (`spill.rs`): a writer, a two-half DMA ring at one frame
-  per tick and the interrupt. A stall longer than the ring but within ring
-  + spill is heard seamless (every frame once, in order; 0 lost), for
-  three sizes. A stall beyond both is counted and not hidden, and filling
-  recovers afterwards. Leaving with the DAC ahead resyncs.
-* RAM/stack (`xtask build`; base = main `28d4520` in this worktree):
-  `__stack_bottom` `0x1322b8` → `0x1323b0` (main stack −248 B: resident
-  +240 B for the interrupt's copy, spill state 28 B; the buffer itself is
-  borrowed arena). Resident 83,500 → 83,740 B (+240; ≈ 2.7 KB free in the
-  main checkout). Frames: audio task 4,992 B, `play_file` 2,260 → 2,308 B,
-  `on_dac_dma` 288 B code, no new panic sites (`panic symbols` 7 as
-  before). `check-resident` ok.
-* Not verified on the player. Expected: `join#N: head=` ≈ 6,000–8,000
-  frames at a FLAC/MP3 join (ring + spill), `u=0` even with the 71-ms
-  open. Watch `underruns` around 0.5 s into each new track (leaving the
-  spill) and around pauses/seeks.
-
 ### 2026-11-24 — AU-5 (gapless): join code clustered in `hot.toml`, per-codec open, read-ahead 256 KiB before the end (worker, no hardware)
 
 From the lead's runs of `d7a2cf4`: the preparation runs (15–16 ms, 53–58
@@ -1564,7 +1501,6 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 | 2026-11-24 | AU-5 bounded lookups (walk cache, stepwise library search, DMA headroom, underruns by cause), worker worktree build | resident 83,508 B (was 83,500), main stack −168 B (`__stack_bottom` 0x132128 → 0x1321d0); audio task poll 4,992 B, `play_file` 2,324 B (was 2,332) | `xtask build`, `llvm-nm`, `llvm-objdump` `sub sp` |
 | 2026-11-24 | AU-5 prepared next stream, player told after the join, underrun ledger, worker worktree build | resident 83,508 B (unchanged), main stack −208 B (`__stack_bottom` 0x1321d0 → 0x1322a0); audio task poll 4,992 B, `play_file` 2,244 B (was 2,324) | `xtask build`, `llvm-nm`, `llvm-objdump` `sub sp` |
 | 2026-11-24 | AU-5 preparation from the file's head, earlier read-ahead, per-join statistics, worker worktree build | resident 83,484 B (was 83,508), main stack −8 B (`__stack_bottom` 0x1322a0 → 0x1322a8); audio task poll 4,992 B, `play_file` 2,260 B (was 2,244) | `xtask build`, `llvm-nm`, `llvm-objdump` `sub sp` |
-| 2026-11-24 | AU-5 PCM spill across the join, worker worktree build | resident 83,740 B (+240), main stack −248 B (`__stack_bottom` 0x1322b8 → 0x1323b0); audio task 4,992 B, `play_file` 2,308 B (was 2,260); join cluster 13 lines | `xtask build`, `llvm-nm`, `llvm-objdump` `sub sp` |
 
 | 2026-11-24 | Host coverage baseline (host tests + 1 fuzz regression input), regions / lines / branches | 72.16 % (60,678 / 84,088) / 71.78 % / 65.09 % | `xtask cover --fuzz` (+ `--add` re-runs), nightly-2026-11-05 |
 | 2026-11-24 | Instrumented coverage build of the host workspace, no debug info | ≈ 0.4 GB build + ≈ 1.1 GB test images in `target/cover/…/tmp` | `du` |

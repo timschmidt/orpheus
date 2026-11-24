@@ -37,7 +37,6 @@ pub mod probe;
 pub mod rate;
 pub mod ring;
 pub mod source;
-pub mod spill;
 pub mod stream;
 
 pub use arena::{Arena, ArenaFull};
@@ -46,7 +45,6 @@ pub use ledger::Ledger;
 pub use probe::{Format, OggCodec, Probe, probe};
 pub use ring::StreamRing;
 pub use source::{ByteSource, SeekSource, SliceSource, SourceError, View, WindowSource};
-pub use spill::Spill;
 pub use stream::{
     CodecId, ContainerInfo, DecodeError, Gapless, OpenError, PcmBlock, SampleKind, Step, StreamInfo,
     Unsupported,
