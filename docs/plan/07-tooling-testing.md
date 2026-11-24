@@ -47,6 +47,11 @@ talk to the player.
 | `xtask check-resident` | Static proof that nothing reachable from an interrupt or fault handler lives in a paged section (§4.3) |
 | `xtask sim [--script file] [--shot dir]` | Run the desktop simulator, optionally scripted and headless |
 | `xtask test [host\|golden\|codecs\|fuzz-smoke\|all]` | Host test suites (§3) |
+| `xtask test asan [--fuzz-only] [--lean]` | Host tests and every fuzz target's corpus under AddressSanitizer + LeakSanitizer (§3.5) |
+| `xtask test miri [--crate NAME]` | Miri over the crate list in `xtask/src/sanitize.rs` (§3.5) |
+| `xtask cover [--crate NAME] [--fuzz] [--html] [--clean] [--report-only] [--add]` | LLVM source-based coverage (line, region, branch) of `crates/`, `sim/`, `xtask/`; `--fuzz` adds the fuzz-corpus replays; reports in `target/orpheus/coverage/` (§3.6) |
+| `xtask metrics [--elf PATH]` | Append this commit's coverage and static firmware rows to `metrics/*.csv` (§4.4) |
+| `xtask gate [--no-dev] [--coverage] [--m11]` | The milestone gate (§6) |
 | `xtask bringup <name>` | Build one bring-up image (small RAM-only binary under `bringup/`) |
 | `xtask dev state` *(dev)* | Which mode the player is in: ADFU ROM, ymon, Orpheus (any personality), Rockbox, stock; battery voltage if readable |
 | `xtask dev adfu` *(dev)* | Bring the player to ADFU + ymon from whatever is running (vendor SCSI reboot command for Rockbox/stock, EP0 request for Orpheus, nothing if already there) |
@@ -165,6 +170,49 @@ pruned only by `cargo fuzz cmin`, never by deleting crash inputs). In M11
   oracle on undefined behaviour.
 * Zero findings is the requirement; each finding becomes a regression test.
 
+How it is done (VER-5, `xtask/src/sanitize.rs`):
+
+* Toolchain: `$ORPHEUS_NIGHTLY`, default `nightly-2026-11-05`, with the
+  `rust-src` and `miri` components (`rustup component add miri rust-src
+  --toolchain nightly-2026-11-05`). `cargo-fuzz` for the fuzz targets.
+* `xtask test asan`: `cargo +nightly test --workspace --lib --bins --tests
+  -Zbuild-std --target x86_64-unknown-linux-gnu` with
+  `RUSTFLAGS=-Zsanitizer=address` in `target/asan/` (`-Zbuild-std` because
+  rustc refuses to link sanitized code against the uninstrumented std).
+  `ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1:…`; LSan is
+  part of ASan on x86_64 Linux. Doctests are not run. Then each cargo-fuzz
+  target: `cargo fuzz run <t> <scratch> <corpus dirs…> -- -runs=0` (ASan is
+  cargo-fuzz's default; every corpus input once, no fuzzing; corpus
+  directories as in §3.6). Logs and `findings.txt` (each report with its
+  test binary, last test started, or the fuzz artifact) in
+  `target/orpheus/asan/`. `--fuzz-only` skips the workspace tests.
+  `--lean` runs one package at a time without debug info and deletes each
+  package's test binaries and scratch images after its run (peak ≈ 1 GB
+  instead of several; for the nearly full disk). The ASan build uses
+  `panic = "unwind"` (`CARGO_PROFILE_DEV_PANIC`): with the profile's
+  `abort`, `-Zbuild-std` produces a std the test harness cannot link.
+  UBSan is not used: Rust code has no C UB to check and the workspace has no
+  C sources (libFuzzer's runtime is the only C++).
+* `xtask test miri [--crate NAME]`: `cargo miri test -p <crate> --lib` for the
+  crates listed in `MIRI` in `xtask/src/sanitize.rs`, each in a time box
+  (300–600 s; on expiry the whole process group is killed), with isolation
+  on; the table names every skipped test and why (so far: file access
+  under isolation — `orpheus-host` `png_roundtrip`, `orpheus-meta`
+  `corpus_files`; over 5–10 min under Miri — `orpheus-otp`
+  `stepping_equals_one_shot`, `uri::tests::fuzz_smoke` and the nine
+  `vault::tests` (each unlock runs the KDF), `orpheus-meta`
+  `garbage_never_panics_or_spins`,
+  `orpheus-settings` `power_cut_at_every_step`, `orpheus-usb`
+  `iso_reads_across_runs_with_padding`; ASan runs all of them). A full run
+  takes ≈ 35 min (`orpheus-bt` and `orpheus-ogg` ≈ 8 min each). Logs and `summary.txt` in `target/orpheus/miri/`. The list: the
+  host-compilable crates with `unsafe` (`atj2157-pac`; `orpheus-host`, whose
+  only `unsafe` is the SG_IO ioctl Miri cannot execute, so only its other
+  unit tests run) and a sample of pure crates as the second oracle
+  (`orpheus-pager`, `-proto`, `-otp`, `-settings`, `-input`, `-power`,
+  `-sdcard`, `-usb`, `-bt`, `-ogg`, `-meta`, `-audio`). Integration tests
+  (files on disk) and the codec/FS/image crates (minutes per test under Miri)
+  are left to ASan; VER-5 grows the list as tests get faster.
+
 ### 3.6 Coverage (M11, VER-1/2/6)
 
 * `xtask cover` uses LLVM source-based coverage (`-Cinstrument-coverage`,
@@ -181,6 +229,60 @@ pruned only by `cargo fuzz cmin`, never by deleting crash inputs). In M11
 * The firmware's logic is made host-testable behind small HAL seams (traits or
   `cfg(test)` mocks) so that it is covered on the host first; the device runs
   cover what only the hardware can reach (drivers, interrupt paths, pager).
+
+How it is done (VER-1, `xtask/src/cover.rs`):
+
+* `xtask cover` builds the host workspace's lib, bin and integration tests
+  (doctests are not run) with the nightly toolchain (§3.5; branch coverage,
+  `-Zcoverage-options=branch`, is nightly-only) and `-Cinstrument-coverage`
+  for `x86_64-unknown-linux-gnu` in `target/cover/` (no debug info), runs
+  them, and uses the same toolchain's `llvm-profdata`/`llvm-cov`
+  (`rustup component add llvm-tools --toolchain nightly-2026-11-05`).
+  `--crate NAME` limits the run and the report to one package.
+* `--fuzz`: every cargo-fuzz project (`crates/**/fuzz/`) is built with the
+  same flags plus `--cfg fuzzing` (plain `cargo build`; libFuzzer only runs
+  the given files) in `target/cover/fuzz/`, and each target runs every file
+  of `tests/fuzz-corpus/<t>/`, `<fuzz dir>/corpus/<t>/`,
+  `tests/regress/<t>/` and `<fuzz dir>/regress/<t>/`. A target without
+  corpus files is not run (libFuzzer would start fuzzing).
+* What counts: `*.rs` under `crates/`, `sim/`, `xtask/` except `tests/`,
+  `benches/`, `examples/` directories and `tests.rs` modules (the tests are
+  the instrument, not the subject; inline `#[cfg(test)] mod tests { … }`
+  blocks still count, and are covered by running) and, without `--fuzz`,
+  the fuzz projects. Files in `fw/` are device code (§5.8). Files with a
+  function body that no instrumented binary contains are listed as
+  **without data** (`no-data.txt`) and fail the M11 gate like uncovered
+  code (files of declarations, tables and trait signatures have no regions
+  and are not listed). Code behind a cargo feature the tests do not enable
+  (e.g. `orpheus-sim`'s `window`) shows up there.
+* Not yet in the run: the codec conformance binary over `tests/corpus/`
+  (`xtask test codecs`) and the RFC 8251 Opus vectors — the codec crates'
+  numbers are unit tests only until `xtask cover` runs them too (VER-2).
+* Numbers: lines are llvm-cov's per-file line summary; regions and branches
+  are computed by `xtask` as the **union over all instantiations and
+  binaries** of each source span (a region is covered if any test or fuzz
+  binary executed it; a branch counts its two outcomes). Approved exclusions
+  are subtracted from regions and branches (`regions_excluded`); their lines
+  still count.
+* Outputs in `target/orpheus/coverage/`: `summary.csv` (per crate, worst
+  first, then `TOTAL`; columns `commit, source, crate, lines_total,
+  lines_covered, line_pct, regions_total, regions_covered, regions_excluded,
+  region_pct, branches_total, branches_covered, branch_pct,
+  files_without_data`), `files.csv`, `functions.csv` (every function with an
+  uncovered region), `no-data.txt`, `lcov.info`, `html/` (`--html`), and
+  `history/<commit>/` (summary and file CSVs of each run). `--clean` deletes
+  `target/cover/` afterwards (1.5 GB for the workspace, mostly test images
+  in its `tmp/`). `--report-only` recomputes the reports from the last
+  run's `merged.profdata` and `objects.txt` (after editing exclusions).
+  `--add` merges this run (typically `--crate NAME`) into the last run's
+  profile and binaries and reports everything — for re-running one failed
+  suite, or covering one crate at a time on a small disk.
+* `coverage-exclusions.toml`: `[[exclude]]` entries with `path` (from the
+  repository root), optional `function` (substring of the demangled
+  function path; without it the whole file), `reason` (the proof of
+  unreachability) and `approved-by`. New entries carry `approved-by =
+  "pending owner"` and are listed but **not applied** until the owner
+  replaces it (D-9).
 
 ### 3.7 Adversarial inputs (M11, VER-3)
 
@@ -268,6 +370,33 @@ failing on a regression that is not explained in the same commit:
 * host: per-crate benchmark timings (`cargo bench`), simulator frame time.
 
 The verification report (VER-11) plots the history.
+
+`cargo xtask metrics [--elf PATH]` (host side, VER-1/VER-10) appends the
+current commit's rows; rows already present for the same commit (and, for
+coverage, the same source) are replaced, so re-running is harmless. Commit
+ids are `git rev-parse --short=12`, with `-dirty` when tracked files differed
+from HEAD; `date` is HEAD's committer date. Files (committed, one header
+line, comma-separated, text fields quoted when they may contain commas):
+
+* `metrics/coverage.csv` — from the last `xtask cover`
+  (`target/orpheus/coverage/summary.csv`), one row per crate plus `TOTAL`:
+  `commit, date, source, crate, lines_total, lines_covered, regions_total,
+  regions_covered, regions_excluded, branches_total, branches_covered,
+  files_without_data`. `source` is `host` or `host+fuzz` (later
+  `+device`, VER-6). `commit` is the commit the coverage run measured.
+* `metrics/static.csv` — from the last `xtask build`
+  (`target/orpheus/firmware.elf` and `layout.json`, or `--elf`), long
+  format: `commit, date, build_id, metric, key, value` with metrics
+  `resident_bytes`, `bss_bytes`, `stack_bytes` (the `.stack` section),
+  `panic_sites`, `region_bytes` (key: region), `code_pages`, `rodata_pages`,
+  `slot_bytes` (key: layout) and 40 × `stack_frame` (key: demangled
+  function, value: bytes its prologue reserves — `push`/`push.w`/`stmdb
+  sp!` 4 B per register, `vpush` 4 B per `s` and 8 B per `d` register, plus
+  `sub sp, #imm` in the first 16 instructions, from `llvm-objdump -d`).
+  `build_id` is the layout's, `-` without a layout.
+
+Dynamic metrics (HIL, fuzz sessions, benchmarks) get their own files under
+`metrics/` with their packages (VER-10 device side).
 
 ## 5. On-device testing (hardware in the loop)
 
@@ -415,6 +544,15 @@ xtask size --check
 xtask check-resident
 xtask dev hil smoke            # plus the suites named by the work package
 ```
+
+Coverage and sanitizer steps (VER-1, VER-5): `xtask gate --coverage` adds
+`xtask cover` as a **report-only** step — it prints the numbers and fails only
+if the coverage run itself fails, never for being below 100 %; that is the
+behaviour until M11. `xtask gate --m11` (the M11 gate) adds `xtask cover
+--fuzz` and **fails below 100 % of non-excluded regions** or when a project
+source file has no coverage data, and adds `xtask test asan` and `xtask
+test miri` (any finding fails). Without these flags the gate is unchanged.
+After a gate run on a commit, `xtask metrics` records the numbers (§4.4).
 
 Then update `docs/STATUS.md` (what was done, measured numbers, new unknowns,
 user checks requested) and commit. A gate that cannot run (for example the

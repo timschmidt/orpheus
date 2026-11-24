@@ -1,4 +1,5 @@
-//! `xtask cover [--crate NAME] [--fuzz] [--html] [--clean] [--report-only]` (07 §3.6, VER-1):
+//! `xtask cover [--crate NAME] [--fuzz] [--html] [--clean] [--report-only] [--add]`
+//! (07 §3.6, VER-1):
 //! LLVM source-based coverage of the host workspace.
 //!
 //! * The host workspace's lib, bin and integration tests (no doctests) are

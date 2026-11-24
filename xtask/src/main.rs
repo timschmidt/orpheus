@@ -45,7 +45,7 @@ usage: cargo xtask <command> [options]
   test asan [--fuzz-only] [--lean] host tests and every fuzz target's corpus under
                                    AddressSanitizer + LeakSanitizer (nightly)
   test miri [--crate NAME]         Miri on the crates listed in xtask/src/sanitize.rs
-  cover [--crate NAME] [--fuzz] [--html] [--clean] [--report-only]
+  cover [--crate NAME] [--fuzz] [--html] [--clean] [--report-only] [--add]
                                    LLVM source-based coverage (line, region, branch)
                                    of crates/, sim/, xtask/: target/orpheus/coverage/
   metrics [--elf PATH]             append this commit's coverage and firmware
