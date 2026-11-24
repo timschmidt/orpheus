@@ -41,6 +41,7 @@ cargo xtask dev <subcommand>
   install-stage2                 replace stage 2 at 0x7DF400 (keeps the vendor record copy)
   keys 'ok wait:300 hold:menu'  inject keys into running yotonrs
   info                          developer-channel INFO of running yotonrs
+  cmd 'play /x.mp3' [--wait S]  firmware test command, then print the reply
   results                       read result block, fault record and log ring
   peek ADDR [N]                 read words
   poke ADDR VALUE               write one word (ADFU/ymon)
@@ -91,6 +92,16 @@ pub fn cmd(args: &mut Args) -> Result<String> {
         "keys" => {
             let script = args.positional("key script")?;
             keys(&script)
+        }
+        "cmd" => {
+            let text = args.positional("command text")?;
+            let wait = args.value("wait").map(|s| num(&s)).transpose()?.unwrap_or(2);
+            let d = yoton_host::devchan::DevChannel::open(Duration::from_secs(3))?;
+            d.control_out(yoton_proto::devchan::REQ_TEST, 0, 0, text.as_bytes())?;
+            std::thread::sleep(Duration::from_secs(u64::from(wait)));
+            let r = d.control_in(yoton_proto::devchan::REQ_TEST, 0, 0, 1024)?;
+            println!("{}", String::from_utf8_lossy(&r));
+            Ok("reply printed".into())
         }
         "info" => {
             let d = yoton_host::devchan::DevChannel::open(Duration::from_secs(3))?;

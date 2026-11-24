@@ -17,6 +17,9 @@ yoton-power = { path = "../../crates/yoton-power" }
 yoton-settings = { path = "../../crates/yoton-settings" }
 yoton-usb = { path = "../../crates/yoton-usb" }
 yoton-pager = { path = "../../crates/yoton-pager" }
+yoton-audio = { path = "../../crates/yoton-audio" }
+yoton-codecs = { path = "../../crates/codecs" }
+yoton-fs = { path = "../../crates/yoton-fs" }
 embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }
 embassy-time = "0.5"
 embassy-sync = "0.8"

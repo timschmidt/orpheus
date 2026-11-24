@@ -13,7 +13,7 @@
 use embassy_usb::Handler;
 use embassy_usb::control::{InResponse, OutResponse, Recipient, Request, RequestType};
 use yoton_proto::devchan::{
-    self as dc, Info, REQ_FRAME, REQ_INFO, REQ_KEYS, REQ_LOG, REQ_PEEK, REQ_REBOOT, REQ_STATS,
+    self as dc, Info, REQ_FRAME, REQ_INFO, REQ_KEYS, REQ_LOG, REQ_PEEK, REQ_REBOOT, REQ_STATS, REQ_TEST,
 };
 
 /// What the firmware provides to the channel.
@@ -34,6 +34,14 @@ pub trait Target {
     fn request_reboot(&mut self, target: u16);
     /// Whether development-only requests (PEEK) are allowed.
     fn development(&self) -> bool;
+    /// TEST OUT: a command for the firmware's test hooks (text).
+    fn test_command(&mut self, _data: &[u8]) -> bool {
+        false
+    }
+    /// TEST IN: the reply of the last command; bytes written.
+    fn test_reply(&mut self, _buf: &mut [u8]) -> usize {
+        0
+    }
 }
 
 pub struct DevChannel<T: Target> {
@@ -65,6 +73,13 @@ impl<T: Target> Handler for DevChannel<T> {
             REQ_REBOOT => {
                 self.target.request_reboot(req.value);
                 OutResponse::Accepted
+            }
+            REQ_TEST => {
+                if self.target.test_command(data) {
+                    OutResponse::Accepted
+                } else {
+                    OutResponse::Rejected
+                }
             }
             REQ_KEYS => {
                 let mut ev = [(0u8, false); 16];
@@ -108,6 +123,10 @@ impl<T: Target> Handler for DevChannel<T> {
                     buf[4 * i..4 * i + 4].copy_from_slice(&w.to_le_bytes());
                 }
                 InResponse::Accepted(&buf[..4 * n])
+            }
+            REQ_TEST => {
+                let n = self.target.test_reply(&mut buf[..want]);
+                InResponse::Accepted(&buf[..n])
             }
             REQ_PEEK if self.target.development() => {
                 if self.target.read_mem(addr32(&req), &mut buf[..want]) {

@@ -10,6 +10,7 @@ publish = false
 atj2157-hal = { path = "../atj2157-hal" }
 yoton-proto.workspace = true
 embassy-time = "0.5"
+yoton-fs = { path = "../../crates/yoton-fs" }
 yoton-settings = { path = "../../crates/yoton-settings" }
 embassy-futures = "0.1"
 yoton-power = { path = "../../crates/yoton-power" }

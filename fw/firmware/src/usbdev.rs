@@ -66,6 +66,26 @@ impl Target for Fw {
     fn development(&self) -> bool {
         true
     }
+    fn test_command(&mut self, data: &[u8]) -> bool {
+        if data == b"stop" {
+            crate::audio::request_stop();
+            return true;
+        }
+        let mut c = crate::audio::Cmd {
+            len: data.len().min(crate::audio::CMD_LEN),
+            text: [0; crate::audio::CMD_LEN],
+        };
+        c.text[..c.len].copy_from_slice(&data[..c.len]);
+        crate::audio::CMDS.try_send(c).is_ok()
+    }
+    fn test_reply(&mut self, buf: &mut [u8]) -> usize {
+        critical_section::with(|cs| {
+            let r = crate::audio::REPLY.borrow(cs).borrow();
+            let n = r.1.min(buf.len());
+            buf[..n].copy_from_slice(&r.0[..n]);
+            n
+        })
+    }
 }
 
 pub async fn supervisor() {

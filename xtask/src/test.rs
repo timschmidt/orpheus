@@ -44,7 +44,9 @@ pub fn cmd(args: &mut Args) -> Result<String> {
             let f = fuzz_smoke(secs)?;
             Ok(format!("host, golden and pagelink tests passed; {c}; {f}"))
         }
-        other => bail!("unknown test suite `{other}` (host, golden, pagelink, codecs, fuzz-smoke, codec-size, all)"),
+        other => bail!(
+            "unknown test suite `{other}` (host, golden, pagelink, codecs, fuzz-smoke, codec-size, all)"
+        ),
     }
 }
 

@@ -207,6 +207,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "bytemuck"
+version = "1.25.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95832e849adfb21180ccb6826a99da14e5d266ae5c2e668e1602cf234f153797"
+dependencies = [
+ "bytemuck_derive",
+]
+
+[[package]]
+name = "bytemuck_derive"
+version = "1.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a1f896587b6f2c069c73d2f0913e2d590c3990285cd2f0b6aa02b786b4c679c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.10",
+]
+
+[[package]]
 name = "byteorder"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -261,7 +281,7 @@ checksum = "6d1922be58519ad40368fc4ca595a2cefa51a7abf947be3b0c90586dc7dbd0e2"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -291,7 +311,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "strsim",
- "syn",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -302,7 +322,7 @@ checksum = "fc34b93ccb385b40dc71c6fceac4b2ad23662c7eeb248cf10d529b7e055b6ead"
 dependencies = [
  "darling_core",
  "quote",
- "syn",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -337,7 +357,7 @@ dependencies = [
  "darling",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -528,7 +548,10 @@ dependencies = [
  "embassy-usb",
  "static_cell",
  "yoton-apps",
+ "yoton-audio",
  "yoton-bsp",
+ "yoton-codecs",
+ "yoton-fs",
  "yoton-input",
  "yoton-pager",
  "yoton-power",
@@ -818,6 +841,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "syn"
+version = "3.0.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ae9ccbea3a7b0b09443036490c8f34a8b1b760fd345e5c0dae0aac718faea79"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "unicode-ident",
+]
+
+[[package]]
 name = "thread_local"
 version = "1.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -845,7 +879,7 @@ checksum = "7490cfa5ec963746568740651ac6781f701c9c5ea257c58e057f3ba8cf69e8da"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -941,7 +975,7 @@ checksum = "1bc1bc82e5a1b1a4d7255861b07881a0407b552f50a4d8543c0c7276fa96f6e8"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -952,7 +986,7 @@ checksum = "b3f7005c3b757b9b82c2f40c0e71094ff1080adddaf3e8b6ce99b545d3c48796"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -1003,17 +1037,61 @@ dependencies = [
 ]
 
 [[package]]
+name = "yoton-audio"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
 name = "yoton-bsp"
 version = "0.1.0"
 dependencies = [
  "atj2157-hal",
  "embassy-futures",
  "embassy-time",
+ "yoton-fs",
  "yoton-input",
  "yoton-power",
  "yoton-proto",
  "yoton-settings",
 ]
+
+[[package]]
+name = "yoton-codec-flac"
+version = "0.1.0"
+dependencies = [
+ "yoton-audio",
+]
+
+[[package]]
+name = "yoton-codec-mp3"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "yoton-audio",
+]
+
+[[package]]
+name = "yoton-codec-wav"
+version = "0.1.0"
+dependencies = [
+ "yoton-audio",
+]
+
+[[package]]
+name = "yoton-codecs"
+version = "0.1.0"
+dependencies = [
+ "yoton-audio",
+ "yoton-codec-flac",
+ "yoton-codec-mp3",
+ "yoton-codec-wav",
+]
+
+[[package]]
+name = "yoton-fs"
+version = "0.1.0"
 
 [[package]]
 name = "yoton-input"

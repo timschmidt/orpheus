@@ -14,6 +14,7 @@
 #![no_std]
 #![no_main]
 
+mod audio;
 mod services;
 mod state;
 mod ui;
@@ -118,6 +119,8 @@ extern "C" fn main() -> ! {
     wdt::feed_from_idle(true);
     clock::set_level(Level::Base);
     log::line(if paged { b"fw: start (paged)" } else { b"fw: start (no pages)" });
+    let rt = executor::start_rt();
+    rt.spawn(audio::audio().unwrap());
     MAIN.init(executor::MainExecutor::new()).run(|s: Spawner| {
         s.spawn(input().unwrap());
         s.spawn(power().unwrap());
