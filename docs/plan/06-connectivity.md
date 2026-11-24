@@ -240,11 +240,14 @@ documented byte for byte in docs/hw/bluetooth.md §3–4).
 
 Crate `yoton-bt` (protocol, host-testable) + `yoton-bsp::bt` (UART, pins).
 
-* **Link**: UART1 with RX by circular DMA (channel 8, mode `0x00200082`) into
-  a 128-byte pattern-filled ring polled every 10 ms (no UART interrupt is
-  known; a DMA half/complete interrupt can replace the poll once U-DMA-2 is
-  settled), TX by DMA (channel 9, mode `0x00228200`). GPIO31 raised while the
-  ring is being drained, as the vendor does.
+* **Link**: UART1 with RX by DMA (channel 8) into a ring polled every
+  10 ms, TX by DMA (channel 9, mode `0x00228200`). As built (BT-2 device):
+  single-byte transfers with reload (`0x00260082`) into a 256-byte ring,
+  the write position read from the channel's remain counter (U-BT-4), so
+  the ring is never stopped and GPIO31 stays low; a CPU-polled FIFO path
+  (1 ms) is the fallback. The vendor instead ran burst-8 into a 128-byte
+  pattern-filled buffer, stopped it to drain it, and raised GPIO31
+  meanwhile.
 * **Codec**: frame parser/encoder with checksum, resynchronisation on `AA`,
   length limits; fuzzed.
 * **Command layer**: `async fn command(id, params) -> Result<Ack>`: one frame

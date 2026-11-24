@@ -12,6 +12,7 @@
 //! | `health` | main | marks the start healthy after 30 s |
 //! | `watchdog` | main | feeds the watchdog when RT, main and UI progress |
 //! | `rt_beat` | RT | RT executor heartbeat for `watchdog` |
+//! | `bt` | main | Bluetooth transmitter module (off until asked) |
 
 #![no_std]
 #![no_main]
@@ -19,6 +20,7 @@
 #![allow(clippy::deref_addrof)]
 
 mod audio;
+mod bt;
 mod media;
 mod services;
 mod state;
@@ -265,6 +267,7 @@ extern "C" fn main() -> ! {
         s.spawn(usbdev::usb().unwrap());
         s.spawn(health().unwrap());
         s.spawn(watchdog().unwrap());
+        s.spawn(bt::bt().unwrap());
     })
 }
 

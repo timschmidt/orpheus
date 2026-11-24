@@ -89,6 +89,14 @@ impl CommandLayer {
         self.pending
     }
 
+    /// The last frame handed to the transport (sent or resent). It stays
+    /// put until the next send, so a UART driver can transmit straight
+    /// from it instead of keeping its own copy.
+    #[must_use]
+    pub fn last_frame(&self) -> &[u8] {
+        self.frame.get(..self.len).unwrap_or(&[])
+    }
+
     /// The command awaiting its acknowledge.
     #[must_use]
     pub fn pending(&self) -> Option<u8> {
@@ -121,14 +129,15 @@ impl CommandLayer {
         if self.pending || frame.len() > MAX_TX_FRAME {
             return Err(Busy);
         }
-        self.frame[..frame.len()].copy_from_slice(frame);
+        let Some(f) = self.frame.get_mut(..frame.len()) else { return Err(Busy) };
+        f.copy_from_slice(frame);
         self.len = frame.len();
         self.id = id;
         self.pending = true;
         self.sent_at = now_ms;
         self.retries_left = retries;
         self.stats.sent += 1;
-        tx.send(&self.frame[..self.len]);
+        tx.send(self.last_frame());
         Ok(())
     }
 
@@ -160,7 +169,7 @@ impl CommandLayer {
             self.retries_left -= 1;
             self.sent_at = now_ms;
             self.stats.resent += 1;
-            tx.send(&self.frame[..self.len]);
+            tx.send(self.last_frame());
             return Poll::Resent { id: self.id };
         }
         self.pending = false;

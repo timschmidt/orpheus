@@ -3,11 +3,13 @@
 //! CLAUDE.md rule 6: commands 0x20–0x24, 0x28, 0x2C and 0x7F are sent only
 //! by the work package that owns them, and the module upgrade never without
 //! a known-good image and the user's explicit go-ahead (recovery from a
-//! failed module upgrade is unknown; decision D-6). Nothing else in this
-//! crate uses this module: the transmitter state machine skips the
-//! vendor's settings read (0x2C) at start-up and powers the module off by
-//! its enable line without the shutdown command (0x24). A test checks that
-//! no automatic path emits these IDs.
+//! failed module upgrade is unknown; decision D-6). The only user in this
+//! crate is [`crate::Transmitter::shutdown`], which sends the shutdown
+//! command (0x24) on the player's power-off path (owner decision
+//! 2026-11-24, WP BT-2). The transmitter state machine skips the vendor's
+//! settings read (0x2C) at start-up, and switching Bluetooth off drops the
+//! enable line without 0x24. Tests check that no other path emits these
+//! IDs.
 
 use crate::frame::{self, EncodeError};
 use crate::link::{Busy, CommandLayer, Transport};
@@ -61,17 +63,22 @@ pub fn encode_restricted(cmd: &RestrictedCommand<'_>, out: &mut [u8]) -> Result<
         }
         RestrictedCommand::UpgradeData { seq, data } => {
             let n = 7 + data.len();
-            if out.len() < n {
+            let (Some(o), Ok(len)) = (out.get_mut(..n), u16::try_from(data.len() + 3)) else {
                 return Err(EncodeError::TooLong);
-            }
+            };
             // Build in place: header, seq, data, checksum.
-            let len = (data.len() + 3) as u16;
-            out[0] = frame::SYNC;
-            out[1..3].copy_from_slice(&len.to_be_bytes());
-            out[3] = id;
-            out[4..6].copy_from_slice(&seq.to_be_bytes());
-            out[6..6 + data.len()].copy_from_slice(data);
-            out[n - 1] = frame::checksum(&out[1..n - 1]);
+            let [l, s] = [len.to_be_bytes(), seq.to_be_bytes()];
+            for (i, b) in
+                [frame::SYNC, l[0], l[1], id, s[0], s[1]].into_iter().chain(data.iter().copied()).enumerate()
+            {
+                if let Some(d) = o.get_mut(i) {
+                    *d = b;
+                }
+            }
+            let sum = frame::checksum(o.get(1..n - 1).unwrap_or(&[]));
+            if let Some(c) = o.last_mut() {
+                *c = sum;
+            }
             Ok(n)
         }
         RestrictedCommand::ChangeBaud { index } => frame::encode_unchecked(id, &[index], out),

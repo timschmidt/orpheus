@@ -551,6 +551,7 @@ dependencies = [
  "yoton-apps",
  "yoton-audio",
  "yoton-bsp",
+ "yoton-bt",
  "yoton-codecs",
  "yoton-dsp",
  "yoton-fs",
@@ -1068,6 +1069,10 @@ dependencies = [
  "yoton-proto",
  "yoton-settings",
 ]
+
+[[package]]
+name = "yoton-bt"
+version = "0.1.0"
 
 [[package]]
 name = "yoton-codec-flac"

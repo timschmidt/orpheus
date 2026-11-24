@@ -22,6 +22,11 @@ pub const I2C_SCL: u8 = 24;
 pub const I2C_SDA: u8 = 25;
 /// Bluetooth host-busy output [code].
 pub const BT_HOST_BUSY: u8 = 31;
+/// UART1 to the Bluetooth module, function 10: GPIO38 = UART1_TX,
+/// GPIO39 = UART1_RX [DS] pin list; both pads set so by the vendor [code]
+/// (U-BT-1, board side: `bt::listen`).
+pub const BT_UART_TX: u8 = 38;
+pub const BT_UART_RX: u8 = 39;
 
 /// SD0 pads: (pin, drive) for CLK, CMD, D0, D1, D2, D3; function word
 /// `0x804` [HW].
