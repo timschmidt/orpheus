@@ -85,7 +85,12 @@ pub fn to_ymon(log: &mut dyn FnMut(&str), timeout: Duration) -> Result<Adfu> {
                 sg::reboot_to_adfu(node)?;
                 asked = true;
             }
-            State::Yotonrs => bail!("yotonrs developer-channel reboot not implemented yet (WP-USB-2)"),
+            State::Yotonrs if !asked => {
+                log("asking yotonrs to reboot into ADFU (developer channel)");
+                let d = crate::devchan::DevChannel::open(Duration::from_secs(2))?;
+                d.reboot(yoton_proto::devchan::REBOOT_ADFU);
+                asked = true;
+            }
             State::AdfuStuck => {
                 bail!("ADFU device present but not answering; wait for the watchdog or ask the user")
             }

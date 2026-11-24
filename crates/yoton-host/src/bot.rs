@@ -60,7 +60,16 @@ pub struct Reply {
 
 impl Bot {
     pub fn open(info: DeviceInfo) -> Result<Self> {
-        let dev = info.open().wait().context("open USB device")?;
+        let t0 = Instant::now();
+        let dev = loop {
+            match info.open().wait() {
+                Ok(d) => break d,
+                Err(_) if t0.elapsed() < Duration::from_secs(3) => {
+                    std::thread::sleep(Duration::from_millis(100))
+                }
+                Err(e) => return Err(e).context("open USB device"),
+            }
+        };
         let iface = dev.detach_and_claim_interface(0).wait().context("claim interface 0")?;
         let desc = iface.descriptor().ok_or_else(|| anyhow!("no interface descriptor"))?;
         let mut ep_in_addr = None;

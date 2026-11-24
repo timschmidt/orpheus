@@ -24,7 +24,18 @@ impl DevChannel {
     pub fn open(wait: Duration) -> Result<Self> {
         let info = bot::wait_for(DEV_VID, DEV_PID, wait)
             .ok_or_else(|| anyhow!("no yotonrs device (1209:0001) on the bus"))?;
-        let dev = info.open().wait().context("open 1209:0001")?;
+        // udev applies permissions a moment after the node appears: retry.
+        let t0 = std::time::Instant::now();
+        let dev = loop {
+            match info.open().wait() {
+                Ok(d) => break d,
+                Err(e) if t0.elapsed() < Duration::from_secs(3) => {
+                    let _ = e;
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Err(e) => return Err(e).context("open 1209:0001"),
+            }
+        };
         Ok(Self { dev, info, chunk: 4096 })
     }
 

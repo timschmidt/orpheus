@@ -56,10 +56,17 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     let mut ok_cycles = 0;
     let mut d = d;
     for i in 0..cycles {
+        let old = d.info.device_address();
         d.control_out(yoton_proto::devchan::REQ_REBOOT, 0x10, 0, &[])?;
         drop(d);
-        if !bot::wait_gone(DEV_VID, DEV_PID, Duration::from_secs(3)) {
-            bail!("cycle {i}: device did not detach");
+        // Re-enumeration gives the device a new bus address.
+        let t = Instant::now();
+        loop {
+            match bot::find(DEV_VID, DEV_PID) {
+                Some(n) if n.device_address() != old => break,
+                _ if t.elapsed() > Duration::from_secs(5) => bail!("cycle {i}: no re-enumeration"),
+                _ => std::thread::sleep(Duration::from_millis(20)),
+            }
         }
         d = DevChannel::open(Duration::from_secs(5))?;
         if matches!(d.speed(), Some(nusb::Speed::High)) && d.info().is_ok() {

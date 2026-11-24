@@ -88,6 +88,8 @@ async fn supervisor() {
         match r {
             0xFFFF => {}
             REATTACH => {
+                // Let the status stage of the request finish first.
+                Timer::after_millis(50).await;
                 usb::set_attached(false);
                 Timer::after_millis(300).await;
                 usb::set_attached(true);
