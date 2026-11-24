@@ -163,7 +163,7 @@ impl Ui {
             atj2157_hal::wdt::reboot(atj2157_hal::wdt::Target::Adfu);
         }
         crate::media::SHUT_DOWN.store(false, core::sync::atomic::Ordering::Release);
-        let _ = crate::media::REQS.try_send(crate::media::Req::Shutdown);
+        crate::media::play(crate::media::PlayReq::Shutdown);
         for _ in 0..100 {
             if crate::media::SHUT_DOWN.load(core::sync::atomic::Ordering::Acquire) {
                 break;
@@ -245,6 +245,7 @@ pub async fn ui() {
             }
         }
     }
+    fw.init_player();
     let t = now();
     let shell = Shell::<AppScreen, Fw>::with_root(&mut fw, screens::HOME, Arg(0), t);
     let mut ui = Ui { fw, shell, mapper: KeyMapper::new(), disp, bl, screen_on: true, store, sound: None };

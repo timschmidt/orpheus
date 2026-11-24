@@ -30,7 +30,7 @@ of every session. Newest entries first in §3.
 | RTC-1 | done (device) | set/read over the developer channel (`xtask dev time [--set]`); alarm untested; once lost after a ymon reset (U-RTC open) |
 | USB-4 | done (device) | Card-reader personality: card handed between the card task and USB; write-protected test mode; mid-track switch and hand-back verified. 2.3 MB/s read (open) |
 | FS-1 | done | `yoton-fs` |
-| FS-2 / AU-5 firmware | first cut on the player | Files lists the card (on-disk order, no sort until AU-12), text viewer window, folder play queue, Now Playing; `yoton-player` (queue/resume/bookmarks) not yet wired in |
+| FS-2 / AU-5 firmware | first cut on the player; **`yoton-player` wired in (built, not yet run on the player)** | Files lists the card (on-disk order, no sort until AU-12), text viewer window, Now Playing. The card task drives `yoton_player::Player`: folder queue in RAM and `/.yoton/queue.bin`, resume record and bookmarks in `/.yoton/player.bin`, seek, shuffle/repeat (settings), A–B, sleep timer, Up next. Not done: gapless prefetch, fades, queue edits, Shuffle all. User check 13 |
 | UI-1, UI-2, UI-3, UI-4 | done (host); running on the player | 457 golden images |
 | AU-1…AU-4, AU-7, AU-8, AU-9 | done (host); on the player: MP3/FLAC/WAV and Speex at 48 MHz, Vorbis at 144 MHz (clock floor), **Opus too slow** | Opus CELT touches more code per frame than the 32 KB code cache holds; ends with "decoder too slow for this player" (abort after 8 underruns) instead of a reset. Needs a bigger code cache or a resident hot path (RAM decision). Ogg pages over ~15.5 KB fail (16 KiB ring < `MAX_PEEK` 28 KiB; RAM) |
 | AU-6 | done (host); **working on the player** | `yoton-dsp` chain between decoder and DAC, fed by the Sound settings; works on a scratch copy of the decoder output; while any stage is active during playback the clock floor is 96 MHz (EQ + bass + crossfeed: 0 underruns, ≈ 90 % idle). WSOLA not done; Levels meter not wired |
@@ -38,6 +38,58 @@ of every session. Newest entries first in §3.
 | OTP-1, BT-1, USB-6 | done (host) | `yoton-otp`, `yoton-bt`, MMC/CD-ROM in `yoton-usb` |
 
 ## 3. Session log
+
+### 2026-11-24 — AU-5 firmware: yoton-player in the card task (worker, no hardware)
+
+* The card task (RT executor) owns a `yoton_player::Player` (in the
+  `Server` static, built in a non-inlined function). UI commands arrive as
+  `media::PlayReq` on a new `PLAY` channel, checked after every decoded
+  block (and waited on while paused); media requests (`REQS`: browse, text,
+  the new Up-next window, card hand-over) are still served between
+  refills. Power-off moved to `PlayReq::Shutdown` so it is seen within a
+  block. The decode loop feeds `Opened`, `OpenFailed`, `Position` (every
+  block, source frames), `Tick` (1 s), `ReaderAtEnd`, `DecoderEnded`,
+  `DecoderFailed` (10 corrupt frames, 8 underruns, failed seek, ring too
+  small), `Drained`, `Shutdown`, and carries out `Open`/`OpenTrack`,
+  `Seek` (decoder seek; the stream ring is now a `SeekSource`), `Pause`/
+  `Resume` (DAC stopped while paused), `Stop`. `Prefetch` is not carried
+  out: the next track opens after the current one played out (no gapless).
+  No fades yet.
+* Files on the card (formats in `yoton_player::image`, host-tested):
+  `/.yoton/queue.bin` (magic `YQU1`, count, queue id = CRC-32 of serial and
+  locators, serial, 8-byte locators, CRC-32), written when a folder is
+  queued; `/.yoton/player.bin` (588 B: resume slots A/B, 64 B each, then the
+  bookmarks, 460 B, magic `YBM2`, each value with its own CRC), written in
+  place (only the changed span) at pause, stop, track start, card
+  hand-over and power-off — never while audio is being output (a card
+  write can outlast the PCM ring), so there is no 60-s save while playing.
+  Both are loaded after mount; the resume track's title is resolved and
+  offered as Music → Resume.
+* `yoton-player` changes: getters (`len`, `queue_id`, `ab`, `sleep_timer`),
+  bookmarks carry the sample rate (for their time in the list; `Player`
+  624 → 752 B), `SleepAfterMs(0)` also cancels "after this track", a
+  shuffled `PlayQueue` picks a seed whose order starts at the chosen item
+  (so every item plays once), `StoreImage`/`Loading` (resume slots only; the
+  bookmarks are encoded from the player when the file is written), queue
+  file encode/decode. 18 tests (4 new).
+* RAM (`xtask build`, `__stack_bottom`): stack 24,752 → 22,968 B
+  (−1,784 B). Of that, +1,796 B is resident MP3 seek code
+  (`Mp3Decoder::find` 1,142 B, `record` 166 B, more `parse_head`, rodata),
+  resident through the `yoton_codec_mp3::*` rule — it could be paged by
+  excluding those symbols in `resident.toml` (not mine to edit). Data and
+  bss net −16 B: the player (752 B) and resume slots went into `Server`,
+  the text-viewer buffer (1,536 B) moved out of it into the decoder arena
+  (the decoder now leaves 2 KiB of the 64 KiB arena free while it plays:
+  largest need 59,488 B still fits), the two DSP scratch buffers became one
+  (−1 KiB), Up-next and bookmark windows (2 × 208 B, 2 × 456 B), `PLAY`
+  channel 144 B. Audio task future unchanged (6,192 B); `play_file` poll
+  frame 2,276 → 2,372 B; UI task future +128 B.
+* Open: on-device test (user check 13 and the lead's test plan); gapless
+  hand-over (reader into the next file, decoder re-open in the arena);
+  fades; periodic resume saves while playing; queue edits / Play next /
+  Add to queue / Favourites / Shuffle all; "Resume at start-up" setting;
+  OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
+  its current track, so OK on an idle Now Playing still restarts it).
 
 ### 2026-11-24 — implementation session 2, part 5 (lead)
 
@@ -299,6 +351,7 @@ of every session. Newest entries first in §3.
 | 2026-11-24 | Opus 96 kbit/s 48 kHz | not real time at 48–144 MHz (paging-bound) | `dev cmd play` |
 | 2026-11-24 | Upload over the developer channel | 165 KB in 3.3 s (≈ 50 KB/s) | `xtask dev put` |
 | 2026-11-24 | Main stack peak after all formats + DSP (28.0 KB stack) | 19.2 KB | INFO stack high-water |
+| 2026-11-24 | Firmware with yoton-player (AU-5 firmware) | resident 80,724 B (was 79,084), bss 122,608 B, main stack 22,968 B (was 24,752), 48 code + 14 rodata pages | `xtask build`, `llvm-nm` `__stack_bottom` |
 
 
 ## 5. Open questions for the user

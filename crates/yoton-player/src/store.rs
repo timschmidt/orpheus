@@ -149,12 +149,15 @@ impl ResumeRecord {
 pub struct Bookmark {
     pub track: TrackRef,
     pub frame: u64,
+    /// Sample rate of the track (to show the time without opening it).
+    pub rate: u32,
 }
 
 /// Bookmarks kept (oldest dropped first).
 pub const MAX_BOOKMARKS: usize = 16;
-pub const BOOKMARKS_LEN: usize = 8 + MAX_BOOKMARKS * 24 + 4;
-const BM_MAGIC: [u8; 4] = *b"YBM1";
+pub const BOOKMARKS_LEN: usize = 8 + MAX_BOOKMARKS * BM_ENTRY + 4;
+const BM_ENTRY: usize = 28;
+const BM_MAGIC: [u8; 4] = *b"YBM2";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Bookmarks {
@@ -191,16 +194,25 @@ impl Bookmarks {
     #[must_use]
     pub fn encode(&self) -> [u8; BOOKMARKS_LEN] {
         let mut b = [0u8; BOOKMARKS_LEN];
+        Self::encode_into(self.as_slice(), &mut b);
+        b
+    }
+
+    /// The byte image of `items` (at most [`MAX_BOOKMARKS`], the oldest
+    /// first) written into `b`.
+    pub fn encode_into(items: &[Bookmark], b: &mut [u8; BOOKMARKS_LEN]) {
+        let items = &items[items.len().saturating_sub(MAX_BOOKMARKS)..];
+        b.fill(0);
         b[..4].copy_from_slice(&BM_MAGIC);
-        b[4] = self.n;
-        for (i, m) in self.as_slice().iter().enumerate() {
-            let o = 8 + 24 * i;
+        b[4] = items.len() as u8;
+        for (i, m) in items.iter().enumerate() {
+            let o = 8 + BM_ENTRY * i;
             m.track.put(&mut b[o..o + 16]);
             b[o + 16..o + 24].copy_from_slice(&m.frame.to_le_bytes());
+            b[o + 24..o + 28].copy_from_slice(&m.rate.to_le_bytes());
         }
         let crc = crc32(&b[..BOOKMARKS_LEN - 4]);
         b[BOOKMARKS_LEN - 4..].copy_from_slice(&crc.to_le_bytes());
-        b
     }
 
     #[must_use]
@@ -216,10 +228,11 @@ impl Bookmarks {
         }
         let mut m = Self { n: b[4], ..Self::default() };
         for i in 0..usize::from(m.n) {
-            let o = 8 + 24 * i;
+            let o = 8 + BM_ENTRY * i;
             let mut f = [0u8; 8];
             f.copy_from_slice(&b[o + 16..o + 24]);
-            m.items[i] = Bookmark { track: TrackRef::get(&b[o..o + 16]), frame: u64::from_le_bytes(f) };
+            let rate = u32::from_le_bytes([b[o + 24], b[o + 25], b[o + 26], b[o + 27]]);
+            m.items[i] = Bookmark { track: TrackRef::get(&b[o..o + 16]), frame: u64::from_le_bytes(f), rate };
         }
         Some(m)
     }
@@ -287,7 +300,7 @@ mod tests {
         }
         let mut m = Bookmarks::default();
         for f in 0..20u64 {
-            m.push(Bookmark { track: TrackRef::default(), frame: f });
+            m.push(Bookmark { track: TrackRef::default(), frame: f, rate: 44_100 });
         }
         assert_eq!(m.as_slice().len(), MAX_BOOKMARKS);
         assert_eq!(m.as_slice()[0].frame, 4);

@@ -40,7 +40,17 @@ pub struct Fw {
     /// stays small (it is built on the stack).
     pub browse: &'static mut media::BrowseWin,
     pub text: &'static mut media::TextWin,
+    pub qwin: &'static mut media::QueueWin,
+    pub bms: &'static mut media::BmWin,
     pub player: media::PlayerSnap,
+    /// Up next has asked for queue rows from this far after the current
+    /// track (the window then follows the track); the last window
+    /// requested (first, queue generation).
+    qwant: Option<u32>,
+    qreq: (u32, u32),
+    /// Last bookmark generation copied, sleep-timer expiries seen.
+    bm_seen: u32,
+    sleep_seen: u16,
     /// Folders entered from the root: id, own entry, name.
     path: [(DirId, FileRef, media::Name); 8],
     depth: usize,
@@ -88,6 +98,13 @@ static UI_BROWSE: static_cell::ConstStaticCell<media::BrowseWin> =
     static_cell::ConstStaticCell::new(media::BrowseWin::EMPTY);
 static UI_TEXT: static_cell::ConstStaticCell<media::TextWin> =
     static_cell::ConstStaticCell::new(media::TextWin::EMPTY);
+static UI_QWIN: static_cell::ConstStaticCell<media::QueueWin> =
+    static_cell::ConstStaticCell::new(media::QueueWin::EMPTY);
+static UI_BMS: static_cell::ConstStaticCell<media::BmWin> =
+    static_cell::ConstStaticCell::new(media::BmWin::EMPTY);
+
+/// Sleep-timer choices (`settings::SLEEP`): minutes; 6 = end of track.
+const SLEEP_MIN: [u32; 6] = [0, 15, 30, 45, 60, 90];
 
 impl Fw {
     /// Once (takes the window statics).
@@ -101,7 +118,13 @@ impl Fw {
             actions: heapless_queue::Queue::new(),
             browse: UI_BROWSE.take(),
             text: UI_TEXT.take(),
+            qwin: UI_QWIN.take(),
+            bms: UI_BMS.take(),
             player: media::PlayerSnap::IDLE,
+            qwant: None,
+            qreq: (u32::MAX, u32::MAX),
+            bm_seen: 0,
+            sleep_seen: 0,
             path: [(DirId::ROOT, FileRef { dir: 0, index: 0 }, media::Name::EMPTY); 8],
             depth: 0,
             text_pos: [(FileRef { dir: u32::MAX, index: 0 }, 0); 8],
@@ -121,13 +144,73 @@ impl Fw {
                 }
             }
             media::tag::TEXT => *self.text = *media::TEXT.borrow(cs).borrow(),
+            media::tag::QUEUE => *self.qwin = *media::QWINDOW.borrow(cs).borrow(),
             _ => {}
         });
     }
 
-    /// Copy the player snapshot (every UI loop).
+    /// Copy the player snapshot (every UI loop), and the windows that
+    /// follow it.
     pub fn sync_player(&mut self) {
         self.player = critical_section::with(|cs| *media::PLAYER.borrow(cs).borrow());
+        let p = self.player;
+        if p.bm_gen != self.bm_seen {
+            self.bm_seen = p.bm_gen;
+            *self.bms = critical_section::with(|cs| *media::BMS.borrow(cs).borrow());
+        }
+        if p.sleep_fired != self.sleep_seen {
+            // The sleep timer ran out: the setting goes back to Off.
+            self.sleep_seen = p.sleep_fired;
+            if self.settings.set(id::SLEEP_TIMER, 0) {
+                self.pending.push(Event::Service(ServiceEvent::SettingChanged(id::SLEEP_TIMER.0)));
+            }
+        }
+        if let Some(off) = self.qwant {
+            self.want_rows(p.queue_pos.saturating_add(off), 7);
+        }
+    }
+
+    /// Ask for the Up-next window at `first` unless it is loaded (or was
+    /// just asked for).
+    fn want_rows(&mut self, first: u32, count: u32) {
+        let p = &self.player;
+        let last = first.saturating_add(count.max(1) - 1).min(p.queue_len.saturating_sub(1));
+        let have = first >= p.queue_len
+            || (self.qwin.title(p.qgen, first).is_some() && self.qwin.title(p.qgen, last).is_some());
+        if !have && self.qreq != (first, p.qgen) {
+            self.qreq = (first, p.qgen);
+            media::request(media::Req::QueueWin { first });
+        }
+    }
+
+    /// After the settings are loaded: what the player follows from them.
+    pub fn init_player(&mut self) {
+        // A sleep timer does not survive a restart.
+        if self.settings.get(id::SLEEP_TIMER) != 0 {
+            self.settings.set(id::SLEEP_TIMER, 0);
+        }
+        self.setting_to_player(id::REPEAT);
+    }
+
+    /// Player settings go to the player when they change.
+    fn setting_to_player(&self, sid: SettingId) {
+        use yoton_player::{Command, Repeat};
+        let v = self.settings.get(sid);
+        let c = match sid {
+            id::SHUFFLE => Command::Shuffle(v != 0),
+            id::REPEAT => Command::Repeat(match v {
+                1 => Repeat::One,
+                2 => Repeat::All,
+                _ => Repeat::Off,
+            }),
+            id::SLEEP_TIMER => match usize::try_from(v) {
+                Ok(6) => Command::SleepAfterTrack,
+                Ok(i) if i < SLEEP_MIN.len() => Command::SleepAfterMs(SLEEP_MIN[i] * 60_000),
+                _ => Command::SleepAfterMs(0),
+            },
+            _ => return,
+        };
+        media::play(media::PlayReq::Cmd(c));
     }
 
     /// The directory entry of `dir`, from the current window or the path
@@ -161,6 +244,7 @@ impl SettingsService for Fw {
     fn set_setting(&mut self, sid: SettingId, value: i16) {
         if self.settings.set(sid, value) {
             self.pending.push(Event::Service(ServiceEvent::SettingChanged(sid.0)));
+            self.setting_to_player(sid);
         }
     }
     fn factory_reset(&mut self) {
@@ -174,7 +258,7 @@ impl PowerService for Fw {
         BatteryInfo { percent: s.percent, millivolts: s.millivolts, charge: s.charge }
     }
     fn sleep_timer_left(&self) -> Option<u16> {
-        None
+        self.player.sleep_min
     }
     fn power(&mut self, req: PowerRequest) {
         if req == PowerRequest::LockKeys {
@@ -368,8 +452,8 @@ impl PlayerService for Fw {
             duration_ms: p.duration_ms,
             queue_pos: p.queue_pos,
             queue_len: p.queue_len,
-            a_ms: None,
-            b_ms: None,
+            a_ms: p.a_ms,
+            b_ms: p.b_ms,
             buffer_pct: 0,
             cpu_pct: 0,
         }
@@ -394,10 +478,14 @@ impl PlayerService for Fw {
             gain_cdb: None,
         })
     }
-    fn queue_entry(&self, _i: u32) -> Option<QueueEntry<'_>> {
-        None
+    fn queue_entry(&self, i: u32) -> Option<QueueEntry<'_>> {
+        let title = self.qwin.title(self.player.qgen, i)?;
+        Some(QueueEntry { title, artist: "", duration_ms: 0 })
     }
-    fn want_queue(&mut self, _first: u32, _count: u32) {}
+    fn want_queue(&mut self, first: u32, count: u32) {
+        self.qwant = Some(first.saturating_sub(self.player.queue_pos));
+        self.want_rows(first, count);
+    }
     fn art(&self, _size: ArtSize) -> Option<&[u16]> {
         None
     }
@@ -411,41 +499,54 @@ impl PlayerService for Fw {
         Levels::default()
     }
     fn resume_title(&self) -> Option<&str> {
-        None
+        let p = &self.player;
+        (p.source == Source::Idle && p.resume && !p.title.is_empty()).then(|| p.title.as_str())
     }
     fn bookmark_count(&self) -> u32 {
-        0
+        self.bms.n
     }
-    fn bookmark(&self, _i: u32) -> Option<Bookmark<'_>> {
-        None
+    fn bookmark(&self, i: u32) -> Option<Bookmark<'_>> {
+        let r = self.bms.rows[..self.bms.n as usize].get(i as usize)?;
+        Some(Bookmark { title: r.title.as_str(), position_ms: r.ms })
     }
     fn library(&self) -> LibraryState {
         LibraryState::Missing
     }
     fn command(&mut self, c: PlayerCmd) {
-        use crate::audio::PAUSED;
-        match c {
-            PlayerCmd::PlayPause => {
-                if self.player.source != Source::Idle {
-                    PAUSED.store(!PAUSED.load(Ordering::Relaxed), Ordering::Relaxed);
-                }
-            }
-            PlayerCmd::Stop => {
-                PAUSED.store(false, Ordering::Relaxed);
-                media::request(media::Req::Stop);
-            }
-            PlayerCmd::Next => media::request(media::Req::Skip(1)),
-            PlayerCmd::Prev => media::request(media::Req::Skip(-1)),
-            PlayerCmd::Jump(i) => media::request(media::Req::Jump(i)),
-            PlayerCmd::PlayDir { dir, start, shuffle: _ } => {
+        use media::PlayReq;
+        use yoton_player::Command;
+        let r = match c {
+            PlayerCmd::PlayPause => PlayReq::Cmd(Command::Toggle),
+            PlayerCmd::Stop => PlayReq::Stop,
+            PlayerCmd::Next => PlayReq::Cmd(Command::Next),
+            PlayerCmd::Prev => PlayReq::Cmd(Command::Prev),
+            PlayerCmd::SeekTo(ms) => PlayReq::Cmd(Command::SeekMs(ms)),
+            PlayerCmd::SeekBy(ms) => PlayReq::Cmd(Command::SeekByMs(ms)),
+            PlayerCmd::Jump(pos) => PlayReq::JumpPos(pos),
+            PlayerCmd::PlayDir { dir, start, shuffle } => {
                 let entry = self.entry_of(dir);
-                PAUSED.store(false, Ordering::Relaxed);
-                media::request(media::Req::PlayDir { entry, start });
+                let shuffle = shuffle || self.settings.get(id::SHUFFLE) != 0;
+                PlayReq::PlayDir { entry, start, shuffle }
             }
-            // Seeking, queue edits, A-B, bookmarks, favourites, shuffle-all
-            // and resume come with the yoton-player integration.
-            _ => {}
-        }
+            PlayerCmd::SetA => PlayReq::SetA,
+            PlayerCmd::SetB => PlayReq::SetB,
+            PlayerCmd::ClearAb => PlayReq::Cmd(Command::AbClear),
+            PlayerCmd::Bookmark => PlayReq::Cmd(Command::AddBookmark),
+            PlayerCmd::PlayBookmark(i) => {
+                PlayReq::Cmd(Command::GotoBookmark(u8::try_from(i).unwrap_or(u8::MAX)))
+            }
+            PlayerCmd::Resume => PlayReq::Resume,
+            // Queue edits, favourites and Shuffle all need an editable
+            // queue file and the library index (later packages).
+            PlayerCmd::Remove(_)
+            | PlayerCmd::MoveUp(_)
+            | PlayerCmd::MoveDown(_)
+            | PlayerCmd::ShuffleAll
+            | PlayerCmd::PlayNext(_)
+            | PlayerCmd::AddToQueue(_)
+            | PlayerCmd::Favourite => return,
+        };
+        media::play(r);
     }
 }
 

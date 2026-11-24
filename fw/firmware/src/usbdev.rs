@@ -185,7 +185,7 @@ impl Target for Fw {
             return true;
         }
         if data == b"stop" {
-            crate::media::request(crate::media::Req::Stop);
+            crate::media::play(crate::media::PlayReq::Stop);
             crate::audio::request_stop();
             return true;
         }
