@@ -115,7 +115,8 @@ are 8 bytes here, 4 on the device, so device figures are at most these):
 
 | Item | Bytes |
 |---|---|
-| `Volume` state without the device and the cache slots | 144 |
+| `Volume` state without the device and the cache slots | 148 |
+| `WalkCache` (3 directories, lent with `set_walk_cache`) | 140 |
 | `CacheSlot` (one sector + tag); minimum 2 slots, 8 planned (4 160 B) | 520 |
 | `File` (position, sizes, entry location, one-run extent cache) | 64 |
 | `DirCursor` | 48 |

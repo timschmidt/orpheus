@@ -42,6 +42,67 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-24 — AU-5 (gapless): bounded lookups after a join, path-walk cache, underruns by cause (worker, no hardware)
+
+From the lead's run of `0b7ac9a`: the joins are almost clean (`u=0`,
+`open_us` 15–22 ms), but `lib_us` ≈ 184 ms and `art_us` ≈ 115 ms each
+exceed the whole PCM ring (≈ 70 ms). The first FLAC join started with only
+`head=513`.
+
+* **Path-walk cache (`orpheus-fs`, host-tested).** Every open under
+  `/.orpheus/…` walked from the root directory. On the owner's card that is
+  likely tens of sector reads, and it was common to both lookups. Now
+  `Volume::set_walk_cache` lends a `WalkCache` (3 directories, 140 B,
+  static in the firmware like the sector cache). A walk starts at the
+  longest cached directory prefix. The cache is emptied when a directory
+  grows (exFAT lengths), when an entry set is deleted or restored
+  (remove, rename), and at each mount. The fs test helpers lend one, so
+  the whole fs suite (write ops, power cuts, big directories, 9 formats)
+  runs with it. The new `tests/walk_cache.rs` covers hits, growth past a
+  cluster, rename and remake, and fails without the growth invalidation
+  (checked).
+* **Library lookup in steps.** `Library::find_begin` / `find_step`
+  (host-tested; `find_near` is built on them) do one probe per call: the
+  next row first, then the binary search. The firmware runs one probe per
+  chore, one session each, at most three small reads. A folder whose
+  track was not in the library (hidden folders such as `/.orpheus/test`,
+  which the library leaves out) is remembered (`LibState::miss_dir`) and
+  its next tracks are not looked for. A non-gapless start still searches
+  in one session (no audio yet).
+* **Album art.** A gapless track in the same folder as the one before keeps
+  the cover shown (an album). Otherwise there is one cache lookup (path walk
+  now cached).
+* **Later and gated.** A gapless track's library place and art are looked
+  for only after its first 2 s (`META_AFTER_MS`). Its title and info are
+  shown once two halves of it are out (no card work).
+* **Headroom from the DMA position.** `PcmOut::headroom` = written halves
+  not finished + the half being filled − what the DMA has played of the
+  current half. It uses the channel's remaining-bytes counter (+0x1C,
+  readable while running per U-BT-4; unconfirmed on the DAC channel).
+  `ROOMY` = 1.5 halves of real headroom (the old estimate counted the half
+  being played as whole).
+* **The DAC is fed first near a track's end.** Reads into the next file
+  happen only when the DAC has `ROOMY` ahead (`StreamRing::space_in`,
+  host-tested). The current file's own reads are never held. UI requests
+  wait while the current file's last bytes play (≤ 0.7 s; the read-ahead
+  open still goes first). The decoder's `NeedData` path no longer serves
+  requests inline.
+* **Underruns by cause.** `status` adds `ub: join= fill= serve= pf= lib=
+  art= dec=`, the current track's underruns, reset with `underruns`. Each
+  operation that took longer than the DAC had queued when it started is
+  charged with the halves it made the DAC miss. `dec` is what no operation
+  explains (decoder/DSP time, interrupts).
+* RAM/stack (`xtask build`; base = main `62b50b4` in this worktree):
+  `__stack_bottom` `0x132128` → `0x1321d0` (main stack −168 B: walk cache
+  140, cause counters 24, search state). Resident 83,500 → 83,508. Frames:
+  audio task poll 4,992 → 4,992 B, `play_file` 2,332 → 2,324 B.
+* Not verified on the player. Open: whether the walk cache brings
+  `art_us` and each library step under ~20 ms (the `ub:` counters will
+  say). If one step is still long, the next lever is keeping the library
+  file open across sessions. Also open: whether the DAC channel's remaining
+  counter reads correctly (if not, `head` reads one half high; the
+  join-start `head` in `status` would show it).
+
 ### 2026-11-24 — AU-5 (gapless): join underruns, `playdir`, join statistics in `status` (worker, no hardware)
 
 * **The "fourth track"** of the lead's run is most likely the **Shuffle
@@ -1223,6 +1284,7 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 | 2026-11-24 | Firmware with the music library (AU-12 firmware), worker worktree build | resident 83,244 B (was 81,996), bss 123,088 B (was 123,000), main stack 19,968 B (was 21,304), 71 code + 16 rodata pages (was 66 + 16), slot 802,816 B (was 761,856); audio task poll frame 5,024 B (was 5,088) | `xtask build`, `llvm-nm` `__stack_bottom`, `llvm-objdump` `sub sp` |
 | 2026-11-24 | Firmware with gapless hand-over and queue edits (AU-5), worker worktree build | resident 83,252 B (unchanged), main stack −312 B (`__stack_bottom` 0x131c00 → 0x131d38); audio task poll frame 5,024 → 4,992 B, `play_file` 2,380 → 2,332 B | `xtask build`, `llvm-nm`, `llvm-objdump` `sub sp` |
 | 2026-11-24 | AU-5 join fixes (chores gated on PCM headroom, deferred title, `find_near`, `playdir`, join statistics), worker worktree build | resident 83,500 B (was 83,468), main stack −184 B (`__stack_bottom` 0x132070 → 0x132128); audio task poll 4,992 B, `play_file` 2,332 B (unchanged) | `xtask build`, `llvm-nm`, `llvm-objdump` `sub sp` |
+| 2026-11-24 | AU-5 bounded lookups (walk cache, stepwise library search, DMA headroom, underruns by cause), worker worktree build | resident 83,508 B (was 83,500), main stack −168 B (`__stack_bottom` 0x132128 → 0x1321d0); audio task poll 4,992 B, `play_file` 2,324 B (was 2,332) | `xtask build`, `llvm-nm`, `llvm-objdump` `sub sp` |
 
 | 2026-11-24 | Host coverage baseline (host tests + 1 fuzz regression input), regions / lines / branches | 72.16 % (60,678 / 84,088) / 71.78 % / 65.09 % | `xtask cover --fuzz` (+ `--add` re-runs), nightly-2026-11-05 |
 | 2026-11-24 | Instrumented coverage build of the host workspace, no debug info | ≈ 0.4 GB build + ≈ 1.1 GB test images in `target/cover/…/tmp` | `du` |

@@ -24,6 +24,116 @@ pub(crate) const ATTR_RO: u8 = 0x01;
 pub(crate) const ATTR_DIR: u8 = 0x10;
 pub(crate) const ATTR_ARCHIVE: u8 = 0x20;
 
+/// Directories the path walk resolved lately (lent to the volume with
+/// [`Volume::set_walk_cache`], like the sector cache): a walk starts at the
+/// longest cached prefix instead of the root. On a large card the root directory
+/// alone can take tens of sector reads to search, and the firmware opens
+/// files under `/.orpheus/...` while audio plays. Keys are the exact path
+/// bytes up to a component (at most [`WALK_KEY`] bytes); the cache is
+/// emptied whenever a directory may have changed shape: an entry set is
+/// deleted or restored (remove, rename) or a directory grows (exFAT
+/// lengths).
+pub(crate) const WALK_KEY: usize = 24;
+const WALK_SLOTS: usize = 3;
+
+/// One cached directory, packed (a `DirSpec` is 32 bytes with padding).
+#[derive(Clone, Copy, Default)]
+struct WalkSlot {
+    first: u32,
+    /// Byte length bound (at most 256 MiB).
+    len: u32,
+    loc_cluster: u32,
+    loc_off: u32,
+    /// Bit 0: the directory is contiguous; bit 1: its entry's location is.
+    flags: u8,
+    /// Key length; 0: an empty slot.
+    klen: u8,
+    key: [u8; WALK_KEY],
+}
+
+impl WalkSlot {
+    fn spec(&self) -> DirSpec {
+        DirSpec {
+            first: self.first,
+            contig: self.flags & 1 != 0,
+            len: u64::from(self.len),
+            self_loc: EntryLoc { cluster: self.loc_cluster, off: self.loc_off, contig: self.flags & 2 != 0 },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct WalkCache {
+    slots: [WalkSlot; WALK_SLOTS],
+    next: u8,
+    /// Walks served from the cache (statistics, tests).
+    hits: u32,
+}
+
+impl WalkCache {
+    pub const EMPTY: WalkCache = WalkCache {
+        slots: [WalkSlot {
+            first: 0,
+            len: 0,
+            loc_cluster: 0,
+            loc_off: 0,
+            flags: 0,
+            klen: 0,
+            key: [0; WALK_KEY],
+        }; WALK_SLOTS],
+        next: 0,
+        hits: 0,
+    };
+
+    pub(crate) fn clear(&mut self) {
+        for s in &mut self.slots {
+            s.klen = 0;
+        }
+    }
+
+    /// The longest cached directory that `path` starts with, ending at a
+    /// component boundary: its spec and where the rest of the path starts.
+    fn lookup(&self, path: &str) -> Option<(DirSpec, usize)> {
+        let b = path.as_bytes();
+        let mut best: Option<(&WalkSlot, usize)> = None;
+        for s in self.slots.iter().filter(|s| s.klen > 0) {
+            let n = usize::from(s.klen);
+            let boundary = matches!(b.get(n), None | Some(b'/'));
+            if boundary && b.get(..n) == s.key.get(..n) && best.is_none_or(|(_, m)| n > m) {
+                best = Some((s, n));
+            }
+        }
+        best.map(|(s, n)| (s.spec(), n))
+    }
+
+    fn insert(&mut self, key: &[u8], spec: DirSpec) {
+        let Ok(len) = u32::try_from(spec.len) else { return };
+        if key.len() > WALK_KEY || key.is_empty() {
+            return;
+        }
+        if self.slots.iter().any(|s| s.klen > 0 && s.key.get(..usize::from(s.klen)) == Some(key)) {
+            return;
+        }
+        let mut k = [0u8; WALK_KEY];
+        if let Some(d) = k.get_mut(..key.len()) {
+            d.copy_from_slice(key);
+        }
+        let i = usize::from(self.next) % WALK_SLOTS;
+        self.next = self.next.wrapping_add(1);
+        if let Some(slot) = self.slots.get_mut(i) {
+            *slot = WalkSlot {
+                first: spec.first,
+                len,
+                loc_cluster: spec.self_loc.cluster,
+                loc_off: spec.self_loc.off,
+                flags: u8::from(spec.contig) | u8::from(spec.self_loc.contig) << 1,
+                klen: key.len() as u8,
+                key: k,
+            };
+        }
+    }
+}
+
 /// Path components: split on `/`, empty and `.` components dropped.
 pub(crate) fn components(path: &str) -> impl Iterator<Item = &str> {
     path.split('/').filter(|c| !c.is_empty() && *c != ".")
@@ -582,7 +692,7 @@ pub(crate) struct Walk<'p> {
     pub info: Option<EntryInfo>,
 }
 
-impl<D: BlockDevice> Volume<'_, D> {
+impl<'c, D: BlockDevice> Volume<'c, D> {
     // ----------------------------------------------------- positions
 
     pub(crate) fn spec_root(&self) -> DirSpec {
@@ -1066,14 +1176,26 @@ impl<D: BlockDevice> Volume<'_, D> {
 
     /// Resolve a path: parent directory, last component and its entry.
     pub(crate) async fn walk<'p>(&mut self, path: &'p str) -> Result<Walk<'p>, D::Error> {
-        let mut spec = self.spec_root();
-        let mut it = components(path);
         if components(path).count() > MAX_DEPTH {
             return Err(Error::NameTooLong);
         }
         if components(path).any(|c| c == "..") {
             return Err(Error::InvalidName);
         }
+        // The last component is looked up in its parent; a cached directory
+        // can stand for the parent (or any ancestor) only.
+        let last = components(path).last().map_or(0, |c| c.as_ptr() as usize - path.as_ptr() as usize);
+        let cached = self.walks.as_deref_mut().and_then(|w| {
+            let r = w.lookup(path.get(..last).unwrap_or(""))?;
+            w.hits = w.hits.wrapping_add(1);
+            Some(r)
+        });
+        let (mut spec, from) = match cached {
+            Some(r) => r,
+            None => (self.spec_root(), 0),
+        };
+        let rest = path.get(from..).unwrap_or("");
+        let mut it = components(rest);
         let Some(mut name) = it.next() else {
             return Ok(Walk { parent: spec, name: "", info: None });
         };
@@ -1089,9 +1211,33 @@ impl<D: BlockDevice> Volume<'_, D> {
                         return Err(Error::NotADirectory);
                     }
                     spec = self.dir_spec(&info);
+                    // `path` up to the end of this directory's name.
+                    let end = name.as_ptr() as usize - path.as_ptr() as usize + name.len();
+                    if let (Some(k), Some(w)) = (path.as_bytes().get(..end), self.walks.as_deref_mut()) {
+                        w.insert(k, spec);
+                    }
                     name = next;
                 }
             }
+        }
+    }
+
+    /// Walks served from the directory cache so far.
+    #[must_use]
+    pub fn walk_hits(&self) -> u32 {
+        self.walks.as_deref().map_or(0, |w| w.hits)
+    }
+
+    /// Lend the volume a directory cache for its path walks (emptied now:
+    /// it may hold another volume's directories).
+    pub fn set_walk_cache(&mut self, w: &'c mut WalkCache) {
+        w.clear();
+        self.walks = Some(w);
+    }
+
+    fn forget_walks(&mut self) {
+        if let Some(w) = self.walks.as_deref_mut() {
+            w.clear();
         }
     }
 
@@ -1170,6 +1316,7 @@ impl<D: BlockDevice> Volume<'_, D> {
 
     /// Add one zeroed cluster to a directory; updates `spec`.
     async fn grow_dir(&mut self, spec: &mut DirSpec) -> Result<u32, D::Error> {
+        self.forget_walks();
         if spec.first == 0 && !self.g.is_exfat() {
             return Err(Error::DirectoryFull);
         }
@@ -1432,6 +1579,7 @@ impl<D: BlockDevice> Volume<'_, D> {
 
     /// Mark an entry set deleted.
     pub(crate) async fn delete_entry(&mut self, info: &EntryInfo) -> Result<(), D::Error> {
+        self.forget_walks();
         let exfat = self.g.is_exfat();
         let mut l = info.start;
         for k in 0..info.count {
@@ -1452,6 +1600,7 @@ impl<D: BlockDevice> Volume<'_, D> {
 
     /// Undo `delete_entry` (used when a rename cannot complete).
     async fn undelete_entry(&mut self, info: &EntryInfo) -> Result<(), D::Error> {
+        self.forget_walks();
         let exfat = self.g.is_exfat();
         let mut l = info.start;
         let lfn = info.count.saturating_sub(1);

@@ -185,6 +185,8 @@ pub struct Volume<'c, D: BlockDevice> {
     pub(crate) upcase_std: bool,
     pub(crate) upcase_cluster: u32,
     pub(crate) upcase_len: u32,
+    /// Directories resolved lately, when lent (`Volume::set_walk_cache`).
+    pub(crate) walks: Option<&'c mut crate::dir::WalkCache>,
 }
 
 pub(crate) fn le16(b: &[u8], o: usize) -> u16 {
@@ -308,6 +310,7 @@ impl<'c, D: BlockDevice> Volume<'c, D> {
             upcase_std: false,
             upcase_cluster: 0,
             upcase_len: 0,
+            walks: None,
         };
         if looks_like_exfat(&bs) {
             vol.mount_exfat(&bs, len).await?;

@@ -175,11 +175,14 @@ pub fn cache() -> Vec<CacheSlot> {
     vec![CacheSlot::EMPTY; 8]
 }
 
-/// Mount an image file read/write (default options).
+/// Mount an image file read/write (default options), with a directory
+/// cache for the path walk (as the firmware mounts the card).
 pub fn mount<'c>(path: &Path, cache: &'c mut [CacheSlot]) -> Vol<'c> {
     let mut dev = FileDisk::open(path).unwrap();
     dev.elide_zero_writes = true;
-    block_on(Volume::mount(dev, cache, MountOptions::default())).expect("mount")
+    let mut vol = block_on(Volume::mount(dev, cache, MountOptions::default())).expect("mount");
+    vol.set_walk_cache(Box::leak(Box::new(orpheus_fs::WalkCache::EMPTY)));
+    vol
 }
 
 pub fn unmount(vol: Vol<'_>) {

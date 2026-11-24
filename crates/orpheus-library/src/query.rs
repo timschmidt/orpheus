@@ -11,6 +11,17 @@ use crate::format::{
     GRP_ROW, HEADER, Header, Kind, LETTER_RUN, SECTIONS, Sec, StrRef, TRK_ROW, grp, rd16, rd32, trk,
 };
 
+/// A library search by locator in progress ([`Library::find_begin`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FindStep {
+    loc: Locator,
+    hint: u32,
+    /// 0: try `hint + 1`, 1: try `hint`, 2: binary search in `lo..hi`.
+    phase: u8,
+    lo: u32,
+    hi: u32,
+}
+
 /// An open, complete library (about 230 bytes; no file handle is kept).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Library {
@@ -611,24 +622,67 @@ impl Library {
 
     /// [`Library::find`], trying `hint + 1` and `hint` first: tracks are in
     /// album order, so the next track of an album is usually the row after
-    /// the current one (one read instead of a binary search; the firmware
-    /// does this at a gapless track change while the DAC runs).
+    /// the current one (one read instead of a binary search).
     pub fn find_near<S: Storage>(
         &self,
         store: &mut S,
         loc: Locator,
         hint: Option<u32>,
     ) -> Result<Option<u32>, Error<S::Error>> {
-        let mut b = [0u8; 8];
-        for id in hint.into_iter().flat_map(|h| [h.wrapping_add(1), h]) {
-            if id < self.tracks {
-                self.read(store, Sec::Trk, id * TRK_ROW as u32, &mut b)?;
-                if (rd32(&b, 0), rd32(&b, 4)) == (loc.dir, loc.index) {
-                    return Ok(Some(id));
-                }
+        let mut st = self.find_begin(loc, hint);
+        loop {
+            if let Some(r) = self.find_step(store, &mut st)? {
+                return Ok(r);
             }
         }
-        self.find(store, loc)
+    }
+
+    /// A [`Library::find_near`] done one probe at a time
+    /// ([`Library::find_step`]): the firmware runs it between decoded
+    /// blocks while the DAC plays, so no single step holds the card long.
+    #[must_use]
+    pub fn find_begin(&self, loc: Locator, hint: Option<u32>) -> FindStep {
+        FindStep {
+            loc,
+            hint: hint.unwrap_or(u32::MAX),
+            phase: if hint.is_some() { 0 } else { 2 },
+            lo: 0,
+            hi: self.tracks,
+        }
+    }
+
+    /// One probe of the search (at most two small reads): `Some(result)`
+    /// when it is over.
+    pub fn find_step<S: Storage>(
+        &self,
+        store: &mut S,
+        st: &mut FindStep,
+    ) -> Result<Option<Option<u32>>, Error<S::Error>> {
+        let mut b = [0u8; 8];
+        let key = (st.loc.dir, st.loc.index);
+        if st.phase < 2 {
+            let id = if st.phase == 0 { st.hint.wrapping_add(1) } else { st.hint };
+            st.phase += 1;
+            if id < self.tracks {
+                self.read(store, Sec::Trk, id * TRK_ROW as u32, &mut b)?;
+                if (rd32(&b, 0), rd32(&b, 4)) == key {
+                    return Ok(Some(Some(id)));
+                }
+            }
+            return Ok(None);
+        }
+        if st.lo >= st.hi {
+            return Ok(Some(None));
+        }
+        let mid = st.lo + (st.hi - st.lo) / 2;
+        let id = self.u32_at(store, Sec::ByLoc, mid)?;
+        self.read(store, Sec::Trk, id * TRK_ROW as u32, &mut b)?;
+        match (rd32(&b, 0), rd32(&b, 4)).cmp(&key) {
+            core::cmp::Ordering::Less => st.lo = mid + 1,
+            core::cmp::Ordering::Greater => st.hi = mid,
+            core::cmp::Ordering::Equal => return Ok(Some(Some(id))),
+        }
+        Ok(None)
     }
 
     /// Where table row `id` is in `list` (a track row for track lists, a

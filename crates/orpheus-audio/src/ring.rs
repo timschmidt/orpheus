@@ -178,6 +178,12 @@ impl<'a> StreamRing<'a> {
     /// one. `None`: nothing to read, or no room. Clears the target's
     /// pending reseek (returned in [`Space::seek`]).
     pub fn space(&mut self, min: usize, max: usize) -> Option<Space<'_>> {
+        self.space_in(min, max, true)
+    }
+
+    /// [`StreamRing::space`], into the next stream only if `next` (the
+    /// firmware holds its read-ahead back while the DAC is short of data).
+    pub fn space_in(&mut self, min: usize, max: usize, next: bool) -> Option<Space<'_>> {
         if self.cur.eof {
             // Nothing more is read from the current file: no reposition.
             self.cur.reseek = false;
@@ -185,7 +191,7 @@ impl<'a> StreamRing<'a> {
         let (target, counter) = if !self.cur.eof {
             (Target::Current, self.base + self.cur.wr)
         } else {
-            let n = self.next.filter(|n| !n.eof)?;
+            let n = self.next.filter(|n| next && !n.eof)?;
             (Target::Next, self.base + self.cur.wr + n.wr)
         };
         let cap = self.buf.len() as u64;
@@ -428,6 +434,9 @@ mod tests {
         drain(&mut r, &mut f, 100, &mut out);
         assert_eq!(out, a[9_000..]);
         r.begin_next(Some(5));
+        // Held back: no space is offered for the next stream (its pending
+        // reposition stays).
+        assert!(r.space_in(1, 100, false).is_none());
         r.cancel_next();
         assert!(!r.hand_over());
         r.skip_to(20_000);
