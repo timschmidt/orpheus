@@ -19,10 +19,10 @@ commit the result.
 
 | | File | Use |
 |---|---|---|
-| ![](../logo/orpheus-lyre.svg) | `../logo/orpheus-lyre.svg` | Default, 48 px and larger |
-| ![](generated/orpheus-lyre-small.svg) | `generated/orpheus-lyre-small.svg` | 16–47 px: favicons, toolbars. Heavier strokes, tighter tile |
-| ![](generated/orpheus-lyre-mono.svg) | `generated/orpheus-lyre-mono.svg` | One colour, no tile: `currentColor` when inlined, black as a file. Print, watermarks, single-colour places |
-| ![](generated/wordmark.svg) | `generated/wordmark.svg` | "Orpheus" in the firmware's own bold bitmap font, `currentColor` |
+| ![Lyre, default](../logo/orpheus-lyre.svg) | `../logo/orpheus-lyre.svg` | Default, 48 px and larger |
+| ![Lyre, small](generated/orpheus-lyre-small.svg) | `generated/orpheus-lyre-small.svg` | 16–47 px: favicons, toolbars. Heavier strokes, tighter tile |
+| ![Lyre, mono](generated/orpheus-lyre-mono.svg) | `generated/orpheus-lyre-mono.svg` | One colour, no tile: `currentColor` when inlined, black as a file. Print, watermarks, single-colour places |
+| ![Wordmark](generated/wordmark.svg) | `generated/wordmark.svg` | "Orpheus" in the firmware's own bold bitmap font, `currentColor` |
 
 Rules:
 

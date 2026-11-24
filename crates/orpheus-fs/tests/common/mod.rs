@@ -83,9 +83,17 @@ pub fn make_image(path: &Path, fmt: Fmt) {
         Fmt::Fat(bits, spc, _) => run(Command::new("mkfs.fat")
             .args(["-F", &bits.to_string(), "-s", &spc.to_string(), "-n", "ORPHEUSTEST", "-i", "1234ABCD"])
             .arg(path)),
-        Fmt::ExFat(c, _) => run(Command::new("mkfs.exfat")
-            .args(["-q", "-P", "none", "-L", "ORPHEUSTEST", "-c", &c.to_string()])
-            .arg(path)),
+        Fmt::ExFat(c, _) => {
+            let r = run(Command::new("mkfs.exfat")
+                .args(["-q", "-P", "none", "-L", "ORPHEUSTEST", "-c", &c.to_string()])
+                .arg(path));
+            // Older exfatprogs (e.g. 1.2 on Ubuntu 24.04) lack `-q`/`-P`.
+            if r.0 {
+                r
+            } else {
+                run(Command::new("mkfs.exfat").args(["-L", "ORPHEUSTEST", "-c", &c.to_string()]).arg(path))
+            }
+        }
     };
     assert!(ok, "mkfs failed for {fmt:?}: {out}");
 }
