@@ -37,13 +37,13 @@ fn now() -> Instant {
 }
 
 struct Ui {
-    fw: Fw,
+    fw: &'static mut Fw,
     shell: Shell<AppScreen, Fw>,
     mapper: KeyMapper,
     disp: Display,
     bl: Backlight,
     screen_on: bool,
-    store: Option<Store<NorRegion, 4>>,
+    store: &'static mut Option<Store<NorRegion, 4>>,
     /// Sound settings last published to the audio task.
     sound: Option<crate::media::Sound>,
 }
@@ -79,7 +79,7 @@ impl Ui {
 
     fn settle(&mut self) {
         while let Some(ev) = self.fw.pending.pop() {
-            let r = self.shell.event(&mut self.fw, ev, now());
+            let r = self.shell.event(&mut *self.fw, ev, now());
             self.handle(r);
         }
     }
@@ -202,9 +202,9 @@ impl Ui {
         let mut dirty = DirtySet::new();
         let t0 = atj2157_hal::time::now_us();
         {
-            let pal = services::palette(&self.fw);
+            let pal = services::palette(&*self.fw);
             let mut g = Gfx::new(fb, &mut dirty, pal, None);
-            self.shell.draw(&mut self.fw, &mut g);
+            self.shell.draw(&mut *self.fw, &mut g);
         }
         let t1 = atj2157_hal::time::now_us();
         T_DRAW.fetch_add((t1 - t0) as u32, core::sync::atomic::Ordering::Relaxed);
@@ -247,16 +247,53 @@ pub static SHOT_HOLD_UNTIL_MS: core::sync::atomic::AtomicU32 = core::sync::atomi
 pub static SET_WRITES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 pub static SET_LAST: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
+static mut FW_CELL: core::mem::MaybeUninit<Fw> = core::mem::MaybeUninit::uninit();
+static mut STORE_CELL: Option<Store<NorRegion, 4>> = None;
+static mut UI_CELL: core::mem::MaybeUninit<Ui> = core::mem::MaybeUninit::uninit();
+
+/// Once, from the UI task.
+#[inline(never)]
+fn new_fw() -> &'static mut Fw {
+    // SAFETY: called once; the UI task is the only user.
+    unsafe { (*(&raw mut FW_CELL)).write(Fw::new()) }
+}
+
+/// Once, from the UI task.
+fn store_slot() -> &'static mut Option<Store<NorRegion, 4>> {
+    // SAFETY: called once; the UI task is the only user.
+    unsafe { &mut *(&raw mut STORE_CELL) }
+}
+
+/// Once, from the UI task.
+#[inline(never)]
+fn new_ui(
+    fw: &'static mut Fw,
+    store: &'static mut Option<Store<NorRegion, 4>>,
+    disp: Display,
+    bl: Backlight,
+    t: Instant,
+) -> &'static mut Ui {
+    let shell = Shell::<AppScreen, Fw>::with_root(fw, screens::HOME, Arg(0), t);
+    let ui = Ui { fw, shell, mapper: KeyMapper::new(), disp, bl, screen_on: true, store, sound: None };
+    // SAFETY: called once; the UI task is the only user.
+    unsafe { (*(&raw mut UI_CELL)).write(ui) }
+}
+
 #[embassy_executor::task]
 pub async fn ui() {
     let Some(fb) = display::take_framebuffer() else { return };
     // SAFETY: DMA channel 1 is the display's (01-hardware §6).
     let disp = Display::new(unsafe { dma::Channel::steal(1) });
     let bl = Backlight::new(12);
-    let mut fw = Fw::new();
+    // `Fw` (1.5 KB), the settings store (1 KB) and `Ui` (≈ 5 KB) live in
+    // statics, built by non-inlined constructors: built by value here they
+    // made this task's poll frame 6 KB, reserved on every poll under the RT
+    // interrupt's stack use (2026-11-24).
+    let fw = new_fw();
     crate::services::apply_volume(fw.volume);
     // Settings from NOR.
-    let mut store = Store::<NorRegion, 4>::mount(NorRegion::settings()).await.ok();
+    let store = store_slot();
+    *store = Store::<NorRegion, 4>::mount(NorRegion::settings()).await.ok();
     let mut bt_last = None;
     if let Some(s) = store.as_mut() {
         let mut keys = [0u16; 64];
@@ -281,9 +318,7 @@ pub async fn ui() {
     }
     fw.init_player();
     fw.bt_boot(bt_last);
-    let t = now();
-    let shell = Shell::<AppScreen, Fw>::with_root(&mut fw, screens::HOME, Arg(0), t);
-    let mut ui = Ui { fw, shell, mapper: KeyMapper::new(), disp, bl, screen_on: true, store, sound: None };
+    let ui = new_ui(fw, store, disp, bl, now());
     ui.shell.invalidate();
     let fb = fb.as_mut_slice();
     ui.draw(fb).await;
@@ -297,7 +332,7 @@ pub async fn ui() {
         if let Some(d) = ui.mapper.next_deadline() {
             deadline = deadline.min(d.0);
         }
-        if ui.shell.wants_ticks(&ui.fw) {
+        if ui.shell.wants_ticks(&*ui.fw) {
             deadline = deadline.min(t.0 + u64::from(TICK_MS));
         }
         let wait = Duration::from_millis(deadline.saturating_sub(t.0).max(1));
@@ -308,7 +343,7 @@ pub async fn ui() {
                 ui.fw.sync(tag);
                 let (first, count) = (ui.fw.browse.first, ui.fw.browse.n);
                 let ev = Event::Data(orpheus_ui::event::DataReady { tag, first, count });
-                let r = ui.shell.event(&mut ui.fw, ev, now());
+                let r = ui.shell.event(&mut *ui.fw, ev, now());
                 ui.handle(r);
             }
             Either4::First((k, down)) => {
@@ -329,12 +364,12 @@ pub async fn ui() {
                 let s = state::snapshot();
                 let ev =
                     Event::Service(ServiceEvent::Battery { percent: s.percent, charging: s.charge_active() });
-                let r = ui.shell.event(&mut ui.fw, ev, now());
+                let r = ui.shell.event(&mut *ui.fw, ev, now());
                 ui.handle(r);
                 if s.cable != last_cable {
                     last_cable = s.cable;
                     let r =
-                        ui.shell.event(&mut ui.fw, Event::Service(ServiceEvent::Usb { host: false }), now());
+                        ui.shell.event(&mut *ui.fw, Event::Service(ServiceEvent::Usb { host: false }), now());
                     ui.handle(r);
                 }
             }
@@ -348,12 +383,12 @@ pub async fn ui() {
         let t = now();
         ui.fw.poll_picture(t.0);
         while let Some((k, p)) = ui.mapper.poll(t) {
-            let r = ui.shell.key(&mut ui.fw, k, p, t);
+            let r = ui.shell.key(&mut *ui.fw, k, p, t);
             ui.handle(r);
             ui.settle();
         }
-        if ui.shell.wants_ticks(&ui.fw) {
-            let r = ui.shell.tick(&mut ui.fw, t);
+        if ui.shell.wants_ticks(&*ui.fw) {
+            let r = ui.shell.tick(&mut *ui.fw, t);
             ui.handle(r);
         }
         ui.after().await;

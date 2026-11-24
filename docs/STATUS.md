@@ -337,8 +337,11 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   of stack left after boot); now a single mount.
 * Logo: a lyre (owner's request) — `docs/logo/orpheus-lyre.svg` (README)
   and the 24×24 `LYRE` icon on the boot/About screens (goldens re-blessed).
-* Open: the stack peak after start + playback is ≈ 22.4 KB of 25.3 KB; the
-  UI task (6.0 KB frame) and the audio task (5.1 KB) should shrink. The
+* Stack: `Fw`, the settings store and `Ui` (≈ 5 KB) now live in statics
+  built by non-inlined constructors; the UI task's poll frame went 6.0 →
+  4.7 KB and the stack grew to 27.8 KB (the task future shrank). On the
+  player after boot + browse + play + view changes: 7.2 KB free (was 2.8
+  KB). The audio task's 5.1 KB frame is the next candidate. The
   orpheus-img test fixtures race when generated fresh by several test
   binaries at once (passes when run alone).
 
