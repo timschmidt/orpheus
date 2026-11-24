@@ -386,6 +386,22 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — AU-12 library on the player (lead)
+
+* Merged AU-12 (firmware, library) (worker). On the player with the owner's
+  card (5,740 audio files): the first library build ran in the idle loop
+  and finished after ≈ 11 min (estimate was 1–2 min: tag reads per file are
+  slower than assumed — open: measure per-file cost, consider reading only
+  the first 4 KiB for files whose ID3v2 header shows no text frames); the
+  UI stayed responsive throughout and the stack never fell below 6.4 KB
+  free. Albums lists the folder names; Artists shows only "Unknown artist"
+  — correct: the owner's files carry no title/artist/album tags (only
+  `encoder=Lavf61.7.100`, checked read-only through the card reader).
+* RTC found stopped again after a series of test resets (clock showed
+  00:00; `dev time` reported not running); `dev time --set` restarts it.
+  Open (U-RTC): which reset path stops the calendar, and show "clock not
+  set" instead of 00:00.
+
 ### 2026-11-24 — AU-12 library (host part) merged (worker)
 
 * `orpheus-library`: on-card music library under `/.orpheus/library`
