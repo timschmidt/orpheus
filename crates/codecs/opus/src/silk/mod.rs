@@ -632,7 +632,7 @@ impl SilkDecoder {
         // Export pitch lag, measured at 48 kHz sampling rate.
         let cs0 = &self.channel_state[0];
         ctl.prev_pitch_lag = if cs0.prev_signal_type == TYPE_VOICED {
-            const MULT_TAB: [i32; 3] = [6, 4, 3];
+            static MULT_TAB: [i32; 3] = [6, 4, 3];
             cs0.lag_prev * MULT_TAB[(((cs0.fs_khz - 8) >> 2) as usize).min(2)]
         } else {
             0

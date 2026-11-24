@@ -162,11 +162,19 @@ pub fn check(e: &Entry, opts: Opts) -> Row {
         row.realtime = (frames as f64 / f64::from(a.info.rate.max(1))) / (a.decode_ns as f64 * 1e-9);
     }
     // Restartability: the device ring and a trickling ring give the same
-    // samples as the whole file at once.
+    // samples as the whole file at once. The Ogg codecs also through the
+    // firmware's 16 KiB ring (one-second pages of 10–28 KB do not fit in
+    // it: they are read packet by packet).
+    let ogg = matches!(a.info.codec, CodecId::Opus | CodecId::Speex | CodecId::Vorbis);
+    let firmware = Cfg { ring: 16 * 1024, ..Cfg::device(row.budget) };
     for (label, cfg) in [
         ("device ring", Cfg::device(row.budget)),
         ("trickle ring", Cfg { chunk: 1531, ..Cfg::device(row.budget) }),
+        ("firmware ring", firmware),
     ] {
+        if label == "firmware ring" && !ogg {
+            continue;
+        }
         crate::set_context(&format!("{} {label}", e.name));
         match drive::decode_file(&file, &cfg, ext) {
             Ok(b) if b.pcm == a.pcm => {}

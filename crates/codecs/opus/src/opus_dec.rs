@@ -121,6 +121,18 @@ enum Dest {
     Transition,
 }
 
+/// A SILK or hybrid frame's redundancy (`opus_decode_frame`): the CELT
+/// payload length, the redundant frame's place and size, and whether the
+/// mode transition is still to be faded in.
+#[derive(Clone, Copy)]
+struct Red {
+    len: usize,
+    redundancy: bool,
+    celt_to_silk: bool,
+    bytes: usize,
+    transition: bool,
+}
+
 impl OpusDec<'_> {
     /// `opus_decoder_init` for `channels` at 48 kHz with `gain` (Q8 dB).
     pub fn init(&mut self, channels: usize, gain: i32) {
@@ -299,16 +311,20 @@ impl OpusDec<'_> {
     }
 
     /// Decode one Opus frame (`data`, of a packet whose TOC is `toc`) into
-    /// the region as `i16`; returns the sample count, or `None` on a
-    /// decoding error (the region then holds silence of the frame length).
+    /// the region as `i16`; returns the sample count (on a decoding error
+    /// the region holds silence of the frame length).
+    ///
+    /// Only the CELT-only path is inline here: SILK and hybrid frames,
+    /// redundancy, mode transitions and long SILK frames run in their own
+    /// functions, so a CELT stream's per-frame code stays compact in the
+    /// code cache (hot.toml `opus-celt`).
     fn decode_frame(&mut self, data: &[u8], toc: Toc) -> usize {
         let ch = self.channels();
         let audiosize = toc.frame_size;
         let mode = self.st.mode;
         let bandwidth = self.st.bandwidth;
         let frame_size = audiosize;
-        let mut len = data.len();
-        if len <= 1 {
+        if data.len() <= 1 {
             // Payloads of 0 or 1 bytes run the concealment (DTX).
             return self.conceal(audiosize.min(self.st.frame_size as usize));
         }
@@ -332,28 +348,105 @@ impl OpusDec<'_> {
         } else {
             (F20 * ch, F20 * ch + frame_size.max(F10) * ch / 2)
         };
-        if mode != MODE_CELT {
-            if self.st.prev_mode == MODE_CELT {
-                self.silk.reset();
-            }
-            self.st.silk_payload_ms = 10.max((1000 * audiosize / 48000) as i32);
-            self.st.silk_channels_internal = self.st.stream_channels;
-            self.st.silk_internal_rate = if mode == MODE_SILK {
-                match bandwidth {
-                    1101 => 8000,
-                    1102 => 12000,
-                    _ => 16000,
-                }
-            } else {
-                16000
-            };
-            self.silk_run(&mut dec, false, frame_size, silk_words);
+        let red = if mode != MODE_CELT {
+            self.silk_part(&mut dec, data.len(), audiosize, silk_words, transition)
+        } else {
+            Red { len: data.len(), redundancy: false, celt_to_silk: false, bytes: 0, transition }
+        };
+        let len = red.len;
+        let start_band = if mode != MODE_CELT { 17 } else { 0 };
+        if bandwidth != 0 {
+            self.set_celt_end(bandwidth);
         }
-        let mut start_band = 0;
+        self.celt.stream_channels = self.st.stream_channels;
+        let mut redundant_rng = 0u32;
+        let red_data = &data[len.min(data.len())..(len + red.bytes).min(data.len())];
+        if red.redundancy && red.celt_to_silk {
+            redundant_rng = self.decode_redundant(red_data);
+        }
+        self.celt.start = start_band;
+        if long_silk {
+            return self.decode_long(frame_size, &red, red_data, dec.rng, redundant_rng);
+        }
+        let mut ok = true;
+        if mode != MODE_SILK {
+            let (pf, _) = self.region.split_at_mut(F20 * ch);
+            let pcm: &mut [f32] = &mut bytemuck::cast_slice_mut::<u32, f32>(pf)[..frame_size * ch];
+            let cfs = F20.min(frame_size);
+            if mode != self.st.prev_mode && self.st.prev_mode > 0 && self.st.prev_redundancy == 0 {
+                self.celt.reset(self.celt_mem);
+            }
+            let r = celt::decode(
+                self.celt,
+                self.celt_mem,
+                Some(&data[..len]),
+                pcm,
+                cfs,
+                Some(&mut dec),
+                Self::celt_scratch(self.scratch),
+            );
+            ok = r.is_ok();
+        } else {
+            self.silk_only_pcm(frame_size, &red);
+        }
+        if mode != MODE_CELT || red.redundancy || red.transition {
+            redundant_rng = self.mix_extras(frame_size, audiosize, silk_words, &red, red_data, redundant_rng);
+        }
+        if self.st.decode_gain != 0 {
+            let pcm: &mut [f32] =
+                &mut bytemuck::cast_slice_mut::<u32, f32>(&mut self.region[..frame_size * ch])[..];
+            let gain = celt::math::exp2(6.488_140_8e-4 * self.st.decode_gain as f32);
+            for v in pcm.iter_mut() {
+                *v *= gain;
+            }
+        }
+        self.st.range_final = if len <= 1 { 0 } else { dec.rng ^ redundant_rng };
+        self.st.prev_mode = mode;
+        self.st.prev_redundancy = i32::from(red.redundancy && !red.celt_to_silk);
+        if !ok {
+            for v in bytemuck::cast_slice_mut::<u32, f32>(&mut self.region[..frame_size * ch]).iter_mut() {
+                *v = 0.0;
+            }
+        }
+        self.float_to_i16(frame_size);
+        frame_size
+    }
+
+    /// The SILK part of a SILK or hybrid frame, then its redundancy header.
+    /// Redundancy cancels the transition decided before; a transition still
+    /// pending (CELT to SILK/hybrid) is concealed now.
+    #[inline(never)]
+    fn silk_part(
+        &mut self,
+        dec: &mut EcDec<'_>,
+        len: usize,
+        audiosize: usize,
+        silk_words: (usize, usize),
+        transition: bool,
+    ) -> Red {
+        let mode = self.st.mode;
+        let bandwidth = self.st.bandwidth;
+        let frame_size = audiosize;
+        let mut len = len;
+        if self.st.prev_mode == MODE_CELT {
+            self.silk.reset();
+        }
+        self.st.silk_payload_ms = 10.max((1000 * audiosize / 48000) as i32);
+        self.st.silk_channels_internal = self.st.stream_channels;
+        self.st.silk_internal_rate = if mode == MODE_SILK {
+            match bandwidth {
+                1101 => 8000,
+                1102 => 12000,
+                _ => 16000,
+            }
+        } else {
+            16000
+        };
+        self.silk_run(dec, false, frame_size, silk_words);
         let mut redundancy = false;
         let mut celt_to_silk = false;
         let mut redundancy_bytes = 0usize;
-        if mode != MODE_CELT && dec.tell() + 17 + 20 * i32::from(mode == MODE_HYBRID) <= 8 * len as i32 {
+        if dec.tell() + 17 + 20 * i32::from(mode == MODE_HYBRID) <= 8 * len as i32 {
             redundancy = if mode == MODE_HYBRID { dec.bit_logp(12) } else { true };
             if redundancy {
                 celt_to_silk = dec.bit_logp(1);
@@ -374,175 +467,148 @@ impl OpusDec<'_> {
                 dec.storage = dec.storage.saturating_sub(redundancy_bytes as u32);
             }
         }
-        if mode != MODE_CELT {
-            start_band = 17;
-        }
-        if redundancy {
-            transition = false;
-        }
-        if transition && mode != MODE_CELT {
+        let transition = transition && !redundancy;
+        if transition {
             self.decode_lost(F5.min(audiosize), Dest::Transition);
         }
-        if bandwidth != 0 {
-            self.set_celt_end(bandwidth);
-        }
-        self.celt.stream_channels = self.st.stream_channels;
-        let mut redundant_rng = 0u32;
-        let red_data = &data[len.min(data.len())..(len + redundancy_bytes).min(data.len())];
-        if redundancy && celt_to_silk {
+        Red { len, redundancy, celt_to_silk, bytes: redundancy_bytes, transition }
+    }
+
+    /// The redundant 5 ms CELT frame into `redundant`; returns its final
+    /// range.
+    #[inline(never)]
+    fn decode_redundant(&mut self, red_data: &[u8]) -> u32 {
+        let ch = self.channels();
+        self.celt.start = 0;
+        let _ = celt::decode(
+            self.celt,
+            self.celt_mem,
+            Some(red_data),
+            &mut self.redundant[..F5 * ch],
+            F5,
+            None,
+            Self::celt_scratch(self.scratch),
+        );
+        self.celt.rng
+    }
+
+    /// A SILK-only frame longer than 20 ms: no CELT frame; the i16 region
+    /// is post-processed in float chunks.
+    #[inline(never)]
+    fn decode_long(
+        &mut self,
+        frame_size: usize,
+        red: &Red,
+        red_data: &[u8],
+        dec_rng: u32,
+        mut redundant_rng: u32,
+    ) -> usize {
+        let ch = self.channels();
+        let mode = self.st.mode;
+        let (redundancy, celt_to_silk) = (red.redundancy, red.celt_to_silk);
+        // The fade-out goes to the transition buffer: no transition is
+        // pending when the previous frame was hybrid and this one SILK.
+        let use_fade =
+            self.st.prev_mode == MODE_HYBRID && !(redundancy && celt_to_silk && self.st.prev_redundancy != 0);
+        if use_fade {
+            // Hybrid -> SILK: the CELT MDCT fades out over 2.5 ms.
             self.celt.start = 0;
+            let silence = [0xFFu8, 0xFF];
             let _ = celt::decode(
                 self.celt,
                 self.celt_mem,
-                Some(red_data),
-                &mut self.redundant[..F5 * ch],
-                F5,
+                Some(&silence),
+                &mut self.transition[..F2_5 * ch],
+                F2_5,
                 None,
                 Self::celt_scratch(self.scratch),
             );
-            redundant_rng = self.celt.rng;
         }
-        self.celt.start = start_band;
-        let mut ok = true;
-        if long_silk {
-            // SILK-only frame longer than 20 ms: no CELT frame; the i16
-            // region is post-processed in float chunks.
-            // The fade-out goes to the transition buffer: no transition is
-            // pending when the previous frame was hybrid and this one SILK.
-            let use_fade = self.st.prev_mode == MODE_HYBRID
-                && !(redundancy && celt_to_silk && self.st.prev_redundancy != 0);
-            if use_fade {
-                // Hybrid -> SILK: the CELT MDCT fades out over 2.5 ms.
-                self.celt.start = 0;
-                let silence = [0xFFu8, 0xFF];
-                let _ = celt::decode(
-                    self.celt,
-                    self.celt_mem,
-                    Some(&silence),
-                    &mut self.transition[..F2_5 * ch],
-                    F2_5,
-                    None,
-                    Self::celt_scratch(self.scratch),
-                );
-            }
-            if redundancy && !celt_to_silk {
-                self.celt.reset(self.celt_mem);
-                self.celt.start = 0;
-                let _ = celt::decode(
-                    self.celt,
-                    self.celt_mem,
-                    Some(red_data),
-                    &mut self.redundant[..F5 * ch],
-                    F5,
-                    None,
-                    Self::celt_scratch(self.scratch),
-                );
-                redundant_rng = self.celt.rng;
-            }
-            self.finish_long(frame_size, use_fade, redundancy, celt_to_silk, transition);
-            self.st.range_final = dec.rng ^ redundant_rng;
-            self.st.prev_mode = mode;
-            self.st.prev_redundancy = i32::from(redundancy && !celt_to_silk);
-            return frame_size;
+        if redundancy && !celt_to_silk {
+            self.celt.reset(self.celt_mem);
+            redundant_rng = self.decode_redundant(red_data);
         }
-        {
-            let (pf, _) = self.region.split_at_mut(F20 * ch);
-            let pcm: &mut [f32] = &mut bytemuck::cast_slice_mut::<u32, f32>(pf)[..frame_size * ch];
-            if mode != MODE_SILK {
-                let cfs = F20.min(frame_size);
-                if mode != self.st.prev_mode && self.st.prev_mode > 0 && self.st.prev_redundancy == 0 {
-                    self.celt.reset(self.celt_mem);
-                }
-                let r = celt::decode(
-                    self.celt,
-                    self.celt_mem,
-                    Some(&data[..len]),
-                    pcm,
-                    cfs,
-                    Some(&mut dec),
-                    Self::celt_scratch(self.scratch),
-                );
-                ok = r.is_ok();
-            } else {
-                pcm.fill(0.0);
-                if self.st.prev_mode == MODE_HYBRID
-                    && !(redundancy && celt_to_silk && self.st.prev_redundancy != 0)
-                {
-                    self.celt.start = 0;
-                    let silence = [0xFFu8, 0xFF];
-                    let _ = celt::decode(
-                        self.celt,
-                        self.celt_mem,
-                        Some(&silence),
-                        &mut pcm[..F2_5 * ch],
-                        F2_5,
-                        None,
-                        Self::celt_scratch(self.scratch),
-                    );
-                }
-            }
-        }
-        {
-            let (pf, ps) = self.region.split_at_mut(F20 * ch);
-            let pcm: &mut [f32] = &mut bytemuck::cast_slice_mut::<u32, f32>(pf)[..frame_size * ch];
-            if mode != MODE_CELT {
-                let silk: &[i16] = bytemuck::cast_slice(&ps[..silk_words.1 - silk_words.0]);
-                for (p, &s) in pcm.iter_mut().zip(silk) {
-                    *p += (1.0 / 32768.0) * f32::from(s);
-                }
-            }
-            if redundancy && !celt_to_silk {
-                self.celt.reset(self.celt_mem);
-                self.celt.start = 0;
-                let _ = celt::decode(
-                    self.celt,
-                    self.celt_mem,
-                    Some(red_data),
-                    &mut self.redundant[..F5 * ch],
-                    F5,
-                    None,
-                    Self::celt_scratch(self.scratch),
-                );
-                redundant_rng = self.celt.rng;
-                let o = ch * (frame_size - F2_5);
-                fade_over_in1(&mut pcm[o..], &self.redundant[ch * F2_5..], F2_5, ch);
-            }
-            if redundancy && celt_to_silk && (self.st.prev_mode != MODE_SILK || self.st.prev_redundancy != 0)
-            {
-                pcm[..F2_5 * ch].copy_from_slice(&self.redundant[..F2_5 * ch]);
-                let o = ch * F2_5;
-                fade_over_in2(&self.redundant[ch * F2_5..], &mut pcm[o..], F2_5, ch);
-            }
-            if transition {
-                if audiosize >= F5 {
-                    pcm[..F2_5 * ch].copy_from_slice(&self.transition[..F2_5 * ch]);
-                    let o = ch * F2_5;
-                    fade_over_in2(&self.transition[ch * F2_5..], &mut pcm[o..], F2_5, ch);
-                } else {
-                    fade_over_in2(&self.transition[..], pcm, F2_5, ch);
-                }
-            }
-        }
-        {
-            let pcm: &mut [f32] =
-                &mut bytemuck::cast_slice_mut::<u32, f32>(&mut self.region[..frame_size * ch])[..];
-            if self.st.decode_gain != 0 {
-                let gain = celt::math::exp2(6.488_140_8e-4 * self.st.decode_gain as f32);
-                for v in pcm.iter_mut() {
-                    *v *= gain;
-                }
-            }
-        }
-        self.st.range_final = if len <= 1 { 0 } else { dec.rng ^ redundant_rng };
+        self.finish_long(frame_size, use_fade, redundancy, celt_to_silk, red.transition);
+        self.st.range_final = dec_rng ^ redundant_rng;
         self.st.prev_mode = mode;
         self.st.prev_redundancy = i32::from(redundancy && !celt_to_silk);
-        if !ok {
-            for v in bytemuck::cast_slice_mut::<u32, f32>(&mut self.region[..frame_size * ch]).iter_mut() {
-                *v = 0.0;
+        frame_size
+    }
+
+    /// The float frame of a SILK-only frame: silence, plus the CELT fade-out
+    /// after a hybrid frame.
+    #[inline(never)]
+    fn silk_only_pcm(&mut self, frame_size: usize, red: &Red) {
+        let ch = self.channels();
+        let (pf, _) = self.region.split_at_mut(F20 * ch);
+        let pcm: &mut [f32] = &mut bytemuck::cast_slice_mut::<u32, f32>(pf)[..frame_size * ch];
+        pcm.fill(0.0);
+        if self.st.prev_mode == MODE_HYBRID
+            && !(red.redundancy && red.celt_to_silk && self.st.prev_redundancy != 0)
+        {
+            self.celt.start = 0;
+            let silence = [0xFFu8, 0xFF];
+            let _ = celt::decode(
+                self.celt,
+                self.celt_mem,
+                Some(&silence),
+                &mut pcm[..F2_5 * ch],
+                F2_5,
+                None,
+                Self::celt_scratch(self.scratch),
+            );
+        }
+    }
+
+    /// Add the SILK output, apply the redundant frames and the transition
+    /// fade (not needed by CELT-only frames without a transition); returns
+    /// the redundant frame's final range.
+    #[inline(never)]
+    fn mix_extras(
+        &mut self,
+        frame_size: usize,
+        audiosize: usize,
+        silk_words: (usize, usize),
+        red: &Red,
+        red_data: &[u8],
+        mut redundant_rng: u32,
+    ) -> u32 {
+        let ch = self.channels();
+        let mode = self.st.mode;
+        let (redundancy, celt_to_silk, transition) = (red.redundancy, red.celt_to_silk, red.transition);
+        if mode != MODE_CELT {
+            let (pf, ps) = self.region.split_at_mut(F20 * ch);
+            let pcm: &mut [f32] = &mut bytemuck::cast_slice_mut::<u32, f32>(pf)[..frame_size * ch];
+            let silk: &[i16] = bytemuck::cast_slice(&ps[..silk_words.1 - silk_words.0]);
+            for (p, &s) in pcm.iter_mut().zip(silk) {
+                *p += (1.0 / 32768.0) * f32::from(s);
             }
         }
-        self.float_to_i16(frame_size);
-        frame_size
+        if redundancy && !celt_to_silk {
+            self.celt.reset(self.celt_mem);
+            redundant_rng = self.decode_redundant(red_data);
+            let (pf, _) = self.region.split_at_mut(F20 * ch);
+            let pcm: &mut [f32] = &mut bytemuck::cast_slice_mut::<u32, f32>(pf)[..frame_size * ch];
+            let o = ch * (frame_size - F2_5);
+            fade_over_in1(&mut pcm[o..], &self.redundant[ch * F2_5..], F2_5, ch);
+        }
+        let (pf, _) = self.region.split_at_mut(F20 * ch);
+        let pcm: &mut [f32] = &mut bytemuck::cast_slice_mut::<u32, f32>(pf)[..frame_size * ch];
+        if redundancy && celt_to_silk && (self.st.prev_mode != MODE_SILK || self.st.prev_redundancy != 0) {
+            pcm[..F2_5 * ch].copy_from_slice(&self.redundant[..F2_5 * ch]);
+            let o = ch * F2_5;
+            fade_over_in2(&self.redundant[ch * F2_5..], &mut pcm[o..], F2_5, ch);
+        }
+        if transition {
+            if audiosize >= F5 {
+                pcm[..F2_5 * ch].copy_from_slice(&self.transition[..F2_5 * ch]);
+                let o = ch * F2_5;
+                fade_over_in2(&self.transition[ch * F2_5..], &mut pcm[o..], F2_5, ch);
+            } else {
+                fade_over_in2(&self.transition[..], pcm, F2_5, ch);
+            }
+        }
+        redundant_rng
     }
 
     /// Long SILK-only frames: the SILK i16 samples are in the whole region;
@@ -620,23 +686,26 @@ impl OpusDec<'_> {
     /// to `i16` at the start of the region, in place.
     fn float_to_i16(&mut self, n: usize) {
         let ch = self.channels();
+        let total = n * ch;
         {
-            let pcm: &mut [f32] = bytemuck::cast_slice_mut(&mut self.region[..n * ch]);
+            let pcm: &mut [f32] = bytemuck::cast_slice_mut(&mut self.region[..total]);
             let mut mem = self.st.softclip_mem;
             soft_clip(pcm, n, ch, &mut mem);
             self.st.softclip_mem = mem;
         }
-        let total = n * ch;
-        let mut k = 0;
-        while k < total {
-            let m = 32.min(total - k);
-            let mut tmp = [0f32; 32];
-            tmp[..m].copy_from_slice(bytemuck::cast_slice::<u32, f32>(&self.region[k..k + m]));
-            let out: &mut [i16] = bytemuck::cast_slice_mut(&mut self.region[..total.div_ceil(2) + 1]);
-            for j in 0..m {
-                out[k + j] = float2int16(tmp[j]);
-            }
-            k += m;
+        // Word `j` receives samples `2j` and `2j + 1` (little-endian halves):
+        // both were read at step `j / 2 <= j` or are read now, so nothing is
+        // overwritten before it is read.
+        let words = &mut self.region[..total];
+        let pairs = total / 2;
+        for j in 0..pairs {
+            let a = float2int16(f32::from_bits(words[2 * j])) as u16;
+            let b = float2int16(f32::from_bits(words[2 * j + 1])) as u16;
+            words[j] = u32::from(a) | u32::from(b) << 16;
+        }
+        if total % 2 == 1 {
+            let a = float2int16(f32::from_bits(words[total - 1])) as u16;
+            words[pairs] = (words[pairs] & 0xFFFF_0000) | u32::from(a);
         }
     }
 

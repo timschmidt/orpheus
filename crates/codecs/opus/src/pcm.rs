@@ -10,7 +10,9 @@ pub fn float2int16(x: f32) -> i16 {
     // 1.5 * 2^23: adding and subtracting it rounds to an integer (ties to
     // even) for |x| < 2^22.
     const MAGIC: f32 = 12_582_912.0;
-    ((x + MAGIC) - MAGIC) as i16
+    // In range after the clamp: through `i32` (one `vcvt`, which saturates
+    // and maps NaN to 0 by itself) instead of a saturating `as i16`.
+    ((x + MAGIC) - MAGIC) as i32 as i16
 }
 
 /// `opus_pcm_soft_clip` on interleaved `x` (`n` frames of `c` channels).
@@ -18,6 +20,19 @@ pub fn soft_clip(x: &mut [f32], n: usize, c: usize, mem: &mut [f32; 2]) {
     if c < 1 || n < 1 {
         return;
     }
+    // Nothing beyond ±1 (NaN included in the slow path) and no clipping
+    // carried over from the previous frame: the clipper would change
+    // nothing and leave its state at 0. The common case, one pass.
+    if mem.iter().take(c).all(|&m| m == 0.0) && x[..n * c].iter().all(|v| v.abs() <= 1.0) {
+        return;
+    }
+    soft_clip_slow(x, n, c, mem);
+}
+
+/// The clipper proper (out of line: rarely runs, and stays out of the
+/// per-frame code in hot.toml).
+#[inline(never)]
+fn soft_clip_slow(x: &mut [f32], n: usize, c: usize, mem: &mut [f32; 2]) {
     for v in x[..n * c].iter_mut() {
         *v = v.clamp(-2.0, 2.0);
     }

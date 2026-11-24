@@ -201,6 +201,13 @@ static WRITTEN: AtomicU32 = AtomicU32::new(0);
 pub static T_DECODE: AtomicU32 = AtomicU32::new(0);
 pub static T_FILL: AtomicU32 = AtomicU32::new(0);
 pub static T_SERVE: AtomicU32 = AtomicU32::new(0);
+/// This track's decoder calls (`status` `dec:`): count, µs in them (sum,
+/// largest) and pager line loads taken inside them — the decoder's own
+/// paging, apart from the playback loop's (AU-8, Opus on the player).
+static DEC_N: AtomicU32 = AtomicU32::new(0);
+static DEC_US: AtomicU32 = AtomicU32::new(0);
+static DEC_MAX_US: AtomicU32 = AtomicU32::new(0);
+static DEC_LOADS: AtomicU32 = AtomicU32::new(0);
 /// The last gapless track change (`status`, µs and counts): PCM frames
 /// queued when the decoder ended (the headroom), time from there to the
 /// next track's first block, pager line loads in that time, underruns of
@@ -608,14 +615,15 @@ impl PcmOut {
 
 // ------------------------------------------------------------------ player
 
-/// Largest measured need: Opus stereo 59,488 B, Vorbis q10 55,140 B.
+/// Largest measured need: Opus stereo 60,008 B (59,488 B + the 520-B PVQ
+/// row, AU-8), Vorbis q10 55,140 B.
 const ARENA: usize = 64 * 1024;
 /// Arena bytes kept free of the decoder for file I/O while it plays (the
 /// text window, the player state image).
 const SPARE: usize = 2048;
 /// The largest decoder, the spare bytes and the music library's build
 /// state (the arena's last bytes, `crate::library::STATE`) fit.
-const _: () = assert!(59_488 + SPARE + crate::library::STATE <= ARENA);
+const _: () = assert!(60_008 + SPARE + crate::library::STATE <= ARENA);
 #[repr(C, align(8))]
 struct ArenaBuf([u8; ARENA]);
 static mut ARENA_BUF: ArenaBuf = ArenaBuf([0; ARENA]);
@@ -1171,11 +1179,16 @@ async fn play_file(
             break 'play failed(srv, driven, b"decoder too slow for this player");
         }
         let d0 = time::now_us();
+        let l0 = pager_loads();
         mark(4);
         let step = dec.decode(ring);
         let dt = time::now_us() - d0;
         decode_us += dt;
         T_DECODE.fetch_add(dt as u32, Ordering::Relaxed);
+        DEC_N.fetch_add(1, Ordering::Relaxed);
+        DEC_US.fetch_add(dt as u32, Ordering::Relaxed);
+        DEC_MAX_US.fetch_max(dt as u32, Ordering::Relaxed);
+        DEC_LOADS.fetch_add(pager_loads().wrapping_sub(l0), Ordering::Relaxed);
         match step {
             Ok(Step::Pcm(block)) => {
                 if join == 1 {
@@ -1614,7 +1627,7 @@ async fn run_player(
     let mut out = PcmOut::new();
     let mut next = Some(first);
     while let Some(o) = next.take() {
-        for c in [&FRAMES, &UNDERRUNS, &SLOW_UNDERRUNS, &CORRUPT] {
+        for c in [&FRAMES, &UNDERRUNS, &SLOW_UNDERRUNS, &CORRUPT, &DEC_N, &DEC_US, &DEC_MAX_US, &DEC_LOADS] {
             c.store(0, Ordering::Relaxed);
         }
         critical_section::with(|cs| LEDGER.borrow(cs).borrow_mut().reset());
@@ -2080,6 +2093,16 @@ pub fn status_reply() {
                 v => w.u(u64::from(v)),
             };
         }
+        // This track's decoder calls: count, µs (sum, largest), pager line
+        // loads inside them.
+        w.s(t!(b" dec: n="))
+            .u(u64::from(DEC_N.load(Ordering::Relaxed)))
+            .s(t!(b" us="))
+            .u(u64::from(DEC_US.load(Ordering::Relaxed)))
+            .s(t!(b" max_us="))
+            .u(u64::from(DEC_MAX_US.load(Ordering::Relaxed)))
+            .s(t!(b" loads="))
+            .u(u64::from(DEC_LOADS.load(Ordering::Relaxed)));
         // This track's underruns by cause (they add up to `underruns`).
         let ub = critical_section::with(|cs| LEDGER.borrow(cs).borrow().by());
         w.s(t!(b" ub: join="))
@@ -2235,7 +2258,7 @@ pub async fn audio() {
         } else if let Some(p) = text.strip_prefix("ls ") {
             ls(&mut vol, p.trim()).await;
         } else if let Some(p) = text.strip_prefix("play ") {
-            for s in [&FRAMES, &UNDERRUNS, &SLOW_UNDERRUNS, &CORRUPT] {
+            for s in [&FRAMES, &UNDERRUNS, &SLOW_UNDERRUNS, &CORRUPT, &DEC_N, &DEC_US, &DEC_MAX_US, &DEC_LOADS] {
                 s.store(0, Ordering::Relaxed);
             }
             let r =

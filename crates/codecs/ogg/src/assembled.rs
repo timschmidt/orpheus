@@ -16,9 +16,9 @@
 //! after the packets completed on the found page, so the next packet starts
 //! exactly at that page's granule position.
 
-use orpheus_audio::{ByteSource, MAX_PEEK, View};
+use orpheus_audio::{ByteSource, View};
 
-use crate::{HEADER_MIN, PageHeader, Sync, crc_page_bytes, crc_update, sync_page};
+use crate::{CHECKED_PAGE, HEADER_MIN, PageHeader, Sync, crc_page_bytes, crc_update, sync_page};
 
 /// One reassembled packet (its bytes are in the caller's buffer).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,7 +51,7 @@ struct Cur {
     seg_done: usize,
     /// Index of the last segment that ends a packet (`segments` if none).
     last_end: usize,
-    /// Running CRC (pages larger than `MAX_PEEK`).
+    /// Running CRC (pages larger than [`CHECKED_PAGE`]).
     crc: u32,
     checked: bool,
     /// Packets ended on this page so far.
@@ -163,7 +163,7 @@ impl PacketReader {
         let n = usize::from(h.segments);
         v.copy_to(HEADER_MIN, &mut lacing[..n]);
         let last_end = (0..n).rev().find(|&i| lacing[i] < 255).unwrap_or(n);
-        let checked = h.total() <= MAX_PEEK;
+        let checked = h.total() <= CHECKED_PAGE;
         let crc = if checked { 0 } else { crc_page_bytes(v.take(h.header_len)) };
         src.consume(h.header_len);
         let own = self.selected == Some(h.serial);
@@ -219,7 +219,7 @@ impl PacketReader {
                         self.skip = 0;
                         return Next::End;
                     }
-                    return Next::NeedData(self.skip.min(MAX_PEEK as u64) as usize);
+                    return Next::NeedData(self.skip.min(CHECKED_PAGE as u64) as usize);
                 }
             }
             let Some(cur) = self.cur.as_mut() else {
@@ -270,7 +270,7 @@ impl PacketReader {
                     self.cur = None;
                     return Next::End;
                 }
-                return Next::NeedData(want.min(MAX_PEEK));
+                return Next::NeedData(want.min(CHECKED_PAGE));
             }
             let dropping = self.discard || cur.skip_completed && cur.seg <= cur.last_end;
             if let Some(v) = View::peek(src, k) {

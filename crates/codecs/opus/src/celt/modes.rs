@@ -32,6 +32,8 @@ pub struct FftState {
     pub shift: i32,
     pub factors: [i16; 16],
     pub bitrev: &'static [i16],
+    /// The twiddles of the inverse MDCT of this size (`4 * nfft` points).
+    pub trig: &'static [f32],
 }
 
 pub static FFT_STATES: [FftState; 4] = [
@@ -41,6 +43,7 @@ pub static FFT_STATES: [FftState; 4] = [
         shift: -1,
         factors: [5, 96, 3, 32, 4, 8, 2, 4, 4, 1, 0, 0, 0, 0, 0, 0],
         bitrev: &BITREV480,
+        trig: &MDCT_TRIG_1920,
     },
     FftState {
         nfft: 240,
@@ -48,6 +51,7 @@ pub static FFT_STATES: [FftState; 4] = [
         shift: 1,
         factors: [5, 48, 3, 16, 4, 4, 4, 1, 0, 0, 0, 0, 0, 0, 0, 0],
         bitrev: &BITREV240,
+        trig: &MDCT_TRIG_960,
     },
     FftState {
         nfft: 120,
@@ -55,6 +59,7 @@ pub static FFT_STATES: [FftState; 4] = [
         shift: 2,
         factors: [5, 24, 3, 8, 2, 4, 4, 1, 0, 0, 0, 0, 0, 0, 0, 0],
         bitrev: &BITREV120,
+        trig: &MDCT_TRIG_480,
     },
     FftState {
         nfft: 60,
@@ -62,6 +67,7 @@ pub static FFT_STATES: [FftState; 4] = [
         shift: 3,
         factors: [5, 12, 3, 4, 4, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         bitrev: &BITREV60,
+        trig: &MDCT_TRIG_240,
     },
 ];
 
@@ -85,7 +91,7 @@ const fn pvq_u() -> [[u32; PVQ_COLS]; 15] {
 
 /// Row starts of libopus's packed `CELT_PVQ_U_DATA` (row `n` holds U(n, k)
 /// for `n <= k <= ROW_OFF[n + 1] - ROW_OFF[n] + n`).
-const ROW_OFF: [usize; 16] =
+static ROW_OFF: [usize; 16] =
     [0, 176, 351, 525, 698, 870, 1041, 1131, 1178, 1207, 1226, 1240, 1248, 1254, 1257, 1258];
 const PVQ_DATA_LEN: usize = 1272;
 

@@ -14,7 +14,93 @@ fn pvq_v(n: usize, k: usize) -> u32 {
     pvq_u_at(n, k).wrapping_add(pvq_u_at(n, k + 1))
 }
 
-/// `cwrsi`: index → pulse vector; returns the squared norm.
+/// Largest pulse count of a PVQ vector (`get_pulses` of the largest cache
+/// index, 40).
+pub const MAX_K: usize = 128;
+
+/// Words of the row of U(N, K) the row computation needs (taken from the
+/// CELT scratch in the arena, not the stack).
+pub const ROW_LEN: usize = MAX_K + 2;
+
+/// `unext` on `ui` (all of it): the next row of
+/// `u[i][j] = u[i-1][j] + u[i][j-1] + u[i-1][j-1]` (libopus `celt/cwrs.c`,
+/// the `SMALL_FOOTPRINT` build).
+fn unext(ui: &mut [u32], mut ui0: u32) {
+    let len = ui.len();
+    if len == 0 {
+        return;
+    }
+    let mut prev = ui[0];
+    for j in 1..len {
+        let cur = ui[j];
+        let ui1 = cur.wrapping_add(prev).wrapping_add(ui0);
+        ui[j - 1] = ui0;
+        ui0 = ui1;
+        prev = cur;
+    }
+    ui[len - 1] = ui0;
+}
+
+/// `uprev` on `ui` (all of it): the previous row of the same recurrence.
+fn uprev(ui: &mut [u32], mut ui0: u32) {
+    let len = ui.len();
+    if len == 0 {
+        return;
+    }
+    let mut prev = ui[0];
+    for j in 1..len {
+        let cur = ui[j];
+        let ui1 = cur.wrapping_sub(prev).wrapping_sub(ui0);
+        ui[j - 1] = ui0;
+        ui0 = ui1;
+        prev = cur;
+    }
+    ui[len - 1] = ui0;
+}
+
+/// `ncwrs_urow`: U(n, 0..k + 2) into `u`; returns V(n, k) (2 <= n,
+/// 1 <= k <= `MAX_K`).
+fn ncwrs_urow(n: usize, k: usize, u: &mut [u32]) -> u32 {
+    let row = &mut u[..k + 2];
+    row[0] = 0;
+    row[1] = 1;
+    for (j, v) in row.iter_mut().enumerate().skip(2) {
+        *v = (2 * j - 1) as u32;
+    }
+    for _ in 2..n {
+        unext(&mut row[1..], 1);
+    }
+    row[k].wrapping_add(row[k + 1])
+}
+
+/// `cwrsi` over a row computed by [`ncwrs_urow`] (the `SMALL_FOOTPRINT`
+/// build): the same vector as the table version, without the 5 KB U(N, K)
+/// table in each frame's paged-rodata working set. Returns the squared
+/// norm (a sum of integers below 2^24: exact in any order).
+fn cwrsi_row(n: usize, mut k: usize, mut i: u32, y: &mut [i32], u: &mut [u32]) -> f32 {
+    let mut yy = 0f32;
+    for d in y.iter_mut().take(n) {
+        let p = u[k + 1];
+        let s = -i32::from(i >= p);
+        i = i.wrapping_sub(p & s as u32);
+        let yj = k as i32;
+        let mut p = u[k];
+        while p > i && k > 0 {
+            k -= 1;
+            p = u[k];
+        }
+        i = i.wrapping_sub(p);
+        let val = (yj - k as i32 + s) ^ s;
+        *d = val;
+        yy += val.wrapping_mul(val) as f32;
+        uprev(&mut u[..k + 2], 0);
+    }
+    yy
+}
+
+/// `cwrsi`: index → pulse vector; returns the squared norm (table version:
+/// kept for inputs outside the row computation's range, which valid
+/// streams do not produce).
 fn cwrsi(mut n: usize, mut k: i32, mut i: u32, y: &mut [i32]) -> f32 {
     let mut yy = 0f32;
     let mut pos = 0usize;
@@ -100,7 +186,12 @@ fn cwrsi(mut n: usize, mut k: i32, mut i: u32, y: &mut [i32]) -> f32 {
 }
 
 /// `decode_pulses`.
-pub fn decode_pulses(y: &mut [i32], n: usize, k: i32, dec: &mut EcDec<'_>) -> f32 {
+pub fn decode_pulses(y: &mut [i32], n: usize, k: i32, dec: &mut EcDec<'_>, row: &mut [u32]) -> f32 {
+    if n >= 2 && n <= y.len() && (1..=MAX_K as i32).contains(&k) && row.len() >= k as usize + 2 {
+        let v = ncwrs_urow(n, k as usize, row);
+        let idx = dec.uint(v.max(2));
+        return cwrsi_row(n, k as usize, idx, y, row);
+    }
     let v = pvq_v(n, k.max(0) as usize);
     let idx = dec.uint(v.max(2));
     cwrsi(n, k, idx, y)
@@ -135,7 +226,7 @@ fn exp_rotation1(x: &mut [f32], len: usize, stride: usize, c: f32, s: f32) {
 
 /// `exp_rotation` (spreading); `dir` < 0 for the decoder.
 pub fn exp_rotation(x: &mut [f32], len: usize, dir: i32, stride: usize, k: i32, spread: i32) {
-    const SPREAD_FACTOR: [i32; 3] = [15, 10, 5];
+    static SPREAD_FACTOR: [i32; 3] = [15, 10, 5];
     if 2 * k >= len as i32 || spread == 0 || stride == 0 {
         return;
     }
@@ -194,9 +285,10 @@ pub fn alg_unquant(
     dec: &mut EcDec<'_>,
     gain: f32,
     iy: &mut [i32],
+    row: &mut [u32],
 ) -> u32 {
     let n = n.min(MAX_N).min(x.len()).min(iy.len());
-    let ryy = decode_pulses(&mut iy[..n], n, k, dec);
+    let ryy = decode_pulses(&mut iy[..n], n, k, dec, row);
     let g = rsqrt(ryy) * gain;
     for (xv, &y) in x[..n].iter_mut().zip(&iy[..n]) {
         *xv = g * y as f32;
@@ -222,5 +314,41 @@ pub fn renormalise_vector(x: &mut [f32], gain: f32) {
     let g = rsqrt(e) * gain;
     for v in x.iter_mut() {
         *v *= g;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::vec;
+
+    /// The row computation decodes every index to the table version's
+    /// vector wherever the U(N, K) table is defined and V(N, K) fits.
+    #[test]
+    fn computed_rows_match_the_table() {
+        let mut checked = 0;
+        for n in 2..=MAX_N {
+            for k in 1..=MAX_K {
+                let v = pvq_v(n, k);
+                let next = pvq_u_at(n, k + 1);
+                if v < 2 || pvq_u_at(n, k) == 0 || next == 0 || next < pvq_u_at(n, k) {
+                    continue;
+                }
+                let mut u = [0u32; ROW_LEN];
+                assert_eq!(ncwrs_urow(n, k, &mut u), v, "V({n}, {k})");
+                for i in [0, 1, v / 3, v / 2, v - 2, v - 1] {
+                    let mut a = vec![0i32; n];
+                    let mut b = vec![0i32; n];
+                    let ea = cwrsi(n, k as i32, i, &mut a);
+                    let mut u = [0u32; ROW_LEN];
+                    ncwrs_urow(n, k, &mut u);
+                    let eb = cwrsi_row(n, k, i, &mut b, &mut u);
+                    assert_eq!(a, b, "n {n} k {k} i {i}");
+                    assert_eq!(ea.to_bits(), eb.to_bits());
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 9_000, "{checked}");
     }
 }

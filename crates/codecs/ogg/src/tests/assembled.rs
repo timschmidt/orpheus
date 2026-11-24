@@ -86,7 +86,7 @@ fn read_all(file: &[u8], ring: usize, chunk: usize) -> (Vec<(Vec<u8>, Packet)>, 
                 out.push((buf[..p.len].to_vec(), p));
             }
             Next::NeedData(n) => {
-                assert!(n > src.available() && n <= MAX_PEEK);
+                assert!(n > src.available() && n <= CHECKED_PAGE);
                 assert!(!src.at_end());
                 if chunk == 0 { src.refill() } else { src.trickle(chunk) }
             }
@@ -119,6 +119,32 @@ fn reassembles_across_pages_and_ring_wraps() {
         }
         assert!(got.last().is_some_and(|(_, p)| p.eos && p.granule == Some(1000)));
     }
+}
+
+/// One-second pages of a 96–256 kbit/s Opus file are 10–28 KB: they play
+/// through a ring smaller than the page (the firmware's 16 KiB), read
+/// packet by packet, with `NeedData` never above `CHECKED_PAGE`.
+#[test]
+fn pages_larger_than_the_ring() {
+    let lens: Vec<usize> = (0..120).map(|i| 200 + (i * 37) % 400).collect();
+    let (file, packets) = mux(0x5151, &lens, 30_000);
+    assert!(file.len() > 2 * 16 * 1024);
+    for (ring, chunk) in [(16 * 1024, 4096), (CHECKED_PAGE + 1, 1531), (CHECKED_PAGE + 1, 7)] {
+        let (got, corrupt) = read_all(&file, ring, chunk);
+        assert_eq!(corrupt, 0, "ring {ring} chunk {chunk}");
+        assert_eq!(got.len(), packets.len() + 1, "ring {ring} chunk {chunk}");
+        for (i, (g, p)) in got[1..].iter().enumerate() {
+            assert_eq!(g, &packets[i], "packet {i}");
+            assert!(!p.after_gap);
+        }
+    }
+    // A damaged byte in a large page is reported once its packets are out.
+    let mut bad = file.clone();
+    let at = bad.len() / 2;
+    bad[at] ^= 0x40;
+    let (got, corrupt) = read_all(&bad, 16 * 1024, 4096);
+    assert!(corrupt > 0);
+    assert_eq!(got.len(), packets.len() + 1);
 }
 
 #[test]

@@ -1,6 +1,6 @@
 use std::vec::Vec;
 
-use orpheus_audio::SliceSource;
+use orpheus_audio::{MAX_PEEK, SliceSource};
 
 use crate::ranges::{Next, Packet, PageErr, Reader, peek_packets};
 use crate::*;

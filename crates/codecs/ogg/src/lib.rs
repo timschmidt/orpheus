@@ -21,10 +21,13 @@
 //!   stream hand-over and gap detection; after a [`Bisect`] it resumes
 //!   exactly at the found page's granule position.
 //!
-//! Pages up to [`MAX_PEEK`] bytes are CRC-checked before any of their bytes
-//! are used. Larger pages (up to 64 KiB, more than the ring can show at
-//! once) are taken from their header; the assembled reader checks their CRC
-//! as they stream past and reports a mismatch after their packets.
+//! Pages up to [`CHECKED_PAGE`] bytes are CRC-checked before any of their
+//! bytes are used. Larger pages (up to 64 KiB; ffmpeg and opusenc write
+//! one-second pages, 10–28 KB at 96–256 kbit/s) are taken from their header
+//! and read packet by packet, so the readers never ask the stream ring for
+//! more than [`CHECKED_PAGE`] bytes of page; the assembled reader checks
+//! their CRC as they stream past and reports a mismatch after their
+//! packets.
 //!
 //! `no_std`, no allocation, no `unsafe`, no floating point.
 
@@ -34,7 +37,7 @@
 #[cfg(test)]
 extern crate std;
 
-use orpheus_audio::{ByteSource, MAX_PEEK, View};
+use orpheus_audio::{ByteSource, View};
 
 pub mod assembled;
 pub mod ranges;
@@ -52,14 +55,25 @@ pub const FLAG_BOS: u8 = 2;
 pub const FLAG_EOS: u8 = 4;
 /// A page on which no packet ends carries this granule position (−1).
 pub const NO_GRANULE: u64 = u64::MAX;
+/// The largest page that is CRC-checked before any of its bytes are used,
+/// and so the most bytes a page reader asks the stream ring to hold
+/// (`NeedData`). Half the firmware's 16 KiB stream ring, which refills when
+/// it drops below half: such a page is always satisfiable, also with the
+/// next file's head read ahead behind it. Measured Ogg Opus pages (corpus,
+/// one-second pages): 1.0–2.5 KB SILK, 3–8 KB at ≤ 64 kbit/s (checked),
+/// 10–28 KB at 96–256 kbit/s (read packet by packet).
+pub const CHECKED_PAGE: usize = 8 * 1024;
 
-const fn crc_table() -> [u32; 256] {
-    let mut t = [0u32; 256];
+/// The CRC of each 4-bit value (a nibble at a time: 64 bytes instead of a
+/// 1 KiB byte table, which on the player is one paged rodata line less in
+/// every Ogg decoder's per-frame working set).
+const fn crc_table() -> [u32; 16] {
+    let mut t = [0u32; 16];
     let mut i = 0;
-    while i < 256 {
-        let mut c = (i as u32) << 24;
+    while i < 16 {
+        let mut c = (i as u32) << 28;
         let mut k = 0;
-        while k < 8 {
+        while k < 4 {
             c = if c & 0x8000_0000 != 0 { (c << 1) ^ 0x04C1_1DB7 } else { c << 1 };
             k += 1;
         }
@@ -69,13 +83,15 @@ const fn crc_table() -> [u32; 256] {
     t
 }
 
-static CRC: [u32; 256] = crc_table();
+static CRC: [u32; 16] = crc_table();
 
 /// Continue the Ogg CRC-32 over `data`.
 #[must_use]
 pub fn crc_update(mut crc: u32, data: &[u8]) -> u32 {
     for &b in data {
-        crc = (crc << 8) ^ CRC[usize::from((crc >> 24) as u8 ^ b)];
+        crc ^= u32::from(b) << 24;
+        crc = (crc << 4) ^ CRC[(crc >> 28) as usize];
+        crc = (crc << 4) ^ CRC[(crc >> 28) as usize];
     }
     crc
 }
@@ -177,8 +193,9 @@ impl PageHeader {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Next<P> {
     Packet(P),
-    /// Call again once `available() >= n` (at most [`MAX_PEEK`]) or the
-    /// source is at its end.
+    /// Call again once `available() >= n` (at most [`CHECKED_PAGE`] for
+    /// pages; a [`ranges`] packet spanning pages up to
+    /// [`orpheus_audio::MAX_PEEK`]) or the source is at its end.
     NeedData(usize),
     /// The stream ended (no further complete page of it).
     End,
@@ -194,8 +211,8 @@ pub(crate) enum Sync {
 }
 
 /// Find the next page at or after the read position, consuming junk before
-/// it. Pages up to `MAX_PEEK` bytes are returned only when complete and
-/// with a good CRC; larger ones from their header. The flag tells whether
+/// it. Pages up to [`CHECKED_PAGE`] bytes are returned only when complete
+/// and with a good CRC; larger ones from their header. The flag tells whether
 /// junk was skipped.
 pub(crate) fn sync_page(src: &mut dyn ByteSource) -> Sync {
     let mut junk = false;
@@ -210,12 +227,12 @@ pub(crate) fn sync_page(src: &mut dyn ByteSource) -> Sync {
                     src.consume(v.len());
                     return Sync::End;
                 } else {
-                    return Sync::Need(n.min(MAX_PEEK));
+                    return Sync::Need(n.min(CHECKED_PAGE));
                 }
             }
             Parse::Page(h) => {
                 let total = h.total();
-                if total > MAX_PEEK {
+                if total > CHECKED_PAGE {
                     return Sync::Page(h, junk);
                 }
                 if v.len() < total {
