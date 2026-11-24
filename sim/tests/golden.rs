@@ -116,7 +116,7 @@ fn media_cases(add: &mut dyn FnMut(String, String)) {
         ("files_props", "next ok down*2 ok down*{artist} ok ok wait:100 down*{track} menu down*4 ok"),
         ("files_delete", "next ok down*2 ok down*{artist} ok ok wait:100 down*{track} menu down*5 ok"),
         ("files_hidden", "next ok menu down*4 ok menu wait:100"),
-        ("files_notice", "next ok down*3 ok wait:100 ok expect-screen:Notice"),
+        ("files_notice", "next ok down ok wait:100 ok expect-screen:Notice"),
         ("text", "next ok ok wait:100 down*{book} ok wait:200 expect-screen:TextViewer"),
         ("text_page", "next ok ok wait:100 down*{book} ok wait:200 next wait:200 next wait:200"),
         ("music", "ok wait:100 expect-screen:Music"),
@@ -154,6 +154,32 @@ fn media_cases(add: &mut dyn FnMut(String, String)) {
                     .replace("{track}", &track.to_string());
                 add(format!("media_{name}_{t}_{l}"), format!("@apps theme:{t} lang:{l} {script}"));
             }
+        }
+    }
+    pictures_cases(add);
+}
+
+/// AU-14: Pictures (folders and pictures only) and the viewer, on the
+/// card's /Pictures: Aurora.png, Iceland.jpg (damaged), Lake.bmp,
+/// Sunset.qoi (portrait), Москва.png (damaged).
+fn pictures_cases(add: &mut dyn FnMut(String, String)) {
+    let open = "next*5 ok wait:100 down*3 ok wait:100";
+    let journeys: &[(&str, String)] = &[
+        ("root", "next*5 ok wait:100 expect-screen:Pictures".into()),
+        ("folder", open.into()),
+        ("folder_menu", format!("{open} menu")),
+        ("png", format!("{open} ok wait:100 expect-screen:PictureViewer")),
+        ("damaged", format!("{open} ok wait:100 next wait:100")),
+        ("bmp", format!("{open} ok wait:100 next*2 wait:100")),
+        ("rotate", format!("{open} ok wait:100 next*2 down wait:100")),
+        ("portrait", format!("{open} ok wait:100 next*3 wait:100")),
+        ("fill", format!("{open} ok wait:100 next*3 ok wait:100")),
+        ("menu", format!("{open} ok wait:100 menu")),
+        ("busy", format!("set:queue=takk {open} ok wait:100")),
+    ];
+    for (t, l) in [("dark", "latin"), ("light", "cjk")] {
+        for (name, script) in journeys {
+            add(format!("pictures_{name}_{t}_{l}"), format!("@apps theme:{t} lang:{l} {script}"));
         }
     }
 }

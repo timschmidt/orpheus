@@ -179,9 +179,16 @@ impl Ui {
     }
 
     async fn draw(&mut self, fb: &mut [u16]) {
-        if !self.screen_on {
+        // A picture job has the frame buffer (`pictures`).
+        if !self.screen_on || self.fw.pic_lent.is_some() {
             return;
         }
+        if self.fw.pic_after_overlay && !self.shell.overlay_shown() {
+            // A picture was not asked for under an overlay: ask again.
+            self.fw.pic_after_overlay = false;
+            self.shell.invalidate();
+        }
+        self.fw.pic_want.set(None);
         let mut dirty = DirtySet::new();
         let t0 = atj2157_hal::time::now_us();
         {
@@ -204,6 +211,14 @@ impl Ui {
             T_FLUSH
                 .fetch_add((atj2157_hal::time::now_us() - t1) as u32, core::sync::atomic::Ordering::Relaxed);
         }
+        // The frame is on the panel: lend the frame buffer for the picture
+        // a screen asked for in it. Not under a menu, dialog, toast or the
+        // volume (the picture would cover them).
+        if self.fw.pic_want.get().is_some() && self.shell.overlay_shown() {
+            self.fw.pic_want.set(None);
+            self.fw.pic_after_overlay = true;
+        }
+        self.fw.lend_picture(fb, now().0);
     }
 }
 
@@ -275,6 +290,11 @@ pub async fn ui() {
             }
             Either4::First((k, down)) => {
                 let t = now();
+                // A key: a picture still coming is not waited for (the
+                // volume overlay can wait).
+                if down && !matches!(k, HwKey::VolUp | HwKey::VolDown) {
+                    ui.fw.reclaim_picture();
+                }
                 if down {
                     ui.mapper.press(map_key(k), t);
                 } else {
@@ -301,6 +321,7 @@ pub async fn ui() {
         atj2157_hal::wdt::beat(&atj2157_hal::wdt::UI_BEAT);
         ui.fw.sync_player();
         let t = now();
+        ui.fw.poll_picture(t.0);
         while let Some((k, p)) = ui.mapper.poll(t) {
             let r = ui.shell.key(&mut ui.fw, k, p, t);
             ui.handle(r);

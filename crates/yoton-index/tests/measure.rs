@@ -24,7 +24,7 @@ fn report() {
         size_of::<Signature>()
     );
     let mut r = Rng(0xBEEF);
-    let spec = Spec { sort: SortBy::Name, show_hidden: true, audio_only: false };
+    let spec = Spec { sort: SortBy::Name, show_hidden: true, audio_only: false, images_only: false };
     let cases =
         [(1000usize, false), (5000, false), (10_000, false), (50_000, false), (5000, true), (10_000, true)];
     for (n, album) in cases {

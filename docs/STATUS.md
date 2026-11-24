@@ -35,10 +35,95 @@ of every session. Newest entries first in §3.
 | AU-1…AU-4, AU-7, AU-8, AU-9 | done (host); on the player: MP3/FLAC/WAV and Speex at 48 MHz, Vorbis at 144 MHz (clock floor), **Opus too slow** | Opus CELT touches more code per frame than the 32 KB code cache holds; ends with "decoder too slow for this player" (abort after 8 underruns) instead of a reset. Needs a bigger code cache or a resident hot path (RAM decision). Ogg pages over ~15.5 KB fail (16 KiB ring < `MAX_PEEK` 28 KiB; RAM) |
 | AU-6 | done (host); **working on the player** | `yoton-dsp` chain between decoder and DAC, fed by the Sound settings; works on a scratch copy of the decoder output; while any stage is active during playback the clock floor is 96 MHz (EQ + bass + crossfeed: 0 underruns, ≈ 90 % idle). WSOLA not done; Levels meter not wired |
 | AU-12 (directory index) | host done; **firmware wired in (built, not yet run on the player)** | `yoton-index` + its `card` adapters over `yoton-fs` (host-tested on FAT32/exFAT images). Files/Music › Folders sorted (Name/Date/Size, hidden per setting), letter jump from the index's letter runs, play queue in listing order. Library index, tag browsing, playlists, Favourites: not started |
-| AU-14 | done (host) | `yoton-img` |
+| AU-14 | done (host); **device: Pictures app and album art (built, not yet run on the player)** | `yoton-img`. Pictures (folders + pictures, list mode), viewer (fit/fill, rotate, next/prev, slideshow), album art made at track open and cached in `/.yoton/cache/art`. Not done: thumbnail grid, 100 % + pan, wallpaper, delete, per-file rotation memory. User check 14 |
 | OTP-1, BT-1, USB-6 | done (host) | `yoton-otp`, `yoton-bt`, MMC/CD-ROM in `yoton-usb` |
 
 ## 3. Session log
+
+### 2026-11-24 — AU-14 device: Pictures and album art (worker, no hardware)
+
+* Started from an interrupted worker's unbuilt WIP (merged
+  `worktree-agent-aeef1db8813ec5d0a`). Kept: `PictureService`
+  (`show_picture`/`picture_state`, `PicReq`/`PicState`, `data::PICTURE`)
+  replacing `PlayerService::art`, `PlayerState::art` (a generation), the
+  Files screen's `BrowseMode` (Files / Music › Folders / Pictures with
+  `BrowseFilter::images_only`), the viewer screen, the strings,
+  `thumb::ART` at 52 × 52 and `ART_BIG` (128 × 128), `lookup_into`,
+  `Gfx::to_screen`, `Shell::overlay_shown`. Changed: the viewer's search
+  (no scan budget that could stall), a dropped request (`Pending` after
+  `Data(PICTURE)`) redraws and asks again, `Busy` re-checks every tick
+  and retries when the music stops, fixed light/white text on black in
+  every theme (was unreadable in Light); Now Playing marks the art when
+  it arrives even if the clock changed meanwhile (the WIP lost it), Big
+  art no longer repaints every second (only the 2-px progress line; the
+  overlay is drawn over the art in the frame buffer, the art is asked for
+  again only when the overlay goes), battery/minute/volume/USB events no
+  longer force a full redraw. Dropped: `scale::rgb888`/`feed_rgb565`
+  (unused).
+* `yoton-index`: `Spec::images_only` (filter bit 4; index files of the
+  Pictures listing are their own `…-n4.idx`; older files still parse).
+* `yoton-img` (host-tested): `art::cover_rank` (`cover`, `folder`, `front`,
+  `album`, `AlbumArt…` with a picture extension), `art::Tee` (one decode,
+  two scalers), `CacheKind::meta` (an entry's metadata without reading
+  its pixels), `Orient::quarter_turns`.
+* Firmware, new module `pictures` (card task). **Pixels go straight into
+  the UI's frame buffer**, never into a RAM copy: a screen asks while it
+  draws; after that frame is on the panel the UI lends the frame buffer
+  (`Req::Picture(PicJob)` with its address and the box) and draws nothing
+  until `tag::PICTURE` comes back; the screen then marks the box. The UI
+  takes a job back that has not started (any key but volume, or 3 s:
+  e.g. the card is with USB) through `PIC_SLOT` (compare-and-swap on the
+  job number, so a taken-back or replaced job never starts) and cancels a
+  running decode with `PIC_CANCEL`. A request made under a menu, dialog,
+  toast or the volume overlay is not sent; the screen is redrawn (and
+  asks again) once the overlay is gone. A lost data-ready tag is noticed
+  within a loop (`PIC_SLOT` back at 0).
+* **Decoding schedule.** Picture files decode only while no track is
+  loaded, in the idle loop, with the whole 64 KiB arena and the stream
+  ring as the source, clock floor High, sleeping 1.5 ms after every 8 ms
+  of work (thread mode and the RT beat keep running). While a track is
+  loaded (playing *or paused*) only ~2 KiB of the arena are free: the
+  viewer shows "Stop playback to view pictures" (chosen over small-only
+  decoding: even BMP/QOI need the scaler's 3 KiB) and retries by itself
+  when playback stops. **Album art** is made when a track opens, before the
+  codec takes the arena: cache lookup (`/.yoton/cache/art`, 52 × 52
+  `Axxx.YTC` and 128 × 128 `Bxxx.YTC` buckets) keyed by the track's
+  locator, size and mtime → else the embedded front cover (ID3 `APIC`,
+  FLAC `PICTURE` via `yoton-meta`; tag reader and tags placed in the
+  arena) → else the folder's best `cover/folder/front…` picture (cached
+  under the cover file's key; looked for once per folder). One decode
+  feeds both sizes (`Tee`); the big copy only for JPEG/BMP/QOI (PNG and
+  GIF need the arena), retried small-only if the arena is short. Misses
+  are recorded as a 0 × 0 entry so the next open does not look again.
+  Showing art is a cache read into the frame buffer (5.4 KB small, 32 KB
+  big), served between ring refills while playing; Big art without a big
+  copy shows the small one centred on black. The art is never resident.
+* Pictures on Home (`app_available`); Files opens pictures in the viewer
+  too (next/prev skip non-pictures).
+* Simulator: `PictureService` decodes for real (`yoton-img`, 64 KiB
+  arena) from a second read-only mount of the card; the card has
+  `Aurora.png`, `Lake.bmp`, `Sunset.qoi` (generated, `sim/src/pictures.rs`,
+  part of the card image's cache key) besides the two damaged stubs.
+  22 new golden images (`pictures_*`: list, menus, PNG, BMP, QOI
+  letterboxed, rotated, filled, damaged, busy; dark/Latin and light/CJK),
+  `media_files_notice_*` now opens `/Images` (pictures open the viewer).
+* RAM (`xtask build`, `__stack_bottom`, this worktree): main stack
+  23,768 → 21,696 B (−2,072). Resident rodata +1,760 B: the panic-location
+  paths of 14 `yoton-img`/`yoton-meta` files (≈ 1.35 KB here; each path is
+  42 B shorter in the main checkout, so expect ≈ −1.5 KB there) plus the
+  new strings in the merged string section; `.data` +144 (`SERVER`: art
+  key, folder art, generation; `PIC_RESULT`), `.bss` +160 (UI future +128,
+  picture statics). Audio task future unchanged (6,192 B). Paged: code
+  52 → 62 pages (`yoton_img` 45 KB, `Decoder::step` alone 28.5 KB;
+  `yoton_meta` 11.5 KB), rodata 14 → 16; slot 626,688 → 724,992 B.
+  Deepest new RT paths: art from the cache while playing nests ≈ 2.2 KB +
+  file system under `play_file` (the existing browse path ≈ 1 KB);
+  `Decoder::step` 776 B + IDCT 352 B. Check the stack high-water mark
+  after Big art during playback.
+* Not done: thumbnail grid and its cache, 100 % with panning, rotation
+  remembered per file, wallpaper, delete, Details screen (a toast),
+  animated GIF, unsynchronised ID3 pictures, Vorbis/Opus embedded art,
+  art in the mini player.
 
 ### 2026-11-24 — AU-12 firmware: the directory index in the card task (worker, no hardware)
 
@@ -461,6 +546,7 @@ of every session. Newest entries first in §3.
 | 2026-11-24 | Main stack peak after all formats + DSP (28.0 KB stack) | 19.2 KB | INFO stack high-water |
 | 2026-11-24 | Firmware with the directory index (AU-12 firmware) | resident 81,844 B, main stack 21,464 B (−1,512), 52 code + 14 rodata pages, slot 626,688 B | `xtask build`, `nm` `__stack_bottom` |
 | 2026-11-24 | Firmware with yoton-player (AU-5 firmware) | resident 80,724 B (was 79,084), bss 122,608 B, main stack 22,968 B (was 24,752), 48 code + 14 rodata pages | `xtask build`, `llvm-nm` `__stack_bottom` |
+| 2026-11-24 | Firmware with Pictures and album art (AU-14 device), worker worktree build | resident 81,444 B (was 79,532), bss 123,160 B (was 123,000), main stack 21,696 B (was 23,768), 62 code + 16 rodata pages (was 52 + 14), slot 724,992 B | `xtask build`, `nm` `__stack_bottom` |
 
 
 ## 5. Open questions for the user

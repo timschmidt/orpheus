@@ -2,6 +2,8 @@
 //! scriptable fakes (`set:battery=8`, `set:card=absent`, `set:usb=host` …)
 //! and a log of everything the screens asked for.
 
+use std::cell::Cell;
+
 use anyhow::{Result, bail};
 use yoton_apps::screens::{self, AppScreen};
 use yoton_apps::services::{
@@ -10,13 +12,16 @@ use yoton_apps::services::{
     SystemService, UsbMode, UsbService, UsbState,
 };
 use yoton_apps::services::{
-    ArtSize, Bookmark, BrowseFilter, BrowseService, DirId, Entry, FileOp, FileRef, Levels, LibraryState,
-    Listing, LyricLine, PlayerCmd, PlayerService, PlayerState, QueueEntry, TextService, TrackInfo,
+    Bookmark, BrowseFilter, BrowseService, DirId, Entry, FileOp, FileRef, Levels, LibraryState, Listing,
+    LyricLine, PicReq, PicState, PictureService, PlayerCmd, PlayerService, PlayerState, QueueEntry,
+    TextService, TrackInfo,
 };
 use yoton_apps::settings::{SettingId, SettingsCache, id, lang_code};
 use yoton_apps::{App, Lang};
 use yoton_power::charger::ChargeState;
 use yoton_ui::event::{BtState, Event, ServiceEvent, Source};
+use yoton_ui::geom::Rect;
+use yoton_ui::gfx::Gfx;
 use yoton_ui::input::KeyGate;
 use yoton_ui::nav::{Arg, ScreenId};
 use yoton_ui::shell::System;
@@ -57,6 +62,7 @@ pub struct HostServices {
     pub log: Vec<Logged>,
     pub media: Media,
     events: Vec<Event>,
+    picture: Cell<PicState>,
 }
 
 impl Default for HostServices {
@@ -82,6 +88,7 @@ impl Default for HostServices {
             log: Vec::new(),
             media: Media::new(),
             events: Vec::new(),
+            picture: Cell::new(PicState::Nothing),
         }
     }
 }
@@ -553,9 +560,6 @@ impl PlayerService for HostServices {
         self.media.queue_entry(i)
     }
     fn want_queue(&mut self, _first: u32, _count: u32) {}
-    fn art(&self, size: ArtSize) -> Option<&[u16]> {
-        self.media.art(size)
-    }
     fn lyrics_count(&self) -> u32 {
         self.media.lyrics_count()
     }
@@ -580,6 +584,17 @@ impl PlayerService for HostServices {
     fn command(&mut self, c: PlayerCmd) {
         let repeat = self.settings.get(id::REPEAT);
         self.media.command(c, repeat);
+    }
+}
+
+impl PictureService for HostServices {
+    fn show_picture(&self, g: &mut Gfx<'_>, r: Rect, req: PicReq) -> PicState {
+        let st = self.media.show_picture(g, r, req);
+        self.picture.set(st);
+        st
+    }
+    fn picture_state(&self) -> PicState {
+        self.picture.get()
     }
 }
 

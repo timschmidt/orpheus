@@ -12,6 +12,8 @@
 //!   orientation, letterbox, ordered dithering).
 //! * [`thumb`] defines the thumbnail cache files on the card and reads and
 //!   writes them through a two-method file trait.
+//! * [`art`]: which file of a folder is its cover, and a tee sink that makes
+//!   the small and the big album art in one decode.
 //!
 //! Arena high-water marks (from `cargo test`, 104 KiB arena): JPEG baseline
 //! 8–25 KiB at 640 × 480 (7.7 KiB of it Huffman/quantisation tables),
@@ -38,6 +40,7 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod art;
 pub mod bmp;
 pub mod gif;
 mod inflate;

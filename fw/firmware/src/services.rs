@@ -10,13 +10,16 @@ use yoton_apps::services::{
     UsbMode, UsbService, UsbState,
 };
 use yoton_apps::services::{
-    ArtSize, Bookmark, BrowseFilter, BrowseService, DirId, Entry, FileOp, FileRef, Levels, LibraryState,
-    Listing, LyricLine, PlayerCmd, PlayerService, PlayerState, QueueEntry, TextService, TrackInfo,
+    Bookmark, BrowseFilter, BrowseService, DirId, Entry, FileOp, FileRef, Levels, LibraryState, Listing,
+    LyricLine, PicReq, PicSource, PicState, PictureService, PlayerCmd, PlayerService, PlayerState,
+    QueueEntry, TextService, TrackInfo,
 };
 use yoton_apps::settings::{SettingId, SettingsCache, id};
 use yoton_apps::{App, Lang};
 use yoton_ui::event::Source;
 use yoton_ui::event::{BtState, Event, ServiceEvent};
+use yoton_ui::geom::Rect;
+use yoton_ui::gfx::Gfx;
 use yoton_ui::shell::System;
 use yoton_ui::widgets::bars::{MiniPlayer, Status};
 
@@ -62,6 +65,18 @@ pub struct Fw {
     /// arrived, or became sorted).
     filter: BrowseFilter,
     wanted: Option<(u32, u32)>,
+    /// The picture asked for in the frame being drawn (panel box), lent
+    /// to the card task after the frame (`ui`); the state of the last one.
+    pub pic_want: core::cell::Cell<Option<(Rect, PicReq)>>,
+    pub pic_state: core::cell::Cell<PicState>,
+    /// The job out (its number): the UI draws nothing until it is back.
+    pub pic_lent: Option<u32>,
+    /// When it was sent (ms), to take it back if it never starts.
+    pub pic_since: u64,
+    pic_seq: u32,
+    /// A picture was not asked for because something covered the screen:
+    /// redraw once it is gone.
+    pub pic_after_overlay: bool,
 }
 
 /// A tiny fixed queue (no external dependency, no allocation).
@@ -134,9 +149,101 @@ impl Fw {
             depth: 0,
             text_pos: [(FileRef { dir: u32::MAX, index: 0 }, 0); 8],
             text_size: 0,
-            filter: BrowseFilter { sort: services::SortBy::Name, hidden: false, audio_only: false },
+            filter: BrowseFilter {
+                sort: services::SortBy::Name,
+                hidden: false,
+                audio_only: false,
+                images_only: false,
+            },
             wanted: None,
+            pic_want: core::cell::Cell::new(None),
+            pic_state: core::cell::Cell::new(PicState::Nothing),
+            pic_lent: None,
+            pic_since: 0,
+            pic_seq: 0,
+            pic_after_overlay: false,
         }
+    }
+
+    /// Lend the frame buffer `fb` for the picture asked for in the frame
+    /// just drawn (if any). False if it could not be sent (the screen is
+    /// told it was dropped).
+    pub fn lend_picture(&mut self, fb: &mut [u16], now_ms: u64) {
+        let Some((r, req)) = self.pic_want.take() else { return };
+        let fit = |v: i16| u8::try_from(v).ok();
+        let job = (|| {
+            Some(media::PicJob {
+                seq: 0,
+                fb: fb.as_mut_ptr() as usize,
+                x: fit(r.x)?,
+                y: fit(r.y)?,
+                w: fit(r.w)?,
+                h: fit(r.h)?,
+                req,
+            })
+        })();
+        let Some(mut job) = job else {
+            self.picture_dropped();
+            return;
+        };
+        self.pic_seq = (self.pic_seq + 1) & !media::PIC_RUNNING;
+        if self.pic_seq == 0 {
+            self.pic_seq = 1;
+        }
+        job.seq = self.pic_seq;
+        media::PIC_CANCEL.store(false, Ordering::Relaxed);
+        media::PIC_SLOT.store(job.seq, Ordering::Release);
+        if media::try_request(media::Req::Picture(job)) {
+            self.pic_lent = Some(job.seq);
+            self.pic_since = now_ms;
+        } else {
+            media::PIC_SLOT.store(0, Ordering::Release);
+            self.picture_dropped();
+        }
+    }
+
+    /// Take the job back if the card task has not started it (a key, or
+    /// it waited too long); else ask it to stop early. True if the frame
+    /// buffer is back.
+    pub fn reclaim_picture(&mut self) -> bool {
+        let Some(seq) = self.pic_lent else { return true };
+        if media::PIC_SLOT.compare_exchange(seq, 0, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            self.pic_lent = None;
+            self.picture_dropped();
+            return true;
+        }
+        media::PIC_CANCEL.store(true, Ordering::Relaxed);
+        false
+    }
+
+    /// Every UI loop while a picture job is out: finish it if the card task
+    /// is done (its data-ready tag may have been lost in a full channel);
+    /// take it back if it has waited 3 s without starting (the card task is
+    /// busy elsewhere, e.g. the card is with USB).
+    pub fn poll_picture(&mut self, now_ms: u64) {
+        let Some(seq) = self.pic_lent else { return };
+        let slot = media::PIC_SLOT.load(Ordering::Acquire);
+        if slot == 0 {
+            self.sync(media::tag::PICTURE);
+            self.pending.push(Event::Data(yoton_ui::event::DataReady {
+                tag: media::tag::PICTURE,
+                first: 0,
+                count: 0,
+            }));
+        } else if slot == seq && now_ms.saturating_sub(self.pic_since) > 3000 {
+            self.reclaim_picture();
+        }
+    }
+
+    /// The picture asked for will not come: the screen hears `Pending`
+    /// with `Event::Data(PICTURE)` and asks again.
+    fn picture_dropped(&mut self) {
+        self.pic_state.set(PicState::Pending);
+        self.pending.push(Event::Data(yoton_ui::event::DataReady {
+            tag: media::tag::PICTURE,
+            first: 0,
+            count: 0,
+        }));
     }
 
     /// Copy the card task's window for `tag` (called before the UI gets
@@ -159,6 +266,14 @@ impl Fw {
             }
             media::tag::QUEUE => {
                 *self.qwin = *media::QWINDOW.borrow(cs).borrow();
+                None
+            }
+            media::tag::PICTURE => {
+                let (seq, st) = media::PIC_RESULT.borrow(cs).get();
+                if self.pic_lent == Some(seq) {
+                    self.pic_lent = None;
+                    self.pic_state.set(st);
+                }
                 None
             }
             _ => None,
@@ -510,6 +625,7 @@ impl PlayerService for Fw {
             b_ms: p.b_ms,
             buffer_pct: 0,
             cpu_pct: 0,
+            art: p.art,
         }
     }
     fn track(&self) -> Option<TrackInfo<'_>> {
@@ -539,9 +655,6 @@ impl PlayerService for Fw {
     fn want_queue(&mut self, first: u32, count: u32) {
         self.qwant = Some(first.saturating_sub(self.player.queue_pos));
         self.want_rows(first, count);
-    }
-    fn art(&self, _size: ArtSize) -> Option<&[u16]> {
-        None
     }
     fn lyrics_count(&self) -> u32 {
         0
@@ -604,6 +717,30 @@ impl PlayerService for Fw {
     }
 }
 
+impl PictureService for Fw {
+    fn show_picture(&self, g: &mut Gfx<'_>, r: Rect, req: PicReq) -> PicState {
+        let s = g.to_screen(r);
+        let card = state::CARD_READY.load(Ordering::Relaxed);
+        let st = match req.src {
+            _ if s.w <= 0 || s.h <= 0 => PicState::Nothing,
+            PicSource::File(_) if !card => PicState::Failed(services::PicError::Io),
+            // The decoder memory is the audio decoder's while a track is
+            // loaded.
+            PicSource::File(_) if self.player.source != Source::Idle => PicState::Busy,
+            PicSource::Art(_) if self.player.art == 0 || !card => PicState::Nothing,
+            _ => {
+                self.pic_want.set(Some((s, req)));
+                PicState::Pending
+            }
+        };
+        self.pic_state.set(st);
+        st
+    }
+    fn picture_state(&self) -> PicState {
+        self.pic_state.get()
+    }
+}
+
 impl UsbService for Fw {
     fn usb(&self) -> UsbState {
         if state::snapshot().cable { UsbState::Host } else { UsbState::Detached }
@@ -645,7 +782,7 @@ impl SystemService for Fw {
         "Yoton YM03 (ATJ2157)"
     }
     fn app_available(&self, app: App) -> bool {
-        matches!(app, App::Settings | App::Files | App::Music)
+        matches!(app, App::Settings | App::Files | App::Music | App::Pictures)
     }
     fn dual_boot(&self) -> bool {
         true

@@ -20,6 +20,7 @@
 
 mod audio;
 mod media;
+mod pictures;
 mod services;
 mod state;
 mod ui;

@@ -455,10 +455,11 @@ pub fn ref_seek_letter(letters: &[Option<char>], from: u32, forward: bool) -> Op
 }
 
 pub const ALL_SPECS: &[Spec] = &[
-    Spec { sort: SortBy::Name, show_hidden: false, audio_only: false },
-    Spec { sort: SortBy::Name, show_hidden: true, audio_only: false },
-    Spec { sort: SortBy::Date, show_hidden: false, audio_only: false },
-    Spec { sort: SortBy::Size, show_hidden: true, audio_only: false },
-    Spec { sort: SortBy::Name, show_hidden: false, audio_only: true },
-    Spec { sort: SortBy::Date, show_hidden: true, audio_only: true },
+    Spec { sort: SortBy::Name, show_hidden: false, audio_only: false, images_only: false },
+    Spec { sort: SortBy::Name, show_hidden: true, audio_only: false, images_only: false },
+    Spec { sort: SortBy::Date, show_hidden: false, audio_only: false, images_only: false },
+    Spec { sort: SortBy::Size, show_hidden: true, audio_only: false, images_only: false },
+    Spec { sort: SortBy::Name, show_hidden: false, audio_only: true, images_only: false },
+    Spec { sort: SortBy::Date, show_hidden: true, audio_only: true, images_only: false },
+    Spec { sort: SortBy::Name, show_hidden: false, audio_only: false, images_only: true },
 ];

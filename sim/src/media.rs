@@ -10,15 +10,30 @@ use std::collections::{HashMap, HashSet};
 
 use yoton_apps::browse::{DirId, EntryKind, FileRef, is_hidden_name, kind_of, letter_of, natural_cmp};
 use yoton_apps::services::{
-    ArtSize, Bookmark, BrowseFilter, DateTime, Entry, Levels, LibraryState, Listing, LyricLine, PlayerCmd,
-    PlayerState, QueueEntry, SortBy, TrackInfo, data,
+    ArtSize, Bookmark, BrowseFilter, DateTime, Entry, Levels, LibraryState, Listing, LyricLine, PicError,
+    PicInfo, PicReq, PicSource, PicState, PlayerCmd, PlayerState, QueueEntry, SortBy, TrackInfo, data,
 };
 use yoton_audio::{Format, SliceSource};
 use yoton_fs::host::{OverlayDisk, block_on};
 use yoton_fs::{CacheSlot, DirEntry, MountOptions, OpenMode, Volume};
 use yoton_ui::event::{DataReady, Event, Source};
+use yoton_ui::geom::Rect;
+use yoton_ui::gfx::Gfx;
 
-use crate::card;
+use crate::{card, pictures};
+
+/// A file of the card image as it was built (pictures for the viewer).
+fn read_card_file(path: &str) -> Option<Vec<u8>> {
+    let cache: &mut [CacheSlot] = &mut [CacheSlot::EMPTY; 4];
+    let disk = OverlayDisk::new(card::image());
+    let opts = MountOptions { read_only: true, ..MountOptions::default() };
+    let mut vol = block_on(Volume::mount(disk, cache, opts)).ok()?;
+    let mut f = block_on(vol.open(path, OpenMode::Read)).ok()?;
+    let mut buf = vec![0u8; usize::try_from(f.size()).ok()?];
+    let n = block_on(vol.read_exact_or_eof(&mut f, &mut buf)).ok()?;
+    buf.truncate(n);
+    Some(buf)
+}
 
 /// Rows the browse window holds (the firmware keeps about two pages).
 pub const WINDOW: u32 = 32;
@@ -259,10 +274,7 @@ impl Media {
             .read_dir(dir)
             .into_iter()
             .filter(|e| filter.hidden || !e.hidden)
-            .filter(|e| {
-                !filter.audio_only
-                    || matches!(e.kind, EntryKind::Dir | EntryKind::Audio | EntryKind::Playlist)
-            })
+            .filter(|e| filter.keeps(e.kind))
             .collect();
         let big = rows.len() > SORT_IN_RAM && !self.indexed.contains(&dir.0);
         let mut sorted = rows.clone();
@@ -706,6 +718,7 @@ impl Media {
             b_ms: self.b,
             buffer_pct: 87,
             cpu_pct: 23,
+            art: self.art_for.map_or(0, |s| s.max(1)),
         }
     }
 
@@ -741,6 +754,38 @@ impl Media {
             ArtSize::Small => &self.art_small,
             ArtSize::Full => &self.art_full,
         })
+    }
+
+    /// `PictureService::show_picture`: decoded at once into the screen.
+    /// Picture files are read from a second, read-only mount of the card
+    /// (the service call cannot borrow the browsing volume mutably).
+    pub fn show_picture(&self, g: &mut Gfx<'_>, r: Rect, req: PicReq) -> PicState {
+        let (w, h) = (u16::try_from(r.w).unwrap_or(0), u16::try_from(r.h).unwrap_or(0));
+        match req.src {
+            PicSource::Art(size) => match self.art(size) {
+                Some(px) if px.len() == usize::from(w) * usize::from(h) => {
+                    g.image(r.x, r.y, r.w, px);
+                    let n = u32::from(size.px().unsigned_abs());
+                    PicState::Shown(PicInfo { width: n, height: n, format: None, reduced: false })
+                }
+                _ => PicState::Nothing,
+            },
+            // The decoder memory is the audio decoder's while a track is
+            // loaded (as on the player).
+            PicSource::File(_) if self.current().is_some() => PicState::Busy,
+            PicSource::File(f) => {
+                let Some(data) = self.file_paths.get(&f).and_then(|p| read_card_file(p)) else {
+                    return PicState::Failed(PicError::Io);
+                };
+                match pictures::decode(&data, w, h, req.fill, req.turns) {
+                    Ok((px, info)) => {
+                        g.image(r.x, r.y, r.w, &px);
+                        PicState::Shown(info)
+                    }
+                    Err(e) => PicState::Failed(e),
+                }
+            }
+        }
     }
 
     pub fn lyrics_count(&self) -> u32 {

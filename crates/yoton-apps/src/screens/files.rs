@@ -16,15 +16,15 @@ use yoton_ui::widgets::dialog::DialogSpec;
 use yoton_ui::widgets::list::{Accessory, Item, ListAction, ListSource, ListView, Row};
 
 use super::{
-    FILES, INFO, MUSIC_FOLDERS, NOTICE, NOW_PLAYING, Notice, PICTURE_VIEW, PICTURES, PROPERTIES, PictureScreen,
-    TEXT_VIEW,
+    FILES, INFO, MUSIC_FOLDERS, NOTICE, NOW_PLAYING, Notice, PICTURE_VIEW, PICTURES, PROPERTIES,
+    PictureScreen, TEXT_VIEW,
 };
-use yoton_ui::nav::ScreenId;
 use crate::App;
 use crate::browse::{DirId, EntryKind, FileRef};
 use crate::services::{BrowseFilter, BrowseService, PlayerCmd, Services, SortBy, data};
 use crate::settings::id;
 use crate::strings::{Lang, Str};
+use yoton_ui::nav::ScreenId;
 
 const ROWS: u32 = 5;
 

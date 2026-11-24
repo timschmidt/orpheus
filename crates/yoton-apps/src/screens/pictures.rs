@@ -9,13 +9,13 @@
 //! pictures only). Not here yet: the thumbnail grid, 100 % with panning,
 //! rotation remembered per file, wallpaper, delete.
 
-use yoton_ui::event::{Event, Instant, Key, KeyPhase, ServiceEvent, UiEvent};
+use yoton_ui::color::Color;
+use yoton_ui::event::{Event, Instant, Key, KeyPhase, ServiceEvent, Source, UiEvent};
 use yoton_ui::font::FontId;
 use yoton_ui::gfx::{Align, Gfx};
 use yoton_ui::menu::MenuBuilder;
 use yoton_ui::nav::{Arg, Cx, Dirty, Nav, Resume, Screen, Wants};
 use yoton_ui::text::StrBuf;
-use yoton_ui::theme::Role;
 
 use crate::browse::{EntryKind, FileRef};
 use crate::icons;
@@ -24,10 +24,12 @@ use crate::strings::{Lang, Str};
 
 /// Slideshow intervals offered (seconds); the default is the second.
 const INTERVALS: [u8; 4] = [2, 5, 10, 30];
-/// Rows looked at per call when searching for the next picture.
-const SCAN: u32 = 64;
 
 // Menu ids.
+/// The viewer is black in every theme; its text is light grey and white.
+const WHITE: Color = 0xFFFF;
+const DIM: Color = 0xAD55;
+
 const M_SLIDESHOW: u16 = 1;
 const M_INTERVAL: u16 = 2;
 const M_INTERVAL_0: u16 = 20;
@@ -92,11 +94,12 @@ impl PictureScreen {
         PicReq { src: PicSource::File(f), fill: self.fill, turns: self.turns }
     }
 
-    /// The nearest picture from `s.from` in its direction.
+    /// The nearest picture from `s.from` in its direction (within the
+    /// loaded window; a row outside it is asked for).
     fn find<S: Services + ?Sized>(svc: &mut S, s: Seek) -> Found {
         let count = svc.listing().count;
         let mut i = s.from;
-        for _ in 0..SCAN {
+        loop {
             if i >= count {
                 return Found::None;
             }
@@ -118,8 +121,6 @@ impl PictureScreen {
                 }
             };
         }
-        // Nothing within the scan budget: go on from there next time.
-        Found::Wait(i)
     }
 
     /// Carry on with the search in `self.seek`; true if the picture changed.
@@ -189,9 +190,9 @@ impl PictureScreen {
 
     fn message(&self, g: &mut Gfx<'_>, cause: Str, action: Option<Str>) {
         let (w, h) = g.size();
-        let dim = g.c(Role::TextDim);
+        let dim = DIM;
         g.icon2((w - 24) / 2, 20, &icons::PICTURES, dim);
-        let text = g.c(Role::Text);
+        let text = WHITE;
         let cause = self.lang.get(cause);
         let mut y = 62;
         let pitch = g.line_pitch(cause, FontId::UiBold);
@@ -229,7 +230,7 @@ impl PictureScreen {
             PicState::Nothing => self.message(g, Str::PicFailed, None),
             PicState::Pending => {
                 let (w, h) = g.size();
-                let dim = g.c(Role::TextDim);
+                let dim = DIM;
                 g.text_in(0, h / 2 + 4, w, self.lang.get(Str::PicLoading), FontId::Ui, dim, Align::Center);
             }
             PicState::Shown(_) => {}
@@ -282,7 +283,9 @@ impl<S: Services + ?Sized> Screen<S> for PictureScreen {
                 self.pending = false;
                 self.shown_at = cx.now;
                 match cx.svc.picture_state() {
-                    PicState::Pending => self.pending = true,
+                    // Dropped (a key, or something covered the screen): ask
+                    // again with the next full draw.
+                    PicState::Pending => cx.ui.redraw(),
                     PicState::Shown(i) => {
                         self.info = Some(i);
                         self.arrived = true;
@@ -294,6 +297,11 @@ impl<S: Services + ?Sized> Screen<S> for PictureScreen {
                 }
             }
             Event::Tick(now) => {
+                if self.result == Some(PicState::Busy) && cx.svc.player().source == Source::Idle {
+                    // The music stopped: the decoder memory is free again.
+                    self.again(cx);
+                    return Nav::Stay;
+                }
                 let due = now.since(self.shown_at) >= u64::from(self.interval_s()) * 1000;
                 if self.slideshow && self.file.is_some() && !self.pending && self.seek.is_none() && due {
                     self.step(cx, true);
@@ -398,7 +406,11 @@ impl<S: Services + ?Sized> Screen<S> for PictureScreen {
     }
 
     fn wants(&self) -> Wants {
-        Wants { ticks: self.slideshow, full_screen: true, ..Wants::default() }
+        Wants {
+            ticks: self.slideshow || self.result == Some(PicState::Busy),
+            full_screen: true,
+            ..Wants::default()
+        }
     }
 
     fn save(&self) -> Resume {

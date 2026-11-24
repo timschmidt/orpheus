@@ -640,13 +640,15 @@ pub enum PicError {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PicState {
     /// Being put into the frame buffer; `Event::Data(PICTURE)` follows.
+    /// After that event it means the request was dropped (a key cancelled
+    /// it, or the screen was covered): draw the box again to ask again.
     Pending,
     /// In the box now.
     Shown(PicInfo),
     /// Nothing to show (the track has no album art).
     Nothing,
     /// The decoder memory belongs to the audio decoder while a track is
-    /// loaded: stop playback to view pictures.
+    /// loaded (playing or paused): stop playback to view pictures.
     Busy,
     Failed(PicError),
 }
@@ -654,14 +656,15 @@ pub enum PicState {
 /// Pictures are decoded by the service straight into the screen; nothing
 /// keeps a decoded picture in RAM (04 §7). On the player the card task
 /// writes the pixels into the frame buffer after the frame that asked for
-/// them was drawn: a screen draws a placeholder for `Pending`, and when
+/// them was drawn and sent to the panel (the UI draws nothing until it is
+/// done). A screen draws a placeholder for `Pending`; when
 /// `Event::Data(PICTURE)` says `Shown` it marks the box dirty without
-/// drawing into it (`Gfx::mark`). Whatever covers the box later (a menu,
-/// a toast) is undone by a full redraw, which asks for the picture again.
+/// drawing into it (`Gfx::mark`). A full redraw clears the box: the screen
+/// asks again then. Ask only from a draw that painted the box.
 pub trait PictureService {
     /// Show `req` in `r` (local coordinates of `g`). The simulator draws at
     /// once and answers `Shown`; the firmware answers `Pending`, or at once
-    /// `Busy` or `Nothing`.
+    /// `Busy` or `Nothing`. Only the last request of a draw is carried out.
     fn show_picture(&self, g: &mut Gfx<'_>, r: Rect, req: PicReq) -> PicState;
     /// The outcome of the last `show_picture` (after `Event::Data(PICTURE)`;
     /// `Pending` before).

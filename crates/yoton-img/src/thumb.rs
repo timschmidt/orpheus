@@ -158,6 +158,14 @@ pub fn crc32(mut crc: u32, data: &[u8]) -> u32 {
     !crc
 }
 
+fn meta_of(e: &[u8; ENTRY as usize]) -> ThumbMeta {
+    ThumbMeta {
+        orig_w: u16::from_le_bytes([e[36], e[37]]),
+        orig_h: u16::from_le_bytes([e[38], e[39]]),
+        approximate: e[40] & 1 != 0,
+    }
+}
+
 impl CacheKind {
     fn slot_bytes(&self) -> u32 {
         2 * u32::from(self.w) * u32::from(self.h)
@@ -300,11 +308,23 @@ impl CacheKind {
         if crc != u32::from_le_bytes([e[44], e[45], e[46], e[47]]) {
             return Ok(None);
         }
-        Ok(Some(ThumbMeta {
-            orig_w: u16::from_le_bytes([e[36], e[37]]),
-            orig_h: u16::from_le_bytes([e[38], e[39]]),
-            approximate: e[40] & 1 != 0,
-        }))
+        Ok(Some(meta_of(&e)))
+    }
+
+    /// Whether `key` is in a bucket file and what was stored with it,
+    /// without reading the pixels (`lookup` checks their CRC). Album art
+    /// uses it at track open; an entry with a 0 × 0 original records that
+    /// there is no picture to find.
+    pub fn meta<F: CacheFile>(
+        &self,
+        f: &mut F,
+        key: &ThumbKey,
+    ) -> Result<Option<ThumbMeta>, CacheError<F::Error>> {
+        if self.read_header(f)?.is_none() {
+            return Ok(None);
+        }
+        let (hit, _) = self.find(f, &key.to_bytes())?;
+        Ok(hit.map(|(_, e)| meta_of(&e)))
     }
 
     /// Store a thumbnail (`w × h` pixels) in a bucket file, replacing an
@@ -493,6 +513,23 @@ mod tests {
         assert_eq!(kind.lookup_into(&mut f, &key(3), &mut fb[..100], 128), Err(CacheError::Size));
         assert_eq!(ART.w, 52);
         assert_eq!(&ART_BIG.file_name(31), b"B01F.YTC");
+    }
+
+    #[test]
+    fn meta_without_pixels() {
+        let kind = CacheKind { slots: 4, ..THUMBS };
+        let mut f = MemFile::default();
+        assert_eq!(kind.meta(&mut f, &key(1)), Ok(None));
+        let none = ThumbMeta { orig_w: 0, orig_h: 0, approximate: false };
+        kind.store(&mut f, &key(1), &none, &[0; 40 * 30]).unwrap();
+        let meta = ThumbMeta { orig_w: 500, orig_h: 500, approximate: true };
+        kind.store(&mut f, &key(2), &meta, &pixels(2)).unwrap();
+        assert_eq!(kind.meta(&mut f, &key(1)), Ok(Some(none)));
+        assert_eq!(kind.meta(&mut f, &key(2)), Ok(Some(meta)));
+        assert_eq!(kind.meta(&mut f, &key(3)), Ok(None));
+        // Only the header and the index were read.
+        let mut g = MemFile { d: f.d[..(HEADER + ENTRY * 4) as usize].to_vec(), ..MemFile::default() };
+        assert_eq!(kind.meta(&mut g, &key(2)), Ok(Some(meta)));
     }
 
     #[test]
