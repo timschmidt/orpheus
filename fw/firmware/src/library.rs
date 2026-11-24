@@ -45,7 +45,7 @@ use orpheus_fs::{DirEntry, Locator};
 use orpheus_index::LetterTable;
 use orpheus_index::card::{CardIo, Handles, Mode};
 use orpheus_library::card::{CardTags, TagState};
-use orpheus_library::{Config, Item, ItemKind, LIBRARY_DIR, Library, List, Progress, Suspended};
+use orpheus_library::{Config, FindStep, Item, ItemKind, LIBRARY_DIR, Library, List, Progress, Suspended};
 
 use crate::media::{self, Io, QUEUE, Server, Vol, WINDOW};
 
@@ -122,11 +122,15 @@ pub struct LibState {
     files: u32,
     /// Changes when another library is opened.
     generation: u32,
+    /// The folder (first cluster) whose last track was not in the library:
+    /// its other tracks are not looked for (the library leaves out hidden
+    /// folders such as `/.orpheus/test`; a miss costs a whole search).
+    miss_dir: Option<u32>,
 }
 
 impl LibState {
     pub const fn new() -> LibState {
-        LibState { lib: None, list: None, due: None, files: 0, generation: 0 }
+        LibState { lib: None, list: None, due: None, files: 0, generation: 0, miss_dir: None }
     }
 
     /// A build is started or suspended.
@@ -151,6 +155,7 @@ impl LibState {
 
     fn opened(&mut self, l: Option<Library>) {
         self.lib = l;
+        self.miss_dir = None;
         self.generation = self.generation.wrapping_add(1);
         if l.is_none() {
             self.list = None;
@@ -585,26 +590,67 @@ pub async fn sample(vol: &mut Vol, srv: &mut Server, seed: u32) -> bool {
     true
 }
 
-/// Publish where the track at `loc` is in the library.
+/// One step of the search for the track at `st`'s locator; when it is
+/// over, its place is published (and a miss remembered for its folder).
+/// `Some(found)` when over.
 #[inline(never)]
-fn find(io: &Io<'_, '_>, lib: &Library, loc: Locator) {
+fn find(io: &Io<'_, '_>, lib: &Library, st: &mut FindStep) -> Option<bool> {
     let mut s = io.store();
-    let mut now = None;
-    // The track before is the hint: an album's next track is usually the
-    // next row (one read, not a binary search while the DAC runs).
-    let hint = critical_section::with(|cs| media::PLAYER.borrow(cs).borrow().lib_now.map(|n| n.track));
-    if let Ok(Some(id)) = lib.find_near(&mut s, loc, hint)
-        && let Ok(t) = lib.track(&mut s, id)
-    {
-        now = Some(LibNow { track: id, album: t.album_id, artist: t.artist_id });
-    }
+    let r = match lib.find_step(&mut s, st) {
+        Ok(None) => return None,
+        Ok(Some(r)) => r,
+        Err(_) => None,
+    };
+    let now = r.and_then(|id| {
+        lib.track(&mut s, id).ok().map(|t| LibNow { track: id, album: t.album_id, artist: t.artist_id })
+    });
     media::player_update(|p| p.lib_now = now);
+    Some(now.is_some())
 }
 
-/// The track that opens, in the library ("Go to album / artist").
-pub async fn find_now(vol: &mut Vol, srv: &Server, loc: Locator) {
-    match srv.lib.lib.as_ref() {
-        Some(lib) => with_lib_io(vol, Mode::Read, |io| find(io, lib, loc)).await,
-        None => media::player_update(|p| p.lib_now = None),
+/// Start looking for the track at `loc` in the library ("Go to album /
+/// artist"); `None` (and no place published) without a library or when
+/// its folder missed before. The track before is the hint: an album's next
+/// track is usually the next row.
+pub fn find_begin(srv: &Server, loc: Locator) -> Option<FindStep> {
+    let lib = srv.lib.lib.as_ref().filter(|_| srv.lib.miss_dir != Some(loc.dir));
+    let Some(lib) = lib else {
+        media::player_update(|p| p.lib_now = None);
+        return None;
+    };
+    let hint = critical_section::with(|cs| media::PLAYER.borrow(cs).borrow().lib_now.map(|n| n.track));
+    Some(lib.find_begin(loc, hint))
+}
+
+/// One step of a search begun with [`find_begin`] (one library session, at
+/// most three small reads): true when it is over.
+pub async fn find_more(vol: &mut Vol, srv: &mut Server, st: &mut FindStep, loc: Locator) -> bool {
+    let Some(lib) = srv.lib.lib.as_ref() else { return true };
+    match with_lib_io(vol, Mode::Read, |io| find(io, lib, st)).await {
+        None => false,
+        Some(found) => {
+            srv.lib.miss_dir = (!found).then_some(loc.dir);
+            true
+        }
     }
+}
+
+/// The whole search in one session.
+#[inline(never)]
+fn find_all(io: &Io<'_, '_>, lib: &Library, mut st: FindStep) -> bool {
+    for _ in 0..64 {
+        if let Some(found) = find(io, lib, &mut st) {
+            return found;
+        }
+    }
+    false
+}
+
+/// The track that opens, in the library, all at once (no audio is playing
+/// yet).
+pub async fn find_now(vol: &mut Vol, srv: &mut Server, loc: Locator) {
+    let Some(st) = find_begin(srv, loc) else { return };
+    let Some(lib) = srv.lib.lib.as_ref() else { return };
+    let found = with_lib_io(vol, Mode::Read, |io| find_all(io, lib, st)).await;
+    srv.lib.miss_dir = (!found).then_some(loc.dir);
 }

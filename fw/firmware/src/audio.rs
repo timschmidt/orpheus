@@ -236,13 +236,43 @@ fn pager_loads() -> u32 {
     atj2157_hal::pager::stats().loads as u32
 }
 
-/// Card work besides the stream refill (UI requests, the read-ahead open,
-/// a gapless track's title, library place and art) waits until the PCM
-/// ring holds this many frames (≈ 52 ms at 44.1 kHz): each can take tens
-/// of ms while nothing feeds the DAC. After [`CHORE_WAIT_US`] it runs
-/// anyway (a decoder that never gets ahead must not starve the UI).
-const ROOMY: u32 = (HALF + HALF / 2) as u32;
+/// Card work besides the current file's refill (UI requests, the
+/// read-ahead open and reads, a gapless track's library place and art)
+/// waits until the DAC has this many frames ahead of it (≈ 52 ms at
+/// 44.1 kHz; `PcmOut::headroom`): each piece runs while nothing feeds the
+/// DAC. After [`CHORE_WAIT_US`] a waiting piece runs anyway (a decoder
+/// that never gets ahead must not starve the UI).
+const ROOMY: i32 = (HALF + HALF / 2) as i32;
 const CHORE_WAIT_US: u64 = 300_000;
+/// A gapless track's library place and art are looked for after this much
+/// of it has played (its first seconds stay free of card work).
+const META_AFTER_MS: u64 = 2000;
+
+/// Underruns of the current track by cause (halves lost; reset with
+/// [`UNDERRUNS`]): an operation that took longer than the DAC had queued
+/// when it started is charged with the difference (`charge`). What no
+/// operation explains is the decoder's (`status`: `dec=`).
+static UNDER_BY: [AtomicU32; 6] = [const { AtomicU32::new(0) }; 6];
+const UB_JOIN: usize = 0;
+const UB_FILL: usize = 1;
+const UB_SERVE: usize = 2;
+const UB_PREFETCH: usize = 3;
+const UB_LIB: usize = 4;
+const UB_ART: usize = 5;
+
+/// Charge `cause` with the halves an operation that started at `t0` (µs)
+/// with `head` frames queued made the DAC miss.
+fn charge(cause: usize, head: i32, t0: u32) {
+    if head == i32::MAX {
+        return;
+    }
+    let us = u64::from(now32().wrapping_sub(t0));
+    let frames = (us * u64::from(RATE.load(Ordering::Relaxed)) / 1_000_000) as i64;
+    let short = frames - i64::from(head.max(0));
+    if short > 0 {
+        UNDER_BY[cause].fetch_add((short as u64).div_ceil(HALF as u64) as u32, Ordering::Relaxed);
+    }
+}
 
 /// Developer `stop`: ends the current file at once (also inside a PCM
 /// wait).
@@ -367,11 +397,22 @@ impl Ring {
     /// Read into free space (sector-sized pieces where it can): the
     /// current file (`f`, else the ring's own) to its end, then the file
     /// read ahead.
-    pub(crate) async fn fill(&mut self, vol: &mut Volume<'static, Card>, mut f: Option<&mut File>) -> bool {
+    pub(crate) async fn fill(&mut self, vol: &mut Volume<'static, Card>, f: Option<&mut File>) -> bool {
+        self.fill_in(vol, f, true).await
+    }
+
+    /// [`Ring::fill`]; the file read ahead only if `next` (held back while
+    /// the DAC is short of data near the current file's end).
+    async fn fill_in(
+        &mut self,
+        vol: &mut Volume<'static, Card>,
+        mut f: Option<&mut File>,
+        next: bool,
+    ) -> bool {
         let mut any = false;
         loop {
             let Ring { s, file: own, next_file, .. } = self;
-            let Some(Space { target, seek, buf }) = s.space(512, 16384) else { break };
+            let Some(Space { target, seek, buf }) = s.space_in(512, 16384, next) else { break };
             let file = match target {
                 Part::Current => match (f.as_deref_mut(), own) {
                     (Some(f), _) | (None, Some(f)) => f,
@@ -485,14 +526,20 @@ impl PcmOut {
         }
     }
 
-    /// Frames queued for the DAC (`u32::MAX` while it is not running:
-    /// nothing has a deadline then).
-    fn queued(&self) -> u32 {
+    /// Frames the DAC has ahead of it: the written halves it has not
+    /// finished, less what it has played of the current one (its DMA
+    /// position), plus the half being filled. `i32::MAX` while it is not
+    /// running (nothing has a deadline then); ≤ 0: it is playing stale data.
+    fn headroom(&self) -> i32 {
         if !self.running {
-            return u32::MAX;
+            return i32::MAX;
         }
+        const BYTES: u32 = (PCM_FRAMES * 4) as u32;
+        // SAFETY: channel 5 belongs to this module; a register read.
+        let rem = unsafe { DmaCh::steal(DAC_CH) }.remaining().min(BYTES);
+        let at = ((BYTES - rem) / 4) as usize % HALF;
         let halves = self.written.wrapping_sub(PLAYED.load(Ordering::Acquire)) as i32;
-        halves.max(0) as u32 * HALF as u32 + self.fill as u32
+        halves * HALF as i32 + self.fill as i32 - at as i32
     }
 
     fn start(&mut self) {
@@ -554,6 +601,9 @@ pub unsafe fn usb_buffer() -> &'static mut [u8; 16384] {
     unsafe { &mut *((&raw mut ARENA_BUF.0).cast::<[u8; 16384]>()) }
 }
 static mut CACHE: [CacheSlot; 8] = [CacheSlot::EMPTY; 8];
+/// The path walk's directory cache (`/.orpheus/library`, the art cache…:
+/// a walk from the root of a large card takes tens of sector reads).
+static mut WALKS: orpheus_fs::WalkCache = orpheus_fs::WalkCache::EMPTY;
 
 /// The card travels between this task (mounted) and the USB task (card
 /// reader): released on request, handed back when the host lets go.
@@ -566,6 +616,8 @@ async fn mount(card: Card) -> Option<Volume<'static, Card>> {
     // unmounted (consumed) before this borrow is created.
     let cache = unsafe { &mut *(&raw mut CACHE) };
     let mut vol = Volume::mount(card, cache, opts).await.ok()?;
+    // SAFETY: as `CACHE`: lent to the one volume that exists.
+    vol.set_walk_cache(unsafe { &mut *(&raw mut WALKS) });
     // The project was renamed (orpheus → Orpheus, 2026-11-24): its card
     // folder moves from `/.orpheus` to `/.orpheus` once, keeping the queue,
     // resume point, indexes and caches (owner's decision). Only this one
@@ -854,11 +906,15 @@ async fn play_file(
             save_store(vol, srv, spare).await;
         }
     }
-    // Chores (see `ROOMY`): a waiting request, the read-ahead open, the
-    // gapless track's title + library place (1) and art (2).
+    // Chores (see `ROOMY`): the read-ahead open, a waiting request, the
+    // gapless track's library place (1: start, 2: steps) and art (3).
     let mut serve_due = false;
     let mut pf_due: Option<u32> = None;
     let mut meta: u8 = if st.gapless { 1 } else { 0 };
+    let mut lib_find: Option<orpheus_library::FindStep> = None;
+    // The folder of the track before (a gapless track in the same folder
+    // keeps its art: an album's cover).
+    let mut prev_dir = u32::MAX;
     let mut chore_since = 0u64;
     // A gapless join being measured: 1 until the first block, 2 until two
     // halves are out.
@@ -1039,12 +1095,17 @@ async fn play_file(
                 if join == 1 {
                     jset(J_OPEN_US, now32().wrapping_sub(jget(J_T0)));
                     jset(J_LOADS, pager_loads().wrapping_sub(jget(J_L0)));
+                    charge(UB_JOIN, jget(J_HEAD) as i32, jget(J_T0));
                     join = 2;
                 } else if join == 2 && frames >= 2 * HALF as u32 {
                     // Underruns are seen at half boundaries: by now the
-                    // join's are counted.
+                    // join's are counted. The UI hears of the new track now
+                    // (no card work: the title came with the read-ahead).
                     jset(J_UNDER, UNDERRUNS.load(Ordering::Relaxed));
                     join = 0;
+                    prev_dir = critical_section::with(|cs| media::PLAYER.borrow(cs).borrow().file.dir);
+                    ring.show_handed();
+                    media::player_update(show);
                 }
                 if driven {
                     flow.merge(srv.feed(Event::Position { frame: pos }));
@@ -1056,20 +1117,30 @@ async fn play_file(
                     }
                 }
                 if ring.available() < RING / 2 {
-                    let a = time::now_us();
+                    let (a, head) = (now32(), out.headroom());
                     mark(1);
-                    ring.fill(vol, None).await;
+                    // The next file's head only with room to spare: near a
+                    // file's end the decoder must stay ahead of the DAC.
+                    ring.fill_in(vol, None, head >= ROOMY).await;
                     mark(0);
-                    T_FILL.fetch_add((time::now_us() - a) as u32, Ordering::Relaxed);
+                    charge(UB_FILL, head, a);
+                    T_FILL.fetch_add(now32().wrapping_sub(a), Ordering::Relaxed);
                     // A request may be waiting: served as a chore.
                     serve_due = true;
                 }
-                if serve_due || pf_due.is_some() || meta != 0 {
+                // The gapless track's library place and art once its first
+                // seconds have played.
+                let meta_now = meta != 0 && join == 0 && u64::from(frames) * 1000 >= META_AFTER_MS * rate;
+                // Requests wait while the current file's last bytes play
+                // (≤ 0.7 s: the hand-over comes first).
+                let serve_now = serve_due && !(ring.eof() && reader_end);
+                if pf_due.is_some() || serve_now || meta_now {
                     let now = time::now_us();
                     if chore_since == 0 {
                         chore_since = now;
                     }
-                    if out.queued() >= ROOMY || now - chore_since > CHORE_WAIT_US {
+                    let head = out.headroom();
+                    if head >= ROOMY || now - chore_since > CHORE_WAIT_US {
                         chore_since = 0;
                         mark(2);
                         let t0 = now32();
@@ -1078,27 +1149,42 @@ async fn play_file(
                         if let Some(item) = pf_due.take() {
                             prefetch(vol, ring, srv, item).await;
                             jset(J_PREFETCH_US, now32().wrapping_sub(t0));
-                        } else if serve_due {
+                            charge(UB_PREFETCH, head, t0);
+                        } else if serve_now {
                             serve_due = false;
                             let go_on = serve_one(vol, srv, spare).await;
                             T_SERVE.fetch_add(now32().wrapping_sub(t0), Ordering::Relaxed);
+                            charge(UB_SERVE, head, t0);
                             if !go_on {
                                 break 'play Ok(End::Pending);
                             }
                         } else if meta == 1 {
-                            meta = 2;
-                            ring.show_handed();
-                            media::player_update(show);
-                            if let Some(t) = st.track {
-                                crate::library::find_now(vol, srv, t.locator()).await;
-                            }
-                            jset(J_LIB_US, now32().wrapping_sub(t0));
+                            // A folder that missed before, or no library:
+                            // nothing to look for.
+                            lib_find = st.track.and_then(|t| crate::library::find_begin(srv, t.locator()));
+                            meta = if lib_find.is_some() { 2 } else { 3 };
+                            jset(J_LIB_US, 0);
                         } else if meta == 2 {
+                            // One probe per chore.
+                            let done = match (lib_find.as_mut(), st.track) {
+                                (Some(f), Some(t)) => {
+                                    crate::library::find_more(vol, srv, f, t.locator()).await
+                                }
+                                _ => true,
+                            };
+                            if done {
+                                meta = 3;
+                            }
+                            jset(J_LIB_US, jget(J_LIB_US).max(now32().wrapping_sub(t0)));
+                            charge(UB_LIB, head, t0);
+                        } else {
                             meta = 0;
-                            if let Some(t) = st.track {
+                            // An album's next track keeps the cover shown.
+                            if let Some(t) = st.track.filter(|t| t.locator().dir != prev_dir) {
                                 crate::pictures::track_art_cached(vol, srv, t.locator()).await;
                             }
                             jset(J_ART_US, now32().wrapping_sub(t0));
+                            charge(UB_ART, head, t0);
                             jset(J_UNDER_META, UNDERRUNS.load(Ordering::Relaxed));
                         }
                         mark(0);
@@ -1117,16 +1203,17 @@ async fn play_file(
                     natural = true;
                     break 'play Ok(End::Idle);
                 }
-                if !ring.fill(vol, None).await {
+                let (a, head) = (now32(), out.headroom());
+                if !ring.fill_in(vol, None, head >= ROOMY).await {
                     // The ring is full and the decoder still wants more:
                     // it can never be satisfied; end the track instead of
                     // spinning.
                     CORRUPT.fetch_add(1, Ordering::Relaxed);
                     break 'play failed(srv, driven, b"stream needs a larger ring");
                 }
-                if !serve_one(vol, srv, spare).await {
-                    break 'play Ok(End::Pending);
-                }
+                charge(UB_FILL, head, a);
+                // A request may be waiting: served as a chore.
+                serve_due = true;
             }
             Ok(Step::EndOfStream) => {
                 natural = true;
@@ -1140,6 +1227,11 @@ async fn play_file(
             }
         }
     };
+    if join != 0 {
+        // A gapless track shorter than two halves: show it anyway.
+        ring.show_handed();
+        media::player_update(show);
+    }
     // At the natural end ask the player what comes next: the file read
     // ahead is handed over with the DAC running (gapless), anything else
     // first plays out what is queued.
@@ -1151,7 +1243,7 @@ async fn play_file(
                 if o.gapless && !o.paused && ring.next.as_ref().is_some_and(|n| o.target.is_item(n.item)) =>
             {
                 gapless = true;
-                jset(J_HEAD, out.queued());
+                jset(J_HEAD, out.headroom().max(0) as u32);
                 jset(J_T0, now32());
                 jset(J_L0, pager_loads());
                 // Underruns while the next decoder opens are not the
@@ -1342,7 +1434,7 @@ async fn run_player(
     let mut out = PcmOut::new();
     let mut next = Some(first);
     while let Some(o) = next.take() {
-        for c in [&FRAMES, &UNDERRUNS, &SLOW_UNDERRUNS, &CORRUPT] {
+        for c in [&FRAMES, &UNDERRUNS, &SLOW_UNDERRUNS, &CORRUPT].into_iter().chain(&UNDER_BY) {
             c.store(0, Ordering::Relaxed);
         }
         STOP.store(false, Ordering::Relaxed);
@@ -1796,6 +1888,23 @@ pub fn status_reply() {
             .u(u64::from(jget(J_UNDER_META)))
             .s(t!(b" pf_us="))
             .u(u64::from(jget(J_PREFETCH_US)));
+        // This track's underruns by cause; `dec`: not explained by one.
+        let ub: [u32; 6] = core::array::from_fn(|i| UNDER_BY[i].load(Ordering::Relaxed));
+        let dec = UNDERRUNS.load(Ordering::Relaxed).saturating_sub(ub.iter().sum());
+        w.s(t!(b" ub: join="))
+            .u(u64::from(ub[UB_JOIN]))
+            .s(t!(b" fill="))
+            .u(u64::from(ub[UB_FILL]))
+            .s(t!(b" serve="))
+            .u(u64::from(ub[UB_SERVE]))
+            .s(t!(b" pf="))
+            .u(u64::from(ub[UB_PREFETCH]))
+            .s(t!(b" lib="))
+            .u(u64::from(ub[UB_LIB]))
+            .s(t!(b" art="))
+            .u(u64::from(ub[UB_ART]))
+            .s(t!(b" dec="))
+            .u(u64::from(dec));
     });
 }
 

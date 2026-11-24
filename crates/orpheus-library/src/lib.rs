@@ -84,7 +84,7 @@ pub use format::{GRP_ROW, Kind, StrRef, TRK_ROW, VERSION};
 pub use orpheus_index::{DirSource, Error, FileName, Signature, SrcEntry, Storage};
 pub use orpheus_meta::window::Budget;
 pub use orpheus_player::TrackRef;
-pub use query::{Item, ItemKind, Library, List, Track};
+pub use query::{FindStep, Item, ItemKind, Library, List, Track};
 
 use orpheus_fs::Locator;
 

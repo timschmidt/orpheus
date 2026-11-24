@@ -485,8 +485,10 @@ driver exists because it is much faster than reboot cycles.
    * MP3, FLAC and WAV must pass. Vorbis is reported (04 §2.2: < 30 ms
      inserted if not zero).
 4. Reported in the run log: `join: head= open_us= loads= lib_us= art_us=
-   pf_us=` per join. `open_us` must stay below the headroom (`head` frames
-   at the stream's rate).
+   pf_us=` per join, and `ub: join= fill= serve= pf= lib= art= dec=` (the
+   track's underruns by cause, which add up to `underruns`). `open_us` must
+   stay below the headroom (`head` frames at the stream's rate). Every
+   `ub:` field must be 0.
 5. A folder with a 44.1 kHz part followed by a 48 kHz file checks the
    rate-change fallback: the second file plays at the right pitch, after
    a short stop.

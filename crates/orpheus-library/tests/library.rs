@@ -127,6 +127,19 @@ fn check_against_model(l: &Library, s: &mut MemStore, card: &Card, articles: boo
         {
             assert_eq!(l.find_near(s, t.r.locator(), hint).unwrap(), Some(i as u32));
         }
+        // Step by step: the next row is one step; a search at most
+        // 2 + log2(n) + 1 steps.
+        let mut st = l.find_begin(t.r.locator(), (i as u32).checked_sub(1));
+        let mut steps = 0;
+        let r = loop {
+            steps += 1;
+            if let Some(r) = l.find_step(s, &mut st).unwrap() {
+                break r;
+            }
+        };
+        assert_eq!(r, Some(i as u32));
+        assert!(i == 0 || steps == 1, "next row found in {steps} steps");
+        assert!(steps <= 3 + (32 - n.leading_zeros()) as usize);
     }
 
     // Artists → albums (year order) → tracks.
