@@ -13,16 +13,18 @@ rust-version.workspace = true
 path = "lib.rs"
 
 [features]
-default = ["wav", "mp3", "flac"]
+default = ["wav", "mp3", "flac", "opus"]
 wav = ["dep:yoton-codec-wav"]
 mp3 = ["dep:yoton-codec-mp3"]
 flac = ["dep:yoton-codec-flac"]
+opus = ["dep:yoton-codec-opus"]
 
 [dependencies]
 yoton-audio = { path = "../yoton-audio" }
 yoton-codec-wav = { path = "wav", optional = true }
 yoton-codec-mp3 = { path = "mp3", optional = true }
 yoton-codec-flac = { path = "flac", optional = true }
+yoton-codec-opus = { path = "opus", optional = true }
 
 [lints]
 workspace = true

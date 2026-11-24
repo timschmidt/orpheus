@@ -1,23 +1,30 @@
 //! Decoder selection (04 §2.1): an enum over the codecs this build
 //! contains, chosen from the probed [`Format`], with one `match` per call.
-//! Cargo features select the codecs (`wav`, `mp3`, `flac`).
+//! Cargo features select the codecs (`wav`, `mp3`, `flac`, `opus`).
 
 #![no_std]
 #![forbid(unsafe_code)]
 
 use yoton_audio::{
-    ByteSource, ContainerInfo, DecodeError, Decoder, Format, OpenError, Plan, SeekSource, SeekStep, Step,
-    StreamInfo, Unsupported,
+    ByteSource, ContainerInfo, DecodeError, Decoder, Format, OggCodec, OpenError, Plan, SeekSource, SeekStep,
+    Step, StreamInfo, Unsupported,
 };
 
 #[cfg(feature = "flac")]
 pub use yoton_codec_flac::FlacDecoder;
 #[cfg(feature = "mp3")]
 pub use yoton_codec_mp3::Mp3Decoder;
+#[cfg(feature = "opus")]
+pub use yoton_codec_opus::OpusDecoder;
 #[cfg(feature = "wav")]
 pub use yoton_codec_wav::WavDecoder;
 
 /// One open decoder of any built codec.
+///
+/// The Ogg decoders carry the page reader's lacing table (about 300 bytes)
+/// in the value; the enum lives in the decode task's state and is not moved
+/// per frame, so the size difference between variants does not matter.
+#[allow(clippy::large_enum_variant)]
 pub enum AnyDecoder<'a> {
     #[cfg(feature = "wav")]
     Wav(WavDecoder<'a>),
@@ -25,9 +32,11 @@ pub enum AnyDecoder<'a> {
     Mp3(Mp3Decoder<'a>),
     #[cfg(feature = "flac")]
     Flac(FlacDecoder<'a>),
+    #[cfg(feature = "opus")]
+    Opus(OpusDecoder<'a>),
 }
 
-#[cfg(not(any(feature = "wav", feature = "mp3", feature = "flac")))]
+#[cfg(not(any(feature = "wav", feature = "mp3", feature = "flac", feature = "opus")))]
 compile_error!("enable at least one codec feature");
 
 macro_rules! each {
@@ -39,6 +48,8 @@ macro_rules! each {
             AnyDecoder::Mp3($d) => $e,
             #[cfg(feature = "flac")]
             AnyDecoder::Flac($d) => $e,
+            #[cfg(feature = "opus")]
+            AnyDecoder::Opus($d) => $e,
         }
     };
 }
@@ -56,6 +67,8 @@ pub fn inspect(format: Format, src: &dyn ByteSource, hint: &ContainerInfo) -> Re
         Format::Mpeg => Mp3Decoder::inspect(src, hint),
         #[cfg(feature = "flac")]
         Format::Flac => FlacDecoder::inspect(src, hint),
+        #[cfg(feature = "opus")]
+        Format::Ogg(OggCodec::Opus) => OpusDecoder::inspect(src, hint),
         _ => {
             let _ = (src, hint);
             Err(unsupported())
@@ -79,6 +92,10 @@ pub fn open<'a>(
         Format::Mpeg => Mp3Decoder::open(src, arena, hint).map(|(d, i)| (AnyDecoder::Mp3(d), i)),
         #[cfg(feature = "flac")]
         Format::Flac => FlacDecoder::open(src, arena, hint).map(|(d, i)| (AnyDecoder::Flac(d), i)),
+        #[cfg(feature = "opus")]
+        Format::Ogg(OggCodec::Opus) => {
+            OpusDecoder::open(src, arena, hint).map(|(d, i)| (AnyDecoder::Opus(d), i))
+        }
         _ => {
             let _ = (src, arena, hint);
             Err(unsupported())

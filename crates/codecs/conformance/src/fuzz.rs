@@ -105,6 +105,11 @@ pub fn flac(data: &[u8]) {
     decode_with(data, Some(Format::Flac));
 }
 
+pub fn opus(data: &[u8]) {
+    decode_with(data, Some(Format::Ogg(yoton_audio::OggCodec::Opus)));
+}
+
+
 /// Probe only.
 pub fn probe(data: &[u8]) {
     let src = yoton_audio::SliceSource::new(data);
@@ -174,6 +179,7 @@ pub const TARGETS: &[Target] = &[
     ("wav", wav),
     ("mp3", mp3),
     ("flac", flac),
+    ("opus", opus),
     ("probe", probe),
     ("meta", meta),
     ("lyrics", lyrics),

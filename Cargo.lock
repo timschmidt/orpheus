@@ -1182,6 +1182,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "yoton-codec-opus"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "yoton-audio",
+ "yoton-ogg",
+]
+
+[[package]]
+name = "yoton-codec-speex"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "yoton-audio",
+ "yoton-ogg",
+]
+
+[[package]]
 name = "yoton-codec-wav"
 version = "0.1.0"
 dependencies = [
@@ -1195,6 +1213,8 @@ dependencies = [
  "yoton-audio",
  "yoton-codec-flac",
  "yoton-codec-mp3",
+ "yoton-codec-opus",
+ "yoton-codec-speex",
  "yoton-codec-wav",
 ]
 

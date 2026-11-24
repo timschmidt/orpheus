@@ -54,6 +54,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "opus"
+path = "fuzz_targets/opus.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "meta"
 path = "fuzz_targets/meta.rs"
 test = false
