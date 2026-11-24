@@ -49,7 +49,7 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     step("test all", crate::test::cmd(&mut Args::from_vec(vec!["all".into()])));
     step("build --release", crate::build::cmd_build(&mut Args::from_vec(vec![])));
     step("size --check", crate::size::cmd(&mut Args::from_vec(vec!["--check".into()])));
-    results.push(("check-resident", "not run (WP-T-3 not done)".into()));
+    step("check-resident", crate::resident::cmd(&mut Args::from_vec(vec![])));
     if skip_dev {
         results.push(("dev hil smoke", "not run (--no-dev)".into()));
     } else {

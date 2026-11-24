@@ -1,0 +1,17 @@
+[package]
+name = "bringup-pagetoy"
+description = "T-3 toy for `xtask pagelink`: enough generated code and tables for several code and rodata pages"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+atj2157-hal = { path = "../../atj2157-hal" }
+yoton-proto.workspace = true
+yoton-pager = { path = "../../../crates/yoton-pager" }
+embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }
+static_cell = "2"
+
+[lints]
+workspace = true

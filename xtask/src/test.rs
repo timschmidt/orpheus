@@ -1,4 +1,4 @@
-//! `xtask test [host|golden|all]` (07 §3).
+//! `xtask test [host|golden|pagelink|all]` (07 §3).
 
 use anyhow::Result;
 
@@ -11,12 +11,14 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     match which.as_str() {
         "host" => host(),
         "golden" => golden(bless),
+        "pagelink" => crate::selftest::run(),
         "all" => {
             host()?;
             golden(false)?;
-            Ok("host and golden tests passed".into())
+            crate::selftest::run()?;
+            Ok("host, golden and pagelink tests passed".into())
         }
-        other => anyhow::bail!("unknown test suite `{other}` (host, golden, all)"),
+        other => anyhow::bail!("unknown test suite `{other}` (host, golden, pagelink, all)"),
     }
 }
 

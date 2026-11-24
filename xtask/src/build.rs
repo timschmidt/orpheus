@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 
 use crate::args::Args;
-use crate::util::{cargo, log, out_dir, root, run};
+use crate::util::{cargo, out_dir, root, run};
 
 pub struct Built {
     pub elf: PathBuf,
@@ -15,8 +15,20 @@ pub struct Built {
 }
 
 /// Build package `pkg` (binary `bin`) in the device workspace and write the
-/// flat image next to the ELF in `target/yoton/`.
+/// flat image next to the ELF in `target/yoton/` (RAM-only images).
 pub fn build_fw(pkg: &str, bin: &str, release: bool, features: Option<&str>) -> Result<Built> {
+    let elf = cargo_build(pkg, bin, release, features)?;
+    let (bytes, load_addr) = flatten(&elf)?;
+    let bin_path = out_dir().join(format!("{bin}.bin"));
+    std::fs::write(&bin_path, &bytes)?;
+    let elf_copy = out_dir().join(format!("{bin}.elf"));
+    std::fs::copy(&elf, &elf_copy)?;
+    Ok(Built { elf: elf_copy, bin: bin_path, load_addr, size: bytes.len() })
+}
+
+/// `cargo build` of package `pkg` (binary `bin`) in the device workspace;
+/// returns the ELF cargo produced.
+pub fn cargo_build(pkg: &str, bin: &str, release: bool, features: Option<&str>) -> Result<PathBuf> {
     let fw = root().join("fw");
     let mut c = cargo();
     c.current_dir(&fw).args(["build", "--package", pkg, "--bin", bin]);
@@ -34,13 +46,7 @@ pub fn build_fw(pkg: &str, bin: &str, release: bool, features: Option<&str>) -> 
     }
     run(&mut c)?;
     let profile = if release { "release" } else { "debug" };
-    let elf = fw.join("target/thumbv7em-none-eabihf").join(profile).join(bin);
-    let (bytes, load_addr) = flatten(&elf)?;
-    let bin_path = out_dir().join(format!("{bin}.bin"));
-    std::fs::write(&bin_path, &bytes)?;
-    let elf_copy = out_dir().join(format!("{bin}.elf"));
-    std::fs::copy(&elf, &elf_copy)?;
-    Ok(Built { elf: elf_copy, bin: bin_path, load_addr, size: bytes.len() })
+    Ok(fw.join("target/thumbv7em-none-eabihf").join(profile).join(bin))
 }
 
 /// Flat binary of all loadable segments with file contents, from the lowest
@@ -81,12 +87,19 @@ pub fn flatten(elf: &Path) -> Result<(Vec<u8>, u32)> {
 }
 
 pub fn cmd_build(args: &mut Args) -> Result<String> {
-    let release = !args.flag("debug");
-    let bin = args.value("bin").unwrap_or_else(|| "firmware".into());
-    let features = args.value("features");
-    let b = build_fw("firmware", &bin, release, features.as_deref())?;
-    log(&format!("{} -> {} ({} bytes at {:#x})", b.elf.display(), b.bin.display(), b.size, b.load_addr));
-    Ok(format!("ok, {} bytes", b.size))
+    // The firmware is a paged image: cargo links pass 1, pagelink the rest
+    // (target/yoton/firmware.yfw, resident.bin, pages.bin, layout.json).
+    let mut forwarded = vec!["--bin".to_string(), args.value("bin").unwrap_or_else(|| "firmware".into())];
+    if args.flag("debug") {
+        forwarded.push("--debug".into());
+    }
+    for key in ["features", "layout"] {
+        if let Some(v) = args.value(key) {
+            forwarded.push(format!("--{key}"));
+            forwarded.push(v);
+        }
+    }
+    crate::pagelink::cmd(&mut Args::from_vec(forwarded))
 }
 
 pub fn cmd_bringup(args: &mut Args) -> Result<String> {

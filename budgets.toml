@@ -10,8 +10,12 @@ bss_bytes = 20480               # 20 KiB
 caches_bytes = 8192
 mode_pool_bytes = 106496        # 104 KiB
 stack_bytes = 12288             # 12 KiB
-# Firmware partition in the dual-boot layout (slot A).
+# Firmware partition in the dual-boot layout (slot A): the whole "YFW1"
+# image (header sector, resident image, page store).
 slot_bytes_dual = 491520        # 480 KiB
+# Page store (02 §3.1): what the alias windows can address.
+code_pages = 128
+rodata_pages = 48
 # Panic sites in the resident image (core::panicking callers). Growth needs
 # a STATUS.md entry.
 resident_panic_sites = 0
@@ -19,6 +23,10 @@ resident_panic_sites = 0
 [bringup]
 # RAM-loaded images end below ymon (0x118000).
 image_bytes = 98304             # 96 KiB
+# Paged bring-up images (fw/bringup/pagetoy): the window limits.
+code_pages = 128
+rodata_pages = 48
+slot_bytes_dual = 491520
 
 [stage2]
 image_bytes = 1024

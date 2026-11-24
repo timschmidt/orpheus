@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Linker wrapper for the device workspace (fw/.cargo/config.toml).
+#
+# rustc calls this instead of rust-lld. It links exactly as rust-lld would,
+# and before that saves the link so that `cargo xtask pagelink` can run the
+# linker again with another linker script without recompiling anything:
+#
+#   <target>/<profile>/yoton-link/<binary>/args     one argument per line
+#   <target>/<profile>/yoton-link/<binary>/in/NNN-* copies of every input file
+#
+# rustc deletes its temporary objects (the LTO object, symbols.o) after the
+# link, hence the copies; `args` refers to the copies. Saving is best effort:
+# a failure here never fails the link, pagelink reports a missing save.
+set -u
+
+sysroot=$(rustc --print sysroot)
+host=$(rustc -vV | sed -n 's/^host: //p')
+lld="$sysroot/lib/rustlib/$host/bin/rust-lld"
+
+args=("$@")
+# rust-lld is a multi-flavour driver; rustc passes `-flavor gnu` only when
+# it knows it runs rust-lld, so add it if absent.
+if [ "${args[0]:-}" != "-flavor" ]; then
+    args=(-flavor gnu "${args[@]}")
+fi
+
+save() {
+    local out="" i
+    for ((i = 0; i < ${#args[@]}; i++)); do
+        if [ "${args[$i]}" = "-o" ]; then
+            out="${args[$((i + 1))]:-}"
+        fi
+    done
+    [ -n "$out" ] || return 0
+    local base name dir
+    base=$(basename "$out")
+    name=$(printf '%s' "$base" | sed -E 's/-[0-9a-f]{16}$//')
+    dir="$(dirname "$out")/../yoton-link/$name"
+    rm -rf "$dir" && mkdir -p "$dir/in" || return 0
+    local n=0 a dst
+    local saved=()
+    for a in "${args[@]}"; do
+        case "$a" in
+        @*)
+            echo "response files are not supported" >"$dir/unsupported"
+            return 0
+            ;;
+        esac
+        local input=0
+        case "$a" in *.o | *.rlib | *.a) [ -f "$a" ] && input=1 ;; esac
+        if [ "$input" = 1 ]; then
+            n=$((n + 1))
+            dst=$(printf '%s/in/%03d-%s' "$dir" "$n" "$(basename "$a")")
+            ln -f "$a" "$dst" 2>/dev/null || cp -f "$a" "$dst" || return 0
+            saved+=("$(realpath "$dst")")
+        else
+            saved+=("$a")
+        fi
+    done
+    printf '%s\n' "${saved[@]}" >"$dir/args.tmp" && mv -f "$dir/args.tmp" "$dir/args"
+    pwd >"$dir/cwd"
+    realpath "$out" >"$dir/output"
+}
+save
+
+exec "$lld" "${args[@]}"
