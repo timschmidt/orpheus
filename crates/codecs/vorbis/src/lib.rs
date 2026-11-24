@@ -45,7 +45,8 @@ use yoton_audio::{
     ByteSource, CodecId, ContainerInfo, DecodeError, Decoder, MAX_PEEK, OpenError, PcmBlock, Plan,
     SampleKind, SeekSource, SeekStep, Step, StreamInfo, Unsupported, View,
 };
-use yoton_ogg::{NO_GRANULE, Next, Packet, PageErr, Reader, find_page, peek_packets};
+use yoton_ogg::ranges::{Next, Packet, PageErr, Reader, peek_packets};
+use yoton_ogg::{Bisect, NO_GRANULE};
 
 /// PCM handed out per call, in frames.
 const OUT_FRAMES: usize = 512;
@@ -127,19 +128,6 @@ struct Emit {
     active: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct SeekSt {
-    target: u64,
-    lo: u64,
-    hi: u64,
-    /// Start of the last page seen with granule <= target.
-    best: Option<u64>,
-    probe: u64,
-    probes: u32,
-    linear: bool,
-    started: bool,
-}
-
 pub struct VorbisDecoder<'a> {
     arena: Arena<'a>,
     id: Ident,
@@ -157,7 +145,8 @@ pub struct VorbisDecoder<'a> {
     discard: u64,
     /// Where the audio packets start: source position and reader state.
     audio_at: Option<(u64, Reader)>,
-    seek: Option<SeekSt>,
+    /// Bisection in progress (kept across `NeedData`).
+    seek: Option<Bisect>,
 }
 
 impl VorbisDecoder<'_> {
@@ -320,7 +309,7 @@ impl VorbisDecoder<'_> {
             }
             let p = match self.ogg.next(src) {
                 Next::Packet(p) => p,
-                Next::Need(n) => return Ok(Err(Step::NeedData(n))),
+                Next::NeedData(n) => return Ok(Err(Step::NeedData(n))),
                 Next::End => {
                     if self.phase != Phase::Audio {
                         return Err(DecodeError::Unsupported(Unsupported::BadHeader));
@@ -433,7 +422,7 @@ impl<'a> Decoder<'a> for VorbisDecoder<'a> {
                     break;
                 }
                 Next::Corrupt => {}
-                Next::Need(n) => return Err(OpenError::NeedData(n)),
+                Next::NeedData(n) => return Err(OpenError::NeedData(n)),
                 Next::End => return Err(Unsupported::BadHeader.into()),
             }
         }
@@ -473,83 +462,21 @@ impl<'a> Decoder<'a> for VorbisDecoder<'a> {
             }
         }
         let Some((audio_off, _)) = self.audio_at else { return Ok(SeekStep::Done(frame)) };
-        let mut st = match self.seek {
-            Some(s) if s.target == frame => s,
-            _ => {
-                let end = src.len().unwrap_or(audio_off);
-                SeekSt {
-                    target: frame,
-                    lo: audio_off,
-                    hi: end.max(audio_off),
-                    best: None,
-                    probe: audio_off,
-                    probes: 0,
-                    linear: false,
-                    started: false,
-                }
-            }
+        let Some(serial) = self.ogg.serial() else { return Ok(SeekStep::Done(frame)) };
+        let mut b = match self.seek {
+            Some(b) if b.target() == frame => b,
+            _ => Bisect::new(audio_off, src.len().unwrap_or(u64::MAX), frame, serial),
         };
-        let serial = self.ogg.serial();
-        loop {
-            if !st.started {
-                st.started = true;
-                st.probes += 1;
-                if st.linear || st.hi.saturating_sub(st.lo) <= 2 * MAX_PEEK as u64 || st.probes > 48 {
-                    st.linear = true;
-                    st.probe = st.best.unwrap_or(st.lo);
-                } else {
-                    st.probe = st.lo + (st.hi - st.lo) / 2;
-                }
-                src.seek(st.probe)?;
+        match b.step(src)? {
+            yoton_ogg::SeekStep::NeedData(n) => {
+                self.seek = Some(b);
+                Ok(SeekStep::NeedData(n))
             }
-            // Find the next page of our stream from the read position.
-            let v = View::of(src);
-            let found = find_page(&v, 0, src.at_end());
-            let page = match found {
-                Ok(pg) => pg,
-                Err(PageErr::Need(n)) => {
-                    if src.at_end() || n > MAX_PEEK {
-                        // Nothing more after the probe.
-                        if st.linear {
-                            let best = st.best;
-                            return self.land(src, best, st.target);
-                        }
-                        st.hi = st.probe;
-                        st.started = false;
-                        continue;
-                    }
-                    self.seek = Some(st);
-                    return Ok(SeekStep::NeedData(n));
-                }
-                Err(PageErr::Bad) => {
-                    src.consume(1);
-                    continue;
-                }
-            };
-            let at = src.position() + page.at as u64;
-            let len = page.len();
-            src.consume(page.at + len);
-            // Header pages (granule 0) and pages without a packet end do
-            // not position anything.
-            if Some(page.serial) != serial
-                || page.granule == NO_GRANULE
-                || page.granule == 0
-                || at < audio_off
-            {
-                continue;
-            }
-            if page.granule <= st.target {
-                st.best = Some(at);
-                if !st.linear {
-                    st.lo = at + len as u64;
-                    st.started = false;
-                }
-            } else if st.linear || !st.started {
-                let best = st.best;
-                return self.land(src, best, st.target);
-            } else {
-                st.hi = st.probe;
-                st.started = false;
+            // Pages of granule 0 (only the first audio packet ends there)
+            // position nothing: start from the first audio packet instead.
+            yoton_ogg::SeekStep::Done(found) => {
+                let at = found.filter(|&(_, g)| g > 0).map(|(off, _)| off);
+                self.land(src, at, frame)
             }
         }
     }

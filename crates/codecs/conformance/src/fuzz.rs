@@ -109,14 +109,28 @@ pub fn vorbis(data: &[u8]) {
     decode_with(data, Some(Format::Ogg(yoton_audio::OggCodec::Vorbis)));
 }
 
-/// The Ogg packet reader alone, over a simulated ring.
+pub fn opus(data: &[u8]) {
+    decode_with(data, Some(Format::Ogg(yoton_audio::OggCodec::Opus)));
+}
+
+pub fn speex(data: &[u8]) {
+    decode_with(data, Some(Format::Ogg(yoton_audio::OggCodec::Speex)));
+}
+
+/// The Ogg packet readers alone (zero-copy and reassembling), over a
+/// simulated ring.
 pub fn ogg(data: &[u8]) {
     use yoton_audio::{ByteSource, SliceSource};
-    use yoton_ogg::{Next, Reader};
+    use yoton_ogg::{Next, assembled, ranges};
     let Some((&sel, file)) = data.split_first() else { return };
     let chunk = CHUNKS[usize::from(sel) % CHUNKS.len()];
+    let feed = |src: &mut SliceSource<'_>, n: usize| {
+        assert!(n > src.available() && n <= yoton_audio::MAX_PEEK && !src.at_end(), "ogg NeedData contract");
+        if chunk == 0 { src.refill() } else { src.trickle(chunk) }
+    };
     let mut src = SliceSource::ring(file, 32 * 1024);
-    let mut r = Reader::new();
+    let mut r = ranges::Reader::new();
+    let mut done = false;
     for _ in 0..drive::budget(file.len()) {
         match r.next(&mut src) {
             Next::Packet(p) => {
@@ -124,15 +138,32 @@ pub fn ogg(data: &[u8]) {
                 let _ = p.byte(&v, p.len.saturating_sub(1));
                 r.commit(&mut src, &p);
             }
-            Next::Need(n) => {
-                assert!(n > src.available() && !src.at_end(), "ogg NeedData contract");
-                if chunk == 0 { src.refill() } else { src.trickle(chunk) }
+            Next::NeedData(n) => feed(&mut src, n),
+            Next::End => {
+                done = true;
+                break;
             }
+            Next::Corrupt => {}
+        }
+    }
+    assert!(done, "ogg range reader does not finish");
+    let mut src = SliceSource::ring(file, 32 * 1024);
+    let mut r = assembled::PacketReader::new();
+    let mut buf = [0u8; 1024];
+    for _ in 0..drive::budget(file.len()) {
+        match r.next_packet(&mut src, &mut buf) {
+            Next::Packet(p) => {
+                assert!(p.len <= buf.len());
+                if p.bos && r.selected().is_none() {
+                    r.select(p.serial);
+                }
+            }
+            Next::NeedData(n) => feed(&mut src, n),
             Next::End => return,
             Next::Corrupt => {}
         }
     }
-    panic!("ogg reader does not finish");
+    panic!("ogg packet reader does not finish");
 }
 
 /// Probe only.
@@ -205,6 +236,8 @@ pub const TARGETS: &[Target] = &[
     ("mp3", mp3),
     ("flac", flac),
     ("vorbis", vorbis),
+    ("opus", opus),
+    ("speex", speex),
     ("ogg", ogg),
     ("probe", probe),
     ("meta", meta),

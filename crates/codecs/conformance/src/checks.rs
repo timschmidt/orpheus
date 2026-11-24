@@ -58,6 +58,8 @@ pub fn budget_for(file: &[u8], name: &str) -> usize {
             Some(b) if b <= 4608 => 38 * 1024,
             _ => 66 * 1024,
         },
+        "opus" => 64 * 1024,
+        "spx" => 12 * 1024,
         _ => 4 * 1024,
     }
 }
@@ -66,7 +68,13 @@ pub fn budget_for(file: &[u8], name: &str) -> usize {
 pub fn lossy(codec: CodecId) -> bool {
     matches!(
         codec,
-        CodecId::Mp1 | CodecId::Mp2 | CodecId::Mp3 | CodecId::Vorbis | CodecId::Opus | CodecId::Aac
+        CodecId::Mp1
+            | CodecId::Mp2
+            | CodecId::Mp3
+            | CodecId::Vorbis
+            | CodecId::Opus
+            | CodecId::Speex
+            | CodecId::Aac
     )
 }
 
@@ -250,7 +258,8 @@ fn seek_check(e: &Entry, file: &[u8], a: &Decoded, n: usize, row: &mut Row) {
         }
     };
     let full = if a.wide { 2_147_483_648.0 } else { 32768.0 };
-    let (mut exact, mut close) = (0usize, 0usize);
+    let (mut exact, mut close, mut converging) = (0usize, 0usize, 0usize);
+    let mut worst = f64::NEG_INFINITY;
     for (&t, (landed, pcm)) in targets.iter().zip(&res) {
         if *landed != t {
             row.failures.push(format!("seek to {t} landed at {landed}"));
@@ -267,6 +276,15 @@ fn seek_check(e: &Entry, file: &[u8], a: &Decoded, n: usize, row: &mut Row) {
             // QuickTime IMA: a mid-stream start carries a DC offset below
             // 128 LSB (see the WAV decoder's seek).
             close += 1;
+        } else if a.info.codec == CodecId::Opus && d.len_ours == d.len_ref && d.rms_db <= OPUS_SEEK_DB {
+            // Opus restarts from a page before the target with a fresh
+            // decoder (RFC 7845 §4.6 pre-roll). CELT converges to the
+            // linear decode exactly within the pre-roll; SILK's integer
+            // LPC/LTP synthesis keeps a residual difference for seconds on
+            // stationary tones (measured −57…−78 dBFS on the synthetic
+            // corpus; noise-like input converges exactly after ~0.5 s).
+            converging += 1;
+            worst = worst.max(d.rms_db);
         } else {
             row.failures.push(format!(
                 "seek to {t}: output differs from linear decode (first mismatch {:?}, len {}/{}, rms {:.1})",
@@ -275,11 +293,19 @@ fn seek_check(e: &Entry, file: &[u8], a: &Decoded, n: usize, row: &mut Row) {
         }
     }
     row.seek = format!(
-        "{exact}/{} exact{}",
+        "{exact}/{} exact{}{}",
         targets.len(),
-        if close > 0 { format!(", {close} close") } else { String::new() }
+        if close > 0 { format!(", {close} close") } else { String::new() },
+        if converging > 0 {
+            format!(", {converging} converging (worst {worst:.1} dB)")
+        } else {
+            String::new()
+        }
     );
 }
+
+/// Seek tolerance for Opus after the pre-roll (see `seek_check`).
+const OPUS_SEEK_DB: f64 = -50.0;
 
 /// Truncations, bit flips and splices: the decoder must end (EndOfStream or
 /// a clean refusal) within the iteration budget and never break the

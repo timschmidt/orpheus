@@ -27,3 +27,4 @@
 /crates/yoton-img/fuzz/artifacts/
 /crates/yoton-img/fuzz/corpus/
 /crates/yoton-img/fuzz/coverage/
+/tests/vectors/

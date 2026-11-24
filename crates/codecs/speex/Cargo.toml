@@ -1,0 +1,15 @@
+[package]
+name = "yoton-codec-speex"
+description = "Speex decoder (Ogg Speex; narrowband, wideband, ultra-wideband, intensity stereo) in the codec arena: the libspeex 1.2.1 float decoder ported to Rust in f32"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+yoton-audio = { path = "../../yoton-audio" }
+yoton-ogg = { path = "../ogg" }
+bytemuck = { version = "1.25", default-features = false, features = ["derive", "min_const_generics"] }
+
+[lints]
+workspace = true

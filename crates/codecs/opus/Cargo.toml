@@ -1,0 +1,15 @@
+[package]
+name = "yoton-codec-opus"
+description = "Opus decoder (RFC 6716, Ogg mapping RFC 7845) in the codec arena: libopus 1.5.2 ported to Rust (integer SILK, f32 CELT)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+yoton-audio = { path = "../../yoton-audio" }
+yoton-ogg = { path = "../ogg" }
+bytemuck = { version = "1.25", default-features = false, features = ["derive", "min_const_generics"] }
+
+[lints]
+workspace = true

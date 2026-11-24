@@ -5,7 +5,9 @@
 //! * `codecs [--gen] [--filter S] [--quick]`: the codec conformance suite
 //!   (07 §3.3). `--gen` (re)builds the corpus in `tests/corpus/` with ffmpeg,
 //!   sox and flac; it is also built when missing. The checks run in the
-//!   `yoton-codec-conformance` binary with overflow checks on.
+//!   `yoton-codec-conformance` binary with overflow checks on. Then the
+//!   RFC 8251 Opus vectors (fetched into `tests/vectors/` when missing) run
+//!   as the opus crate's tests. `YOTON_CORPUS` overrides the corpus path.
 //! * `fuzz-smoke [--secs N]`: the stable mutation smoke run over every fuzz
 //!   target, then each `cargo fuzz` target for N seconds (default 60) when a
 //!   nightly toolchain and cargo-fuzz are installed (07 §3.4); inputs kept
@@ -74,8 +76,10 @@ fn golden(bless: bool) -> Result<String> {
 // ---------------------------------------------------------------------------
 // Codec conformance (07 §3.3)
 
+/// `tests/corpus/`, or `$YOTON_CORPUS` (a scratch corpus while working on
+/// one codec's generator).
 fn corpus_dir() -> PathBuf {
-    root().join("tests").join("corpus")
+    std::env::var_os("YOTON_CORPUS").map_or_else(|| root().join("tests").join("corpus"), PathBuf::from)
 }
 
 /// The conformance binary, built with overflow checks and debug assertions
@@ -109,7 +113,38 @@ fn codecs(regen: bool, filter: Option<&str>, quick: bool) -> Result<String> {
         c.args(["--no-robust", "--seeks", "4"]);
     }
     run(&mut c)?;
-    Ok("codec conformance passed".into())
+    let vectors = fetch_opus_vectors();
+    // The RFC 8251 Opus vectors (range-exact, ≤ −80 dBFS) run as the opus
+    // crate's tests; they skip themselves when the vectors are missing.
+    run(cargo().current_dir(root()).args(["test", "--quiet", "--release", "-p", "yoton-codec-opus"]))?;
+    Ok(format!("codec conformance passed; {vectors}"))
+}
+
+/// The RFC 8251 Opus test vectors (opus-codec.org; code components of the
+/// RFC, Simplified BSD licence) in `tests/vectors/opus_newvectors`,
+/// downloaded with curl and checked by SHA-256 when missing.
+fn fetch_opus_vectors() -> String {
+    const URL: &str = "https://opus-codec.org/static/testvectors/opus_testvectors-rfc8251.tar.gz";
+    const SHA256: &str = "6b26a22f9ba87b2b836906a9bb7afec5f8e54d49553b1200382520ee6fedfa55";
+    let dir = root().join("tests").join("vectors");
+    if dir.join("opus_newvectors").join("testvector01.bit").exists() {
+        return "Opus RFC 8251 vectors present".into();
+    }
+    let tgz = dir.join("opus_testvectors-rfc8251.tar.gz");
+    let fetched = std::fs::create_dir_all(&dir).is_ok()
+        && Command::new("curl").args(["-sSfL", "-o"]).arg(&tgz).arg(URL).status().is_ok_and(|s| s.success())
+        && Command::new("sha256sum")
+            .arg(&tgz)
+            .output()
+            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).starts_with(SHA256))
+        && Command::new("tar").arg("xzf").arg(&tgz).arg("-C").arg(&dir).status().is_ok_and(|s| s.success());
+    let _ = std::fs::remove_file(&tgz);
+    if fetched {
+        "Opus RFC 8251 vectors downloaded".into()
+    } else {
+        log("could not fetch the Opus test vectors: their tests are skipped");
+        "Opus RFC 8251 vectors NOT available (tests skipped)".into()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -273,12 +308,26 @@ impl Gen {
 
     /// Decode `file` with ffmpeg into the reference and add a manifest line.
     fn add(&mut self, rel: &str, r: Ref, gapless_src: Option<&Path>) -> Result<()> {
+        self.add_dec(rel, r, gapless_src, None)
+    }
+
+    /// As [`Self::add`], decoding the reference with the named ffmpeg
+    /// decoder (`libopus`, `libspeex`) instead of ffmpeg's default one.
+    fn add_dec(
+        &mut self,
+        rel: &str,
+        r: Ref,
+        gapless_src: Option<&Path>,
+        decoder: Option<&str>,
+    ) -> Result<()> {
         let file = self.dir.join(rel);
         let ref_rel = format!("ref/{}.{}", rel.replace('/', "_"), if r == Ref::S32 { "s32" } else { "s16" });
         let rf = self.path(&ref_rel)?;
         let (f, c) = if r == Ref::S32 { ("s32le", "pcm_s32le") } else { ("s16le", "pcm_s16le") };
+        let dec: Vec<String> = decoder.map_or_else(Vec::new, |d| s(&["-c:a", d]));
         ffmpeg(
-            &[s(&["-i"]), vec![p(&file)], s(&["-map", "0:a:0", "-f", f, "-c:a", c]), vec![p(&rf)]].concat(),
+            &[dec, s(&["-i"]), vec![p(&file)], s(&["-map", "0:a:0", "-f", f, "-c:a", c]), vec![p(&rf)]]
+                .concat(),
         )?;
         let frames = match gapless_src {
             Some(src) => frames_of(src)?.to_string(),
@@ -329,6 +378,8 @@ fn generate(dir: &Path) -> Result<usize> {
     mp3(&mut g)?;
     flac(&mut g)?;
     vorbis(&mut g)?;
+    opus(&mut g)?;
+    speex(&mut g)?;
     gapless(&mut g)?;
     std::fs::write(dir.join("manifest.tsv"), &g.manifest)?;
     std::fs::write(dir.join("gapless.tsv"), &g.joins)?;
@@ -591,6 +642,212 @@ fn flac(g: &mut Gen) -> Result<()> {
     Ok(())
 }
 
+/// Ogg Opus (WP AU-8): libopus through ffmpeg in its SILK, hybrid and CELT
+/// ranges, every frame duration, CBR/VBR, mono/stereo, and opus-tools'
+/// `opusenc` (its own muxer, a picture in OpusTags). References come from
+/// libopus (`-c:a libopus`), which applies pre-skip, end trimming and the
+/// header gain as RFC 7845 asks.
+fn opus(g: &mut Gen) -> Result<()> {
+    use Ref::S16;
+    let music = g.source(Sig::Music, 48000, 2, 4.0, 16)?;
+    let mix = g.source(Sig::Mix, 48000, 2, 3.0, 16)?;
+    let mono = g.source(Sig::Music, 48000, 1, 3.0, 16)?;
+    let enc = |extra: &[&'static str]| -> Vec<&'static str> { [&["-c:a", "libopus"][..], extra].concat() };
+    let add = |g: &mut Gen, src: &Path, rel: &str, args: &[&str], gapless: bool| -> Result<()> {
+        let out = g.path(rel)?;
+        ffmpeg(&[s(&["-i"]), vec![p(src)], s(args), vec![p(&out)]].concat())?;
+        g.add_dec(rel, S16, gapless.then_some(src), Some("libopus"))
+    };
+    // Bit-rate ladder, default application (the encoder picks SILK, hybrid
+    // or CELT by rate).
+    for br in ["16k", "24k", "32k", "48k", "64k", "96k", "128k", "192k", "256k"] {
+        add(g, &music, &format!("opus/music_{br}.opus"), &enc(&["-b:a", br]), true)?;
+    }
+    // SILK (voip at low rates), hybrid (voip/audio mid rates), CELT only.
+    for (rel, src, args) in [
+        ("opus/silk_nb_8k_mono.opus", &mono, &["-application", "voip", "-b:a", "8k", "-cutoff", "4000"][..]),
+        (
+            "opus/silk_mb_12k_mono.opus",
+            &mono,
+            &["-application", "voip", "-b:a", "12k", "-cutoff", "6000"][..],
+        ),
+        (
+            "opus/silk_wb_16k_mono.opus",
+            &mono,
+            &["-application", "voip", "-b:a", "16k", "-cutoff", "8000"][..],
+        ),
+        (
+            "opus/silk_wb_20k_stereo.opus",
+            &music,
+            &["-application", "voip", "-b:a", "20k", "-cutoff", "8000"][..],
+        ),
+        (
+            "opus/hybrid_swb_24k.opus",
+            &music,
+            &["-application", "voip", "-b:a", "24k", "-cutoff", "12000"][..],
+        ),
+        ("opus/hybrid_fb_32k.opus", &music, &["-application", "voip", "-b:a", "32k"][..]),
+        ("opus/celt_lowdelay_64k.opus", &mix, &["-application", "lowdelay", "-b:a", "64k"][..]),
+        ("opus/celt_cbr_128k.opus", &mix, &["-vbr", "off", "-b:a", "128k"][..]),
+        ("opus/celt_cvbr_96k.opus", &mix, &["-vbr", "constrained", "-b:a", "96k"][..]),
+        ("opus/mono_48k.opus", &mono, &["-b:a", "48k"][..]),
+    ] {
+        add(g, src, rel, &enc(args), true)?;
+    }
+    // Frame durations: 2.5–20 ms single frames, 40/60/120 ms multi-frame
+    // packets (SILK 40/60 ms frames at voip rates).
+    for fd in ["2.5", "5", "10", "20", "40", "60", "120"] {
+        add(
+            g,
+            &music,
+            &format!("opus/celt_fd{fd}_96k.opus"),
+            &enc(&["-frame_duration", fd, "-b:a", "96k"]),
+            true,
+        )?;
+    }
+    for fd in ["40", "60", "120"] {
+        add(
+            g,
+            &mono,
+            &format!("opus/silk_fd{fd}_16k.opus"),
+            &enc(&["-application", "voip", "-frame_duration", fd, "-b:a", "16k"]),
+            true,
+        )?;
+    }
+    // Other input rates (decoded at 48 kHz: no gapless length check).
+    for rate in [8000, 16000, 24000] {
+        let src = g.source(Sig::Music, rate, 1, 3.0, 16)?;
+        add(g, &src, &format!("opus/in{rate}_mono.opus"), &enc(&["-b:a", "24k"]), false)?;
+    }
+    for sig in [Sig::Silence, Sig::Impulse, Sig::Square, Sig::Noise, Sig::Sweep] {
+        let src = g.source(sig, 48000, 2, 2.0, 16)?;
+        add(g, &src, &format!("opus/{}_96k.opus", sig.name()), &enc(&["-b:a", "96k"]), true)?;
+    }
+    // opus-tools' encoder and muxer, if installed: speech framing and a
+    // picture (OpusTags over several pages).
+    if Command::new("opusenc").arg("--version").output().is_ok() {
+        let cover = g.dir.join("src/cover.png");
+        for (rel, args) in [
+            ("opus/opusenc_96k.opus", vec!["--quiet", "--bitrate", "96"]),
+            (
+                "opus/opusenc_speech_24k_60ms.opus",
+                vec!["--quiet", "--speech", "--bitrate", "24", "--framesize", "60"],
+            ),
+            ("opus/opusenc_picture.opus", vec!["--quiet", "--bitrate", "64", "--picture"]),
+        ] {
+            let out = g.path(rel)?;
+            let mut a = s(&args);
+            if rel.contains("picture") {
+                a.push(p(&cover));
+            }
+            tool("opusenc", &[a, vec![p(&music), p(&out)]].concat())?;
+            g.add_dec(rel, S16, Some(&music), Some("libopus"))?;
+        }
+    }
+    // Header output gain (+6 dB and -6 dB), patched into an ffmpeg file.
+    for (rel, gain) in [("opus/gain_plus6db.opus", 1536i16), ("opus/gain_minus6db.opus", -1536)] {
+        let base = g.dir.join("opus/music_64k.opus");
+        let mut f = std::fs::read(&base)?;
+        set_opus_gain(&mut f, gain)?;
+        std::fs::write(g.path(rel)?, f)?;
+        g.add_dec(rel, S16, Some(&music), Some("libopus"))?;
+    }
+    // Surround (multistream, mapping family 1): refused.
+    let six = g.dir.join("src/six_48000.wav");
+    let out = g.path("opus/six_48000.opus")?;
+    ffmpeg(
+        &[
+            s(&["-i"]),
+            vec![p(&six)],
+            s(&["-c:a", "libopus", "-b:a", "192k", "-mapping_family", "1"]),
+            vec![p(&out)],
+        ]
+        .concat(),
+    )?;
+    g.refuse("opus/six_48000.opus")?;
+    Ok(())
+}
+
+/// Set the output gain in the `OpusHead` of an Ogg Opus file (first page)
+/// and fix that page's CRC.
+fn set_opus_gain(f: &mut [u8], gain: i16) -> Result<()> {
+    if f.len() < 28 || &f[..4] != b"OggS" {
+        bail!("not an Ogg file");
+    }
+    let nseg = usize::from(f[26]);
+    let hl = 27 + nseg;
+    let body: usize = f[27..hl].iter().map(|&b| usize::from(b)).sum();
+    if f.len() < hl + body || &f[hl..hl + 8] != b"OpusHead" {
+        bail!("no OpusHead");
+    }
+    f[hl + 16..hl + 18].copy_from_slice(&gain.to_le_bytes());
+    f[22..26].fill(0);
+    let mut crc = 0u32;
+    for &b in &f[..hl + body] {
+        crc ^= u32::from(b) << 24;
+        for _ in 0..8 {
+            crc = if crc & 0x8000_0000 != 0 { (crc << 1) ^ 0x04C1_1DB7 } else { crc << 1 };
+        }
+    }
+    f[22..26].copy_from_slice(&crc.to_le_bytes());
+    Ok(())
+}
+
+/// Ogg Speex from ffmpeg's `libspeex` encoder: narrowband (8 kHz),
+/// wideband (16 kHz) and ultra-wideband (32 kHz), CBR qualities that select
+/// every sub-mode, VBR, ABR, VAD/DTX, several frames per packet, mono and
+/// intensity stereo. References come from libspeex (`-c:a libspeex`),
+/// which outputs every decoded frame untrimmed; the sources are whole
+/// numbers of frames long (3 s), so the decoded length equals the source
+/// length.
+fn speex(g: &mut Gen) -> Result<()> {
+    use Ref::S16;
+    let add = |g: &mut Gen, src: &Path, rel: &str, args: &[&str]| -> Result<()> {
+        let out = g.path(rel)?;
+        ffmpeg(&[s(&["-i"]), vec![p(src)], s(&["-c:a", "libspeex"]), s(args), vec![p(&out)]].concat())?;
+        g.add_dec(rel, S16, Some(src), Some("libspeex"))
+    };
+    let nb = g.source(Sig::Mix, 8000, 1, 3.0, 16)?;
+    let wb = g.source(Sig::Mix, 16000, 1, 3.0, 16)?;
+    let uwb = g.source(Sig::Mix, 32000, 1, 3.0, 16)?;
+    let nb2 = g.source(Sig::Music, 8000, 2, 3.0, 16)?;
+    let wb2 = g.source(Sig::Music, 16000, 2, 3.0, 16)?;
+    let uwb2 = g.source(Sig::Music, 32000, 2, 3.0, 16)?;
+    // CBR: quality 0–10 maps to narrowband sub-modes 1, 8, 2, 3, 4, 5, 6, 7.
+    for q in ["0", "1", "2", "4", "6", "8", "9", "10"] {
+        add(g, &nb, &format!("speex/nb_q{q}.spx"), &["-cbr_quality", q])?;
+    }
+    for q in ["0", "3", "6", "8", "10"] {
+        add(g, &wb, &format!("speex/wb_q{q}.spx"), &["-cbr_quality", q])?;
+    }
+    for q in ["2", "8", "10"] {
+        add(g, &uwb, &format!("speex/uwb_q{q}.spx"), &["-cbr_quality", q])?;
+    }
+    let other: &[(&str, &Path, &[&str])] = &[
+        ("speex/nb_vbr_q4.spx", &nb, &["-q:a", "4"]),
+        ("speex/nb_abr_11k.spx", &nb, &["-abr", "1", "-b:a", "11k"]),
+        ("speex/nb_vad_dtx.spx", &nb, &["-q:a", "3", "-vad", "1", "-dtx", "1"]),
+        ("speex/nb_fpp4_c10.spx", &nb, &["-frames_per_packet", "4", "-compression_level", "10"]),
+        ("speex/wb_vbr_q6.spx", &wb, &["-q:a", "6"]),
+        ("speex/wb_abr_20k.spx", &wb, &["-abr", "1", "-b:a", "20k"]),
+        ("speex/wb_fpp3_c1.spx", &wb, &["-frames_per_packet", "3", "-compression_level", "1"]),
+        ("speex/wb_dtx.spx", &wb, &["-q:a", "2", "-vad", "1", "-dtx", "1"]),
+        ("speex/uwb_vbr_q7.spx", &uwb, &["-q:a", "7"]),
+        ("speex/uwb_fpp8.spx", &uwb, &["-frames_per_packet", "8"]),
+        ("speex/nb_stereo_q8.spx", &nb2, &["-cbr_quality", "8"]),
+        ("speex/wb_stereo_vbr.spx", &wb2, &["-q:a", "5"]),
+        ("speex/uwb_stereo_abr_fpp2.spx", &uwb2, &["-abr", "1", "-b:a", "32k", "-frames_per_packet", "2"]),
+    ];
+    for &(rel, src, args) in other {
+        add(g, src, rel, args)?;
+    }
+    let silence = g.source(Sig::Silence, 8000, 1, 2.0, 16)?;
+    add(g, &silence, "speex/nb_silence.spx", &[])?;
+    let impulse = g.source(Sig::Impulse, 16000, 1, 2.0, 16)?;
+    add(g, &impulse, "speex/wb_impulse.spx", &[])?;
+    Ok(())
+}
+
 /// A stereo music-like test signal quantised to `valid` bits, stored
 /// left-justified in `container`-bit samples of a WAVE_FORMAT_EXTENSIBLE
 /// file (no tool here writes such files).
@@ -813,6 +1070,8 @@ fn seed_fuzz_corpus(target: &str, corpus_dir: &Path, out: &Path) -> Result<()> {
         "mp3" => &["mp3/"],
         "flac" => &["flac/"],
         "vorbis" | "ogg" => &["vorbis/"],
+        "opus" => &["opus/"],
+        "speex" => &["speex/"],
         "meta" => &["mp3/", "flac/", "wav/"],
         _ => &[""],
     };
@@ -873,13 +1132,15 @@ fn fuzz_smoke(secs: u64) -> Result<String> {
 // Code size on the device target
 
 /// Codec crates measured by `codec-size`.
-const SIZE_CRATES: [&str; 8] = [
+const SIZE_CRATES: [&str; 10] = [
     "yoton-audio",
     "yoton-codec-wav",
     "yoton-codec-mp3",
     "yoton-codec-flac",
     "yoton-ogg",
     "yoton-codec-vorbis",
+    "yoton-codec-opus",
+    "yoton-codec-speex",
     "yoton-meta",
     "yoton-player",
 ];
