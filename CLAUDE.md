@@ -6,7 +6,7 @@ in `docs/PLAN.md`; start every session there and in `docs/STATUS.md`.
 
 ## Orientation
 
-* Plan documents: `docs/plan/01…08-*.md`. Work packages and their order:
+* Plan documents: `docs/plan/01…09-*.md`. Work packages and their order:
   `docs/plan/08-milestones.md`. Do the package you were given; do not pull
   later work forward.
 * Hardware facts: `docs/plan/01-hardware.md` first, then the datasheet text in

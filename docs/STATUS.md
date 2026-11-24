@@ -386,6 +386,29 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — plan: M12 documentation/website/branding; presenter remote with tilt pointer (lead, owner's request)
+
+* New plan document `docs/plan/09-docs-website.md` and milestone **M12**
+  (BRAND-1, DOC-2…4, WEB-1…3): concise docs for users and developers,
+  open-source project files, GitHub Pages site built from the repository,
+  Orpheus in the browser (the real UI/app/codec crates on the simulator back
+  ends, compiled to WASM), a WebUSB browser installer with backup-first
+  safety rules, and one Orpheus/lyre brand generated into firmware, docs and
+  site. DOC-1 moved there; REL-1 depends on M11 and M12. New decision D-11
+  (public repository name, Pages address, when to publish).
+* **Presenter remote and IMU (tilt) mouse back in scope**: 06 §4.3 rewritten
+  (staged HID transport — the module's SDP already lists HID 0x1124; the
+  tilt-pointer engine with clutch, relative/absolute/scroll modes, one-euro
+  filter, jerk rejection, trace tests), 05 §7.12 Remote app (Connect,
+  Present with timer and slide counter, Pointer, profiles for PowerPoint,
+  Keynote, Google Slides, Impress, PDF, Media, Custom), WPs BT-3
+  (investigation, now with stop/go), BT-4, SENS-2, UI-6b; decision D-10 for
+  the fallback transport (USB HID, reduced remote, or module firmware).
+  PLAN.md requirements, limits and non-goals updated. Note: the running
+  Bluetooth-screens worker's package is UI-6a (it was briefed as "BT-3 (UI)").
+* Disk: the workstation's disk was at 953 MB free; build caches of the main
+  checkout and finished worktrees removed (6.8 GB free afterwards).
+
 ### 2026-11-24 — Bluetooth end to end with a host A2DP sink; amplifier gain fix (lead)
 
 * The workstation's Bluetooth adapter served as a test headset: a BlueZ

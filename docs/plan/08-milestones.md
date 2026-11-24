@@ -39,9 +39,10 @@ Two tracks run side by side from the start:
 | M5 | **Daily driver** | Folder-based playback (WAV, MP3, FLAC), Files, Now Playing, card reader, power states | Replaces Rockbox for everyday use |
 | M6 | Library and sound | Library index, playlists, DSP, hardware engine, Vorbis, Opus, Speex, AAC and the rest | |
 | M7 | Radio, recorder, sensors, tools | FM, recorder, pedometer, stopwatch/timer/alarm, pictures | Stock feature parity |
-| M8 | Bluetooth | Transmitter role with remote control; investigation report on whether the module can do HID | |
+| M8 | Bluetooth | Transmitter role with headset remote control; **presenter remote with tilt pointer** over Bluetooth HID (or USB HID by owner decision D-10) | The player presents slides and points |
 | M9 | USB extras and authenticator | HID keyboard, authenticator, disk/CD emulation, (USB audio) | All requested extras that the hardware allows |
 | M10 | Polish and release | Battery-life tuning, self-update, full-flash layout option, languages, manual, release | 1.0 |
+| M12 | **Documentation, website and branding** | Concise, current documentation for users and developers; open-source project files; GitHub Pages site built from the repository with Orpheus running in the browser (WASM) and a browser installer (WebUSB where supported); shared Orpheus/lyre branding across firmware, docs and site (09) | Runs alongside M10–M11; release depends on it |
 | M11 | **Verification** (last stage) | 100 % coverage of the project's own source by unit, adversarial-input and fuzz tests under sanitizers; every on-device function and every screen/app interaction exercised in fuzzed sequences on the player; memory use and performance tracked as thoroughly as coverage; every fuzz finding kept as a regression test | Release only after M11 is green |
 
 M5 is the first point where the user can live with the player. Everything
@@ -162,7 +163,10 @@ per codec: one listening pass with real files of that format.
 | BT-1 | UART1 driver, pin assignment test (U-BT-1), frame codec, command layer, identity | 06 §4.2 | H+D | M | — |
 | BT-2 | Transmitter role: state machine, pairing, AVRCP bridge, volume policy, reconnect, power | 06 §4.2 | H+D | L | Pair a headset and a speaker; music, keys, volume, reconnect; note whether the wired output stays live (U-BT-2) — **gate** |
 | UI-6a | Bluetooth app and quick-panel rows | 05 §7.4 | H | M | |
-| BT-3 | Investigation: can the module do HID (Bluetooth remote, code typing)? Report only; nothing built without a new owner decision | 06 §4.3 | D | S | Phone scan observations; optional chip marking (decision D-5) |
+| BT-3 | HID investigation (06 §4.3.1 steps 1–3): read the module's SDP HID record and report descriptor with the workstation as HID host; find the command that feeds it; capability, rate, latency, A2DP coexistence. Stop/go for BT-4; if no-go, owner decision D-10 | 06 §4.3.1 | D | M | — |
+| BT-4 | HID transport: `orpheus-hid` (descriptors, report builders, auto-release, transport trait, simulator back end) + module transport (or USB transport per D-10); HIL with `hidraw` on the workstation | 06 §4.3.1 | H+D | M | — |
+| SENS-2 | Tilt pointer: `orpheus-pointer` (orientation, relative/absolute/scroll, clutch, one-euro filter, jerk rejection), sensor fast-sampling mode, trace replay tests, fake-sensor test command | 06 §4.3.2 | H+D | M | Pointer feel in each mode |
+| UI-6b | Remote app: Connect, Present (timer, slide counter), Pointer, Calibrate, profiles, key-map editor | 05 §7.12 | H+D | M | A real presentation (PowerPoint or Impress, Google Slides); an hour's battery use |
 
 ### M9 — USB extras and authenticator
 
@@ -184,8 +188,25 @@ per codec: one listening pass with real files of that format.
 | LAY-1 | Full-flash layout option, Unifont pack, `install-full`, `restore vendor` (decision D-2) | 02 §2.4 | D | M |
 | T-6 | Rust payloads (ymon, NOR tools), optional Rust stage 1 | 07 §8 | D | S |
 | AU-15 | Optional formats (WMA, trackers, CUE) | 04 §4 | H+D | M |
-| DOC-1 | User manual (one page per app), developer guide, hardware notes cleaned up, release notes | — | H | M |
-| REL-1 | Release checklist: all gates, all HIL suites, soak ×3, all user checks ticked or waived by the user, tagged build for each layout | 07 §6 | D | S |
+| DOC-1 | Moved to M12 (DOC-2…DOC-4) | 09 | — | — |
+| REL-1 | Release checklist: all gates, all HIL suites, soak ×3, all user checks ticked or waived by the user, tagged build for each layout; M11 and M12 complete | 07 §6 | D | S |
+
+### M12 — Documentation, website and branding (owner's requirement 2026-11-24)
+
+Spec: [09-docs-website.md](09-docs-website.md). Can start any time (host
+work); the parts that describe features follow those features. Needs D-1
+(licence) before anything is published, D-3 before public browser installs,
+D-11 for the site's address.
+
+| WP | Content | Spec | Dev | Size | User |
+|---|---|---|---|---|---|
+| BRAND-1 | Brand source `docs/brand/` (lyre variants, palette, type, usage rules); `xtask brand` generates firmware icons/boot logo/theme colours, favicon set and social card; gate checks generated assets are current | 09 §6 | H | S | Approve the palette and logo variants |
+| DOC-2 | Documentation set: README rewrite, user manual per app, troubleshooting/recovery, FAQ; screenshots generated from goldens (`xtask site shots`) | 09 §2 | H | M | Read the manual once |
+| DOC-3 | Developer docs: getting started (tested in a clean container in CI), architecture overview with diagrams, how-tos; rustdoc with `missing_docs` and doc tests | 09 §2 | H | M | — |
+| DOC-4 | Open-source project files: LICENSE (D-1), CONTRIBUTING, CODE_OF_CONDUCT, SECURITY, CHANGELOG, issue/PR templates, GitHub Actions (host gate, docs checks) | 09 §2 | H | S | Choose the licence (D-1) |
+| WEB-1 | Site generator `xtask site`, page templates, Home/Install/Manual/Developers/Hardware/Changelog/FAQ, light/dark, accessibility; Pages deployment workflow and PR previews; link check, HTML validation, Lighthouse CI | 09 §3 | H | M | Review the site |
+| WEB-2 | Orpheus in the browser: `xtask wasm` (sim back ends, AudioWorklet, virtual card with CC0/CC-BY demo content, drag-and-drop files kept local, IndexedDB state, developer panel, key-sequence recorder compatible with the fuzz corpus); size and frame budgets; Playwright golden test | 09 §4 | H | L | Try it in three browsers |
+| WEB-3 | Browser installer: `orpheus-host` over a WebUSB transport in WASM; backup-first install, update via developer channel + UPD-1, restore stock, recovery; WebUSB/MS OS 2.0 descriptors in the firmware; mock-device suite and a Playwright HIL run on the reference player | 09 §5 | H+D | L | A first-time user installs and restores from the page alone |
 
 ### M11 — Verification (the last stage; owner's requirement 2026-11-24)
 
@@ -266,6 +287,9 @@ Rules of thumb for whoever assigns sessions:
   stable Rust.
 * The user has used the player daily for two weeks on a release candidate
   without a fault record.
+* **M12 complete**: documentation, website, WASM Orpheus and browser
+  installer published from the repository with the shared Orpheus/lyre
+  branding, and 09 §8 acceptance met.
 * **M11 complete**: 100 % coverage of the project's own source (host unit and
   adversarial tests, fuzzing, device HIL coverage) except the owner-reviewed
   exclusion list; all tests and fuzz targets clean under AddressSanitizer

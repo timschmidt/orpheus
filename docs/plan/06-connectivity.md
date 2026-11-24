@@ -17,16 +17,17 @@ for USB; [docs/hw/bluetooth.md](../hw/bluetooth.md) for the Bluetooth module;
 | Bluetooth: send music to headphones/speakers | **Yes, cheap** | The board carries an autonomous transmitter module (self-reports "ATS2851") that runs its own stack and takes **analogue** audio from the DAC; the player only sends short UART commands |
 | Bluetooth: remote keys and volume from the headset; volume and track text to the headset | **Yes** | In the module's command set |
 | Bluetooth: receive audio and play it through the DAC | **Out of scope** (owner's decision, 2026-11-23) | The module's stock firmware has no such command and no audio route from the module back into the SoC is known |
-| Bluetooth: HID (presentation remote, code typing), BLE | **No with the module's stock firmware** | No such command (§4.3) |
+| Bluetooth: HID (presentation remote, tilt pointer, code typing) | **Under investigation, promising** | The module's SDP record lists HID (0x1124); the command that feeds it is not known yet (§4.3); USB HID is the fallback (decision D-10) |
+| Bluetooth: BLE | **No with the module's stock firmware** | No such command |
 | One-time codes (TOTP/HOTP) on screen | **Yes** | Needs a correct clock |
-| Typing codes into a computer | **Yes over USB HID**; over Bluetooth only if §4.3 succeeds | |
-| Presentation / media remote over USB | **Out of scope** (owner's decision, 2026-11-23) | Possible, but a remote that needs a cable is unattractive |
-| Mouse / pointer control | **Out of scope** (owner's decision, 2026-11-23) | The sensor is a 3-axis accelerometer (MiraMEMS DA2xx family) with no gyroscope, so only a tilt mouse would have been possible |
+| Typing codes into a computer | **Yes over USB HID**; over Bluetooth if §4.3 succeeds | |
+| Presentation remote | **In scope** (owner, 2026-11-24): over Bluetooth HID (§4.3); over USB only if the owner chooses it (D-10) | App: 05 §7.12 |
+| Mouse / pointer control | **In scope as a tilt pointer** (owner, 2026-11-24) | 3-axis accelerometer (MiraMEMS DA2xx), no gyroscope: pointer by tilt with a clutch key (§4.3.2) |
 
-The Bluetooth HID "No" is a limit of the fitted Bluetooth module, not of this
-plan. §4.3 describes the investigation that could lift it and what would
-have to be true. Nothing else in the plan depends on it. The "Out of scope"
-rows are not to be implemented or investigated.
+Bluetooth HID depends on the fitted module, not on this plan: §4.3 stages
+the work so the remote and the pointer are built whatever the transport
+turns out to be (Bluetooth HID, or USB HID by owner decision D-10). The
+receiver role and BLE stay out of scope.
 
 ## 2. USB device stack
 
@@ -289,33 +290,101 @@ First hardware step (blocks everything else): which of GPIO38/39 is TX
 one pin as UART TX and the other as RX, send the identity command, look for
 the reply; then swap.
 
-### 4.3 Investigation track: can the module do HID? (not committed)
+### 4.3 Presenter remote and tilt pointer over Bluetooth HID
 
-The user would like the player to act as a Bluetooth presentation remote. That
-needs a HID role, which the module's command set does not offer. No remote is
-built in this plan (a USB-tethered one was removed from scope on 2026-11-23,
-with the receiver role and the mouse); this track only answers whether a
-Bluetooth one is possible. It is a sequence of cheap checks with a stop/go
-after each; none of it blocks the rest of the plan.
+Owner's requirement (2026-11-24, reversing the removal of 2026-11-23): the
+player becomes a **Bluetooth presentation remote with a tilt-controlled
+pointer** (the "IMU mouse"). The app is specified in 05 §7.12; this section
+covers the transport and the pointer engine.
 
-1. **Observe** (no risk): with the stock firmware in Bluetooth mode, scan from
-   a phone. Is the module discoverable/connectable? What name, address and
-   class of device does it show? (bluetooth.md Q8)
-2. **Probe the unexplained commands** (0x27, 0x2D, 0x30, 0x32, sub-commands
-   0x16/0x17 of 0x05, the three fixed inquiry bytes) and scan the command-id
-   space for acknowledgements, **excluding** 0x20–0x24, 0x28, 0x2C and 0x7F.
-   Log every event. A "role" or "mode" command would show up here.
-3. **Module firmware**: is an SDK, tool chain or alternative image with a HID
-   role obtainable for this chip (docs/research/rust-ecosystem.md §9–10)? Can
-   the stock image be read back? The chip marking would help identify it
-   (needs the case opened: decision D-5, optional). Only if such firmware
-   exists is a HID role a project; it would be planned separately, with
-   module-bricking risk stated to the user first (decision D-6).
+**Evidence so far.** The module's command set has no documented HID command,
+but its SDP record, read by a BlueZ host on 2026-11-24, lists **Human
+Interface Device (0x1124)** next to A2DP, AVRCP, HFP and PnP (01-hardware
+§9). So the module firmware contains a HID service; whether the player can
+feed it reports is the open question.
 
-The result is a short report. If a HID role exists, a Bluetooth remote and
-Bluetooth code typing go to the owner as a new decision; nothing is built
-without it. If not, the Bluetooth app keeps the transmitter role only and
-authenticator typing stays on USB.
+#### 4.3.1 Transport: staged with stop/go points (WP BT-3, then BT-4)
+
+1. **Read the HID record** (no risk, host side): with the module paired to
+   the workstation, read its SDP HID attributes (report descriptor, subclass,
+   `HIDVirtualCable`, `HIDReconnectInitiate`, boot device flag) through
+   BlueZ D-Bus/`sdptool`, and let BlueZ's input plugin connect the HID
+   control and interrupt channels (L2CAP PSM 0x11/0x13). Record which report
+   ids exist (keyboard, consumer, mouse?) and whether the connection is
+   accepted. Watch the module's UART for new events while the host connects
+   and sends output reports (LEDs).
+2. **Find the feeding command**: the unexplained commands (0x27, 0x2D, 0x30,
+   0x32, sub-commands 0x16/0x17 of 0x05) are first candidates; then the
+   vendor firmware (BTENGINE/ the remote-control or "selfie" code paths, HID
+   strings) for a frame that carries key or report bytes; then a scan of the
+   command-id space **excluding** 0x20–0x24, 0x28, 0x2C and 0x7F (CLAUDE.md
+   rule 6) with the host connected as HID host, logging every report the
+   host receives (`hidraw`). Stop/go: a command that makes the host receive
+   a report.
+3. **Map the capability**: which keys/usages and whether relative mouse
+   reports are reachable; report rate and latency (host timestamps vs the
+   player's send time; target ≤ 30 ms, ≥ 60 reports/s for the pointer);
+   coexistence with A2DP (both at once, or one role at a time).
+4. **Decide** (owner, D-10) if the module's HID cannot carry what the remote
+   needs:
+   * a reduced remote with what it can carry (e.g. consumer keys only:
+     next/previous via media keys work in some presentation tools), or
+   * the remote over **USB HID** (the same app and reports through USB-5's
+     HID interface; works with any computer, needs a cable), or
+   * module firmware work (D-6; module-bricking risk stated first).
+
+**Built in every case** (host-testable, transport-independent):
+`orpheus-hid` — report descriptors (boot keyboard, consumer control,
+relative mouse with wheel, optional absolute pointer), report builders, key
+press/release sequencing with auto-release on link loss, and a transport
+trait with three implementations: Bluetooth module (BT-4), USB (USB-5), and
+the simulator/WASM back end that renders what the computer would see.
+
+#### 4.3.2 Tilt pointer engine (WP SENS-2)
+
+The sensor is a 3-axis accelerometer without gyroscope (MiraMEMS DA2xx at
+I2C `0x27`), so the pointer is driven by **tilt** (the gravity vector), not
+rotation rate. Crate `orpheus-pointer` (host-testable, `no_std`, fixed
+memory):
+
+* **Sampling**: 100 Hz over I2C (the sensor's FIFO if it has one, else a
+  timer-driven 6-byte read, ≈ 0.7 ms at 100 kHz), only while the pointer is
+  active; the step counter's low rate otherwise.
+* **Orientation**: pitch and roll from the gravity vector, relative to the
+  **neutral pose captured when the clutch is pressed**, so the user can hold
+  the player any way; corrected for the screen-rotation setting.
+* **Modes**:
+  * *Relative (joystick)*: angular offset beyond a dead zone (default 3°)
+    maps to cursor velocity through a curve `v = g · (|θ| − dz)^1.6`, capped;
+    sub-pixel accumulation; one-euro filter against hand tremor and sensor
+    noise.
+  * *Absolute (laser)*: tilt angle maps to a screen position (±20° covers the
+    screen by default) through the absolute-pointer report; returns to the
+    centre at clutch press.
+  * *Scroll*: tilt drives the wheel (vertical and horizontal).
+* **Clutch**: the pointer moves only while the clutch key is held (default),
+  or toggles with a tap (setting); release freezes the cursor — this removes
+  drift and accidental motion, the main weakness of tilt pointers.
+* **Linear acceleration** (hand jerks) is rejected by ignoring samples whose
+  magnitude departs from 1 g by more than a threshold.
+* **Settings**: speed, dead zone, smoothing, invert axes, mode, clutch
+  behaviour; a calibration screen shows the live tilt and the dead zone.
+* **Tests**: recorded sensor traces (SENS-1's capture tool) replayed on the
+  host with expected cursor paths (golden CSV); properties: no motion within
+  the dead zone at rest, zero drift over 60 s of rest data, symmetric
+  response, bounded latency (≤ 2 samples); fuzzed sample streams; on the
+  device, traces are injected through a test command (a fake sensor source)
+  so HIL tests need no hand movement; the feel is a user check.
+
+#### 4.3.3 Acceptance
+
+**[HIL]** with the workstation as HID host (BlueZ, `hidraw` read through the
+project udev rule): every remote action produces the expected report
+sequence for each profile; injected sensor traces produce the expected mouse
+reports; reconnect after power cycle; link loss releases all keys.
+**User checks**: a real presentation in PowerPoint or LibreOffice Impress and
+Google Slides (next/previous/black/end, timer), pointer feel in each mode,
+battery use over an hour of presenting.
 
 ## 5. Authenticator
 
@@ -390,6 +459,12 @@ release, not part of the committed scope.
   identity/settings; host replay tests.
 * **WP-BT-2 Transmitter role**: state machine, pairing UI, AVRCP bridge,
   volume policy, auto-reconnect, power handling.
-* **WP-BT-3 Investigation track** (§4.3), report in docs/hw/bluetooth.md.
+* **WP-BT-3 HID investigation** (§4.3.1 steps 1–3), report in
+  docs/hw/bluetooth.md; stop/go for BT-4.
+* **WP-BT-4 HID transport**: `orpheus-hid` (descriptors, reports, transport
+  trait, simulator back end) and the module transport; or the USB transport
+  if the owner chooses it (D-10).
+* **WP-SENS-2 Tilt pointer**: `orpheus-pointer`, sensor fast-sampling mode,
+  trace tests, fake-sensor test command.
 * **WP-OTP-1 `orpheus-otp`, vault, PIN flow, time sync**; **WP-OTP-2 typing and
   provisioning.**

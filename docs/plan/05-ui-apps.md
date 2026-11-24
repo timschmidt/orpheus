@@ -424,8 +424,9 @@ hardware has one).
 
 ### 7.4 Bluetooth
 
-The fitted module is an audio transmitter (06 §4): the app sends audio out and
-nothing else. There is no receiver ("speaker") mode and no remote.
+The fitted module is an audio transmitter (06 §4): this app sends audio out.
+There is no receiver ("speaker") mode. The presenter remote and pointer are
+their own app (§7.12) and share the pairing screens below.
 
 * Top: Bluetooth on/off toggle; device name (editable).
 * **Listen** (send audio out): paired audio devices with state (connected,
@@ -624,10 +625,68 @@ underruns, faults survived; 02-architecture §8).
 **Acceptance**: every setting round-trips through the store; factory reset
 restores defaults and leaves the card untouched; golden images for each group.
 
+### 7.12 Remote (presenter remote and tilt pointer)
+
+Owner's requirement (2026-11-24). Transport and pointer engine: 06 §4.3. The
+app works the same over Bluetooth HID or USB HID; the computer sees a
+keyboard + consumer-control + mouse device named "Orpheus Remote".
+
+**Screens**
+
+* **Connect**: paired computers (shared list with §7.4, filtered to HID
+  hosts), "Pair new computer…" (makes the player discoverable as a HID
+  device for 2 minutes, shows the name and the pairing code if the host
+  asks for one), and the transport in use. Auto-reconnect to the last
+  computer when the app opens.
+* **Present** (the main screen, readable at arm's length): large elapsed
+  timer or countdown (colour turns amber at the warning time, red at zero),
+  slide counter (counts next/previous presses; can be reset), clock,
+  connection and battery icons, the active profile, and a one-line key hint.
+  The screen stays on at reduced brightness while presenting; timer alerts
+  flash the backlight (no vibration motor) and can play a short tone in the
+  headphones.
+* **Pointer**: live pointer mode, a tilt indicator with the dead zone, and
+  click hints; also reachable with a key from Present.
+* **Menu**: Profile · Timer (count up / countdown with duration and warning
+  time) · Pointer mode (relative / absolute laser / scroll / off) · Pointer
+  settings (speed, dead zone, smoothing, invert, clutch hold/toggle) ·
+  Calibrate · Black screen / White screen · Disconnect.
+
+**Keys on the Present screen** (the global grammar holds; deviations are
+shown in the key hint)
+
+| Key | Tap | Hold |
+|---|---|---|
+| Next / Prev | next / previous slide | — (no seek) |
+| OK | start or resume the show (profile key, e.g. F5 / Shift+F5) | end the show (Esc) |
+| Up | pointer clutch: move the pointer while held (relative/absolute modes); in laser mode also switches the presentation tool's laser pointer on (profile key, e.g. Ctrl+L) and off on release | — |
+| Down | left click (in pointer modes); black screen toggle otherwise | right click |
+| Vol+ / Vol− | volume on the computer (consumer keys), or zoom, per profile | ramp |
+| Menu | app menu | quick panel |
+| Back | leave the app (asks while a show is running); the link stays up in the background until Disconnect or the auto-off time | Home |
+
+**Profiles** (key maps, editable copies allowed): PowerPoint (Windows),
+PowerPoint (macOS), Keynote, Google Slides, LibreOffice Impress, PDF /
+browser (arrows, F11), Generic (arrows, B, W, Esc), Media (consumer keys:
+play/pause, next/previous, volume), Custom (per-key editor).
+
+**Pointer** (06 §4.3.2): clutch on Up by default; modes relative, absolute
+and scroll; Down clicks; double-tap Down double-clicks; hold Down + clutch
+drags.
+
+**Power**: sensor at 100 Hz only while the clutch is held or absolute mode
+is on; HID reports only on change; target ≥ 8 h of presenting with the
+screen dimmed.
+
+**Acceptance (simulator and WASM)**: golden images of every screen and
+state; the simulator back end shows what the computer receives (key
+names, pointer trail) so the app is testable without hardware; behaviour
+tests for each profile's key sequences; **[HIL]** as 06 §4.3.3.
+
 ## 8. Non-goals for v1 (recorded so nobody builds them by accident)
 
-Video playback; games/plugins; touch or pointer UI; a remote-control app or
-mouse for a computer; a Bluetooth receiver mode; multi-language text shaping
+Video playback; games/plugins; touch or pointer UI on the player itself; a
+Bluetooth receiver mode; multi-language text shaping
 (Indic, Arabic joining); streaming/network features; user theming beyond
 palette + wallpaper; voice prompts. Each can be proposed after the release
 milestone.
@@ -646,6 +705,8 @@ content checklist.
 * **WP-UI-3 Files** with the windowed/indexed directory source and text viewer.
 * **WP-UI-4 Music** lists, Now Playing views, equaliser, queue.
 * **WP-UI-5 Radio, Recorder, Stopwatch, Steps, Pictures.**
+* **WP-UI-6b Remote** (§7.12): Connect, Present, Pointer, Calibrate, profiles
+  and the key-map editor, simulator HID back end.
 * **WP-UI-6 Bluetooth, USB dialog, USB Drive, Authenticator** (incl.
   `TextEntry` and PIN pad).
 * **WP-UI-7 Polish**: icons and themes pass, animations, rotation, language

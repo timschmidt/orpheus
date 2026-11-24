@@ -14,11 +14,15 @@ A player that boots in about a second into a consistent, readable UI; plays
 MP3, FLAC, Ogg Vorbis, Opus, Speex, WAV and more without a glitch while the
 user browses; lasts at least as long on a charge as the stock firmware; offers
 Music, Files, Radio, Bluetooth, Recorder, Pictures, Steps, Stopwatch and
-Settings, plus an authenticator, a USB disk/CD emulator and a remote control;
+Settings, plus an authenticator, a USB disk/CD emulator and a presenter
+remote with a tilt pointer;
 uses the SoC's hardware (DMA everywhere, hardware volume, PLL/voltage scaling,
 standby states, the FFT/IIR engine, the hardware I2C controller) instead of
 the CPU wherever the hardware can do the job; and is built so that an AI
-worker can prove each step without seeing or hearing the device.
+worker can prove each step without seeing or hearing the device. It is
+presented like a good open-source project: concise documentation, a website
+where Orpheus runs in the browser and installs from it, one Orpheus/lyre
+identity throughout.
 
 ## 2. Requirements and where they are planned
 
@@ -39,8 +43,9 @@ worker can prove each step without seeing or hearing the device.
 | Stopwatch, pedometer, recorder, pictures, radio, Bluetooth, music, settings, folder browser | 05 §7 | Each specified with acceptance tests |
 | Boot a computer from an ISO/IMG on the card | 06 §3, 05 §7.10 | Disk and CD-ROM modes; automated boot test with QEMU |
 | 2FA token | 06 §5, 05 §7.9 | TOTP/HOTP, typed over USB; honest limit on at-rest secrecy |
-| Bluetooth presentation remote | 06 §1, §4.3 | **Not possible with the fitted module's firmware, and not built.** A USB-tethered remote was judged unattractive and removed by the owner on 2026-11-23. A small investigation (BT-3) checks whether the module can do HID at all; if it can, a Bluetooth remote goes back to the owner as a new decision |
-| Bluetooth audio receiver; 3D mouse | — | **Removed from scope by the owner on 2026-11-23** (the module cannot receive audio; the sensor has no gyroscope). Not to be implemented or investigated |
+| Bluetooth presentation remote with IMU (tilt) mouse | 05 §7.12, 06 §4.3 | **In scope again (owner, 2026-11-24).** The module's SDP record lists HID (0x1124); BT-3 finds how to feed it, BT-4 builds the transport, SENS-2 the tilt pointer (accelerometer only, no gyroscope: tilt with a clutch key), UI-6b the app. If the module cannot carry the reports, the owner chooses the fallback (D-10: USB HID, a reduced remote, or module firmware work) |
+| Bluetooth audio receiver | — | **Removed from scope by the owner on 2026-11-23** (the module cannot receive audio) |
+| Documentation, website, in-browser Orpheus, browser installer, branding | 09, 08 M12 | Concise docs for users and developers, open-source project files, GitHub Pages site from the repository with a WASM build of the firmware's UI/app/codec code and a WebUSB installer where the browser supports it; one Orpheus/lyre brand for firmware, docs and site (owner, 2026-11-24) |
 | Ruthlessly efficient | 02 §1, §3, §10; 07 §4 | RAM and size budgets enforced by tooling; resident-set proof; profile-guided page packing |
 | Polished, intuitive, consistent | 05 | Screen-level specification and golden-image tests |
 | Ogg, MP3, FLAC, Speex, WAV and other useful formats | 04 §4 | Also Opus, AAC-LC, ALAC, WavPack, APE; WMA optional |
@@ -110,8 +115,9 @@ Written up in `docs/hw/` (four reverse-engineering reports),
 8. **A developer channel on USB endpoint 0** in every USB personality for
    logs, screenshots, key injection and tests (06 §2.5).
 9. **Bluetooth transmitter role only is committed**; whether the module can
-   do HID is an uncommitted investigation with stop/go points (06 §4.3). A
-   receiver role, a mouse and a remote-control app are out of scope.
+   do HID is investigated first (06 §4.3); the presenter remote with a tilt
+   pointer is committed (owner, 2026-11-24) over Bluetooth HID, with the
+   fallback chosen by the owner (D-10). A receiver role is out of scope.
 10. **Order of work**: shortest path to a daily-usable player (M5), then
     breadth (08).
 11. **Last stage: verification (M11, owner's requirement 2026-11-24).**
@@ -141,6 +147,8 @@ Defaults are what workers assume until told otherwise.
 | D-7 | Publishing `docs/hw/` and `docs/vendor/` | Kept out of git by `.gitignore` (the `yoton` repository treats vendor-derived analysis the same way) | Remove the ignore lines to publish the reverse-engineering reports; the datasheet copy should stay local |
 | D-8 | Rockbox on the player | Replaced by Orpheus at milestone M2; restorable with one command | The player is the Rockbox reference until then |
 | D-9 | Coverage exclusions (M11) | None; each proposed exclusion (provably unreachable code only) is listed in `coverage-exclusions.toml` with its reason and needs the owner's approval | The 100 % coverage requirement is otherwise absolute |
+| D-10 | Remote transport if the module's Bluetooth HID cannot be fed | Ask the owner with BT-3's report: USB HID (cable), a reduced Bluetooth remote, or module firmware work (D-6) | The remote and pointer are built regardless; only the link changes |
+| D-11 | Public repository name, GitHub Pages address (or custom domain), and when the site goes public | Not public until D-1 is decided and the owner says so | The site and the browser installer are publication |
 
 Also needed from the user along the way: the checks in
 [USER-CHECKS.md](USER-CHECKS.md) (listening, looking, pressing keys,
@@ -159,6 +167,7 @@ system write tests (FS-2), and a photo or description of the key legends.
 | [plan/06-connectivity.md](plan/06-connectivity.md) | USB stack and personalities, disk/CD emulation, Bluetooth, authenticator |
 | [plan/07-tooling-testing.md](plan/07-tooling-testing.md) | Host tools, simulator, conformance, hardware-in-the-loop, safety rules |
 | [plan/08-milestones.md](plan/08-milestones.md) | Milestones, work packages, dependencies, risks, definition of done |
+| [plan/09-docs-website.md](plan/09-docs-website.md) | Documentation set, GitHub Pages site, Orpheus in the browser (WASM), browser installer, branding |
 | [STATUS.md](STATUS.md) | Living progress log (workers update it every session) |
 | [USER-CHECKS.md](USER-CHECKS.md) | Checks that need a person |
 | `hw/system.md`, `hw/audio.md`, `hw/bluetooth.md`, `hw/fm-i2c-imu.md` | Reverse-engineering reports from the stock firmware |
@@ -182,11 +191,14 @@ what fails and why.
 
 ## 8. Limits stated plainly
 
-* A Bluetooth presentation remote depends on a module whose firmware does not
-  offer HID; the plan investigates, but does not promise, a Bluetooth route,
-  and builds no remote meanwhile.
-* The Bluetooth audio receiver, the mouse and the USB-tethered Remote app were
-  removed from scope by the owner on 2026-11-23.
+* The presenter remote over **Bluetooth** depends on feeding the module's
+  HID service (listed in its SDP record, command not yet known); the remote
+  and the pointer are built either way, and the owner picks the fallback
+  transport if Bluetooth HID is not reachable (D-10).
+* The pointer is a **tilt** pointer: the sensor has no gyroscope, so it
+  cannot track rotation like a gyro air mouse; a clutch key keeps it usable.
+* The Bluetooth audio receiver was removed from scope by the owner on
+  2026-11-23.
 * The authenticator cannot protect secrets against someone who has the player
   and a USB cable, unless the passphrase is long: the boot ROM allows reading
   all flash.
