@@ -118,6 +118,7 @@ impl Ui {
                     PowerRequest::Restart => atj2157_hal::wdt::reboot(atj2157_hal::wdt::Target::Normal),
                     PowerRequest::Recovery => atj2157_hal::wdt::reboot(atj2157_hal::wdt::Target::Adfu),
                     PowerRequest::LockKeys => self.shell.gate.locked = true,
+                    PowerRequest::PowerOff => self.power_off().await,
                     // Power-off (PWR-3a) and the stock-firmware request
                     // (needs a stage-2 mailbox path) are not wired yet.
                     _ => {}
@@ -152,6 +153,29 @@ impl Ui {
                 self.shell.invalidate();
             }
         }
+    }
+
+    /// PWR-3a: flush the card, screen off, power off. A firmware started by
+    /// a host test reboots into USB recovery instead (CLAUDE.md rule 4).
+    async fn power_off(&mut self) {
+        if atj2157_hal::persist::test_request().is_some() {
+            atj2157_hal::log::line(b"power-off in a test: rebooting instead");
+            atj2157_hal::wdt::reboot(atj2157_hal::wdt::Target::Adfu);
+        }
+        crate::media::SHUT_DOWN.store(false, core::sync::atomic::Ordering::Release);
+        let _ = crate::media::REQS.try_send(crate::media::Req::Shutdown);
+        for _ in 0..100 {
+            if crate::media::SHUT_DOWN.load(core::sync::atomic::Ordering::Acquire) {
+                break;
+            }
+            Timer::after_millis(10).await;
+        }
+        self.bl.set(0);
+        self.disp.sleep(true);
+        Timer::after_millis(50).await;
+        // Bluetooth shutdown (command 0x24, user decision 2026-11-24) joins
+        // here once BT-2 drives the module.
+        atj2157_hal::pmu::power_off(false)
     }
 
     async fn draw(&mut self, fb: &mut [u16]) {

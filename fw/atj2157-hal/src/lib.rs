@@ -23,6 +23,7 @@ pub mod log;
 pub mod nor;
 pub mod pager;
 pub mod persist;
+pub mod pmu;
 pub mod pwm;
 pub mod rt;
 pub mod rtc_clock;

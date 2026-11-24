@@ -750,9 +750,9 @@ async fn run_queue(
         let _ = play_file(vol, ring, arena, f, ext, srv).await;
         r = match srv.pending.take() {
             Some(Req::Stop) => break,
-            Some(Req::Release) => {
-                // Leave it for the idle loop, which hands the card over.
-                srv.pending = Some(Req::Release);
+            Some(p @ (Req::Release | Req::Shutdown)) => {
+                // Leave it for the idle loop (card hand-over, flush).
+                srv.pending = Some(p);
                 break;
             }
             Some(p) => p,
@@ -920,6 +920,11 @@ pub async fn audio() {
                     continue;
                 }
                 let Some(r) = srv.pending.take() else { continue };
+                if let Req::Shutdown = r {
+                    let _ = vol.flush().await;
+                    media::SHUT_DOWN.store(true, Ordering::Release);
+                    continue;
+                }
                 if let Req::Release = r {
                     match release(vol).await {
                         Some(v) => vol = v,

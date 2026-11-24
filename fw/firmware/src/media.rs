@@ -65,7 +65,12 @@ pub enum Req {
     Stop,
     /// Hand the card to the USB task (stops playback first).
     Release,
+    /// Power-off: stop playback, flush the volume, then set `SHUT_DOWN`.
+    Shutdown,
 }
+
+/// Set by the card task once the volume is flushed for power-off.
+pub static SHUT_DOWN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 pub static REQS: Channel<CriticalSectionRawMutex, Req, 4> = Channel::new();
 /// Data-ready tags for the UI.
