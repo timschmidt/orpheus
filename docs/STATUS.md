@@ -162,7 +162,10 @@ of every session. Newest entries first in §3.
 
 * On the player: bookmarks (Now Playing menu → Bookmark here; Music →
   Bookmarks lists it; choosing it plays from the position), resume, shuffle
-  toggle. "Shuffle all" is not implemented (opens an idle Now Playing).
+  toggle (the queue then plays out of folder order: 27 / 231 after the
+  resumed track), A–B repeat (markers on the bar; elapsed time cycling
+  0:12 → 0:15 → 0:09 → 0:12 … between the marks). "Shuffle all" is not
+  implemented (opens an idle Now Playing). Sleep timer not yet observed.
 * **Fixed a crash in NOR writes** (02 §3.2 rule 5): toggling Shuffle wrote
   the settings store; `nor::status`/`wait_ready` and the command-byte
   constant were paged, so the pager loaded them while the chip was busy
