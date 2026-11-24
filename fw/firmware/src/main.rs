@@ -111,11 +111,13 @@ static MAIN: StaticCell<executor::MainExecutor> = StaticCell::new();
 /// Resident (`[bin.firmware]` in resident.toml): runs before the pager.
 #[unsafe(no_mangle)]
 extern "C" fn main() -> ! {
+    // Watchdog first: a hang anywhere in start-up must end in a reset (and
+    // after three, in USB recovery), never in a player that needs a hand.
+    wdt::start(pac::rtc::wd::PERIOD_5S6);
     pager::arm_deny();
     log::init();
     let paged = start_pager();
     hal::init();
-    wdt::start(pac::rtc::wd::PERIOD_5S6);
     wdt::feed_from_idle(true);
     clock::set_level(Level::Base);
     log::line(if paged { b"fw: start (paged)" } else { b"fw: start (no pages)" });
