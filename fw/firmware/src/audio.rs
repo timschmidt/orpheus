@@ -685,6 +685,10 @@ async fn play_file(
                 break 'play Ok(End::Idle);
             }
             if let Some(target) = fl.seek {
+                // Stop the DAC for the seek: the bisection reads the card for
+                // a while, which is not an underrun (and must not count
+                // towards the too-slow abort).
+                out.stop();
                 match seek_to(&mut dec, ring, vol, &mut f, target).await {
                     Some(at) => {
                         pos = at;

@@ -91,6 +91,17 @@ of every session. Newest entries first in §3.
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — implementation session 2, part 6 (lead)
+
+* Merged AU-12 host (`yoton-index`, worker) and AU-5 firmware (yoton-player
+  driving playback, worker). On the player: Files → folder → OK on track 2
+  plays with "2 / 231"; Next → "3 / 231"; OK pauses; `/.yoton/queue.bin`
+  and `/.yoton/player.bin` written; after a normal reboot Music offers
+  "Resume ‹title›", which continues the same track at the paused position;
+  holding Next seeks. Fixed: the DAC kept running during a seek (7
+  underruns per seek, close to the too-slow abort); it now stops for the
+  seek (3 seeks: 0 underruns).
+
 ### 2026-11-24 — implementation session 2, part 5 (lead)
 
 * Upload path for test files (user-approved): developer-channel `PUT`
