@@ -37,12 +37,15 @@ pub struct Item<'a> {
     pub accessory: Accessory,
     /// Drawn in the dim text colour (unavailable entries).
     pub dim: bool,
+    /// The value matters more than the label (information pages): the
+    /// label keeps a third of the row, the value the rest.
+    pub wide_value: bool,
 }
 
 impl<'a> Item<'a> {
     #[must_use]
     pub const fn new(text: &'a str) -> Item<'a> {
-        Item { text, value: None, icon: None, accessory: Accessory::None, dim: false }
+        Item { text, value: None, icon: None, accessory: Accessory::None, dim: false, wide_value: false }
     }
 
     #[must_use]
@@ -60,6 +63,12 @@ impl<'a> Item<'a> {
     #[must_use]
     pub const fn accessory(mut self, a: Accessory) -> Self {
         self.accessory = a;
+        self
+    }
+
+    #[must_use]
+    pub const fn wide_value(mut self) -> Self {
+        self.wide_value = true;
         self
     }
 
@@ -444,7 +453,17 @@ impl ListView {
                 let mut right = w - 7;
                 right = draw_accessory(g, it.accessory, right, y, focused);
                 if let Some(v) = it.value {
-                    let vw = g.measure(v, FontId::Ui).min((right - x) / 2);
+                    // The value takes what the label leaves, and at least
+                    // half the row when both are long.
+                    let avail = right - x - 6;
+                    let (tw, vfull) = (g.measure(it.text, FontId::Ui), g.measure(v, FontId::Ui));
+                    let vw = if tw + vfull <= avail {
+                        vfull
+                    } else if it.wide_value {
+                        vfull.min(avail - tw.min(avail / 3))
+                    } else {
+                        vfull.min((avail - tw).max((right - x) / 2))
+                    };
                     g.text_in(right - vw, y + ROW_BASELINE, vw, v, FontId::Ui, dim, Align::Right);
                     right -= vw + 6;
                 }

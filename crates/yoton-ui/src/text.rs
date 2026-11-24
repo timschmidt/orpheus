@@ -75,6 +75,29 @@ impl<const N: usize> StrBuf<N> {
         true
     }
 
+    /// Append `s`; if it does not fit, append what fits followed by `…`.
+    pub fn push_str_or_ellipsis(&mut self, s: &str) -> bool {
+        let start = usize::from(self.len);
+        if self.push_str(s) {
+            return true;
+        }
+        // Cut back until the ellipsis (3 bytes) fits.
+        let mut end = usize::from(self.len);
+        while end > start && end + 3 > N {
+            end -= 1;
+            while end > start && !self.as_bytes_upto(end) {
+                end -= 1;
+            }
+        }
+        self.len = u8::try_from(end).unwrap_or(0);
+        self.push('…');
+        false
+    }
+
+    fn as_bytes_upto(&self, end: usize) -> bool {
+        self.buf.get(..end).is_some_and(|b| core::str::from_utf8(b).is_ok())
+    }
+
     pub fn push(&mut self, c: char) -> bool {
         let mut tmp = [0u8; 4];
         let enc = c.encode_utf8(&mut tmp).as_bytes();
@@ -198,6 +221,46 @@ pub fn is_cjk(c: char) -> bool {
     matches!(u32::from(c), 0x2E80..=0x9FFF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF | 0xFF00..=0xFFEF)
 }
 
+/// Characters that must not begin a line (closing brackets and CJK
+/// punctuation, the prolonged sound mark).
+#[must_use]
+pub fn no_line_start(c: char) -> bool {
+    matches!(
+        c,
+        '。' | '、'
+            | '，'
+            | '．'
+            | '！'
+            | '？'
+            | '：'
+            | '；'
+            | '）'
+            | '」'
+            | '』'
+            | '】'
+            | '〉'
+            | '》'
+            | 'ー'
+            | '…'
+            | '・'
+            | 'ゃ'
+            | 'ゅ'
+            | 'ょ'
+            | 'っ'
+            | 'ャ'
+            | 'ュ'
+            | 'ョ'
+            | 'ッ'
+            | ')'
+            | ','
+            | '.'
+            | '!'
+            | '?'
+            | ':'
+            | ';'
+    )
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -222,6 +285,9 @@ mod tests {
         d.push_i32(-7);
         d.push_u32_padded(5, 3);
         assert_eq!(d.as_str(), "-7005");
+        let mut e = StrBuf::<10>::new();
+        assert!(!e.push_str_or_ellipsis("Звезда по"));
+        assert_eq!(e.as_str(), "Зве…");
     }
 
     #[test]

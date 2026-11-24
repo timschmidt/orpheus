@@ -96,9 +96,15 @@ pub struct Shell<T, S: ?Sized> {
 impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
     /// Start at the home screen.
     pub fn new(svc: &mut S, now: Instant) -> Self {
+        Self::with_root(svc, T::HOME, Arg(0), now)
+    }
+
+    /// Start with `root` as the only screen (boot logo, charging screen).
+    /// `Nav::Home` later replaces it with `T::HOME`.
+    pub fn with_root(svc: &mut S, root: ScreenId, arg: Arg, now: Instant) -> Self {
         let mut s = Shell {
             stack: NavStack::new(),
-            top: T::create(T::HOME),
+            top: T::create(root),
             gate: KeyGate::new(),
             ui: UiRequests::default(),
             sheet: None,
@@ -117,9 +123,9 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
             now,
             _svc: PhantomData,
         };
-        s.stack.push(NavEntry { id: T::HOME, arg: Arg(0), resume: Default::default() });
+        s.stack.push(NavEntry { id: root, arg, resume: Default::default() });
         let mut cx = Cx { svc, ui: &mut s.ui, now };
-        s.top.enter(&mut cx, Arg(0));
+        s.top.enter(&mut cx, arg);
         s.apply_requests(svc, now);
         s
     }
@@ -182,7 +188,16 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
         match self.gate.filter(k, p) {
             Gate::Pass(k, p) => self.key_pass(svc, k, p, now, &mut req),
             Gate::Wake => req.wake = true,
-            Gate::LockNotice => req.lock_notice = true,
+            Gate::LockNotice => {
+                req.lock_notice = true;
+                if let Some(id) = T::LOCK_SCREEN
+                    && self.top.id() != id
+                {
+                    self.close_modal();
+                    self.apply_nav(svc, Nav::Push(id, Arg(0)), now);
+                    self.apply_requests(svc, now);
+                }
+            }
             Gate::Drop => {}
         }
         req
@@ -203,7 +218,16 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
         if k == Key::Power {
             match p {
                 KeyPhase::Up { held: false } => req.screen_off = true,
-                KeyPhase::Hold => req.power_menu = true,
+                KeyPhase::Hold => {
+                    req.power_menu = true;
+                    if let Some(id) = T::POWER_MENU
+                        && self.top.id() != id
+                    {
+                        self.close_modal();
+                        self.apply_nav(svc, Nav::Push(id, Arg(0)), now);
+                        self.apply_requests(svc, now);
+                    }
+                }
                 KeyPhase::Long => req.power_off = true,
                 _ => {}
             }
@@ -305,6 +329,16 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
     /// A non-key event (service, data). Ticks go through [`Shell::tick`].
     pub fn event(&mut self, svc: &mut S, ev: Event, now: Instant) -> Requests {
         self.now = now;
+        // App-wide reactions first (low battery, USB host, card removed).
+        let nav = {
+            let mut cx = Cx { svc: &mut *svc, ui: &mut self.ui, now };
+            T::global(&mut cx, &ev)
+        };
+        if nav != Nav::Stay {
+            self.close_modal();
+            self.apply_nav(svc, nav, now);
+            self.apply_requests(svc, now);
+        }
         self.deliver(svc, ev, now);
         Requests::default()
     }
@@ -316,6 +350,11 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
         if self.toast.is_some_and(|t| now >= t.until) {
             self.toast = None;
             self.strip_drawn = StripKey::None;
+            // Screens that own the strip area must repaint under the toast.
+            let w = self.top.wants();
+            if w.strip == StripUse::Content || w.full_screen {
+                self.content_all = true;
+            }
             if self.sheet.is_some() || self.dialog.is_some() {
                 self.modal_fresh = true;
             }
@@ -344,8 +383,15 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
 
     fn apply_requests(&mut self, _svc: &mut S, now: Instant) {
         if let Some(t) = self.ui.toast.take() {
-            self.toast = Some(Toast::new(t, now));
+            let mut toast = Toast::new(t, now);
+            if let Some(ms) = self.ui.toast_ms.take() {
+                toast.until = now.add_ms(u64::from(ms));
+            }
+            self.toast = Some(toast);
             self.toast_drawn = false;
+        }
+        if core::mem::take(&mut self.ui.invalidate) {
+            self.invalidate();
         }
         if let Some(d) = self.ui.dialog.take() {
             self.sheet = None;
@@ -473,7 +519,9 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
                 self.draw_strip(svc, g, wants.strip, wants.is_player, now);
             }
             if dirty == Dirty::All {
+                // A full redraw may have covered the overlays.
                 self.volume_drawn = false;
+                self.toast_drawn = false;
             }
         }
 

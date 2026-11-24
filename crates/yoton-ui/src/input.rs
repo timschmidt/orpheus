@@ -259,9 +259,11 @@ pub enum LockedKeys {
 pub enum Gate {
     /// Deliver to the UI.
     Pass(Key, KeyPhase),
-    /// Screen was off: turn it on; the rest of this press is swallowed.
+    /// Screen was off (not locked): turn it on; the rest of this press is
+    /// swallowed.
     Wake,
-    /// Keys are locked: show the lock screen for 2 s (05 §6.3).
+    /// Keys are locked: show the lock screen for 2 s (05 §6.3), with the
+    /// screen on for that time if it was off.
     LockNotice,
     /// Swallowed (rest of a waking press, or a locked key's later phases).
     Drop,
@@ -307,7 +309,7 @@ impl KeyGate {
             return Gate::Drop;
         }
         self.swallowed |= bit;
-        if self.screen_on { Gate::LockNotice } else { Gate::Wake }
+        if self.locked { Gate::LockNotice } else { Gate::Wake }
     }
 }
 
@@ -393,6 +395,10 @@ mod tests {
         g.screen_on = false;
         assert_eq!(g.filter(Key::Ok, KeyPhase::Down), Gate::Wake);
         assert_eq!(g.filter(Key::Ok, KeyPhase::Up { held: false }), Gate::Drop);
+        g.locked = true;
+        assert_eq!(g.filter(Key::Ok, KeyPhase::Down), Gate::LockNotice);
+        assert_eq!(g.filter(Key::Ok, KeyPhase::Up { held: false }), Gate::Drop);
+        g.locked = false;
         assert_eq!(g.filter(Key::VolUp, KeyPhase::Down), Gate::Pass(Key::VolUp, KeyPhase::Down));
         g.screen_on = true;
         g.locked = true;
