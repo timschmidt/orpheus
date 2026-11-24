@@ -1199,6 +1199,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "yoton-dsp"
+version = "0.1.0"
+dependencies = [
+ "yoton-audio",
+]
+
+[[package]]
 name = "yoton-fs"
 version = "0.1.0"
 dependencies = [
