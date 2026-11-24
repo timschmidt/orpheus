@@ -1,9 +1,10 @@
 //! The milestone gate (07 §6). Each step reports passed / FAILED / not run.
 //!
 //! `--coverage` adds `xtask cover` as a report-only step (the numbers, never
-//! a failure for being below 100 %). `--m11` (the M11 gate, VER-1) adds
-//! coverage with the fuzz corpora and fails below 100 % of the non-excluded
-//! regions. Without these flags the gate is unchanged.
+//! a failure for being below 100 %). `--m11` (the M11 gate, VER-1/VER-5)
+//! adds coverage with the fuzz corpora and fails below 100 % of the
+//! non-excluded regions, plus `test asan` and `test miri`. Without these
+//! flags the gate is unchanged.
 
 use anyhow::{Result, bail};
 
@@ -59,6 +60,10 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     step("check-resident", crate::resident::cmd(&mut Args::from_vec(vec![])));
     if coverage {
         step("coverage", crate::cover::gate_step(m11));
+    }
+    if m11 {
+        step("test asan", crate::sanitize::asan(false, false));
+        step("test miri", crate::sanitize::miri(None));
     }
     if skip_dev {
         results.push(("dev hil smoke", "not run (--no-dev)".into()));

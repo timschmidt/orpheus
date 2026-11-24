@@ -507,14 +507,17 @@ mod tests {
     fn english_and_pack() {
         assert_eq!(tr!(Lang::ENGLISH, AppMusic), "Music");
         assert_eq!(EN.len(), COUNT);
-        let pack: &'static [u8] =
-            std::boxed::Box::leak(build("ru", "Русский", &[(Str::AppMusic, "Музыка")]).into_boxed_slice());
+        // `from_pack` wants `'static` data: keep it in statics (reachable, so
+        // LeakSanitizer does not report it as `Box::leak` did).
+        static PACK: std::sync::OnceLock<std::vec::Vec<u8>> = std::sync::OnceLock::new();
+        static TRUNCATED: std::sync::OnceLock<std::vec::Vec<u8>> = std::sync::OnceLock::new();
+        let pack: &'static [u8] = PACK.get_or_init(|| build("ru", "Русский", &[(Str::AppMusic, "Музыка")]));
         let l = Lang::from_pack(pack).unwrap();
         assert_eq!(tr!(l, AppMusic), "Музыка");
         assert_eq!(tr!(l, AppFiles), "Files", "missing entries fall back to English");
         assert_eq!((l.code(), l.name()), ("ru", "Русский"));
         assert!(Lang::from_pack(b"nope").is_none());
-        let truncated: &'static [u8] = std::boxed::Box::leak(pack[..20].to_vec().into_boxed_slice());
+        let truncated: &'static [u8] = TRUNCATED.get_or_init(|| pack[..20].to_vec());
         assert!(Lang::from_pack(truncated).is_none());
     }
 }

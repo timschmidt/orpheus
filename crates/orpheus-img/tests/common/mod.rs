@@ -32,6 +32,13 @@ pub fn data_dir() -> PathBuf {
     if dir.join("manifest.txt").exists() {
         return dir;
     }
+    // The tests of one binary run in parallel threads and share the
+    // `gen-<pid>` scratch directory: generate once per process.
+    static GENERATING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _once = GENERATING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if dir.join("manifest.txt").exists() {
+        return dir;
+    }
     std::fs::create_dir_all(&root).unwrap();
     let tmp = root.join(format!("gen-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);

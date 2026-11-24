@@ -453,9 +453,10 @@ fn corpus_files(dirs: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 /// Seed images for `orpheus-fs`'s `mount_walk` target (written by its
-/// `fuzz_smoke` test into `<target dir>/tmp/orpheus-fs/fuzz-seeds`).
+/// `fuzz_smoke` test into `<tmp>/orpheus-fs/fuzz-seeds`).
 pub fn fs_seeds(target_dir: &Path) -> Option<PathBuf> {
-    [target_dir.join("tmp"), root().join("target").join("tmp")]
+    // `CARGO_TARGET_TMPDIR` is `<target dir>/<triple>/tmp` with `--target`.
+    [target_dir.join(HOST).join("tmp"), target_dir.join("tmp"), root().join("target").join("tmp")]
         .into_iter()
         .map(|d| d.join("orpheus-fs").join("fuzz-seeds"))
         .find(|d| d.join("fat12.img").exists())
@@ -619,6 +620,15 @@ fn members() -> Vec<(String, String)> {
     }
     // Longest prefix first, so `crates/codecs/mp3` wins over `crates/codecs`.
     v.sort_by_key(|(d, _)| std::cmp::Reverse(d.len()));
+    v
+}
+
+/// Host-workspace package names (no fuzz projects), sorted.
+pub fn workspace_packages() -> Vec<String> {
+    let fuzz: Vec<PathBuf> = fuzz_dirs().into_iter().map(|f| f.dir).collect();
+    let mut v: Vec<String> =
+        members().into_iter().filter(|(d, _)| !fuzz.contains(&root().join(d))).map(|(_, n)| n).collect();
+    v.sort();
     v
 }
 

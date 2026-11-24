@@ -15,6 +15,7 @@ mod metrics;
 mod pagelink;
 mod resident;
 mod rules;
+mod sanitize;
 mod savedlink;
 mod selftest;
 mod size;
@@ -41,6 +42,9 @@ usage: cargo xtask <command> [options]
                                    size report; --check enforces budgets.toml
   test [host|golden|pagelink|codecs|fuzz-smoke|codec-size|all]
                                    host test suites (pagelink: the paged toy end to end)
+  test asan [--fuzz-only] [--lean] host tests and every fuzz target's corpus under
+                                   AddressSanitizer + LeakSanitizer (nightly)
+  test miri [--crate NAME]         Miri on the crates listed in xtask/src/sanitize.rs
   cover [--crate NAME] [--fuzz] [--html] [--clean] [--report-only]
                                    LLVM source-based coverage (line, region, branch)
                                    of crates/, sim/, xtask/: target/orpheus/coverage/
@@ -48,7 +52,7 @@ usage: cargo xtask <command> [options]
                                    size/stack rows to metrics/*.csv
   gate [--no-dev] [--coverage] [--m11]
                                    the milestone gate (07 §6); --coverage adds the
-                                   coverage report, --m11 enforces 100 %
+                                   coverage report, --m11 enforces 100 % + ASan + Miri
   dev <subcommand>                 talk to the player (see `cargo xtask dev help`)
 ";
 
