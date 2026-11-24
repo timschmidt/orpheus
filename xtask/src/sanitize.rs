@@ -296,8 +296,12 @@ pub const MIRI: &[MiriCrate] = &[
                 "PBKDF2 with thousands of HMAC rounds: over 10 min under Miri; ASan runs it",
             ),
             ("uri::tests::fuzz_smoke", "thousands of mutated URIs: over 5 min under Miri; ASan runs it"),
+            (
+                "vault::tests::",
+                "every unlock runs the KDF: the vault tests take over 15 min under Miri; ASan runs them",
+            ),
         ],
-        900,
+        600,
     ),
     (
         "orpheus-settings",
@@ -322,7 +326,18 @@ pub const MIRI: &[MiriCrate] = &[
     ),
     ("orpheus-bt", &["--lib"], &[], 600),
     ("orpheus-ogg", &["--lib"], &[], 600),
-    ("orpheus-meta", &["--lib"], &[], 600),
+    (
+        "orpheus-meta",
+        &["--lib"],
+        &[
+            ("tests::corpus_files", "reads the conformance corpus from disk (isolation); ASan runs it"),
+            (
+                "tests::garbage_never_panics_or_spins",
+                "thousands of random buffers: over 10 min under Miri; ASan runs it",
+            ),
+        ],
+        600,
+    ),
     ("orpheus-audio", &["--lib"], &[], 600),
 ];
 
