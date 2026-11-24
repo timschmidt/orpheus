@@ -797,7 +797,7 @@ impl<S: Services + ?Sized> Screen<S> for AlertScreen {
 
 /// A time in large numerals centred at baseline `y`: the part
 /// [`split_time`] keeps large in 28 px, the rest in 16 px.
-fn draw_big_time(g: &mut Gfx<'_>, y: i16, time: &str) {
+pub(crate) fn draw_big_time(g: &mut Gfx<'_>, y: i16, time: &str) {
     let (w, _) = g.size();
     let (big, small) = split_time(time);
     let bw = g.measure(big, FontId::Num28);

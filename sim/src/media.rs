@@ -229,6 +229,17 @@ impl Media {
         }
     }
 
+    /// The card's volume (the recorder writes its files through it).
+    pub fn volume(&mut self) -> &mut Volume<'static, OverlayDisk<'static>> {
+        self.vol.as_mut().expect("mounted")
+    }
+
+    /// Forget the current listing (files were added): the next browse
+    /// reads the folder again.
+    pub fn refresh(&mut self) {
+        self.rows.clear();
+    }
+
     pub fn take_events(&mut self) -> Vec<Event> {
         std::mem::take(&mut self.events)
     }

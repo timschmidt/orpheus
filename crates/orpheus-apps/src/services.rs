@@ -606,6 +606,176 @@ pub trait ToolsService {
     fn alarm_wakes_from_off(&self) -> bool;
 }
 
+// ---------------------------------------------------------------- Recorder
+
+pub use orpheus_rec::{Format as RecFormat, Quality as RecQuality, Source as RecSource};
+
+/// What the recorder is doing (05 §7.5).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum RecPhase {
+    /// Not capturing.
+    #[default]
+    Off,
+    /// Capturing for the meters (the app is open), not writing.
+    Armed,
+    Recording,
+    Paused,
+    /// Voice activation waits for sound (recording, the timer stopped).
+    Waiting,
+    /// The rest is written and the file closed.
+    Saving,
+}
+
+impl RecPhase {
+    /// A file is open.
+    #[must_use]
+    pub const fn is_recording(self) -> bool {
+        matches!(self, RecPhase::Recording | RecPhase::Paused | RecPhase::Waiting | RecPhase::Saving)
+    }
+}
+
+/// Why a recording ended by itself.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RecEnd {
+    /// Saved: stopped by the user (or the time limit).
+    Saved,
+    /// The card had 1 MiB left; the file is saved.
+    CardFull,
+    /// Writing failed (card removed?).
+    CardError,
+    /// No card, or the folder could not be made.
+    NoCard,
+    /// The source is not there (no tuner, no line input).
+    NoSource,
+}
+
+/// The recorder's state, by value.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct RecInfo {
+    pub phase: RecPhase,
+    pub source: RecSource,
+    pub format: RecFormat,
+    pub rate: u32,
+    pub channels: u8,
+    /// Length of the file so far.
+    pub elapsed_ms: u32,
+    /// Meters: bar and held peak per channel in dBFS (−60…0), clip.
+    pub bar: [i8; 2],
+    pub hold: [i8; 2],
+    pub clip: bool,
+    /// Gain shown in dB: manual, the input gain; automatic, the AGC's.
+    pub gain_db: i8,
+    pub auto_gain: bool,
+    /// Recording time left on the card (seconds; `None` unknown).
+    pub left_s: Option<u32>,
+    /// Blocks the card was too slow for (dropped, marked in the file).
+    pub drops: u32,
+    pub marks: u16,
+    /// The station when recording the radio.
+    pub fm_khz: u32,
+    /// How the last recording ended (until the next starts).
+    pub ended: Option<RecEnd>,
+}
+
+/// Requests from the Recorder app.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RecRequest {
+    /// Capture for the meters with the current settings (the app is
+    /// shown); again after a setting changed.
+    Arm,
+    /// Stop capturing (the app is left).
+    Disarm,
+    /// Start a recording with the current settings.
+    Start,
+    Pause,
+    Resume,
+    /// Stop and save.
+    Stop,
+    /// A mark here (a new file if Auto split… is on mark: not built).
+    Mark,
+    /// Manual input gain one step up or down.
+    Gain(i8),
+}
+
+/// `ServiceEvent::Other { kind: other::RECORDER, value }` values.
+pub mod rec_event {
+    /// [`super::RecInfo`] changed (phase, levels, time).
+    pub const STATE: u32 = 1;
+    /// A recording ended ([`super::RecInfo::ended`] says how).
+    pub const ENDED: u32 = 2;
+}
+
+/// The recorder (05 §7.5, firmware card task in recording mode).
+pub trait RecorderService {
+    fn recorder(&self) -> RecInfo;
+    fn rec_request(&mut self, r: RecRequest);
+    /// The current or last recording's file name (`""` none yet).
+    fn rec_name(&self) -> &str;
+    /// The recordings folder, if there is one.
+    fn rec_dir(&mut self) -> Option<DirId>;
+    /// The board has a line input.
+    fn rec_has_line_in(&self) -> bool;
+}
+
+/// Settings › Recording › Source as a source.
+#[must_use]
+pub const fn rec_source(v: i16) -> RecSource {
+    match v {
+        1 => RecSource::Fm,
+        2 => RecSource::Line,
+        _ => RecSource::Mic,
+    }
+}
+
+/// What Settings › Recording asks for, as the recorder's settings (both
+/// service implementations start recordings from this).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct RecSettings {
+    pub source: RecSource,
+    pub params: orpheus_rec::Params,
+    pub chain: orpheus_rec::chain::ChainConfig,
+    /// Manual input gain, dB from the source's default (−12…12).
+    pub gain_db: i8,
+    pub split_min: u32,
+    pub monitor: bool,
+}
+
+/// Read the recorder's settings.
+pub fn rec_settings<S: SettingsService + ?Sized>(s: &S) -> RecSettings {
+    let source = rec_source(s.setting(id::REC_SOURCE));
+    let format = RecFormat::from_index(s.setting(id::REC_FORMAT));
+    let rate = RecQuality::from_index(s.setting(id::REC_QUALITY)).rate();
+    let vox = orpheus_rec::vox::THRESHOLDS_DB.get(usize::try_from(s.setting(id::REC_VOX)).unwrap_or(0));
+    RecSettings {
+        source,
+        params: orpheus_rec::Params { rate, channels: source.channels(), format, level: 1 },
+        chain: orpheus_rec::chain::ChainConfig {
+            lowcut: s.setting(id::REC_LOWCUT) != 0,
+            agc: s.setting(id::REC_GAIN_MODE) != 0,
+            vox_db: vox.copied().unwrap_or(0),
+        },
+        gain_db: i8::try_from(s.setting(id::REC_GAIN).clamp(-12, 12)).unwrap_or(0),
+        split_min: [0, 15, 30, 60]
+            .get(usize::try_from(s.setting(id::REC_SPLIT)).unwrap_or(0))
+            .copied()
+            .unwrap_or(0),
+        monitor: s.setting(id::REC_MONITOR) != 0,
+    }
+}
+
+/// "5 h 12 min", "47 min" (recording time left).
+pub fn push_left<const N: usize>(secs: u32, lang: Lang, out: &mut StrBuf<N>) {
+    let h = secs / 3600;
+    let m = secs / 60 % 60;
+    if h > 0 {
+        out.push_u32(h);
+        out.push_str(" h ");
+    }
+    out.push_u32(m);
+    out.push(' ');
+    out.push_str(lang.get(crate::strings::Str::Mins));
+}
+
 /// Everything the apps need. Implemented automatically for any type with
 /// all the parts; the toolkit's `System` (status bar, volume, mini-player)
 /// can be implemented with [`status`], [`mini_player`] and
@@ -628,6 +798,7 @@ pub trait Services:
     + SystemService
     + StepsService
     + ToolsService
+    + RecorderService
 {
 }
 
@@ -649,6 +820,7 @@ impl<T> Services for T where
         + SystemService
         + StepsService
         + ToolsService
+        + RecorderService
 {
 }
 
@@ -750,6 +922,8 @@ pub mod other {
     pub const STEPS: u16 = 4;
     /// Stopwatch, timer, alarms: `value` is one of [`super::tools_event`].
     pub const TOOLS: u16 = 5;
+    /// Recorder: `value` is one of [`super::rec_event`].
+    pub const RECORDER: u16 = 6;
 }
 
 /// Browser order (Files menu › Sort).

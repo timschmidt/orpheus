@@ -12,6 +12,7 @@ orpheus-ui = { path = "../orpheus-ui" }
 orpheus-power = { path = "../orpheus-power" }
 orpheus-fm = { path = "../orpheus-fm" }
 orpheus-steps = { path = "../orpheus-steps" }
+orpheus-rec = { path = "../orpheus-rec" }
 
 [lints]
 workspace = true

@@ -17,7 +17,7 @@ use orpheus_ui::widgets::list::{Accessory, Item, ListAction, ListSource, ListVie
 
 use super::{
     FILES, INFO, MUSIC_FOLDERS, NOTICE, NOW_PLAYING, Notice, PICTURE_VIEW, PICTURES, PROPERTIES,
-    PictureScreen, TEXT_VIEW,
+    PictureScreen, RECORDINGS, TEXT_VIEW,
 };
 use crate::App;
 use crate::browse::{DirId, EntryKind, FileRef};
@@ -135,6 +135,9 @@ pub enum BrowseMode {
     Music,
     /// Pictures: folders and pictures.
     Pictures,
+    /// Recorder › Recordings…: the recordings, newest first; OK plays,
+    /// Menu deletes (05 §7.5).
+    Recordings,
 }
 
 /// One folder.
@@ -181,6 +184,7 @@ impl FilesScreen {
             BrowseMode::Files => FILES,
             BrowseMode::Music => MUSIC_FOLDERS,
             BrowseMode::Pictures => PICTURES,
+            BrowseMode::Recordings => RECORDINGS,
         }
     }
 
@@ -192,14 +196,15 @@ impl FilesScreen {
 
     fn filter<S: Services + ?Sized>(&self, svc: &S) -> BrowseFilter {
         let sort = match svc.setting(id::FILES_SORT) {
+            _ if self.mode == BrowseMode::Recordings => SortBy::Date,
             1 => SortBy::Date,
             2 => SortBy::Size,
             _ => SortBy::Name,
         };
         BrowseFilter {
             sort,
-            hidden: svc.setting(id::SHOW_HIDDEN) != 0,
-            audio_only: self.mode == BrowseMode::Music,
+            hidden: svc.setting(id::SHOW_HIDDEN) != 0 && self.mode != BrowseMode::Recordings,
+            audio_only: matches!(self.mode, BrowseMode::Music | BrowseMode::Recordings),
             images_only: self.mode == BrowseMode::Pictures,
         }
     }
@@ -376,7 +381,9 @@ impl<S: Services + ?Sized> Screen<S> for FilesScreen {
                 g.clear(Role::Bg);
                 let dim = g.c(Role::TextDim);
                 let (w, h) = g.size();
-                g.text_in(4, h / 2, w - 8, self.lang.get(Str::EmptyFolder), FontId::Ui, dim, Align::Center);
+                let empty =
+                    if self.mode == BrowseMode::Recordings { Str::NoRecordings } else { Str::EmptyFolder };
+                g.text_in(4, h / 2, w - 8, self.lang.get(empty), FontId::Ui, dim, Align::Center);
             }
             return;
         }
@@ -390,6 +397,13 @@ impl<S: Services + ?Sized> Screen<S> for FilesScreen {
         let l = self.lang;
         let focused = cx.svc.entry(self.list.focus).map(|e| e.kind);
         match out.parent() {
+            None if self.mode == BrowseMode::Recordings => {
+                if focused.is_some() {
+                    out.action(M_PLAY, l.get(Str::PlayFolder));
+                    out.action(M_PROPS, l.get(Str::Properties));
+                    out.action(M_DELETE, l.get(Str::DeleteMenu));
+                }
+            }
             None => {
                 if self.mode == BrowseMode::Pictures {
                     out.action(M_SLIDESHOW, l.get(Str::Slideshow));
@@ -430,6 +444,7 @@ impl<S: Services + ?Sized> Screen<S> for FilesScreen {
                 BrowseMode::Files => Str::AppFiles,
                 BrowseMode::Music => Str::Folders,
                 BrowseMode::Pictures => Str::AppPictures,
+                BrowseMode::Recordings => Str::Recordings,
             })),
             strip: StripUse::Auto,
             ..Wants::default()
