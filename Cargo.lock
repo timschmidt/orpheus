@@ -1235,6 +1235,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "yoton-player"
+version = "0.1.0"
+dependencies = [
+ "yoton-fs",
+ "yoton-proto",
+]
+
+[[package]]
 name = "yoton-power"
 version = "0.1.0"
 

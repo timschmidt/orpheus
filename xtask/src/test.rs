@@ -121,6 +121,8 @@ const NATIVE: [u32; 9] = [8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100,
 struct Gen {
     dir: PathBuf,
     manifest: String,
+    /// `gapless.tsv`: album-style splits decoded back to back.
+    joins: String,
     files: usize,
 }
 
@@ -320,12 +322,15 @@ fn generate(dir: &Path) -> Result<usize> {
         std::fs::remove_dir_all(dir).with_context(|| format!("remove {}", dir.display()))?;
     }
     std::fs::create_dir_all(dir)?;
-    let mut g = Gen { dir: dir.to_path_buf(), manifest: String::new(), files: 0 };
+    let mut g = Gen { dir: dir.to_path_buf(), manifest: String::new(), joins: String::new(), files: 0 };
     g.manifest.push_str("# file\treference\tformat\texpect\tsource frames (gapless check)\n");
+    g.joins.push_str("# name\tsource wav\tparts\texact|lossy\tper-part references\n");
     wav_family(&mut g)?;
     mp3(&mut g)?;
     flac(&mut g)?;
+    gapless(&mut g)?;
     std::fs::write(dir.join("manifest.tsv"), &g.manifest)?;
+    std::fs::write(dir.join("gapless.tsv"), &g.joins)?;
     Ok(g.files)
 }
 
@@ -634,6 +639,63 @@ fn write_valid_bits_wav(
     h.extend_from_slice(&(data.len() as u32).to_le_bytes());
     h.extend_from_slice(&data);
     std::fs::write(path, h)?;
+    Ok(())
+}
+
+/// Album-style gapless sets (04 §2.2): one source cut at odd sample
+/// positions into three tracks, encoded per codec. The conformance run
+/// decodes the tracks back to back in one arena (decoder re-opened at each
+/// boundary) and requires the join to have exactly the source's length —
+/// bit-exact for lossless codecs, within −80 dBFS of ffmpeg's per-track
+/// decodes for lossy ones.
+fn gapless(g: &mut Gen) -> Result<()> {
+    let src = g.source(Sig::Music, 44100, 2, 5.0, 16)?;
+    let total = frames_of(&src)?;
+    let cuts = [0u64, 60_417, 131_333, total];
+    let mut wavs = Vec::new();
+    for k in 0..3 {
+        let part = g.path(&format!("gapless/src_part{k}.wav"))?;
+        sox(&[
+            vec![p(&src), p(&part)],
+            s(&["trim", &format!("{}s", cuts[k]), &format!("{}s", cuts[k + 1] - cuts[k])]),
+        ]
+        .concat())?;
+        wavs.push(part);
+    }
+    let codecs: &[(&str, &str, &[&str], bool)] = &[
+        ("flac", "flac", &["-c:a", "flac"], true),
+        ("wav", "wav", &["-c:a", "pcm_s16le"], true),
+        ("mp3", "mp3", &["-c:a", "libmp3lame", "-b:a", "192k"], false),
+    ];
+    for &(name, ext, args, exact) in codecs {
+        let mut parts = Vec::new();
+        let mut refs = Vec::new();
+        for (k, w) in wavs.iter().enumerate() {
+            let rel = format!("gapless/{name}_part{k}.{ext}");
+            let out = g.path(&rel)?;
+            ffmpeg(&[s(&["-i"]), vec![p(w)], s(args), vec![p(&out)]].concat())?;
+            let rref = format!("gapless/{name}_part{k}.s16");
+            ffmpeg(
+                &[
+                    s(&["-i"]),
+                    vec![p(&out)],
+                    s(&["-f", "s16le", "-c:a", "pcm_s16le"]),
+                    vec![p(&g.dir.join(&rref))],
+                ]
+                .concat(),
+            )?;
+            parts.push(rel);
+            refs.push(rref);
+        }
+        let srcrel = src.strip_prefix(&g.dir).unwrap_or(&src).to_string_lossy().into_owned();
+        writeln!(
+            g.joins,
+            "{name}\t{srcrel}\t{}\t{}\t{}",
+            parts.join(","),
+            if exact { "exact" } else { "lossy" },
+            refs.join(",")
+        )?;
+    }
     Ok(())
 }
 

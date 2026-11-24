@@ -15,6 +15,7 @@ pub mod checks;
 pub mod compare;
 pub mod drive;
 pub mod fuzz;
+pub mod join;
 pub mod rng;
 
 use std::cell::RefCell;
