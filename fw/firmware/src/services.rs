@@ -1026,7 +1026,9 @@ impl SystemService for Fw {
         matches!(app, App::Settings | App::Files | App::Music | App::Pictures | App::Bluetooth)
     }
     fn dual_boot(&self) -> bool {
-        true
+        // "Start original firmware" only exists in the dual-boot layout; in
+        // the full layout (decision D-2) the stock firmware is erased.
+        !atj2157_hal::nor::full_layout()
     }
     fn usb_audio_built(&self) -> bool {
         false

@@ -19,6 +19,13 @@ use orpheus_proto::layout::{dual_writable, full_writable};
 /// full layout's (sector 0 and the vendor data at the top stay excluded).
 static FULL: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
+/// True once [`allow_full_layout`] ran: the firmware runs from a
+/// full-layout slot (the stock firmware is gone).
+#[must_use]
+pub fn full_layout() -> bool {
+    FULL.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 /// Allow writes anywhere the full layout permits.
 pub fn allow_full_layout() {
     FULL.store(true, core::sync::atomic::Ordering::Relaxed);
