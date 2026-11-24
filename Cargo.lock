@@ -1415,6 +1415,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "yoton-img"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "yoton-audio",
+ "yoton-meta",
+]
+
+[[package]]
 name = "yoton-input"
 version = "0.1.0"
 
