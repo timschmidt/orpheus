@@ -304,9 +304,63 @@ pub fn skip(src: &mut dyn ByteSource, n: u64) -> u64 {
     k as u64
 }
 
+/// A window of a file read into memory: `buf` holds the bytes from file
+/// offset `off` on; positions and the length are the file's. The firmware
+/// probes and inspects the next track's head through it while the current
+/// track plays (`at_end`: `buf` reaches the end of the file).
+#[derive(Debug)]
+pub struct WindowSource<'d> {
+    buf: &'d [u8],
+    rd: usize,
+    off: u64,
+    len: Option<u64>,
+}
+
+impl<'d> WindowSource<'d> {
+    #[must_use]
+    pub fn new(buf: &'d [u8], off: u64, len: Option<u64>) -> Self {
+        Self { buf, rd: 0, off, len }
+    }
+}
+
+impl ByteSource for WindowSource<'_> {
+    fn peek(&self, n: usize) -> Option<(&[u8], &[u8])> {
+        let s = self.buf.get(self.rd..)?;
+        Some((s.get(..n)?, &[]))
+    }
+    fn available(&self) -> usize {
+        self.buf.len().saturating_sub(self.rd)
+    }
+    fn consume(&mut self, n: usize) {
+        self.rd += n.min(self.available());
+    }
+    fn position(&self) -> u64 {
+        self.off + self.rd as u64
+    }
+    fn len(&self) -> Option<u64> {
+        self.len
+    }
+    fn at_end(&self) -> bool {
+        self.len.is_some_and(|l| self.off + self.buf.len() as u64 >= l)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_has_the_file_positions() {
+        let data: std::vec::Vec<u8> = (0..50u8).collect();
+        let mut w = WindowSource::new(&data[10..30], 10, Some(50));
+        assert_eq!((w.position(), w.available(), w.len(), w.at_end()), (10, 20, Some(50), false));
+        assert_eq!(w.peek(3), Some((&data[10..13], &[][..])));
+        w.consume(25);
+        assert_eq!((w.position(), w.available()), (30, 0));
+        assert!(w.peek(1).is_none());
+        let end = WindowSource::new(&data[40..], 40, Some(50));
+        assert!(end.at_end());
+    }
 
     #[test]
     fn ring_splits_at_wrap() {

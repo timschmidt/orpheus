@@ -114,6 +114,12 @@ impl<'a> StreamRing<'a> {
         self.cur.eof
     }
 
+    /// Bytes of the current stream's file the reader has not read yet.
+    #[must_use]
+    pub fn file_left(&self) -> Option<u64> {
+        self.cur.len.map(|l| l.saturating_sub(self.cur.wr))
+    }
+
     /// The current stream's read position moved and the reader has not
     /// read from the new position yet.
     #[must_use]
@@ -564,6 +570,7 @@ mod tests {
         f.fill(&mut r);
         r.skip_to(9_000);
         assert!(r.reseek_pending() && r.available() == 0);
+        assert_eq!(r.file_left(), Some(1_000));
         let mut out = Vec::new();
         drain(&mut r, &mut f, 100, &mut out);
         assert_eq!(out, a[9_000..]);

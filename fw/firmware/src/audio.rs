@@ -208,7 +208,7 @@ pub static T_SERVE: AtomicU32 = AtomicU32::new(0);
 /// library lookup and of the album-art lookup that follow, underruns after
 /// them, time of the read-ahead open. Plus the start time and pager count
 /// of the join in progress.
-static JOIN: [AtomicU32; 12] = [const { AtomicU32::new(0) }; 12];
+static JOIN: [AtomicU32; 13] = [const { AtomicU32::new(0) }; 13];
 const J_HEAD: usize = 0;
 const J_OPEN_US: usize = 1;
 const J_LOADS: usize = 2;
@@ -221,6 +221,10 @@ const J_T0: usize = 8;
 const J_L0: usize = 9;
 const J_PREP_US: usize = 10;
 const J_PREP_LOADS: usize = 11;
+/// Joins since start-up (which one `status` shows).
+const J_SEQ: usize = 12;
+/// Not measured yet (`status` prints `-`).
+const J_NONE: u32 = u32::MAX;
 
 fn jset(i: usize, v: u32) {
     JOIN[i].store(v, Ordering::Relaxed);
@@ -249,6 +253,11 @@ const CHORE_WAIT_US: u64 = 300_000;
 /// A gapless track's library place and art are looked for after this much
 /// of it has played (its first seconds stay free of card work).
 const META_AFTER_MS: u64 = 2000;
+/// The player is asked for the next track (`ReaderAtEnd`) when this much of
+/// the current file is still to be read (≈ 0.5 s of FLAC, 2.7 s of MP3 at
+/// 192 kbit/s): its open and preparation then have time to find a moment
+/// the DAC has room. Its bytes still come after the current file's.
+const READ_AHEAD_LEAD: u64 = 64 * 1024;
 
 /// Underruns of the current track by cause (`orpheus_audio::Ledger`,
 /// reset with [`UNDERRUNS`]): every operation that keeps the writer from
@@ -304,7 +313,7 @@ pub(crate) struct Ring {
     /// shown (`play_file`'s chores: not while the next decoder opens).
     shown: Option<Next>,
     /// Its stream as prepared (taken by `play_file`).
-    prepared: Option<(orpheus_audio::Format, orpheus_audio::Plan)>,
+    prepared: Option<Prepared>,
 }
 
 pub(crate) struct Next {
@@ -313,10 +322,19 @@ pub(crate) struct Next {
     ext: [u8; 8],
     ext_len: u8,
     title: media::Name,
-    /// Probed and inspected while the current file still plays (the next
-    /// stream's read position is then at its codec data): `Some(Ok)` ready,
-    /// `Some(Err)` gave up (the hand-over does it the ordinary way).
-    prep: Option<Result<(orpheus_audio::Format, orpheus_audio::Plan), ()>>,
+    /// Probed and inspected while the current file still plays
+    /// (`prepare`): `Some(Ok)` ready, `Some(Err)` gave up (the hand-over
+    /// does it the ordinary way).
+    prep: Option<Result<Prepared, ()>>,
+}
+
+/// A stream probed and inspected ahead: its format, the decoder's plan, and
+/// where its codec data starts (after leading tags).
+#[derive(Clone, Copy)]
+pub(crate) struct Prepared {
+    format: orpheus_audio::Format,
+    plan: orpheus_audio::Plan,
+    start: u64,
 }
 
 impl ByteSource for Ring {
@@ -390,50 +408,6 @@ impl Ring {
         let n = self.shown.as_mut()?;
         self.prepared = n.prep.take().and_then(Result::ok);
         Some((n.track, n.ext, n.ext_len))
-    }
-
-    /// Probe (skipping leading tags) and inspect the stream read ahead,
-    /// while the current one plays: the hand-over then only opens the
-    /// decoder. True once it is decided (ready or given up); false: more of
-    /// it must be read first.
-    #[inline(never)]
-    fn prepare(&mut self) -> bool {
-        let Some(n) = self.next.as_mut() else { return true };
-        if n.prep.is_some() {
-            return true;
-        }
-        let ext = n.ext.get(..usize::from(n.ext_len)).filter(|e| !e.is_empty());
-        let Some(mut src) = self.s.next_source() else { return true };
-        let mut r = None;
-        for _ in 0..8 {
-            match probe(&src, ext) {
-                Probe::Found(format) => {
-                    let hint = ContainerInfo { format, gapless: None, stream_len: None };
-                    r = match orpheus_codecs::inspect(format, &src, &hint) {
-                        Ok(plan) => Some(Ok((format, plan))),
-                        Err(OpenError::NeedData(_)) if !src.at_end() => None,
-                        Err(_) => Some(Err(())),
-                    };
-                    break;
-                }
-                Probe::Skip(k) if (k as usize) <= src.available() => src.consume(k as usize),
-                Probe::Skip(k) => {
-                    let to = src.position() + k;
-                    src.skip_to(to);
-                    break;
-                }
-                Probe::NeedData(_) if !src.at_end() => break,
-                _ => {
-                    r = Some(Err(()));
-                    break;
-                }
-            }
-        }
-        let done = r.is_some();
-        if let Some(n) = self.next.as_mut() {
-            n.prep = r;
-        }
-        done
     }
 
     /// Publish the title kept by [`Ring::hand_over`].
@@ -811,6 +785,12 @@ async fn seek_to(
 /// The current track's decoder ended and the next one is handed over:
 /// the join's statistics start, and its underruns are no decoder's.
 fn handed_over(out: &PcmOut) {
+    // A new join: what it has not measured yet shows `-`, not the last
+    // join's numbers (the read-ahead and preparation are this join's).
+    for i in [J_OPEN_US, J_LOADS, J_UNDER, J_LIB_US, J_ART_US, J_UNDER_META] {
+        jset(i, J_NONE);
+    }
+    jset(J_SEQ, jget(J_SEQ).wrapping_add(1));
     jset(J_HEAD, out.headroom().max(0) as u32);
     jset(J_T0, now32());
     jset(J_L0, pager_loads());
@@ -831,11 +811,76 @@ fn failed(srv: &mut Server, driven: bool, why: &'static [u8]) -> Result<End, &'s
 /// (the open at the track change fails and the player moves on).
 async fn prefetch(vol: &mut Volume<'static, Card>, ring: &mut Ring, srv: &Server, item: u32) {
     ring.cancel_next();
+    // For the next join.
+    jset(J_PREP_US, J_NONE);
+    jset(J_PREP_LOADS, J_NONE);
     let mut title = media::Name::EMPTY;
     let got = open_target(vol, srv, Target::Item(item), Some(&mut title), &mut ring.next_file).await;
     if let (Some((track, ext, ext_len)), Some(f)) = (got, ring.next_file.as_ref()) {
         ring.s.begin_next(Some(f.size()));
         ring.next = Some(Next { item, track, ext, ext_len, title, prep: None });
+    }
+}
+
+/// What the head of a file shows (`inspect_head`).
+enum HeadStep {
+    Ready(Prepared),
+    /// A leading tag ends beyond the window: read from this offset.
+    SkipTo(u64),
+    Fail,
+}
+
+/// Probe (skipping leading tags) and inspect a window of a file's head.
+#[inline(never)]
+fn inspect_head(src: &mut orpheus_audio::WindowSource<'_>, ext: Option<&[u8]>) -> HeadStep {
+    for _ in 0..16 {
+        match probe(&*src, ext) {
+            Probe::Found(format) => {
+                let hint = ContainerInfo { format, gapless: None, stream_len: None };
+                let start = src.position();
+                return match orpheus_codecs::inspect(format, &*src, &hint) {
+                    Ok(plan) => HeadStep::Ready(Prepared { format, plan, start }),
+                    Err(_) => HeadStep::Fail,
+                };
+            }
+            Probe::Skip(k) if (k as usize) <= src.available() => src.consume(k as usize),
+            Probe::Skip(k) => return HeadStep::SkipTo(src.position() + k),
+            _ => return HeadStep::Fail,
+        }
+    }
+    HeadStep::Fail
+}
+
+/// Probe and inspect the file read ahead from its own head (read into
+/// `buf`, free arena memory; a copy of its handle, so the ring's reading is
+/// untouched), while the current file plays: at the hand-over only the
+/// decoder opens. Up to 8 KiB per read; a stream that needs more is left
+/// to the hand-over.
+async fn prepare(vol: &mut Volume<'static, Card>, ring: &mut Ring, buf: &mut [u8]) {
+    let Some(mut f) = ring.next_file.clone() else { return };
+    let Some(n) = ring.next.as_ref().filter(|n| n.prep.is_none()) else { return };
+    let (ext, ext_len) = (n.ext, usize::from(n.ext_len));
+    let ext = ext.get(..ext_len).filter(|e| !e.is_empty());
+    let len = f.size();
+    let n = buf.len().min(8192);
+    let Some(buf) = buf.get_mut(..n) else { return };
+    let mut off = 0u64;
+    let mut r = Err(());
+    for _ in 0..4 {
+        f.set_position(off);
+        let got = vol.read_exact_or_eof(&mut f, buf).await.unwrap_or(0);
+        let mut w = orpheus_audio::WindowSource::new(buf.get(..got).unwrap_or_default(), off, Some(len));
+        match inspect_head(&mut w, ext) {
+            HeadStep::Ready(p) => {
+                r = Ok(p);
+                break;
+            }
+            HeadStep::SkipTo(at) if at < len => off = at,
+            _ => break,
+        }
+    }
+    if let Some(n) = ring.next.as_mut() {
+        n.prep = Some(r);
     }
 }
 
@@ -859,12 +904,21 @@ async fn play_file(
     // A gapless start has the file's head in the ring already: no card
     // read before the decoder runs unless the probe asks for more.
     let prepared = if st.gapless { ring.prepared.take() } else { None };
-    if !st.gapless || (prepared.is_none() && ring.available() < 4096) {
+    if let Some(p) = prepared {
+        // To the codec data, past leading tags (as the preparation found).
+        let skip = p.start.saturating_sub(ring.position());
+        if skip <= ring.available() as u64 {
+            ring.consume(skip as usize);
+        } else {
+            ring.s.skip_to(p.start);
+        }
+    }
+    if !st.gapless || ring.available() < 4096 {
         ring.fill(vol, None).await;
     }
     // Probe, skipping leading tags (done already for a prepared stream).
-    let format = if let Some((fm, _)) = prepared {
-        fm
+    let format = if let Some(p) = prepared {
+        p.format
     } else {
         loop {
             match probe(ring, ext) {
@@ -885,8 +939,8 @@ async fn play_file(
         }
     };
     let hint = ContainerInfo { format, gapless: None, stream_len: None };
-    let plan = if let Some((_, p)) = prepared {
-        p
+    let plan = if let Some(p) = prepared {
+        p.plan
     } else {
         loop {
             match orpheus_codecs::inspect(format, ring, &hint) {
@@ -1226,10 +1280,9 @@ async fn play_file(
                 let meta_now = meta != 0 && join == 0 && u64::from(frames) * 1000 >= META_AFTER_MS * rate;
                 // Requests wait while the current file's last bytes play
                 // (≤ 0.7 s: the hand-over comes first).
-                let serve_now = serve_due && !(ring.eof() && reader_end);
-                // The stream read ahead, probed and inspected before the end.
-                let prep_now = ring.next.as_ref().is_some_and(|n| n.prep.is_none())
-                    && (ring.s.next_buffered() >= 2048 || ring.s.next_source().is_some_and(|n| n.at_end()));
+                let serve_now = serve_due && !(ring.eof() && ring.next.is_some());
+                // The file read ahead, probed and inspected before the end.
+                let prep_now = ring.next.as_ref().is_some_and(|n| n.prep.is_none());
                 if pf_due.is_some() || serve_now || meta_now || prep_now {
                     let now = time::now_us();
                     if chore_since == 0 {
@@ -1248,10 +1301,9 @@ async fn play_file(
                             note(UB_PREFETCH, t0);
                         } else if prep_now {
                             let l0 = pager_loads();
-                            if ring.prepare() {
-                                jset(J_PREP_US, now32().wrapping_sub(t0));
-                                jset(J_PREP_LOADS, pager_loads().wrapping_sub(l0));
-                            }
+                            prepare(vol, ring, spare).await;
+                            jset(J_PREP_US, now32().wrapping_sub(t0));
+                            jset(J_PREP_LOADS, pager_loads().wrapping_sub(l0));
                             note(UB_PREPARE, t0);
                         } else if serve_now {
                             serve_due = false;
@@ -1294,7 +1346,7 @@ async fn play_file(
                         LAST_SERVE_MS.store((time::now_us() / 1000) as u32, Ordering::Relaxed);
                     }
                 }
-                if driven && ring.eof() && !reader_end {
+                if driven && !reader_end && ring.s.file_left().is_some_and(|l| l <= READ_AHEAD_LEAD) {
                     reader_end = true;
                     // The player answers with `Prefetch`: the next file is
                     // read after this one (gapless).
@@ -2006,27 +2058,26 @@ pub fn status_reply() {
             .u(u64::from(shuffled))
             .s(t!(b" title="))
             .s(&t.as_bytes()[..n]);
-        // The last gapless join.
-        w.s(t!(b" join: head="))
-            .u(u64::from(jget(J_HEAD)))
-            .s(t!(b" open_us="))
-            .u(u64::from(jget(J_OPEN_US)))
-            .s(t!(b" loads="))
-            .u(u64::from(jget(J_LOADS)))
-            .s(t!(b" u="))
-            .u(u64::from(jget(J_UNDER)))
-            .s(t!(b" lib_us="))
-            .u(u64::from(jget(J_LIB_US)))
-            .s(t!(b" art_us="))
-            .u(u64::from(jget(J_ART_US)))
-            .s(t!(b" u_meta="))
-            .u(u64::from(jget(J_UNDER_META)))
-            .s(t!(b" pf_us="))
-            .u(u64::from(jget(J_PREFETCH_US)));
-        w.s(t!(b" prep_us="))
-            .u(u64::from(jget(J_PREP_US)))
-            .s(t!(b" prep_loads="))
-            .u(u64::from(jget(J_PREP_LOADS)));
+        // The last gapless join (`-`: not measured yet).
+        w.s(t!(b" join#")).u(u64::from(jget(J_SEQ))).s(b":");
+        for (label, i) in [
+            (t!(b" head="), J_HEAD),
+            (t!(b" open_us="), J_OPEN_US),
+            (t!(b" loads="), J_LOADS),
+            (t!(b" u="), J_UNDER),
+            (t!(b" lib_us="), J_LIB_US),
+            (t!(b" art_us="), J_ART_US),
+            (t!(b" u_meta="), J_UNDER_META),
+            (t!(b" pf_us="), J_PREFETCH_US),
+            (t!(b" prep_us="), J_PREP_US),
+            (t!(b" prep_loads="), J_PREP_LOADS),
+        ] {
+            w.s(label);
+            match jget(i) {
+                J_NONE => w.s(b"-"),
+                v => w.u(u64::from(v)),
+            };
+        }
         // This track's underruns by cause (they add up to `underruns`).
         let ub = critical_section::with(|cs| LEDGER.borrow(cs).borrow().by());
         w.s(t!(b" ub: join="))

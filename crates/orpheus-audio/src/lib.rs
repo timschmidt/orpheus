@@ -44,7 +44,7 @@ pub use decoder::{Decoder, Plan, SeekStep};
 pub use ledger::Ledger;
 pub use probe::{Format, OggCodec, Probe, probe};
 pub use ring::StreamRing;
-pub use source::{ByteSource, SeekSource, SliceSource, SourceError, View};
+pub use source::{ByteSource, SeekSource, SliceSource, SourceError, View, WindowSource};
 pub use stream::{
     CodecId, ContainerInfo, DecodeError, Gapless, OpenError, PcmBlock, SampleKind, Step, StreamInfo,
     Unsupported,

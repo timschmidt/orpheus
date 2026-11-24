@@ -42,6 +42,51 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-24 — AU-5 (gapless): the preparation runs, from the file's head; join statistics per join (worker, no hardware)
+
+From the lead's runs of `ec43e38`: `underruns=0` through both joins of the
+FLAC and MP3 splits (three runs, every `ub:` 0). But `prep_us=0
+prep_loads=0` on every join, and the FLAC open (≈ 49 ms, 145 loads) leaves
+only ≈ 20 ms of the 70-ms ring.
+
+* **Why the preparation never ran.** It probed the next stream inside the
+  stream ring. That stream gets bytes there only after the current file
+  has been read to its end, and then only as the last ≈ 16 KiB of the
+  current file drain. Those 16 KiB are ≈ 0.14 s of FLAC, and they are
+  read only while the DAC has headroom. The "≥ 2 KiB buffered" condition
+  was therefore met only in the last moments, if at all, and the join
+  came first.
+* **Now:**
+  * `prepare` reads the next file's head itself: up to 8 KiB, through a
+    copy of its file handle, into the free end of the decoder arena. It
+    probes it, skipping leading tags (a tag longer than the window is read
+    past, at most four reads), and inspects it through the new
+    `orpheus_audio::WindowSource` (a window of a file with the file's
+    positions and length; host-tested).
+  * It runs as a chore right after the read-ahead open, independent of
+    the ring. At the hand-over the ring's read position moves to the codec
+    data the preparation found, and only the decoder opens.
+  * The player is asked for the next track (`ReaderAtEnd`) when the
+    current file's last 64 KiB are being read (≈ 0.5 s of FLAC, 2.7 s of
+    MP3 at 192 kbit/s), not only once it is read to its end. That gives
+    the open and the preparation time to find a moment with headroom. The
+    next file's bytes still come after the current file's.
+* **Join statistics per join.** `status` prints `join#N:` (joins since
+  start-up). At each hand-over, the fields that join has not measured yet
+  read `-` until they are (open time and loads at the first block,
+  underruns after two halves, library and art after 2 s). The read-ahead
+  and preparation fields are cleared at the read-ahead open, so they
+  belong to the next join. Before, a poll right after a join could show
+  the previous join's numbers.
+* RAM/stack (`xtask build`; base = main `7acdb74` in this worktree):
+  `__stack_bottom` `0x1322a0` → `0x1322a8` (main stack −8 B). Resident
+  83,508 → 83,484 B. Frames: audio task poll 4,992 B (unchanged),
+  `play_file` 2,244 → 2,260 B.
+* Not verified on the player. Expect `prep_us`/`prep_loads` > 0 and the
+  FLAC join's `open_us`/`loads` lower than 49 ms / 145. The decoder open
+  re-reads the stream head (FLAC `open` parses it again), so not all of
+  its pages move out of the join.
+
 ### 2026-11-24 — AU-5 (gapless): the next stream prepared before the join, the player told after it, exact underrun ledger (worker, no hardware)
 
 From the lead's run of `879d967`: MP3 joins clean. The FLAC split's 2nd join
@@ -1384,6 +1429,7 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 | 2026-11-24 | AU-5 join fixes (chores gated on PCM headroom, deferred title, `find_near`, `playdir`, join statistics), worker worktree build | resident 83,500 B (was 83,468), main stack −184 B (`__stack_bottom` 0x132070 → 0x132128); audio task poll 4,992 B, `play_file` 2,332 B (unchanged) | `xtask build`, `llvm-nm`, `llvm-objdump` `sub sp` |
 | 2026-11-24 | AU-5 bounded lookups (walk cache, stepwise library search, DMA headroom, underruns by cause), worker worktree build | resident 83,508 B (was 83,500), main stack −168 B (`__stack_bottom` 0x132128 → 0x1321d0); audio task poll 4,992 B, `play_file` 2,324 B (was 2,332) | `xtask build`, `llvm-nm`, `llvm-objdump` `sub sp` |
 | 2026-11-24 | AU-5 prepared next stream, player told after the join, underrun ledger, worker worktree build | resident 83,508 B (unchanged), main stack −208 B (`__stack_bottom` 0x1321d0 → 0x1322a0); audio task poll 4,992 B, `play_file` 2,244 B (was 2,324) | `xtask build`, `llvm-nm`, `llvm-objdump` `sub sp` |
+| 2026-11-24 | AU-5 preparation from the file's head, earlier read-ahead, per-join statistics, worker worktree build | resident 83,484 B (was 83,508), main stack −8 B (`__stack_bottom` 0x1322a0 → 0x1322a8); audio task poll 4,992 B, `play_file` 2,260 B (was 2,244) | `xtask build`, `llvm-nm`, `llvm-objdump` `sub sp` |
 
 | 2026-11-24 | Host coverage baseline (host tests + 1 fuzz regression input), regions / lines / branches | 72.16 % (60,678 / 84,088) / 71.78 % / 65.09 % | `xtask cover --fuzz` (+ `--add` re-runs), nightly-2026-11-05 |
 | 2026-11-24 | Instrumented coverage build of the host workspace, no debug info | ≈ 0.4 GB build + ≈ 1.1 GB test images in `target/cover/…/tmp` | `du` |

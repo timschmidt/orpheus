@@ -484,12 +484,13 @@ driver exists because it is much faster than reboot cycles.
    * The final `idle frames=` is part 2's frame count.
    * MP3, FLAC and WAV must pass. Vorbis is reported (04 §2.2: < 30 ms
      inserted if not zero).
-4. Reported in the run log: `join: head= open_us= loads= lib_us= art_us=
-   pf_us=` per join, and `ub: join= fill= serve= pf= prep= lib= art= dec=`
-   (the track's underruns by cause, which add up to `underruns`), and
-   `prep_us= prep_loads=` (the next stream prepared before the join). `open_us` must
-   stay below the headroom (`head` frames at the stream's rate). Every
-   `ub:` field must be 0.
+4. Reported in the run log: `join#N: head= open_us= loads= u= lib_us=
+   art_us= u_meta= pf_us= prep_us= prep_loads=` per join (`-`: not
+   measured yet; `prep_*`: the next stream probed and inspected before the
+   join), and `ub: join= fill= serve= pf= prep= lib= art= dec=` (the
+   track's underruns by cause, which add up to `underruns`). `open_us`
+   must stay below the headroom (`head` frames at the stream's rate).
+   Every `ub:` field must be 0.
 5. A folder with a 44.1 kHz part followed by a 48 kHz file checks the
    rate-change fallback: the second file plays at the right pitch, after
    a short stop.
