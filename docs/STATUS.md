@@ -678,6 +678,33 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — PWR-5 (D-4) part 1 on the player; gapless fix measured (lead)
+
+* **Max level (288 MHz, VDD 0x18, SYSCLK bit 8, NOR ÷6)** works: clock
+  self-test (`dev ram clocks --test clocks`) PASS — 192 MHz 72,912 µs and
+  288 MHz 48,608 µs against 291,669 µs at 48 MHz (exact scaling), RAM and
+  NOR DMA CRC ok, VDD code 0x18 read back. Turbo (192 MHz) verified for the
+  first time too. Full firmware pinned at 288 MHz (`gov off`, `clock 288`;
+  `VOUT_CTL` = 0x32E75118): FPU benchmark 1,603 µs vs 3,087 µs at 144
+  (1.93×), DSP chain 1,827 vs 3,549 µs (1.94×), 30 s MP3 decode 4.99 s vs
+  7.61 s (1.52×, paging-bound), Vorbis 3.63 s vs 5.86 s (1.61×); decoded
+  output bit-identical to 144 MHz (CRC) for MP3 and Vorbis; Speex fine.
+  **Opus still fails at 288 MHz** (one file needs a larger stream ring,
+  the other is "decoder too slow"): Opus is memory/paging-bound, not CPU-bound.
+* **Battery drain cannot be measured on the cable**: with USB connected the
+  battery stayed at 4,144–4,148 mV through 4 min of 288-MHz playback (the
+  player runs from VBUS; the charger had already terminated, `CHG_CTL`
+  0x8C410738). Next: a battery logger (voltage, level, state per minute to
+  `/.orpheus/test/`) and a user check with the cable unplugged for equal
+  periods at Normal and Maximum. Test command `charge pause|resume` added.
+* **Gapless fix (AU-5 `0b7ac9a`) measured with the new `playdir`**: order
+  correct (`q=` 1/3→3/3, `shuf=0`; the earlier "fourth track" was the
+  Shuffle setting); decoder re-open 15–22 ms with 52 ms headroom → 0
+  underruns at the join itself, but the library lookup (≈ 184 ms) and art
+  lookup (≈ 115 ms) after the join cause 4–6 underruns per track, and one
+  FLAC join started with only 11.6 ms of PCM queued. Sent back to the AU-5
+  worker (incremental/skipped lookups, full ring before the hand-over).
+
 ### 2026-11-24 — D-1, D-4, D-6 decided by the owner
 
 * **D-1**: MIT OR Apache-2.0. Added `LICENSE-MIT`, `LICENSE-APACHE` (the

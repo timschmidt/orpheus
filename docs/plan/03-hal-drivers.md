@@ -44,7 +44,7 @@ peripheral clock derivations).
 | `Mid` | 96 MHz | COREPLL N = 16 | `0x0C` | after the level self-test |
 | `High` | 144 MHz | COREPLL N = 24 | `0x0C` | after the level self-test |
 | `Turbo` | 192 MHz | COREPLL N = 32 | `0x10` (1.1 V) | after the level self-test |
-| `Max` | 288 MHz | COREPLL N = 48, `CMU_SYSCLK` bit 8 set | `0x18` (1.3 V) | an option the user can choose (decision D-4, 2026-11-24: test, characterise battery drain, keep available; WP PWR-5) |
+| `Max` | 288 MHz | COREPLL N = 48, `CMU_SYSCLK` bit 8 set | `0x18` (1.3 V) | an option the user can choose (decision D-4, 2026-11-24; WP PWR-5). **Verified 2026-11-24**: self-test PASS, NOR ÷6 (`0x203`) = 48 MHz, compute 1.93–1.94× High, decode bit-identical; battery drain not yet characterised |
 
 Voltage codes per the datasheet (01 §7): `0x0C` = 1.0 V, `0x10` = 1.1 V,
 `0x14` = 1.2 V (the reset default), `0x18` = 1.3 V. All values are rows of the

@@ -61,6 +61,9 @@ async fn input() {
     }
 }
 
+/// Test command `charge pause|resume` (usbdev): charging paused.
+pub static CHARGE_PAUSE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 #[embassy_executor::task]
 async fn power() {
     charger::init();
@@ -68,10 +71,26 @@ async fn power() {
     let mut smooth = gauge::Smoother::default();
     let mut last_pct = 255u8;
     let mut ticker = Ticker::every(Duration::from_secs(1));
+    let mut paused = false;
     loop {
         let i = charger::inputs();
-        let cmd = c.step(i);
-        charger::apply(&mut c, cmd).await;
+        // Test only (PWR-5 drain measurements on the cable): charging
+        // paused with the vendor's stop sequence; resuming restarts the
+        // charger state machine so it detects and charges again. A test
+        // always ends in a reboot, which clears the flag.
+        if CHARGE_PAUSE.load(core::sync::atomic::Ordering::Relaxed) {
+            if !paused {
+                charger::stop_now();
+                paused = true;
+            }
+        } else {
+            if paused {
+                c = Charger::new();
+                paused = false;
+            }
+            let cmd = c.step(i);
+            charger::apply(&mut c, cmd).await;
+        }
         let raw = smooth.feed(i.battery_raw);
         let mv = gauge::raw_to_mv(raw);
         let pct = gauge::percent(mv);

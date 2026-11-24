@@ -189,6 +189,10 @@ impl Target for Fw {
             });
             return true;
         }
+        if data == b"charge pause" || data == b"charge resume" {
+            crate::CHARGE_PAUSE.store(data == b"charge pause", Ordering::Relaxed);
+            return true;
+        }
         if data == b"crc on" || data == b"crc off" {
             crate::audio::CRC_ON.store(data == b"crc on", Ordering::Relaxed);
             return true;
