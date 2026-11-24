@@ -21,7 +21,7 @@
 use atj2157_hal::dma::Channel;
 use atj2157_hal::gpio::{Input, Output};
 use atj2157_hal::pac::{gpio, uart as ureg};
-use atj2157_hal::uart::{self, DmaRing, Uart};
+use atj2157_hal::uart::{self, DmaRing, Rx, Uart};
 
 use crate::pins::{BT_ENABLE, BT_HOST_BUSY, BT_UART_RX, BT_UART_TX};
 
@@ -46,20 +46,26 @@ pub fn init() {
 /// How the UART's FIFOs are served.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Mode {
-    /// Receive by DMA ring (else by CPU from the 16-byte FIFO).
-    pub rx_dma: bool,
+    /// Receive by DMA ring, or by CPU polling of the 16-byte FIFO (the
+    /// owner must then poll at least every 1.4 ms).
+    pub rx: Rx,
     /// Transmit by DMA (else by CPU through the FIFO).
     pub tx_dma: bool,
 }
 
 impl Mode {
-    pub const DEFAULT: Mode = Mode { rx_dma: true, tx_dma: true };
+    pub const DEFAULT: Mode = Mode { rx: Rx::Dma, tx_dma: true };
+}
+
+enum RxPath {
+    Dma(DmaRing),
+    Cpu,
 }
 
 /// The module powered and its UART running.
 pub struct Link {
     uart: Uart,
-    rx: Option<DmaRing>,
+    rx: RxPath,
     tx: Channel,
     mode: Mode,
     pub rx_errors: u32,
@@ -73,10 +79,13 @@ pub struct Link {
 pub unsafe fn up(mode: Mode, ring: &'static mut [u8; RING]) -> Link {
     // SAFETY: the caller hands over UART1 and channels 8/9.
     let (u, rx_ch, tx) = unsafe { (Uart::steal(UART), Channel::steal(RX_DMA), Channel::steal(TX_DMA)) };
-    u.open(ureg::VENDOR_BR_115200, uart::ctl_8n1(mode.rx_dma, mode.tx_dma));
+    u.open(ureg::VENDOR_BR_115200, uart::ctl_8n1(mode.rx, mode.tx_dma));
     gpio::mfp(usize::from(BT_UART_TX)).write(PAD_TX);
     gpio::mfp(usize::from(BT_UART_RX)).write(PAD_RX);
-    let rx = mode.rx_dma.then(|| DmaRing::start(rx_ch, &u, ring));
+    let rx = match mode.rx {
+        Rx::Dma => RxPath::Dma(DmaRing::start(rx_ch, &u, ring)),
+        Rx::Cpu => RxPath::Cpu,
+    };
     tx.enable_irq();
     let _ = Output::new(BT_HOST_BUSY, false);
     let _ = Output::new(BT_ENABLE, true);
@@ -86,8 +95,11 @@ pub unsafe fn up(mode: Mode, ring: &'static mut [u8; RING]) -> Link {
 /// Enable line low, UART off, pads parked low.
 pub fn down(link: Link) {
     let _ = Output::new(BT_ENABLE, false);
-    if let Some(r) = link.rx {
-        let _ = r.stop();
+    match link.rx {
+        RxPath::Dma(r) => {
+            let _ = r.stop();
+        }
+        RxPath::Cpu => {}
     }
     link.tx.abort();
     link.uart.close();
@@ -113,9 +125,9 @@ impl Link {
         if self.uart.take_errors() != 0 {
             self.rx_errors += 1;
         }
-        match self.rx.as_mut() {
-            Some(r) => r.read(out),
-            None => self.uart.read_fifo(out),
+        match &mut self.rx {
+            RxPath::Dma(r) => r.read(out),
+            RxPath::Cpu => self.uart.read_fifo(out),
         }
     }
 
@@ -128,12 +140,14 @@ impl Link {
         }
     }
 
-    /// Diagnostics: `STA`, `CTL`, ring remain counter, ring running, most
-    /// bytes found in one read.
+    /// Diagnostics: `STA`, `CTL`, DMA ring remain counter, DMA ring
+    /// running, most bytes found in one read.
     #[must_use]
     pub fn regs(&self) -> (u32, u32, u32, bool, u32) {
-        let (rem, run, peak) =
-            self.rx.as_ref().map_or((0, false, 0), |r| (r.remaining(), r.running(), r.peak));
+        let (rem, run, peak) = match &self.rx {
+            RxPath::Dma(r) => (r.remaining(), r.running(), r.peak),
+            RxPath::Cpu => (0, false, 0),
+        };
         (self.uart.status(), self.uart.control(), rem, run, peak)
     }
 }

@@ -19,7 +19,10 @@
 //!   transfers, `TFER` cleared before and after, then wait for `UTBB` —
 //!   bluetooth.md §2.3, VERBATIM) or [`Uart::send_fifo`].
 //!
-//! Interrupt lines 21–24 (datasheet table) are not used (U-IRQ-1).
+//! Interrupt lines 21–24 (datasheet table) are not used (U-IRQ-1). An
+//! RX-interrupt ring (a resident handler moving FIFO bytes into a ring)
+//! is the next fallback should the DMA ring fail on the hardware; it was
+//! left out for its resident RAM.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -182,15 +185,26 @@ impl Uart {
     }
 }
 
-/// `CTL` fields for an 8N1 line with both FIFOs on; `rx_dma` / `tx_dma`
-/// route the FIFOs to DMA (single-byte receive requests; transmit
-/// requests at 8 free bytes as the vendor's Bluetooth word).
+/// How the receive FIFO is served.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rx {
+    /// [`DmaRing`].
+    Dma,
+    /// [`Uart::read_fifo`] by the owner's poll.
+    Cpu,
+}
+
+/// `CTL` fields for an 8N1 line with both FIFOs on; `rx` selects DMA
+/// requests (single-byte) or none (CPU);
+/// `tx_dma` routes the TX FIFO to DMA (requests at 8 free bytes as the
+/// vendor's Bluetooth word).
 #[must_use]
-pub const fn ctl_8n1(rx_dma: bool, tx_dma: bool) -> u32 {
+pub const fn ctl_8n1(rx: Rx, tx_dma: bool) -> u32 {
     use reg::ctl::*;
     let mut v = RXENABLE | TXENABLE | TX_FIFO_EN | RX_FIFO_EN | EN | DWLS.val(DWLS_8);
-    if rx_dma {
-        v |= RX_FIFO_SEL | RXDE | RDIC.val(LEVEL_1);
+    match rx {
+        Rx::Dma => v |= RX_FIFO_SEL | RXDE | RDIC.val(LEVEL_1),
+        Rx::Cpu => {}
     }
     if tx_dma {
         v |= TX_FIFO_SEL | TXDE | TDIC.val(LEVEL_8);

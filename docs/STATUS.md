@@ -37,8 +37,68 @@ of every session. Newest entries first in §3.
 | AU-12 (directory index) | host done; **firmware wired in (built, not yet run on the player)** | `yoton-index` + its `card` adapters over `yoton-fs` (host-tested on FAT32/exFAT images). Files/Music › Folders sorted (Name/Date/Size, hidden per setting), letter jump from the index's letter runs, play queue in listing order. Library index, tag browsing, playlists, Favourites: not started |
 | AU-14 | done (host) | `yoton-img` |
 | OTP-1, BT-1, USB-6 | done (host) | `yoton-otp`, `yoton-bt`, MMC/CD-ROM in `yoton-usb` |
+| BT-2 (device) | **built, not yet run on the player** | UART1 driver (`atj2157_hal::uart`, `yoton_bsp::bt`), `yoton_bt::driver`, firmware `bt` task, `BluetoothService`, shutdown 0x24 on power-off. Module off at boot; `bt probe/on/off/status/scan/connect/listen/shutdown/rx/tx` test commands. Not done: volume policy, metadata at track change, pairing UI, U-BT-2 |
 
 ## 3. Session log
+
+### 2026-11-24 — BT-2 device side: UART driver, Bluetooth task, shutdown on power-off (worker, no hardware)
+
+Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
+
+* HAL `uart` (new): open/close (reset pulse, clock gate, `BR`, `CTL`),
+  error flags, CPU FIFO read/write, TX by DMA (vendor channel-9 word
+  `0x00228200`, `TFER` cleared before/after, wait for `UTBB` — VERBATIM
+  bluetooth.md §2.3; bounded, aborts on timeout, counts a missing
+  completion interrupt), RX `DmaRing`: single-byte DMA with reload into a
+  ring, write position from the remain counter (U-BT-4). No UART
+  interrupt (an RX-interrupt ring was written and dropped again for its
+  resident RAM; it is the next fallback).
+* BSP `bt`: pins (GPIO38 TX / GPIO39 RX function 10, pads `0x302A` /
+  `0x312A` VERBATIM, GPIO20 enable, GPIO31 host-busy low), `up`/`down`
+  (enable line last up / first down, pads parked low when off as the
+  vendor does), `Listen` (both UART pads as pulled-up inputs, nothing
+  driven, edges counted while the module starts: board side of U-BT-1).
+* `yoton-bt`: `driver` (sans-I/O glue: `Port` trait, power on/off,
+  bounded power-off shutdown, stats, the enable line re-checked against
+  the state after every drain); transmitter `shutdown` (0x24 once, no
+  resend, refused unless the module is up; no restart afterwards); the
+  command queue is now a 264-byte ring of encoded frames (was 8 × 81 B);
+  TX frames are sent straight from the command layer's buffer;
+  `MAX_FOUND` 8, `MAX_NAME` 24, 12 outputs (RAM). The crate has no panic
+  sites left in the firmware (their absolute-path location strings sit in
+  resident `.rodata.str1.1`: ~0.6 KB in a worktree, ~0.3 KB in the main
+  checkout). Tests: 30 (shutdown with/without acknowledge, power-off while
+  starting, dead module, start-up/scan/connect over a mock UART, a noisy
+  byte-by-byte line, the queue ring, lost enable output).
+* Firmware `bt` task (main executor): module off at boot (GPIO20 driven
+  low); the Bluetooth setting powers it 5 s after boot, never in a host
+  test; setting changes switch it; headset keys → player; playback
+  start/stop → command 0x05; state and device name → `BluetoothService`;
+  a newly connected device is saved (settings key `0x06F0`) as the
+  reconnect target. `Ui::power_off` sends 0x24 when the module is up and
+  waits at most 1 s for its completion (owner decision 2026-11-24); a test
+  run reboots before that point, so `bt shutdown` exercises the same
+  sequence by hand. No other restricted command is sent anywhere.
+* Developer channel (`xtask dev cmd "bt …" --wait N`): `probe` (on,
+  start-up exchange, full report, off again; ≤ 25 s), `on`, `off`,
+  `status`, `scan`, `connect N` / `connect pN`, `disconnect`, `listen`
+  (≈ 4 s), `shutdown`, `rx dma|cpu`, `tx dma|cpu` (module off only). The
+  report: state, identity, pad words of GPIO20/31/38/39, UART `STA`/`CTL`,
+  ring remain counter and peak, RX bytes/frames/skipped/bad length/bad
+  checksum, TX frames/bytes/failures/DMA timeouts/missing completion
+  interrupts, command counters, paired and found devices, the last 24
+  bytes received.
+* Diagnostics text uses `t!` statics so it is paged (plain byte-string
+  literals go to the resident mergeable string section).
+* RAM (`xtask build`, worktree): `__stack_bottom` `0x131728` → `0x132018`,
+  stack −2,288 B (bss +2,136: driver 1,328, task 336, ring 256, request
+  channel 60, snapshot 40, UI task +88; resident +160). Over the ~2 KiB
+  aim by ~240 B; levers: ring 128 B (−128), fewer found devices.
+* Not run on the player. Resident additions: none (no new handler; the
+  DMA completion handler is `atj2157_hal::dma::*`). `check-resident` ok.
+* Open: U-BT-1 (board side), U-BT-4, U-BT-5 (01-hardware §9); volume
+  policy, metadata at track change, the pairing screens and U-BT-2 are the
+  rest of BT-2.
 
 ### 2026-11-24 — AU-12 firmware: the directory index in the card task (worker, no hardware)
 
@@ -461,6 +521,7 @@ of every session. Newest entries first in §3.
 | 2026-11-24 | Main stack peak after all formats + DSP (28.0 KB stack) | 19.2 KB | INFO stack high-water |
 | 2026-11-24 | Firmware with the directory index (AU-12 firmware) | resident 81,844 B, main stack 21,464 B (−1,512), 52 code + 14 rodata pages, slot 626,688 B | `xtask build`, `nm` `__stack_bottom` |
 | 2026-11-24 | Firmware with yoton-player (AU-5 firmware) | resident 80,724 B (was 79,084), bss 122,608 B, main stack 22,968 B (was 24,752), 48 code + 14 rodata pages | `xtask build`, `llvm-nm` `__stack_bottom` |
+| 2026-11-24 | Firmware with BT-2 device side (worktree build) | resident +160 B, bss +2,136 B, main stack −2,288 B; `yoton_bt::driver::Driver` 1,328 B | `xtask build`, `llvm-nm` `__stack_bottom` |
 
 
 ## 5. Open questions for the user

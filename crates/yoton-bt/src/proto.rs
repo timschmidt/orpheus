@@ -25,7 +25,9 @@ impl Addr {
 
     fn from(p: &[u8]) -> Self {
         let mut a = [0u8; 6];
-        a.copy_from_slice(&p[..6]);
+        if let Some(s) = p.get(..6) {
+            a.copy_from_slice(s);
+        }
         Addr(a)
     }
 }
@@ -153,7 +155,9 @@ impl Command<'_> {
                 while !text.is_char_boundary(end) {
                     end -= 1;
                 }
-                p[1..1 + end].copy_from_slice(&text.as_bytes()[..end]);
+                if let (Some(d), Some(s)) = (p.get_mut(1..1 + end), text.as_bytes().get(..end)) {
+                    d.copy_from_slice(s);
+                }
                 1 + size
             }
             Command::MetaEnd => {
@@ -161,7 +165,7 @@ impl Command<'_> {
                 1
             }
         };
-        frame::encode(self.id(), &p[..n], out)
+        frame::encode(self.id(), p.get(..n).unwrap_or(&[]), out)
     }
 }
 
@@ -244,8 +248,7 @@ pub enum Event<'a> {
 
 /// Strip zero padding from a name.
 fn name(b: &[u8]) -> &[u8] {
-    let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
-    &b[..end]
+    b.split(|&c| c == 0).next().unwrap_or(b)
 }
 
 impl<'a> Event<'a> {

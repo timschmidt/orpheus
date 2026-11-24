@@ -48,16 +48,19 @@ pub fn checksum(bytes: &[u8]) -> u8 {
 /// Encode without the restricted-ID check (crate-internal and
 /// [`crate::restricted`]).
 pub(crate) fn encode_unchecked(id: u8, params: &[u8], out: &mut [u8]) -> Result<usize, EncodeError> {
+    // Slices by `get`: no panic paths (their location strings would cost
+    // resident RAM in the firmware).
+    const TOO_LONG: Result<usize, EncodeError> = Err(EncodeError::TooLong);
     let n = 5 + params.len();
-    if out.len() < n || params.len() + 1 > usize::from(u16::MAX) {
-        return Err(EncodeError::TooLong);
-    }
-    let len = (params.len() + 1) as u16;
-    out[0] = SYNC;
-    out[1..3].copy_from_slice(&len.to_be_bytes());
-    out[3] = id;
-    out[4..4 + params.len()].copy_from_slice(params);
-    out[n - 1] = checksum(&out[1..n - 1]);
+    let Ok(len) = u16::try_from(params.len() + 1) else { return TOO_LONG };
+    let Some((head, rest)) = out.get_mut(..n).and_then(|o| o.split_at_mut_checked(4)) else {
+        return TOO_LONG;
+    };
+    let Some((body, [chk])) = rest.split_at_mut_checked(params.len()) else { return TOO_LONG };
+    let [sync, len_h, len_l, cmd] = head else { return TOO_LONG };
+    (*sync, *len_h, *len_l, *cmd) = (SYNC, (len >> 8) as u8, len as u8, id);
+    body.copy_from_slice(params);
+    *chk = checksum(&[*len_h, *len_l, *cmd]).wrapping_add(checksum(body));
     Ok(n)
 }
 
@@ -97,7 +100,7 @@ impl Frame {
 
     #[must_use]
     pub fn params(&self) -> &[u8] {
-        &self.params[..usize::from(self.len)]
+        &self.params[..usize::from(self.len).min(MAX_RX_PARAMS)]
     }
 }
 
@@ -157,7 +160,12 @@ impl Decoder {
             }
             return Step::More;
         }
-        self.buf[self.n] = c;
+        let Some(slot) = self.buf.get_mut(self.n) else {
+            // Cannot happen (a candidate ends at 4 + MAX_RX_LEN bytes).
+            self.n = 0;
+            return Step::More;
+        };
+        *slot = c;
         self.n += 1;
         if self.n < 3 {
             return Step::More;
@@ -172,14 +180,15 @@ impl Decoder {
         }
         let total = self.n;
         self.n = 0;
-        if checksum(&self.buf[1..total]) != 0 {
+        let cand = self.buf.get(..total).unwrap_or(&[]);
+        if cand.len() < 5 || checksum(&cand[1..]) != 0 {
             // `checksum` of a range that includes CHK is 0 when valid.
             self.n = total;
             self.stats.bad_checksum += 1;
             return Step::Fail;
         }
         self.stats.frames += 1;
-        Step::Frame(Frame::new(self.buf[3], &self.buf[4..total - 1]))
+        Step::Frame(Frame::new(cand[3], &cand[4..cand.len() - 1]))
     }
 
     /// Feed one byte; `out` receives every completed frame (a rejected
@@ -189,7 +198,7 @@ impl Decoder {
         pending[0] = b;
         let (mut i, mut np) = (0usize, 1usize);
         while i < np {
-            let c = pending[i];
+            let Some(&c) = pending.get(i) else { break };
             i += 1;
             match self.step(c) {
                 Step::More => {}
@@ -197,16 +206,23 @@ impl Decoder {
                 Step::Fail => {
                     // Replay everything after the rejected AA, ahead of the
                     // bytes not yet processed.
-                    let held = self.n;
+                    // `held` ≤ CAND and `np - i` ≤ CAND: `next` holds both
+                    // (written with `get` to keep panic paths out).
+                    let held = self.n.min(CAND);
                     self.n = 0;
                     let mut next = [0u8; 2 * CAND];
-                    let t = held - 1;
-                    next[..t].copy_from_slice(&self.buf[1..held]);
-                    let rest = np - i;
-                    next[t..t + rest].copy_from_slice(&pending[i..np]);
+                    let mut t = 0;
+                    for &c in
+                        self.buf.get(1..held).unwrap_or(&[]).iter().chain(pending.get(i..np).unwrap_or(&[]))
+                    {
+                        if let Some(d) = next.get_mut(t) {
+                            *d = c;
+                            t += 1;
+                        }
+                    }
                     pending = next;
                     i = 0;
-                    np = t + rest;
+                    np = t;
                 }
             }
         }

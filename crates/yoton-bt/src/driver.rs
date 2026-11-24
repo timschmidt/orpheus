@@ -8,16 +8,17 @@
 //!   rises, so the module's ready event is not lost) and passes every
 //!   output on to the caller.
 //! * One frame at a time: the transmitter sends at most one frame per
-//!   call (one command in flight), so the TX queue holds one frame and the
-//!   firmware flushes it after each call. A frame that does not fit is
-//!   counted and dropped; the command layer's resend recovers it.
+//!   call (one command in flight), and the frame stays in the command
+//!   layer's buffer until the next send ([`Transmitter::last_frame`]), so
+//!   the TX side is a flag, not a copy; the firmware flushes after each
+//!   call. A second send before the flush supersedes the first (counted
+//!   in [`Stats::tx_dropped`]); the command layer's resend recovers it.
 //! * Player power-off ([`Driver::begin_shutdown`]): the shutdown command
 //!   (0x24) when the module is up, then at most [`SHUTDOWN_WAIT_MS`] for
 //!   the module's completion event; the enable line drops either way.
 //! * Diagnostics ([`Stats`]): bytes and frames both ways, power-ups, the
 //!   last bytes received.
 
-use crate::frame::MAX_TX_FRAME;
 use crate::link::Transport;
 use crate::transmitter::{Config, Output, State, Transmitter};
 
@@ -36,21 +37,19 @@ pub trait Port {
     fn read(&mut self, buf: &mut [u8]) -> usize;
 }
 
-/// The frame waiting for the UART.
+/// "A frame is waiting for the UART" (the bytes are
+/// [`Transmitter::last_frame`]).
 pub struct TxQueue {
-    buf: [u8; MAX_TX_FRAME],
-    len: usize,
+    pending: bool,
     dropped: u32,
 }
 
 impl Transport for TxQueue {
-    fn send(&mut self, frame: &[u8]) {
-        if self.len + frame.len() <= self.buf.len() {
-            self.buf[self.len..self.len + frame.len()].copy_from_slice(frame);
-            self.len += frame.len();
-        } else {
+    fn send(&mut self, _frame: &[u8]) {
+        if self.pending {
             self.dropped += 1;
         }
+        self.pending = true;
     }
 }
 
@@ -60,7 +59,7 @@ pub struct Stats {
     pub rx_bytes: u32,
     pub tx_bytes: u32,
     pub tx_frames: u32,
-    /// Frames dropped because the previous one was not flushed yet.
+    /// Frames superseded because the previous one was not flushed yet.
     pub tx_dropped: u32,
     /// Times the enable line went high.
     pub power_ups: u32,
@@ -78,13 +77,13 @@ impl Stats {
     #[must_use]
     pub fn last_rx(&self) -> (&[u8], &[u8]) {
         let n = (self.rx_bytes as usize).min(RX_HISTORY);
-        let pos = usize::from(self.rx_hist_pos);
+        let pos = usize::from(self.rx_hist_pos).min(RX_HISTORY);
         if n < RX_HISTORY { (&self.rx_hist[..n], &[]) } else { (&self.rx_hist[pos..], &self.rx_hist[..pos]) }
     }
 
     fn record_rx(&mut self, bytes: &[u8]) {
         for &b in bytes {
-            self.rx_hist[usize::from(self.rx_hist_pos)] = b;
+            self.rx_hist[usize::from(self.rx_hist_pos) % RX_HISTORY] = b;
             self.rx_hist_pos = ((usize::from(self.rx_hist_pos) + 1) % RX_HISTORY) as u8;
         }
         self.rx_bytes = self.rx_bytes.wrapping_add(bytes.len() as u32);
@@ -96,6 +95,8 @@ pub struct Driver {
     tx: TxQueue,
     stats: Stats,
     shutdown_until: Option<u64>,
+    /// What the port was last told about the enable line.
+    enabled: bool,
 }
 
 impl Driver {
@@ -105,9 +106,10 @@ impl Driver {
     pub fn new(cfg: Config) -> Self {
         Self {
             t: Transmitter::new(cfg),
-            tx: TxQueue { buf: [0; MAX_TX_FRAME], len: 0, dropped: 0 },
+            tx: TxQueue { pending: false, dropped: 0 },
             stats: Stats::default(),
             shutdown_until: None,
+            enabled: false,
         }
     }
 
@@ -158,9 +160,10 @@ impl Driver {
     /// Received bytes, timeouts, retries, restarts, the shutdown deadline.
     /// Call every 10 ms while the module is on or starting.
     pub fn poll(&mut self, now: u64, port: &mut impl Port, out: &mut impl FnMut(Output)) {
-        let mut buf = [0u8; 64];
+        // Small chunks bound the outputs one call can produce.
+        let mut buf = [0u8; 32];
         loop {
-            let n = port.read(&mut buf);
+            let n = port.read(&mut buf).min(buf.len());
             if n == 0 {
                 break;
             }
@@ -207,33 +210,47 @@ impl Driver {
         self.t.state() == State::Off
     }
 
-    /// The frame to send now (empty if none).
+    /// The frame to send now (empty if none). It stays put until the
+    /// next call into the driver.
     #[must_use]
     pub fn tx_pending(&self) -> &[u8] {
-        &self.tx.buf[..self.tx.len]
+        if self.tx.pending { self.t.last_frame() } else { &[] }
     }
 
     /// [`Self::tx_pending`] went out.
     pub fn tx_sent(&mut self) {
-        if self.tx.len > 0 {
-            self.stats.tx_bytes = self.stats.tx_bytes.wrapping_add(self.tx.len as u32);
+        if self.tx.pending {
+            let n = self.t.last_frame().len() as u32;
+            self.stats.tx_bytes = self.stats.tx_bytes.wrapping_add(n);
             self.stats.tx_frames += 1;
         }
-        self.tx.len = 0;
+        self.tx.pending = false;
     }
 
     fn drain(&mut self, port: &mut impl Port, out: &mut impl FnMut(Output)) {
         while let Some(o) = self.t.next_output() {
             if let Output::Enable(on) = o {
-                // Nothing queued for the previous power cycle goes out.
-                self.tx.len = 0;
-                if on {
-                    self.stats.power_ups += 1;
-                }
-                port.set_enabled(on);
+                self.set_enabled(on, port);
             }
             out(o);
         }
+        // Should an `Enable` output ever be lost (output queue full), the
+        // state machine's state still decides: the line is high exactly
+        // while it is not Off.
+        let want = self.t.state() != State::Off;
+        if want != self.enabled {
+            self.set_enabled(want, port);
+        }
+    }
+
+    fn set_enabled(&mut self, on: bool, port: &mut impl Port) {
+        // Nothing queued for the previous power cycle goes out.
+        self.tx.pending = false;
+        if on {
+            self.stats.power_ups += 1;
+        }
+        self.enabled = on;
+        port.set_enabled(on);
     }
 }
 
@@ -463,6 +480,75 @@ mod tests {
         assert_eq!(m.seen, [0x06; 6]);
         assert!(outs.contains(&Output::LinkDown { restarting: false }));
         assert!(m.seen.iter().all(|&id| !is_restricted(id)));
+    }
+
+    /// UART framing over a noisy, oddly chunked line: garbage, a stray
+    /// `AA`, a corrupted frame and byte-by-byte delivery do not stop the
+    /// start-up exchange.
+    #[test]
+    fn startup_over_noisy_line() {
+        struct Noisy(Module, usize);
+        impl Port for Noisy {
+            fn set_enabled(&mut self, on: bool) {
+                self.0.set_enabled(on);
+                if on {
+                    // Line noise ahead of the module's own bytes.
+                    let mut v = std::vec![0xFF, 0xAA, 0x00, 0x7F, 0x13, 0xAA, 0x00, 0x02, 0x00, 0x06, 0x00];
+                    v.append(&mut self.0.to_host);
+                    self.0.to_host = v;
+                }
+            }
+            fn read(&mut self, buf: &mut [u8]) -> usize {
+                // 1, 2, 3, 1, 2, 3 … bytes per poll.
+                self.1 = self.1 % 3 + 1;
+                let n = self.1.min(buf.len());
+                self.0.read(&mut buf[..n])
+            }
+        }
+        let mut d = Driver::new(Config { auto_reconnect: false, ..Config::default() });
+        let mut p = Noisy(Module::default(), 0);
+        let mut outs = Vec::new();
+        d.power(true, 0, &mut p, &mut |o| outs.push(o));
+        let mut now = 0;
+        while now <= 2000 && d.state() != State::Idle {
+            d.poll(now, &mut p, &mut |o| outs.push(o));
+            let f = d.tx_pending().to_vec();
+            if !f.is_empty() {
+                p.0.receive(&f);
+                d.tx_sent();
+            }
+            now += 10;
+        }
+        assert_eq!(d.state(), State::Idle);
+        assert_eq!(d.transmitter().identity(), b"ATS2851\0");
+        let ds = d.transmitter().decode_stats();
+        assert!(ds.skipped > 0 && ds.bad_checksum + ds.bad_length > 0, "{ds:?}");
+    }
+
+    /// The enable line follows the state machine even if an `Enable`
+    /// output were lost: the driver re-checks after every drain.
+    #[test]
+    fn enable_line_follows_state() {
+        #[derive(Default)]
+        struct Line(Vec<bool>);
+        impl Port for Line {
+            fn set_enabled(&mut self, on: bool) {
+                self.0.push(on);
+            }
+            fn read(&mut self, _: &mut [u8]) -> usize {
+                0
+            }
+        }
+        let mut d = Driver::new(Config::default());
+        let mut l = Line::default();
+        d.power(true, 0, &mut l, &mut |_| {});
+        // Swallow the transmitter's outputs behind the driver's back.
+        while d.t.next_output().is_some() {}
+        d.t.power_off();
+        while d.t.next_output().is_some() {}
+        d.poll(10, &mut l, &mut |_| {});
+        assert_eq!(l.0, [true, false]);
+        assert!(d.tx_pending().is_empty());
     }
 
     #[test]

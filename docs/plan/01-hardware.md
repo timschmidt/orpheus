@@ -343,7 +343,9 @@ that. Added:
 | U-FM-2 | Tuner reference clock present without further set-up | Tune a strong local station, read RSSI/stereo flags | FM-1 |
 | U-FM-3 | Meaning of mixer bits `+0x2C[23:16]`; FM → ADC route | Toggle with a station tuned; capture through the ADC | FM-1 |
 | U-ACC-1 | Accelerometer id (register `0x01`), exact part, INT pin wiring | Read; enable an interrupt and scan GPIO inputs while the user taps (**user check**) | SENS-1 |
-| U-BT-1 | Which of GPIO38/39 is TX; BAUD register halves | Identity command both ways round (06 §4.2) | BT-1 |
+| U-BT-1 | Which of GPIO38/39 is TX; BAUD register halves. **SoC side answered [DS]**: function 10 makes GPIO38 UART1_TX and GPIO39 UART1_RX (no swapped set-up exists; the other UART1 pad pairs 4/5, 22/23, 28/29 belong to the panel, backlight/keys and card); BR halves = TX/RX divisors (§9 HAL-0). Board side: `bt listen` (both pads as pulled-up inputs, module powered, falling edges counted) and `bt probe` (identity answered) | `xtask dev cmd "bt listen"`, `"bt probe"` (BT-2 device) | BT-2 |
+| U-BT-4 | UART1 RX by DMA **single transfers with reload** (`0x00260082`, `CTL` `RDIC` = 1 byte) into a 256-byte ring, write position from the channel's remain counter (`+0x1C`): does the counter read correctly while the channel runs, and does reload re-arm a peripheral-paced channel (U-DMA-2 remainder)? The vendor ran burst-8 without reload and drained the tail by CPU | `bt status` after `bt on`: `ring_rem` moves, `rx bytes` grows, frames decode; else `bt rx cpu` (1 ms FIFO poll) | BT-2 |
+| U-BT-5 | DMA channel 9 completion interrupt (line 35 [DS]) for UART TX | `bt status`: `dma_no_irq` stays 0 | BT-2 |
 | U-BT-2 | Analogue tap point; headphone output live while streaming | **User check** (listen) | BT-2 |
 | U-BT-3 … | bluetooth.md §8 questions 7–10 (unknown commands, incoming connections, upgrade image, enable pin) | 06 §4.3 | BT-3 |
 | U-IMG-1 | What the image/video block at `0xC0090000` does (JPEG acceleration?) | Read `MMM_VP.AL`/`MMM_ID.AL` register use; only pursue if it decodes JPEG | later |

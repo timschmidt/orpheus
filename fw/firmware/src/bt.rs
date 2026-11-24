@@ -1,12 +1,14 @@
 //! The Bluetooth task (WP BT-2, device side; 06 §4.2, bluetooth.md).
 //!
 //! Owns the transmitter module: `yoton_bt::driver::Driver` (state machine,
-//! command layer, frame codec; ~2 KB, in a static) over `yoton_bsp::bt`
-//! (UART1 with a DMA receive ring and DMA transmit, GPIO20 enable,
-//! GPIO31 host-busy). No interrupt handler of its own: the receive ring is
-//! polled every 10 ms while the module is on (2 ms with the CPU-FIFO
-//! fallback); transmit waits on the DMA channel's completion (the generic
-//! `atj2157_hal::dma` handler, resident already) with a time bound.
+//! command layer, frame codec; ~1.3 KB, in a static) over `yoton_bsp::bt`
+//! (UART1, GPIO20 enable, GPIO31 host-busy). Receive path, switchable for
+//! the first hardware runs (`bt rx …`): a DMA ring (default, no
+//! interrupt) or CPU polling of the FIFO. No interrupt handler of its
+//! own, so nothing here needs to be resident. The task polls every
+//! 10 ms while the module is on (1 ms with CPU polling); transmit waits on
+//! the DMA channel's completion (the generic `atj2157_hal::dma` handler,
+//! resident already) with a time bound.
 //!
 //! * Off at boot (`yoton_bsp::bt::init` drives GPIO20 low). The UI sends
 //!   [`Req::Boot`] with the settings: Bluetooth on → the module starts
@@ -15,18 +17,25 @@
 //!   low, no shutdown command). The player's power-off calls
 //!   [`shutdown_for_power_off`]: command 0x24 when the module is up, at
 //!   most 1 s for its completion, then the enable line low (owner decision
-//!   2026-11-24). No other path sends 0x24 except the `bt shutdown` test
-//!   command, which runs the same sequence.
+//!   2026-11-24). Nothing else sends 0x24 except the `bt shutdown` test
+//!   command, which runs the same sequence by hand (CLAUDE.md rule 6: no
+//!   other restricted command exists here).
 //! * Headset keys go to the player; playback start/stop goes to the
 //!   module (command 0x05); the connected device's name and the last
 //!   device (saved by the UI under [`LAST_KEY`]) go to the UI.
-//! * Developer channel: `bt on|off|status|scan|connect N|connect pN|
-//!   disconnect|listen|shutdown|rx dma|rx cpu|tx dma|tx cpu` ([`test_command`]).
+//! * Developer channel ([`test_command`]): `bt probe|on|off|status|scan|
+//!   connect N|connect pN|disconnect|listen|shutdown|rx dma|rx cpu|tx dma|
+//!   tx cpu`.
+//!
+//! Text for the developer channel is built from [`t!`] statics: plain
+//! byte-string literals land in the mergeable `.rodata.str1.1`, which
+//! cannot be paged and would cost SRAM.
 
 use core::cell::RefCell;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use atj2157_hal::uart::Rx;
 use critical_section::Mutex;
 use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -40,6 +49,16 @@ use yoton_bt::{Addr, Config, Key, Output, State};
 use yoton_ui::event::{BtState, Source};
 
 use crate::audio::Writer;
+
+/// A byte string in its own (pageable) rodata section; see the module
+/// docs.
+macro_rules! t {
+    ($s:literal) => {{
+        static S: [u8; $s.len()] = *$s;
+        let s: &'static [u8] = &S;
+        s
+    }};
+}
 
 /// Settings-store key of the last connected device (6 bytes, as the
 /// module sends the address).
@@ -57,6 +76,8 @@ pub enum Req {
     },
     /// Bluetooth on / off (setting or test).
     Power(bool),
+    /// Test: on, start-up exchange, report, off.
+    Probe,
     Reconnect(bool),
     Scan,
     /// Connect to a found device (`false`) or a paired one (`true`), by
@@ -68,9 +89,8 @@ pub enum Req {
     Disconnect,
     /// U-BT-1 board check, module off only ([`hw::Listen`]).
     Listen,
-    /// Receive (`SetRx`) / transmit (`SetTx`) by DMA (`true`) or CPU;
-    /// module off only.
-    SetRx(bool),
+    /// Receive / transmit path; module off only.
+    SetRx(Rx),
     SetTx(bool),
     /// The player's power-off sequence.
     Shutdown,
@@ -81,8 +101,9 @@ pub enum Req {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Snap {
     pub state: BtState,
-    /// The connected device's name (UTF-8 as sent, may be cut).
-    pub name: [u8; 31],
+    /// The connected device's name, else the last device's if it is in
+    /// the module's paired list (UTF-8 as sent, may be cut).
+    pub name: [u8; 24],
     pub name_len: u8,
     /// The last connected device, and a count of changes (the UI saves it).
     pub last: Option<Addr>,
@@ -90,7 +111,7 @@ pub struct Snap {
 }
 
 impl Snap {
-    pub const OFF: Snap = Snap { state: BtState::Off, name: [0; 31], name_len: 0, last: None, last_gen: 0 };
+    pub const OFF: Snap = Snap { state: BtState::Off, name: [0; 24], name_len: 0, last: None, last_gen: 0 };
 
     #[must_use]
     pub fn name(&self) -> &str {
@@ -105,7 +126,7 @@ impl Snap {
 pub static SNAP: Mutex<RefCell<Snap>> = Mutex::new(RefCell::new(Snap::OFF));
 
 /// Requests, with "from the developer channel" (a reply is written).
-static REQS: Channel<CriticalSectionRawMutex, (Req, bool), 4> = Channel::new();
+static REQS: Channel<CriticalSectionRawMutex, (Req, bool), 3> = Channel::new();
 static SHUT_DONE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 /// Frames the UART did not get out (DMA or FIFO timeout).
 static TX_FAIL: AtomicU32 = AtomicU32::new(0);
@@ -128,6 +149,7 @@ pub async fn shutdown_for_power_off() {
 /// `bt …` developer-channel commands; false if unknown.
 pub fn test_command(rest: &[u8]) -> bool {
     let r = match rest {
+        b"probe" => Req::Probe,
         b"on" => Req::Power(true),
         b"off" => Req::Power(false),
         b"status" => Req::Status,
@@ -135,8 +157,8 @@ pub fn test_command(rest: &[u8]) -> bool {
         b"disconnect" => Req::Disconnect,
         b"listen" => Req::Listen,
         b"shutdown" => Req::Shutdown,
-        b"rx dma" => Req::SetRx(true),
-        b"rx cpu" => Req::SetRx(false),
+        b"rx dma" => Req::SetRx(Rx::Dma),
+        b"rx cpu" => Req::SetRx(Rx::Cpu),
         b"tx dma" => Req::SetTx(true),
         b"tx cpu" => Req::SetTx(false),
         _ => {
@@ -191,6 +213,7 @@ impl Port for HwPort {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Report {
     On,
+    Probe,
     Off,
     Scan,
     Connect,
@@ -203,7 +226,8 @@ struct Session {
     restart_pending: bool,
     audio: bool,
     connected: Option<Addr>,
-    snap: Snap,
+    last: Option<Addr>,
+    last_gen: u16,
     report: Option<(Report, u64)>,
     saw_connected: bool,
     saw_failed: bool,
@@ -221,9 +245,9 @@ impl Session {
             Output::Connected(a) => {
                 self.saw_connected = true;
                 self.connected = Some(a);
-                if self.snap.last != Some(a) {
-                    self.snap.last = Some(a);
-                    self.snap.last_gen = self.snap.last_gen.wrapping_add(1);
+                if self.last != Some(a) {
+                    self.last = Some(a);
+                    self.last_gen = self.last_gen.wrapping_add(1);
                 }
             }
             Output::Disconnected => self.connected = None,
@@ -257,6 +281,8 @@ impl Session {
     fn start_report(&mut self, r: Report, now: u64) {
         let secs = match r {
             Report::On => 15,
+            // Long enough for a dead module's three power cycles.
+            Report::Probe => 25,
             Report::Off => 0,
             Report::Scan => 30,
             Report::Connect => 25,
@@ -298,7 +324,8 @@ pub async fn bt() {
         restart_pending: false,
         audio: false,
         connected: None,
-        snap: Snap::OFF,
+        last: None,
+        last_gen: 0,
         report: None,
         saw_connected: false,
         saw_failed: false,
@@ -312,7 +339,7 @@ pub async fn bt() {
         let req = if idle {
             Some(REQS.receive().await)
         } else {
-            let ms = if port.mode.rx_dma { 10 } else { 2 };
+            let ms = if port.mode.rx == Rx::Cpu { 1 } else { 10 };
             match select(REQS.receive(), Timer::after_millis(ms)).await {
                 Either::First(r) => Some(r),
                 Either::Second(()) => None,
@@ -320,7 +347,13 @@ pub async fn bt() {
         };
         let now = now_ms();
         if let Some((r, test)) = req {
-            handle(r, test, d, &mut port, &mut s, now).await;
+            // `handle` is synchronous; the two requests that wait run here
+            // (keeps the task's future small).
+            match handle(r, test, d, &mut port, &mut s, now) {
+                Then::Nothing => {}
+                Then::Listen => listen().await,
+                Then::ShutdownWait(sent) => shutdown_wait(sent, test, d, &mut port, &mut s, now).await,
+            }
         }
         if let Some(t) = s.boot_on_at
             && now >= t
@@ -340,11 +373,13 @@ pub async fn bt() {
             });
             flush(d, &mut port).await;
         }
-        publish(d, &mut s);
+        publish(d, &s);
         if let Some((r, deadline)) = s.report {
             let st = d.state();
             let done = match r {
-                Report::On => d.transmitter().module_up() || (st == State::Off && !s.restart_pending),
+                Report::On | Report::Probe => {
+                    d.transmitter().module_up() || (st == State::Off && !s.restart_pending)
+                }
                 Report::Off => true,
                 Report::Scan => s.saw_inquiry_done || st != State::Inquiry,
                 Report::Connect => s.saw_connected || s.saw_failed || st == State::Off,
@@ -352,17 +387,36 @@ pub async fn bt() {
             };
             if done || now >= deadline {
                 s.report = None;
-                status_reply(d, &port, &s, if done { b"done" } else { b"timed out" });
+                let head = match (r, done) {
+                    (Report::Probe, true) => t!(b"probe done, module off again"),
+                    (Report::Probe, false) => t!(b"probe timed out, module off again"),
+                    (_, true) => t!(b"done"),
+                    (_, false) => t!(b"timed out"),
+                };
+                status_reply(d, &port, &s, head);
+                if r == Report::Probe {
+                    d.power(false, now_ms(), &mut port, &mut |o| s.on_output(o));
+                    s.restart_pending = false;
+                    publish(d, &s);
+                }
             }
         }
     }
 }
 
-async fn handle(r: Req, test: bool, d: &mut Driver, port: &mut HwPort, s: &mut Session, now: u64) {
+/// What the task still has to wait for after [`handle`].
+enum Then {
+    Nothing,
+    Listen,
+    /// The shutdown command went out (`true`) or the line was dropped.
+    ShutdownWait(bool),
+}
+
+fn handle(r: Req, test: bool, d: &mut Driver, port: &mut HwPort, s: &mut Session, now: u64) -> Then {
     let mut refused = false;
     match r {
         Req::Boot { on, reconnect, last } => {
-            s.snap.last = last;
+            s.last = last;
             d.request(now, port, &mut |o| s.on_output(o), |t, _, _| {
                 t.set_last_device(last);
                 t.set_config(Config { auto_reconnect: reconnect, ..*t.config() });
@@ -384,6 +438,15 @@ async fn handle(r: Req, test: bool, d: &mut Driver, port: &mut HwPort, s: &mut S
             d.power(on, now, port, &mut |o| s.on_output(o));
             if !on {
                 s.restart_pending = false;
+            }
+        }
+        Req::Probe => {
+            if d.is_off() {
+                s.boot_on_at = None;
+                s.start_report(Report::Probe, now);
+                d.power(true, now, port, &mut |o| s.on_output(o));
+            } else {
+                refused = true;
             }
         }
         Req::Scan => {
@@ -415,12 +478,15 @@ async fn handle(r: Req, test: bool, d: &mut Driver, port: &mut HwPort, s: &mut S
                 s.start_report(Report::Disconnect, now);
             }
         }
-        Req::SetRx(dma) | Req::SetTx(dma) => {
-            if port.link.is_some() {
-                refused = true;
-            } else if matches!(r, Req::SetRx(_)) {
-                port.mode.rx_dma = dma;
-            } else {
+        Req::SetRx(rx) => {
+            refused = port.link.is_some();
+            if !refused {
+                port.mode.rx = rx;
+            }
+        }
+        Req::SetTx(dma) => {
+            refused = port.link.is_some();
+            if !refused {
                 port.mode.tx_dma = dma;
             }
         }
@@ -428,60 +494,64 @@ async fn handle(r: Req, test: bool, d: &mut Driver, port: &mut HwPort, s: &mut S
             if port.link.is_some() || !d.is_off() {
                 refused = true;
             } else {
-                listen().await;
-                return;
+                return Then::Listen;
             }
         }
         Req::Shutdown => {
             s.boot_on_at = None;
             s.restart_pending = false;
-            let sent = d.begin_shutdown(now, port, &mut |o| s.on_output(o));
-            flush(d, port).await;
-            if sent {
-                // Bounded inside the driver (SHUTDOWN_WAIT_MS); this loop
-                // only adds a guard.
-                let until = now + SHUTDOWN_WAIT_MS + 200;
-                while !d.is_off() && now_ms() < until {
-                    Timer::after_millis(10).await;
-                    d.poll(now_ms(), port, &mut |o| s.on_output(o));
-                    flush(d, port).await;
-                }
-                if !d.is_off() {
-                    d.power(false, now_ms(), port, &mut |o| s.on_output(o));
-                }
-            }
-            SHUT_DONE.signal(());
-            if test {
-                status_reply(
-                    d,
-                    port,
-                    s,
-                    if sent { b"shutdown: 0x24 sent" } else { b"shutdown: module not up, line dropped" },
-                );
-            }
-            return;
+            return Then::ShutdownWait(d.begin_shutdown(now, port, &mut |o| s.on_output(o)));
         }
         Req::Status => {}
     }
     if test {
         let head: &[u8] = if refused {
-            b"refused"
+            t!(b"refused")
         } else if s.report.is_some() {
-            b"started"
+            t!(b"started")
         } else {
-            b"ok"
+            t!(b"ok")
+        };
+        status_reply(d, port, s, head);
+    }
+    Then::Nothing
+}
+
+/// The rest of the power-off sequence: the shutdown frame out, the
+/// module's completion awaited (bounded inside the driver by
+/// `SHUTDOWN_WAIT_MS`; this loop only adds a guard), the line low.
+async fn shutdown_wait(sent: bool, test: bool, d: &mut Driver, port: &mut HwPort, s: &mut Session, now: u64) {
+    flush(d, port).await;
+    if sent {
+        let until = now + SHUTDOWN_WAIT_MS + 200;
+        while !d.is_off() && now_ms() < until {
+            Timer::after_millis(10).await;
+            d.poll(now_ms(), port, &mut |o| s.on_output(o));
+            flush(d, port).await;
+        }
+        if !d.is_off() {
+            d.power(false, now_ms(), port, &mut |o| s.on_output(o));
+        }
+    }
+    publish(d, s);
+    SHUT_DONE.signal(());
+    if test {
+        let head = if sent {
+            t!(b"shutdown: 0x24 sent")
+        } else {
+            t!(b"shutdown: module not up, enable line dropped")
         };
         status_reply(d, port, s, head);
     }
 }
 
-/// Send the queued frame, if any.
+/// Send the pending frame, if any.
 async fn flush(d: &mut Driver, port: &mut HwPort) {
     if d.tx_pending().is_empty() {
         return;
     }
     // The frame lives in the DRIVER static (SRAM0, DMA-visible) and is not
-    // touched until `tx_sent`.
+    // touched until the next call into the driver.
     let ok = match port.link.as_mut() {
         Some(l) => l.send(d.tx_pending()).await,
         None => true,
@@ -492,23 +562,22 @@ async fn flush(d: &mut Driver, port: &mut HwPort) {
     d.tx_sent();
 }
 
-/// State and the connected device's name to the UI (on change only).
-fn publish(d: &Driver, s: &mut Session) {
-    let mut n = s.snap;
-    n.state = ui_state(d.state());
-    n.name_len = 0;
-    if let Some(dev) = s.connected.and_then(|a| find(d, a))
-        && matches!(n.state, BtState::Connected | BtState::Streaming)
-    {
+/// State and the device's name to the UI (on change only).
+fn publish(d: &Driver, s: &Session) {
+    let mut n = Snap { state: ui_state(d.state()), last: s.last, last_gen: s.last_gen, ..Snap::OFF };
+    let who = if matches!(n.state, BtState::Connected | BtState::Streaming) { s.connected } else { s.last };
+    if let Some(dev) = who.and_then(|a| find(d, a)) {
         let b = dev.name();
         let k = b.len().min(n.name.len());
         n.name[..k].copy_from_slice(&b[..k]);
         n.name_len = k as u8;
     }
-    if n != s.snap {
-        s.snap = n;
-        critical_section::with(|cs| *SNAP.borrow(cs).borrow_mut() = n);
-    }
+    critical_section::with(|cs| {
+        let mut cur = SNAP.borrow(cs).borrow_mut();
+        if *cur != n {
+            *cur = n;
+        }
+    });
 }
 
 /// `bt listen`: which UART pad the module drives while it starts (U-BT-1,
@@ -523,142 +592,137 @@ async fn listen() {
     let (falls, lows, n) = (l.falls, l.lows, l.samples);
     l.end();
     crate::audio::reply(|w| {
-        w.s(b"bt listen: gpio38 falls=")
+        w.s(t!(b"bt listen: gpio38 falls="))
             .u(u64::from(falls.0))
-            .s(b" low=")
+            .s(t!(b" low="))
             .u(u64::from(lows.0))
-            .s(b" gpio39 falls=")
+            .s(t!(b" gpio39 falls="))
             .u(u64::from(falls.1))
-            .s(b" low=")
+            .s(t!(b" low="))
             .u(u64::from(lows.1))
-            .s(b" samples=")
+            .s(t!(b" samples="))
             .u(u64::from(n))
-            .s(b"\nexpected: gpio39 (module TX) toggles, gpio38 (module RX) stays high");
+            .s(t!(b"\nexpected: gpio39 (module TX) toggles, gpio38 (module RX) stays high"));
     });
 }
 
 fn hex(w: &mut Writer<'_>, v: u32, digits: u32) {
-    const H: &[u8; 16] = b"0123456789ABCDEF";
     for i in (0..digits).rev() {
-        w.s(&[H[((v >> (i * 4)) & 15) as usize]]);
+        let d = ((v >> (i * 4)) & 15) as u8;
+        w.s(&[if d < 10 { b'0' + d } else { b'A' + d - 10 }]);
     }
 }
 
 fn state_name(s: State) -> &'static [u8] {
     match s {
-        State::Off => b"off",
-        State::Starting => b"starting",
-        State::Idle => b"idle",
-        State::Inquiry => b"inquiry",
-        State::Connecting => b"connecting",
-        State::Connected => b"connected",
-        State::Streaming => b"streaming",
+        State::Off => t!(b"off"),
+        State::Starting => t!(b"starting"),
+        State::Idle => t!(b"idle"),
+        State::Inquiry => t!(b"inquiry"),
+        State::Connecting => t!(b"connecting"),
+        State::Connected => t!(b"connected"),
+        State::Streaming => t!(b"streaming"),
     }
 }
 
 fn device_line(w: &mut Writer<'_>, i: usize, x: &Device) {
-    w.s(b"\n  ").u(i as u64).s(b" ").s(&x.addr.to_text()).s(b" cod=");
+    w.s(t!(b"\n  ")).u(i as u64).s(t!(b" ")).s(&x.addr.to_text()).s(t!(b" cod="));
     for b in x.cod {
         hex(w, u32::from(b), 2);
     }
-    w.s(b" \"");
+    w.s(t!(b" \""));
     for &c in x.name() {
         w.s(&[if (0x20..0x7F).contains(&c) { c } else { b'?' }]);
     }
-    w.s(b"\"");
+    w.s(t!(b"\""));
+}
+
+fn rx_name(rx: Rx) -> &'static [u8] {
+    match rx {
+        Rx::Dma => t!(b"dma"),
+        Rx::Cpu => t!(b"cpu"),
+    }
+}
+
+fn counter(w: &mut Writer<'_>, label: &[u8], v: u32) {
+    w.s(label).u(u64::from(v));
 }
 
 fn status_reply(d: &Driver, port: &HwPort, s: &Session, head: &[u8]) {
+    use atj2157_hal::uart;
     let t = d.transmitter();
     let st = d.stats();
     let ls = t.link_stats();
     let ds = t.decode_stats();
+    // Pads: enable, host busy, UART TX, UART RX (read only).
+    let pads = [20usize, 31, 38, 39].map(|p| atj2157_hal::pac::gpio::mfp(p).read());
     crate::audio::reply(|w| {
-        w.s(b"bt ").s(head).s(b": state=").s(state_name(t.state()));
-        w.s(if t.shutting_down() { b" (shutting down)" } else { b"" });
-        w.s(b" module=\"");
+        w.s(t!(b"bt ")).s(head).s(t!(b": state=")).s(state_name(t.state()));
+        if t.shutting_down() {
+            w.s(t!(b" (shutting down)"));
+        }
+        w.s(t!(b" module=\""));
         for &c in t.identity() {
             if (0x20..0x7F).contains(&c) {
                 w.s(&[c]);
             }
         }
-        w.s(b"\" rx=").s(if port.mode.rx_dma { b"dma" } else { b"cpu" }).s(b" tx=").s(if port.mode.tx_dma {
-            b"dma"
-        } else {
-            b"cpu"
-        });
+        w.s(t!(b"\" rx=")).s(rx_name(port.mode.rx)).s(t!(b" tx="));
+        w.s(if port.mode.tx_dma { t!(b"dma") } else { t!(b"cpu") });
+        w.s(t!(b"\npads 20/31/38/39 ="));
+        for p in pads {
+            w.s(t!(b" "));
+            hex(w, p, 4);
+        }
         if let Some(l) = port.link.as_ref() {
             let (sta, ctl, rem, run, peak) = l.regs();
-            w.s(b"\nuart sta=0x");
+            w.s(t!(b"\nuart sta=0x"));
             hex(w, sta, 8);
-            w.s(b" ctl=0x");
+            w.s(t!(b" ctl=0x"));
             hex(w, ctl, 8);
-            w.s(b" ring_rem=")
-                .u(u64::from(rem))
-                .s(b" ring_run=")
-                .u(u64::from(run))
-                .s(b" peak=")
-                .u(u64::from(peak));
-            w.s(b" rx_err=").u(u64::from(l.rx_errors));
+            counter(w, t!(b" ring_rem="), rem);
+            counter(w, t!(b" ring_run="), u32::from(run));
+            counter(w, t!(b" peak="), peak);
+            counter(w, t!(b" rx_err="), l.rx_errors);
         }
-        w.s(b"\nrx bytes=")
-            .u(u64::from(st.rx_bytes))
-            .s(b" frames=")
-            .u(u64::from(ds.frames))
-            .s(b" skipped=")
-            .u(u64::from(ds.skipped))
-            .s(b" badlen=")
-            .u(u64::from(ds.bad_length))
-            .s(b" badsum=")
-            .u(u64::from(ds.bad_checksum));
-        w.s(b"\ntx frames=")
-            .u(u64::from(st.tx_frames))
-            .s(b" bytes=")
-            .u(u64::from(st.tx_bytes))
-            .s(b" dropped=")
-            .u(u64::from(st.tx_dropped))
-            .s(b" fail=")
-            .u(u64::from(TX_FAIL.load(Ordering::Relaxed)))
-            .s(b" dma_timeouts=")
-            .u(u64::from(atj2157_hal::uart::TX_DMA_TIMEOUTS.load(Ordering::Relaxed)))
-            .s(b" dma_no_irq=")
-            .u(u64::from(atj2157_hal::uart::TX_DMA_NO_IRQ.load(Ordering::Relaxed)));
-        w.s(b"\ncmd sent=")
-            .u(u64::from(ls.sent))
-            .s(b" resent=")
-            .u(u64::from(ls.resent))
-            .s(b" timeouts=")
-            .u(u64::from(ls.timeouts))
-            .s(b" stray_acks=")
-            .u(u64::from(ls.stray_acks))
-            .s(b" power_ups=")
-            .u(u64::from(st.power_ups))
-            .s(b" shutdowns=")
-            .u(u64::from(st.shutdowns))
-            .s(b"/")
-            .u(u64::from(st.shutdowns_completed))
-            .s(b" gave_up=")
-            .u(u64::from(s.gave_up))
-            .s(b" keys=")
-            .u(u64::from(s.keys));
+        counter(w, t!(b"\nrx bytes="), st.rx_bytes);
+        counter(w, t!(b" frames="), ds.frames);
+        counter(w, t!(b" skipped="), ds.skipped);
+        counter(w, t!(b" badlen="), ds.bad_length);
+        counter(w, t!(b" badsum="), ds.bad_checksum);
+        counter(w, t!(b"\ntx frames="), st.tx_frames);
+        counter(w, t!(b" bytes="), st.tx_bytes);
+        counter(w, t!(b" superseded="), st.tx_dropped);
+        counter(w, t!(b" fail="), TX_FAIL.load(Ordering::Relaxed));
+        counter(w, t!(b" dma_timeouts="), uart::TX_DMA_TIMEOUTS.load(Ordering::Relaxed));
+        counter(w, t!(b" dma_no_irq="), uart::TX_DMA_NO_IRQ.load(Ordering::Relaxed));
+        counter(w, t!(b"\ncmd sent="), ls.sent);
+        counter(w, t!(b" resent="), ls.resent);
+        counter(w, t!(b" timeouts="), ls.timeouts);
+        counter(w, t!(b" stray_acks="), ls.stray_acks);
+        counter(w, t!(b" power_ups="), st.power_ups);
+        counter(w, t!(b" shutdowns="), st.shutdowns);
+        counter(w, t!(b"/"), st.shutdowns_completed);
+        counter(w, t!(b" gave_up="), u32::from(s.gave_up));
+        counter(w, t!(b" keys="), s.keys);
         if let Some(v) = s.sink_volume {
-            w.s(b" sink_vol=").u(u64::from(v));
+            counter(w, t!(b" sink_vol="), u32::from(v));
         }
         if let Some(a) = s.connected {
-            w.s(b"\nconnected ").s(&a.to_text());
+            w.s(t!(b"\nconnected ")).s(&a.to_text());
         }
-        w.s(b"\npaired=").u(t.paired().len() as u64);
+        counter(w, t!(b"\npaired="), t.paired().len() as u32);
         for (i, x) in t.paired().iter().enumerate() {
             device_line(w, i, x);
         }
-        w.s(b"\nfound=").u(t.found().len() as u64);
+        counter(w, t!(b"\nfound="), t.found().len() as u32);
         for (i, x) in t.found().iter().enumerate() {
             device_line(w, i, x);
         }
-        w.s(b"\nrx tail:");
+        w.s(t!(b"\nrx tail:"));
         let (a, b) = st.last_rx();
         for &c in a.iter().chain(b) {
-            w.s(b" ");
+            w.s(t!(b" "));
             hex(w, u32::from(c), 2);
         }
     });
