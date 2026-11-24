@@ -279,6 +279,43 @@ pub fn rgb565(c: Rgb) -> u16 {
     pack(u32::from(c[0]) << 8, u32::from(c[1]) << 8, u32::from(c[2]) << 8, 0, 0, false)
 }
 
+/// RGB565 back to RGB888 (bits replicated into the low bits).
+#[must_use]
+pub fn rgb888(c: u16) -> Rgb {
+    let (r, g, b) = ((c >> 11) & 31, (c >> 5) & 63, c & 31);
+    [((r << 3) | (r >> 2)) as u8, ((g << 2) | (g >> 4)) as u8, ((b << 3) | (b >> 2)) as u8]
+}
+
+/// Feed an RGB565 picture (`w` pixels per row, rows top first, upright) to
+/// a sink — e.g. a [`Scaler`] that makes a smaller copy of a picture
+/// already decoded. `row` is work memory for at least `w` pixels. Returns
+/// false if `w`, `row` or `px` do not fit together.
+pub fn feed_rgb565(px: &[u16], w: usize, sink: &mut dyn RowSink, row: &mut [Rgb]) -> bool {
+    if w == 0 || row.len() < w || px.len() % w != 0 || px.is_empty() {
+        return false;
+    }
+    let h = px.len() / w;
+    let (fw, fh) = (w as u32, h as u32);
+    sink.begin(&Frame {
+        width: fw,
+        height: fh,
+        full_width: fw,
+        full_height: fh,
+        orient: Orient::NORMAL,
+        bottom_up: false,
+        approximate: false,
+    });
+    for (y, line) in px.chunks_exact(w).enumerate() {
+        for (d, &s) in row.iter_mut().zip(line) {
+            *d = rgb888(s);
+        }
+        if sink.row(y as u32, &row[..w]) == Flow::Stop {
+            break;
+        }
+    }
+    true
+}
+
 /// See the module documentation.
 pub struct Scaler<'b, 'f> {
     p: Placement,
@@ -762,5 +799,30 @@ mod tests {
         drop(s);
         let mean_r: f64 = fb.iter().map(|c| f64::from(c >> 11)).sum::<f64>() / 16.0;
         assert!((mean_r - 127.0 * 31.0 / 255.0).abs() < 0.07, "{mean_r}");
+    }
+
+    #[test]
+    fn rgb565_round_trip_and_reduce() {
+        for c in [0u16, 0xFFFF, 0xF800, 0x07E0, 0x001F, 0x8410, 0x1234] {
+            assert_eq!(rgb565(rgb888(c)), c);
+        }
+        // An 8 × 8 picture: left half red, right half blue; reduced to 4 × 4.
+        let red = rgb565([255, 0, 0]);
+        let blue = rgb565([0, 0, 255]);
+        let src: std::vec::Vec<u16> = (0..64).map(|i| if i % 8 < 4 { red } else { blue }).collect();
+        let mut fb = [0u16; 16];
+        let mut work = [0u32; Scaler::need_words(4)];
+        let p = Placement { dither: false, ..Placement::fit(4, 4) };
+        let mut s = Scaler::new(&mut work, p, Target { buf: &mut fb, stride: 4, x: 0, y: 0 }).unwrap();
+        let mut row = [[0u8; 3]; 8];
+        assert!(feed_rgb565(&src, 8, &mut s, &mut row));
+        assert!(s.complete());
+        drop(s);
+        for y in 0..4 {
+            assert_eq!(&fb[y * 4..y * 4 + 4], &[red, red, blue, blue]);
+        }
+        let mut s = Scaler::new(&mut work, p, Target { buf: &mut fb, stride: 4, x: 0, y: 0 }).unwrap();
+        assert!(!feed_rgb565(&src, 8, &mut s, &mut row[..4]));
+        assert!(!feed_rgb565(&src[..60], 8, &mut s, &mut row));
     }
 }

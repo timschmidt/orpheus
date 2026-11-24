@@ -48,9 +48,14 @@ pub struct CacheKind {
 /// Picture browser cells (05 §7.6: 3 × 3 grid of 40 × 30 cells).
 pub const THUMBS: CacheKind =
     CacheKind { dir: "/.yoton/cache/thumbs", prefix: b'T', w: 40, h: 30, buckets: 64, slots: 64 };
-/// Album art in Now Playing (05 §7.1: 56 × 56).
+/// Album art in Now Playing's Standard view (05 §7.1; the UI draws it at
+/// 52 × 52, `yoton_apps::services::ArtSize::Small`).
 pub const ART: CacheKind =
-    CacheKind { dir: "/.yoton/cache/art", prefix: b'A', w: 56, h: 56, buckets: 64, slots: 32 };
+    CacheKind { dir: "/.yoton/cache/art", prefix: b'A', w: 52, h: 52, buckets: 64, slots: 32 };
+/// Album art for Now Playing's Big art view (full screen, 128 × 128):
+/// at most 256 KiB per bucket file.
+pub const ART_BIG: CacheKind =
+    CacheKind { dir: "/.yoton/cache/art", prefix: b'B', w: 128, h: 128, buckets: 32, slots: 8 };
 /// The wallpaper (05 §7.6: one 128 × 128 picture).
 pub const WALLPAPER: CacheKind =
     CacheKind { dir: "/.yoton/cache", prefix: b'W', w: 128, h: 128, buckets: 1, slots: 1 };
@@ -251,6 +256,23 @@ impl CacheKind {
         if out.len() != usize::from(self.w) * usize::from(self.h) {
             return Err(CacheError::Size);
         }
+        self.lookup_into(f, key, out, usize::from(self.w))
+    }
+
+    /// [`CacheKind::lookup`] into a box of a larger picture: row `y` of the
+    /// thumbnail goes to `out[y * stride..][..w]` (a frame-buffer region).
+    /// On a miss or a CRC mismatch the box may hold some of the bytes read.
+    pub fn lookup_into<F: CacheFile>(
+        &self,
+        f: &mut F,
+        key: &ThumbKey,
+        out: &mut [u16],
+        stride: usize,
+    ) -> Result<Option<ThumbMeta>, CacheError<F::Error>> {
+        let (w, h) = (usize::from(self.w), usize::from(self.h));
+        if stride < w || h == 0 || out.len() < (h - 1) * stride + w {
+            return Err(CacheError::Size);
+        }
         if self.read_header(f)?.is_none() {
             return Ok(None);
         }
@@ -259,16 +281,18 @@ impl CacheKind {
         let mut crc = 0;
         let mut buf = [0u8; 256];
         let mut off = self.slot_off(slot);
+        let total = w * h;
         let mut px = 0usize;
-        while px < out.len() {
-            let k = (out.len() - px).min(buf.len() / 2);
+        while px < total {
+            let k = (total - px).min(buf.len() / 2);
             let n = f.read_at(off, &mut buf[..2 * k]).map_err(CacheError::Io)?;
             if n < 2 * k {
                 return Ok(None);
             }
             crc = crc32(crc, &buf[..2 * k]);
             for i in 0..k {
-                out[px + i] = u16::from_le_bytes([buf[2 * i], buf[2 * i + 1]]);
+                let p = px + i;
+                out[p / w * stride + p % w] = u16::from_le_bytes([buf[2 * i], buf[2 * i + 1]]);
             }
             px += k;
             off += 2 * k as u32;
@@ -447,6 +471,28 @@ mod tests {
         let mut g = MemFile { d: std::vec![0xAB; 100], ..Default::default() };
         kind.store(&mut g, &key(5), &meta, &pixels(5)).unwrap();
         assert_eq!(kind.lookup(&mut g, &key(5), &mut out), Ok(Some(meta)));
+    }
+
+    #[test]
+    fn lookup_into_a_box() {
+        let kind = CacheKind { slots: 2, ..THUMBS };
+        let mut f = MemFile::default();
+        let meta = ThumbMeta { orig_w: 640, orig_h: 480, approximate: false };
+        kind.store(&mut f, &key(3), &meta, &pixels(3)).unwrap();
+        // A 40 × 30 thumbnail at (5, 2) of a 128-wide frame buffer.
+        let mut fb = std::vec![0xEEEEu16; 128 * 40];
+        let at = 2 * 128 + 5;
+        assert_eq!(kind.lookup_into(&mut f, &key(3), &mut fb[at..], 128), Ok(Some(meta)));
+        let px = pixels(3);
+        for y in 0..30 {
+            assert_eq!(&fb[at + y * 128..at + y * 128 + 40], &px[y * 40..y * 40 + 40]);
+            assert_eq!(fb[at + y * 128 + 40], 0xEEEE);
+        }
+        assert_eq!(fb[at - 1], 0xEEEE);
+        assert_eq!(kind.lookup_into(&mut f, &key(4), &mut fb[at..], 128), Ok(None));
+        assert_eq!(kind.lookup_into(&mut f, &key(3), &mut fb[..100], 128), Err(CacheError::Size));
+        assert_eq!(ART.w, 52);
+        assert_eq!(&ART_BIG.file_name(31), b"B01F.YTC");
     }
 
     #[test]

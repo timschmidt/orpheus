@@ -9,7 +9,7 @@ use yoton_ui::menu::MenuBuilder;
 use yoton_ui::nav::{Arg, Cx, Dirty, Nav, Resume, Screen, StripUse, Wants};
 use yoton_ui::theme::Role;
 
-use super::{FILES, HOME_APPS, MUSIC, NOTICE, Notice, SETTINGS};
+use super::{FILES, HOME_APPS, MUSIC, NOTICE, Notice, PICTURES, SETTINGS};
 use crate::App;
 use crate::services::{CardState, Services, mini_player};
 use crate::settings::id;
@@ -129,6 +129,7 @@ impl<S: Services + ?Sized> Screen<S> for HomeScreen {
                         _ => match app {
                             App::Music => return Nav::Push(MUSIC, Arg(0)),
                             App::Files => return Nav::Push(FILES, Arg(0)),
+                            App::Pictures => return Nav::Push(PICTURES, Arg(0)),
                             _ => Notice::NotYet(app),
                         },
                     }

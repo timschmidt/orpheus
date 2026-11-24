@@ -444,6 +444,21 @@ strings! {
     HintEq = "◂ ▸ band · OK preset",
     HintText = "◂ ▸ page",
     Mins = "min",
+    // Pictures (05 §7.6).
+    PicLoading = "Loading…",
+    PicBusy = "Stop playback to view pictures",
+    PicBusyAction = "The picture decoder shares its memory with the music.",
+    PicFailed = "Cannot show this picture",
+    PicUnsupported = "This kind of picture is not supported.",
+    PicCorrupt = "The file is damaged or incomplete.",
+    PicTooLarge = "The picture is too large for the player.",
+    PicIo = "The card could not be read.",
+    Slideshow = "Slideshow",
+    SlideInterval = "Slideshow interval",
+    RotateLeft = "Rotate left",
+    RotateRight = "Rotate right",
+    FillScreen = "Fill the screen",
+    NoPictures = "No pictures here",
 }
 
 /// Number of strings.
