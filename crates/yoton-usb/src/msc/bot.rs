@@ -132,6 +132,13 @@ impl<'b, I: EndpointIn, O: EndpointOut, B: BlockDevice> Bot<'b, I, O, B> {
                     self.buf[..k].copy_from_slice(&d[..k]);
                     Kind::Data(k)
                 }
+                Plan::DataInPadded { head, len } => {
+                    let k = len.min(cbw.len as usize).min(self.buf.len());
+                    let h = head.len().min(k);
+                    self.buf[..h].copy_from_slice(&head[..h]);
+                    self.buf[h..k].fill(0);
+                    Kind::Data(k)
+                }
                 Plan::Read { lba, count } => Kind::Read(lba, count),
                 Plan::Write { lba, count } => Kind::Write(lba, count),
             }
@@ -189,7 +196,9 @@ impl<'b, I: EndpointIn, O: EndpointOut, B: BlockDevice> Bot<'b, I, O, B> {
                             self.stats.phase_errors += 1;
                             break;
                         }
-                        if status == 0 && self.dev.write(lba + u64::from(blk), &self.buf[..n * bs]).await.is_err() {
+                        if status == 0
+                            && self.dev.write(lba + u64::from(blk), &self.buf[..n * bs]).await.is_err()
+                        {
                             self.scsi.set_sense(Sense::WRITE_ERROR);
                             status = 1;
                             self.stats.errors += 1;
@@ -218,6 +227,7 @@ enum Kind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::msc::scsi::DeviceKind;
     use core::convert::Infallible;
     use embassy_futures::block_on;
     use embassy_usb_driver::{Direction, Endpoint, EndpointAddress, EndpointInfo, EndpointType};
@@ -296,6 +306,7 @@ mod tests {
 
     fn unit() -> Unit {
         Unit {
+            kind: DeviceKind::Disk,
             removable: true,
             block_size: 512,
             blocks: 64,
@@ -370,5 +381,79 @@ mod tests {
         assert_eq!(bot.ep_in.sent[0][12], 1);
         block_on(bot.serve_one()).unwrap();
         assert_eq!(bot.ep_in.sent[1][2], 0x05);
+    }
+
+    /// A fragmented ISO exported as a CD through the extent table: TOC,
+    /// 2048-byte reads across runs, the padded DVD structure.
+    #[test]
+    fn cdrom_image_over_bot() {
+        use crate::msc::extent::{Extent, ExtentTable, ImageDevice};
+        // 10 blocks of 2048 = 40 card sectors, in 3 runs on the card.
+        let mut card = std::vec![0u8; 64 * 512];
+        let file: Vec<u8> = (0..10 * 2048).map(|i| (i / 7 % 256) as u8).collect();
+        let runs = [(50u32, 0usize, 12usize), (20, 12, 20), (5, 32, 8)];
+        for (lba, from, n) in runs {
+            card[lba as usize * 512..(lba as usize + n) * 512]
+                .copy_from_slice(&file[from * 512..(from + n) * 512]);
+        }
+        let mut st = [Extent::default(); 8];
+        let mut t = ExtentTable::new(&mut st);
+        for (lba, _, n) in runs {
+            t.push(lba, n as u32).unwrap();
+        }
+        let card = Ram(card);
+        let img = ImageDevice::new(card, t, file.len() as u64, 2048).unwrap();
+        let unit = Unit::cdrom(file.len() as u64, *b"yotonrs ", *b"USB Drive CD    ", *b"0001");
+        let mut q = VecDeque::new();
+        q.push_back(cbw(1, 12, true, &[0x43, 0, 0, 0, 0, 0, 0xAA, 0, 12, 0]));
+        q.push_back(cbw(2, 4 * 2048, true, &[0x28, 0, 0, 0, 0, 4, 0, 0, 4, 0]));
+        q.push_back(cbw(3, 2052, true, &[0xAD, 0, 0, 0, 0, 0, 0, 0, 0x08, 0x04, 0, 0]));
+        let mut buf = std::vec![0u8; 4096];
+        let mut bot = Bot::new(
+            In { info: info(Direction::In), sent: Vec::new() },
+            Out { info: info(Direction::Out), queue: q },
+            img,
+            unit,
+            &mut buf,
+        );
+        for _ in 0..3 {
+            block_on(bot.serve_one()).unwrap();
+        }
+        let sent = &bot.ep_in.sent;
+        assert_eq!(sent[0], [0, 10, 1, 1, 0, 0x14, 0xAA, 0, 0, 0, 0, 10]);
+        let data: Vec<u8> = sent[2..sent.len() - 2].concat();
+        assert_eq!(data.len(), 4 * 2048);
+        assert_eq!(&data[..], &file[4 * 2048..8 * 2048]);
+        // A CD-sized image: READ DVD STRUCTURE fails with sense, no data.
+        let last = &sent[sent.len() - 1];
+        assert_eq!((last[12], u32::from_le_bytes([last[8], last[9], last[10], last[11]])), (1, 2052));
+        assert_eq!(bot.scsi.sense().asc, 0x30);
+    }
+
+    #[test]
+    fn padded_data_in() {
+        let unit = Unit::cdrom(2 * 1024 * 1024 * 1024, *b"yotonrs ", *b"USB Drive DVD   ", *b"0001");
+        let mut q = VecDeque::new();
+        q.push_back(cbw(1, 2052, true, &[0xAD, 0, 0, 0, 0, 0, 0, 0, 0x08, 0x04, 0, 0]));
+        q.push_back(cbw(2, 100, true, &[0xAD, 0, 0, 0, 0, 0, 0, 0, 0x08, 0x04, 0, 0]));
+        let mut buf = std::vec![0xAAu8; 4096];
+        let mut bot = Bot::new(
+            In { info: info(Direction::In), sent: Vec::new() },
+            Out { info: info(Direction::Out), queue: q },
+            Ram(Vec::new()),
+            unit,
+            &mut buf,
+        );
+        block_on(bot.serve_one()).unwrap();
+        block_on(bot.serve_one()).unwrap();
+        let sent = &bot.ep_in.sent;
+        let first: Vec<u8> = sent[..5].concat();
+        assert_eq!(first.len(), 2052);
+        assert_eq!(&first[..2], &[0x08, 0x02]);
+        assert!(first[21..].iter().all(|&b| b == 0));
+        assert_eq!(sent[5][12], 0);
+        // Host allocated 100 bytes: 100 sent, no residue.
+        assert_eq!(sent[6].len(), 100);
+        assert_eq!(&sent[7][8..13], &[0, 0, 0, 0, 0]);
     }
 }
