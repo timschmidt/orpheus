@@ -399,6 +399,7 @@ pub const RU: &[(Str, &str)] = &[
     (BtDisconnectFirst, "Сначала отключите"),
     (HintBtScan, "OK подключить"),
     (HintBtConnect, "Назад — отмена"),
+    (QueueFull, "Очередь заполнена"),
 ];
 
 pub const JA: &[(Str, &str)] = &[
@@ -747,4 +748,5 @@ pub const JA: &[(Str, &str)] = &[
     (BtDisconnectFirst, "先に切断してください"),
     (HintBtScan, "OK 接続"),
     (HintBtConnect, "戻る キャンセル"),
+    (QueueFull, "キューに追加できません"),
 ];

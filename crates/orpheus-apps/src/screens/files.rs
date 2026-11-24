@@ -21,7 +21,7 @@ use super::{
 };
 use crate::App;
 use crate::browse::{DirId, EntryKind, FileRef};
-use crate::services::{BrowseFilter, BrowseService, PlayerCmd, Services, SortBy, data};
+use crate::services::{BrowseFilter, BrowseService, PlayerCmd, QUEUE_MAX, Services, SortBy, data};
 use crate::settings::id;
 use crate::strings::{Lang, Str};
 use orpheus_ui::nav::ScreenId;
@@ -261,7 +261,9 @@ impl FilesScreen {
                 Nav::Push(NOW_PLAYING, Arg(0))
             }
             M_NEXT | M_QUEUE => {
-                if let Some((f, _)) = focused {
+                if focused.is_some() && cx.svc.player().queue_len >= QUEUE_MAX {
+                    cx.ui.toast(lang.get(Str::QueueFull));
+                } else if let Some((f, _)) = focused {
                     let (c, t) = if mid == M_NEXT {
                         (PlayerCmd::PlayNext(f), Str::PlayingNext)
                     } else {

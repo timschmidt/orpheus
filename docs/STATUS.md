@@ -30,7 +30,7 @@ of every session. Newest entries first in §3.
 | RTC-1 | done (device) | set/read over the developer channel (`xtask dev time [--set]`); alarm untested; once lost after a ymon reset (U-RTC open) |
 | USB-4 | done (device) | Card-reader personality: card handed between the card task and USB; write-protected test mode; mid-track switch and hand-back verified. 2.3 MB/s read (open) |
 | FS-1 | done | `orpheus-fs` |
-| FS-2 / AU-5 firmware | first cut on the player; **`orpheus-player` wired in (built, not yet run on the player)** | Files lists the card (sorted through the directory index since AU-12 firmware), text viewer window, Now Playing. The card task drives `orpheus_player::Player`: folder queue in RAM and `/.orpheus/queue.bin`, resume record and bookmarks in `/.orpheus/player.bin`, seek, shuffle/repeat (settings), A–B, sleep timer, Up next. Not done: gapless prefetch, fades, queue edits, Shuffle all. User check 13 |
+| FS-2 / AU-5 firmware | first cut on the player; **`orpheus-player` wired in; gapless hand-over and queue edits (built, not yet run on the player)** | Files lists the card (sorted through the directory index since AU-12 firmware), text viewer window, Now Playing. The card task drives `orpheus_player::Player`: folder queue in RAM and `/.orpheus/queue.bin`, resume record and bookmarks in `/.orpheus/player.bin`, seek, shuffle/repeat (settings), A–B, sleep timer, Up next. Gapless read-ahead (`orpheus_audio::StreamRing`) and decoder re-open with the DAC running; Up next remove/move, Play next, Add to queue (256 max). Not done: fades. User checks 13, 17 |
 | UI-1, UI-2, UI-3, UI-4 | done (host); running on the player | 457 golden images |
 | AU-1…AU-4, AU-7, AU-8, AU-9 | done (host); on the player: MP3/FLAC/WAV and Speex at 48 MHz, Vorbis at 144 MHz (clock floor), **Opus too slow** | Opus CELT touches more code per frame than the 32 KB code cache holds; ends with "decoder too slow for this player" (abort after 8 underruns) instead of a reset. Needs a bigger code cache or a resident hot path (RAM decision). Ogg pages over ~15.5 KB fail (16 KiB ring < `MAX_PEEK` 28 KiB; RAM) |
 | AU-6 | done (host); **working on the player** | `orpheus-dsp` chain between decoder and DAC, fed by the Sound settings; works on a scratch copy of the decoder output; while any stage is active during playback the clock floor is 96 MHz (EQ + bass + crossfeed: 0 underruns, ≈ 90 % idle). WSOLA not done; Levels meter not wired |
@@ -38,7 +38,7 @@ of every session. Newest entries first in §3.
 | AU-14 | done (host); **device: Pictures app and album art (built, not yet run on the player)** | `orpheus-img`. Pictures (folders + pictures, list mode), viewer (fit/fill, rotate, next/prev, slideshow), album art made at track open and cached in `/.orpheus/cache/art`. Not done: thumbnail grid, 100 % + pan, wallpaper, delete, per-file rotation memory. User check 14 |
 | OTP-1, BT-1, USB-6 | done (host) | `orpheus-otp`, `orpheus-bt`, MMC/CD-ROM in `orpheus-usb` |
 | BT-2 (device) | **built, not yet run on the player** | UART1 driver (`atj2157_hal::uart`, `yoton_bsp::bt`), `orpheus_bt::driver`, firmware `bt` task, `BluetoothService`, shutdown 0x24 on power-off. Module off at boot; `bt probe/on/off/status/scan/connect/listen/shutdown/rx/tx` test commands. Not done: volume policy, metadata at track change, pairing UI, U-BT-2 |
-| UI-6a | **built, host-tested; not yet run on the player** | Bluetooth app (status, Pair new device, Paired devices, connect progress/failure, forget, reconnect switch), `BluetoothService` lists/requests, volume policy of 06 §4.2 (0x26 on connect and change, DAC reference −3 dB while the sink takes absolute volume), address text in written order. User check 17 |
+| UI-6a | **on the player 2026-11-24** (connect, reconnect, audio, volume — policy changed, see session entry) | Bluetooth app (status, Pair new device, Paired devices, connect progress/failure, forget, reconnect switch), `BluetoothService` lists/requests, volume policy of 06 §4.2 (0x26 on connect and change, DAC reference −3 dB while the sink takes absolute volume), address text in written order. User check 17 |
 
 ## 3. Session log
 
@@ -118,6 +118,113 @@ of every session. Newest entries first in §3.
   (address, profiles); refresh of the paired list read from the module
   after pairing (the local insert stands in); the reference level is not
   measured for clipping (user check 17).
+### 2026-11-24 — AU-5 firmware: gapless track changes and queue edits (worker, no hardware)
+
+* **Gapless read-ahead** (04 §2.2). New `orpheus_audio::StreamRing`
+  (host-tested): one byte ring holding the current stream and, once the
+  reader has read that file to its end, the head of the next one right
+  behind it. The decoder sees only the current stream (`ByteSource`/
+  `SeekSource`, file offsets); `hand_over` makes the next stream current
+  (its offset 0 directly after the old stream's last byte; unread trailing
+  tags dropped). A seek in the current stream drops what was read of the
+  next one (read again from its start). No panic paths (each new file path
+  would land in resident `.rodata`). The firmware's `Ring` wraps it and now
+  owns the files too (`Ring::file`, `next_file`: a `File` is 64 B and is no
+  longer moved through the RT task's frames).
+* **Flow.** `ReaderAtEnd` → player `Prefetch(item)` → the card task opens
+  the item (directory lookup, title kept, not shown) between blocks and the
+  ring reads it after the current file. `DecoderEnded` → `Open { gapless }`:
+  if that item is the one read ahead, the DAC is **not** drained or stopped
+  (`PcmOut` now lives in `run_player`, across tracks); `play_item` hands the
+  ring over, publishes the title, and `play_file` probes (ID3 skip through
+  `skip_to`), inspects and opens the next decoder in the same arena on the
+  bytes already there; the DSP chain keeps its state when the format is the
+  same (no `apply_sound`, `set_format` is a no-op then). The decoders trim
+  encoder delay/padding themselves (LAME/Xing, Ogg granules, FLAC totals),
+  so nothing is inserted or dropped at the join. The clock floor is High
+  from the decoder's end until the next track's codec sets its own (Vorbis
+  codebook set-up while the PCM ring plays out); underruns in that window
+  do not count towards the too-slow abort. Album art (cache only:
+  `pictures::track_art_cached`, else the folder's cover when it is the same
+  folder) and the library place (`find_now`) follow at the next ring
+  refill. No save at a gapless change (the DAC runs; the next pause, stop,
+  ordinary track change, hand-over or power-off saves).
+* **Fallbacks.** Another sample rate: `play_file` returns `End::Again`,
+  `play_item` lets the previous track play out (`PcmOut::finish`) and opens
+  the same item the ordinary way (DAC restarted at the new rate). A file
+  read ahead that cannot be opened: the same (it then fails as usual). A
+  track change the user makes (Next, Prev, jump, new queue, bookmark) is
+  unchanged: stop, flush, fresh start. `CancelPrefetch` (repeat/shuffle
+  change, queue edit, sleep after track) drops the read-ahead and reports
+  `ReaderAtEnd` again so the new next track is read ahead.
+* **Host test of the hand-over** (`orpheus-codec-conformance`):
+  `join::decode_gapless` is the firmware's sequence (16 KiB `StreamRing`,
+  512-B-minimum reads, prefetch when the reader is at the end, probe → tag
+  skip → inspect → open in one arena). `tests/ring_join.rs`: a WAV signal
+  cut at 1 / 4,093 / 33,333 / 99,999 frames with a `LIST` tag after the
+  first part and a 19 KB ID3 tag (larger than the ring) before the second
+  joins sample-exact; FLAC×3, MP3×4, 24-bit FLAC×2 and a mixed
+  MP3/FLAC/MP3/FLAC chain equal the parts decoded alone. `join::check` (the
+  corpus album splits of `xtask test codecs`) now also requires the ring
+  path to give exactly the per-part samples: `xtask test codecs --filter
+  gapless --quick` (fresh corpus) passes flac/wav bit-exact, mp3 (LAME)
+  −118.7 dBFS and vorbis −121.2 dBFS vs the per-track references, all
+  220,500 frames = source length. Shifting the hand-over by two bytes
+  makes the tests fail (checked).
+* **Queue edits** (05 §7.1). `PlayerCmd::PlayNext(file)` (after the current
+  track), `AddToQueue(file)` (at the end), `Remove(i)`, `MoveUp(i)`,
+  `MoveDown(i)` (Up next; only tracks after the current one) →
+  `PlayReq::Edit` → `Server::edit` → `orpheus_player::queue::edit`
+  (host-tested): a shuffled queue is first written into the queue in its
+  play order (`unshuffle`, in place, 256-bit bitmap), so the order the
+  user sees stays and the player goes on unshuffled; the new
+  `Command::Requeue { id, len, pos }` updates the player without touching
+  the track (prefetch cancelled and asked for again; resume record saved
+  with the new queue id unless stopped). Queue id and Up-next generation
+  change; `queue.bin` is rewritten at the next save (`Server::queue_dirty`,
+  before the resume record in `save_store`). Limit 256
+  (`services::QUEUE_MAX`): Files shows "The queue is full" (new string, ru/ja
+  in the sim packs) instead of sending. With nothing queued, Play next / Add
+  to queue start a one-track queue. The Shuffle setting stays on after an
+  edit; switching it off keeps the edited order, switching it on shuffles
+  anew.
+* `orpheus-player`: `Command::Requeue`, `Player::order`, `queue::{edit,
+  unshuffle, Edit, EDIT_MAX}`; 22 tests (+5: requeue plays on gapless in the
+  new order, requeue of a shuffled queue keeps the order and the record,
+  edits, unshuffle, shuffled edits). The test simulation re-reports the
+  reader's end after `CancelPrefetch`, as the firmware does.
+* **RAM / stack** (`xtask build`, this worktree, before → after):
+  `__stack_bottom` `0x131c00` → `0x131d38` (main stack −312 B: `Ring` +2
+  files + read-ahead record ≈ 250 B in the audio task's future, `Server`
+  +4); resident 83,252 → 83,252 B (unchanged; `xtask size --check` fails in
+  a worktree as before: 83,252 > 81,920, the absolute panic-location paths).
+  Frames (`sub sp`): audio task poll 5,024 → **4,992 B**, `play_file`
+  2,380 → **2,332 B**, `save_store` 916 → 908 B; new functions all below
+  256 B (`Ring::hand_over`, `Server::edit`, `prefetch`, `track_meta`).
+* Not done: fades (04 §2.2) around pause/seek/manual skips; saving the
+  resume point at a gapless change; making art for a track whose embedded
+  picture is not cached yet at a gapless change (the folder's cover or none
+  is shown until the next ordinary open); Play next / Add to queue for
+  library rows and whole folders (the menus offer them only on Files
+  entries); a golden for the "queue is full" toast. Not run on the player:
+  user check 18 and the lead's test below.
+* Device test plan (lead): `cargo xtask test codecs --gen` makes
+  `tests/corpus/gapless/{flac,wav,mp3,vorbis}_part{0,1,2}.*` (a 5-s music
+  source cut at frames 60,417 and 131,333). Upload each codec's three parts
+  into its own folder, e.g. `cargo xtask dev put
+  tests/corpus/gapless/mp3_part0.mp3 /.orpheus/test/gapless-mp3/mp3_part0.mp3`
+  (and so on), plus one 48 kHz file into `/.orpheus/test/gapless-mp3/`
+  named `mp3_part3_48k.mp3` for the rate fallback. On the player: Files →
+  Menu → Show hidden → `.orpheus/test/gapless-mp3` → OK on `mp3_part0`;
+  during part 1 and 2 `cargo xtask dev cmd status` must show
+  `underruns=0` (the counter restarts per track and covers the hand-over),
+  the title changes at each join, `cargo xtask dev stats` shows the clock
+  at High briefly and back to the codec's floor. Listening: user check 18.
+  Then queue edits: Up next → Menu → Move down / Remove on the next track
+  while the current one is in its last seconds (the edited next track must
+  follow gapless), Files → Menu → Play next / Add to queue, and 256+ adds
+  for the toast; after each edit `cargo xtask dev cmd status` and a
+  power-off/on: Music → Resume continues in the edited queue.
 
 ### 2026-11-24 — AU-12 firmware: the music library on the player (worker, no hardware)
 
@@ -967,6 +1074,7 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 | 2026-11-24 | Firmware with BT-2 device side (worktree build) | resident +160 B, bss +2,136 B, main stack −2,288 B; `orpheus_bt::driver::Driver` 1,328 B | `xtask build`, `llvm-nm` `__stack_bottom` |
 | 2026-11-24 | Firmware with Pictures and album art (AU-14 device), worker worktree build | resident 81,444 B (was 79,532), bss 123,160 B (was 123,000), main stack 21,696 B (was 23,768), 62 code + 16 rodata pages (was 52 + 14), slot 724,992 B | `xtask build`, `nm` `__stack_bottom` |
 | 2026-11-24 | Firmware with the music library (AU-12 firmware), worker worktree build | resident 83,244 B (was 81,996), bss 123,088 B (was 123,000), main stack 19,968 B (was 21,304), 71 code + 16 rodata pages (was 66 + 16), slot 802,816 B (was 761,856); audio task poll frame 5,024 B (was 5,088) | `xtask build`, `llvm-nm` `__stack_bottom`, `llvm-objdump` `sub sp` |
+| 2026-11-24 | Firmware with gapless hand-over and queue edits (AU-5), worker worktree build | resident 83,252 B (unchanged), main stack −312 B (`__stack_bottom` 0x131c00 → 0x131d38); audio task poll frame 5,024 → 4,992 B, `play_file` 2,380 → 2,332 B | `xtask build`, `llvm-nm`, `llvm-objdump` `sub sp` |
 
 
 ## 5. Open questions for the user

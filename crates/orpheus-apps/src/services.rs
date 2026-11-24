@@ -732,6 +732,10 @@ pub enum LibraryState {
     Ready,
 }
 
+/// The longest play queue: Play next and Add to queue do nothing beyond
+/// it (the screens say "The queue is full").
+pub const QUEUE_MAX: u32 = 256;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PlayerCmd {
     PlayPause,

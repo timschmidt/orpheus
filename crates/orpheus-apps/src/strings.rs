@@ -497,6 +497,8 @@ strings! {
     BtDisconnectFirst = "Disconnect first",
     HintBtScan = "OK connect",
     HintBtConnect = "Back cancel",
+    // Queue edits (AU-5).
+    QueueFull = "The queue is full",
 }
 
 /// Number of strings.

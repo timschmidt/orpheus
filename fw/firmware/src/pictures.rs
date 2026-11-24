@@ -237,7 +237,7 @@ async fn run(
             Ok(Step::Done) => return Ok(()),
             Ok(Step::Progress) => {}
             Ok(Step::NeedData(_)) => {
-                if (ring.eof && !ring.reseek) || (!ring.fill(vol, f).await && !ring.eof) {
+                if (ring.eof() && !ring.reseek()) || (!ring.fill(vol, Some(f)).await && !ring.eof()) {
                     return Err(Stop::Io);
                 }
             }
@@ -512,6 +512,24 @@ pub async fn track_art(vol: &mut Vol, ring: &mut Ring, arena: &mut [u8], srv: &m
     srv.set_art(art);
 }
 
+/// The album art of the track at `l` at a gapless track change (the
+/// decoder holds the arena and the stream ring): the track's own art if the
+/// cache has it, else the cover of its folder if that is the folder looked
+/// at last (an album's next track); nothing is made or scanned.
+pub async fn track_art_cached(vol: &mut Vol, srv: &mut Server, l: Locator) {
+    let serial = vol.serial();
+    let mut e = DirEntry::new();
+    if vol.open_locator(l, &mut e).await.is_ok() {
+        let key = file_key(serial, &e);
+        if cached_meta(vol, &ART, &sized(key, &ART)).await.is_some_and(|m| m.orig_w > 0) {
+            srv.set_art(Some(ArtRef { key }));
+            return;
+        }
+    }
+    let art = srv.folder_art.filter(|&(dir, _)| dir == l.dir).and_then(|(_, a)| a);
+    srv.set_art(art);
+}
+
 /// The art of the best cover picture in the folder of `l`, made if needed.
 async fn folder_art(
     vol: &mut Vol,
@@ -573,7 +591,7 @@ async fn embedded(
             Ok(MetaStep::Done) | Err(_) => break,
             Ok(MetaStep::Continue) => {}
             Ok(MetaStep::NeedData(_)) => {
-                if (ring.eof && !ring.reseek) || (!ring.fill(vol, &mut f).await && !ring.eof) {
+                if (ring.eof() && !ring.reseek()) || (!ring.fill(vol, Some(&mut f)).await && !ring.eof()) {
                     break;
                 }
             }
@@ -649,7 +667,7 @@ async fn make_art(
         {
             break;
         }
-        if !ring.fill(vol, &mut f).await && ring.available() < 8 {
+        if !ring.fill(vol, Some(&mut f)).await && ring.available() < 8 {
             break;
         }
         let mut head = [0u8; 8];

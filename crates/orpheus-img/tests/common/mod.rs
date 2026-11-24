@@ -24,6 +24,14 @@ fn fnv(s: &str) -> u32 {
 /// Directory holding the generated pictures (generated on first use; the
 /// name carries a hash of `gen.py`, so editing it regenerates).
 pub fn data_dir() -> PathBuf {
+    // Once per process: the tests of one binary run on several threads,
+    // and they would otherwise generate into the same `gen-<pid>` folder
+    // and delete each other's files.
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(generate).clone()
+}
+
+fn generate() -> PathBuf {
     if let Ok(d) = std::env::var("ORPHEUS_IMG_DATA") {
         return PathBuf::from(d);
     }

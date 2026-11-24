@@ -812,7 +812,9 @@ impl PlayerService for Fw {
     }
     fn command(&mut self, c: PlayerCmd) {
         use media::PlayReq;
+        use orpheus_fs::Locator;
         use orpheus_player::Command;
+        use orpheus_player::queue::Edit;
         let r = match c {
             PlayerCmd::PlayPause => PlayReq::Cmd(Command::Toggle),
             PlayerCmd::Stop => PlayReq::Stop,
@@ -839,14 +841,14 @@ impl PlayerService for Fw {
                 let shuffle = shuffle || self.settings.get(id::SHUFFLE) != 0;
                 PlayReq::PlayLib { list, start, shuffle }
             }
-            // Queue edits and favourites need an editable queue file
-            // (later packages).
-            PlayerCmd::Remove(_)
-            | PlayerCmd::MoveUp(_)
-            | PlayerCmd::MoveDown(_)
-            | PlayerCmd::PlayNext(_)
-            | PlayerCmd::AddToQueue(_)
-            | PlayerCmd::Favourite => return,
+            // Up next and a file's menu edit the queue (`Server::edit`).
+            PlayerCmd::Remove(p) => PlayReq::Edit(Edit::Remove(p)),
+            PlayerCmd::MoveUp(p) => PlayReq::Edit(Edit::MoveUp(p)),
+            PlayerCmd::MoveDown(p) => PlayReq::Edit(Edit::MoveDown(p)),
+            PlayerCmd::PlayNext(f) => PlayReq::Edit(Edit::PlayNext(Locator { dir: f.dir, index: f.index })),
+            PlayerCmd::AddToQueue(f) => PlayReq::Edit(Edit::Add(Locator { dir: f.dir, index: f.index })),
+            // Favourites need playlists (later package).
+            PlayerCmd::Favourite => return,
         };
         media::play(r);
     }
