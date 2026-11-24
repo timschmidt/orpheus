@@ -19,6 +19,8 @@ use crate::{MetaStep, Opts, TagReader, Tags};
 const SECTOR: u64 = 512;
 /// Bytes after the leading tags examined for the stream length.
 const LENGTH_HEAD: usize = 2048;
+/// Bytes fetched at once when the parser first reads near the end.
+const TAIL: usize = 1024;
 
 /// A file that can be read at any offset.
 pub trait ReadAt {
@@ -134,6 +136,29 @@ impl Win<'_> {
     fn fill<R: ReadAt>(&mut self, r: &mut Reader<'_, R>, n: usize, min: usize) -> Result<bool, R::Error> {
         if n > self.buf.len() {
             return Ok(false);
+        }
+        let tail = TAIL.min(self.buf.len()) as u64;
+        if self.lo == self.hi && self.start + tail >= self.len && self.start > 0 {
+            // Near the end (ID3v1, APE footer, Lyrics3): fetch the whole
+            // tail at once so that the footers read before and after
+            // this one need no further call.
+            let pos = self.start + self.lo as u64;
+            let from = (self.len.saturating_sub(tail) / SECTOR * SECTOR).min(pos);
+            let k = (self.len - from) as usize;
+            if k <= self.buf.len() && k >= n + (pos - from) as usize {
+                return match r.read(from, &mut self.buf[..k])? {
+                    Some(got) => {
+                        self.start = from;
+                        self.lo = (pos - from) as usize;
+                        self.hi = got;
+                        if got < k {
+                            self.len = from + got as u64;
+                        }
+                        Ok(self.hi >= self.lo + n)
+                    }
+                    None => Ok(false),
+                };
+            }
         }
         self.buf.copy_within(self.lo..self.hi, 0);
         self.start += self.lo as u64;

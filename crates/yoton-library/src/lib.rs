@@ -35,6 +35,32 @@
 //! random sample for Shuffle all.
 //!
 //! `no_std`, no allocator, no `unsafe`, no hardware.
+//!
+//! # Firmware integration
+//!
+//! * [`Storage`] over `/.yoton/library/` ([`LIBRARY_DIR`]; the file names
+//!   are at most 10 bytes, no sharding needed) and [`TagSource`] over the
+//!   volume: `open_dir` = `open_locator` + the entry's cursor (root: the
+//!   root cursor; `after`: `seek_dir` to the entry and read past it),
+//!   `open_file` = `open_locator` + `open_entry`, `read_at` = seek + read.
+//! * Scheduling as the directory index: [`Builder::step`] in the idle loop
+//!   on the lent scratch (8 KiB minimum, 12–16 KiB for whole tag windows),
+//!   [`Builder::suspend`] as soon as anything else needs the card or the
+//!   arena; [`Suspended`] (≈ 1.1 KiB) is the only permanent state. The
+//!   card's open files and folder cursor may be reused between steps
+//!   (`open_dir(.., after)` repositions). Start a build on card insertion
+//!   when no [`Library`] opens, and as an update when the user asks
+//!   (Settings › Storage › Rebuild library) or after USB mass storage.
+//! * Music screens: Artists → [`List::Artists`], OK → [`List::open`]
+//!   (artist albums → album tracks); Albums → [`List::Albums`]; Songs →
+//!   [`List::Songs`]; Genres → [`List::Genres`] → genre artists → their
+//!   albums → tracks; Recently added → [`List::Recent`] (cap the rows the
+//!   UI shows). Play/Shuffle on a container: [`List::tracks_of`] then
+//!   [`Library::queue`] into `/.yoton/queue.bin`; OK on a track: queue the
+//!   list and start at its row. Shuffle all: [`Library::sample`] (in
+//!   library order; play it shuffled). Go to album/artist from Now
+//!   Playing: [`Library::find`] → [`Track::album_id`] / `artist_id`.
+//!   Names: [`Library::text`] (`""` = unknown artist/album/genre).
 
 #![no_std]
 #![forbid(unsafe_code)]

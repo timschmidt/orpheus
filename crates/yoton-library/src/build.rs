@@ -1177,11 +1177,9 @@ where
             }
             if a == b && f.name_hash == hash && f.loc.dir == e.loc.dir {
                 if f.size == e.size as u32 && f.mtime == e.mtime {
-                    let mut it = [0u8; cat::MAX];
-                    it[..l].copy_from_slice(oi.take(s_old, l));
                     // The contiguity bit of exFAT may have changed.
-                    wr32(&mut it, 6, e.loc.index);
-                    cat_out.put(store, s_cat, &it[..l])?;
+                    wr32(s_old, lo + 6, e.loc.index);
+                    cat_out.put(store, s_cat, oi.take(s_old, l))?;
                     cur.tracks += 1;
                     stats.tracks += 1;
                     stats.reused += 1;
@@ -1262,14 +1260,14 @@ where
 
 // ---------------------------------------------------------- sort stages
 
-/// Read the next input record into `rec`; `false` at the end.
+/// Take the next input record (`size` bytes, or a catalogue item when
+/// 0); its position in `buf`, `None` at the end.
 fn next_rec<S: Storage>(
     store: &mut S,
     i: &mut In,
     buf: &mut [u8],
     size: usize,
-    rec: &mut [u8],
-) -> Result<Option<usize>, Error<S::Error>> {
+) -> Result<Option<(usize, usize)>, Error<S::Error>> {
     if i.is_empty() {
         return Ok(None);
     }
@@ -1284,8 +1282,9 @@ fn next_rec<S: Storage>(
         size
     };
     i.need(store, buf, n)?.map_err(short)?;
-    rec[..n].copy_from_slice(i.take(buf, n));
-    Ok(Some(n))
+    let at = usize::from(i.lo);
+    i.take(buf, n);
+    Ok(Some((at, n)))
 }
 
 const KINDS: [Kind; cat::FIELDS] = [Kind::Title, Kind::Artist, Kind::Album, Kind::Artist, Kind::Genre];
@@ -1299,11 +1298,10 @@ fn feed<S: Storage>(
     r: &mut Regions<'_>,
     sort: &mut [u8],
 ) -> Result<bool, Error<S::Error>> {
-    let mut rec = [0u8; cat::MAX];
-    let Some(n) = next_rec(store, &mut sj.ins[0], r.b0, js.rec(), &mut rec)? else {
+    let Some((at, n)) = next_rec(store, &mut sj.ins[0], r.b0, js.rec())? else {
         return Ok(false);
     };
-    let rec = &rec[..n];
+    let rec = &r.b0[at..at + n];
     let ord = sj.n;
     sj.n += 1;
     let cmp = js.cmp();
