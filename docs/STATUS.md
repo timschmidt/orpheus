@@ -51,10 +51,83 @@ of every session. Newest entries first in §3.
 | DOC-4 | done (host); workflows not run (no CI here) | CONTRIBUTING, CODE_OF_CONDUCT (Contributor Covenant 2.1), SECURITY, CHANGELOG, issue/PR templates, workflows `gate.yml`, `docs.yml`, `pages.yml` (actions pinned by SHA) |
 | WEB-2 | done (host); not yet on the live site (the lead pushes) | `cargo xtask wasm [--test] [--record] [--demo]` → `target/orpheus/site/try/pkg/`: `sim/web` (`orpheus-web`) = the `orpheus-apps` screens over the simulator's services, a FAT32 card built in the browser (synthesised demo set, the visitor's files, the saved library), the firmware's codecs + DSP chain into an AudioWorklet, key recorder/replayer in the `ui_keys` corpus format. Try-it page (`site/pages/try.md`, `site/try/`): SVG player with clickable keys, integer-scaled pixelated canvas, IndexedDB state and files, Factory reset, developer panel. Self-test `tests/web/try.mjs` passes in Chromium 155 and Firefox 157 (headless); in `pages.yml`. Safari not tested: user check 23 |
 | WEB-1 | done (host); not published | `cargo xtask site [--check]` → `target/orpheus/site/`; Home, Manual, Developers, Hardware, Changelog, FAQ, Try it and Install (placeholders for WEB-2/WEB-3). Deploy only with repository variable `PAGES_ENABLED=true`. User: review the site |
-| AU-13 | **built (host + firmware), not yet run on the player** | `orpheus-rec` (WAV PCM, IMA ADPCM, FLAC 0–2 encoders; low-cut, AGC, meter, voice activation; names; write-behind ring; the recording session), `atj2157_hal::adc` (vendor capture sequence VERBATIM, DMA ch 6), `firmware::rec` (recording mode of the card task, SRAM3 state after the radio's), developer `rec start/stop/status`. Not built: voice (Opus/Speex) encoders, mic monitoring, pre-record. User check 23 |
+| AU-13 | **built; first player run 2026-11-24: capture runs, microphone silent → front-end fix + `rec raw`/`rec width`/`rec mic` (not yet re-run)** | `orpheus-rec` (WAV PCM, IMA ADPCM, FLAC 0–2 encoders; low-cut, AGC, meter, voice activation; names; write-behind ring; the recording session), `atj2157_hal::adc` (vendor capture sequence VERBATIM, DMA ch 6), `firmware::rec` (recording mode of the card task, SRAM3 state after the radio's), developer `rec start/stop/status`. Not built: voice (Opus/Speex) encoders, mic monitoring, pre-record. User check 23 |
 | UI-5b | **built (host + firmware), not yet run on the player** | Recorder app (meters, timer, pause/mark/stop question, gain, menu with source/format/quality/AGC/VOX/split/monitor/low-cut), Recordings… (newest first, play, delete with question); simulator back end over the same session and a fake ADC; 122 goldens, 10 behaviour tests |
 
 ## 3. Session log
+
+### 2026-11-24 — AU-13 fix after the first device run: the microphone recorded silence (worker, no hardware)
+
+From the lead's run of `d7f59d7c`: `rec start mic wav 10` saved
+`REC-0001.wav` (442,368 frames, 0 drops, `ring_peak=17196`), but
+`level=-60/-60 peak=-60/-60 clip=0` throughout while someone talked;
+`rec status` mid-recording: `adc=33001043,4000d2a,180028,103,93,187`,
+`dma_events` 151 → 206. The DMA moves, every sample is near zero.
+
+* **Cause (found in the vendor code, [code]): the microphone was routed
+  to the wrong side.** The vendor's analogue front-end function
+  (`AUD_DEV` B1:0x0D82058C) takes (left, right): left ORs `0xC` into
+  `MIC_MIX_CTL` (`[3:2]`, the datasheet's MICL_EN) and `0x70080` into
+  `ADC_CTL` (FD buffer L on, 6 kΩ), right ORs `0x3` (MICR_EN) and `0x7040`;
+  the mono microphone calls it with (1, 0) together with the left converter
+  switches `0x2A` (input code 4). audio.md §3.1 has the two swapped, so
+  ours enabled the right mic input (`MIC_MIX_CTL` = `0x103`) and no FD
+  buffer (`CTL` = `0x04000D2A`) while capturing the left converter. Now
+  VERBATIM: `MIC_MIX_CTL = (v & ~0x13F) | 0x10C` (`| 0x10` single-ended),
+  `CTL = (v & 0xFFF8803F) | gain << 8 | 0x70080`. Expected registers:
+  `MIC_MIX_CTL` `0x10c`, `CTL` `0x4070daa`. Corrected in 01-hardware §8,
+  U-AUD-13 and the PAC (`VENDOR_MIC_LEFT/RIGHT/CLEAR`,
+  `VENDOR_CTL_MIC_KEEP`).
+* **U-AUD-12 (sample width), not decided by this run.** The vendor's DMA
+  mode is `0x40000 | fmt << 20 | 0x8B` with the same `fmt` as
+  `FIFOCTL[7]` (B1:0x0D82062C), so `0x0014008B` + `FIFO_DMAWIDTH` = 16-bit
+  is what the vendor records with; ours matched it (`FIFOCTL` `0x93`).
+  Which half a 16-bit read gets is not in the datasheet, so it is now a
+  runtime choice: `rec width 32` uses `FIFO_DMAWIDTH` = 0 and mode
+  `0x0004008B` (whole words, sample in `[31:8]`, datasheet §8.2.6.7) and
+  narrows each half of the ring in place to bits 31:16
+  (`orpheus_rec::pcm::unpack_24in32`; half as many frames per half, so
+  23 ms of stereo / 46 ms of mono at 44.1 kHz per half). Default stays 16.
+* **Meter**: reads the block the capture hands to the session (the DMA
+  half, after low-cut/AGC), not a scratch; checked, unchanged. Host tests
+  added for it on the 24-in-32 path.
+* **Developer commands**: `rec raw` (while capturing: 16 words from the
+  start of the half the DMA is filling, read once it is ≥ 64 B in and
+  ≥ 1 KiB from the end, so the reader has not processed them; `ring=`,
+  `at=`, `dma_left=` (REMAIN), `settled=`, `fifosta=`, two direct FIFO
+  reads `fifo=a,b` (two, so stereo keeps L/R order; the recording loses
+  those two samples), `words=`); `rec width [16|32]`, `rec mic
+  [diff|se]` (from the next start, not stored; shown in `rec status` as
+  `width= mic=`).
+* **Code**: PAC `adc` constants and docs; HAL `adc` (`Width`,
+  `dma_mode`, the mic front end, `fifo_peek`), `dma::remaining_of`;
+  `firmware::rec` (options, `CAP_RING`, the 32-bit unpack in
+  `Capture::next`, frames per half from the width); `orpheus-rec::pcm`
+  (new, 5 tests: word layout, unpack in place incl. odd length, stereo
+  order, a −20 dBFS tone meters −20 through the 24-in-32 path and not
+  through the low halves, the chain meters the block it is fed).
+* **Numbers**: resident 77,428 B (unchanged); `.bss` 123,648 → 123,656 B
+  (+8: `OPTS`, `CAP_RING`); paged code 798,566 → 800,300 B (98 → 99
+  pages); slot 1,040,384 B.
+* Gate: host fmt, clippy (all targets), `cargo test --workspace`; fw fmt,
+  clippy; `xtask build`, `check-resident` pass. `xtask test golden` not
+  needed (no screen changed); `size --check` not run (worktree path).
+* **Lead's run** (one command at a time, `--wait` for each reply):
+  1. `cargo xtask dev cmd "rec status"` → `rec off … width=16 mic=diff`.
+  2. `cargo xtask dev cmd "rec start mic wav 20 w16" --wait 3`, then
+     while speaking at 30 cm: `cargo xtask dev cmd "rec status"` (expect
+     `adc=…,4070daa,180028,10c,93,…` and a level between −40 and −6),
+     `cargo xtask dev cmd "rec raw"` twice (words vary, not all 0), wait
+     for `rec saved …/w16/REC-….wav`.
+  3. `cargo xtask dev cmd "rec width 32"`, then the same with sub-folder
+     `w32` (`rec start mic wav 20 w32`, `rec status`, `rec raw`: each word
+     should end in `00`; FIFOCTL in `adc=` is `0x13`).
+  4. If both are still at −60: `rec mic se`, `rec width 16`, repeat 2 with
+     `se16`. End with `rec width 16`, `rec mic diff`, `rec status` →
+     `rec off`.
+  5. Pull `/.orpheus/test/rec/` with the card reader and listen. Report the
+     `rec raw` lines: they decide U-AUD-12 (which half carries the
+     sample at width 16).
 
 ### 2026-11-24 — WEB-2: Orpheus in the browser (worker, no hardware)
 

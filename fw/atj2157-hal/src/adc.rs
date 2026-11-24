@@ -3,13 +3,25 @@
 //!
 //! The sequences are the vendor's (`AUD_DEV.DRV` API 18 "start capture",
 //! API 20 "set gain", the stop routine; docs/hw/audio.md §3), register
-//! names from the datasheet (`atj2157_pac::adc`). Everything here is
-//! **[code]**, not yet run on the player (U-AUD-4).
+//! names from the datasheet (`atj2157_pac::adc`). First run on the player
+//! 2026-11-24: the capture and its DMA run, the microphone recorded
+//! silence (the front end below, fixed since; U-AUD-4/12/13 open).
 //!
 //! The capture runs by DMA in reload mode from the ADC01 FIFO into a ring
 //! of two halves (the caller's; `atj2157_hal::dma::Channel::
-//! enable_ring_irq` counts the halves): 16-bit samples, interleaved when
-//! both converters run (FM, line-in), one per frame for the microphone.
+//! enable_ring_irq` counts the halves), interleaved when both converters
+//! run (FM, line-in), one sample per frame for the microphone. The FIFO
+//! holds 24-bit samples in bits 31:8 of a word; [`Width`] picks how they
+//! reach memory: narrowed to 16 bits by the FIFO and the DMA (the vendor's
+//! setting; which 16 bits is U-AUD-12) or as whole words that the caller
+//! narrows (`orpheus_rec::pcm::unpack_24in32`).
+//!
+//! The microphone front end (2026-11-24, after the first device run
+//! recorded digital silence): the vendor's mono microphone enables the
+//! **left** mic input (`MIC_MIX_CTL[3:2]`) and the left FD buffer
+//! (`CTL` `0x70080`) besides the left converter switches; the first
+//! version enabled the right mic input (`[1:0]`, audio.md §3.1 has the two
+//! swapped) and no buffer, so nothing reached the left converter (U-AUD-13).
 //!
 //! It must coexist with the DAC (monitoring, the FM bypass playing):
 //!
@@ -38,9 +50,29 @@ use crate::delay::spin_us;
 /// ADC01 FIFO data register (the DMA source).
 pub const FIFO_ADDR: u32 = 0xC018_1018;
 
-/// DMA mode word: ADC01 FIFO → memory, fixed source, 16-bit, reload
-/// (`0x0014008B`, the vendor's interleaved capture). [code]
-pub const DMA_MODE: u32 = 0x0014_008B;
+/// How samples reach memory (U-AUD-12).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Width {
+    /// `FIFO_DMAWIDTH` = 16-bit and DMA width 16 (the vendor's): one
+    /// `i16` per sample in memory.
+    Bits16,
+    /// `FIFO_DMAWIDTH` = 32-bit and DMA width 32: the FIFO words as they
+    /// are (24-bit sample in bits 31:8); the caller keeps the top 16 bits.
+    Bits32,
+}
+
+/// DMA mode word: ADC01 FIFO (source code `0x0B`) → memory, fixed source
+/// (b7), reload (b18), interleaved, width b21:20 (datasheet §5.3.1.3 TWS:
+/// 0 32-bit, 1 16-bit). `0x0014008B` is the vendor's (B1:0x0D82062C:
+/// `0x40000 | fmt << 20 | planar << 16 | 0x8B`, with the same `fmt` as
+/// `FIFO_DMAWIDTH`) [code].
+#[must_use]
+pub const fn dma_mode(width: Width) -> u32 {
+    match width {
+        Width::Bits16 => 0x0014_008B,
+        Width::Bits32 => 0x0004_008B,
+    }
+}
 
 /// The vendor waits this long after the front end is on before the first
 /// DMA block (API 18).
@@ -114,9 +146,9 @@ fn set_rate(rate: u32) {
 
 /// Power the converter path for `input` at `rate` and start the FIFO in
 /// DMA mode (vendor API 18 up to the DMA). The caller then starts its DMA
-/// channel with [`DMA_MODE`] from [`FIFO_ADDR`] after [`SETTLE_MS`].
-/// `analog` 0–15, `digital` 0–59.
-pub fn start(input: Input, rate: u32, analog: u8, digital: u8) {
+/// channel with [`dma_mode`]`(width)` from [`FIFO_ADDR`] after
+/// [`SETTLE_MS`]. `analog` 0–15, `digital` 0–59.
+pub fn start(input: Input, rate: u32, analog: u8, digital: u8, width: Width) {
     // VERBATIM(vendor AUD_DEV B1:0x0D8206B2, API 18) from here.
     // Reset pulse, clock gate, rate.
     rmu::RST1.clear_bits(rmu::rst1::ADC);
@@ -160,12 +192,18 @@ pub fn start(input: Input, rate: u32, analog: u8, digital: u8) {
     adc::BIAS1.set_bits(adc::VENDOR_BIAS1_SET);
     cmu::ADC01CLK.clear_bits(adcclk::OVFSDIV.mask());
     adc::GRPCTL.write(0);
-    adc::ADC01_FIFOCTL
-        .modify(|v| (v & !adc::VENDOR_FIFOCTL_CLEAR) | adc::VENDOR_FIFOCTL_DMA | adc::fifoctl::FIFO_DMAWIDTH);
-    // Analogue front end: the microphone input (MIC_MIX_CTL; "ADC_ANA").
+    let w16 = if width == Width::Bits16 { adc::fifoctl::FIFO_DMAWIDTH } else { 0 };
+    adc::ADC01_FIFOCTL.modify(|v| (v & !adc::VENDOR_FIFOCTL_CLEAR) | adc::VENDOR_FIFOCTL_DMA | w16);
+    // Analogue front end for the microphone, left side (B1:0x0D82058C,
+    // called with left = 1, right = 0): the left mic input on, single-ended
+    // or differential; then in CTL the gain and the left FD buffer (6 kΩ).
     if let Input::Mic { differential } = input {
-        adc::MIC_MIX_CTL.modify(|v| {
-            (v & !0x13F) | adc::mic_mix_ctl::MICGRSEL | 0x3 | if differential { 0 } else { 0x10 }
+        let se = if differential { 0 } else { adc::mic_mix_ctl::MIC_IN_MODE };
+        adc::MIC_MIX_CTL.modify(|v| (v & !adc::VENDOR_MIC_CLEAR) | adc::VENDOR_MIC_LEFT | se);
+        adc::CTL.modify(|v| {
+            (v & adc::VENDOR_CTL_MIC_KEEP)
+                | ctl::PREAM_PG.val(u32::from(analog.min(15)))
+                | adc::VENDOR_CTL_FDBUF_L
         });
     }
     // VERBATIM end.
@@ -191,6 +229,18 @@ pub fn stop() {
     adc::CH1_DIGCTL.write(0);
     adc::DIGCTL.write(0);
     cmu::ADC01CLK.write(adcclk::PORT_VALUE);
+}
+
+/// The FIFO status (`ADC01_FIFOSTA`: b8 overrun, b7 half full, b6 empty,
+/// b4:0 level) and two words read straight from the FIFO (developer
+/// `rec raw`). Two, so the DMA's L/R order is kept: each read takes a word
+/// the DMA would have had.
+#[must_use]
+pub fn fifo_peek() -> (u32, [u32; 2]) {
+    let sta = adc::ADC01_FIFOSTA.read();
+    let a = adc::ADC01_DAT_FIFO.read();
+    let b = adc::ADC01_DAT_FIFO.read();
+    (sta, [a, b])
 }
 
 /// Registers for the developer status: `CMU+0x80`, CTL, CH0, MIC_MIX,

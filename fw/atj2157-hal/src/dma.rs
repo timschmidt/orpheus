@@ -105,6 +105,14 @@ fn on_ring_irq() {
     WAKERS[RING_CH].wake();
 }
 
+/// Bytes left in channel `n`'s running block (its REMAIN register; a
+/// read, no ownership needed): where a ring's DMA is writing (developer
+/// `rec raw`).
+#[must_use]
+pub fn remaining_of(n: usize) -> u32 {
+    ch_reg(n, 0x1C).read()
+}
+
 /// Events of channel `n` so far (see [`RING_EVENTS`]; 0 for the others).
 #[must_use]
 pub fn events(n: usize) -> u32 {

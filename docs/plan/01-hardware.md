@@ -260,6 +260,13 @@ instead of reset; bit 6 interrupt pending.
 * The port's comment "no FM tuner on this model" is wrong: the stock firmware
   has a complete RDA5807 driver and the radio in its main menu.
 * `GPIO_OUTEN` in the port's header is probably the output data latch.
+* audio.md §3.1/§3.3 (ADC_ANA): "b1:0 = 3 for the left converter, b3:2 for
+  the right" is the wrong way round. The front-end function at
+  B1:0x0D82058C ORs `0xC` (`MIC_MIX_CTL[3:2]`, the datasheet's MICL_EN) for
+  its first argument, which the mono-microphone caller sets, and `0x3`
+  (MICR_EN) for its second; it also sets the matching FD buffer in
+  `ADC_CTL` (left `0x70080`, right `0x7040`). The datasheet's names are
+  right (U-AUD-13).
 * The strings `WAKE_PD`, `DC5V_ON`, `welcome s4` belong to the vendor's second
   boot stage (NOR `0x200–0x71FF`), which our stage 1 bypasses: its work
   (battery check, DEVPLL, SRAM2/3, pin table) is ours to do.
@@ -471,8 +478,8 @@ run on the player.
 | U-AUD-8 | Hardware mixing of DAC FIFO1 (key clicks) | Second DMA stream on FIFO1 during playback | AU-1 |
 | U-AUD-9 | `DAC_FIFO0_CNT` as a playback-position counter | Compare with DMA bytes played | AU-1 |
 | U-AUD-11 | Recording reprograms `CMU+0x80` (the ADC clock, whose `0x33000000` bits analogue output needs) while the FM bypass or the DAC runs: does the output stay clean, at 16 / 44.1 / 48 kHz? `atj2157_hal::adc` keeps those bits and puts the DAC power-up's value back at stop, instead of the vendor's `CMU+0x80 = 0` | `rec start fm wav 20` with the radio playing, at each quality; listen for clicks, pitch changes or silence | AU-13 |
-| U-AUD-12 | Which 16 of the FIFO's 24 bits the capture DMA takes with `FIFO_DMAWIDTH` = 16-bit and mode bit 20 (vendor setting): the top 16 (as playback's widening suggests) or the low ones | `rec start mic wav 10` while speaking: level in `rec status` in the −40…−6 dBFS range and clean speech mean the top 16 | AU-13 |
-| U-AUD-13 | The microphone's input mode (the vendor's `CONFIG.TXT` says differential, `MIC_MIX_CTL[4]` = 0) and its gain on this board (vendor 31 dB analogue + 21 dB digital) | Speak at 30 cm: peaks near −12 dBFS; if far lower or very noisy try single-ended | AU-13 |
+| U-AUD-12 | Which 16 of the FIFO's 24 bits the capture DMA takes with `FIFO_DMAWIDTH` = 16-bit and DMA width 16 (`TWS` = 1, mode `0x0014008B`, the vendor's setting): the top 16 (as playback's widening suggests) or the low ones. The datasheet: FIFO words hold the sample in `[31:8]`, `[7:0]` zero (§8.2.6.7); a 16-bit DMA read ignores address bit 0 only (§5.3.1.5). **First run 2026-11-24 (`d7f59d7c`)**: data moves (`dma_events` counting, `FIFOSTA` `0x187`/`0x184`: overrun flag from before the DMA started, level 4–7), but the microphone read −60 dBFS throughout; the front end was wrong too (U-AUD-13), so this run does not decide it. Since then a runtime choice: `rec width 32` captures whole words (`FIFO_DMAWIDTH` = 0, mode `0x0004008B`) and keeps bits 31:16 in software (`orpheus_rec::pcm`); `rec raw` dumps the ring's words, `FIFOSTA` and two FIFO reads while capturing | `rec start mic wav 10`, `rec raw` and `rec status` while speaking, at `rec width 16` and `rec width 32`: same level both ways and clean speech = the 16-bit DMA takes the top 16. In `rec raw` at width 16 each word is two samples (first in the low half); at width 32 each word should have `[7:0]` = 0 | AU-13 |
+| U-AUD-13 | The microphone's input mode (the vendor's `CONFIG.TXT` says differential, `MIC_MIX_CTL[4]` = 0) and its gain on this board (vendor 31 dB analogue + 21 dB digital). **First run 2026-11-24: silence (−60 dBFS) with `MIC_MIX_CTL` = `0x103`, `CTL` = `0x04000D2A`.** Cause found in the vendor code (B1:0x0D82058C–0x5E6, callers 0x0D8207F2–0x866): its mono microphone enables the *left* mic input `MIC_MIX_CTL[3:2]` (`0x10C`) and the left FD buffer `CTL` `0x70080` (FDBUFL_EN, FDBUFL_IRS 6 kΩ), mask `0xFFF8803F` first; we had the right mic input `[1:0]` and no buffer (audio.md §3.1 swapped the two arguments). Fixed [code]; expected now `MIC_MIX_CTL` = `0x10C`, `CTL` = `0x04070DAA` | Speak at 30 cm: peaks near −12 dBFS; if far lower or very noisy try `rec mic se` (single-ended). The vendor also calls `0x15840001(0, 1, 0, 1)` when a config byte at `0x306F02` is 1 (unknown purpose, not copied) | AU-13 |
 
 ### Answered on the player by bring-up images, 2026-11-23
 
