@@ -67,9 +67,13 @@ const SAVE_AFTER_MS: u64 = 10 * 60_000;
 /// Longest trace (`acc trace <secs>`).
 const TRACE_MAX_S: u32 = 3600;
 
-/// SRAM3 above the battery logger's state (`drain::SHARED_ADDR`,
-/// `0x307800`) and below the card I/O counter (`0x307FFC`).
-pub const SHARED_ADDR: usize = 0x0030_7A00;
+/// SRAM3 right after the battery logger's state (`drain::SHARED_END`,
+/// 8-byte aligned); the radio's follows (`fm::FM_ADDR`), all below the
+/// card I/O counter (`0x307FFC`). Chained so that no two overlap: at a
+/// fixed `0x307A00` this state ran into the radio's (2026-11-24).
+pub const SHARED_ADDR: usize = (crate::drain::SHARED_END + 7) & !7;
+/// End of [`Shared`].
+pub const SHARED_END: usize = SHARED_ADDR + core::mem::size_of::<Shared>();
 
 /// The trace capture.
 struct Trace {
@@ -132,9 +136,10 @@ pub struct Shared {
 
 /// Below the card's I/O counter.
 const _: () = assert!(SHARED_ADDR + core::mem::size_of::<Shared>() <= yoton_bsp::card::IO_ADDR);
-/// Above the battery logger's state.
+/// Above the battery logger's state, aligned.
 const _: () =
     assert!(crate::drain::SHARED_ADDR + core::mem::size_of::<crate::drain::Shared>() <= SHARED_ADDR);
+const _: () = assert!(SHARED_ADDR % core::mem::align_of::<Shared>() == 0);
 
 /// Commands for the sensor task (they need the bus or the chip's mode).
 #[derive(Clone, Copy)]
