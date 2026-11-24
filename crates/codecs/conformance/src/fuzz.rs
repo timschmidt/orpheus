@@ -115,9 +115,69 @@ pub fn probe(data: &[u8]) {
 /// A named target body.
 pub type Target = (&'static str, fn(&[u8]));
 
+/// Tag reader over a simulated ring: byte 0 picks the container and the
+/// refill size. It must finish without breaking the `NeedData` contract
+/// and with a bounded number of `Continue`s.
+pub fn meta(data: &[u8]) {
+    use yoton_audio::{ByteSource, SliceSource};
+    use yoton_meta::{MetaStep, Opts, TagReader, Tags};
+    let Some((&sel, file)) = data.split_first() else { return };
+    let format = [Format::Mpeg, Format::Flac, Format::Wav, Format::Aiff][usize::from(sel & 3)];
+    let chunk = CHUNKS[usize::from(sel >> 2) % CHUNKS.len()];
+    let mut src = SliceSource::ring(file, 32 * 1024);
+    let mut r = TagReader::new(format, Opts::default());
+    let mut tags = Tags::default();
+    let mut continues = 0usize;
+    for _ in 0..drive::budget(file.len()) {
+        match r.step(&mut src, &mut tags) {
+            Ok(MetaStep::Done) | Err(_) => return,
+            Ok(MetaStep::Continue) => {
+                continues += 1;
+                assert!(continues <= file.len() + 16, "tag reader spins");
+            }
+            Ok(MetaStep::NeedData(n)) => {
+                assert!(n > src.available() && !src.at_end(), "tag reader NeedData contract");
+                if chunk == 0 { src.refill() } else { src.trickle(chunk) }
+            }
+        }
+    }
+    panic!("tag reader does not finish");
+}
+
+/// LRC and SYLT readers over arbitrary bytes.
+pub fn lyrics(data: &[u8]) {
+    use yoton_audio::SliceSource;
+    use yoton_meta::lrc::{LrcReader, LrcStep};
+    use yoton_meta::sylt::{SyltReader, SyltStep};
+    let mut src = SliceSource::ring(data, 4096);
+    let mut r = LrcReader::new(yoton_meta::CodePage::Windows1251);
+    for _ in 0..drive::budget(data.len()) {
+        match r.next(&mut src) {
+            LrcStep::Done => break,
+            LrcStep::NeedData(_) => src.trickle(97),
+            LrcStep::Line(_) => {}
+        }
+    }
+    let mut src = SliceSource::new(data);
+    let mut s = SyltReader::new(data.len() as u32, yoton_meta::CodePage::Latin1);
+    for _ in 0..drive::budget(data.len()) {
+        if !matches!(s.next(&mut src), SyltStep::Entry(_)) {
+            return;
+        }
+    }
+    panic!("SYLT reader does not finish");
+}
+
 /// The targets, by name (for the smoke run and the cargo-fuzz wrappers).
-pub const TARGETS: &[Target] =
-    &[("decode_any", decode_any), ("wav", wav), ("mp3", mp3), ("flac", flac), ("probe", probe)];
+pub const TARGETS: &[Target] = &[
+    ("decode_any", decode_any),
+    ("wav", wav),
+    ("mp3", mp3),
+    ("flac", flac),
+    ("probe", probe),
+    ("meta", meta),
+    ("lyrics", lyrics),
+];
 
 /// One mutation of `seed` (bit flips, byte overwrites, truncation, splices
 /// of random bytes, duplicated or deleted ranges), with a random 3-byte

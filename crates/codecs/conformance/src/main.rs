@@ -138,6 +138,17 @@ fn fuzz_smoke(a: &Args) -> Result<bool, String> {
     if seeds.is_empty() {
         return Err("no seeds".into());
     }
+    // Regression inputs kept from earlier fuzzer findings (07 §3.4).
+    let regress = a.dir.join("../regress");
+    for &(name, f) in fuzz::TARGETS {
+        let Ok(rd) = std::fs::read_dir(regress.join(name)) else { continue };
+        for e in rd.flatten() {
+            if let Ok(input) = std::fs::read(e.path()) {
+                yoton_codec_conformance::set_context(&format!("regression {name}/{}", e.path().display()));
+                f(&input);
+            }
+        }
+    }
     let jobs: Vec<(fuzz::Target, usize)> =
         fuzz::TARGETS.iter().flat_map(|&t| (0..8).map(move |k| (t, k))).collect();
     let per = a.iters / 8 + 1;

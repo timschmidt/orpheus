@@ -54,6 +54,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "meta"
+path = "fuzz_targets/meta.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lyrics"
+path = "fuzz_targets/lyrics.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "probe"
 path = "fuzz_targets/probe.rs"
 test = false

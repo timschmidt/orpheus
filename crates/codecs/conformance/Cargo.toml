@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 yoton-audio = { path = "../../yoton-audio" }
 yoton-codecs = { path = ".." }
+yoton-meta = { path = "../../yoton-meta" }
 md-5 = "0.10"
 
 [lints]

@@ -373,6 +373,14 @@ impl FlacDecoder<'_> {
                 st.at = pos;
                 src.seek(pos)?;
             }
+            if !st.linear && src.position() >= st.hi && st.at < st.hi {
+                // The probe scanned past the bracket without a header: no
+                // frame starts between the probe and `hi`.
+                st.hi = st.at.max(st.lo);
+                st.linear = st.hi <= st.lo + 1;
+                st.started = false;
+                continue;
+            }
             match self.sync(src) {
                 Ok(h) => {
                     let at = src.position();

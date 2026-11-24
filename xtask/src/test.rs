@@ -698,7 +698,7 @@ fn seed_fuzz_corpus(target: &str, corpus_dir: &Path, out: &Path) -> Result<()> {
         "wav" => &["wav/", "aiff/", "au/"],
         "mp3" => &["mp3/"],
         "flac" => &["flac/"],
-        "meta" => &["mp3/", "flac/"],
+        "meta" => &["mp3/", "flac/", "wav/"],
         _ => &[""],
     };
     let manifest = std::fs::read_to_string(corpus_dir.join("manifest.tsv"))?;
@@ -758,7 +758,8 @@ fn fuzz_smoke(secs: u64) -> Result<String> {
 // Code size on the device target
 
 /// Codec crates measured by `codec-size`.
-const SIZE_CRATES: [&str; 4] = ["yoton-audio", "yoton-codec-wav", "yoton-codec-mp3", "yoton-codec-flac"];
+const SIZE_CRATES: [&str; 5] =
+    ["yoton-audio", "yoton-codec-wav", "yoton-codec-mp3", "yoton-codec-flac", "yoton-meta"];
 
 fn codec_size() -> Result<String> {
     let target_dir = root().join("target").join("codec-size");

@@ -637,6 +637,7 @@ dependencies = [
  "md-5",
  "yoton-audio",
  "yoton-codecs",
+ "yoton-meta",
 ]
 
 [[package]]
@@ -681,6 +682,13 @@ dependencies = [
  "nusb",
  "png",
  "yoton-proto",
+]
+
+[[package]]
+name = "yoton-meta"
+version = "0.1.0"
+dependencies = [
+ "yoton-audio",
 ]
 
 [[package]]
