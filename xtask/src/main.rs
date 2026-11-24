@@ -8,8 +8,16 @@ mod args;
 mod build;
 mod dev;
 mod gate;
+mod linkgraph;
+mod linkmap;
+mod pagelink;
+mod resident;
+mod rules;
+mod savedlink;
+mod selftest;
 mod size;
 mod test;
+mod thumb;
 mod util;
 
 use std::process::ExitCode;
@@ -19,10 +27,17 @@ use args::Args;
 const USAGE: &str = "\
 usage: cargo xtask <command> [options]
 
-  build [--debug] [--bin NAME]     build the firmware (fw/) and its flat image
+  build [--debug] [--bin NAME] [--layout dual|full] [--features F]
+                                   build the firmware (fw/) and pagelink it:
+                                   target/yoton/firmware.yfw, resident.bin,
+                                   pages.bin, layout.json
+  pagelink [--bin NAME] [--no-build] [--paged PATTERN,..]
+                                   the two-pass paged link alone
+  check-resident [--bin NAME]      prove nothing reachable from the roots is paged
   bringup NAME [--debug]           build a RAM-only bring-up image (fw/bringup/NAME)
-  size [--check] [--elf PATH]      size report; --check enforces budgets.toml
-  test [host|golden|all]           host test suites
+  size [--check] [--bin NAME] [--elf PATH]
+                                   size report; --check enforces budgets.toml
+  test [host|golden|pagelink|all]  host test suites (pagelink: the paged toy end to end)
   gate                             the milestone gate (07 §6)
   dev <subcommand>                 talk to the player (see `cargo xtask dev help`)
 ";
@@ -36,6 +51,8 @@ fn main() -> ExitCode {
     let r = match cmd.as_str() {
         "build" => build::cmd_build(&mut args),
         "bringup" => build::cmd_bringup(&mut args),
+        "pagelink" => pagelink::cmd(&mut args),
+        "check-resident" => resident::cmd(&mut args),
         "size" => size::cmd(&mut args),
         "test" => test::cmd(&mut args),
         "gate" => gate::cmd(&mut args),

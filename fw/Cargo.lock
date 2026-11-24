@@ -126,6 +126,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bringup-pagetoy"
+version = "0.1.0"
+dependencies = [
+ "atj2157-hal",
+ "embassy-executor",
+ "static_cell",
+ "yoton-pager",
+ "yoton-proto",
+]
+
+[[package]]
 name = "bringup-sd"
 version = "0.1.0"
 dependencies = [
@@ -846,6 +857,10 @@ dependencies = [
 
 [[package]]
 name = "yoton-input"
+version = "0.1.0"
+
+[[package]]
+name = "yoton-pager"
 version = "0.1.0"
 
 [[package]]

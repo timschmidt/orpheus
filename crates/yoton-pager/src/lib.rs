@@ -456,8 +456,11 @@ impl PagerCore {
     /// Find the region mapping `t`, or take one: a free region, else the
     /// least recently faulted one that does not map the faulting code.
     fn region_for(&mut self, t: &Target, pc: u32) -> (usize, bool) {
+        // Indices are reduced modulo the table size throughout: the bound is
+        // then visible to the compiler and no bounds-check panic is linked
+        // into the fault path (`check-resident` lists reachable panics).
         if let Some(r) = self.reg_page.iter().position(|&p| p == t.id) {
-            return (r, false);
+            return (r % POOL_REGIONS, false);
         }
         let pc_page = match Page::of(pc) {
             Some(p @ Page::Code(_)) => p.id(),
@@ -476,7 +479,7 @@ impl PagerCore {
             }
             self.stats.evictions += 1;
             r
-        };
+        } % POOL_REGIONS;
         self.reg_page[r] = t.id;
         self.reg_va[r] = t.va;
         self.reg_slot[r] = t.slot;
@@ -516,6 +519,7 @@ impl PagerCore {
             }
             let mut sub = (addr >> 10) & 7;
             let (r, fresh) = self.region_for(&t, pc);
+            let r = r % POOL_REGIONS;
             if self.reg_mask[r] & (1 << sub) != 0 {
                 if !fresh {
                     // The line is mapped, so the access straddles into the
@@ -553,6 +557,8 @@ impl PagerCore {
     }
 
     fn load(&mut self, r: usize, t: &Target, sub: u32, pc: u32) -> Action {
+        let r = r % POOL_REGIONS;
+        let sub = sub & 7;
         let line = (usize::from(t.slot) * 8 + sub as usize) % LINES;
         let prev = self.line_page[line];
         if prev != NO_PAGE
@@ -601,7 +607,7 @@ impl PagerCore {
         let line = (slot * 8 + sub) as usize % LINES;
         let id = self.line_page[line];
         self.line_page[line] = NO_PAGE;
-        let r = self.reg_page.iter().position(|&p| p == id && id != NO_PAGE)?;
+        let r = self.reg_page.iter().position(|&p| p == id && id != NO_PAGE)? % POOL_REGIONS;
         self.reg_mask[r] &= !(1 << sub);
         Some(self.map(r))
     }

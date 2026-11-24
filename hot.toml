@@ -1,0 +1,22 @@
+# Profile-guided packing of paged code and rodata
+# (docs/plan/02-architecture.md §3.5). Read by `cargo xtask pagelink`.
+#
+# Each cluster is an ordered list of patterns (globs over demangled symbol
+# names, or over section names); the matching paged sections are packed
+# first, adjacent, in pattern order, each cluster starting on a 1 KiB line
+# boundary. A cluster that fits the cache (24 lines or less, leaving 8 for
+# everything else) runs fault-free after warm-up. Everything not in a
+# cluster follows, grouped by crate in link order. `bins` limits a cluster
+# to some binaries (all when absent). The fault profiler (WP-T-8,
+# `xtask dev prof --update-hot`) will regenerate the firmware clusters.
+#
+# [[cluster]]
+# name = "mp3-frame"
+# symbols = ["yoton_codec_mp3::frame::*", "yoton_codec_mp3::imdct::*"]
+
+# The paged toy: three functions spread over the generated code, packed
+# together (checked by `cargo xtask test pagelink`).
+[[cluster]]
+name = "pagetoy-hot"
+bins = ["bringup-pagetoy"]
+symbols = ["bringup_pagetoy::generated::work_40", "bringup_pagetoy::generated::work_3", "bringup_pagetoy::generated::work_9"]

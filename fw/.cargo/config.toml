@@ -3,3 +3,6 @@ target = "thumbv7em-none-eabihf"
 
 [target.thumbv7em-none-eabihf]
 rustflags = ["-C", "target-cpu=cortex-m4", "-C", "link-arg=--nmagic"]
+# Saves every link for `cargo xtask pagelink` (which links again with the
+# generated paged layout without recompiling), then runs rust-lld unchanged.
+linker = "../tools/yoton-ld"
