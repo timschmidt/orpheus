@@ -1,0 +1,13 @@
+[package]
+name = "yoton-ogg"
+description = "Ogg page and packet layer (RFC 3533) over a ByteSource: CRC, packet reassembly into a caller buffer, serial selection, granule bisection seek"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+yoton-audio = { path = "../../yoton-audio" }
+
+[lints]
+workspace = true

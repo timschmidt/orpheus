@@ -1228,6 +1228,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "yoton-ogg"
+version = "0.1.0"
+dependencies = [
+ "yoton-audio",
+]
+
+[[package]]
 name = "yoton-pager"
 version = "0.1.0"
 dependencies = [
