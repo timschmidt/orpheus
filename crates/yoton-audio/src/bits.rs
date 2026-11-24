@@ -119,7 +119,8 @@ impl<'a> BitReader<'a> {
         loop {
             let lz = self.cache.leading_zeros();
             if lz < self.nbits {
-                self.cache <<= lz + 1;
+                // `lz + 1` is 64 when the one is the cache's last bit.
+                self.cache = self.cache.checked_shl(lz + 1).unwrap_or(0);
                 self.nbits -= lz + 1;
                 return count + lz;
             }

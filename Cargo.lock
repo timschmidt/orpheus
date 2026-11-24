@@ -667,6 +667,7 @@ name = "yoton-codecs"
 version = "0.1.0"
 dependencies = [
  "yoton-audio",
+ "yoton-codec-flac",
  "yoton-codec-mp3",
  "yoton-codec-wav",
 ]

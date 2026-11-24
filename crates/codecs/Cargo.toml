@@ -16,12 +16,13 @@ path = "lib.rs"
 default = ["wav", "mp3", "flac"]
 wav = ["dep:yoton-codec-wav"]
 mp3 = ["dep:yoton-codec-mp3"]
-flac = []
+flac = ["dep:yoton-codec-flac"]
 
 [dependencies]
 yoton-audio = { path = "../yoton-audio" }
 yoton-codec-wav = { path = "wav", optional = true }
 yoton-codec-mp3 = { path = "mp3", optional = true }
+yoton-codec-flac = { path = "flac", optional = true }
 
 [lints]
 workspace = true

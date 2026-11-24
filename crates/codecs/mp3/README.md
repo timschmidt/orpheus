@@ -36,7 +36,7 @@ device (04 §4.3). The `exact` feature evaluates sums in minimp3's order.
 | | Bytes |
 |---|---|
 | Arena (`ARENA`) | 21 102: state 12 388, split-frame buffer 1 536, PCM block 4 608, seek index 2 048, seek walk ring 512, alignment slack |
-| Measured high-water | see the conformance summary (same on every file: everything is taken at open) |
+| Measured high-water | 21 092 on every corpus file (everything is taken at open) |
 | Budget (04 §4.1) | 28 672 |
 | Decoder struct (outside the arena) | about 150 |
 | Stack | mbop3 states < 3 KiB on ESP32-S3; not measured here |

@@ -529,7 +529,11 @@ fn flac(g: &mut Gen) -> Result<()> {
         g.flac(&src, &format!("flac/{}_44100_2.flac", sig.name()), &["-5"], S16)?;
     }
     let six = g.dir.join("src/six_48000.wav");
-    g.flac(&six, "flac/six_48000.flac", &["-5", "--channel-map=none"], S16)?;
+    // Six channels need ~100 KB of planar block: over the 38 KiB budget,
+    // refused (no in-decoder down-mix yet).
+    let out = g.path("flac/six_48000.flac")?;
+    tool("flac", &[s(&["-s", "-f", "-5", "--channel-map=none", "-o"]), vec![p(&out), p(&six)]].concat())?;
+    g.refuse("flac/six_48000.flac")?;
     // Odd bit depths (12 and 20 bits) from WAVE_FORMAT_EXTENSIBLE input
     // with fewer valid bits than the container.
     for (bits, cont) in [(12u16, 16u16), (20, 24)] {
