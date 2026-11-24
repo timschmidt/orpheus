@@ -159,6 +159,53 @@ fn media_cases(add: &mut dyn FnMut(String, String)) {
     pictures_cases(add);
     library_cases(add);
     bluetooth_cases(add);
+    radio_cases(add);
+}
+
+/// UI-5a: the Radio app over the firmware's radio service and the fake
+/// tuner (`orpheus_fm::fake`). Home grid: Radio is the third app. Menu
+/// rows off a preset: Save preset, Presets…, Auto-scan, Force mono,
+/// Region, Stop radio.
+fn radio_cases(add: &mut dyn FnMut(String, String)) {
+    let app = "goto:Radio wait:300 expect-screen:Radio";
+    let journeys: &[(&str, String)] = &[
+        ("playing", format!("set:presets=demo set:radio=101900 {app}")),
+        ("open", "next*2 ok wait:1100 expect-screen:Radio".into()),
+        ("starting", "goto:Radio wait:300 expect-screen:Radio".into()),
+        ("text", format!("set:presets=demo set:radio=101900 {app} wait:2500")),
+        ("muted", format!("set:radio=94700 {app} ok wait:100")),
+        ("off", format!("set:radio=94700 {app} hold:ok wait:2200")),
+        ("seeking", format!("set:seekreads=200 set:radio=94700 {app} hold:next wait:300")),
+        ("scanning", format!("set:radio=94700 {app} menu down*2 ok wait:250")),
+        ("scanned", format!("set:radio=94700 {app} menu down*2 ok wait:1500")),
+        ("scan_ask", format!("set:presets=demo set:radio=94700 {app} menu down*2 ok")),
+        ("menu", format!("set:presets=demo set:radio=101900 {app} menu")),
+        ("region", format!("set:radio=94700 {app} menu down*4 ok")),
+        (
+            "presets",
+            format!(
+                "set:presets=demo set:radio=94700 {app} menu down ok wait:100 expect-screen:RadioPresets"
+            ),
+        ),
+        ("presets_menu", format!("set:presets=demo set:radio=94700 {app} menu down ok wait:100 down menu")),
+        ("presets_empty", format!("set:radio=94700 {app} menu down ok wait:100")),
+        ("no_antenna", format!("set:antenna=0 set:radio=91500 {app}")),
+        ("no_tuner", "set:tuner=absent goto:Radio wait:1500 expect-screen:Radio".into()),
+        ("japan", format!("set:0x0701=3 set:radio=77100 {app}")),
+        ("home", "set:radio=101900 wait:3000 expect-screen:Home".into()),
+    ];
+    for t in ["dark", "light"] {
+        for l in ["latin", "cyrillic", "cjk"] {
+            for (name, script) in journeys {
+                add(format!("radio_{name}_{t}_{l}"), format!("@apps theme:{t} lang:{l} {script}"));
+            }
+        }
+    }
+    add("radio_playing_amber".into(), format!("@apps theme:amber set:presets=demo set:radio=101900 {app}"));
+    add(
+        "radio_presets_amber".into(),
+        format!("@apps theme:amber set:presets=demo set:radio=94700 {app} menu down ok wait:100"),
+    );
 }
 
 /// UI-6a: the Bluetooth app over the fake module (`sim/src/bt.rs`). Home
@@ -276,7 +323,7 @@ fn app_cases(add: &mut dyn FnMut(String, String)) {
         ("quick", "set:playing=1 set:bt=connected hold:menu expect-screen:QuickPanel down*3 next"),
         ("lock", "set:playing=1 power down expect-screen:Lock"),
         ("no_card", "set:card=absent ok expect-screen:Notice"),
-        ("not_yet", "next*2 ok expect-screen:Notice"),
+        ("not_yet", "down ok expect-screen:Notice"),
         ("battery_low", "set:battery=5 expect-screen:Notice"),
         ("charging", "set:charge=charging set:battery=64 goto:Charging expect-screen:Charging"),
         ("usb", "set:usb=host expect-screen:UsbConnect"),

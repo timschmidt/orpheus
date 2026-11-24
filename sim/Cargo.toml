@@ -15,6 +15,7 @@ window = ["dep:minifb"]
 orpheus-ui = { path = "../crates/orpheus-ui" }
 orpheus-apps = { path = "../crates/orpheus-apps" }
 orpheus-power = { path = "../crates/orpheus-power" }
+orpheus-fm = { path = "../crates/orpheus-fm", features = ["fake"] }
 orpheus-fs = { path = "../crates/orpheus-fs", features = ["std"] }
 orpheus-meta = { path = "../crates/orpheus-meta" }
 orpheus-audio = { path = "../crates/orpheus-audio" }

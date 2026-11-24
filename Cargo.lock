@@ -828,6 +828,7 @@ dependencies = [
 name = "orpheus-apps"
 version = "0.1.0"
 dependencies = [
+ "orpheus-fm",
  "orpheus-power",
  "orpheus-ui",
 ]
@@ -923,6 +924,10 @@ version = "0.1.0"
 dependencies = [
  "orpheus-audio",
 ]
+
+[[package]]
+name = "orpheus-fm"
+version = "0.1.0"
 
 [[package]]
 name = "orpheus-fs"
@@ -1044,6 +1049,7 @@ dependencies = [
  "minifb",
  "orpheus-apps",
  "orpheus-audio",
+ "orpheus-fm",
  "orpheus-fs",
  "orpheus-host",
  "orpheus-img",

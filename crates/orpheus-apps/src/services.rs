@@ -406,6 +406,143 @@ pub trait BluetoothService {
     fn bt_request(&mut self, r: BtRequest);
 }
 
+// ---------------------------------------------------------------- Radio
+
+pub use orpheus_fm::presets::{MAX as PRESETS_MAX, Preset, Presets};
+pub use orpheus_fm::region::Region;
+
+/// What the radio is doing (05 §7.3).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum RadioPhase {
+    /// The tuner is powered down.
+    #[default]
+    Off,
+    Starting,
+    Playing,
+    Seeking,
+    Scanning,
+    /// The tuner did not answer.
+    NotResponding,
+}
+
+impl RadioPhase {
+    /// The radio is (or is about to be) heard.
+    #[must_use]
+    pub const fn is_on(self) -> bool {
+        matches!(
+            self,
+            RadioPhase::Starting | RadioPhase::Playing | RadioPhase::Seeking | RadioPhase::Scanning
+        )
+    }
+}
+
+/// The radio's state, by value.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct RadioInfo {
+    pub phase: RadioPhase,
+    pub khz: u32,
+    /// Received signal strength, 0–127 (about 1 dB per step).
+    pub rssi: u8,
+    pub stereo: bool,
+    pub muted: bool,
+    /// Earphones are plugged in: their cable is the antenna.
+    pub antenna: bool,
+    /// Auto-scan: progress 0–1000 and stations found so far.
+    pub progress: u16,
+    pub found: u8,
+}
+
+impl RadioInfo {
+    /// Signal bars 0–3 for the screen.
+    #[must_use]
+    pub const fn bars(&self) -> u8 {
+        match self.rssi {
+            0..=19 => 0,
+            20..=29 => 1,
+            30..=39 => 2,
+            _ => 3,
+        }
+    }
+}
+
+/// Radio requests from the screens.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RadioRequest {
+    /// Power the tuner and play (music stops).
+    Start,
+    /// Stop: the tuner is powered down.
+    Stop,
+    Tune(u32),
+    /// One region step.
+    Step {
+        up: bool,
+    },
+    /// To the next station.
+    Seek {
+        up: bool,
+    },
+    /// Stop a seek or an auto-scan.
+    Cancel,
+    Mute(bool),
+    /// Auto-scan: the stations found replace the presets when it ends.
+    Scan,
+}
+
+/// Changes to the presets (the service saves them).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PresetOp {
+    /// Save a frequency (named with the station's RDS name when it is the
+    /// one playing).
+    Save(u32),
+    Remove(usize),
+    MoveUp(usize),
+    MoveDown(usize),
+}
+
+/// `ServiceEvent::Other { kind: other::RADIO, value }` values.
+pub mod radio_event {
+    /// [`super::RadioInfo`] changed (phase, frequency, signal, mute).
+    pub const STATE: u32 = 1;
+    /// The RDS name or text changed.
+    pub const RDS: u32 = 2;
+    /// An auto-scan ended (the presets were replaced if it found any).
+    pub const SCANNED: u32 = 3;
+    /// The presets changed.
+    pub const PRESETS: u32 = 4;
+}
+
+/// The FM radio (05 §7.3, firmware `fm` task).
+pub trait RadioService {
+    fn radio(&self) -> RadioInfo;
+    /// RDS programme service name, `""` if none.
+    fn radio_ps(&self) -> &str;
+    /// RDS radio text so far, `""` if none.
+    fn radio_rt(&self) -> &str;
+    fn radio_request(&mut self, r: RadioRequest);
+    fn presets(&self) -> &Presets;
+    /// Change the presets; false if it could not be done (list full).
+    fn preset_op(&mut self, op: PresetOp) -> bool;
+}
+
+/// "101.90": a frequency in MHz with two decimals.
+pub fn push_mhz<const N: usize>(khz: u32, out: &mut StrBuf<N>) {
+    out.push_u32(khz / 1000);
+    out.push('.');
+    let frac = (khz % 1000) / 10;
+    if frac < 10 {
+        out.push('0');
+    }
+    out.push_u32(frac);
+}
+
+/// A preset's label: its RDS name as text.
+pub fn push_preset_name<const N: usize>(p: &Preset, out: &mut StrBuf<N>) {
+    let mut b = [0u8; 32];
+    let n = orpheus_fm::rds::to_utf8(p.name(), &mut b);
+    let s = core::str::from_utf8(b.get(..n).unwrap_or(&[])).unwrap_or("");
+    out.push_str_or_ellipsis(s.trim());
+}
+
 pub trait SystemService {
     /// The active language (the firmware switches packs when the Language
     /// setting changes).
@@ -444,6 +581,7 @@ pub trait Services:
     + PlaybackService
     + UsbService
     + BluetoothService
+    + RadioService
     + SystemService
 {
 }
@@ -462,6 +600,7 @@ impl<T> Services for T where
         + PlaybackService
         + UsbService
         + BluetoothService
+        + RadioService
         + SystemService
 {
 }
@@ -551,6 +690,8 @@ pub mod other {
     pub const LIBRARY: u16 = 1;
     /// Bluetooth: `value` is one of [`super::bt_event`].
     pub const BLUETOOTH: u16 = 2;
+    /// Radio: `value` is one of [`super::radio_event`].
+    pub const RADIO: u16 = 3;
 }
 
 /// Browser order (Files menu › Sort).

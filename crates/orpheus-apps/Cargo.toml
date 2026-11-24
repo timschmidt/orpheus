@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 orpheus-ui = { path = "../orpheus-ui" }
 orpheus-power = { path = "../orpheus-power" }
+orpheus-fm = { path = "../orpheus-fm" }
 
 [lints]
 workspace = true
