@@ -105,6 +105,36 @@ pub fn flac(data: &[u8]) {
     decode_with(data, Some(Format::Flac));
 }
 
+pub fn vorbis(data: &[u8]) {
+    decode_with(data, Some(Format::Ogg(yoton_audio::OggCodec::Vorbis)));
+}
+
+/// The Ogg packet reader alone, over a simulated ring.
+pub fn ogg(data: &[u8]) {
+    use yoton_audio::{ByteSource, SliceSource};
+    use yoton_ogg::{Next, Reader};
+    let Some((&sel, file)) = data.split_first() else { return };
+    let chunk = CHUNKS[usize::from(sel) % CHUNKS.len()];
+    let mut src = SliceSource::ring(file, 32 * 1024);
+    let mut r = Reader::new();
+    for _ in 0..drive::budget(file.len()) {
+        match r.next(&mut src) {
+            Next::Packet(p) => {
+                let v = yoton_audio::View::of(&src);
+                let _ = p.byte(&v, p.len.saturating_sub(1));
+                r.commit(&mut src, &p);
+            }
+            Next::Need(n) => {
+                assert!(n > src.available() && !src.at_end(), "ogg NeedData contract");
+                if chunk == 0 { src.refill() } else { src.trickle(chunk) }
+            }
+            Next::End => return,
+            Next::Corrupt => {}
+        }
+    }
+    panic!("ogg reader does not finish");
+}
+
 /// Probe only.
 pub fn probe(data: &[u8]) {
     let src = yoton_audio::SliceSource::new(data);
@@ -174,6 +204,8 @@ pub const TARGETS: &[Target] = &[
     ("wav", wav),
     ("mp3", mp3),
     ("flac", flac),
+    ("vorbis", vorbis),
+    ("ogg", ogg),
     ("probe", probe),
     ("meta", meta),
     ("lyrics", lyrics),

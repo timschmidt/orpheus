@@ -1,0 +1,13 @@
+[package]
+name = "yoton-ogg"
+description = "Ogg page and packet reader over the stream ring (RFC 3533), no copying, no allocation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+yoton-audio = { path = "../../yoton-audio" }
+
+[lints]
+workspace = true

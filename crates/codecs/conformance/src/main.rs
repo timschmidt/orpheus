@@ -122,6 +122,19 @@ fn run(a: &Args) -> Result<bool, String> {
     }
     println!();
     println!("{} files, {} failed", rows.len(), failed);
+    let joins: Vec<_> = yoton_codec_conformance::join::manifest(&a.dir)
+        .into_iter()
+        .filter(|j| a.filter.as_ref().is_none_or(|f| j.name.contains(f.as_str()) || f.contains("gapless")))
+        .collect();
+    for j in &joins {
+        match yoton_codec_conformance::join::check(j) {
+            Ok(s) => println!("ok   gapless join {:<8} {s}", j.name),
+            Err(e) => {
+                failed += 1;
+                println!("FAIL gapless join {:<8} {e}", j.name);
+            }
+        }
+    }
     Ok(failed == 0)
 }
 

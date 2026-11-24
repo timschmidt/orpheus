@@ -121,6 +121,8 @@ const NATIVE: [u32; 9] = [8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100,
 struct Gen {
     dir: PathBuf,
     manifest: String,
+    /// `gapless.tsv`: album-style splits decoded back to back.
+    joins: String,
     files: usize,
 }
 
@@ -320,12 +322,16 @@ fn generate(dir: &Path) -> Result<usize> {
         std::fs::remove_dir_all(dir).with_context(|| format!("remove {}", dir.display()))?;
     }
     std::fs::create_dir_all(dir)?;
-    let mut g = Gen { dir: dir.to_path_buf(), manifest: String::new(), files: 0 };
+    let mut g = Gen { dir: dir.to_path_buf(), manifest: String::new(), joins: String::new(), files: 0 };
     g.manifest.push_str("# file\treference\tformat\texpect\tsource frames (gapless check)\n");
+    g.joins.push_str("# name\tsource wav\tparts\texact|lossy\tper-part references\n");
     wav_family(&mut g)?;
     mp3(&mut g)?;
     flac(&mut g)?;
+    vorbis(&mut g)?;
+    gapless(&mut g)?;
     std::fs::write(dir.join("manifest.tsv"), &g.manifest)?;
+    std::fs::write(dir.join("gapless.tsv"), &g.joins)?;
     Ok(g.files)
 }
 
@@ -637,6 +643,108 @@ fn write_valid_bits_wav(
     Ok(())
 }
 
+fn vorbis(g: &mut Gen) -> Result<()> {
+    use Ref::S16;
+    let music = g.source(Sig::Music, 44100, 2, 4.0, 16)?;
+    let mix = g.source(Sig::Mix, 44100, 2, 4.0, 16)?;
+    let lib = ["-c:a", "libvorbis"];
+    let with = |extra: &[&'static str]| -> Vec<&'static str> { [&lib[..], extra].concat() };
+    for q in ["0", "2", "5", "8", "10"] {
+        g.ff(&music, &format!("vorbis/q{q}_44100_2.ogg"), &with(&["-q:a", q]), S16, true)?;
+    }
+    g.ff(&mix, "vorbis/q4_mix_44100_2.ogg", &with(&["-q:a", "4"]), S16, true)?;
+    g.ff(&mix, "vorbis/b64k_44100_2.ogg", &with(&["-b:a", "64k"]), S16, true)?;
+    for (rate, ch, q) in [
+        (48000, 2, "6"),
+        (32000, 2, "3"),
+        (22050, 1, "3"),
+        (16000, 1, "2"),
+        (11025, 1, "1"),
+        (8000, 1, "0"),
+        (96000, 2, "5"),
+    ] {
+        let src = g.source(Sig::Music, rate, ch, 3.0, 16)?;
+        g.ff(&src, &format!("vorbis/q{q}_{rate}_{ch}.ogg"), &with(&["-q:a", q]), S16, true)?;
+    }
+    for sig in [Sig::Silence, Sig::Impulse, Sig::Square, Sig::Noise, Sig::Sweep] {
+        let src = g.source(sig, 44100, 2, 2.0, 16)?;
+        g.ff(&src, &format!("vorbis/{}_q5.ogg", sig.name()), &with(&["-q:a", "5"]), S16, true)?;
+    }
+    // A comment packet larger than the stream ring before the set-up.
+    let big = format!("comment={}", "lyrics ".repeat(6000));
+    g.ff(
+        &music,
+        "vorbis/bigcomment_q3.ogg",
+        &["-c:a", "libvorbis", "-q:a", "3", "-metadata", &big],
+        S16,
+        true,
+    )?;
+    let six = g.dir.join("src/six_48000.wav");
+    // Six channels need ~104 KB: over the 72 KiB arena, refused.
+    let out = g.path("vorbis/six_q3_48000.ogg")?;
+    ffmpeg(&[s(&["-i"]), vec![p(&six)], s(&["-c:a", "libvorbis", "-q:a", "3"]), vec![p(&out)]].concat())?;
+    g.refuse("vorbis/six_q3_48000.ogg")?;
+    Ok(())
+}
+
+/// Album-style gapless sets (04 §2.2): one source cut at odd sample
+/// positions into three tracks, encoded per codec. The conformance run
+/// decodes the tracks back to back in one arena (decoder re-opened at each
+/// boundary) and requires the join to have exactly the source's length —
+/// bit-exact for lossless codecs, within −80 dBFS of ffmpeg's per-track
+/// decodes for lossy ones.
+fn gapless(g: &mut Gen) -> Result<()> {
+    let src = g.source(Sig::Music, 44100, 2, 5.0, 16)?;
+    let total = frames_of(&src)?;
+    let cuts = [0u64, 60_417, 131_333, total];
+    let mut wavs = Vec::new();
+    for k in 0..3 {
+        let part = g.path(&format!("gapless/src_part{k}.wav"))?;
+        sox(&[
+            vec![p(&src), p(&part)],
+            s(&["trim", &format!("{}s", cuts[k]), &format!("{}s", cuts[k + 1] - cuts[k])]),
+        ]
+        .concat())?;
+        wavs.push(part);
+    }
+    let codecs: &[(&str, &str, &[&str], bool)] = &[
+        ("flac", "flac", &["-c:a", "flac"], true),
+        ("wav", "wav", &["-c:a", "pcm_s16le"], true),
+        ("mp3", "mp3", &["-c:a", "libmp3lame", "-b:a", "192k"], false),
+        ("vorbis", "ogg", &["-c:a", "libvorbis", "-q:a", "5"], false),
+    ];
+    for &(name, ext, args, exact) in codecs {
+        let mut parts = Vec::new();
+        let mut refs = Vec::new();
+        for (k, w) in wavs.iter().enumerate() {
+            let rel = format!("gapless/{name}_part{k}.{ext}");
+            let out = g.path(&rel)?;
+            ffmpeg(&[s(&["-i"]), vec![p(w)], s(args), vec![p(&out)]].concat())?;
+            let rref = format!("gapless/{name}_part{k}.s16");
+            ffmpeg(
+                &[
+                    s(&["-i"]),
+                    vec![p(&out)],
+                    s(&["-f", "s16le", "-c:a", "pcm_s16le"]),
+                    vec![p(&g.dir.join(&rref))],
+                ]
+                .concat(),
+            )?;
+            parts.push(rel);
+            refs.push(rref);
+        }
+        let srcrel = src.strip_prefix(&g.dir).unwrap_or(&src).to_string_lossy().into_owned();
+        writeln!(
+            g.joins,
+            "{name}\t{srcrel}\t{}\t{}\t{}",
+            parts.join(","),
+            if exact { "exact" } else { "lossy" },
+            refs.join(",")
+        )?;
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Fuzzing (07 §3.4)
 
@@ -704,6 +812,7 @@ fn seed_fuzz_corpus(target: &str, corpus_dir: &Path, out: &Path) -> Result<()> {
         "wav" => &["wav/", "aiff/", "au/"],
         "mp3" => &["mp3/"],
         "flac" => &["flac/"],
+        "vorbis" | "ogg" => &["vorbis/"],
         "meta" => &["mp3/", "flac/", "wav/"],
         _ => &[""],
     };
@@ -764,8 +873,16 @@ fn fuzz_smoke(secs: u64) -> Result<String> {
 // Code size on the device target
 
 /// Codec crates measured by `codec-size`.
-const SIZE_CRATES: [&str; 5] =
-    ["yoton-audio", "yoton-codec-wav", "yoton-codec-mp3", "yoton-codec-flac", "yoton-meta"];
+const SIZE_CRATES: [&str; 8] = [
+    "yoton-audio",
+    "yoton-codec-wav",
+    "yoton-codec-mp3",
+    "yoton-codec-flac",
+    "yoton-ogg",
+    "yoton-codec-vorbis",
+    "yoton-meta",
+    "yoton-player",
+];
 
 fn codec_size() -> Result<String> {
     let target_dir = root().join("target").join("codec-size");

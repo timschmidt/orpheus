@@ -6,18 +6,22 @@
 #![forbid(unsafe_code)]
 
 use yoton_audio::{
-    ByteSource, ContainerInfo, DecodeError, Decoder, Format, OpenError, Plan, SeekSource, SeekStep, Step,
-    StreamInfo, Unsupported,
+    ByteSource, ContainerInfo, DecodeError, Decoder, Format, OggCodec, OpenError, Plan, SeekSource, SeekStep,
+    Step, StreamInfo, Unsupported,
 };
 
 #[cfg(feature = "flac")]
 pub use yoton_codec_flac::FlacDecoder;
 #[cfg(feature = "mp3")]
 pub use yoton_codec_mp3::Mp3Decoder;
+#[cfg(feature = "vorbis")]
+pub use yoton_codec_vorbis::VorbisDecoder;
 #[cfg(feature = "wav")]
 pub use yoton_codec_wav::WavDecoder;
 
-/// One open decoder of any built codec.
+/// One open decoder of any built codec (the largest variant, Vorbis, is
+/// about 1 KiB: two Ogg page headers with their lacing tables).
+#[allow(clippy::large_enum_variant)]
 pub enum AnyDecoder<'a> {
     #[cfg(feature = "wav")]
     Wav(WavDecoder<'a>),
@@ -25,9 +29,11 @@ pub enum AnyDecoder<'a> {
     Mp3(Mp3Decoder<'a>),
     #[cfg(feature = "flac")]
     Flac(FlacDecoder<'a>),
+    #[cfg(feature = "vorbis")]
+    Vorbis(VorbisDecoder<'a>),
 }
 
-#[cfg(not(any(feature = "wav", feature = "mp3", feature = "flac")))]
+#[cfg(not(any(feature = "wav", feature = "mp3", feature = "flac", feature = "vorbis")))]
 compile_error!("enable at least one codec feature");
 
 macro_rules! each {
@@ -39,6 +45,8 @@ macro_rules! each {
             AnyDecoder::Mp3($d) => $e,
             #[cfg(feature = "flac")]
             AnyDecoder::Flac($d) => $e,
+            #[cfg(feature = "vorbis")]
+            AnyDecoder::Vorbis($d) => $e,
         }
     };
 }
@@ -56,6 +64,8 @@ pub fn inspect(format: Format, src: &dyn ByteSource, hint: &ContainerInfo) -> Re
         Format::Mpeg => Mp3Decoder::inspect(src, hint),
         #[cfg(feature = "flac")]
         Format::Flac => FlacDecoder::inspect(src, hint),
+        #[cfg(feature = "vorbis")]
+        Format::Ogg(OggCodec::Vorbis) => VorbisDecoder::inspect(src, hint),
         _ => {
             let _ = (src, hint);
             Err(unsupported())
@@ -79,6 +89,10 @@ pub fn open<'a>(
         Format::Mpeg => Mp3Decoder::open(src, arena, hint).map(|(d, i)| (AnyDecoder::Mp3(d), i)),
         #[cfg(feature = "flac")]
         Format::Flac => FlacDecoder::open(src, arena, hint).map(|(d, i)| (AnyDecoder::Flac(d), i)),
+        #[cfg(feature = "vorbis")]
+        Format::Ogg(OggCodec::Vorbis) => {
+            VorbisDecoder::open(src, arena, hint).map(|(d, i)| (AnyDecoder::Vorbis(d), i))
+        }
         _ => {
             let _ = (src, arena, hint);
             Err(unsupported())

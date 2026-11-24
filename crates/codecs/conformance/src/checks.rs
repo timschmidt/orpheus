@@ -53,6 +53,7 @@ pub fn budget_for(file: &[u8], name: &str) -> usize {
     let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     match ext.as_str() {
         "mp3" | "mp2" | "mp1" => 28 * 1024,
+        "ogg" | "oga" => 72 * 1024,
         "flac" => match compare::flac_max_block(file) {
             Some(b) if b <= 4608 => 38 * 1024,
             _ => 66 * 1024,
