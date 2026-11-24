@@ -3,11 +3,13 @@
 //! CLAUDE.md rule 6: commands 0x20–0x24, 0x28, 0x2C and 0x7F are sent only
 //! by the work package that owns them, and the module upgrade never without
 //! a known-good image and the user's explicit go-ahead (recovery from a
-//! failed module upgrade is unknown; decision D-6). Nothing else in this
-//! crate uses this module: the transmitter state machine skips the
-//! vendor's settings read (0x2C) at start-up and powers the module off by
-//! its enable line without the shutdown command (0x24). A test checks that
-//! no automatic path emits these IDs.
+//! failed module upgrade is unknown; decision D-6). The only user in this
+//! crate is [`crate::Transmitter::shutdown`], which sends the shutdown
+//! command (0x24) on the player's power-off path (owner decision
+//! 2026-11-24, WP BT-2). The transmitter state machine skips the vendor's
+//! settings read (0x2C) at start-up, and switching Bluetooth off drops the
+//! enable line without 0x24. Tests check that no other path emits these
+//! IDs.
 
 use crate::frame::{self, EncodeError};
 use crate::link::{Busy, CommandLayer, Transport};

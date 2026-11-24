@@ -62,7 +62,14 @@ pub struct Fw {
     /// arrived, or became sorted).
     filter: BrowseFilter,
     wanted: Option<(u32, u32)>,
+    /// Bluetooth as last published by the Bluetooth task; a newly
+    /// connected device for the UI to save.
+    bt: crate::bt::Snap,
+    pub bt_to_save: Option<yoton_bt::Addr>,
 }
+
+/// "Reconnect automatically" (Settings › Bluetooth).
+const BT_RECONNECT: SettingId = SettingId(0x0603);
 
 /// A tiny fixed queue (no external dependency, no allocation).
 pub mod heapless_queue {
@@ -136,6 +143,8 @@ impl Fw {
             text_size: 0,
             filter: BrowseFilter { sort: services::SortBy::Name, hidden: false, audio_only: false },
             wanted: None,
+            bt: crate::bt::Snap::OFF,
+            bt_to_save: None,
         }
     }
 
@@ -220,6 +229,36 @@ impl Fw {
         }
     }
 
+    /// After the settings are loaded: the Bluetooth task gets them. The
+    /// module stays off in a host test whatever the setting says.
+    pub fn bt_boot(&mut self, last: Option<yoton_bt::Addr>) {
+        let on = self.settings.get(id::BLUETOOTH) != 0 && atj2157_hal::persist::test_request().is_none();
+        let reconnect = self.settings.get(BT_RECONNECT) != 0;
+        crate::bt::request(crate::bt::Req::Boot { on, reconnect, last });
+    }
+
+    /// Copy the Bluetooth task's snapshot (every UI loop).
+    pub fn sync_bt(&mut self) {
+        let n = critical_section::with(|cs| *crate::bt::SNAP.borrow(cs).borrow());
+        if n.state != self.bt.state {
+            self.pending.push(Event::Service(ServiceEvent::Bluetooth(n.state)));
+        }
+        if n.last_gen != self.bt.last_gen {
+            self.bt_to_save = n.last;
+        }
+        self.bt = n;
+    }
+
+    /// Bluetooth settings go to the Bluetooth task when they change.
+    fn setting_to_bt(&self, sid: SettingId) {
+        let on = self.settings.get(sid) != 0;
+        match sid {
+            id::BLUETOOTH => crate::bt::request(crate::bt::Req::Power(on)),
+            BT_RECONNECT => crate::bt::request(crate::bt::Req::Reconnect(on)),
+            _ => {}
+        }
+    }
+
     /// After the settings are loaded: what the player follows from them.
     pub fn init_player(&mut self) {
         // A sleep timer does not survive a restart.
@@ -282,10 +321,12 @@ impl SettingsService for Fw {
         if self.settings.set(sid, value) {
             self.pending.push(Event::Service(ServiceEvent::SettingChanged(sid.0)));
             self.setting_to_player(sid);
+            self.setting_to_bt(sid);
         }
     }
     fn factory_reset(&mut self) {
         self.settings.reset();
+        self.setting_to_bt(id::BLUETOOTH);
     }
 }
 
@@ -615,10 +656,10 @@ impl UsbService for Fw {
 
 impl BluetoothService for Fw {
     fn bt(&self) -> BtState {
-        BtState::Off
+        self.bt.state
     }
     fn bt_device(&self) -> &str {
-        ""
+        self.bt.name()
     }
 }
 

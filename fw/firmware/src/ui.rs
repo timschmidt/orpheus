@@ -103,6 +103,10 @@ impl Ui {
                 SET_WRITES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                 SET_LAST.store(u32::from(*k) | us << 16, core::sync::atomic::Ordering::Relaxed);
             }
+            // A newly connected Bluetooth device becomes the reconnect target.
+            if let Some(a) = self.fw.bt_to_save.take() {
+                let _ = store.set(crate::bt::LAST_KEY, &a.0).await;
+            }
         }
         while let Some(a) = self.fw.actions.pop() {
             if let Action::Usb(m) = a {
@@ -173,8 +177,9 @@ impl Ui {
         self.bl.set(0);
         self.disp.sleep(true);
         Timer::after_millis(50).await;
-        // Bluetooth shutdown (command 0x24, user decision 2026-11-24) joins
-        // here once BT-2 drives the module.
+        // Bluetooth module: shutdown command 0x24 when it is up, bounded
+        // wait, enable line low (owner decision 2026-11-24, BT-2).
+        crate::bt::shutdown_for_power_off().await;
         atj2157_hal::pmu::power_off(false)
     }
 
@@ -229,6 +234,7 @@ pub async fn ui() {
     crate::services::apply_volume(fw.volume);
     // Settings from NOR.
     let mut store = Store::<NorRegion, 4>::mount(NorRegion::settings()).await.ok();
+    let mut bt_last = None;
     if let Some(s) = store.as_mut() {
         let mut keys = [0u16; 64];
         let mut n = 0;
@@ -242,10 +248,16 @@ pub async fn ui() {
             let mut b = [0u8; 8];
             if let Ok(Some(len)) = s.get(k, &mut b).await {
                 fw.settings.load(k, &b[..len]);
+                if k == crate::bt::LAST_KEY && len == 6 {
+                    let mut a = [0u8; 6];
+                    a.copy_from_slice(&b[..6]);
+                    bt_last = Some(yoton_bt::Addr(a));
+                }
             }
         }
     }
     fw.init_player();
+    fw.bt_boot(bt_last);
     let t = now();
     let shell = Shell::<AppScreen, Fw>::with_root(&mut fw, screens::HOME, Arg(0), t);
     let mut ui = Ui { fw, shell, mapper: KeyMapper::new(), disp, bl, screen_on: true, store, sound: None };
@@ -300,6 +312,7 @@ pub async fn ui() {
         LOOPS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         atj2157_hal::wdt::beat(&atj2157_hal::wdt::UI_BEAT);
         ui.fw.sync_player();
+        ui.fw.sync_bt();
         let t = now();
         while let Some((k, p)) = ui.mapper.poll(t) {
             let r = ui.shell.key(&mut ui.fw, k, p, t);

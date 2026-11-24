@@ -5,6 +5,7 @@
 
 #![no_std]
 
+pub mod bt;
 pub mod card;
 pub mod charger;
 pub mod display;
