@@ -307,7 +307,15 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 * Merged AU-14 (device): Pictures app and album art. On the player: Home
   shows Pictures; Show hidden → `/.yoton/test`: a 1600×1200 JPEG letterboxed,
   a truncated JPEG shows "Cannot show this picture", BMP and PNG render, Down
-  rotates by 90°. Album art not yet tried on the player.
+  rotates by 90°. Album art on the player: an MP3 with an embedded JPEG cover
+  (uploaded to `/.yoton/test/`) shows it in Now Playing's Big art view; the
+  first open of a track with new art costs underruns (9 here) while the
+  cover is decoded — open item: decode art without stopping the DAC feed, or
+  before the previous track ends. The owner's album files showed no art
+  (they may have none embedded).
+* UI glitches seen on the player (open): the scrolling (marquee) text of the
+  focused list row and of the mini-player strip is drawn over itself
+  (previous frame not cleared); "Shuffle all" opens an idle Now Playing.
 * **Second NOR-write crash fixed**: LLVM had inlined `nor::program_page`
   (its busy-polling loop) into the paged `NorRegion::program`, so the
   resident-root rule protected only the unused out-of-line copy; toggling
