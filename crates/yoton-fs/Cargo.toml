@@ -1,0 +1,20 @@
+[package]
+name = "yoton-fs"
+description = "Allocation-free async FAT12/16/32 and exFAT file system for the Yoton YM03 firmware"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# Host helpers: image-file, RAM and fault-injecting block devices, block_on.
+std = []
+
+[dependencies]
+
+[dev-dependencies]
+yoton-fs = { path = ".", features = ["std"] }
+
+[lints]
+workspace = true
