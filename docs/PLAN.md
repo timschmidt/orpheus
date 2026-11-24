@@ -148,7 +148,7 @@ Defaults are what workers assume until told otherwise.
 | D-8 | Rockbox on the player | Replaced by Orpheus at milestone M2; restorable with one command | The player is the Rockbox reference until then |
 | D-9 | Coverage exclusions (M11) | None; each proposed exclusion (provably unreachable code only) is listed in `coverage-exclusions.toml` with its reason and needs the owner's approval | The 100 % coverage requirement is otherwise absolute |
 | D-10 | Remote transport if the module's Bluetooth HID cannot be fed, and **for the tilt pointer** (the module's HID descriptor has keyboard and consumer reports but **no mouse**, read 2026-11-24) | Keys over Bluetooth if BT-3 finds the feeding command; pointer: ask the owner — USB HID (cable), or module firmware work (D-6) | The remote and pointer are built regardless; only the link changes |
-| D-11 | Public repository name, GitHub Pages address (or custom domain), and when the site goes public | Not public until D-1 is decided and the owner says so | The site and the browser installer are publication |
+| D-11 | Public repository name, GitHub Pages address, publication | **Decided 2026-11-24 by the owner: published as `timschmidt/orpheus` on GitHub, public.** Pages address follows as `timschmidt.github.io/orpheus` unless a custom domain is chosen | The site and the browser installer are publication |
 
 Also needed from the user along the way: the checks in
 [USER-CHECKS.md](USER-CHECKS.md) (listening, looking, pressing keys,

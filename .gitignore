@@ -28,3 +28,9 @@
 /crates/orpheus-img/fuzz/corpus/
 /crates/orpheus-img/fuzz/coverage/
 /tests/vectors/
+
+# Stray audio captures in the root (a mistyped recorder argument once
+# produced a file named after its sample rate)
+/*.wav
+/44100
+/48000

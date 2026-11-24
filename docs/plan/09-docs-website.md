@@ -175,8 +175,9 @@ One brand source, `docs/brand/`, used by everything:
 * D-1 licence (blocks publishing the site and releases).
 * D-3 USB identity (blocks public browser installs).
 * D-7 publishing the hardware notes (decides what the Hardware page links).
-* D-11 public repository name and the Pages address (`<owner>.github.io/<repo>`
-  or a custom domain), and when the site goes public.
+* D-11 **decided 2026-11-24**: the repository is public as
+  `github.com/timschmidt/orpheus`; Pages at `timschmidt.github.io/orpheus`
+  unless a custom domain is chosen.
 * Demo content licences for the in-browser card (only CC0/CC-BY material
   with attribution).
 

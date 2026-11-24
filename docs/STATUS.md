@@ -571,6 +571,17 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — published (D-11, owner's decision)
+
+* The repository is public as `github.com/timschmidt/orpheus` (branch
+  `main`; worker branches stay local). Before publishing: tracked files and
+  history checked for secrets, flash dumps and vendor material (none; the
+  vendor-derived `docs/hw/`, `docs/vendor/` and `local/` stay ignored per
+  D-7); a stray 5.6 MB test recording (`44100`, committed by mistake in the
+  Bluetooth volume commit) removed from main's history; root-level audio
+  files now ignored. Licence (D-1) is still open, so the code is public but
+  not yet under an open-source licence.
+
 ### 2026-11-24 — AU-5 gapless/queue merged; first device run (lead)
 
 * Merged AU-5 (gapless, queue editing). Fixed the `orpheus-img` "fixture
