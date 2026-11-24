@@ -16,9 +16,10 @@ use orpheus_apps::services::{
     LibNow, LibRow, LibraryService, LibraryState, Listing, LyricLine, PicReq, PicState, PictureService,
     PlayerCmd, PlayerService, PlayerState, QueueEntry, TextService, TrackInfo,
 };
-use orpheus_apps::services::{BtDevice, BtList, BtPhase, BtRequest};
+use orpheus_apps::services::{BtDevice, BtList, BtPhase, BtRequest, StepsInfo, StepsService, ToolsService};
 use orpheus_apps::services::{PresetOp, Presets, RadioInfo, RadioRequest, RadioService, Region};
 use orpheus_apps::settings::{SettingId, SettingsCache, id, lang_code};
+use orpheus_apps::tools::{self, Tools};
 use orpheus_apps::{App, Lang};
 use orpheus_power::charger::ChargeState;
 use orpheus_ui::event::{BtState, Event, ServiceEvent, Source};
@@ -33,6 +34,7 @@ use orpheus_ui::widgets::bars::{MiniPlayer, Status};
 use crate::bt::FakeBt;
 use crate::media::Media;
 use crate::radio::SimRadio;
+use crate::steps::FakeSteps;
 use crate::{Host, packs};
 
 /// Something the screens asked the services to do.
@@ -76,6 +78,22 @@ pub struct HostServices {
     pub drain: DrainLog,
     /// Files the fake logger has started (its next number).
     drain_files: u16,
+    /// The fake accelerometer and the step history (`set:walk=on`,
+    /// `set:steps=N`, `set:week=…`, `set:sensor=off`).
+    pub steps: FakeSteps,
+    /// Stopwatch, timer, alarms (UI-5d).
+    pub tools: Tools,
+    /// `set:alarmwake=1`: alarms can wake the player from off (PWR-3c).
+    pub alarm_wake: bool,
+    /// `set:clockvalid=0`: the RTC lost its time (U-RTC).
+    pub clock_valid: bool,
+    /// `set:clockrun=1`: the fake clock follows simulated time (alarms).
+    pub clock_run: bool,
+    clock_ms: u64,
+    /// Simulated milliseconds (the shell's `Instant`).
+    now_ms: u64,
+    /// An alert lit the screen.
+    wake: bool,
 }
 
 impl Default for HostServices {
@@ -107,6 +125,14 @@ impl Default for HostServices {
             developer: false,
             drain: DrainLog::default(),
             drain_files: 0,
+            steps: FakeSteps::default(),
+            tools: Tools::default(),
+            alarm_wake: false,
+            clock_valid: true,
+            clock_run: false,
+            clock_ms: 0,
+            now_ms: 0,
+            wake: false,
         }
     }
 }
@@ -201,7 +227,7 @@ impl ClockService for HostServices {
     }
 
     fn clock_valid(&self) -> bool {
-        true
+        self.clock_valid
     }
 }
 
@@ -323,6 +349,36 @@ impl BluetoothService for HostServices {
     fn bt_request(&mut self, r: BtRequest) {
         self.bt.request(r);
         self.bt_events();
+    }
+}
+
+impl StepsService for HostServices {
+    fn steps_info(&self) -> StepsInfo {
+        let background = self.settings.get(id::STEP_BACKGROUND) != 0;
+        StepsInfo { sensor: self.steps.sensor, counting: background, dated: self.clock_valid }
+    }
+
+    fn steps_day(&self, ago: u8) -> u32 {
+        self.steps.history.steps_ago(usize::from(ago))
+    }
+
+    fn steps_reset_today(&mut self) {
+        self.steps.history.reset_today();
+        self.events.push(Event::Service(ServiceEvent::Other { kind: services::other::STEPS, value: 0 }));
+    }
+}
+
+impl ToolsService for HostServices {
+    fn tools(&self) -> &Tools {
+        &self.tools
+    }
+
+    fn tools_mut(&mut self) -> &mut Tools {
+        &mut self.tools
+    }
+
+    fn alarm_wakes_from_off(&self) -> bool {
+        self.alarm_wake
     }
 }
 
@@ -540,10 +596,28 @@ impl Host for HostServices {
                 })));
             }
             "clock" => {
-                let (h, m) = v.split_once(':').unwrap_or(("12", "41"));
-                self.clock.hour = h.parse()?;
-                self.clock.minute = m.parse()?;
+                let mut it = v.split(':');
+                self.clock.hour = it.next().unwrap_or("12").parse()?;
+                self.clock.minute = it.next().unwrap_or("41").parse()?;
+                self.clock.second = it.next().unwrap_or("0").parse()?;
+                self.clock_ms = 0;
                 evs.push(Event::Service(ServiceEvent::Minute));
+            }
+            "weekday" => self.clock.weekday = v.parse::<u8>()? % 7,
+            "clockvalid" => self.clock_valid = on,
+            "clockrun" => self.clock_run = on,
+            "alarmwake" => self.alarm_wake = on,
+            "walk" => self.steps.walking = on,
+            "sensor" => self.steps.sensor = on,
+            "steps" => {
+                self.steps.set_today(v.parse()?);
+                evs.push(Event::Service(ServiceEvent::Other { kind: services::other::STEPS, value: 0 }));
+            }
+            "week" => {
+                let counts: Vec<u32> = v.split('/').map(str::parse).collect::<Result<_, _>>()?;
+                let today = self.today().unwrap_or(0);
+                self.steps.set_week(&counts, today);
+                evs.push(Event::Service(ServiceEvent::Other { kind: services::other::STEPS, value: 0 }));
             }
             "library" => {
                 self.media.set_library(match v {
@@ -626,6 +700,8 @@ impl Host for HostServices {
             "BtPaired" => screens::BT_PAIRED,
             "Radio" => screens::RADIO,
             "RadioPresets" => screens::RADIO_PRESETS,
+            "Steps" => screens::STEPS,
+            "Stopwatch" => screens::STOPWATCH,
             _ => return None,
         })
     }
@@ -649,6 +725,10 @@ impl Host for HostServices {
         if core::mem::take(&mut self.lock_request) {
             gate.locked = true;
         }
+        // An alert lights the screen (the keys stay as they were).
+        if core::mem::take(&mut self.wake) {
+            gate.screen_on = true;
+        }
         self.locked = gate.locked;
     }
 
@@ -669,6 +749,22 @@ impl Host for HostServices {
         }
         self.radio.advance(ms);
         self.radio_events();
+        self.now_ms += ms;
+        if self.clock_run {
+            self.tick_clock(ms);
+        }
+        let today = self.today();
+        self.steps.advance(ms, today);
+        if self.steps.take_changed() {
+            let v = self.steps.history.today();
+            self.events.push(Event::Service(ServiceEvent::Other { kind: services::other::STEPS, value: v }));
+        }
+        if let Some(e) = tools::poll_service(self, self.now_ms) {
+            if e == services::tools_event::ALERT {
+                self.wake = true;
+            }
+            self.events.push(Event::Service(ServiceEvent::Other { kind: services::other::TOOLS, value: e }));
+        }
     }
 }
 
@@ -844,6 +940,36 @@ impl HostServices {
             mono: self.settings.get(id::FORCE_MONO) != 0,
             sensitivity: u8::try_from(self.settings.get(id::SEEK_SENSITIVITY)).unwrap_or(1),
             ..orpheus_fm::radio::Config::DEFAULT
+        }
+    }
+
+    /// Today's day number while the fake clock is valid.
+    fn today(&self) -> Option<u32> {
+        self.clock_valid.then(|| orpheus_steps::day_number(self.clock.year, self.clock.month, self.clock.day))
+    }
+
+    /// The fake clock follows simulated time (`set:clockrun=1`); days do
+    /// not change month (enough for the alarm tests).
+    fn tick_clock(&mut self, ms: u64) {
+        self.clock_ms += ms;
+        while self.clock_ms >= 1000 {
+            self.clock_ms -= 1000;
+            let c = &mut self.clock;
+            c.second += 1;
+            if c.second == 60 {
+                c.second = 0;
+                c.minute += 1;
+                self.events.push(Event::Service(ServiceEvent::Minute));
+            }
+            if c.minute == 60 {
+                c.minute = 0;
+                c.hour += 1;
+            }
+            if c.hour == 24 {
+                c.hour = 0;
+                c.day += 1;
+                c.weekday = (c.weekday + 1) % 7;
+            }
         }
     }
 

@@ -896,6 +896,7 @@ version = "0.1.0"
 dependencies = [
  "orpheus-fm",
  "orpheus-power",
+ "orpheus-steps",
  "orpheus-ui",
 ]
 
@@ -1123,7 +1124,15 @@ dependencies = [
  "orpheus-library",
  "orpheus-meta",
  "orpheus-power",
+ "orpheus-steps",
  "orpheus-ui",
+]
+
+[[package]]
+name = "orpheus-steps"
+version = "0.1.0"
+dependencies = [
+ "orpheus-proto",
 ]
 
 [[package]]

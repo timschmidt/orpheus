@@ -32,6 +32,7 @@ pub mod media;
 pub mod packs;
 pub mod pictures;
 pub mod radio;
+pub mod steps;
 pub mod system;
 #[cfg(feature = "window")]
 pub mod window;

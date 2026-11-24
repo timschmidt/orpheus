@@ -354,6 +354,20 @@ update handshake `0xA596 → 0x5A69` after every write, alarm IRQ 6.
 Acceptance: set/read round trip; alarm fires within 1 s; 12 h drift logged
 against the host.
 
+**Alarm as built (UI-5d, 2026-11-24)**: the UI arms the RTC alarm
+(`rtc_clock::set_alarm`) with the next enabled alarm's time whenever the
+alarms or the minute change, and clears it when none is on;
+`rtc_clock::alarm_state` reads it back (`alarm status`: armed time,
+enable, pending). While the player is on, the alarm rings from the UI's
+once-a-second check of the RTC minute (`orpheus_apps::tools::Tools::poll`,
+host-tested), not from the pending bit. **Not done (PWR-3c)**: waking from
+off. `services::ALARM_WAKE_FROM_OFF` is `false`; with it `true`, power-off
+would pass `pmu::power_off(true)` (`WKEN_CTL` bit 4) while an alarm is
+armed. Missing before it can be switched on: U-PMU-3's alarm case on this
+board (arm the alarm 1 min ahead, power off, watch USB re-enumerate), and a
+way for the start to know it was the alarm (wake reason) so the alert
+rings at boot. The Alarm tab says "Rings only while on" meanwhile.
+
 ## 12. DAC, headphone amplifier, mixer (in WP-AU-1)
 
 Facts: `pcm-yotonym03.c` **[HW]**; audio.md §1–2, §4, §6.3.
@@ -440,12 +454,37 @@ Facts: fm-i2c-imu.md.
   counting if accuracy holds), suspend (`0x11 ← 0x80`) otherwise and at boot.
   If the identified part has a FIFO, a step counter or a usable interrupt
   pin, use them (fewer wake-ups); the baseline assumes none.
+  **As built (SENS-1, 2026-11-24)**: `yoton_bsp::accel` on the software
+  master at 100 kHz; open = the vendor's functional steps (± 2 g, ODR code
+  6 = 62.5 Hz, unlock, normal mode; **VERBATIM**), suspend at boot and
+  whenever nothing counts; one 6-byte burst read per sample. The `sensor`
+  task (main executor) samples at **25 Hz** while counting is wanted (Count
+  in background "While on", the Steps app open, or a trace) and runs the
+  detector, the day check and the history once a second over the batch;
+  the per-sample code is the `steps-sample` cluster of `hot.toml` (4 lines;
+  the read path touches about 2). No FIFO and no interrupt (U-ACC-1 open:
+  `acc regs` dumps the map). State in SRAM3 (`0x307A00`, beside the
+  battery logger's). Developer commands: `acc read`, `acc regs`,
+  `acc trace <secs>` / `acc trace stop` (CSV to
+  `/.orpheus/test/acc-<n>.csv`, `orpheus_steps::trace`), `steps status`.
 * **Step detector** (`orpheus-apps::steps`, host-tested): magnitude of the
   3-axis vector, low-pass, adaptive threshold between running max and min,
   minimum 200 ms and maximum 2 s step interval, a "regularity" gate of four
   consecutive plausible steps before counting starts (suppresses bus rides
   and handling), as an improvement on the stock algorithm (fm-i2c-imu.md
   §3.4, which is the fallback reference).
+  **As built** in the crate `orpheus-steps` (`detector`, integer only):
+  gravity removed with a ≈ 1.3 s average, ≈ 4 Hz low-pass, decaying
+  envelopes with ± ¼-swing hysteresis, minimum swing by Sensitivity (0.16 /
+  0.10 / 0.06 g), step interval 270 ms – 2 s, four regular candidates
+  (intervals within 40 %) before counting; a candidate whose interval holds
+  two rises of the unfiltered signal counts as too fast (shaking that the
+  low-pass halves into a walking rhythm), two too-fast ones without a
+  clean step between them drop the walk. Tests (`tests/synthetic.rs`,
+  25 and 50 Hz): walking, slow, brisk, running, pocket, clipped sprint
+  within ± 5 %; 0 steps on a table for 10 min, handled, on a bus, shaken
+  at 3.8–8 Hz. Shaking slower than ≈ 3.7 Hz is a running cadence and
+  counts. `traces/*.csv` with `# truth=N` are replayed (`tests/traces.rs`).
 
 Acceptance: I2C scan finds exactly `0x10` (and `0x11`/`0x60` on some
 variants) and `0x27`; tuner tunes and reports plausible RSSI on a local

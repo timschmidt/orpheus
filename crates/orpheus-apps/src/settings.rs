@@ -41,6 +41,10 @@ pub enum Unit {
     UtcMinutes,
     /// Seconds per day.
     PerDay,
+    /// Centimetres (stride length).
+    Cm,
+    /// Kilograms (weight).
+    Kg,
 }
 
 /// Things a row does instead of holding a value.
@@ -215,7 +219,21 @@ pub mod id {
     pub const FORCE_MONO: SettingId = SettingId(0x0702);
     pub const SEEK_SENSITIVITY: SettingId = SettingId(0x0703);
     /// The radio's last frequency, in 10 kHz (UI-5a).
-    pub const RADIO_FREQ: SettingId = SettingId(0x0D20);
+    pub const RADIO_FREQ: SettingId = SettingId(0x0D50);
+    /// Steps (05 §7.7, UI-5c): daily goal, stride (cm), weight (kg),
+    /// units (0 km, 1 mi), count in background (0 off, 1 while on),
+    /// sensitivity (0 low, 1 medium, 2 high).
+    pub const STEP_GOAL: SettingId = SettingId(0x0D20);
+    pub const STRIDE: SettingId = SettingId(0x0D21);
+    pub const WEIGHT: SettingId = SettingId(0x0D22);
+    pub const STEP_UNITS: SettingId = SettingId(0x0D23);
+    pub const STEP_BACKGROUND: SettingId = SettingId(0x0D24);
+    pub const STEP_SENSITIVITY: SettingId = SettingId(0x0D25);
+    /// Alarm `i` (05 §7.8, UI-5d): `ALARM0 + 3i` minutes after midnight,
+    /// `+ 1` repeat days (bit 0 Monday … bit 6 Sunday, 0 once), `+ 2` on.
+    pub const ALARM0: SettingId = SettingId(0x0D30);
+    /// Timer presets: the last five durations (seconds), newest first.
+    pub const TIMER_PRESET0: SettingId = SettingId(0x0D40);
 }
 
 const SOUND: &[Setting] = &[
@@ -382,6 +400,13 @@ pub const EQ_GAINS: [[i8; 5]; 9] = [
     [-2, 0, 3, 4, 1],
 ];
 
+/// Steps › Units.
+pub const STEP_UNITS: &[Choice] = ch![S(Str::Kilometres), S(Str::Miles)];
+/// Steps › Count in background.
+pub const STEP_BACKGROUND: &[Choice] = ch![S(Str::Off), S(Str::WhileOn)];
+/// Steps › Sensitivity.
+pub const STEP_SENSITIVITY: &[Choice] = ch![S(Str::Low), S(Str::Medium), S(Str::High)];
+
 /// Settings that belong to apps rather than to a Settings group (stored
 /// like the others; edited in the apps).
 pub const APP_ITEMS: &[Setting] = &[
@@ -398,7 +423,33 @@ pub const APP_ITEMS: &[Setting] = &[
     r(0x0D17, Str::EqCustom2, -12, 12, 1, Unit::Db, 0),
     r(0x0D18, Str::EqCustom2, -12, 12, 1, Unit::Db, 0),
     r(0x0D19, Str::EqCustom2, -12, 12, 1, Unit::Db, 0),
-    r(0x0D20, Str::AppRadio, 6500, 10800, 5, Unit::None, 8750),
+    r(0x0D50, Str::AppRadio, 6500, 10800, 5, Unit::None, 8750),
+    // Steps (UI-5c).
+    r(0x0D20, Str::DailyGoal, 1000, 30000, 500, Unit::None, 10000),
+    r(0x0D21, Str::StrideLength, 30, 150, 1, Unit::Cm, 70),
+    r(0x0D22, Str::Weight, 30, 200, 1, Unit::Kg, 70),
+    c(0x0D23, Str::Units, STEP_UNITS, 0),
+    c(0x0D24, Str::CountInBackground, STEP_BACKGROUND, 1),
+    c(0x0D25, Str::Sensitivity, STEP_SENSITIVITY, 1),
+    // Alarms (UI-5d): time (minutes), repeat days, on.
+    r(0x0D30, Str::TabAlarm, 0, 1439, 1, Unit::None, 7 * 60),
+    r(0x0D31, Str::RepeatDays, 0, 127, 1, Unit::None, 0x1F),
+    t(0x0D32, Str::TabAlarm, 0),
+    r(0x0D33, Str::TabAlarm, 0, 1439, 1, Unit::None, 7 * 60 + 30),
+    r(0x0D34, Str::RepeatDays, 0, 127, 1, Unit::None, 0x1F),
+    t(0x0D35, Str::TabAlarm, 0),
+    r(0x0D36, Str::TabAlarm, 0, 1439, 1, Unit::None, 9 * 60),
+    r(0x0D37, Str::RepeatDays, 0, 127, 1, Unit::None, 0x60),
+    t(0x0D38, Str::TabAlarm, 0),
+    r(0x0D39, Str::TabAlarm, 0, 1439, 1, Unit::None, 12 * 60),
+    r(0x0D3A, Str::RepeatDays, 0, 127, 1, Unit::None, 0),
+    t(0x0D3B, Str::TabAlarm, 0),
+    // Timer presets (UI-5d): seconds, newest first.
+    r(0x0D40, Str::TabTimer, 0, 32400, 1, Unit::None, 60),
+    r(0x0D41, Str::TabTimer, 0, 32400, 1, Unit::None, 180),
+    r(0x0D42, Str::TabTimer, 0, 32400, 1, Unit::None, 300),
+    r(0x0D43, Str::TabTimer, 0, 32400, 1, Unit::None, 600),
+    r(0x0D44, Str::TabTimer, 0, 32400, 1, Unit::None, 1500),
 ];
 
 /// The five band gains (dB) of equaliser preset `preset` (an
@@ -454,7 +505,7 @@ pub fn def(id: SettingId) -> Option<&'static Setting> {
 }
 
 /// Number of stored items.
-pub const STORED: usize = 66;
+pub const STORED: usize = 89;
 
 /// Position among stored items (cache index).
 #[must_use]
@@ -531,6 +582,11 @@ pub fn format_value<const N: usize>(s: &Setting, v: i16, lang: Lang, out: &mut S
                 out.push_i32(i32::from(v));
                 out.push(' ');
                 out.push_str(lang.get(Str::PerDay));
+            }
+            Unit::Cm | Unit::Kg => {
+                out.push_i32(i32::from(v));
+                out.push(' ');
+                out.push_str(lang.get(if unit == Unit::Cm { Str::Cm } else { Str::Kg }));
             }
         },
         _ => {}

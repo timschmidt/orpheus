@@ -2,6 +2,7 @@
 //! screen holds state; covered screens are rebuilt from resume records).
 
 mod bluetooth;
+mod clocks;
 mod edit;
 mod files;
 mod home;
@@ -11,10 +12,15 @@ mod pictures;
 mod player;
 mod radio;
 mod rows;
+mod steps;
 mod system;
 mod text;
 
 pub use bluetooth::{BluetoothScreen, BtConnectScreen, BtView, bt_kind_icon, connect_arg, phase_label};
+pub use clocks::{
+    AlarmDaysScreen, AlertScreen, PICK_ALARM, PICK_TIMER, ToolsScreen, push_days, push_hm, push_hms,
+    push_lap, push_stopwatch,
+};
 pub use edit::{PickerScreen, SliderScreen};
 pub use files::{BrowseMode, FilesScreen, kind_icon, kind_label, push_size};
 pub use home::HomeScreen;
@@ -24,6 +30,7 @@ pub use pictures::PictureScreen;
 pub use player::{EqualiserScreen, NowPlayingScreen};
 pub use radio::{PresetsScreen, RadioScreen};
 pub use rows::{MAX_ROWS, RowData, Rows};
+pub use steps::{DAY_SHORT, StepsScreen, push_distance, push_energy, push_grouped, steps_hint};
 pub use system::{BootScreen, ChargingScreen, GoodbyeScreen, LockScreen, Notice, NoticeScreen};
 pub use text::TextScreen;
 
@@ -32,7 +39,7 @@ use orpheus_ui::gfx::Gfx;
 use orpheus_ui::menu::MenuBuilder;
 use orpheus_ui::nav::{Arg, Cx, Dirty, Nav, Resume, Screen, ScreenId, ScreenSet, Wants};
 
-use crate::services::{Services, UsbMode, bt_event, other, radio_event};
+use crate::services::{Services, UsbMode, bt_event, other, radio_event, tools_event};
 use crate::settings::id;
 use crate::strings::Str;
 
@@ -90,6 +97,14 @@ pub const DEVELOPER: ScreenId = ScreenId(31);
 pub const RADIO: ScreenId = ScreenId(32);
 /// Radio › Presets….
 pub const RADIO_PRESETS: ScreenId = ScreenId(33);
+/// Steps (05 §7.7). Arg: 0 Today, 1 Week.
+pub const STEPS: ScreenId = ScreenId(34);
+/// Stopwatch · Timer · Alarm (05 §7.8). Arg: the tab (0, 1, 2).
+pub const STOPWATCH: ScreenId = ScreenId(35);
+/// An alarm's repeat days. Arg: the alarm.
+pub const ALARM_DAYS: ScreenId = ScreenId(36);
+/// The timer or an alarm ringing (pushed over any screen).
+pub const ALERT: ScreenId = ScreenId(37);
 
 /// One variant per screen. Only the top screen exists, so the enum's size
 /// (its largest variant, the list screen) is the UI's screen RAM.
@@ -114,6 +129,10 @@ pub enum AppScreen {
     BtConnect(BtConnectScreen),
     Radio(RadioScreen),
     RadioPresets(PresetsScreen),
+    Steps(StepsScreen),
+    Tools(ToolsScreen),
+    AlarmDays(AlarmDaysScreen),
+    Alert(AlertScreen),
 }
 
 macro_rules! each {
@@ -138,6 +157,10 @@ macro_rules! each {
             AppScreen::BtConnect($s) => $e,
             AppScreen::Radio($s) => $e,
             AppScreen::RadioPresets($s) => $e,
+            AppScreen::Steps($s) => $e,
+            AppScreen::Tools($s) => $e,
+            AppScreen::AlarmDays($s) => $e,
+            AppScreen::Alert($s) => $e,
         }
     };
 }
@@ -207,6 +230,10 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             BT_CONNECT => AppScreen::BtConnect(BtConnectScreen::default()),
             RADIO => AppScreen::Radio(RadioScreen::default()),
             RADIO_PRESETS => AppScreen::RadioPresets(PresetsScreen::default()),
+            STEPS => AppScreen::Steps(StepsScreen::default()),
+            STOPWATCH => AppScreen::Tools(ToolsScreen::default()),
+            ALARM_DAYS => AppScreen::AlarmDays(AlarmDaysScreen::default()),
+            ALERT => AppScreen::Alert(AlertScreen::default()),
             _ => AppScreen::Home(HomeScreen::default()),
         }
     }
@@ -236,6 +263,10 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             AppScreen::BtConnect(_) => BT_CONNECT,
             AppScreen::Radio(_) => RADIO,
             AppScreen::RadioPresets(_) => RADIO_PRESETS,
+            AppScreen::Steps(_) => STEPS,
+            AppScreen::Tools(_) => STOPWATCH,
+            AppScreen::AlarmDays(_) => ALARM_DAYS,
+            AppScreen::Alert(_) => ALERT,
         }
     }
 
@@ -264,6 +295,10 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             AppScreen::BtConnect(_) => "BtConnect",
             AppScreen::Radio(_) => "Radio",
             AppScreen::RadioPresets(_) => "RadioPresets",
+            AppScreen::Steps(_) => "Steps",
+            AppScreen::Tools(_) => "Stopwatch",
+            AppScreen::AlarmDays(_) => "AlarmDays",
+            AppScreen::Alert(_) => "Alert",
         }
     }
 
@@ -332,6 +367,9 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
                 }
                 Nav::Stay
             }
+            // The timer or an alarm rings: the alert goes over whatever
+            // is shown (an older alert under it closes itself).
+            ServiceEvent::Other { kind: other::TOOLS, value: tools_event::ALERT } => Nav::Push(ALERT, Arg(0)),
             ServiceEvent::CardRemoved => {
                 cx.ui.toast(lang.get(Str::CardRemoved));
                 Nav::Stay

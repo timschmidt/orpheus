@@ -137,6 +137,12 @@ pub enum Req {
     /// written at once when idle; while playing only its file is chosen
     /// here (the rows wait for room in the DAC's ring, `audio::play_file`).
     Drain,
+    /// The step counter has something for the card (`crate::sensor`: the
+    /// steps file, trace rows): written at once when idle; while playing
+    /// only a trace file is chosen here (writes wait for room, as `Drain`).
+    Sensor,
+    /// An alert started (`audio::ALERT`): wakes the idle loop to sound it.
+    Alert,
 }
 
 /// A picture for a box of the frame buffer (`PictureService`). The UI
@@ -864,6 +870,15 @@ impl Server {
                 }
                 true
             }
+            Req::Sensor => {
+                if idle {
+                    crate::audio::sensor_flush(vol, scratch, false).await;
+                } else {
+                    crate::audio::trace_prepare(vol).await;
+                }
+                true
+            }
+            Req::Alert => true,
             Req::Text { file, offset } => {
                 self.text(vol, file, offset, scratch).await;
                 true

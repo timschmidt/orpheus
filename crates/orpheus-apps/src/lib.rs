@@ -15,6 +15,7 @@ pub mod screens;
 pub mod services;
 pub mod settings;
 pub mod strings;
+pub mod tools;
 
 pub use screens::AppScreen;
 pub use services::Services;

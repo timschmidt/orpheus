@@ -563,6 +563,49 @@ pub trait SystemService {
     fn keys_locked(&self) -> bool;
 }
 
+// ---------------------------------------------------------------- Steps
+
+/// The pedometer as the Steps app sees it (05 §7.7, SENS-1).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct StepsInfo {
+    /// The accelerometer answered with its id.
+    pub sensor: bool,
+    /// Counting now (Count in background, or the app is open).
+    pub counting: bool,
+    /// Days are dated (the clock is valid); otherwise no history is kept.
+    pub dated: bool,
+}
+
+/// `ServiceEvent::Other { kind: other::STEPS, value }`: today's count
+/// changed (`value` = the count).
+pub trait StepsService {
+    fn steps_info(&self) -> StepsInfo;
+    /// Steps `ago` days before today (0 = today, up to 6).
+    fn steps_day(&self, ago: u8) -> u32;
+    /// Steps › Reset today.
+    fn steps_reset_today(&mut self);
+}
+
+// ---------------------------------------------------------------- Tools
+
+/// `ServiceEvent::Other { kind: other::TOOLS, value }` values.
+pub mod tools_event {
+    /// An alert started ([`crate::tools::Tools::ringing`]).
+    pub const ALERT: u32 = 1;
+    /// The alert ended by itself (rang for a minute).
+    pub const ALERT_ENDED: u32 = 2;
+}
+
+/// Stopwatch, timer and alarms (05 §7.8). The state is the service's, so
+/// it runs while the app is left; the screens change it directly.
+pub trait ToolsService {
+    fn tools(&self) -> &crate::tools::Tools;
+    fn tools_mut(&mut self) -> &mut crate::tools::Tools;
+    /// An alarm can switch the player on from off (PWR-3c, U-PMU-3). Off
+    /// until proven on the player: alarms ring only while it is on.
+    fn alarm_wakes_from_off(&self) -> bool;
+}
+
 /// Everything the apps need. Implemented automatically for any type with
 /// all the parts; the toolkit's `System` (status bar, volume, mini-player)
 /// can be implemented with [`status`], [`mini_player`] and
@@ -583,6 +626,8 @@ pub trait Services:
     + BluetoothService
     + RadioService
     + SystemService
+    + StepsService
+    + ToolsService
 {
 }
 
@@ -602,6 +647,8 @@ impl<T> Services for T where
         + BluetoothService
         + RadioService
         + SystemService
+        + StepsService
+        + ToolsService
 {
 }
 
@@ -614,9 +661,16 @@ where
         + PlaybackService
         + BluetoothService
         + SystemService
+        + ToolsService
         + ?Sized,
 {
     let b = s.battery();
+    let tools = s.tools();
+    // The bell: an alarm set, a timer running or an alarm snoozed; the dot:
+    // the stopwatch running (05 §7.8: they run in the background).
+    let alarm = tools.timer.running()
+        || tools.snoozed()
+        || (0..crate::tools::ALARMS).any(|i| crate::tools::alarm(s, i).on);
     let t = s.now();
     Status {
         // No time while the clock is not set (the RTC can stop): the bar
@@ -631,8 +685,8 @@ where
         source: s.playing().map_or(Source::Idle, |p| p.source),
         locked: s.keys_locked(),
         sleep_timer: s.sleep_timer_left().is_some(),
-        alarm: false,
-        activity: false,
+        alarm,
+        activity: tools.stopwatch.running(),
     }
 }
 
@@ -692,6 +746,10 @@ pub mod other {
     pub const BLUETOOTH: u16 = 2;
     /// Radio: `value` is one of [`super::radio_event`].
     pub const RADIO: u16 = 3;
+    /// Steps: today's count changed (`value`).
+    pub const STEPS: u16 = 4;
+    /// Stopwatch, timer, alarms: `value` is one of [`super::tools_event`].
+    pub const TOOLS: u16 = 5;
 }
 
 /// Browser order (Files menu › Sort).

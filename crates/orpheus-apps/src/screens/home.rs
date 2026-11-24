@@ -128,6 +128,12 @@ impl<S: Services + ?Sized> Screen<S> for HomeScreen {
                 if app == App::Radio {
                     return Nav::Push(super::RADIO, Arg(0));
                 }
+                if app == App::Steps {
+                    return Nav::Push(super::STEPS, Arg(0));
+                }
+                if app == App::Stopwatch {
+                    return Nav::Push(super::STOPWATCH, Arg(0));
+                }
                 let notice = if app.needs_card() {
                     match cx.svc.card() {
                         CardState::Absent => Notice::NoCard,

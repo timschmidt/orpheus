@@ -10,6 +10,7 @@ use orpheus_ui::text::StrBuf;
 use orpheus_ui::theme::Role;
 use orpheus_ui::widgets::misc::{draw_big_value, draw_slider};
 
+use super::clocks::{PICK_ALARM, PICK_TIMER};
 use crate::services::{DateTime, Services};
 use crate::settings::{self, Kind, SettingId, Unit, id};
 use crate::strings::{Lang, Str};
@@ -71,6 +72,14 @@ fn big_parts(v: i16, unit: Unit, lang: Lang) -> (StrBuf<12>, &'static str) {
             signed(&mut b);
             lang.get(Str::PerDay)
         }
+        Unit::Cm => {
+            b.push_i32(i32::from(v));
+            lang.get(Str::Cm)
+        }
+        Unit::Kg => {
+            b.push_i32(i32::from(v));
+            lang.get(Str::Kg)
+        }
     };
     (b, u)
 }
@@ -130,10 +139,26 @@ impl<S: Services + ?Sized> Screen<S> for SliderScreen {
     }
 }
 
-/// Time (arg 0) or date (arg 1) picker: Prev/Next choose the field,
-/// Up/Down change it, OK sets the clock.
+/// What the picker edits.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum Pick {
+    /// The clock's time (arg 0).
+    #[default]
+    Time,
+    /// The clock's date (arg 1).
+    Date,
+    /// The timer's duration, h:m:s (arg [`PICK_TIMER`]).
+    Timer,
+    /// Alarm `i`'s time (arg [`PICK_ALARM`] + i).
+    Alarm(u8),
+}
+
+/// Time (arg 0) or date (arg 1) picker, the timer's duration or an
+/// alarm's time (05 §7.8): Prev/Next choose the field, Up/Down change it,
+/// OK sets it.
 #[derive(Default)]
 pub struct PickerScreen {
+    pick: Pick,
     date: bool,
     t: DateTime,
     field: u8,
@@ -152,8 +177,12 @@ const fn days_in(month: u8, year: u16) -> u8 {
 }
 
 impl PickerScreen {
-    /// Field kinds in display order: 0 hour, 1 minute, 2 day, 3 month, 4 year.
+    /// Field kinds in display order: 0 hour, 1 minute, 2 day, 3 month, 4
+    /// year, 5 second.
     fn fields(&self) -> &'static [u8] {
+        if self.pick == Pick::Timer {
+            return &[0, 1, 5];
+        }
         if !self.date {
             return &[0, 1];
         }
@@ -181,15 +210,22 @@ impl PickerScreen {
             1 => u32::from(self.t.minute),
             2 => u32::from(self.t.day),
             3 => u32::from(self.t.month),
+            5 => u32::from(self.t.second),
             _ => u32::from(self.t.year),
         }
     }
 
     fn change(&mut self, f: u8, dir: i32) {
         let wrap = |v: i32, lo: i32, hi: i32| (v - lo + dir).rem_euclid(hi - lo + 1) + lo;
+        let timer = self.pick == Pick::Timer;
+        let hours = if timer { 9 } else { 23 };
         let t = &mut self.t;
         match f {
-            0 => t.hour = u8::try_from(wrap(i32::from(t.hour), 0, 23)).unwrap_or(0),
+            0 => t.hour = u8::try_from(wrap(i32::from(t.hour), 0, hours)).unwrap_or(0),
+            5 => {
+                t.second = u8::try_from(wrap(i32::from(t.second), 0, 59)).unwrap_or(0);
+                return;
+            }
             1 => t.minute = u8::try_from(wrap(i32::from(t.minute), 0, 59)).unwrap_or(0),
             2 => {
                 let days = i32::from(days_in(t.month, t.year));
@@ -199,7 +235,9 @@ impl PickerScreen {
             _ => t.year = u16::try_from(wrap(i32::from(t.year), 2020, 2099)).unwrap_or(2026),
         }
         t.day = t.day.clamp(1, days_in(t.month, t.year));
-        t.second = 0;
+        if !timer {
+            t.second = 0;
+        }
     }
 
     fn field_name(f: u8) -> Str {
@@ -208,15 +246,48 @@ impl PickerScreen {
             1 => Str::Minutes,
             2 => Str::Day,
             3 => Str::Month,
+            5 => Str::SecondsField,
             _ => Str::Year,
+        }
+    }
+
+    fn title(&self) -> Str {
+        match self.pick {
+            Pick::Time | Pick::Alarm(_) => Str::SetTime,
+            Pick::Date => Str::SetDate,
+            Pick::Timer => Str::Duration,
         }
     }
 }
 
 impl<S: Services + ?Sized> Screen<S> for PickerScreen {
     fn enter(&mut self, cx: &mut Cx<'_, S>, arg: Arg) {
-        self.date = arg.0 == 1;
+        self.pick = match arg.0 {
+            1 => Pick::Date,
+            PICK_TIMER => Pick::Timer,
+            a if (PICK_ALARM..PICK_ALARM + crate::tools::ALARMS as u32).contains(&a) => {
+                Pick::Alarm(u8::try_from(a - PICK_ALARM).unwrap_or(0))
+            }
+            _ => Pick::Time,
+        };
+        self.date = self.pick == Pick::Date;
         self.t = cx.svc.now();
+        match self.pick {
+            Pick::Timer => {
+                let s = cx.svc.tools().timer.duration() / 1000;
+                self.t = DateTime {
+                    hour: u8::try_from(s / 3600).unwrap_or(0).min(9),
+                    minute: u8::try_from(s / 60 % 60).unwrap_or(0),
+                    second: u8::try_from(s % 60).unwrap_or(0),
+                    ..DateTime::default()
+                };
+            }
+            Pick::Alarm(i) => {
+                let a = crate::tools::alarm(cx.svc, usize::from(i));
+                self.t = DateTime { hour: a.hour(), minute: a.min(), ..DateTime::default() };
+            }
+            _ => {}
+        }
         self.order = u8::try_from(cx.svc.setting(id::DATE_FORMAT)).unwrap_or(0);
         self.lang = cx.svc.lang();
         self.field = 0;
@@ -227,8 +298,24 @@ impl<S: Services + ?Sized> Screen<S> for PickerScreen {
             return Nav::Pop;
         }
         if ev.is_tap(Key::Ok) {
-            cx.svc.set_now(self.t);
-            cx.ui.toast(self.lang.get(Str::Done));
+            let t = self.t;
+            match self.pick {
+                Pick::Time | Pick::Date => {
+                    cx.svc.set_now(t);
+                    cx.ui.toast(self.lang.get(Str::Done));
+                }
+                Pick::Timer => {
+                    let secs = u32::from(t.hour) * 3600 + u32::from(t.minute) * 60 + u32::from(t.second);
+                    if secs > 0 {
+                        cx.svc.tools_mut().timer.set(secs * 1000);
+                    }
+                }
+                Pick::Alarm(i) => {
+                    let (time, _, on) = crate::tools::alarm_keys(usize::from(i));
+                    cx.svc.set_setting(time, i16::from(t.hour) * 60 + i16::from(t.minute));
+                    cx.svc.set_setting(on, 1);
+                }
+            }
             return Nav::Pop;
         }
         let n = u8::try_from(self.fields().len()).unwrap_or(1);
@@ -250,10 +337,12 @@ impl<S: Services + ?Sized> Screen<S> for PickerScreen {
         }
         let (w, _) = g.size();
         g.clear(Role::Bg);
-        let font = if self.date { FontId::Num16 } else { FontId::Num28 };
-        let base = if self.date { 52 } else { 58 };
+        // Three fields (a date, a duration) in 16 px numerals.
+        let small = self.fields().len() == 3;
+        let font = if small { FontId::Num16 } else { FontId::Num28 };
+        let base = if small { 52 } else { 58 };
         let dim = g.c(Role::TextDim);
-        let title = self.lang.get(if self.date { Str::SetDate } else { Str::SetTime });
+        let title = self.lang.get(self.title());
         g.text_in(6, 17, w - 12, title, FontId::UiBold, dim, Align::Center);
         // Measure the whole line to centre it.
         let mut parts: [StrBuf<6>; 3] = [StrBuf::new(); 3];
@@ -271,8 +360,8 @@ impl<S: Services + ?Sized> Screen<S> for PickerScreen {
         }
         let mut x = (w - total) / 2;
         let text = g.c(Role::Text);
-        let h = if self.date { 24 } else { 38 };
-        let asc = if self.date { 19 } else { 33 };
+        let h = if small { 24 } else { 38 };
+        let asc = if small { 19 } else { 33 };
         for (i, f) in fields.iter().enumerate() {
             let fw = g.measure(parts[i].as_str(), font) + 2 * pad;
             let focused = usize::from(self.field) == i;

@@ -11,6 +11,7 @@ publish = false
 orpheus-ui = { path = "../orpheus-ui" }
 orpheus-power = { path = "../orpheus-power" }
 orpheus-fm = { path = "../orpheus-fm" }
+orpheus-steps = { path = "../orpheus-steps" }
 
 [lints]
 workspace = true

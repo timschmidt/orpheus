@@ -223,6 +223,19 @@ impl Target for Fw {
         if let Some(rest) = data.strip_prefix(b"drain ") {
             return crate::drain::test_command(rest);
         }
+        // SENS-1: the accelerometer and the step counter; UI-5d: the RTC
+        // alarm.
+        if let Some(rest) = data.strip_prefix(b"acc ") {
+            return crate::sensor::acc_command(rest);
+        }
+        if data == b"steps status" {
+            crate::sensor::steps_status();
+            return true;
+        }
+        if data == b"alarm status" {
+            crate::services::alarm_status();
+            return true;
+        }
         if CARD_WITH_USB.load(Ordering::Relaxed) {
             crate::audio::busy_reply();
             return true;

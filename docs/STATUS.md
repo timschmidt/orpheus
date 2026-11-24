@@ -39,6 +39,9 @@ of every session. Newest entries first in §3.
 | AU-14 | done (host); **device: Pictures app and album art (built, not yet run on the player)** | `orpheus-img`. Pictures (folders + pictures, list mode), viewer (fit/fill, rotate, next/prev, slideshow), album art made at track open and cached in `/.orpheus/cache/art`. Not done: thumbnail grid, 100 % + pan, wallpaper, delete, per-file rotation memory. User check 14 |
 | OTP-1, BT-1, USB-6 | done (host) | `orpheus-otp`, `orpheus-bt`, MMC/CD-ROM in `orpheus-usb` |
 | BT-2 (device) | **built, not yet run on the player** | UART1 driver (`atj2157_hal::uart`, `yoton_bsp::bt`), `orpheus_bt::driver`, firmware `bt` task, `BluetoothService`, shutdown 0x24 on power-off. Module off at boot; `bt probe/on/off/status/scan/connect/listen/shutdown/rx/tx` test commands. Not done: volume policy, metadata at track change, pairing UI, U-BT-2 |
+| SENS-1 | **built, not yet run on the player** | `orpheus-steps` (detector, history, trace format; synthetic-trace tests), `yoton_bsp::accel` (no FIFO: part unidentified, U-ACC-1), `firmware::sensor` task (25 Hz, SRAM3 state), `/.orpheus/steps.bin`, `acc read/regs/trace`, `steps status`. User check 20 |
+| UI-5c | **built (host + firmware), not yet run on the player** | Steps app (Today/Week, goal, distance/kcal, settings, reset), 73 goldens (UI-5d: 98) |
+| UI-5d | **built (host + firmware), not yet run on the player** | Stopwatch/Timer/Alarm in the background, alert screen, beep, backlight flash, status-bar bell/dot, RTC alarm armed; wake from off waits for PWR-3c (`ALARM_WAKE_FROM_OFF = false`). User check 21 |
 | UI-6a | **on the player 2026-11-24** (connect, reconnect, audio, volume — policy changed, see session entry) | Bluetooth app (status, Pair new device, Paired devices, connect progress/failure, forget, reconnect switch), `BluetoothService` lists/requests, volume policy of 06 §4.2 (0x26 on connect and change, DAC reference −3 dB while the sink takes absolute volume), address text in written order. User check 17 |
 | BRAND-1 | done (host) | `docs/brand/palette.toml` (dark/light = firmware Dark/Light with Blue; `link`, `accent` web-only; WCAG AA checked for the web and after RGB565), `cargo xtask brand [--check]` → `docs/brand/generated/` (mono/small lyre, wordmark in the firmware's bold font, favicons + ICO, apple-touch, manifest icons, 1200×630 social card, `palette.css`). Firmware theme tables unchanged; generating them, the boot logo and firmware icons are follow-ups. User: approve palette and logo variants |
 | DOC-2 | done (host) | README rewrite, `docs/user/` (manual index, install/update/restore, keys, Music, Now Playing, Files, Pictures, Bluetooth, Settings, Performance, troubleshooting, FAQ; each ≤ 600 words, checked by `site --check`), screenshots `docs/shots/` from goldens (`xtask site shots`). User: read the manual once |
@@ -198,6 +201,92 @@ of every session. Newest entries first in §3.
   decodes RDS, the earphone window (U-AUD-5), TWI1 (U-FM-1 rest), the
   shared bus with the accelerometer (SENS-1 adds a lock; nothing else
   uses the bus yet). User check 20.
+### 2026-11-24 — SENS-1, UI-5c, UI-5d: step counter, Steps app, Stopwatch · Timer · Alarm (worker, no hardware)
+
+* **`orpheus-steps`** (new crate, `no_std`, host-tested): the step
+  detector (integer only: magnitude, gravity removed over ≈ 1.3 s,
+  ≈ 4 Hz low-pass, decaying envelopes with ± ¼-swing hysteresis, minimum
+  swing by Sensitivity 0.16/0.10/0.06 g, step interval 270 ms – 2 s, four
+  regular candidates before counting, a "too fast" rule on the unfiltered
+  signal against shaking); `History` (today + six days, day rollover,
+  clock set back, merge with steps counted before the card was read) and
+  `/.orpheus/steps.bin` (`OSTP`, version 1, CRC-32, 68 B); the trace CSV
+  format; distance and kcal (05 §7.7). Tests: synthetic traces at 25 and
+  50 Hz (walk, slow, brisk, run, pocket, clipped sprint within ± 5 %, eight
+  seeds each; **0 steps** on a table for 10 min, handled, on a bus, shaken
+  at 3.8–8 Hz; walks with stops; sensitivity order; the user check's
+  200 steps twice) and `traces/*.csv` with `# truth=N` (three synthetic
+  files committed; captures from `acc trace` go there). Shaking slower
+  than ≈ 3.7 Hz is a running cadence and counts (documented).
+* **Firmware (SENS-1)**: `yoton_bsp::accel` (id check, the vendor's open
+  sequence steps 1–4, 7–9, 14 marked VERBATIM: ± 2 g, ODR code 6 = 62.5 Hz;
+  suspend at boot and when nothing counts; one 6-byte burst read). **No
+  FIFO, no interrupt**: the part is not identified beyond id `0x13`
+  (U-ACC-1; `acc regs` dumps `0x00–0x3F` to tell). `firmware::sensor`
+  task on the main executor: 25 Hz while Count in background is "While on"
+  (default), the Steps app is open or a trace runs; the detector, the RTC
+  day check and the history once a second over the batch; per-sample code
+  in the new `hot.toml` cluster `steps-sample` (4 lines at `0x222000`,
+  after `play-block`, which does not move). State in SRAM3 at `0x307A00`
+  (history, detector, 64-sample trace ring). The card task reads
+  `steps.bin` at mount, writes it 10 min after the first unsaved step, at
+  a day change, at power-off and before a USB hand-over (never while the
+  clock is invalid), trace rows when 32 wait; while playing only with
+  `ROOMY` headroom (ledger cause `serve`), like the battery log.
+* **Developer commands**: `acc read` (one sample, magnitude in mg, chip
+  id, ODR, mode, rate, counting, samples, I2C errors; wakes a suspended
+  part for the read), `acc regs`, `acc trace <secs>` (≤ 3600) /
+  `acc trace stop` (reply: file, written, lost), `steps status` (today,
+  the week, present, counting, background, app, dated, file loaded,
+  detected, samples, errors, saves), `alarm status` (RTC alarm registers,
+  now, wake-from-off flag).
+* **UI-5c Steps** (05 §7.7 as built): tabs Today · Week, goal bar,
+  distance/kcal, seven bars with the goal line, Up/Down day; Menu: Daily
+  goal, Stride, Weight, Units, Count in background (Off / While on),
+  Sensitivity, Reset today. Settings `0x0D20–0x0D25`. Strip hints: "No
+  clock: no history", "Counts only here". `Tabs` widget in `orpheus-ui`
+  (`draw_tabs`: side by side, or the active name between ◂ ▸).
+* **UI-5d Stopwatch · Timer · Alarm** (05 §7.8 as built): state in the
+  service (`orpheus_apps::tools::Tools` in `Fw`), so they run in the
+  background; stopwatch timed from the key-down edge, 20 laps; timer with
+  the last five durations as presets, h:m:s picker (the date/time picker
+  gained timer and alarm modes); four alarms (time, days or once, on),
+  snooze 9 min, a one-time alarm switches itself off; the alert screen
+  over any screen lights the display, flashes the backlight and plays a
+  2 kHz beep pattern through the headphones (`audio::alert_tone`, in the
+  card task's idle loop or while paused: the music pauses for it and
+  resumes); status bar bell (alarm on, timer running, snoozed) and dot
+  (stopwatch running); auto-off waits while the stopwatch or timer runs.
+  The RTC alarm is armed with the next alarm (`rtc_clock::set_alarm`,
+  `alarm_state` added); ringing while on comes from the once-a-second
+  minute check. **Wake from off: not done** — `services::ALARM_WAKE_FROM_OFF
+  = false` (PWR-3c: U-PMU-3's alarm case and a wake reason at start are
+  missing; 03 §11); the Alarm tab says "Rings only while on".
+* **Simulator**: fake accelerometer (`sim/src/steps.rs`: the real detector
+  at 25 Hz on a synthetic walk or noise; `set:walk=`, `set:steps=`,
+  `set:week=a/b/…`, `set:sensor=off`), fake clock (`set:clockrun=1`,
+  `set:clock=HH:MM:SS`, `set:weekday=`, `set:clockvalid=0`),
+  `set:alarmwake=1`. 171 new goldens (`steps_*`, `tools_*`: dark/light ×
+  latin/cyrillic/cjk, amber), looked at; none of the 620 existing changed;
+  791 in all. Behaviour tests: `sim/tests/steps.rs` (8),
+  `sim/tests/tools.rs` (12: key-edge timing exact over 60 s, laps, reset
+  confirmation, background with indicators, timer alert once and the
+  screen lit from off, ringing ends after a minute, presets, alarm days,
+  one-time, snooze, no alarm without a clock, alarm edits).
+* **RAM**: `__stack_bottom` 0x132238 → 0x132498 (**+608 B** SRAM0: `Fw`
+  +304 (`Tools` ≈ 220, 23 more settings), sensor task pool 120, its signal
+  12, the rest task futures). The sensor state is in SRAM3. Async frames:
+  sensor task poll 68 B, `steps_save`/`trace_write` 980 B each (as
+  `drain_flush_rows`, 1,004 B, on the same path), audio task poll 4,992 B
+  (unchanged). Resident 83,316 → 83,484 B (+168: the panic-path strings of
+  `sensor.rs` and `accel.rs`; `clocks.rs` and `detector.rs` made
+  panic-free); code pages 75 → 79, slot 835,584 → 868,352 B.
+  `size --check` not run (fails in worktrees, path length).
+* **Not done**: Month tab, "Always" counting, alarm actions other than the
+  beep and the volume ramp, stopwatch across a restart, wake from off
+  (PWR-3c), the alert through Bluetooth (it plays at the DAC).
+* **Not run on the player.** Lead's test plan: in the worker's final
+  report (dev commands first, then user checks 20 and 21).
 
 ### 2026-11-24 — PWR-5 rework and AU-5 fixes: playdir reboot, browsing while playing, remount, playdir during playback, bit rate (worker, no hardware)
 
@@ -2047,10 +2136,17 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 | 2026-11-24 | Instrumented coverage build of the host workspace, no debug info | ≈ 0.4 GB build + ≈ 1.1 GB test images in `target/cover/…/tmp` | `du` |
 | 2026-11-24 | Coverage after VER-4 part 1, regions / lines / branches | host + fuzz 83.27 % (74,194 / 89,102) / 83.37 % / 80.81 %; fuzz only 78.04 % (48,171 / 61,729 regions of the files fuzz binaries contain) | `xtask cover --fuzz-only`, `xtask cover` (+ fuzz replays), nightly-2026-11-05 |
 | 2026-11-24 | Committed fuzz corpora | 30 targets, 13.5 k files, 15 MB | `du --apparent-size tests/fuzz-corpus` |
+| 2026-11-24 | Firmware with SENS-1, UI-5c, UI-5d, worker worktree build | resident 83,316 → 83,484 B; `__stack_bottom` 0x132238 → 0x132498 (+608 B); 75 → 79 code pages (+16 rodata), slot 835,584 → 868,352 B; cluster `steps-sample` 3,648 B (4 lines) at 0x222000; sensor task poll frame 68 B, audio task poll 4,992 B (unchanged) | `xtask build`, `llvm-nm`, `llvm-objdump` `sub sp` |
+| 2026-11-24 | Step detector on synthetic traces (25 Hz, 8 seeds × walk/slow/brisk/pocket 120 s, run 90 s) | all within ± 5 %; 0 steps: table 10 min, handling, bus 10 min, shaking 3.8–8 Hz | `cargo test -p orpheus-steps` |
 | 2026-11-24 | ASan host tests | 63 binaries, 586 tests, 0 memory errors; LSan: 4 binaries (1 fixed) | `xtask test asan --lean` |
 | 2026-11-24 | Miri | 14 crates, 232 tests, no UB; full run ≈ 35 min | `xtask test miri` |
 
 ## 5. Open questions for the user
+
+* SENS-1/UI-5d (2026-11-24): user checks 20 (200 steps twice, 10 min on a
+  table) and 21 (stopwatch against a phone, timer and alarm alerts while
+  on). A labelled walking capture (`acc trace`, user check 20 c) would
+  replace the synthetic traces in the detector's tests.
 
 * D-9 (coverage exclusions): the list is empty; workers will propose
   entries with `approved-by = "pending owner"` for the owner to review.

@@ -14,6 +14,7 @@
 //! | `rt_beat` | RT | RT executor heartbeat for `watchdog` |
 //! | `bt` | main | Bluetooth transmitter module (off until asked) |
 //! | `fm` | main | FM tuner and its route to the amplifier (off until asked) |
+//! | `sensor` | main | accelerometer at 25 Hz while steps are counted (SENS-1) |
 
 #![no_std]
 #![no_main]
@@ -27,6 +28,7 @@ mod fm;
 mod library;
 mod media;
 mod pictures;
+mod sensor;
 mod services;
 mod state;
 mod ui;
@@ -347,6 +349,7 @@ extern "C" fn main() -> ! {
         s.spawn(watchdog().unwrap());
         s.spawn(bt::bt().unwrap());
         s.spawn(fm::fm().unwrap());
+        s.spawn(sensor::sensor().unwrap());
     })
 }
 

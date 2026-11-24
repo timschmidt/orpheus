@@ -219,6 +219,25 @@ symbols = [
     "firmware::audio::play_file::{closure#0}",
 ]
 
+# Step counting (SENS-1): the code that runs 25 times a second while steps
+# are counted, also during playback: the sensor task's poll, the sample
+# (one I2C burst read into the batch and the trace ring). Packed so that
+# it takes one or two lines of the cache instead of touching scattered
+# lines of the task, the BSP and the HAL; the detector and the day history
+# run once a second (`firmware::sensor::batch`, not here).
+[[cluster]]
+name = "steps-sample"
+bins = ["firmware"]
+symbols = [
+    "embassy_executor::raw::TaskStorage<firmware::sensor::__sensor_task::*>::poll",
+    "firmware::sensor::__sensor_task::__sensor_task_inner_function::{closure#0}",
+    "firmware::sensor::sample",
+    "firmware::sensor::trace_push",
+    "yoton_bsp::accel::Accel>::read",
+    "yoton_bsp::accel::Accel>::regs",
+    "atj2157_hal::i2c_soft::SoftI2c>::*",
+]
+
 # The paged toy: three functions spread over the generated code, packed
 # together (checked by `cargo xtask test pagelink`).
 [[cluster]]
