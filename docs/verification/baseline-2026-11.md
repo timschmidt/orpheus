@@ -244,10 +244,12 @@ in the coverage run (or move the window code behind a testable seam).
 ## 7. Metrics recorded
 
 `metrics/coverage.csv`: 34 rows (33 crates + `TOTAL`) for this baseline.
-`metrics/static.csv`: resident 78,911 B, bss 120,520 B, stack section
-26,864 B, 7 panic sites, 71 code + 16 rodata pages, full-layout slot
-798,720 B, and the 40 largest prologue stack frames (largest:
-`firmware::audio::init_chain` 11,192 B, the audio task 5,112 B, the UI task
-poll 4,776 B, `firmware::ui::new_ui` 4,488 B) — from the main checkout's
-last `xtask build` (layout build id `595caf3d…`), not a build of this
-commit.
+`metrics/static.csv` (row commit `deac5f96df1e`): resident 79,087 B, bss
+121,440 B, stack section 25,768 B, 7 panic sites, 73 code + 16 rodata
+pages, full-layout slot 815,104 B, and the 40 largest prologue stack frames
+(largest: `firmware::audio::init_chain` 11,192 B, the audio task 5,080 B,
+the UI task poll 4,776 B, `firmware::ui::new_ui` 4,504 B) — from the main
+checkout's last `xtask build` at the time (layout build id `3ed98285…`),
+not a build of this worktree. The coverage rows carry the commit the
+coverage run measured (`e92443fd3003-dirty`: `e92443f` plus the
+uncommitted VER-1/VER-5 tooling).
