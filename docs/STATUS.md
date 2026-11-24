@@ -43,6 +43,82 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-24 — PWR-5 rework and AU-5 fixes: playdir reboot, browsing while playing, remount, playdir during playback, bit rate (worker, no hardware)
+
+From the lead's run of `f6492092` (merged locally, not kept): `playdir`
+rebooted within ≈ 5 s (watchdog, no fault record), also with the logger
+off and the governor off; the logger never wrote while idle.
+
+* **The reboot: code layout, not logger code.** With the logger off no
+  new code runs on the playback path (an atomic load per block, a counter
+  per card operation). What changed: the paged layout (74 → 75 pages;
+  `AnyDecoder::decode` moved 9 KiB, `play_file` 3.6 KiB), and SRAM0
+  (+424 B). The stack has an MPU guard (an overflow leaves a StackGuard
+  record; the lead measured 5,972 B free during playback), so the paging:
+  the lead measured ≈ 2,700 line loads/s and 18 loads per decode call on
+  `2e9bf3a4`: MP3 already runs close to thrashing. Found on the way:
+  `AnyDecoder::decode` holds the MP3 frame code inlined (≈ 7 KiB, paged,
+  about 8 lines per frame) although `orpheus_codec_mp3::*` is resident.
+* **New `hot.toml` cluster `play-block`** (after the Opus clusters,
+  67 lines at `0x211000`): `AnyDecoder::decode`, the card task's poll,
+  the card read path of a refill (fill_in, fs read, cluster_at, fat_get,
+  cache load, card and SD read), the per-block small functions (task
+  poll, PCM push/headroom, note, player update, `Server::feed`,
+  `Player::handle`), then `play_file`. Its place no longer moves with
+  unrelated code. The order of the groups was chosen offline: hot lines =
+  the small functions whole, and in the large ones the entry and the call
+  sites into the per-block targets; about 41 hot lines for 32 physical
+  ones; lines shared between different pages: 8 in this order (11 with the
+  small functions first), against ≈ 27 on `2e9bf3a4` and 30 on `33b9db6e`
+  unpacked. An estimate only: **line loads/s with MP3 and Opus are the
+  measure** (the Opus clusters' places are unchanged; its per-block
+  firmware code moved).
+* **SRAM0 back to about zero** (stack bottom +88 B against `2e9bf3a4`:
+  `Server` +104 B for the listing job, `PlayerSnap` +8, `Fw` +16, USB pool
+  −40): the logger's state and the shared flags (Performance, backlight,
+  screen, developer rows, Keep awake) live in SRAM3 at `0x307800`
+  (`drain::Shared`, initialised in `audio::init_chain`), the card I/O
+  counter in the last word of SRAM3; no panic sites in the logger (each
+  kept a file path in the resident `.rodata.str1.1`); 4/8/16-byte strings
+  avoided (merged into resident `.rodata.cst*`); the UI's developer
+  handlers not inlined (the screen dispatch frame grew by 176 B); the
+  card task's drain functions in `audio.rs`. Resident text, rodata and
+  task pools as on `2e9bf3a4`.
+* **"Never wrote"**: by design rows went out only every 5 rows (5 min);
+  the header at once. Now the first row is written after the first
+  minute, then every 5.
+* **Browsing Files while playing** (8–14 underruns per track, all
+  `serve`): a listing is made in pieces (`media::Job`, `Server::step`),
+  one per chore between ring refills, each ≤ 8 ms (`PIECE_US`) and
+  ≤ 32 directory entries or 8 rows: the counting pass, the index check,
+  the focused row (now within 256 rows while playing, was 1,024: 8 KiB of
+  index per piece), the rows of the window, the letter table. The window
+  is published as it fills with `complete: false` (the UI asks for
+  nothing meanwhile). Scrolling (`Want`) with a sorted listing goes the
+  same way; while paused the pieces run back to back; a job left over
+  when playback ends finishes in the idle loop. Idle browsing unchanged.
+* **Remount after `usb msc ro` / `usb dev`**: the USB task resets the SD
+  controller and re-initialises the card (`Card::reinit`) before handing
+  it back (a host may stop mid-transfer). In the card task it added the
+  card's size (bounce buffer) to the task's pool (+616 B); in the USB
+  task the pool did not grow.
+* **`playdir` while a track plays**: the developer channel stops the
+  playing track (`request_stop`) before queuing the command (the card
+  task reads commands only between tracks), so the new queue starts.
+* **Bit rate 0 kbit/s**: the firmware always passed 0. Now
+  `orpheus_apps::services::average_kbps`: the decoder's average, else the
+  file's size over its duration (host-tested).
+* Tests: `orpheus-power` 23, `xtask drain` 7, `average_kbps`; goldens
+  for the Developer rows re-blessed ("File" instead of "Log file", a
+  shared string). Gate: see the commit. **Not run on the player.**
+* Lead's plan: (1) `playdir` a 48 kHz MP3 and an Opus album: `stats`
+  line loads/s and `status` `dec:` loads per call against `2e9bf3a4`,
+  no reboot; (2) Files while playing a 48 kHz MP3, scroll a large folder:
+  `ub:` serve 0; (3) `usb msc ro`, mount on the host, `usb dev` while
+  mounted: `status` shows the card mounted; (4) `playdir A`, then
+  `playdir B` while A plays: B starts; (5) Now Playing › Info bit rate;
+  (6) `drain start smoke stay`: `written=1` after ≈ 1 min.
+
 ### 2026-11-24 — PWR-5 (D-4): Performance setting, battery logger, drain report (worker, no hardware)
 
 * **Performance setting**: Settings › System › Performance, Normal /
@@ -90,12 +166,9 @@ of every session. Newest entries first in §3.
 * Goldens: 24 new (System scrolled to Performance, the choice, the About
   unlock toast, the Developer rows; dark/light × latin/cyrillic/cjk; looked
   at), 8 changed by one row more in System (scroll bar). 620 images.
-* **RAM**: `__stack_bottom` 0x132300 → 0x1324A8 (+424 B): `drain::LOG`
-  244 B (bss, all-zero `Log`), 13 B of atomics/flags, `Fw` +8 B, resident
-  rodata +161 B (UI strings in `.rodata.str1.1` +133, `.rodata.cst*` +28;
-  the logger's own literals are in paged statics). Task pools unchanged
-  (audio 7,560 B, ui 2,328 B, power 128 B). Resident 83,508 → 83,668 B
-  (text unchanged); paged code 74 → 75 pages.
+* **RAM** (this first version; see the rework entry above): `__stack_bottom`
+  +424 B (`drain::LOG` 244 B, flags, resident panic-path strings and
+  constants). Reworked to about zero.
 * Docs: 03 §2.1/§2.4 (as built), 08 PWR-5 row, `docs/user/performance.md`,
   user check 19.
 * **Not run on the player.** Lead's test plan: in the final worker report

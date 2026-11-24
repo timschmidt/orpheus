@@ -56,6 +56,21 @@ impl Card {
         Ok(Self { sd, blocks, bounce: Bounce([0; 512]), bounced: 0 })
     }
 
+    /// Reset the host controller and initialise the card again (after the
+    /// USB card reader: a host may stop in the middle of a transfer and
+    /// leave the card or the controller in a state the next command does
+    /// not expect).
+    pub async fn reinit(&mut self) -> Result<(), Error> {
+        // SAFETY: channel 4 is the SD channel (01-hardware §6); the `Sd`
+        // that held it is replaced below.
+        let ch = unsafe { dma::Channel::steal(4) };
+        ch.abort();
+        self.sd = Sd::new(&sd::Pins { pads: &pins::SD_PADS, func: pins::SD_FUNC }, ch);
+        self.sd.init_card().await?;
+        self.blocks = self.sd.blocks().min(u64::from(u32::MAX)) as u32;
+        Ok(())
+    }
+
     #[must_use]
     pub fn stats(&self) -> sd::Stats {
         self.sd.stats

@@ -83,8 +83,30 @@ pub const INDEX_SCRATCH: usize = 16 * 1024;
 /// Directory entries (or rows) per build step in the background.
 pub const BUILD_BUDGET: u32 = 64;
 /// While playing, the focused file is looked for in sorted listings of at
-/// most this many rows (32 KiB of index, read between ring refills).
-pub const FOCUS_SCAN_PLAYING: u32 = 1024;
+/// most this many rows (8 KiB of index, one piece between ring refills).
+pub const FOCUS_SCAN_PLAYING: u32 = 256;
+/// While playing, a listing is made in pieces between ring refills
+/// ([`Server::step`]): each stops after this long (µs) or this many
+/// directory entries (counting) or rows (filling the window). Whole, a
+/// browse or a window took longer than the PCM ring holds at 48 kHz
+/// (≈ 64 ms; 8–14 underruns per track, all `serve`, 2026-11-24).
+pub const PIECE_US: u32 = 8_000;
+pub const PIECE_ENTRIES: u32 = 32;
+pub const PIECE_ROWS: u32 = 8;
+
+/// A listing being made while a track plays, one piece per chore.
+#[derive(Clone, Copy)]
+pub enum Job {
+    /// The counting pass: the next entry, the signature and the rows so
+    /// far.
+    Count { cur: DirCursor, sig: Signature, n: u32 },
+    /// Counted: the index is looked for next (a piece of its own).
+    Counted { sig: Signature, n: u32 },
+    /// Rows of the sorted listing `ix` into the window from `start`
+    /// (`u32::MAX`: the focused file is looked for first), `n` filled;
+    /// `letters`: the letter table follows.
+    Rows { ix: Index, start: u32, n: u32, letters: bool },
+}
 /// Letter runs kept in RAM for letter jumps ([`LETTERS`]).
 pub const LETTER_RUNS: usize = 80;
 
@@ -355,6 +377,8 @@ pub struct PlayerSnap {
     pub rate: u32,
     pub channels: u8,
     pub bits: u8,
+    /// Average bit rate, kbit/s (`orpheus_apps::services::average_kbps`).
+    pub kbps: u16,
     pub a_ms: Option<u32>,
     pub b_ms: Option<u32>,
     /// Sleep timer: minutes left (0: at the end of the track).
@@ -393,6 +417,7 @@ impl PlayerSnap {
         rate: 0,
         channels: 0,
         bits: 0,
+        kbps: 0,
         a_ms: None,
         b_ms: None,
         sleep_min: None,
@@ -689,6 +714,8 @@ pub struct Server {
     lgen: u32,
     /// The background build.
     build: Option<Build>,
+    /// The listing being made in pieces while a track plays.
+    job: Option<Job>,
     /// The index file of an abandoned build, removed (with the scratch
     /// files) before the next build starts.
     orphan: Option<FileName>,
@@ -741,6 +768,7 @@ impl Server {
             index: None,
             lgen: 0,
             build: None,
+            job: None,
             orphan: None,
             queue: [Locator { dir: 0, index: 0 }; QUEUE],
             qlen: 0,
@@ -812,10 +840,15 @@ impl Server {
                 true
             }
             Req::Want { first } => {
-                self.window(vol, first).await;
+                if idle {
+                    self.window(vol, first).await;
+                } else {
+                    self.window_playing(vol, first).await;
+                }
                 true
             }
             Req::LibList { list } => {
+                self.job = None;
                 crate::library::open_list(vol, self, list).await;
                 true
             }
@@ -855,6 +888,7 @@ impl Server {
     /// A listing that is not a folder (a music-library list, `dir`)
     /// replaces the current one; returns its generation.
     pub fn start_listing(&mut self, dir: DirId) -> u32 {
+        self.job = None;
         self.dir = dir;
         self.entry = None;
         self.count = 0;
@@ -918,6 +952,12 @@ impl Server {
             return;
         };
         self.dircl = start.dir_cluster();
+        self.job = None;
+        if idle.is_none() {
+            // While a track plays: in pieces (`step`, one per chore).
+            self.job = Some(Job::Count { cur: start, sig: Signature::default(), n: 0 });
+            return;
+        }
         let mut cur = start;
         let mut e = DirEntry::new();
         // The index's signature covers every entry, shown or not.
@@ -947,9 +987,8 @@ impl Server {
         }
         self.count = n;
         let spec = Spec::from(filter);
-        // While playing, finding the focused file reads at most this many
-        // rows (a longer stall between ring refills could underrun).
-        let scan = if idle.is_some() { u32::MAX } else { FOCUS_SCAN_PLAYING };
+        // Idle (playing: `step`): the focused file in any listing.
+        let scan = u32::MAX;
         if n >= 2 {
             // Idle and small: index it now (on the second pair of scratch
             // files: a background build may be suspended on the first).
@@ -980,6 +1019,169 @@ impl Server {
         if n >= 2 {
             self.want_build(start, spec);
         }
+    }
+
+    /// A listing piece is waiting (while a track plays).
+    #[must_use]
+    pub fn has_job(&self) -> bool {
+        self.job.is_some()
+    }
+
+    /// One piece of the listing being made while a track plays: at most
+    /// [`PIECE_US`] (and [`PIECE_ENTRIES`] entries or [`PIECE_ROWS`] rows;
+    /// a single card read may take longer). The window is published as it
+    /// fills, with `complete: false` until it is whole (the UI asks for
+    /// nothing meanwhile).
+    pub async fn step(&mut self, vol: &mut Vol) {
+        let t0 = atj2157_hal::time::now_us();
+        let spent = move || (atj2157_hal::time::now_us() - t0) as u32;
+        match self.job.take() {
+            None => {}
+            Some(Job::Count { mut cur, mut sig, mut n }) => {
+                let mut e = DirEntry::new();
+                let mut k = 0;
+                let end = loop {
+                    if k >= PIECE_ENTRIES || spent() > PIECE_US {
+                        break false;
+                    }
+                    let before = cur.index();
+                    match vol.read_dir(&mut cur, &mut e).await {
+                        Ok(true) => {}
+                        _ => break true,
+                    }
+                    k += 1;
+                    if is_dot(&e) {
+                        continue;
+                    }
+                    sig.add(&src_entry(&e), e.name());
+                    if !Self::matches(self.filter, &e) {
+                        continue;
+                    }
+                    if n % WINDOW == 0 && ((n / WINDOW) as usize) < CHECKPOINTS {
+                        self.checkpoints[(n / WINDOW) as usize] = before;
+                    }
+                    if n < WINDOW {
+                        let row = Self::row(&e);
+                        critical_section::with(|cs| BROWSE.borrow(cs).borrow_mut().rows[n as usize] = row);
+                    }
+                    n += 1;
+                };
+                self.job = Some(if end { Job::Counted { sig, n } } else { Job::Count { cur, sig, n } });
+            }
+            Some(Job::Counted { sig, n }) => {
+                self.count = n;
+                let spec = Spec::from(self.filter);
+                if n >= 2 {
+                    let dircl = self.dircl;
+                    let ix = with_io(vol, Mode::Read, |io| match Index::open(&mut io.store(), dircl, spec) {
+                        Ok(Some(ix)) if ix.is_current(&sig) => Some(ix),
+                        _ => None,
+                    })
+                    .await;
+                    if let Some(ix) = ix {
+                        self.claim(ix.file());
+                        if self.build.is_some_and(|b| b.dircl == dircl && b.spec == spec) {
+                            self.build = None;
+                        }
+                        self.index = Some(ix);
+                        self.job = Some(Job::Rows { ix, start: u32::MAX, n: 0, letters: true });
+                        return;
+                    }
+                }
+                let (dir, lgen) = (self.dir, self.lgen);
+                critical_section::with(|cs| {
+                    let mut w = BROWSE.borrow(cs).borrow_mut();
+                    // A single entry is in order already.
+                    w.listing = Listing { dir, count: n, sorted: n <= 1, complete: true };
+                    w.lgen = lgen;
+                    w.first = 0;
+                    w.n = n.min(WINDOW);
+                });
+                ready(tag::BROWSE);
+                if n >= 2
+                    && let Some(start) = Self::cursor(vol, self.entry).await
+                {
+                    self.want_build(start, spec);
+                }
+            }
+            Some(Job::Rows { ix, start: u32::MAX, n, letters }) => {
+                // The focused file first (a piece of its own).
+                let first = with_io(vol, Mode::Read, |io| self.focus_row(io, &ix, FOCUS_SCAN_PLAYING)).await;
+                let start = first.unwrap_or(0).saturating_sub(WINDOW / 4).min(ix.count().saturating_sub(1));
+                self.job = Some(Job::Rows { ix, start, n, letters });
+            }
+            Some(Job::Rows { ix, start, n, letters }) => {
+                let mut e = DirEntry::new();
+                let e = &mut e;
+                let (n, done) =
+                    with_io(vol, Mode::Read, |io| Self::fill_some(io, &ix, start, n, e, t0)).await;
+                if done && letters {
+                    with_io(vol, Mode::Read, |io| Self::load_letters(io, &ix, self.lgen)).await;
+                }
+                let (dir, lgen, count) = (self.dir, self.lgen, ix.count());
+                critical_section::with(|cs| {
+                    let mut w = BROWSE.borrow(cs).borrow_mut();
+                    w.listing = Listing { dir, count, sorted: true, complete: done };
+                    w.lgen = lgen;
+                    w.first = start;
+                    w.n = n;
+                });
+                ready(tag::BROWSE);
+                if !done {
+                    self.job = Some(Job::Rows { ix, start, n, letters });
+                }
+            }
+        }
+    }
+
+    /// A window of the listing while a track plays: from the index in
+    /// pieces (`step`); an unsorted listing reads at most two windows of
+    /// entries, as idle.
+    async fn window_playing(&mut self, vol: &mut Vol, first: u32) {
+        match self.index {
+            Some(ix) => {
+                let start = first.saturating_sub(WINDOW / 4).min(ix.count().saturating_sub(1));
+                self.job = Some(Job::Rows { ix, start, n: 0, letters: false });
+            }
+            None => self.window(vol, first).await,
+        }
+    }
+
+    /// Rows `start + n..` of `ix` into the window until it is full or the
+    /// piece's time ([`PIECE_US`] from `t0`) or [`PIECE_ROWS`] are used up;
+    /// returns the rows filled and whether the window is complete.
+    #[inline(never)]
+    fn fill_some(
+        io: &Io<'_, '_>,
+        ix: &Index,
+        start: u32,
+        mut n: u32,
+        e: &mut DirEntry,
+        t0: u64,
+    ) -> (u32, bool) {
+        let mut rows = [ROW0; 4];
+        let n0 = n;
+        while n < WINDOW {
+            if n - n0 >= PIECE_ROWS || (atj2157_hal::time::now_us() - t0) as u32 > PIECE_US {
+                return (n, false);
+            }
+            let want = ((WINDOW - n) as usize).min(rows.len());
+            let got = match ix.rows(&mut io.store(), start + n, &mut rows[..want]) {
+                Ok(g) if g > 0 => g,
+                _ => break,
+            };
+            for r in &rows[..got] {
+                let found = io.with_vol(|vol, cx| spin(cx, vol.open_locator(r.loc, e)).is_ok());
+                let row = if found {
+                    Self::row(e)
+                } else {
+                    Row { name: Name::new("?"), kind: r.kind, size: r.size, file: fref(r.loc), ..Row::EMPTY }
+                };
+                critical_section::with(|cs| BROWSE.borrow(cs).borrow_mut().rows[n as usize] = row);
+                n += 1;
+            }
+        }
+        (n, true)
     }
 
     /// The index to serve a listing from: the current one, or (idle,
@@ -1185,6 +1387,7 @@ impl Server {
     /// comes back; a build in progress is given up and its files removed.
     pub async fn card_leaving(&mut self, vol: &mut Vol) {
         crate::library::card_leaving(self);
+        self.job = None;
         self.index = None;
         // The host may change the folder's pictures.
         self.folder_art = None;

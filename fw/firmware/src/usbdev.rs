@@ -224,6 +224,12 @@ impl Target for Fw {
             crate::audio::busy_reply();
             return true;
         }
+        if data.starts_with(b"playdir ") {
+            // The card task reads commands only between tracks: stop the
+            // one playing (and so the queue) first; the new queue starts
+            // when the command is served.
+            crate::audio::request_stop();
+        }
         let mut c = crate::audio::Cmd {
             len: data.len().min(crate::audio::CMD_LEN),
             text: [0; crate::audio::CMD_LEN],
@@ -431,6 +437,14 @@ async fn run_msc() -> Personality {
             embassy_futures::select::Either3::First(_) => Personality::Dev,
         }
     };
+    // A host that still had the card mounted may have stopped in the middle
+    // of a transfer: reset the controller and the card before handing it
+    // back (`card: remount failed` after `usb msc ro` / `usb dev`,
+    // 2026-11-24). Here, where the card already lives in this task's
+    // state; in the card task it would add its size to that task's.
+    if card.reinit().await.is_err() {
+        atj2157_hal::log::line(b"usb: card re-init failed");
+    }
     crate::audio::CARD_BACK.send(card).await;
     CARD_WITH_USB.store(false, Ordering::Relaxed);
     atj2157_hal::log::line(b"usb: card returned");

@@ -697,6 +697,23 @@ pub struct TrackInfo<'a> {
     pub gain_cdb: Option<i32>,
 }
 
+/// The bit rate Now Playing › Info shows (kbit/s, rounded): the decoder's
+/// average when it reports one (MP3 frame header or Xing/VBRI tag, FLAC
+/// stream info, …), else the file's size over its duration (tags
+/// included: a little high for files with large embedded art); 0 when
+/// neither is known.
+#[must_use]
+pub fn average_kbps(reported_bps: u32, size: u64, duration_ms: u32) -> u16 {
+    let bps = if reported_bps > 0 {
+        u64::from(reported_bps)
+    } else if duration_ms > 0 {
+        size.saturating_mul(8000) / u64::from(duration_ms)
+    } else {
+        0
+    };
+    u16::try_from(bps.saturating_add(500) / 1000).unwrap_or(u16::MAX)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct QueueEntry<'a> {
     pub title: &'a str,
@@ -1124,6 +1141,20 @@ pub trait PictureService {
 #[cfg(test)]
 mod bt_tests {
     use super::*;
+
+    #[test]
+    fn bitrate_shown() {
+        // The decoder's figure first.
+        assert_eq!(average_kbps(192_000, 5_000_000, 200_000), 192);
+        assert_eq!(average_kbps(127_600, 0, 0), 128);
+        // Otherwise size over duration: 4.8 MB in 200 s = 192 kbit/s.
+        assert_eq!(average_kbps(0, 4_800_000, 200_000), 192);
+        // 48 kHz VBR MP3 without a tag: 3 MB over 2:05.
+        assert_eq!(average_kbps(0, 3_000_000, 125_000), 192);
+        // Nothing known.
+        assert_eq!(average_kbps(0, 4_800_000, 0), 0);
+        assert_eq!(average_kbps(0, u64::MAX, 1), u16::MAX);
+    }
 
     #[test]
     fn kind_from_class_of_device() {

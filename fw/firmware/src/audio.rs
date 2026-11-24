@@ -1034,6 +1034,9 @@ async fn play_file(
         p.channels = info.channels;
         p.bits = info.bits;
         p.size = size;
+        // The decoder's average, else size over duration (a 48 kHz MP3
+        // showed 0 kbit/s, 2026-11-24).
+        p.kbps = orpheus_apps::services::average_kbps(info.bitrate, size, p.duration_ms);
     };
     // After a gapless change the UI hears of the new track once its
     // decoder runs (chores below).
@@ -1166,9 +1169,13 @@ async fn play_file(
                 media::player_update(|p| p.source = Source::Paused);
                 save_store(vol, srv, spare).await;
             }
-            // The battery log while the DAC is stopped (PWR-5).
+            // The battery log and a listing in pieces while the DAC is
+            // stopped.
             if crate::drain::due() {
                 drain_flush_rows(vol, spare).await;
+            }
+            while srv.has_job() && media::REQS.is_empty() && media::PLAY.is_empty() {
+                srv.step(vol).await;
             }
             continue;
         }
@@ -1302,7 +1309,9 @@ async fn play_file(
                 let serve_now = serve_due && !(ring.eof() && ring.next.is_some());
                 // The file read ahead, probed and inspected before the end.
                 let prep_now = ring.next.as_ref().is_some_and(|n| n.prep.is_none());
-                if pf_due.is_some() || serve_now || meta_now || prep_now {
+                // A listing being made in pieces (Files while playing).
+                let job_now = srv.has_job() && !(ring.eof() && ring.next.is_some());
+                if pf_due.is_some() || serve_now || meta_now || prep_now || job_now {
                     let now = time::now_us();
                     if chore_since == 0 {
                         chore_since = now;
@@ -1332,6 +1341,10 @@ async fn play_file(
                             if !go_on {
                                 break 'play Ok(End::Pending);
                             }
+                        } else if job_now {
+                            srv.step(vol).await;
+                            T_SERVE.fetch_add(now32().wrapping_sub(t0), Ordering::Relaxed);
+                            note(UB_SERVE, t0);
                         } else if meta == 1 {
                             // A folder that missed before, or no library:
                             // nothing to look for.
@@ -1574,6 +1587,7 @@ async fn release(vol: Volume<'static, Card>) -> Option<Volume<'static, Card>> {
     media::player_update(|p| p.source = Source::Idle);
     let (card, _) = vol.unmount().await;
     CARD_OUT.send(card).await;
+    // The USB task re-initialised the card before handing it back.
     let card = CARD_BACK.receive().await;
     let v = mount(card).await;
     if v.is_some() {
@@ -2268,6 +2282,10 @@ pub async fn audio() {
         } else if let Some(r) = srv.pending.take() {
             Either3::Second(r)
         } else {
+            // A listing left in pieces by playback: finished now.
+            while srv.has_job() && !work_waiting() {
+                srv.step(&mut vol).await;
+            }
             // The battery log (PWR-5) first: a minute's rows are small.
             if crate::drain::due() && !work_waiting() {
                 drain_flush(&mut vol, arena).await;

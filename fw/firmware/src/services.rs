@@ -799,7 +799,7 @@ impl PlayerService for Fw {
             sample_rate: p.rate,
             bits: p.bits,
             channels: p.channels,
-            bitrate_kbps: 0,
+            bitrate_kbps: p.kbps,
             gain_cdb: None,
         })
     }
