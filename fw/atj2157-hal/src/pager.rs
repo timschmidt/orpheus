@@ -119,7 +119,8 @@ extern "C" fn yoton_pager_fault(frame: *const u32, exc_return: u32, ipsr: u32) {
             barrier();
         }
         Action::Load { map: m, nor_offset, phys, unmap } => {
-            crate::wdt::feed();
+            // No watchdog feed here: a line read takes ~175 us, and a
+            // system that only faults pages in is not making progress.
             w(MPU_CTRL, mpu::CTRL_OFF);
             barrier();
             if let Some(u) = unmap {

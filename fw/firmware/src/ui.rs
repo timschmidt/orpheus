@@ -253,6 +253,7 @@ pub async fn ui() {
         }
         let w0 = atj2157_hal::time::now_us();
         LOOPS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        atj2157_hal::wdt::beat(&atj2157_hal::wdt::UI_BEAT);
         ui.fw.sync_player();
         let t = now();
         while let Some((k, p)) = ui.mapper.poll(t) {

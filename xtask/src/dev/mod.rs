@@ -41,7 +41,7 @@ cargo xtask dev <subcommand>
   install-stage2                 replace stage 2 at 0x7DF400 (keeps the vendor record copy)
   keys 'ok wait:300 hold:menu'  inject keys into running yotonrs
   info                          developer-channel INFO of running yotonrs
-  stats                         executor idle time and pager counters
+  stats [--irq]                 executor idle time, pager and UI counters (--irq: per line)
   time [--set]                  read (or set from the host, UTC) the player's clock
   cmd 'play /x.mp3' [--wait S]  firmware test command, then print the reply
   results                       read result block, fault record and log ring
@@ -107,7 +107,18 @@ pub fn cmd(args: &mut Args) -> Result<String> {
         }
         "stats" => {
             let d = yoton_host::devchan::DevChannel::open(Duration::from_secs(3))?;
-            let r = d.control_in(yoton_proto::devchan::REQ_STATS, 0, 0, 64)?;
+            if args.flag("irq") {
+                let r = d.control_in(yoton_proto::devchan::REQ_STATS, 1, 0, 256)?;
+                let mut out = String::from("interrupts per line:");
+                for (i, c) in r.chunks_exact(4).enumerate() {
+                    let v = u32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+                    if v != 0 {
+                        out.push_str(&format!(" {i}:{v}"));
+                    }
+                }
+                return Ok(out);
+            }
+            let r = d.control_in(yoton_proto::devchan::REQ_STATS, 0, 0, 80)?;
             let w: Vec<u32> =
                 r.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
             let g = |i: usize| w.get(i).copied().unwrap_or(0);

@@ -249,6 +249,10 @@ pub static __vectors: [Vector; 16 + N_IRQ] = {
 /// Registered IRQ handlers (0 = none). Written with the line disabled.
 static HANDLERS: [AtomicUsize; N_IRQ] = [const { AtomicUsize::new(0) }; N_IRQ];
 
+/// Interrupts taken per NVIC line (diagnostics: storms, rates).
+pub static IRQ_COUNT: [core::sync::atomic::AtomicU32; N_IRQ] =
+    [const { core::sync::atomic::AtomicU32::new(0) }; N_IRQ];
+
 /// Register `handler` for NVIC line `n`. Call before enabling the line.
 pub fn bind(n: u16, handler: fn()) {
     if let Some(slot) = HANDLERS.get(usize::from(n)) {
@@ -262,6 +266,9 @@ unsafe extern "C" fn irq_dispatch() {
     // SAFETY: reading IPSR has no side effects.
     unsafe { core::arch::asm!("mrs {}, ipsr", out(reg) ipsr, options(nomem, nostack, preserves_flags)) };
     let n = (ipsr & 0x1FF).wrapping_sub(16) as usize;
+    if let Some(c) = IRQ_COUNT.get(n) {
+        c.fetch_add(1, Ordering::Relaxed);
+    }
     let h = HANDLERS.get(n).map_or(0, |s| s.load(Ordering::Acquire));
     if h == 0 {
         unhandled(n);

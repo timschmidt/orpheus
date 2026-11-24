@@ -47,7 +47,15 @@ impl Target for Fw {
         self.read_mem(logring::ALT_BASE + offset, &mut buf[..n]);
         n
     }
-    fn stats(&mut self, _group: u16, out: &mut [u32]) -> usize {
+    fn stats(&mut self, group: u16, out: &mut [u32]) -> usize {
+        if group == 1 {
+            // Interrupts per NVIC line.
+            let n = out.len().min(atj2157_hal::rt::IRQ_COUNT.len());
+            for (o, c) in out[..n].iter_mut().zip(&atj2157_hal::rt::IRQ_COUNT) {
+                *o = c.load(Ordering::Relaxed);
+            }
+            return n;
+        }
         out[0] = usb::RESETS.load(Ordering::Relaxed);
         out[1] = usb::SETUPS.load(Ordering::Relaxed);
         out[2] = usb::DMA_ERRORS.load(Ordering::Relaxed);

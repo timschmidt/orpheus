@@ -10,6 +10,8 @@
 //! | `power` | main | charger state machine, battery gauge (1 Hz) |
 //! | `usb` | main | embassy-usb device with the developer channel |
 //! | `health` | main | marks the start healthy after 30 s |
+//! | `watchdog` | main | feeds the watchdog when RT, main and UI progress |
+//! | `rt_beat` | RT | RT executor heartbeat for `watchdog` |
 
 #![no_std]
 #![no_main]
@@ -84,6 +86,26 @@ async fn power() {
     }
 }
 
+/// Feeds the watchdog only when the RT executor and the UI loop have made
+/// progress (this task running proves the main executor; 02 §8).
+#[embassy_executor::task]
+async fn watchdog() {
+    let mut h = wdt::Health::new();
+    loop {
+        Timer::after_millis(1000).await;
+        h.check();
+    }
+}
+
+/// RT executor heartbeat (the audio task may sleep for long periods).
+#[embassy_executor::task]
+async fn rt_beat() {
+    loop {
+        wdt::beat(&wdt::RT_BEAT);
+        Timer::after_millis(250).await;
+    }
+}
+
 #[embassy_executor::task]
 async fn health() {
     // Started by the HIL harness: return to USB recovery after args[0]
@@ -130,17 +152,18 @@ extern "C" fn main() -> ! {
     log::init();
     let paged = start_pager();
     hal::init();
-    wdt::feed_from_idle(true);
     clock::set_level(Level::Base);
     log::line(if paged { b"fw: start (paged)" } else { b"fw: start (no pages)" });
     let rt = executor::start_rt();
     rt.spawn(audio::audio().unwrap());
+    rt.spawn(rt_beat().unwrap());
     MAIN.init(executor::MainExecutor::new()).run(|s: Spawner| {
         s.spawn(input().unwrap());
         s.spawn(power().unwrap());
         s.spawn(ui::ui().unwrap());
         s.spawn(usbdev::usb().unwrap());
         s.spawn(health().unwrap());
+        s.spawn(watchdog().unwrap());
     })
 }
 

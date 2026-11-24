@@ -71,6 +71,51 @@ pub fn reboot_after_fault() -> ! {
     if test && flags & mailbox::FLAG_RETURN_ADFU != 0 { reboot(Target::Adfu) } else { reboot(Target::Normal) }
 }
 
+/// Progress counters for the firmware's `watchdog` task (02 §8): the RT
+/// executor, the main executor and the UI loop each bump theirs.
+pub static RT_BEAT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+pub static UI_BEAT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// Bump a progress counter.
+#[inline]
+pub fn beat(b: &core::sync::atomic::AtomicU32) {
+    b.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Health check for the `watchdog` task (which itself proves the main
+/// executor runs): feeds only when the RT executor and the UI loop have
+/// made progress since the last feed. Returns whether it fed.
+pub struct Health {
+    rt: u32,
+    ui: u32,
+}
+
+impl Health {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { rt: u32::MAX, ui: u32::MAX }
+    }
+
+    pub fn check(&mut self) -> bool {
+        let rt = RT_BEAT.load(core::sync::atomic::Ordering::Relaxed);
+        let ui = UI_BEAT.load(core::sync::atomic::Ordering::Relaxed);
+        if rt != self.rt && ui != self.ui {
+            self.rt = rt;
+            self.ui = ui;
+            feed();
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl Default for Health {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 static FEED_FROM_IDLE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// Let the main executor's idle loop feed the watchdog (bring-up images).
