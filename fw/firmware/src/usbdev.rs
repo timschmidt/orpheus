@@ -38,7 +38,15 @@ impl Target for Fw {
         true
     }
     fn read_frame(&mut self, offset: u32, buf: &mut [u8]) -> usize {
+        // Hold the UI's drawing while a screenshot is read in pieces, so it
+        // shows one frame (a scrolling row otherwise mixes two frames).
         let n = buf.len().min((mem::FB_SIZE.saturating_sub(offset)) as usize);
+        let until = if offset as usize + n >= mem::FB_SIZE as usize {
+            0
+        } else {
+            (time::now_us() / 1000) as u32 + 300
+        };
+        crate::ui::SHOT_HOLD_UNTIL_MS.store(until, Ordering::Relaxed);
         self.read_mem(mem::FB_BASE + offset, &mut buf[..n]);
         n
     }

@@ -313,9 +313,11 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   cover is decoded — open item: decode art without stopping the DAC feed, or
   before the previous track ends. The owner's album files showed no art
   (they may have none embedded).
-* UI glitches seen on the player (open): the scrolling (marquee) text of the
-  focused list row and of the mini-player strip is drawn over itself
-  (previous frame not cleared); "Shuffle all" opens an idle Now Playing.
+* The "garbled" scrolling text in screenshots was a screenshot artifact: the
+  frame buffer is read in 1 KiB pieces while the UI keeps redrawing the
+  marquee row. The UI now holds drawing while a screenshot is read (≤ 300 ms);
+  four shots of a scrolling row are clean. Still open: "Shuffle all" opens an
+  idle Now Playing.
 * **Second NOR-write crash fixed**: LLVM had inlined `nor::program_page`
   (its busy-polling loop) into the paged `NorRegion::program`, so the
   resident-root rule protected only the unused out-of-line copy; toggling

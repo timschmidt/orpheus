@@ -184,6 +184,11 @@ impl Ui {
     }
 
     async fn draw(&mut self, fb: &mut [u16]) {
+        // A screenshot is being read: do not change the frame buffer.
+        let hold = SHOT_HOLD_UNTIL_MS.load(core::sync::atomic::Ordering::Relaxed);
+        if hold != 0 && ((atj2157_hal::time::now_us() / 1000) as u32).wrapping_sub(hold) > u32::MAX / 2 {
+            return;
+        }
         // A picture job has the frame buffer (`pictures`).
         if !self.screen_on || self.fw.pic_lent.is_some() {
             return;
@@ -236,6 +241,9 @@ pub static ROWS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::
 /// Draw (shell drawing into the frame buffer) and flush (panel DMA) time.
 pub static T_DRAW: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 pub static T_FLUSH: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// Set by the developer channel while a screenshot is read (ms deadline,
+/// 0 = none): the UI does not draw until then.
+pub static SHOT_HOLD_UNTIL_MS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 pub static SET_WRITES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 pub static SET_LAST: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
