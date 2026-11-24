@@ -26,6 +26,9 @@ pub const REQ_TIME: u8 = 0x08;
 pub const REQ_SET: u8 = 0x09;
 pub const REQ_PEEK: u8 = 0x0A;
 pub const REQ_PROVISION: u8 = 0x0B;
+/// OUT: append the data stage (≤ 4 KiB) to the file opened with the
+/// `fcreate` test command (only under `/.yoton/`; development builds).
+pub const REQ_PUT: u8 = 0x0C;
 
 /// `REBOOT` targets (`wValue`).
 pub const REBOOT_NORMAL: u16 = 0;

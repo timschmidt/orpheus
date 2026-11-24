@@ -101,10 +101,11 @@ async fn watchdog() {
     }
 }
 
-/// Lowest clock level the governor may choose (0 = Base, 1 = Mid). The
-/// audio task sets Mid while the DSP chain is active: at Base, MP3 + DSP +
-/// UI overload the CPU (paging included) and starve thread mode.
-pub static CLOCK_FLOOR_MID: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// Lowest clock level the governor may choose (0 = Base, 1 = Mid, 2 =
+/// High). The audio task sets it from the codec and the DSP chain: at Base,
+/// Vorbis/Opus, or MP3 + DSP, plus the UI overload the CPU (paging
+/// included) and starve thread mode.
+pub static CLOCK_FLOOR: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
 /// Governor on/off (test command `gov on|off`).
 pub static GOV_ON: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
@@ -145,10 +146,11 @@ impl Governor {
             self.calm = self.calm.saturating_add(1);
             if self.calm >= 3 {
                 self.calm = 0;
-                let floor_mid = CLOCK_FLOOR_MID.load(core::sync::atomic::Ordering::Relaxed);
+                let floor = CLOCK_FLOOR.load(core::sync::atomic::Ordering::Relaxed);
                 let down = match cur {
-                    Level::High | Level::Turbo => Some(Level::Mid),
-                    Level::Mid if !floor_mid => Some(Level::Base),
+                    Level::Turbo => Some(Level::High),
+                    Level::High if floor < 2 => Some(Level::Mid),
+                    Level::Mid if floor < 1 => Some(Level::Base),
                     _ => None,
                 };
                 if let Some(l) = down {

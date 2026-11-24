@@ -97,6 +97,9 @@ impl Target for Fw {
     fn development(&self) -> bool {
         true
     }
+    fn put(&mut self, data: &[u8]) -> bool {
+        crate::audio::put_chunk(data)
+    }
     fn set_time(&mut self, t: [u8; 7]) -> bool {
         atj2157_hal::rtc_clock::set(atj2157_hal::rtc_clock::DateTime {
             year: u16::from_le_bytes([t[0], t[1]]),
@@ -163,6 +166,10 @@ impl Target for Fw {
                 b"144" => Level::High,
                 _ => Level::Base,
             });
+            return true;
+        }
+        if data == b"crc on" || data == b"crc off" {
+            crate::audio::CRC_ON.store(data == b"crc on", Ordering::Relaxed);
             return true;
         }
         if data == b"gov on" || data == b"gov off" {

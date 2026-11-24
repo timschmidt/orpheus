@@ -31,12 +31,26 @@ of every session. Newest entries first in §3.
 | FS-1 | done | `yoton-fs` |
 | FS-2 / AU-5 firmware | first cut on the player | Files lists the card (on-disk order, no sort until AU-12), text viewer window, folder play queue, Now Playing; `yoton-player` (queue/resume/bookmarks) not yet wired in |
 | UI-1, UI-2, UI-3, UI-4 | done (host); running on the player | 457 golden images |
-| AU-1…AU-4, AU-7, AU-8, AU-9 | done (host); MP3/FLAC/WAV played on the player | Vorbis/Opus/Speex not yet played on the player (no test files inside `/.yoton/`) |
+| AU-1…AU-4, AU-7, AU-8, AU-9 | done (host); on the player: MP3/FLAC/WAV and Speex at 48 MHz, Vorbis at 144 MHz (clock floor), **Opus too slow** | Opus CELT touches more code per frame than the 32 KB code cache holds; ends with "decoder too slow for this player" (abort after 8 underruns) instead of a reset. Needs a bigger code cache or a resident hot path (RAM decision). Ogg pages over ~15.5 KB fail (16 KiB ring < `MAX_PEEK` 28 KiB; RAM) |
 | AU-6 | done (host); **working on the player** | `yoton-dsp` chain between decoder and DAC, fed by the Sound settings; works on a scratch copy of the decoder output; while any stage is active during playback the clock floor is 96 MHz (EQ + bass + crossfeed: 0 underruns, ≈ 90 % idle). WSOLA not done; Levels meter not wired |
 | AU-14 | done (host) | `yoton-img` |
 | OTP-1, BT-1, USB-6 | done (host) | `yoton-otp`, `yoton-bt`, MMC/CD-ROM in `yoton-usb` |
 
 ## 3. Session log
+
+### 2026-11-24 — implementation session 2, part 5 (lead)
+
+* Upload path for test files (user-approved): developer-channel `PUT`
+  request (≤ 4 KiB per transfer, buffer in the idle decoder arena),
+  `fcreate`/`fclose` commands, `xtask dev put LOCAL /.yoton/PATH`; writes go
+  through yoton-fs (write prefix `/.yoton`). ≈ 50 KB/s. Uploaded Vorbis,
+  Opus (1 s and 0.25 s pages) and Speex test files to `/.yoton/test/`.
+* Results above; codec clock floors (Vorbis/Opus: High) set by the audio
+  task. Found: the output CRC32 (bitwise, per frame) cost a large share of
+  48 MHz; now only with `crc on` (MP3 at 48 MHz: ≈ 87 % idle). A `NeedData`
+  the full ring cannot satisfy now ends the track instead of spinning. A
+  `REQ_PUT` arm compiled as a catch-all binding (missing import) — caught by
+  the yoton-usb tests; `xtask build` does not run clippy, the gate does.
 
 ### 2026-11-24 — implementation session 2, part 4 (lead)
 
@@ -278,6 +292,12 @@ of every session. Newest entries first in §3.
 | 2026-11-24 | Main stack after start-up (32.6 KB stack) | 9.5 KB free (≈ 23 KB used); after moving `Chain::new` to `main`: 18.6 KB free (≈ 14 KB used) | INFO stack high-water |
 | 2026-11-24 | DSP chain alone (bass, 44.1 kHz stereo) on the player, 48 MHz | 20 blocks × 1152 frames in 97 ms (≈ 19 % of real time) | `dev cmd dspt` |
 | 2026-11-24 | MP3 + EQ + bass + crossfeed at 96 MHz | 0 underruns, ≈ 90 % idle | `xtask dev stats` |
+| 2026-11-24 | MP3 44.1 kHz at 48 MHz, output CRC off | ≈ 87 % idle | `xtask dev stats` |
+| 2026-11-24 | Vorbis q5 44.1 kHz stereo | real time at 144 MHz, 0 underruns | `dev cmd play` |
+| 2026-11-24 | Speex WB 16 kHz | real time at 48 MHz, 0 underruns | `dev cmd play` |
+| 2026-11-24 | Opus 96 kbit/s 48 kHz | not real time at 48–144 MHz (paging-bound) | `dev cmd play` |
+| 2026-11-24 | Upload over the developer channel | 165 KB in 3.3 s (≈ 50 KB/s) | `xtask dev put` |
+| 2026-11-24 | Main stack peak after all formats + DSP (28.0 KB stack) | 19.2 KB | INFO stack high-water |
 
 
 ## 5. Open questions for the user

@@ -13,8 +13,8 @@
 use embassy_usb::Handler;
 use embassy_usb::control::{InResponse, OutResponse, Recipient, Request, RequestType};
 use yoton_proto::devchan::{
-    self as dc, Info, REQ_FRAME, REQ_INFO, REQ_KEYS, REQ_LOG, REQ_PEEK, REQ_REBOOT, REQ_STATS, REQ_TEST,
-    REQ_TIME,
+    self as dc, Info, REQ_FRAME, REQ_INFO, REQ_KEYS, REQ_LOG, REQ_PEEK, REQ_PUT, REQ_REBOOT, REQ_STATS,
+    REQ_TEST, REQ_TIME,
 };
 
 /// What the firmware provides to the channel.
@@ -35,6 +35,10 @@ pub trait Target {
     fn request_reboot(&mut self, target: u16);
     /// Whether development-only requests (PEEK) are allowed.
     fn development(&self) -> bool;
+    /// PUT OUT: data for the file being uploaded. Returns false when busy.
+    fn put(&mut self, _data: &[u8]) -> bool {
+        false
+    }
     /// TIME OUT: set the clock (UTC: year u16 LE, month, day, hour, minute,
     /// second). Returns false if rejected.
     fn set_time(&mut self, _t: [u8; 7]) -> bool {
@@ -88,6 +92,13 @@ impl<T: Target> Handler for DevChannel<T> {
                 Ok(t) if self.target.set_time(t) => OutResponse::Accepted,
                 _ => OutResponse::Rejected,
             },
+            REQ_PUT => {
+                if self.target.put(data) {
+                    OutResponse::Accepted
+                } else {
+                    OutResponse::Rejected
+                }
+            }
             REQ_TEST => {
                 if self.target.test_command(data) {
                     OutResponse::Accepted

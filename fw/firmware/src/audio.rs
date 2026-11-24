@@ -97,17 +97,23 @@ pub static PLAYING: AtomicBool = AtomicBool::new(false);
 /// Where the playback loop is (status diagnostics): 1 card read, 2 media
 /// request, 3 waiting for the DAC, 4 decoding, 5 DSP, 0 elsewhere.
 pub static WHERE: AtomicU32 = AtomicU32::new(0);
-/// While the DSP chain does work during playback, the clock stays at Mid or
-/// above (see `CLOCK_FLOOR_MID`); raised here at once, from the RT task.
-fn dsp_clock_floor(active: bool) {
-    crate::CLOCK_FLOOR_MID.store(active, Ordering::Relaxed);
-    if active
-        && matches!(
-            atj2157_hal::clock::current(),
-            atj2157_hal::clock::Level::Low | atj2157_hal::clock::Level::Base
-        )
-    {
-        atj2157_hal::clock::set_level(atj2157_hal::clock::Level::Mid);
+/// Clock floor for the current track (set at its start from the codec).
+static CODEC_FLOOR: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+/// Apply the clock floor: the codec's, raised to Mid while the DSP chain
+/// works; the level is raised here at once (from the RT task) and the
+/// governor never goes below it.
+fn dsp_clock_floor(dsp_active: bool) {
+    use atj2157_hal::clock::{Level, current, set_level};
+    let floor = CODEC_FLOOR.load(Ordering::Relaxed).max(u8::from(dsp_active));
+    crate::CLOCK_FLOOR.store(floor, Ordering::Relaxed);
+    let have = match current() {
+        Level::Low | Level::Base => 0,
+        Level::Mid => 1,
+        _ => 2,
+    };
+    if have < floor {
+        set_level(if floor >= 2 { Level::High } else { Level::Mid });
     }
 }
 
@@ -115,6 +121,13 @@ fn sound_active() -> bool {
     DSP_ON.load(Ordering::Relaxed)
         && critical_section::with(|cs| *media::SOUND.borrow(cs).borrow() != media::Sound::default())
 }
+
+/// Underruns after which a track is abandoned as undecodable in time.
+const MAX_UNDERRUNS: u32 = 8;
+
+/// Output CRC for HIL comparisons (test command `crc on|off`). Off by
+/// default: the bitwise CRC32 per frame cost a large share of 48 MHz.
+pub static CRC_ON: AtomicBool = AtomicBool::new(false);
 
 /// DSP chain on/off (test command `dsp on|off`).
 pub static DSP_ON: AtomicBool = AtomicBool::new(true);
@@ -139,6 +152,9 @@ pub static PAUSED: AtomicBool = AtomicBool::new(false);
 
 // ------------------------------------------------------------ stream ring
 
+/// 16 KiB: RAM does not allow `yoton_audio::MAX_PEEK` (28 KiB) plus a
+/// refill unit next to the resident audio path. Ogg pages up to ~15.5 KiB
+/// play; a stream that needs more ends with an error (open, STATUS).
 const RING: usize = 16 * 1024;
 #[repr(C, align(4))]
 struct RingBuf([u8; RING]);
@@ -189,7 +205,7 @@ impl Ring {
     /// Read from the file into free space (sector-sized pieces where it can).
     async fn fill(&mut self, vol: &mut Volume<'static, Card>, f: &mut File) -> bool {
         let mut any = false;
-        while !self.eof && RING - self.available() >= 4096 {
+        while !self.eof && RING - self.available() >= 512 {
             let start = (self.wr % RING as u64) as usize;
             let space = (RING - self.available()).min(RING - start).min(16384);
             match vol.read(f, &mut self.buf[start..start + space]).await {
@@ -251,7 +267,9 @@ impl PcmOut {
     async fn push(&mut self, frame: u32) {
         // SAFETY: inside the PCM ring in SRAM3; the DMA reads the other half.
         unsafe { core::ptr::write_volatile(self.slot(), frame) };
-        self.crc = crc32_update(self.crc, &frame.to_le_bytes());
+        if CRC_ON.load(Ordering::Relaxed) {
+            self.crc = crc32_update(self.crc, &frame.to_le_bytes());
+        }
         self.fill += 1;
         if self.fill == HALF {
             self.fill = 0;
@@ -381,6 +399,8 @@ fn codec_name(ext: Option<&[u8]>) -> &'static str {
         b"flac" => "FLAC",
         b"wav\0" => "WAV",
         b"ogg\0" | b"oga\0" => "Vorbis",
+        b"opus" => "Opus",
+        b"spx\0" => "Speex",
         b"aif\0" | b"aiff" => "AIFF",
         _ => "?",
     }
@@ -461,6 +481,9 @@ async fn play_file(
         })
         .map_err(|_| &b"rate not supported"[..])?;
     let mut sound_gen = media::SOUND_GEN.load(Ordering::Acquire);
+    // Vorbis and Opus need High at the moment (paged decoders).
+    let heavy = matches!(codec_name(ext), "Vorbis" | "Opus");
+    CODEC_FLOOR.store(if heavy { 2 } else { 0 }, Ordering::Relaxed);
     dsp_clock_floor(sound_active());
     mark(7);
     media::apply_sound(chain);
@@ -489,6 +512,15 @@ async fn play_file(
     loop {
         if STOP.load(Ordering::Relaxed) {
             break;
+        }
+        if UNDERRUNS.load(Ordering::Relaxed) >= MAX_UNDERRUNS {
+            // The decoder cannot keep up (Opus on paged code): stop the
+            // track rather than starve the rest of the system.
+            out.stop();
+            PLAYING.store(false, Ordering::Relaxed);
+            CODEC_FLOOR.store(0, Ordering::Relaxed);
+            dsp_clock_floor(false);
+            return Err(b"decoder too slow for this player");
         }
         if PAUSED.load(Ordering::Relaxed) {
             out.stop();
@@ -577,7 +609,13 @@ async fn play_file(
                 if ring.eof {
                     break;
                 }
-                ring.fill(vol, &mut f).await;
+                if !ring.fill(vol, &mut f).await {
+                    // The ring is full and the decoder still wants more:
+                    // it can never be satisfied; end the track instead of
+                    // spinning.
+                    CORRUPT.fetch_add(1, Ordering::Relaxed);
+                    break;
+                }
                 serve_one(vol, srv).await;
             }
             Ok(Step::EndOfStream) => break,
@@ -595,6 +633,7 @@ async fn play_file(
     PLAY_US.store((time::now_us() - t0) as u32, Ordering::Relaxed);
     PLAYING.store(false, Ordering::Relaxed);
     PAUSED.store(false, Ordering::Relaxed);
+    CODEC_FLOOR.store(0, Ordering::Relaxed);
     dsp_clock_floor(false);
     Ok(())
 }
@@ -723,6 +762,82 @@ async fn run_queue(
     STOP.store(false, Ordering::Relaxed);
     PAUSED.store(false, Ordering::Relaxed);
     media::player_update(|p| p.source = Source::Idle);
+}
+
+// ------------------------------------------------------------ upload
+
+/// Length of the uploaded chunk waiting in the arena (0 = free). The chunk
+/// itself goes to the first 4 KiB of the decoder arena, which is idle while
+/// the card task runs the upload loop (and only then is `UPLOADING` set).
+static PUT_LEN: AtomicU32 = AtomicU32::new(0);
+static UPLOADING: AtomicBool = AtomicBool::new(false);
+static PUT_SIGNAL: embassy_sync::signal::Signal<CriticalSectionRawMutex, ()> =
+    embassy_sync::signal::Signal::new();
+
+/// From the developer channel: queue a chunk for the open upload.
+pub fn put_chunk(data: &[u8]) -> bool {
+    if data.len() > 4096 || !UPLOADING.load(Ordering::Acquire) || PUT_LEN.load(Ordering::Acquire) != 0 {
+        return false;
+    }
+    // SAFETY: while UPLOADING is set the card task does not touch the arena
+    // except to copy a chunk out after PUT_LEN says one is there; PUT_LEN 0
+    // means it is done with the previous one.
+    unsafe { (&mut (*(&raw mut ARENA_BUF)).0)[..data.len()].copy_from_slice(data) };
+    PUT_LEN.store(data.len() as u32, Ordering::Release);
+    PUT_SIGNAL.signal(());
+    true
+}
+
+/// Upload loop (`fcreate PATH`): appends chunks until `fclose` arrives as
+/// a command; writes only where the volume allows (`/.yoton/`).
+async fn upload(vol: &mut Volume<'static, Card>, arena: &mut [u8], path: &str) {
+    let mut f = match vol.open(path, OpenMode::Truncate).await {
+        Ok(f) => f,
+        Err(_) => {
+            reply(|w| {
+                w.s(b"fcreate failed");
+            });
+            return;
+        }
+    };
+    let mut total = 0u64;
+    PUT_LEN.store(0, Ordering::Release);
+    UPLOADING.store(true, Ordering::Release);
+    reply(|w| {
+        w.s(b"put 0");
+    });
+    loop {
+        match select(PUT_SIGNAL.wait(), CMDS.receive()).await {
+            Either::First(()) => {
+                let n = PUT_LEN.load(Ordering::Acquire) as usize;
+                if n > 0 {
+                    let r = vol.write(&mut f, &arena[..n]).await;
+                    PUT_LEN.store(0, Ordering::Release);
+                    if r.is_err() {
+                        UPLOADING.store(false, Ordering::Release);
+                        reply(|w| {
+                            w.s(b"put write failed");
+                        });
+                        return;
+                    }
+                    total += n as u64;
+                    reply(|w| {
+                        w.s(b"put ").u(total);
+                    });
+                }
+            }
+            Either::Second(c) => {
+                if &c.text[..c.len] == b"fclose" {
+                    UPLOADING.store(false, Ordering::Release);
+                    let ok = vol.close(f).await.is_ok() && vol.flush().await.is_ok();
+                    reply(|w| {
+                        w.s(if ok { b"closed " } else { b"close failed " }).u(total);
+                    });
+                    return;
+                }
+            }
+        }
+    }
 }
 
 /// Write the playback counters as the reply (answers at once, from any
@@ -891,6 +1006,16 @@ pub async fn audio() {
                     .s(b" us=")
                     .u(us);
             });
+        } else if let Some(p) = text.strip_prefix("fcreate ") {
+            let mut pb = [0u8; CMD_LEN];
+            let p = p.trim();
+            pb[..p.len()].copy_from_slice(p.as_bytes());
+            let path = core::str::from_utf8(&pb[..p.len()]).unwrap_or("");
+            // Parents one by one (only `/.yoton/…` is writable).
+            for (i, _) in path.match_indices('/').skip(1) {
+                let _ = vol.create_dir(&path[..i]).await;
+            }
+            upload(&mut vol, arena, path).await;
         } else if text == "fp" {
             // Test: f32 work through paged helpers inside the RT executor.
             let t0 = time::now_us();
