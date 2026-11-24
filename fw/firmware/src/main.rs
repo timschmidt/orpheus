@@ -13,6 +13,8 @@
 
 #![no_std]
 #![no_main]
+// `&mut *(&raw mut STATIC)` borrows a `static mut` buffer (2024 edition).
+#![allow(clippy::deref_addrof)]
 
 mod audio;
 mod services;

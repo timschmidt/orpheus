@@ -99,6 +99,13 @@ impl Ui {
             }
         }
         while let Some(a) = self.fw.actions.pop() {
+            if let Action::Usb(m) = a {
+                let p = match m {
+                    yoton_apps::services::UsbMode::FileTransfer => crate::usbdev::Personality::FileTransfer,
+                    _ => crate::usbdev::Personality::Dev,
+                };
+                let _ = crate::usbdev::MODE.try_send(p);
+            }
             if let Action::Power(p) = a {
                 match p {
                     PowerRequest::Restart => atj2157_hal::wdt::reboot(atj2157_hal::wdt::Target::Normal),

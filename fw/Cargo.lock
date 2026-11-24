@@ -546,6 +546,7 @@ dependencies = [
  "embassy-sync",
  "embassy-time",
  "embassy-usb",
+ "embassy-usb-driver",
  "static_cell",
  "yoton-apps",
  "yoton-audio",

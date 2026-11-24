@@ -5,7 +5,6 @@ use core::sync::atomic::{AtomicU16, Ordering};
 use atj2157_hal::{executor, log, time, usb, wdt};
 use embassy_time::Timer;
 use embassy_usb::{Builder, Config};
-use static_cell::{ConstStaticCell, StaticCell};
 use yoton_proto::devchan::{self as dc, Info};
 use yoton_proto::{logring, mem};
 use yoton_usb::devchan::{DevChannel, Target};
@@ -85,6 +84,12 @@ impl Target for Fw {
         Some([y[0], y[1], n.month, n.day, n.hour, n.minute, n.second])
     }
     fn test_command(&mut self, data: &[u8]) -> bool {
+        if data == b"usb msc" {
+            return MODE.try_send(Personality::FileTransfer).is_ok();
+        }
+        if data == b"usb dev" {
+            return MODE.try_send(Personality::Dev).is_ok();
+        }
         if data == b"stop" {
             crate::audio::request_stop();
             return true;
@@ -128,34 +133,181 @@ pub async fn supervisor() {
     }
 }
 
-static CONFIG_DESC: ConstStaticCell<[u8; 256]> = ConstStaticCell::new([0; 256]);
-static BOS_DESC: ConstStaticCell<[u8; 256]> = ConstStaticCell::new([0; 256]);
-static MSOS_DESC: ConstStaticCell<[u8; 256]> = ConstStaticCell::new([0; 256]);
-static CONTROL_BUF: ConstStaticCell<[u8; 4096]> = ConstStaticCell::new([0; 4096]);
-static DEVCHAN: StaticCell<DevChannel<Fw>> = StaticCell::new();
+static mut CONFIG_DESC: [u8; 256] = [0; 256];
+static mut BOS_DESC: [u8; 256] = [0; 256];
+static mut MSOS_DESC: [u8; 256] = [0; 256];
+static mut CONTROL_BUF: [u8; 4096] = [0; 4096];
+static mut DEVCHAN: DevChannel<Fw> = DevChannel { target: Fw, requests: 0 };
+static mut MSC_CLASS: MscClass = MscClass;
 
-#[embassy_executor::task]
-pub async fn usb() {
+/// Personality requests (from the UI's USB dialog or the TEST channel).
+pub static MODE: embassy_sync::channel::Channel<
+    embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
+    Personality,
+    2,
+> = embassy_sync::channel::Channel::new();
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Personality {
+    /// Developer channel only.
+    Dev,
+    /// Card reader (+ developer channel).
+    FileTransfer,
+}
+
+/// Class requests of the mass-storage interface: GET MAX LUN = 0, reset.
+struct MscClass;
+impl embassy_usb::Handler for MscClass {
+    fn control_in<'a>(
+        &'a mut self,
+        req: embassy_usb::control::Request,
+        buf: &'a mut [u8],
+    ) -> Option<embassy_usb::control::InResponse<'a>> {
+        use embassy_usb::control::{InResponse, Recipient, RequestType};
+        if req.request_type == RequestType::Class
+            && req.recipient == Recipient::Interface
+            && req.request == 0xFE
+        {
+            buf[0] = 0;
+            return Some(InResponse::Accepted(&buf[..1]));
+        }
+        None
+    }
+    fn control_out(
+        &mut self,
+        req: embassy_usb::control::Request,
+        _data: &[u8],
+    ) -> Option<embassy_usb::control::OutResponse> {
+        use embassy_usb::control::{OutResponse, Recipient, RequestType};
+        if req.request_type == RequestType::Class
+            && req.recipient == Recipient::Interface
+            && req.request == 0xFF
+        {
+            return Some(OutResponse::Accepted);
+        }
+        None
+    }
+}
+
+#[repr(C, align(4))]
+struct MscBuf([u8; 16384]);
+static mut MSC_BUF: MscBuf = MscBuf([0; 16384]);
+
+/// Card as the MSC block device (512-byte blocks).
+struct CardDev<'a>(&'a mut yoton_bsp::card::Card);
+impl yoton_usb::msc::BlockDevice for CardDev<'_> {
+    type Error = ();
+    async fn read(&mut self, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
+        let (s, _) = buf.as_chunks_mut::<512>();
+        yoton_bsp::card::BlockDevice::read(self.0, lba as u32, s).await.map_err(|_| ())
+    }
+    async fn write(&mut self, lba: u64, buf: &[u8]) -> Result<(), ()> {
+        let (s, _) = buf.as_chunks::<512>();
+        yoton_bsp::card::BlockDevice::write(self.0, lba as u32, s).await.map_err(|_| ())
+    }
+}
+
+fn builder(product: &'static str) -> Builder<'static, usb::Driver> {
     let driver = usb::Driver::new();
     let mut config = Config::new(dc::DEV_VID, dc::DEV_PID);
     config.manufacturer = Some("yotonrs");
-    config.product = Some("YM03");
+    config.product = Some(product);
     config.serial_number = Some("0001");
     config.max_power = 100;
     config.max_packet_size_0 = 64;
-    let mut builder = Builder::new(
-        driver,
-        config,
-        CONFIG_DESC.take(),
-        BOS_DESC.take(),
-        MSOS_DESC.take(),
-        CONTROL_BUF.take(),
-    );
-    builder.handler(DEVCHAN.init(DevChannel::new(Fw)));
-    let mut func = builder.function(0xFF, 0, 0);
+    // SAFETY: one UsbDevice exists at a time; the previous one is dropped
+    // before the next builder borrows these buffers again.
+    let mut b = unsafe {
+        Builder::new(
+            driver,
+            config,
+            &mut *(&raw mut CONFIG_DESC),
+            &mut *(&raw mut BOS_DESC),
+            &mut *(&raw mut MSOS_DESC),
+            &mut *(&raw mut CONTROL_BUF),
+        )
+    };
+    // SAFETY: as above.
+    b.handler(unsafe { &mut *(&raw mut DEVCHAN) });
+    b
+}
+
+async fn run_dev() -> Personality {
+    let mut b = builder("YM03");
+    let mut func = b.function(0xFF, 0, 0);
     let mut iface = func.interface();
     let _alt = iface.alt_setting(0xFF, 0, 0, None);
     drop(func);
-    let mut dev = builder.build();
-    embassy_futures::join::join(dev.run(), supervisor()).await;
+    let mut dev = b.build();
+    let r = embassy_futures::select::select3(dev.run(), supervisor(), MODE.receive()).await;
+    usb::set_attached(false);
+    match r {
+        embassy_futures::select::Either3::Third(p) => p,
+        _ => Personality::Dev,
+    }
+}
+
+async fn run_msc() -> Personality {
+    // Get the card from the audio task.
+    let mut c = crate::audio::Cmd { len: 7, text: [0; crate::audio::CMD_LEN] };
+    c.text[..7].copy_from_slice(b"release");
+    crate::audio::CMDS.send(c).await;
+    let mut card = crate::audio::CARD_OUT.receive().await;
+    let blocks = u64::from(yoton_bsp::card::BlockDevice::sector_count(&card));
+    let next = {
+        let mut b = builder("YM03 card reader");
+        // SAFETY: as in `builder`.
+        b.handler(unsafe { &mut *(&raw mut MSC_CLASS) });
+        let mut func = b.function(0x08, 0x06, 0x50);
+        let mut iface = func.interface();
+        let mut alt = iface.alt_setting(0x08, 0x06, 0x50, None);
+        let ep_in = alt.endpoint_bulk_in(None, 512);
+        let ep_out = alt.endpoint_bulk_out(None, 512);
+        drop(func);
+        let mut dev = b.build();
+        let unit = yoton_usb::msc::scsi::Unit {
+            removable: true,
+            block_size: 512,
+            blocks,
+            read_only: false,
+            present: true,
+            vendor: *b"yotonrs ",
+            product: *b"YM03 microSD    ",
+            revision: *b"0001",
+        };
+        // SAFETY: the buffer is used only by this BOT instance.
+        let buf = unsafe { &mut (*(&raw mut MSC_BUF)).0 };
+        let mut bot = yoton_usb::msc::bot::Bot::new(ep_in, ep_out, CardDev(&mut card), unit, buf);
+        let pump = async {
+            loop {
+                embassy_usb_driver::Endpoint::wait_enabled(&mut bot.ep_in).await;
+                while bot.serve_one().await.is_ok() {
+                    if bot.scsi.events.eject {
+                        return Personality::Dev;
+                    }
+                }
+            }
+        };
+        let r = embassy_futures::select::select3(dev.run(), pump, MODE.receive()).await;
+        usb::set_attached(false);
+        match r {
+            embassy_futures::select::Either3::Second(p) | embassy_futures::select::Either3::Third(p) => p,
+            embassy_futures::select::Either3::First(_) => Personality::Dev,
+        }
+    };
+    crate::audio::CARD_BACK.send(card).await;
+    next
+}
+
+#[embassy_executor::task]
+pub async fn usb() {
+    let mut mode = Personality::Dev;
+    loop {
+        mode = match mode {
+            Personality::Dev => run_dev().await,
+            Personality::FileTransfer => run_msc().await,
+        };
+        usb::shutdown();
+        Timer::after_millis(200).await;
+    }
 }

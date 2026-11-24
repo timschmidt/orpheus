@@ -272,7 +272,20 @@ const ARENA: usize = 72 * 1024;
 #[repr(C, align(8))]
 struct ArenaBuf([u8; ARENA]);
 static ARENA_BUF: ConstStaticCell<ArenaBuf> = ConstStaticCell::new(ArenaBuf([0; ARENA]));
-static CACHE: ConstStaticCell<[CacheSlot; 8]> = ConstStaticCell::new([CacheSlot::EMPTY; 8]);
+static mut CACHE: [CacheSlot; 8] = [CacheSlot::EMPTY; 8];
+
+/// The card travels between this task (mounted) and the USB task (card
+/// reader): released on request, handed back when the host lets go.
+pub static CARD_OUT: Channel<CriticalSectionRawMutex, Card, 1> = Channel::new();
+pub static CARD_BACK: Channel<CriticalSectionRawMutex, Card, 1> = Channel::new();
+
+async fn mount(card: Card) -> Option<Volume<'static, Card>> {
+    let opts = MountOptions { read_only: false, write_prefix: Some("/.yoton"), partition: None };
+    // SAFETY: exactly one Volume exists at a time; the previous one was
+    // unmounted (consumed) before this borrow is created.
+    let cache = unsafe { &mut *(&raw mut CACHE) };
+    Volume::mount(card, cache, opts).await.ok()
+}
 
 fn ext_of(path: &str) -> Option<&[u8]> {
     path.rsplit_once('.').map(|(_, e)| e.as_bytes())
@@ -439,10 +452,9 @@ pub async fn audio() {
             return;
         }
     };
-    let opts = MountOptions { read_only: false, write_prefix: Some("/.yoton"), partition: None };
-    let mut vol = match Volume::mount(card, CACHE.take(), opts).await {
-        Ok(v) => v,
-        Err(_) => {
+    let mut vol = match mount(card).await {
+        Some(v) => v,
+        None => {
             reply(|w| {
                 w.s(b"card: mount failed");
             });
@@ -458,7 +470,25 @@ pub async fn audio() {
     loop {
         let cmd = CMDS.receive().await;
         let text = core::str::from_utf8(&cmd.text[..cmd.len]).unwrap_or("");
-        if let Some(p) = text.strip_prefix("ls ") {
+        if text == "release" {
+            // Hand the card to the USB task, wait for it to come back.
+            crate::state::CARD_READY.store(false, Ordering::Relaxed);
+            let (card, _) = vol.unmount().await;
+            CARD_OUT.send(card).await;
+            let card = CARD_BACK.receive().await;
+            match mount(card).await {
+                Some(v) => {
+                    vol = v;
+                    crate::state::CARD_READY.store(true, Ordering::Relaxed);
+                }
+                None => {
+                    reply(|w| {
+                        w.s(b"card: remount failed");
+                    });
+                    return;
+                }
+            }
+        } else if let Some(p) = text.strip_prefix("ls ") {
             ls(&mut vol, p.trim()).await;
         } else if let Some(p) = text.strip_prefix("play ") {
             for s in [&FRAMES, &UNDERRUNS, &CORRUPT] {

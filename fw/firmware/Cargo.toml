@@ -25,6 +25,7 @@ embassy-time = "0.5"
 embassy-sync = "0.8"
 embassy-futures = "0.1"
 embassy-usb = { version = "0.6", default-features = false }
+embassy-usb-driver = "0.2"
 static_cell = "2"
 critical-section = "1.2"
 
