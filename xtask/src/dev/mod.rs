@@ -41,6 +41,7 @@ cargo xtask dev <subcommand>
   install-stage2                 replace stage 2 at 0x7DF400 (keeps the vendor record copy)
   keys 'ok wait:300 hold:menu'  inject keys into running yotonrs
   info                          developer-channel INFO of running yotonrs
+  stats                         executor idle time and pager counters
   time [--set]                  read (or set from the host, UTC) the player's clock
   cmd 'play /x.mp3' [--wait S]  firmware test command, then print the reply
   results                       read result block, fault record and log ring
@@ -104,6 +105,35 @@ pub fn cmd(args: &mut Args) -> Result<String> {
             println!("{}", String::from_utf8_lossy(&r));
             Ok("reply printed".into())
         }
+        "stats" => {
+            let d = yoton_host::devchan::DevChannel::open(Duration::from_secs(3))?;
+            let r = d.control_in(yoton_proto::devchan::REQ_STATS, 0, 0, 64)?;
+            let w: Vec<u32> =
+                r.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+            let g = |i: usize| w.get(i).copied().unwrap_or(0);
+            Ok(format!(
+                "uptime {} ms, idle {} us, pager loads {} (code faults {}, ro faults {}, evictions {}), usb resets {} setups {}, ui loops {} busy {} us rows {}, settings writes {} (last key {:#06x}, {} us), ui draw {} us flush {} us, rt decode {} us fill {} us serve {} us",
+                g(8),
+                g(3),
+                g(4),
+                g(5),
+                g(6),
+                g(7),
+                g(0),
+                g(1),
+                g(9),
+                g(10),
+                g(11),
+                g(12),
+                g(13) & 0xFFFF,
+                g(13) >> 16,
+                g(14),
+                g(15),
+                g(16),
+                g(17),
+                g(18)
+            ))
+        }
         "time" => {
             let d = yoton_host::devchan::DevChannel::open(Duration::from_secs(3))?;
             if args.flag("set") {
@@ -130,11 +160,13 @@ pub fn cmd(args: &mut Args) -> Result<String> {
             let d = yoton_host::devchan::DevChannel::open(Duration::from_secs(3))?;
             let i = d.info()?;
             Ok(format!(
-                "uptime {} ms, battery {} mV, flags {:#x}, build {}",
+                "uptime {} ms, battery {} mV, flags {:#x}, build {}, stack free {} of {} B",
                 i.uptime_ms,
                 i.battery_mv,
                 i.flags,
-                String::from_utf8_lossy(&i.build_id).trim_end_matches('\0')
+                String::from_utf8_lossy(&i.build_id).trim_end_matches('\0'),
+                i.reserved & 0xFFFF,
+                i.reserved >> 16
             ))
         }
         "stage" => stage::cmd_stage(args),

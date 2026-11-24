@@ -24,7 +24,9 @@ impl Target for Fw {
             battery_mv: crate::state::snapshot().millivolts,
             flags: u16::from(usb::high_speed()),
             build_id: *b"yotonrs-fw\0\0\0\0\0\0",
-            reserved: usb::SETUPS.load(Ordering::Relaxed),
+            // Stack high-water: free bytes (low half) of the total (high).
+            reserved: (atj2157_hal::rt::stack_unused().min(0xFFFF) as u32)
+                | ((atj2157_hal::rt::stack_size().min(0xFFFF) as u32) << 16),
         }
     }
     fn read_mem(&mut self, addr: u32, buf: &mut [u8]) -> bool {
@@ -50,7 +52,27 @@ impl Target for Fw {
         out[1] = usb::SETUPS.load(Ordering::Relaxed);
         out[2] = usb::DMA_ERRORS.load(Ordering::Relaxed);
         out[3] = executor::idle_us();
-        4
+        let p = atj2157_hal::pager::stats();
+        let n = out.len().min(19);
+        let v = [
+            p.loads,
+            p.code_faults,
+            p.ro_faults,
+            p.evictions,
+            (time::now_us() / 1000) as u32,
+            crate::ui::LOOPS.load(Ordering::Relaxed),
+            crate::ui::BUSY_US.load(Ordering::Relaxed),
+            crate::ui::ROWS.load(Ordering::Relaxed),
+            crate::ui::SET_WRITES.load(Ordering::Relaxed),
+            crate::ui::SET_LAST.load(Ordering::Relaxed),
+            crate::ui::T_DRAW.load(Ordering::Relaxed),
+            crate::ui::T_FLUSH.load(Ordering::Relaxed),
+            crate::audio::T_DECODE.load(Ordering::Relaxed),
+            crate::audio::T_FILL.load(Ordering::Relaxed),
+            crate::audio::T_SERVE.load(Ordering::Relaxed),
+        ];
+        out[4..n].copy_from_slice(&v[..n - 4]);
+        n
     }
     fn keys(&mut self, events: &[(u8, bool)]) {
         for &(k, down) in events {
@@ -207,10 +229,6 @@ impl embassy_usb::Handler for MscClass {
     }
 }
 
-#[repr(C, align(4))]
-struct MscBuf([u8; 16384]);
-static mut MSC_BUF: MscBuf = MscBuf([0; 16384]);
-
 /// Card as the MSC block device (512-byte blocks).
 struct CardDev<'a>(&'a mut yoton_bsp::card::Card);
 impl yoton_usb::msc::BlockDevice for CardDev<'_> {
@@ -296,8 +314,9 @@ async fn run_msc() -> Personality {
             product: *b"YM03 microSD    ",
             revision: *b"0001",
         };
-        // SAFETY: the buffer is used only by this BOT instance.
-        let buf = unsafe { &mut (*(&raw mut MSC_BUF)).0 };
+        // SAFETY: the card is with this task until `CARD_BACK.send` below,
+        // after this scope (and the borrow) ends.
+        let buf = unsafe { crate::audio::usb_buffer() };
         let mut bot = yoton_usb::msc::bot::Bot::new(ep_in, ep_out, CardDev(&mut card), unit, buf);
         let pump = async {
             loop {

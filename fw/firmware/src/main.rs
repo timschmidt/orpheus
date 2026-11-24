@@ -17,6 +17,7 @@
 #![allow(clippy::deref_addrof)]
 
 mod audio;
+mod media;
 mod services;
 mod state;
 mod ui;

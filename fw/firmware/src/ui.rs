@@ -1,7 +1,7 @@
 //! The UI task: key mapper → shell → screens → frame buffer → panel.
 
 use atj2157_hal::dma;
-use embassy_futures::select::{Either3, select3};
+use embassy_futures::select::{Either4, select4};
 use embassy_time::{Duration, Instant as TInstant, Timer};
 use yoton_apps::screens::{self, AppScreen};
 use yoton_apps::services::{self, PowerRequest};
@@ -95,7 +95,11 @@ impl Ui {
                 }
             }
             for (k, v) in &dirty[..n] {
+                let t0 = atj2157_hal::time::now_us();
                 let _ = store.set(*k, v).await;
+                let us = (atj2157_hal::time::now_us() - t0).min(0xFFFF) as u32;
+                SET_WRITES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                SET_LAST.store(u32::from(*k) | us << 16, core::sync::atomic::Ordering::Relaxed);
             }
         }
         while let Some(a) = self.fw.actions.pop() {
@@ -135,11 +139,14 @@ impl Ui {
             return;
         }
         let mut dirty = DirtySet::new();
+        let t0 = atj2157_hal::time::now_us();
         {
             let pal = services::palette(&self.fw);
             let mut g = Gfx::new(fb, &mut dirty, pal, None);
             self.shell.draw(&mut self.fw, &mut g);
         }
+        let t1 = atj2157_hal::time::now_us();
+        T_DRAW.fetch_add((t1 - t0) as u32, core::sync::atomic::Ordering::Relaxed);
         // Flush the union of the dirty rows as one band (full width).
         let mut y0 = 128u32;
         let mut y1 = 0u32;
@@ -148,10 +155,25 @@ impl Ui {
             y1 = y1.max((r.y + r.h).clamp(0, 128) as u32);
         }
         if y1 > y0 {
+            ROWS.fetch_add(y1 - y0, core::sync::atomic::Ordering::Relaxed);
             self.disp.flush_rows(fb, y0, y1).await;
+            T_FLUSH
+                .fetch_add((atj2157_hal::time::now_us() - t1) as u32, core::sync::atomic::Ordering::Relaxed);
         }
     }
 }
+
+/// UI loop counters for STATS: iterations, microseconds of work, rows
+/// flushed to the panel.
+pub static LOOPS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+pub static BUSY_US: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+pub static ROWS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// Settings written to NOR: count, last key | (microseconds of the last write << 16).
+/// Draw (shell drawing into the frame buffer) and flush (panel DMA) time.
+pub static T_DRAW: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+pub static T_FLUSH: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+pub static SET_WRITES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+pub static SET_LAST: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 #[embassy_executor::task]
 pub async fn ui() {
@@ -160,6 +182,7 @@ pub async fn ui() {
     let disp = Display::new(unsafe { dma::Channel::steal(1) });
     let bl = Backlight::new(12);
     let mut fw = Fw::new();
+    crate::services::apply_volume(fw.volume);
     // Settings from NOR.
     let mut store = Store::<NorRegion, 4>::mount(NorRegion::settings()).await.ok();
     if let Some(s) = store.as_mut() {
@@ -195,8 +218,17 @@ pub async fn ui() {
             deadline = deadline.min(t.0 + u64::from(TICK_MS));
         }
         let wait = Duration::from_millis(deadline.saturating_sub(t.0).max(1));
-        match select3(KEYS.receive(), BATTERY.receive(), Timer::after(wait)).await {
-            Either3::First((k, down)) => {
+        match select4(KEYS.receive(), BATTERY.receive(), Timer::after(wait), crate::media::READY.receive())
+            .await
+        {
+            Either4::Fourth(tag) => {
+                ui.fw.sync(tag);
+                let (first, count) = (ui.fw.browse.first, ui.fw.browse.n);
+                let ev = Event::Data(yoton_ui::event::DataReady { tag, first, count });
+                let r = ui.shell.event(&mut ui.fw, ev, now());
+                ui.handle(r);
+            }
+            Either4::First((k, down)) => {
                 let t = now();
                 if down {
                     ui.mapper.press(map_key(k), t);
@@ -204,7 +236,7 @@ pub async fn ui() {
                     ui.mapper.release(map_key(k), t);
                 }
             }
-            Either3::Second(()) => {
+            Either4::Second(()) => {
                 let s = state::snapshot();
                 let ev =
                     Event::Service(ServiceEvent::Battery { percent: s.percent, charging: s.charge_active() });
@@ -217,8 +249,11 @@ pub async fn ui() {
                     ui.handle(r);
                 }
             }
-            Either3::Third(()) => {}
+            Either4::Third(()) => {}
         }
+        let w0 = atj2157_hal::time::now_us();
+        LOOPS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        ui.fw.sync_player();
         let t = now();
         while let Some((k, p)) = ui.mapper.poll(t) {
             let r = ui.shell.key(&mut ui.fw, k, p, t);
@@ -231,5 +266,6 @@ pub async fn ui() {
         }
         ui.after().await;
         ui.draw(fb).await;
+        BUSY_US.fetch_add((atj2157_hal::time::now_us() - w0) as u32, core::sync::atomic::Ordering::Relaxed);
     }
 }

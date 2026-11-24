@@ -23,6 +23,9 @@ use yoton_audio::{ByteSource, ContainerInfo, OpenError, PcmBlock, Probe, Step, p
 use yoton_bsp::card::Card;
 use yoton_fs::{CacheSlot, DirEntry, File, MountOptions, OpenMode, Volume};
 use yoton_proto::hash::crc32_update;
+use yoton_ui::event::Source;
+
+use crate::media::{self, Req, Server};
 
 // ---------------------------------------------------------------- commands
 
@@ -91,7 +94,15 @@ pub static RATE: AtomicU32 = AtomicU32::new(0);
 pub static DECODE_US: AtomicU32 = AtomicU32::new(0);
 pub static PLAY_US: AtomicU32 = AtomicU32::new(0);
 pub static PLAYING: AtomicBool = AtomicBool::new(false);
+/// Live RT-side timing (µs, cumulative since start): decode, card reads,
+/// media requests served from inside playback, PCM ring waits.
+pub static T_DECODE: AtomicU32 = AtomicU32::new(0);
+pub static T_FILL: AtomicU32 = AtomicU32::new(0);
+pub static T_SERVE: AtomicU32 = AtomicU32::new(0);
 static STOP: AtomicBool = AtomicBool::new(false);
+/// Pause request from the UI (the DAC DMA stops; play resumes from the
+/// next decoded frame).
+pub static PAUSED: AtomicBool = AtomicBool::new(false);
 
 // ------------------------------------------------------------ stream ring
 
@@ -271,7 +282,19 @@ impl PcmOut {
 const ARENA: usize = 72 * 1024;
 #[repr(C, align(8))]
 struct ArenaBuf([u8; ARENA]);
-static ARENA_BUF: ConstStaticCell<ArenaBuf> = ConstStaticCell::new(ArenaBuf([0; ARENA]));
+static mut ARENA_BUF: ArenaBuf = ArenaBuf([0; ARENA]);
+
+/// The card reader's transfer buffer: the first 16 KiB of the decoder
+/// arena. Only while the card is with the USB task, when this task is
+/// parked in `CARD_BACK.receive()` and does not touch the arena.
+///
+/// # Safety
+/// Call only between receiving the card from `CARD_OUT` and sending it
+/// back on `CARD_BACK`, and drop the borrow before sending it back.
+pub unsafe fn usb_buffer() -> &'static mut [u8; 16384] {
+    // SAFETY: see above; the arena is 72 KiB, 8-byte aligned.
+    unsafe { &mut *((&raw mut ARENA_BUF.0).cast::<[u8; 16384]>()) }
+}
 static mut CACHE: [CacheSlot; 8] = [CacheSlot::EMPTY; 8];
 
 /// The card travels between this task (mounted) and the USB task (card
@@ -291,18 +314,58 @@ fn ext_of(path: &str) -> Option<&[u8]> {
     path.rsplit_once('.').map(|(_, e)| e.as_bytes())
 }
 
-async fn play(
+async fn play_path(
     vol: &mut Volume<'static, Card>,
     ring: &mut Ring,
     arena: &mut [u8],
     path: &str,
+    srv: &mut Server,
 ) -> Result<(), &'static [u8]> {
-    let mut f = vol.open(path, OpenMode::Read).await.map_err(|_| &b"open failed"[..])?;
+    let f = vol.open(path, OpenMode::Read).await.map_err(|_| &b"open failed"[..])?;
+    play_file(vol, ring, arena, f, ext_of(path), srv).await
+}
+
+fn codec_name(ext: Option<&[u8]>) -> &'static str {
+    let mut e = [0u8; 4];
+    if let Some(x) = ext {
+        for (d, s) in e.iter_mut().zip(x) {
+            *d = s.to_ascii_lowercase();
+        }
+    }
+    match &e {
+        b"mp3\0" => "MP3",
+        b"mp2\0" => "MP2",
+        b"flac" => "FLAC",
+        b"wav\0" => "WAV",
+        b"ogg\0" | b"oga\0" => "Vorbis",
+        b"aif\0" | b"aiff" => "AIFF",
+        _ => "?",
+    }
+}
+
+/// Serve at most one media request from inside playback. Requests for the
+/// player loop (skip, stop, new queue) end the current track.
+async fn serve_one(vol: &mut Volume<'static, Card>, srv: &mut Server) {
+    if let Ok(r) = media::REQS.try_receive()
+        && !srv.serve(vol, r).await
+    {
+        STOP.store(true, Ordering::Relaxed);
+    }
+}
+
+async fn play_file(
+    vol: &mut Volume<'static, Card>,
+    ring: &mut Ring,
+    arena: &mut [u8],
+    mut f: File,
+    ext: Option<&[u8]>,
+    srv: &mut Server,
+) -> Result<(), &'static [u8]> {
     ring.reset(f.size());
     ring.fill(vol, &mut f).await;
     // Probe, skipping leading tags.
     let format = loop {
-        match probe(ring, ext_of(path)) {
+        match probe(ring, ext) {
             Probe::Found(fm) => break fm,
             Probe::Skip(n) => {
                 if (n as usize) <= ring.available() {
@@ -344,6 +407,17 @@ async fn play(
     RATE.store(info.rate, Ordering::Relaxed);
     let stereo = info.channels == 2;
     let mut out = PcmOut::new();
+    let rate = u64::from(info.rate);
+    media::player_update(|p| {
+        p.source = Source::Playing;
+        p.position_ms = 0;
+        p.duration_ms = info.frames.map_or(0, |n| (n * 1000 / rate) as u32);
+        p.codec = codec_name(ext);
+        p.rate = info.rate;
+        p.channels = info.channels;
+        p.bits = info.bits;
+        p.size = f.size();
+    });
     PLAYING.store(true, Ordering::Relaxed);
     STOP.store(false, Ordering::Relaxed);
     let t0 = time::now_us();
@@ -353,9 +427,26 @@ async fn play(
         if STOP.load(Ordering::Relaxed) {
             break;
         }
+        if PAUSED.load(Ordering::Relaxed) {
+            out.stop();
+            media::player_update(|p| p.source = Source::Paused);
+            while PAUSED.load(Ordering::Relaxed) && !STOP.load(Ordering::Relaxed) {
+                if let Ok(r) = media::REQS.try_receive() {
+                    if !srv.serve(vol, r).await {
+                        STOP.store(true, Ordering::Relaxed);
+                    }
+                } else {
+                    embassy_time::Timer::after_millis(20).await;
+                }
+            }
+            media::player_update(|p| p.source = Source::Playing);
+            continue;
+        }
         let d0 = time::now_us();
         let step = dec.decode(ring);
-        decode_us += time::now_us() - d0;
+        let dt = time::now_us() - d0;
+        decode_us += dt;
+        T_DECODE.fetch_add(dt as u32, Ordering::Relaxed);
         match step {
             Ok(Step::Pcm(block)) => {
                 // Copy out first: the block borrows the decoder.
@@ -380,8 +471,14 @@ async fn play(
                     }
                 }
                 FRAMES.store(frames, Ordering::Relaxed);
+                media::player_update(|p| p.position_ms = (u64::from(frames) * 1000 / rate) as u32);
                 if ring.available() < RING / 2 {
+                    let a = time::now_us();
                     ring.fill(vol, &mut f).await;
+                    let b = time::now_us();
+                    serve_one(vol, srv).await;
+                    T_FILL.fetch_add((b - a) as u32, Ordering::Relaxed);
+                    T_SERVE.fetch_add((time::now_us() - b) as u32, Ordering::Relaxed);
                 }
             }
             Ok(Step::NeedData(_)) => {
@@ -389,6 +486,7 @@ async fn play(
                     break;
                 }
                 ring.fill(vol, &mut f).await;
+                serve_one(vol, srv).await;
             }
             Ok(Step::EndOfStream) => break,
             Err(_) => {
@@ -404,6 +502,7 @@ async fn play(
     DECODE_US.store(decode_us as u32, Ordering::Relaxed);
     PLAY_US.store((time::now_us() - t0) as u32, Ordering::Relaxed);
     PLAYING.store(false, Ordering::Relaxed);
+    PAUSED.store(false, Ordering::Relaxed);
     Ok(())
 }
 
@@ -430,6 +529,64 @@ async fn ls(vol: &mut Volume<'static, Card>, path: &str) {
     reply(|w| {
         w.s(&out[..n]).s(b"(").u(count).s(b" entries)");
     });
+}
+
+static SERVER: ConstStaticCell<Server> = ConstStaticCell::new(Server::new());
+
+/// Play the queue: `r` is the request that started it (new folder, skip,
+/// jump). Returns when the queue ends or a stop is requested.
+async fn run_queue(
+    vol: &mut Volume<'static, Card>,
+    ring: &mut Ring,
+    arena: &mut [u8],
+    srv: &mut Server,
+    mut r: Req,
+) {
+    loop {
+        match r {
+            Req::PlayDir { entry, start } => srv.build_queue(vol, entry, start).await,
+            Req::Skip(d) => {
+                let p = i64::from(srv.qpos) + i64::from(d);
+                if p < 0 || p >= i64::from(srv.qlen) {
+                    break;
+                }
+                srv.qpos = p as u32;
+            }
+            Req::Jump(i) if i < srv.qlen => srv.qpos = i,
+            _ => break,
+        }
+        let mut e = DirEntry::new();
+        let Some(f) = srv.open_current(vol, &mut e).await else { break };
+        let name = e.name();
+        let ext = name.rsplit_once('.').map(|(_, x)| x.as_bytes());
+        let mut ext_buf = [0u8; 8];
+        let ext = ext.map(|x| {
+            let n = x.len().min(8);
+            ext_buf[..n].copy_from_slice(&x[..n]);
+            &ext_buf[..n]
+        });
+        let title = media::Name::new(name.rsplit_once('.').map_or(name, |(t, _)| t));
+        let (qpos, qlen, file) = (srv.qpos, srv.qlen, e.locator());
+        media::player_update(|p| {
+            p.title = title;
+            p.queue_pos = qpos;
+            p.queue_len = qlen;
+            p.file = yoton_apps::services::FileRef { dir: file.dir, index: file.index };
+        });
+        for c in [&FRAMES, &UNDERRUNS, &CORRUPT] {
+            c.store(0, Ordering::Relaxed);
+        }
+        STOP.store(false, Ordering::Relaxed);
+        let _ = play_file(vol, ring, arena, f, ext, srv).await;
+        r = match srv.pending.take() {
+            Some(Req::Stop) => break,
+            Some(p) => p,
+            None => Req::Skip(1),
+        };
+    }
+    STOP.store(false, Ordering::Relaxed);
+    PAUSED.store(false, Ordering::Relaxed);
+    media::player_update(|p| p.source = Source::Idle);
 }
 
 /// Write the playback counters as the reply (answers at once, from any
@@ -489,9 +646,27 @@ pub async fn audio() {
         w.s(b"card: mounted");
     });
     let mut ring = Ring { buf: &mut RING_BUF.take().0, rd: 0, wr: 0, len: None, eof: true };
-    let arena = &mut ARENA_BUF.take().0;
+    // SAFETY: this task is the arena's owner; the USB task borrows it only
+    // while this task waits for the card (`usb_buffer`).
+    let arena: &mut [u8] = unsafe { &mut (*(&raw mut ARENA_BUF)).0 };
+    let srv = SERVER.take();
     loop {
-        let cmd = CMDS.receive().await;
+        // A player request left over from playback, else wait for one.
+        let r = match srv.pending.take() {
+            Some(r) => Either::Second(r),
+            None => select(CMDS.receive(), media::REQS.receive()).await,
+        };
+        let cmd = match r {
+            Either::First(c) => c,
+            Either::Second(r) => {
+                if srv.serve(&mut vol, r).await {
+                    continue;
+                }
+                let Some(r) = srv.pending.take() else { continue };
+                run_queue(&mut vol, &mut ring, arena, srv, r).await;
+                continue;
+            }
+        };
         let text = core::str::from_utf8(&cmd.text[..cmd.len]).unwrap_or("");
         if text == "release" {
             // Hand the card to the USB task, wait for it to come back.
@@ -517,7 +692,9 @@ pub async fn audio() {
             for s in [&FRAMES, &UNDERRUNS, &CORRUPT] {
                 s.store(0, Ordering::Relaxed);
             }
-            let r = select(play(&mut vol, &mut ring, arena, p.trim()), core::future::pending::<()>()).await;
+            let r =
+                select(play_path(&mut vol, &mut ring, arena, p.trim(), srv), core::future::pending::<()>())
+                    .await;
             match r {
                 Either::First(Ok(())) => reply(|w| {
                     w.s(b"played frames=")
