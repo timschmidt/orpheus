@@ -571,6 +571,13 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — D-10 decided by the owner
+
+* The presenter remote is a Bluetooth remote (the module's keyboard +
+  consumer HID reports). The tilt (IMU) pointer is built only if BT-3 finds
+  a Bluetooth transport for mouse data; otherwise SENS-2 and the pointer
+  parts of UI-6b are dropped (no USB pointer, no module firmware work).
+
 ### 2026-11-24 — published (D-11, owner's decision)
 
 * The repository is public as `github.com/timschmidt/orpheus` (branch

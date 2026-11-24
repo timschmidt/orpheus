@@ -625,11 +625,13 @@ underruns, faults survived; 02-architecture §8).
 **Acceptance**: every setting round-trips through the store; factory reset
 restores defaults and leaves the card untouched; golden images for each group.
 
-### 7.12 Remote (presenter remote and tilt pointer)
+### 7.12 Remote (Bluetooth presenter remote; pointer conditional)
 
-Owner's requirement (2026-11-24). Transport and pointer engine: 06 §4.3. The
-app works the same over Bluetooth HID or USB HID; the computer sees a
-keyboard + consumer-control + mouse device named "Orpheus Remote".
+Owner's requirement (2026-11-24). Transport: 06 §4.3. The computer sees the
+module's Bluetooth keyboard + consumer-control device. **Everything marked
+"pointer" below exists only if a Bluetooth transport can carry mouse data
+(decision D-10); otherwise it is left out and Up/Down keep their non-pointer
+meanings.**
 
 **Screens**
 

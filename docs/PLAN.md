@@ -14,8 +14,8 @@ A player that boots in about a second into a consistent, readable UI; plays
 MP3, FLAC, Ogg Vorbis, Opus, Speex, WAV and more without a glitch while the
 user browses; lasts at least as long on a charge as the stock firmware; offers
 Music, Files, Radio, Bluetooth, Recorder, Pictures, Steps, Stopwatch and
-Settings, plus an authenticator, a USB disk/CD emulator and a presenter
-remote with a tilt pointer;
+Settings, plus an authenticator, a USB disk/CD emulator and a Bluetooth
+presenter remote;
 uses the SoC's hardware (DMA everywhere, hardware volume, PLL/voltage scaling,
 standby states, the FFT/IIR engine, the hardware I2C controller) instead of
 the CPU wherever the hardware can do the job; and is built so that an AI
@@ -43,7 +43,7 @@ identity throughout.
 | Stopwatch, pedometer, recorder, pictures, radio, Bluetooth, music, settings, folder browser | 05 §7 | Each specified with acceptance tests |
 | Boot a computer from an ISO/IMG on the card | 06 §3, 05 §7.10 | Disk and CD-ROM modes; automated boot test with QEMU |
 | 2FA token | 06 §5, 05 §7.9 | TOTP/HOTP, typed over USB; honest limit on at-rest secrecy |
-| Bluetooth presentation remote with IMU (tilt) mouse | 05 §7.12, 06 §4.3 | **In scope again (owner, 2026-11-24).** The module's SDP record lists HID (0x1124); BT-3 finds how to feed it, BT-4 builds the transport, SENS-2 the tilt pointer (accelerometer only, no gyroscope: tilt with a clutch key), UI-6b the app. If the module cannot carry the reports, the owner chooses the fallback (D-10: USB HID, a reduced remote, or module firmware work) |
+| Bluetooth presentation remote; IMU (tilt) mouse only over Bluetooth | 05 §7.12, 06 §4.3 | **Remote in scope (owner, 2026-11-24)** over the module's HID service (keyboard + consumer reports, read 2026-11-24); BT-3 finds the command that feeds it, BT-4 builds the transport, UI-6b the app. **Tilt pointer conditional (D-10):** built only if BT-3 finds a Bluetooth transport for mouse data, otherwise dropped |
 | Bluetooth audio receiver | — | **Removed from scope by the owner on 2026-11-23** (the module cannot receive audio) |
 | Documentation, website, in-browser Orpheus, browser installer, branding | 09, 08 M12 | Concise docs for users and developers, open-source project files, GitHub Pages site from the repository with a WASM build of the firmware's UI/app/codec code and a WebUSB installer where the browser supports it; one Orpheus/lyre brand for firmware, docs and site (owner, 2026-11-24) |
 | Ruthlessly efficient | 02 §1, §3, §10; 07 §4 | RAM and size budgets enforced by tooling; resident-set proof; profile-guided page packing |
@@ -115,9 +115,9 @@ Written up in `docs/hw/` (four reverse-engineering reports),
 8. **A developer channel on USB endpoint 0** in every USB personality for
    logs, screenshots, key injection and tests (06 §2.5).
 9. **Bluetooth transmitter role only is committed**; whether the module can
-   do HID is investigated first (06 §4.3); the presenter remote with a tilt
-   pointer is committed (owner, 2026-11-24) over Bluetooth HID, with the
-   fallback chosen by the owner (D-10). A receiver role is out of scope.
+   do HID is investigated first (06 §4.3); the Bluetooth presenter remote
+   is committed (owner, 2026-11-24); the tilt pointer only if Bluetooth can
+   carry mouse data (D-10). A receiver role is out of scope.
 10. **Order of work**: shortest path to a daily-usable player (M5), then
     breadth (08).
 11. **Last stage: verification (M11, owner's requirement 2026-11-24).**
@@ -147,7 +147,7 @@ Defaults are what workers assume until told otherwise.
 | D-7 | Publishing `docs/hw/` and `docs/vendor/` | Kept out of git by `.gitignore` (the `yoton` repository treats vendor-derived analysis the same way) | Remove the ignore lines to publish the reverse-engineering reports; the datasheet copy should stay local |
 | D-8 | Rockbox on the player | Replaced by Orpheus at milestone M2; restorable with one command | The player is the Rockbox reference until then |
 | D-9 | Coverage exclusions (M11) | None; each proposed exclusion (provably unreachable code only) is listed in `coverage-exclusions.toml` with its reason and needs the owner's approval | The 100 % coverage requirement is otherwise absolute |
-| D-10 | Remote transport if the module's Bluetooth HID cannot be fed, and **for the tilt pointer** (the module's HID descriptor has keyboard and consumer reports but **no mouse**, read 2026-11-24) | Keys over Bluetooth if BT-3 finds the feeding command; pointer: ask the owner — USB HID (cable), or module firmware work (D-6) | The remote and pointer are built regardless; only the link changes |
+| D-10 | Remote transport and the tilt pointer | **Decided 2026-11-24 by the owner**: the presenter remote is a **Bluetooth** remote (keyboard and consumer reports through the module's HID service). The tilt (IMU) pointer is built **only if a Bluetooth transport can carry mouse data**; if BT-3 finds none (the module's descriptor read on 2026-11-24 has no mouse report), the pointer is dropped from the plan — no USB pointer, no module firmware work for it | Decides SENS-2 and the pointer parts of UI-6b |
 | D-11 | Public repository name, GitHub Pages address, publication | **Decided 2026-11-24 by the owner: published as `timschmidt/orpheus` on GitHub, public.** Pages address follows as `timschmidt.github.io/orpheus` unless a custom domain is chosen | The site and the browser installer are publication |
 
 Also needed from the user along the way: the checks in
@@ -191,12 +191,12 @@ what fails and why.
 
 ## 8. Limits stated plainly
 
-* The presenter remote over **Bluetooth** depends on feeding the module's
-  HID service (listed in its SDP record, command not yet known); the remote
-  and the pointer are built either way, and the owner picks the fallback
-  transport if Bluetooth HID is not reachable (D-10).
-* The pointer is a **tilt** pointer: the sensor has no gyroscope, so it
-  cannot track rotation like a gyro air mouse; a clutch key keeps it usable.
+* The presenter remote depends on feeding the module's HID service (listed
+  in its SDP record: keyboard and consumer reports; the feeding command is
+  not known yet).
+* The pointer exists only if a Bluetooth transport can carry mouse data
+  (the module's descriptor has no mouse report; D-10). If built, it is a
+  **tilt** pointer: no gyroscope, so a clutch key keeps it usable.
 * The Bluetooth audio receiver was removed from scope by the owner on
   2026-11-23.
 * The authenticator cannot protect secrets against someone who has the player

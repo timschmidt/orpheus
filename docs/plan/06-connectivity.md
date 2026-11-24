@@ -17,17 +17,17 @@ for USB; [docs/hw/bluetooth.md](../hw/bluetooth.md) for the Bluetooth module;
 | Bluetooth: send music to headphones/speakers | **Yes, cheap** | The board carries an autonomous transmitter module (self-reports "ATS2851") that runs its own stack and takes **analogue** audio from the DAC; the player only sends short UART commands |
 | Bluetooth: remote keys and volume from the headset; volume and track text to the headset | **Yes** | In the module's command set |
 | Bluetooth: receive audio and play it through the DAC | **Out of scope** (owner's decision, 2026-11-23) | The module's stock firmware has no such command and no audio route from the module back into the SoC is known |
-| Bluetooth: HID (presentation remote, tilt pointer, code typing) | **Under investigation, promising** | The module's SDP record lists HID (0x1124); the command that feeds it is not known yet (§4.3); USB HID is the fallback (decision D-10) |
+| Bluetooth: HID (presentation remote, tilt pointer, code typing) | **Under investigation, promising** | The module's SDP record lists HID (0x1124); keyboard + consumer reports, no mouse; the command that feeds it is not known yet (§4.3); the pointer only if Bluetooth can carry mouse data (D-10) |
 | Bluetooth: BLE | **No with the module's stock firmware** | No such command |
 | One-time codes (TOTP/HOTP) on screen | **Yes** | Needs a correct clock |
 | Typing codes into a computer | **Yes over USB HID**; over Bluetooth if §4.3 succeeds | |
-| Presentation remote | **In scope** (owner, 2026-11-24): over Bluetooth HID (§4.3); over USB only if the owner chooses it (D-10) | App: 05 §7.12 |
-| Mouse / pointer control | **In scope as a tilt pointer** (owner, 2026-11-24) | 3-axis accelerometer (MiraMEMS DA2xx), no gyroscope: pointer by tilt with a clutch key (§4.3.2) |
+| Presentation remote | **In scope** (owner, 2026-11-24): over Bluetooth HID (§4.3) | App: 05 §7.12 |
+| Mouse / pointer control | **Conditional** (D-10): only if a Bluetooth transport carries mouse data; otherwise dropped | 3-axis accelerometer (MiraMEMS DA2xx), no gyroscope: pointer by tilt with a clutch key (§4.3.2) |
 
 Bluetooth HID depends on the fitted module, not on this plan: §4.3 stages
-the work so the remote and the pointer are built whatever the transport
-turns out to be (Bluetooth HID, or USB HID by owner decision D-10). The
-receiver role and BLE stay out of scope.
+the work: the presenter remote is a Bluetooth remote; the tilt pointer is
+built only if a Bluetooth transport can carry mouse data (owner's decision
+D-10, 2026-11-24). The receiver role and BLE stay out of scope.
 
 ## 2. USB device stack
 
@@ -325,8 +325,8 @@ presenter key: arrows, PageUp/PageDown, F5, Esc, B, W, Ctrl+L) and **report
 previous, 0x83 Recall last, Rewind). **No mouse report.** Consequence: the
 remote's keys fit the module as it is, if step 2 finds the command that
 feeds these reports; the **tilt pointer cannot be carried by this
-descriptor** and needs USB HID or module firmware work — that part of D-10
-can be decided now.
+descriptor**; per D-10 (owner, 2026-11-24) it is built only if another
+Bluetooth path for mouse data is found, and dropped otherwise.
 
 1. **Read the HID record** (no risk, host side): with the module paired to
    the workstation, read its SDP HID attributes (report descriptor, subclass,
@@ -348,13 +348,12 @@ can be decided now.
    reports are reachable; report rate and latency (host timestamps vs the
    player's send time; target ≤ 30 ms, ≥ 60 reports/s for the pointer);
    coexistence with A2DP (both at once, or one role at a time).
-4. **Decide** (owner, D-10) if the module's HID cannot carry what the remote
-   needs:
-   * a reduced remote with what it can carry (e.g. consumer keys only:
-     next/previous via media keys work in some presentation tools), or
-   * the remote over **USB HID** (the same app and reports through USB-5's
-     HID interface; works with any computer, needs a cable), or
-   * module firmware work (D-6; module-bricking risk stated first).
+4. **Owner's decision D-10 (2026-11-24)**: the remote is a Bluetooth remote
+   (keyboard + consumer reports). **Mouse data**: look for any Bluetooth
+   path that carries it (another descriptor or record the module can
+   switch to, a command that sends pointer reports, the module's own
+   remote/"selfie" modes). If none exists, the tilt pointer (§4.3.2) is
+   **dropped** — no USB pointer and no module firmware work for it.
 
 **Built in every case** (host-testable, transport-independent):
 `orpheus-hid` — report descriptors (boot keyboard, consumer control,
@@ -363,7 +362,10 @@ press/release sequencing with auto-release on link loss, and a transport
 trait with three implementations: Bluetooth module (BT-4), USB (USB-5), and
 the simulator/WASM back end that renders what the computer would see.
 
-#### 4.3.2 Tilt pointer engine (WP SENS-2)
+#### 4.3.2 Tilt pointer engine (WP SENS-2) — conditional (D-10)
+
+Built **only if** §4.3.1 finds a Bluetooth transport for mouse data; if not,
+this section and SENS-2 are dropped and the remote ships without a pointer.
 
 The sensor is a 3-axis accelerometer without gyroscope (MiraMEMS DA2xx at
 I2C `0x27`), so the pointer is driven by **tilt** (the gravity vector), not
@@ -485,9 +487,9 @@ release, not part of the committed scope.
 * **WP-BT-3 HID investigation** (§4.3.1 steps 1–3), report in
   docs/hw/bluetooth.md; stop/go for BT-4.
 * **WP-BT-4 HID transport**: `orpheus-hid` (descriptors, reports, transport
-  trait, simulator back end) and the module transport; or the USB transport
-  if the owner chooses it (D-10).
-* **WP-SENS-2 Tilt pointer**: `orpheus-pointer`, sensor fast-sampling mode,
+  trait, simulator back end) and the module transport.
+* **WP-SENS-2 Tilt pointer** (conditional, D-10: only with a Bluetooth
+  transport for mouse data): `orpheus-pointer`, sensor fast-sampling mode,
   trace tests, fake-sensor test command.
 * **WP-OTP-1 `orpheus-otp`, vault, PIN flow, time sync**; **WP-OTP-2 typing and
   provisioning.**

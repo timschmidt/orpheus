@@ -39,7 +39,7 @@ Two tracks run side by side from the start:
 | M5 | **Daily driver** | Folder-based playback (WAV, MP3, FLAC), Files, Now Playing, card reader, power states | Replaces Rockbox for everyday use |
 | M6 | Library and sound | Library index, playlists, DSP, hardware engine, Vorbis, Opus, Speex, AAC and the rest | |
 | M7 | Radio, recorder, sensors, tools | FM, recorder, pedometer, stopwatch/timer/alarm, pictures | Stock feature parity |
-| M8 | Bluetooth | Transmitter role with headset remote control; **presenter remote with tilt pointer** over Bluetooth HID (or USB HID by owner decision D-10) | The player presents slides and points |
+| M8 | Bluetooth | Transmitter role with headset remote control; **Bluetooth presenter remote** (tilt pointer only if Bluetooth can carry mouse data, D-10) | The player presents slides |
 | M9 | USB extras and authenticator | HID keyboard, authenticator, disk/CD emulation, (USB audio) | All requested extras that the hardware allows |
 | M10 | Polish and release | Battery-life tuning, self-update, full-flash layout option, languages, manual, release | 1.0 |
 | M12 | **Documentation, website and branding** | Concise, current documentation for users and developers; open-source project files; GitHub Pages site built from the repository with Orpheus running in the browser (WASM) and a browser installer (WebUSB where supported); shared Orpheus/lyre branding across firmware, docs and site (09) | Runs alongside M10–M11; release depends on it |
@@ -163,10 +163,10 @@ per codec: one listening pass with real files of that format.
 | BT-1 | UART1 driver, pin assignment test (U-BT-1), frame codec, command layer, identity | 06 §4.2 | H+D | M | — |
 | BT-2 | Transmitter role: state machine, pairing, AVRCP bridge, volume policy, reconnect, power | 06 §4.2 | H+D | L | Pair a headset and a speaker; music, keys, volume, reconnect; note whether the wired output stays live (U-BT-2) — **gate** |
 | UI-6a | Bluetooth app and quick-panel rows | 05 §7.4 | H | M | |
-| BT-3 | HID investigation (06 §4.3.1 steps 1–3): read the module's SDP HID record and report descriptor with the workstation as HID host; find the command that feeds it; capability, rate, latency, A2DP coexistence. Stop/go for BT-4; if no-go, owner decision D-10 | 06 §4.3.1 | D | M | — |
-| BT-4 | HID transport: `orpheus-hid` (descriptors, report builders, auto-release, transport trait, simulator back end) + module transport (or USB transport per D-10); HIL with `hidraw` on the workstation | 06 §4.3.1 | H+D | M | — |
-| SENS-2 | Tilt pointer: `orpheus-pointer` (orientation, relative/absolute/scroll, clutch, one-euro filter, jerk rejection), sensor fast-sampling mode, trace replay tests, fake-sensor test command | 06 §4.3.2 | H+D | M | Pointer feel in each mode |
-| UI-6b | Remote app: Connect, Present (timer, slide counter), Pointer, Calibrate, profiles, key-map editor | 05 §7.12 | H+D | M | A real presentation (PowerPoint or Impress, Google Slides); an hour's battery use |
+| BT-3 | HID investigation (06 §4.3.1 steps 1–3): read the module's SDP HID record and report descriptor with the workstation as HID host; find the command that feeds it; capability, rate, latency, A2DP coexistence. Includes the search for a Bluetooth path for mouse data (decides SENS-2, D-10) | 06 §4.3.1 | D | M | — |
+| BT-4 | HID transport: `orpheus-hid` (descriptors, report builders, auto-release, transport trait, simulator back end) + module transport; HIL with `hidraw` on the workstation | 06 §4.3.1 | H+D | M | — |
+| SENS-2 | **Conditional (D-10): only if BT-3 finds a Bluetooth transport for mouse data; otherwise dropped.** Tilt pointer: `orpheus-pointer` (orientation, relative/absolute/scroll, clutch, one-euro filter, jerk rejection), sensor fast-sampling mode, trace replay tests, fake-sensor test command | 06 §4.3.2 | H+D | M | Pointer feel in each mode |
+| UI-6b | Remote app: Connect, Present (timer, slide counter), profiles, key-map editor; Pointer and Calibrate screens only with SENS-2 | 05 §7.12 | H+D | M | A real presentation (PowerPoint or Impress, Google Slides); an hour's battery use |
 
 ### M9 — USB extras and authenticator
 
