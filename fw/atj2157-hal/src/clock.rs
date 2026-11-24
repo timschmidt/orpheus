@@ -36,6 +36,10 @@ pub enum Level {
     High,
     /// 192 MHz, N = 32, core supply 1.1 V.
     Turbo,
+    /// 288 MHz, N = 48, core supply 1.3 V, `SYSCLK` bit 8 — the vendor's
+    /// level 29. An option the user chooses (decision D-4, WP PWR-5); the
+    /// governor never selects it on its own.
+    Max,
 }
 
 struct Row {
@@ -45,22 +49,28 @@ struct Row {
     /// Core voltage code `VOUT_CTL[4:0]` (0x0C = 1.0 V, 0x10 = 1.1 V).
     vdd: u32,
     /// SPI0 clock word keeping the NOR at ≤ 48 MHz from COREPLL, or CK24M
-    /// when the PLL is off.
+    /// when the PLL is off (divider code n ≥ 2 divides by 2n).
     spi: u32,
+    /// Extra `CMU_SYSCLK` bits with the PLL selected: bit 8 for the
+    /// vendor's levels ≥ 204 MHz (meaning unknown, U-PWR-2).
+    sys: u32,
 }
 
 const fn row(l: Level) -> Row {
     match l {
-        Level::Low => Row { hz: 24_000_000, n: 0, vdd: 0x0C, spi: 0x100 },
-        Level::Base => Row { hz: 48_000_000, n: 8, vdd: 0x0C, spi: 0x200 },
-        Level::Mid => Row { hz: 96_000_000, n: 16, vdd: 0x0C, spi: 0x201 },
-        Level::High => Row { hz: 144_000_000, n: 24, vdd: 0x0C, spi: 0x202 },
-        Level::Turbo => Row { hz: 192_000_000, n: 32, vdd: 0x10, spi: 0x202 },
+        Level::Low => Row { hz: 24_000_000, n: 0, vdd: 0x0C, spi: 0x100, sys: 0 },
+        Level::Base => Row { hz: 48_000_000, n: 8, vdd: 0x0C, spi: 0x200, sys: 0 },
+        Level::Mid => Row { hz: 96_000_000, n: 16, vdd: 0x0C, spi: 0x201, sys: 0 },
+        Level::High => Row { hz: 144_000_000, n: 24, vdd: 0x0C, spi: 0x202, sys: 0 },
+        Level::Turbo => Row { hz: 192_000_000, n: 32, vdd: 0x10, spi: 0x202, sys: 0 },
+        // VERBATIM(vendor KERNEL.DRV level table, level 29: N 0x30, VDD
+        // 0x18, CMU_SYSCLK 0x0102; system.md §1.4). NOR ÷6 = 48 MHz.
+        Level::Max => Row { hz: 288_000_000, n: 48, vdd: 0x18, spi: 0x203, sys: 0x100 },
     }
 }
 
 /// Voltage codes this firmware may write (vendor table rows only).
-const ALLOWED_VDD: [u32; 2] = [0x0C, 0x10];
+const ALLOWED_VDD: [u32; 3] = [0x0C, 0x10, 0x18];
 
 static CURRENT: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(1);
 static SWITCHES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
@@ -76,6 +86,7 @@ impl Level {
             2 => Level::Mid,
             3 => Level::High,
             4 => Level::Turbo,
+            5 => Level::Max,
             _ => Level::Base,
         }
     }
@@ -125,7 +136,7 @@ pub fn set_level(to: Level) {
         } else {
             cmu::COREPLL_CTL.write(r.n | 0x80);
             crate::delay::spin_us(100);
-            cmu::SYSCLK.modify(|v| (v & !0x133) | 2);
+            cmu::SYSCLK.modify(|v| (v & !0x133) | 2 | r.sys);
         }
         crate::delay::set_core_hz(r.hz);
         crate::nor::set_clock(r.spi);

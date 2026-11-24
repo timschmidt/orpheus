@@ -55,7 +55,7 @@ fn as_bytes(b: &[u32]) -> &[u8] {
 async fn run(test_id: u32) {
     let mut r = persist::Results::begin(test_id);
     nor::init();
-    r.set(24, clock::vdd_code());
+    r.set(28, clock::vdd_code());
     let ram = &mut RAM.take().0;
     let nb = &mut NORBUF.take().0;
     // Reference CRC: polled read at the ROM clock.
@@ -63,7 +63,8 @@ async fn run(test_id: u32) {
     let nbb = unsafe { core::slice::from_raw_parts_mut(nb.as_mut_ptr().cast::<u8>(), 65536) };
     let _ = nor::read(NOR_ADDR, nbb);
     let reference = crc32(nbb);
-    let levels = [Level::Base, Level::Low, Level::Mid, Level::High, Level::Turbo, Level::Base];
+    // Max (288 MHz, 1.3 V) is the vendor's level 29 (decision D-4, PWR-5).
+    let levels = [Level::Base, Level::Low, Level::Mid, Level::High, Level::Turbo, Level::Max, Level::Base];
     let mut ok = true;
     let mut base_us = 0u32;
     for (i, &l) in levels.iter().enumerate() {
@@ -96,11 +97,15 @@ async fn run(test_id: u32) {
     clock::set_level(Level::Base);
     let mut msg = log::LineBuf::new();
     msg.push_str("vdd0=")
-        .push_hex(r.get(24))
+        .push_hex(r.get(28))
         .push_str(" base_us=")
         .push_u32(base_us)
         .push_str(" turbo_us=")
-        .push_u32(r.get(16));
+        .push_u32(r.get(16))
+        .push_str(" max_us=")
+        .push_u32(r.get(20))
+        .push_str(" max_vdd=")
+        .push_hex(r.get(23));
     r.flush(if ok { Verdict::Pass } else { Verdict::Fail }, msg.as_bytes());
     wdt::reboot(wdt::Target::Adfu);
 }

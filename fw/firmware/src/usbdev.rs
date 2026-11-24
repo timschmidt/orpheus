@@ -183,6 +183,8 @@ impl Target for Fw {
             set_level(match l {
                 b"96" => Level::Mid,
                 b"144" => Level::High,
+                b"192" => Level::Turbo,
+                b"288" => Level::Max,
                 _ => Level::Base,
             });
             return true;

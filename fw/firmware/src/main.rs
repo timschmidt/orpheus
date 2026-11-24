@@ -152,7 +152,7 @@ impl Governor {
                 self.calm = 0;
                 let floor = CLOCK_FLOOR.load(core::sync::atomic::Ordering::Relaxed);
                 let down = match cur {
-                    Level::Turbo => Some(Level::High),
+                    Level::Turbo | Level::Max => Some(Level::High),
                     Level::High if floor < 2 => Some(Level::Mid),
                     Level::Mid if floor < 1 => Some(Level::Base),
                     _ => None,
