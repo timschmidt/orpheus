@@ -465,6 +465,32 @@ driver exists because it is much faster than reboot cycles.
 | `power` | Clock-level sweep with a CPU benchmark; idle statistics (time in WFI); battery ADC logging; charger state transitions | Benchmark scales with clock; WFI share ≥ 95 % at idle Home screen |
 | `soak` | 2 h playlist playback with periodic UI scripts and seeks | No fault, no underrun, no drift between played samples and wall clock beyond crystal tolerance |
 
+**Gapless join check** (part of `audio`, AU-5; runs without keys):
+
+1. `cargo xtask test codecs --gen` makes `tests/corpus/gapless/{flac,wav,
+   mp3,vorbis}_part{0,1,2}.*`: one 5-s source cut at frames 60,417 and
+   131,333 (parts of 60,417 / 70,916 / 89,167 frames at 44.1 kHz). Upload
+   each codec's three parts into `/.orpheus/test/gapless-<codec>/` with
+   `cargo xtask dev put`.
+2. `cargo xtask dev cmd "playdir /.orpheus/test/gapless-<codec>"` (folder
+   order, shuffle off), then poll `cargo xtask dev cmd status` every 200 ms
+   until it reads `idle`.
+3. Pass:
+   * `q=` goes 1/3 → 2/3 → 3/3, the titles are `<codec>_part0/1/2`, and
+     `shuf=0`.
+   * `underruns=0` on every poll. The counter is per track and covers that
+     track's join.
+   * `join: u=0 u_meta=0` after each join.
+   * The final `idle frames=` is part 2's frame count.
+   * MP3, FLAC and WAV must pass. Vorbis is reported (04 §2.2: < 30 ms
+     inserted if not zero).
+4. Reported in the run log: `join: head= open_us= loads= lib_us= art_us=
+   pf_us=` per join. `open_us` must stay below the headroom (`head` frames
+   at the stream's rate).
+5. A folder with a 44.1 kHz part followed by a 48 kHz file checks the
+   rate-change fallback: the second file plays at the right pitch, after
+   a short stop.
+
 ### 5.5 Audio verification without ears
 
 1. **Digital tap**: in test builds the PCM sink computes a CRC-32 and a running

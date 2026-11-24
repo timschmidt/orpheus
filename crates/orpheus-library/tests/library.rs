@@ -120,6 +120,13 @@ fn check_against_model(l: &Library, s: &mut MemStore, card: &Card, articles: boo
         assert_eq!(text(l, s, tr.genre), sp(&spell_genre, &t.genre, false));
         assert_eq!((tr.year, tr.track, tr.disc), (t.year, t.track, t.disc));
         assert_eq!(l.find(s, t.r.locator()).unwrap(), Some(i as u32));
+        // With the previous track as the hint, a wrong hint, none.
+        let n = sorted.len() as u32;
+        for hint in
+            [(i as u32).checked_sub(1), Some(i as u32), Some((i as u32 + 7) % n), Some(u32::MAX), None]
+        {
+            assert_eq!(l.find_near(s, t.r.locator(), hint).unwrap(), Some(i as u32));
+        }
     }
 
     // Artists → albums (year order) → tracks.

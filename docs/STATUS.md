@@ -42,6 +42,65 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-24 — AU-5 (gapless): join underruns, `playdir`, join statistics in `status` (worker, no hardware)
+
+* **The "fourth track"** of the lead's run is most likely the **Shuffle
+  setting**: Files → OK queues the folder with `shuffle || setting`, and a
+  shuffled queue of three started at part 0 plays `0, 2, 1` or `0, 1, 2`
+  depending on the seed. The polled frame counts fit `p0, p2 (32,303 and
+  86,447 are the same track), p1 (ends at 70,916)`, and the earlier run
+  (ends at 89,167) fits `p0, p1, p2`. The underrun counter is per track (reset
+  before each `play_item`, so it covers that track's join), which is why it
+  read 6 twice during part 2. No player bug was found on the path
+  (`Prefetch` is issued only for `next_pos`, `CancelPrefetch` re-reports the
+  reader's end only after a cancel). `status` now shows `q=POS/LEN shuf=0|1
+  title=…`, so the next run can tell.
+* **Join underruns: likely cause and changes.** After the hand-over, the
+  new track's first stream refill also ran the queued UI request and then
+  the gapless track's library lookup (`Library::find`: a binary search of
+  ~13 probes × 2 reads over 5,740 tracks, plus a session open) and its
+  art-cache lookup. Each of these does card I/O while nothing feeds the
+  DAC, and the PCM ring holds at most 70 ms. Changes:
+  * All card work besides the stream refill is now a **chore** that runs
+    only while the PCM ring holds ≥ 1.5 halves (≈ 52 ms; at most 300 ms
+    late), one per decoded block. In order of priority: the read-ahead open
+    (`Prefetch`; it was done right when the reader reached the end), a
+    waiting UI request, the gapless track's title + player snapshot +
+    library place, then its art.
+  * The new track's title and info are published only after its decoder
+    runs (`Ring::shown`): the UI's repaint no longer competes with the
+    decoder open for the four-slot code cache.
+  * `Library::find_near` (host-tested): it tries the previous track's
+    row + 1 first. Album tracks are consecutive rows, so it is one read
+    instead of the binary search.
+  * There is no card read before the next decoder opens when ≥ 4 KiB of it
+    is already in the ring.
+* **Measuring on the device.** `status` reports the last join as
+  `join: head=` (PCM frames queued when the decoder ended), `open_us=`
+  (decoder end → first block of the next track), `loads=` (pager line loads
+  in that window), `u=` (the new track's underruns after its first two
+  halves: the join's), `lib_us=` / `art_us=` (the two meta chores),
+  `u_meta=` (underruns after them), `pf_us=` (the read-ahead open). If
+  `u > 0` with `open_us` > the headroom (`head` / 44.1 frames per ms), the
+  open itself is too slow (paged code: `loads`). The next step would then be
+  probe + inspect of the next stream at read-ahead time. If `u_meta > u`, a
+  meta chore is too long even when roomy (the next step: the library
+  binary search in steps).
+* **`playdir PATH [START]`** (developer channel, idle loop): queues a folder
+  as Files → OK does (same `PlayReq::PlayDir`, index order), but always with
+  shuffle **off** so tests are repeatable. `PATH` may also name a file (its
+  folder, from that file); `START` is a file name in the folder. Replies
+  `playdir ok`; progress is in `status`. HIL check in
+  `docs/plan/07-tooling-testing.md` §5.4.
+* RAM/stack (`xtask build`; base = main `ec797b0` in this worktree):
+  `__stack_bottom` `0x132070` → `0x132128` (main stack −184 B: join
+  statistics 40 B, `Ring::shown` ≈ 112 B, chore state in the audio task's
+  future). Resident 83,468 → 83,500 B (+32, a few short literals). Frames:
+  audio task poll 4,992 → 4,992 B, `play_file` 2,332 → 2,332 B.
+* Not verified on the player (I have no hardware). Open: the join numbers
+  from the next run; Vorbis (codebook set-up in the open window); whether
+  0 underruns needs the pre-inspect step.
+
 ### 2026-11-24 — UI-6a: the Bluetooth app (worker, no hardware)
 
 * **Screens** (`orpheus-apps::screens::bluetooth`, ids 27–30): Home →
@@ -1163,6 +1222,7 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 | 2026-11-24 | Firmware with Pictures and album art (AU-14 device), worker worktree build | resident 81,444 B (was 79,532), bss 123,160 B (was 123,000), main stack 21,696 B (was 23,768), 62 code + 16 rodata pages (was 52 + 14), slot 724,992 B | `xtask build`, `nm` `__stack_bottom` |
 | 2026-11-24 | Firmware with the music library (AU-12 firmware), worker worktree build | resident 83,244 B (was 81,996), bss 123,088 B (was 123,000), main stack 19,968 B (was 21,304), 71 code + 16 rodata pages (was 66 + 16), slot 802,816 B (was 761,856); audio task poll frame 5,024 B (was 5,088) | `xtask build`, `llvm-nm` `__stack_bottom`, `llvm-objdump` `sub sp` |
 | 2026-11-24 | Firmware with gapless hand-over and queue edits (AU-5), worker worktree build | resident 83,252 B (unchanged), main stack −312 B (`__stack_bottom` 0x131c00 → 0x131d38); audio task poll frame 5,024 → 4,992 B, `play_file` 2,380 → 2,332 B | `xtask build`, `llvm-nm`, `llvm-objdump` `sub sp` |
+| 2026-11-24 | AU-5 join fixes (chores gated on PCM headroom, deferred title, `find_near`, `playdir`, join statistics), worker worktree build | resident 83,500 B (was 83,468), main stack −184 B (`__stack_bottom` 0x132070 → 0x132128); audio task poll 4,992 B, `play_file` 2,332 B (unchanged) | `xtask build`, `llvm-nm`, `llvm-objdump` `sub sp` |
 
 | 2026-11-24 | Host coverage baseline (host tests + 1 fuzz regression input), regions / lines / branches | 72.16 % (60,678 / 84,088) / 71.78 % / 65.09 % | `xtask cover --fuzz` (+ `--add` re-runs), nightly-2026-11-05 |
 | 2026-11-24 | Instrumented coverage build of the host workspace, no debug info | ≈ 0.4 GB build + ≈ 1.1 GB test images in `target/cover/…/tmp` | `du` |
