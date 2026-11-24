@@ -4,19 +4,24 @@
 
 use crate::frame::{self, EncodeError, Frame, MAX_TX_PARAMS};
 
-/// A Bluetooth device address as the module sends it. The byte order is
-/// unknown (bluetooth.md §3.4): addresses are only copied, compared and
-/// sent back exactly as received.
+/// A Bluetooth device address as the module sends it: least-significant
+/// byte first (HCI order, seen on the player 2026-11-24). Kept in that
+/// order, compared and sent back exactly as received; only
+/// [`Addr::to_text`] reverses it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Addr(pub [u8; 6]);
 
 impl Addr {
-    /// `XX:XX:XX:XX:XX:XX` in received byte order.
+    /// `XX:XX:XX:XX:XX:XX` as the address is written: the module sends it
+    /// least-significant byte first (HCI order; seen on the player
+    /// 2026-11-24: `E0:AD:47:32:1B:1F` arrives as `1F 1B 32 47 AD E0`), so
+    /// the text is the stored bytes reversed. The stored bytes stay in
+    /// wire order for commands.
     #[must_use]
     pub fn to_text(&self) -> [u8; 17] {
         const HEX: &[u8; 16] = b"0123456789ABCDEF";
         let mut t = [b':'; 17];
-        for (i, b) in self.0.iter().enumerate() {
+        for (i, b) in self.0.iter().rev().enumerate() {
             t[i * 3] = HEX[usize::from(b >> 4)];
             t[i * 3 + 1] = HEX[usize::from(b & 15)];
         }
@@ -315,9 +320,37 @@ pub const fn volume_from_sink(v: u8) -> u8 {
     if l == 0 { 1 } else { l as u8 }
 }
 
+/// The player's volume steps (0–30, the UI's scale) to the module's 0–31
+/// scale of [`volume_to_sink`].
+#[must_use]
+pub const fn local_from_ui(v: u8) -> u8 {
+    let v = if v > 30 { 30 } else { v };
+    ((v as u16 * 31 + 15) / 30) as u8
+}
+
+/// The module's 0–31 scale back to the UI's 0–30.
+#[must_use]
+pub const fn ui_from_local(l: u8) -> u8 {
+    let l = if l > 31 { 31 } else { l };
+    ((l as u16 * 30 + 15) / 31) as u8
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A UI volume sent to the sink and echoed back lands on itself (no
+    /// drift when the sink confirms every change).
+    #[test]
+    fn ui_volume_round_trip() {
+        for v in 0..=30u8 {
+            let raw = volume_to_sink(local_from_ui(v));
+            assert_eq!(ui_from_local(volume_from_sink(raw)), v, "{v} -> {raw}");
+        }
+        assert_eq!(local_from_ui(30), 31);
+        assert_eq!(ui_from_local(31), 30);
+        assert_eq!(ui_from_local(volume_from_sink(127)), 30);
+    }
     use crate::frame::MAX_TX_FRAME;
 
     fn bytes(c: Command<'_>) -> std::vec::Vec<u8> {
@@ -388,7 +421,9 @@ mod tests {
         assert_eq!(Event::parse(&Frame::new(0x01, &[0x4B])), Event::Key(Key::Next));
         // Short frames of known IDs are passed through as Other.
         assert_eq!(Event::parse(&Frame::new(0x02, &[0])), Event::Other { id: 0x02, params: &[0] });
-        assert_eq!(Addr([0xDE, 0xAD, 0, 1, 2, 0xFF]).to_text(), *b"DE:AD:00:01:02:FF");
+        // Written most-significant byte first: the wire order reversed.
+        assert_eq!(Addr([0xDE, 0xAD, 0, 1, 2, 0xFF]).to_text(), *b"FF:02:01:00:AD:DE");
+        assert_eq!(Addr([0x1F, 0x1B, 0x32, 0x47, 0xAD, 0xE0]).to_text(), *b"E0:AD:47:32:1B:1F");
     }
 
     #[test]

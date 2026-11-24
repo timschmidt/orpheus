@@ -23,6 +23,12 @@
 //! * Headset keys go to the player; playback start/stop goes to the
 //!   module (command 0x05); the connected device's name and the last
 //!   device (saved by the UI under [`LAST_KEY`]) go to the UI.
+//! * The Bluetooth app (WP UI-6a) asks through [`request`]: scan, stop,
+//!   connect to an address, cancel, disconnect, forget, the sink's
+//!   absolute volume. It sees [`SNAP`] (state, counters of connections
+//!   made / failed / lost, the sink's volume) and [`LISTS`] (the found
+//!   and paired devices, copied when they change). None of these is a
+//!   restricted command.
 //! * Developer channel ([`test_command`]): `bt probe|on|off|status|scan|
 //!   connect N|connect pN|disconnect|listen|shutdown|rx dma|rx cpu|tx dma|
 //!   tx cpu`.
@@ -33,7 +39,7 @@
 
 use core::cell::RefCell;
 use core::mem::MaybeUninit;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
 use atj2157_hal::uart::Rx;
 use critical_section::Mutex;
@@ -42,6 +48,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer, with_timeout};
+use orpheus_apps::services::{BT_DEVICES, BtAddr, BtDevice, BtKind, BtList, BtPhase};
 use orpheus_bt::driver::{Driver, Port, SHUTDOWN_WAIT_MS};
 use orpheus_bt::transmitter::Device;
 use orpheus_bt::{Addr, Config, Key, Output, State};
@@ -87,6 +94,13 @@ pub enum Req {
         index: u8,
     },
     Disconnect,
+    /// The Bluetooth app (UI-6a): stop the inquiry; connect to an address
+    /// (a running inquiry is stopped first); cancel an attempt; forget a
+    /// pairing.
+    StopScan,
+    ConnectTo(Addr),
+    CancelConnect,
+    Forget(Addr),
     /// U-BT-1 board check, module off only ([`hw::Listen`]).
     Listen,
     /// Receive / transmit path; module off only.
@@ -108,10 +122,39 @@ pub struct Snap {
     /// The last connected device, and a count of changes (the UI saves it).
     pub last: Option<Addr>,
     pub last_gen: u16,
+    /// What the app shows.
+    pub phase: BtPhase,
+    /// Counts of connections made, attempts failed, connections lost, and
+    /// changes of [`LISTS`]: the UI turns changes into events.
+    pub connects: u16,
+    pub fails: u16,
+    pub drops: u16,
+    pub lists_gen: u16,
+    /// Connected to a sink that reported absolute-volume support (the
+    /// DAC then stays at the reference level).
+    pub sink_abs: bool,
+    /// The sink's volume change last taken (0–31) and a count of them:
+    /// the player's volume follows.
+    pub sink_local: u8,
+    pub sink_gen: u16,
 }
 
 impl Snap {
-    pub const OFF: Snap = Snap { state: BtState::Off, name: [0; 24], name_len: 0, last: None, last_gen: 0 };
+    pub const OFF: Snap = Snap {
+        state: BtState::Off,
+        name: [0; 24],
+        name_len: 0,
+        last: None,
+        last_gen: 0,
+        phase: BtPhase::Off,
+        connects: 0,
+        fails: 0,
+        drops: 0,
+        lists_gen: 0,
+        sink_abs: false,
+        sink_local: 0,
+        sink_gen: 0,
+    };
 
     #[must_use]
     pub fn name(&self) -> &str {
@@ -124,6 +167,50 @@ impl Snap {
 }
 
 pub static SNAP: Mutex<RefCell<Snap>> = Mutex::new(RefCell::new(Snap::OFF));
+
+/// The player's volume on the module's 0–31 scale, set by the UI on
+/// every change ([`VOL_NONE`] until then). The task hands changes to the
+/// transmitter, which sends them to a connected sink (command 0x26) and
+/// again at every connection (06 §4.2; a BlueZ sink starts at 0).
+pub static VOLUME: AtomicU8 = AtomicU8::new(VOL_NONE);
+pub const VOL_NONE: u8 = 0xFF;
+
+/// The module's device lists as the UI reads them (≈ 0.5 KB: 2 × 8
+/// devices of 33 bytes), rewritten by [`publish`] when they change.
+pub struct Lists {
+    found: [BtDevice; BT_DEVICES],
+    n_found: u8,
+    paired: [BtDevice; BT_DEVICES],
+    n_paired: u8,
+}
+
+impl Lists {
+    const EMPTY: Lists = Lists {
+        found: [BtDevice::EMPTY; BT_DEVICES],
+        n_found: 0,
+        paired: [BtDevice::EMPTY; BT_DEVICES],
+        n_paired: 0,
+    };
+
+    fn of(&self, l: BtList) -> &[BtDevice] {
+        match l {
+            BtList::Found => self.found.get(..usize::from(self.n_found)).unwrap_or(&[]),
+            BtList::Paired => self.paired.get(..usize::from(self.n_paired)).unwrap_or(&[]),
+        }
+    }
+
+    #[must_use]
+    pub fn count(&self, l: BtList) -> usize {
+        self.of(l).len()
+    }
+
+    #[must_use]
+    pub fn get(&self, l: BtList, i: usize) -> Option<BtDevice> {
+        self.of(l).get(i).copied()
+    }
+}
+
+pub static LISTS: Mutex<RefCell<Lists>> = Mutex::new(RefCell::new(Lists::EMPTY));
 
 /// Requests, with "from the developer channel" (a reply is written).
 static REQS: Channel<CriticalSectionRawMutex, (Req, bool), 3> = Channel::new();
@@ -235,30 +322,62 @@ struct Session {
     gave_up: bool,
     keys: u32,
     sink_volume: Option<u8>,
+    /// Absolute volume taken by the connected sink (0x26 acknowledged,
+    /// or the sink reported a volume); `sink_no_abs`: it said it has none.
+    sink_abs: bool,
+    sink_no_abs: bool,
+    sink_local: u8,
+    sink_gen: u16,
+    /// [`VOLUME`] as last handed to the transmitter.
+    vol_sent: u8,
+    /// The module was given up on (no answer after its restarts).
+    dead: bool,
+    /// The device asked for by the app (shown while connecting).
+    target: Option<Addr>,
+    connects: u16,
+    fails: u16,
+    drops: u16,
+    lists_gen: u16,
 }
 
 impl Session {
     fn on_output(&mut self, o: Output) {
         use orpheus_player::Command;
         match o {
-            Output::Enable(true) => self.restart_pending = false,
+            Output::Enable(true) => {
+                self.restart_pending = false;
+                self.dead = false;
+            }
             Output::Connected(a) => {
                 self.saw_connected = true;
                 self.connected = Some(a);
+                self.target = None;
+                self.connects = self.connects.wrapping_add(1);
                 if self.last != Some(a) {
                     self.last = Some(a);
                     self.last_gen = self.last_gen.wrapping_add(1);
                 }
             }
-            Output::Disconnected => self.connected = None,
-            Output::ConnectFailed => self.saw_failed = true,
+            Output::Disconnected => {
+                self.connected = None;
+                self.sink_volume = None;
+                self.sink_abs = false;
+                self.sink_no_abs = false;
+                self.drops = self.drops.wrapping_add(1);
+            }
+            Output::ConnectFailed => {
+                self.saw_failed = true;
+                self.target = None;
+                self.fails = self.fails.wrapping_add(1);
+            }
             Output::InquiryDone => self.saw_inquiry_done = true,
             Output::LinkDown { restarting } => {
                 self.restart_pending = restarting;
                 self.gave_up |= !restarting;
-                self.connected = None;
+                self.dead |= !restarting;
+                self.lost_connection();
             }
-            Output::State(State::Off) => self.connected = None,
+            Output::State(State::Off) => self.lost_connection(),
             Output::Key(k) => {
                 // AVRCP pass-through from the headset (bluetooth.md §3.5):
                 // play/pause toggle as the vendor treats them.
@@ -272,10 +391,40 @@ impl Session {
                 };
                 crate::media::play(r);
             }
-            Output::SinkVolume { raw, .. } => self.sink_volume = Some(raw),
-            Output::AbsVolume(v) => self.sink_volume = v,
+            Output::SinkVolume { raw, local } => {
+                // A change made on the sink: the player's volume follows.
+                // What the UI will store back is already the
+                // transmitter's, so it is not sent again.
+                use orpheus_bt::proto::{local_from_ui, ui_from_local};
+                self.sink_volume = Some(raw);
+                self.sink_abs = true;
+                self.sink_local = local;
+                self.sink_gen = self.sink_gen.wrapping_add(1);
+                self.vol_sent = local_from_ui(ui_from_local(local));
+            }
+            Output::AbsVolume(v) => {
+                // The sink's answer to 0x25: `None` = no absolute volume,
+                // the DAC goes back to the player's volume.
+                self.sink_volume = v;
+                self.sink_abs = v.is_some();
+                self.sink_no_abs = v.is_none();
+            }
+            // 0x26 acknowledged while connected: the sink scales.
+            Output::VolumeAcked => self.sink_abs = !self.sink_no_abs,
             _ => {}
         }
+    }
+
+    fn lost_connection(&mut self) {
+        if self.connected.take().is_some() {
+            self.drops = self.drops.wrapping_add(1);
+        }
+        if self.target.take().is_some() {
+            self.fails = self.fails.wrapping_add(1);
+        }
+        self.sink_volume = None;
+        self.sink_abs = false;
+        self.sink_no_abs = false;
     }
 
     fn start_report(&mut self, r: Report, now: u64) {
@@ -333,6 +482,17 @@ pub async fn bt() {
         gave_up: false,
         keys: 0,
         sink_volume: None,
+        sink_abs: false,
+        sink_no_abs: false,
+        sink_local: 0,
+        sink_gen: 0,
+        vol_sent: VOL_NONE,
+        dead: false,
+        target: None,
+        connects: 0,
+        fails: 0,
+        drops: 0,
+        lists_gen: 0,
     };
     loop {
         let idle = d.is_off() && !s.restart_pending && s.boot_on_at.is_none() && s.report.is_none();
@@ -363,6 +523,15 @@ pub async fn bt() {
         }
         d.poll(now_ms(), &mut port, &mut |o| s.on_output(o));
         flush(d, &mut port).await;
+        // The player's volume to the transmitter (sent when connected).
+        let vol = VOLUME.load(Ordering::Relaxed);
+        if vol != VOL_NONE && vol != s.vol_sent {
+            s.vol_sent = vol;
+            let _ = d.request(now_ms(), &mut port, &mut |o| s.on_output(o), |t, now, tx| {
+                t.set_volume(vol, now, tx)
+            });
+            flush(d, &mut port).await;
+        }
         // Playback start/stop to the module (command 0x05 when connected).
         let playing =
             critical_section::with(|cs| crate::media::PLAYER.borrow(cs).borrow().source) == Source::Playing;
@@ -373,7 +542,7 @@ pub async fn bt() {
             });
             flush(d, &mut port).await;
         }
-        publish(d, &s);
+        publish(d, &mut s);
         if let Some((r, deadline)) = s.report {
             let st = d.state();
             let done = match r {
@@ -397,7 +566,7 @@ pub async fn bt() {
                 if r == Report::Probe {
                     d.power(false, now_ms(), &mut port, &mut |o| s.on_output(o));
                     s.restart_pending = false;
-                    publish(d, &s);
+                    publish(d, &mut s);
                 }
             }
         }
@@ -432,6 +601,7 @@ fn handle(r: Req, test: bool, d: &mut Driver, port: &mut HwPort, s: &mut Session
         }
         Req::Power(on) => {
             s.boot_on_at = None;
+            s.dead = false;
             if test {
                 s.start_report(if on { Report::On } else { Report::Off }, now);
             }
@@ -476,6 +646,36 @@ fn handle(r: Req, test: bool, d: &mut Driver, port: &mut HwPort, s: &mut Session
                 d.request(now, port, &mut |o| s.on_output(o), |t, now, tx| t.disconnect(now, tx)).is_err();
             if test && !refused {
                 s.start_report(Report::Disconnect, now);
+            }
+        }
+        Req::StopScan => {
+            refused =
+                d.request(now, port, &mut |o| s.on_output(o), |t, now, tx| t.stop_inquiry(now, tx)).is_err();
+        }
+        Req::ConnectTo(a) => {
+            refused =
+                d.request(now, port, &mut |o| s.on_output(o), |t, now, tx| t.connect(a, now, tx)).is_err();
+            if refused {
+                // Said at once, so the app's progress screen ends.
+                s.fails = s.fails.wrapping_add(1);
+            } else if s.connected != Some(a) {
+                s.target = Some(a);
+            }
+        }
+        Req::CancelConnect => {
+            refused = d
+                .request(now, port, &mut |o| s.on_output(o), |t, now, tx| t.cancel_connect(now, tx))
+                .is_err();
+            if !refused {
+                s.target = None;
+            }
+        }
+        Req::Forget(a) => {
+            refused = d
+                .request(now, port, &mut |o| s.on_output(o), |t, now, tx| t.forget(Some(a), now, tx))
+                .is_err();
+            if !refused && s.last == Some(a) {
+                s.last = None;
             }
         }
         Req::SetRx(rx) => {
@@ -562,10 +762,79 @@ async fn flush(d: &mut Driver, port: &mut HwPort) {
     d.tx_sent();
 }
 
+fn ui_phase(st: State, s: &Session) -> BtPhase {
+    match st {
+        State::Off if s.dead => BtPhase::NotResponding,
+        State::Off if s.boot_on_at.is_some() || s.restart_pending => BtPhase::Starting,
+        State::Off => BtPhase::Off,
+        State::Starting => BtPhase::Starting,
+        State::Idle => BtPhase::Ready,
+        State::Inquiry => BtPhase::Scanning,
+        State::Connecting => BtPhase::Connecting,
+        State::Connected => BtPhase::Connected,
+        State::Streaming => BtPhase::Streaming,
+    }
+}
+
+/// Copy the module's lists into [`LISTS`] where they differ; true if
+/// anything changed. In place, under one critical section (no 0.5 KB
+/// temporary on the stack).
+#[inline(never)]
+fn publish_lists(d: &Driver, connected: Option<Addr>) -> bool {
+    let t = d.transmitter();
+    let conv = |x: &Device, found: bool| {
+        let kind = if found { BtKind::from_cod(x.cod) } else { BtKind::Unknown };
+        BtDevice::new(BtAddr(x.addr.0), kind, x.name(), Some(x.addr) == connected)
+    };
+    critical_section::with(|cs| {
+        let mut guard = LISTS.borrow(cs).borrow_mut();
+        let l = &mut *guard;
+        let mut changed = false;
+        for (found, src) in [(true, t.found()), (false, t.paired())] {
+            let n = src.len().min(BT_DEVICES);
+            let (dst, len) =
+                if found { (&mut l.found, &mut l.n_found) } else { (&mut l.paired, &mut l.n_paired) };
+            for (o, x) in dst.iter_mut().zip(src) {
+                let v = conv(x, found);
+                if *o != v {
+                    *o = v;
+                    changed = true;
+                }
+            }
+            if usize::from(*len) != n {
+                *len = n as u8;
+                changed = true;
+            }
+        }
+        changed
+    })
+}
+
 /// State and the device's name to the UI (on change only).
-fn publish(d: &Driver, s: &Session) {
-    let mut n = Snap { state: ui_state(d.state()), last: s.last, last_gen: s.last_gen, ..Snap::OFF };
-    let who = if matches!(n.state, BtState::Connected | BtState::Streaming) { s.connected } else { s.last };
+fn publish(d: &Driver, s: &mut Session) {
+    let connected = if matches!(d.state(), State::Connected | State::Streaming) { s.connected } else { None };
+    if publish_lists(d, connected) {
+        s.lists_gen = s.lists_gen.wrapping_add(1);
+    }
+    let mut n = Snap {
+        state: ui_state(d.state()),
+        last: s.last,
+        last_gen: s.last_gen,
+        phase: ui_phase(d.state(), s),
+        connects: s.connects,
+        fails: s.fails,
+        drops: s.drops,
+        lists_gen: s.lists_gen,
+        sink_abs: connected.is_some() && s.sink_abs,
+        sink_local: s.sink_local,
+        sink_gen: s.sink_gen,
+        ..Snap::OFF
+    };
+    let who = match n.phase {
+        BtPhase::Connected | BtPhase::Streaming => s.connected,
+        BtPhase::Connecting => s.target.or(s.last),
+        _ => s.last,
+    };
     if let Some(dev) = who.and_then(|a| find(d, a)) {
         let b = dev.name();
         let k = b.len().min(n.name.len());

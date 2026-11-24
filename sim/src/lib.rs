@@ -23,6 +23,7 @@
 //! | `goto:Library` | push a screen directly |
 
 pub mod apps;
+pub mod bt;
 pub mod card;
 pub mod demo;
 pub mod fallback;

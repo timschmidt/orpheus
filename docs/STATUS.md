@@ -38,8 +38,86 @@ of every session. Newest entries first in §3.
 | AU-14 | done (host); **device: Pictures app and album art (built, not yet run on the player)** | `orpheus-img`. Pictures (folders + pictures, list mode), viewer (fit/fill, rotate, next/prev, slideshow), album art made at track open and cached in `/.orpheus/cache/art`. Not done: thumbnail grid, 100 % + pan, wallpaper, delete, per-file rotation memory. User check 14 |
 | OTP-1, BT-1, USB-6 | done (host) | `orpheus-otp`, `orpheus-bt`, MMC/CD-ROM in `orpheus-usb` |
 | BT-2 (device) | **built, not yet run on the player** | UART1 driver (`atj2157_hal::uart`, `yoton_bsp::bt`), `orpheus_bt::driver`, firmware `bt` task, `BluetoothService`, shutdown 0x24 on power-off. Module off at boot; `bt probe/on/off/status/scan/connect/listen/shutdown/rx/tx` test commands. Not done: volume policy, metadata at track change, pairing UI, U-BT-2 |
+| UI-6a | **built, host-tested; not yet run on the player** | Bluetooth app (status, Pair new device, Paired devices, connect progress/failure, forget, reconnect switch), `BluetoothService` lists/requests, volume policy of 06 §4.2 (0x26 on connect and change, DAC reference −3 dB while the sink takes absolute volume), address text in written order. User check 17 |
 
 ## 3. Session log
+
+### 2026-11-24 — UI-6a: the Bluetooth app (worker, no hardware)
+
+* **Screens** (`orpheus-apps::screens::bluetooth`, ids 27–30): Home →
+  Bluetooth (enabled in the firmware's `app_available`): header, Bluetooth
+  on/off, state row (Off / Starting… / Not connected / Searching… /
+  Connecting… / Connected / Sending audio / Not responding, with the status
+  icon), the connected device on its own row (OK = Disconnect? / cancel),
+  Pair new device… (starts the inquiry), Paired devices (count), Reconnect
+  automatically (0x0603). **Pair new device** (`BtScan`): live list, kind
+  icon from the class of device (headphones / speaker / phone / computer /
+  generic; major class is in the middle byte whichever the order), name or
+  the address, names arriving after the inquiry; "Searching…" while it
+  runs, then "No devices found" / "Search again"; OK connects (the inquiry
+  is stopped first), Back stops it. **Paired devices** (`BtPaired`): radio
+  marks the connected one; OK connects or asks to disconnect; Menu →
+  Connect/Disconnect, Forget… (destructive dialog). **Connecting**
+  (`BtConnect`): spinner, Back cancels (0x29); success pops back, a global
+  toast "Connected · NAME" (also for reconnects; "Disconnected" when a
+  connection is lost); failure (module 15 s timeout, refusal, our 40 s
+  guard) → dialog "Could not connect" with Cancel / Retry. No rename (no
+  such module command, bluetooth.md §3.7), no signal strength (byte 6 of
+  0x03 unknown).
+* **Service API** (`services.rs`): `BtPhase`, `BtAddr` (`push_text`
+  reversed), `BtKind::from_cod`, `BtDevice` (by value, 24-byte name, cut
+  on a character), `BtList`, `BtRequest {Scan, StopScan, Connect(addr),
+  CancelConnect, Disconnect, Forget(addr)}`, `bt_phase/bt_count/bt_entry/
+  bt_request`, events `ServiceEvent::Other { kind: other::BLUETOOTH, value:
+  bt_event::{LISTS, PHASE, CONNECT_FAILED, CONNECTED, DISCONNECTED} }`.
+  `settings::id::BT_RECONNECT`.
+* **`orpheus-bt`**: connect during an inquiry stops it (0x01) and connects
+  at its end (cancel before that drops it); names of unnamed devices are
+  asked for (0x02) when an inquiry ends; a newly connected device joins the
+  paired list with its found name; **the player's volume** (`set_volume`,
+  now remembered when not connected) **is sent as 0x26 on every
+  connection** before the audio start, and on every change; a sink report
+  that differs within 3 s of connecting (BlueZ starts at 0) or our query's
+  answer is answered with ours, later sink changes are taken
+  (`Output::SinkVolume`), `Output::VolumeAcked` on the acknowledge of
+  0x26. `Addr::to_text` prints the bytes reversed (the lead's finding:
+  LSB first on the wire). `local_from_ui`/`ui_from_local` (UI 0–30 ↔
+  module 0–31, round trip exact). Tests: 34 (new: connect during inquiry,
+  cancel before the inquiry stops, connect → 0x26, UI volume round trip).
+* **Firmware**: `bt` task requests `StopScan, ConnectTo, CancelConnect,
+  Forget`; `LISTS` (found + paired, ≈ 0.5 KB, copied in place when they
+  change); `Snap` + phase, counters of connects/fails/drops/list changes,
+  sink state; `bt::VOLUME` (atomic) carries the player's volume to the
+  task. `Fw`: volume policy (06 §4.2, the lead's measurement: the tap is
+  after the DAC volume): DAC held at UI step 30 (−3 dB) while connected to
+  a sink that acknowledged 0x26 or reported a volume, back to the
+  player's volume on disconnect or when the sink says it has no absolute
+  volume; sink changes become the player's volume. `atj2157-hal/dac.rs`
+  untouched (the lead's).
+* **Simulator**: fake module (`sim/src/bt.rs`: start-up 1.2 s, five
+  devices appearing over 2.7 s, one unnamed until after the inquiry, one
+  never named, Car Kit and the phone fail to connect, forget, reconnect at
+  power-on), `set:bt=off|starting|on|scanning|connecting|connected|
+  streaming|dead`, `set:btfound=N`. 91 goldens `bt_*` (15 journeys × dark/
+  light × Latin/Cyrillic/CJK + amber), looked at; Russian/Japanese strings
+  shortened until nothing important is cut; 7 kanji added to the Unifont
+  subset (from an older Unifont, CJK ideographs unchanged). Behaviour tests
+  `sim/tests/bluetooth.rs` (9). All older goldens unchanged.
+* **RAM** (`xtask build`, this worktree): `__stack_bottom` `0x131c00` →
+  `0x131f38` (**+824 B**): bss +608 (`LISTS` 532, `SNAP` and the UI's copy
+  +2 × 16, task/`Fw` fields), resident +216 (rodata, panic-location data;
+  expect less in the main checkout). `xtask size --check` fails in a
+  worktree as before (resident 83,468; base 83,252).
+* **Facts from the lead's run** (01-hardware §9 U-BT-2, U-BT-6):
+  addresses LSB first; sink volume 0 after connect; connect refused during
+  an inquiry; SDP record advertises HID 0x1124; reconnect within ~10 s;
+  the feed tracks the DAC volume. `docs/hw/bluetooth.md` is not in a
+  worktree (ignored): the note for its §8 Q8 is in the UI-6a report.
+* Not done: track metadata (0x31) at track change; "Output" setting and
+  muting the wired output while streaming (U-BT-2 open); details page
+  (address, profiles); refresh of the paired list read from the module
+  after pairing (the local insert stands in); the reference level is not
+  measured for clipping (user check 17).
 
 ### 2026-11-24 — AU-12 firmware: the music library on the player (worker, no hardware)
 

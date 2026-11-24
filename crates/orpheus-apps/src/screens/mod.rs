@@ -1,6 +1,7 @@
 //! The screens and their dispatch enum (static, no heap: only the top
 //! screen holds state; covered screens are rebuilt from resume records).
 
+mod bluetooth;
 mod edit;
 mod files;
 mod home;
@@ -12,6 +13,7 @@ mod rows;
 mod system;
 mod text;
 
+pub use bluetooth::{BluetoothScreen, BtConnectScreen, BtView, bt_kind_icon, connect_arg, phase_label};
 pub use edit::{PickerScreen, SliderScreen};
 pub use files::{BrowseMode, FilesScreen, kind_icon, kind_label, push_size};
 pub use home::HomeScreen;
@@ -28,7 +30,7 @@ use orpheus_ui::gfx::Gfx;
 use orpheus_ui::menu::MenuBuilder;
 use orpheus_ui::nav::{Arg, Cx, Dirty, Nav, Resume, Screen, ScreenId, ScreenSet, Wants};
 
-use crate::services::{Services, UsbMode};
+use crate::services::{Services, UsbMode, bt_event, other};
 use crate::settings::id;
 use crate::strings::Str;
 
@@ -73,6 +75,13 @@ pub const PICTURE_VIEW: ScreenId = ScreenId(25);
 /// A music-library list (Artists, an artist's albums, …). Arg:
 /// [`LibraryScreen::arg`].
 pub const LIBRARY: ScreenId = ScreenId(26);
+/// The Bluetooth app (05 §7.4).
+pub const BLUETOOTH: ScreenId = ScreenId(27);
+/// Pair new device (inquiry results).
+pub const BT_SCAN: ScreenId = ScreenId(28);
+pub const BT_PAIRED: ScreenId = ScreenId(29);
+/// Connecting. Arg: [`connect_arg`].
+pub const BT_CONNECT: ScreenId = ScreenId(30);
 
 /// One variant per screen. Only the top screen exists, so the enum's size
 /// (its largest variant, the list screen) is the UI's screen RAM.
@@ -93,6 +102,8 @@ pub enum AppScreen {
     Equaliser(EqualiserScreen),
     Picture(PictureScreen),
     Library(LibraryScreen),
+    Bluetooth(BluetoothScreen),
+    BtConnect(BtConnectScreen),
 }
 
 macro_rules! each {
@@ -113,6 +124,8 @@ macro_rules! each {
             AppScreen::Equaliser($s) => $e,
             AppScreen::Picture($s) => $e,
             AppScreen::Library($s) => $e,
+            AppScreen::Bluetooth($s) => $e,
+            AppScreen::BtConnect($s) => $e,
         }
     };
 }
@@ -175,6 +188,10 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             PROPERTIES => AppScreen::List(ListScreen::new(ListKind::Properties(0))),
             BOOKMARKS => AppScreen::List(ListScreen::new(ListKind::Bookmarks)),
             LIBRARY => AppScreen::Library(LibraryScreen::default()),
+            BLUETOOTH => AppScreen::Bluetooth(BluetoothScreen::new(BtView::Home)),
+            BT_SCAN => AppScreen::Bluetooth(BluetoothScreen::new(BtView::Scan)),
+            BT_PAIRED => AppScreen::Bluetooth(BluetoothScreen::new(BtView::Paired)),
+            BT_CONNECT => AppScreen::BtConnect(BtConnectScreen::default()),
             _ => AppScreen::Home(HomeScreen::default()),
         }
     }
@@ -200,6 +217,8 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             AppScreen::Equaliser(_) => EQUALISER,
             AppScreen::Picture(_) => PICTURE_VIEW,
             AppScreen::Library(_) => LIBRARY,
+            AppScreen::Bluetooth(b) => b.screen_id(),
+            AppScreen::BtConnect(_) => BT_CONNECT,
         }
     }
 
@@ -224,6 +243,8 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             AppScreen::Equaliser(_) => "Equaliser",
             AppScreen::Picture(_) => "PictureViewer",
             AppScreen::Library(_) => "MusicLibrary",
+            AppScreen::Bluetooth(b) => b.name(),
+            AppScreen::BtConnect(_) => "BtConnect",
         }
     }
 
@@ -259,6 +280,25 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
                     Nav::Stay
                 }
             },
+            ServiceEvent::Other { kind: other::BLUETOOTH, value } => {
+                // A connection made or lost, also by a reconnect or the
+                // headset itself: say so wherever the user is.
+                match value {
+                    bt_event::CONNECTED => {
+                        let mut b = orpheus_ui::text::StrBuf::<48>::new();
+                        b.push_str(lang.get(Str::BtConnected));
+                        let name = cx.svc.bt_device();
+                        if !name.is_empty() {
+                            b.push_str(" · ");
+                            b.push_str_or_ellipsis(name);
+                        }
+                        cx.ui.toast(b.as_str());
+                    }
+                    bt_event::DISCONNECTED => cx.ui.toast(lang.get(Str::BtDisconnected)),
+                    _ => {}
+                }
+                Nav::Stay
+            }
             ServiceEvent::CardRemoved => {
                 cx.ui.toast(lang.get(Str::CardRemoved));
                 Nav::Stay

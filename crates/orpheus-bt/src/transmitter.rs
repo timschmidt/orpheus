@@ -51,6 +51,9 @@ const _: () = assert!(META_QUEUE_BYTES <= QUEUE_BYTES);
 /// should one be lost anyway, [`Transmitter::state`] says whether the
 /// enable line belongs high (the driver checks it).
 const OUTPUTS: usize = 12;
+/// After a connection, sink volume reports that differ from the
+/// player's are its start-up value and are answered with ours.
+pub const VOLUME_SYNC_MS: u64 = 3000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
@@ -160,6 +163,9 @@ pub enum Output {
     },
     /// Absolute-volume support of the sink, with its volume.
     AbsVolume(Option<u8>),
+    /// The module acknowledged an absolute volume (command 0x26) while
+    /// connected: the sink scales from now on (06 §4.2).
+    VolumeAcked,
     /// A command went unacknowledged; the module is being restarted
     /// (`restarting`) or given up on.
     LinkDown {
@@ -269,6 +275,14 @@ pub struct Transmitter {
     found_len: u8,
     last_device: Option<Addr>,
     audio_active: bool,
+    /// The player's volume (0–31): pushed to the sink at every connection
+    /// and on every change while connected (06 §4.2; the sink's absolute
+    /// volume is 0 after every connection on BlueZ, so without this the
+    /// stream is silent).
+    volume: Option<u8>,
+    /// Until then, volume reports from the sink that differ from ours are
+    /// answered with ours (its start-up value, not a user's change).
+    volume_sync_until: u64,
     /// Connection the firmware asked for (after a disconnect, or a
     /// reconnect attempt).
     want: Option<Addr>,
@@ -304,6 +318,8 @@ impl Transmitter {
             found_len: 0,
             last_device: None,
             audio_active: false,
+            volume: None,
+            volume_sync_until: 0,
             want: None,
             connect_deadline: None,
             reconnect_left: 0,
@@ -498,9 +514,9 @@ impl Transmitter {
                 self.phase = Phase::Paired { until: now + self.cfg.paired_timeout_ms };
             }
             (0x2B, Phase::Setup) => self.finish_start(now),
-            (0x01, _) if self.state == State::Inquiry => {
-                self.set_state(State::Idle);
-                self.emit(Output::InquiryDone);
+            (0x01, _) if self.state == State::Inquiry => self.inquiry_finished(now),
+            (0x26, _) if matches!(self.state, State::Connected | State::Streaming) => {
+                self.emit(Output::VolumeAcked);
             }
             _ => {}
         }
@@ -555,8 +571,7 @@ impl Transmitter {
             }
             Event::InquiryDone => {
                 if self.state == State::Inquiry {
-                    self.set_state(State::Idle);
-                    self.emit(Output::InquiryDone);
+                    self.inquiry_finished(now);
                 }
             }
             Event::RemoteName { addr, name } => {
@@ -574,8 +589,24 @@ impl Transmitter {
                 }
             }
             Event::Key(k) => self.emit(Output::Key(k)),
-            Event::SinkVolume(v) => self.emit(Output::SinkVolume { raw: v, local: volume_from_sink(v) }),
-            Event::AbsVolume(v) => self.emit(Output::AbsVolume(v)),
+            Event::SinkVolume(v) => {
+                if now < self.volume_sync_until && self.differs(v) {
+                    self.push_volume();
+                } else {
+                    let local = volume_from_sink(v);
+                    self.volume = Some(local);
+                    self.emit(Output::SinkVolume { raw: v, local });
+                }
+            }
+            Event::AbsVolume(v) => {
+                // The answer to our query: support, not a user's change.
+                if let Some(raw) = v
+                    && self.differs(raw)
+                {
+                    self.push_volume();
+                }
+                self.emit(Output::AbsVolume(v));
+            }
             Event::ShutdownComplete => {
                 self.clear_session();
                 self.shutting_down = false;
@@ -587,15 +618,57 @@ impl Transmitter {
         }
     }
 
+    /// The inquiry ended (its own end, or a stop): Idle; then the
+    /// connection asked for during it, or the names of the devices found
+    /// without one (command 0x02 each, as the vendor's UI does).
+    fn inquiry_finished(&mut self, now: u64) {
+        self.set_state(State::Idle);
+        self.emit(Output::InquiryDone);
+        if let Some(a) = self.want.take() {
+            self.begin_connect(a, now);
+            return;
+        }
+        for i in 0..self.found().len() {
+            if let Some(&d) = self.found.get(i)
+                && d.name_len == 0
+                && self.enqueue(&Command::RemoteName(d.addr), DEFAULT_RETRIES).is_err()
+            {
+                break;
+            }
+        }
+    }
+
+    /// A newly connected device is paired now (the module pairs on
+    /// connect): add it to the paired list with the name it was found
+    /// under, so the list is right without reading it again.
+    fn note_paired(&mut self, a: Addr) {
+        if self.paired().iter().any(|d| d.addr == a) {
+            return;
+        }
+        let name = self.found().iter().find(|d| d.addr == a).map(|d| (d.name, d.name_len));
+        if let Some(slot) = self.paired.get_mut(usize::from(self.paired_len)) {
+            *slot = Device { addr: a, ..Device::default() };
+            if let Some((n, l)) = name {
+                slot.name = n;
+                slot.name_len = l;
+            }
+            self.paired_len += 1;
+            self.emit(Output::PairedList);
+        }
+    }
+
     fn on_link(&mut self, st: LinkState, addr: Addr, now: u64) {
         match st {
             LinkState::Connected => {
+                self.note_paired(addr);
                 self.want = None;
                 self.connect_deadline = None;
                 self.reconnect_left = 0;
                 self.reconnect_at = None;
                 self.last_device = Some(addr);
                 self.emit(Output::Connected(addr));
+                self.push_volume();
+                self.volume_sync_until = now + VOLUME_SYNC_MS;
                 if self.audio_active && self.enqueue(&Command::Audio(true), DEFAULT_RETRIES).is_ok() {
                     self.set_state(State::Streaming);
                 } else {
@@ -839,6 +912,13 @@ impl Transmitter {
         self.reconnect_at = None;
         match self.state {
             State::Idle => self.begin_connect(a, now),
+            State::Inquiry => {
+                // Stop the inquiry; the connection follows its end.
+                if self.want.is_none() {
+                    self.enqueue(&Command::StopInquiry, DEFAULT_RETRIES)?;
+                }
+                self.want = Some(a);
+            }
             State::Connected | State::Streaming => {
                 if self.last_device == Some(a) {
                     return Ok(());
@@ -853,6 +933,11 @@ impl Transmitter {
     }
 
     pub fn cancel_connect(&mut self, now: u64, tx: &mut impl Transport) -> Result<(), Refused> {
+        if self.state == State::Inquiry && self.want.is_some() {
+            // Asked for during an inquiry, not started yet.
+            self.want = None;
+            return Ok(());
+        }
         if self.state != State::Connecting {
             return Err(Refused);
         }
@@ -925,14 +1010,34 @@ impl Transmitter {
         self.pump(now, tx);
     }
 
-    /// Player volume 0–31 to the sink (absolute volume, command 0x26).
+    /// The player's volume 0–31: remembered, and sent to the sink
+    /// (absolute volume, command 0x26) now if connected and again at
+    /// every connection. Refused only when the command queue is full.
     pub fn set_volume(&mut self, local: u8, now: u64, tx: &mut impl Transport) -> Result<(), Refused> {
-        if !matches!(self.state, State::Connected | State::Streaming) {
-            return Err(Refused);
+        let local = local.min(31);
+        self.volume = Some(local);
+        if matches!(self.state, State::Connected | State::Streaming) {
+            self.enqueue(&Command::SetAbsVolume(volume_to_sink(local)), DEFAULT_RETRIES)?;
+            self.pump(now, tx);
         }
-        self.enqueue(&Command::SetAbsVolume(volume_to_sink(local)), DEFAULT_RETRIES)?;
-        self.pump(now, tx);
         Ok(())
+    }
+
+    /// The player's volume as last set or taken from the sink.
+    #[must_use]
+    pub fn volume(&self) -> Option<u8> {
+        self.volume
+    }
+
+    fn differs(&self, raw: u8) -> bool {
+        self.volume.is_some_and(|v| volume_to_sink(v) != raw)
+    }
+
+    /// Queue the player's volume for the sink (connected only).
+    fn push_volume(&mut self) {
+        if let Some(v) = self.volume {
+            let _ = self.enqueue(&Command::SetAbsVolume(volume_to_sink(v)), DEFAULT_RETRIES);
+        }
     }
 
     /// Ask the sink for its absolute volume (answer: `Output::AbsVolume`).
@@ -1173,8 +1278,7 @@ mod tests {
         t.on_bytes(&ev(0x04, &[]), 200, &mut tx);
         assert_eq!(t.state(), State::Idle);
         assert_eq!(t.found().len(), 1);
-        // No name: resolve.
-        t.resolve_names(210, &mut tx).unwrap();
+        // No name: asked for at the end of the inquiry.
         assert_eq!(tx.take(), [ev(0x02, &HEADSET.0)]);
         t.on_bytes(&ack(0x02), 220, &mut tx);
         let mut n = HEADSET.0.to_vec();
@@ -1249,6 +1353,117 @@ mod tests {
         ] {
             assert!(o.contains(&want), "{want:?} missing from {o:?}");
         }
+    }
+
+    fn link_ev(st: u8, a: Addr) -> Vec<u8> {
+        let mut p = std::vec![st, 0];
+        p.extend_from_slice(&a.0);
+        ev(0x02, &p)
+    }
+
+    fn found_ev(a: Addr, name: &[u8]) -> Vec<u8> {
+        let mut r = a.0.to_vec();
+        r.extend_from_slice(&[0xC5, 0x04, 0x04, 0x24]);
+        r.extend_from_slice(name);
+        ev(0x03, &r)
+    }
+
+    /// OK on a device while the inquiry runs: stop it, then connect; the
+    /// device joins the paired list with its name once connected.
+    #[test]
+    fn connect_during_inquiry_then_paired() {
+        let (mut t, mut tx) = started(Config::default(), &[], None);
+        t.start_inquiry(0, &mut tx).unwrap();
+        t.on_bytes(&ack(0x00), 10, &mut tx);
+        tx.take();
+        t.on_bytes(&found_ev(HEADSET, b"Buds\0"), 100, &mut tx);
+        t.on_bytes(&found_ev(Addr([7; 6]), b""), 120, &mut tx);
+        outputs(&mut t);
+        t.connect(HEADSET, 200, &mut tx).unwrap();
+        assert_eq!(tx.take(), [ev(0x01, &[0])], "stop first");
+        // A second OK only moves the target; no second stop.
+        t.connect(HEADSET, 205, &mut tx).unwrap();
+        assert!(tx.take().is_empty());
+        t.on_bytes(&ack(0x01), 210, &mut tx);
+        assert_eq!(t.state(), State::Connecting);
+        assert_eq!(tx.take(), [ev(0x03, &HEADSET.0)], "connect, no name requests");
+        t.on_bytes(&ack(0x03), 220, &mut tx);
+        t.on_bytes(&link_ev(0, HEADSET), 900, &mut tx);
+        assert_eq!(t.state(), State::Connected);
+        assert_eq!(t.paired().len(), 1);
+        assert_eq!(t.paired()[0].name(), b"Buds");
+        let o = outputs(&mut t);
+        assert!(o.contains(&Output::PairedList) && o.contains(&Output::Connected(HEADSET)), "{o:?}");
+        // Connected again later: not added twice.
+        t.on_bytes(&link_ev(1, HEADSET), 1000, &mut tx);
+        t.connect(HEADSET, 1010, &mut tx).unwrap();
+        t.on_bytes(&ack(0x03), 1020, &mut tx);
+        t.on_bytes(&link_ev(0, HEADSET), 1100, &mut tx);
+        assert_eq!(t.paired().len(), 1);
+    }
+
+    /// Back on the connect screen before the inquiry stopped: nothing is
+    /// connected; unnamed devices are asked for their names.
+    #[test]
+    fn cancel_before_inquiry_stops() {
+        let (mut t, mut tx) = started(Config::default(), &[], None);
+        t.start_inquiry(0, &mut tx).unwrap();
+        t.on_bytes(&ack(0x00), 10, &mut tx);
+        let other = Addr([7; 6]);
+        t.on_bytes(&found_ev(other, b""), 120, &mut tx);
+        t.connect(HEADSET, 200, &mut tx).unwrap();
+        t.cancel_connect(210, &mut tx).unwrap();
+        tx.take();
+        t.on_bytes(&ack(0x01), 220, &mut tx);
+        assert_eq!(t.state(), State::Idle);
+        assert_eq!(tx.take(), [ev(0x02, &other.0)]);
+        assert_eq!(t.cancel_connect(230, &mut tx), Err(Refused));
+    }
+
+    /// Found on the player with a BlueZ sink (lead, 2026-11-24): its
+    /// absolute volume is 0 after every connection. The player's volume
+    /// goes out on connect (before the audio start), its start-up report
+    /// of 0 is answered with ours, a later change by the user is taken.
+    #[test]
+    fn connect_sends_player_volume() {
+        let (mut t, mut tx) = started(Config::default(), &[HEADSET], None);
+        // Set while not connected: remembered, nothing sent.
+        t.set_volume(16, 100, &mut tx).unwrap();
+        assert!(tx.take().is_empty());
+        t.set_audio_active(true, 110, &mut tx);
+        t.connect(HEADSET, 120, &mut tx).unwrap();
+        t.on_bytes(&ack(0x03), 130, &mut tx);
+        tx.take();
+        let raw = volume_to_sink(16);
+        t.on_bytes(&link_ev(0, HEADSET), 1000, &mut tx);
+        assert_eq!(tx.take(), [ev(0x26, &[raw])], "volume first");
+        t.on_bytes(&ack(0x26), 1010, &mut tx);
+        assert!(outputs(&mut t).contains(&Output::VolumeAcked));
+        assert_eq!(tx.take(), [ev(0x05, &[0x14, 0])], "then audio");
+        t.on_bytes(&ack(0x05), 1020, &mut tx);
+        outputs(&mut t);
+        // The sink reports its start-up 0: answered with ours, not taken.
+        t.on_bytes(&ev(0x26, &[0]), 1100, &mut tx);
+        assert_eq!(tx.take(), [ev(0x26, &[raw])]);
+        t.on_bytes(&ack(0x26), 1110, &mut tx);
+        assert!(!outputs(&mut t).iter().any(|o| matches!(o, Output::SinkVolume { .. })));
+        assert_eq!(t.volume(), Some(16));
+        // Our query's answer with another value: ours again.
+        t.on_bytes(&link_ev(2, HEADSET), 1200, &mut tx);
+        assert_eq!(tx.take(), [ev(0x25, &[])]);
+        t.on_bytes(&ack(0x25), 1210, &mut tx);
+        t.on_bytes(&ev(0x25, &[5]), 1220, &mut tx);
+        assert_eq!(tx.take(), [ev(0x26, &[raw])]);
+        t.on_bytes(&ack(0x26), 1230, &mut tx);
+        assert!(outputs(&mut t).contains(&Output::AbsVolume(Some(5))));
+        // Later, the user turns the headset down: taken as the volume.
+        t.on_bytes(&ev(0x26, &[40]), 1000 + VOLUME_SYNC_MS, &mut tx);
+        assert!(tx.take().is_empty());
+        assert_eq!(outputs(&mut t), [Output::SinkVolume { raw: 40, local: volume_from_sink(40) }]);
+        assert_eq!(t.volume(), Some(volume_from_sink(40)));
+        // A change on the player goes out at once.
+        t.set_volume(20, 5000, &mut tx).unwrap();
+        assert_eq!(tx.take(), [ev(0x26, &[volume_to_sink(20)])]);
     }
 
     #[test]

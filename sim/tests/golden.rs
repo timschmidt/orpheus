@@ -158,6 +158,41 @@ fn media_cases(add: &mut dyn FnMut(String, String)) {
     }
     pictures_cases(add);
     library_cases(add);
+    bluetooth_cases(add);
+}
+
+/// UI-6a: the Bluetooth app over the fake module (`sim/src/bt.rs`). Home
+/// grid: Bluetooth is the fourth app (`next*3 ok`). App rows: Bluetooth,
+/// state, (connected device), Pair new device, Paired devices, Reconnect
+/// automatically.
+fn bluetooth_cases(add: &mut dyn FnMut(String, String)) {
+    let app = "next*3 ok wait:100 expect-screen:Bluetooth";
+    let scan = format!("set:bt=on {app} down*2 ok expect-screen:BtScan");
+    let journeys: &[(&str, String)] = &[
+        ("off", app.into()),
+        ("starting", format!("{app} ok wait:300")),
+        ("ready", format!("set:bt=on {app}")),
+        ("streaming", format!("set:bt=streaming {app} down")),
+        ("dead", format!("set:bt=dead {app}")),
+        ("disconnect", format!("set:bt=connected {app} down ok")),
+        ("scan_live", format!("{scan} wait:1700")),
+        ("scan_done", format!("{scan} wait:6000 down*2")),
+        ("connecting", format!("{scan} wait:6000 ok wait:500 expect-screen:BtConnect")),
+        ("connected", format!("{scan} wait:6000 ok wait:2200 expect-screen:BtScan")),
+        ("failed", format!("{scan} wait:6000 down*3 ok wait:2300 expect-screen:BtConnect")),
+        ("paired", format!("set:bt=connected {app} down*4 ok expect-screen:BtPaired")),
+        ("paired_menu", format!("set:bt=connected {app} down*4 ok down menu")),
+        ("forget", format!("set:bt=connected {app} down*4 ok menu down ok")),
+        ("paired_empty", format!("set:bt=on {app} down*3 ok menu down ok down ok wait:100")),
+    ];
+    for t in ["dark", "light"] {
+        for l in ["latin", "cyrillic", "cjk"] {
+            for (name, script) in journeys {
+                add(format!("bt_{name}_{t}_{l}"), format!("@apps theme:{t} lang:{l} {script}"));
+            }
+        }
+    }
+    add("bt_ready_amber".into(), format!("@apps theme:amber set:bt=on {app}"));
 }
 
 /// AU-12: the music library, built for real from the card image
