@@ -187,7 +187,9 @@ How it is done (VER-4):
   from the committed corpus and dictionary; new inputs go to
   `target/fuzz-corpus/<target>/` and are merged into the committed corpus
   with `cargo fuzz cmin`. A finding is minimised (`-minimize_crash=1`) into
-  `tests/regress/<target>/` and listed in the findings table
+  `tests/regress/<target>/` (one left open, which still fails, into
+  `tests/regress-open/<target>/` until its fix moves it) and listed in the
+  findings table
   (`docs/verification/baseline-2026-11.md` §8.4).
 
 ### 3.5 Sanitizers (M11, VER-5)
@@ -417,7 +419,7 @@ line, comma-separated, text fields quoted when they may contain commas):
   (`target/orpheus/coverage/summary.csv`), one row per crate plus `TOTAL`:
   `commit, date, source, crate, lines_total, lines_covered, regions_total,
   regions_covered, regions_excluded, branches_total, branches_covered,
-  files_without_data`. `source` is `host` or `host+fuzz` (later
+  files_without_data`. `source` is `host`, `fuzz` (`--fuzz-only`) or `host+fuzz` (later
   `+device`, VER-6). `commit` is the commit the coverage run measured.
 * `metrics/static.csv` — from the last `xtask build`
   (`target/orpheus/firmware.elf` and `layout.json`, or `--elf`), long

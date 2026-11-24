@@ -99,10 +99,12 @@ pub struct Report {
 }
 
 pub fn cmd(args: &mut Args) -> Result<String> {
+    // `flag` consumes the argument: read `--fuzz-only` once.
+    let fuzz_only = args.flag("fuzz-only");
     let o = Opts {
         krate: args.value("crate"),
-        fuzz: args.flag("fuzz") || args.flag("fuzz-only"),
-        fuzz_only: args.flag("fuzz-only"),
+        fuzz: args.flag("fuzz") || fuzz_only,
+        fuzz_only,
         html: args.flag("html"),
         clean: args.flag("clean"),
         report_only: args.flag("report-only"),

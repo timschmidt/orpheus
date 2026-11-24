@@ -116,7 +116,7 @@ LeakSanitizer reported leaks at process exit in 4 binaries:
 | Where | Report | Cause | State |
 |---|---|---|---|
 | `orpheus-apps` lib tests (`strings::tests::english_and_pack`) | 1,380 B in 2 allocations | the test `Box::leak`ed two language packs to get `&'static [u8]` for `Lang::from_pack` | **fixed**: the packs live in `OnceLock` statics (reachable); re-run clean |
-| `orpheus-sim` `tests/apps.rs`, `tests/golden.rs`, `tests/media.rs` | 307,840 B / 3,469,440 B / 116,480 B, every allocation 8,320 B | `sim::media::Media::new` `Box::leak`s 16 `CacheSlot`s (16 × 520 B) per instance because `orpheus_fs::Volume` borrows its cache for `'static`; every `Media` dropped by a test loses it | **open** (VER-5): not local — needs `Volume` to hand its cache back (`into_parts`/`unmount` returning it) or a cache pool in the simulator. Simulator-only; the firmware's cache is a `static` |
+| `orpheus-sim` `tests/apps.rs`, `tests/golden.rs`, `tests/media.rs` | 307,840 B / 3,469,440 B / 116,480 B, every allocation 8,320 B | `sim::media::Media::new` `Box::leak`s 16 `CacheSlot`s (16 × 520 B) per instance because `orpheus_fs::Volume` borrows its cache for `'static`; every `Media` dropped by a test loses it | **fixed in VER-4** (§8.4, S-1): `orpheus_fs::Volume::into_parts` hands the slots back and dropped `Media` return them to a pool the next one reuses. Simulator-only; the firmware's cache is a `static` |
 
 Also found by the run (tooling, fixed in `xtask`): with the profile's
 `panic = "abort"`, `-Zbuild-std` builds a std the test harness cannot link
@@ -253,3 +253,147 @@ checkout's last `xtask build` at the time (layout build id `3ed98285…`),
 not a build of this worktree. The coverage rows carry the commit the
 coverage run measured (`e92443fd3003-dirty`: `e92443f` plus the
 uncommitted VER-1/VER-5 tooling).
+
+
+## 8. VER-4 part 1: fuzz targets, committed corpora, findings (2026-11-24)
+
+Measured on commit `0a2598d` plus the `--fuzz-only` flag fix and this
+document (recorded as `0a2598dd44a2-dirty`), nightly-2026-11-05,
+cargo-fuzz 0.13.1, AddressSanitizer (cargo-fuzz's default) in every fuzz
+run.
+
+### 8.1 Targets
+
+30 cargo-fuzz targets (14 before, 16 new). The new ones, with what they
+check besides "no panic, no hang":
+
+| Target (project) | Input | Invariants |
+|---|---|---|
+| `otp_uri` (`orpheus-otp/fuzz`) | `otpauth://` URI / base32 text | parsed entry within the entry limits, codes of `digits` digits; the canonical URI written from it parses to the same entry; base32 encode/decode round trip both ways |
+| `otp_vault` | vault sector + operations (push, remove, set counter, HOTP step, save, change PIN, remount) | `load` classifies erased/damaged/locked by the header; aligned programs; a wrong key always fails and arms the back-off; after save + remount + unlock exactly the model's entries; the HOTP code is the pre-step counter's |
+| `bt_frame` (`orpheus-bt/fuzz`) | UART bytes, chunk size | frames independent of chunking; statistics count them; every frame re-encodes to bytes decoding to itself, a run of them to the same run; event parsing agrees with the frame; volume scales in range and round-trip |
+| `bt_tx` | module bytes, well-formed events, acknowledges, time, every firmware request | every frame sent well formed; no restricted command (rule 6) except 0x24 after an accepted `shutdown`; nothing sent while off; list and name bounds; output indices exist; outputs drain; a "no absolute volume" report leaves the volume |
+| `usb_scsi` (`orpheus-usb/fuzz`) | CBWs, data, raw packets for disk / read-only / absent / CD / DVD units | medium accesses inside the medium, none on read-only or absent units (medium unchanged then); CSW tag, status, residue; data ≤ transfer length; plans inside the medium, failures with sense data, standard allocation lengths, padded head ≤ length |
+| `usb_devchan` | setup packets + data stages | only vendor/device requests claimed; replies ≤ `wLength` and the buffer; PEEK only in development builds; reboot only for REBOOT; key pairs as sent (≤ 16); INFO round trip |
+| `proto_records` (`orpheus-proto/fuzz`) | NOR/RAM contents at an offset | each record that parses re-encodes to one that parses the same (mailbox, INFO: to the input bytes; fault record and slot header: every kept field); the log ring unrolls to a rotation within capacity and output; word decoders round-trip |
+| `settings_mount` (`orpheus-settings/fuzz`) | four settings sectors + sets, removes, remounts, power cuts | mount always succeeds; listed keys read back once; never programs over non-erased bits, only aligned words; reads = model; a remount keeps the model; a cut leaves the old or the new value of that key only |
+| `index_open` (`orpheus-index/fuzz`) | index file (header CRC and length optionally repaired) | opens only for its directory, spec and length; row windows = single rows = positions; letter jumps inside the listing; the RAM letter table answers like the file; a verified file lists directories first |
+| `library_open` (`orpheus-library/fuzz`) | library file in slot A or B (header CRC and length optionally repaired, second slot) | row windows of the asked size; names are text; letter jumps inside the lists; queues ≤ asked; Shuffle all ≤ tracks; on a verified file positions and lookups by locator agree |
+| `player_queue` (`orpheus-player/fuzz`) | `queue.bin`, capacity | decodes only what fits, identity matches, re-encodes to the same bytes; locators round-trip; no cut-short file decodes |
+| `player_resume` | `player.bin` + commands and decoder/reader events | records re-encode equal; every Open/Prefetch item exists; position inside the queue; the shuffle order is a permutation of the queue; ≤ 16 bookmarks; a written `player.bin` restarts to the same record and bookmarks |
+| `sd_registers` (`orpheus-sdcard/fuzz`) | CID/CSD registers, R1/OCR words | bit fields = the 128-bit value's bits; CID fields = the bytes; a CSD parses iff its structure is 1–3, capacity per the version's formula, byte size without overflow; status/OCR flags are their bits |
+| `input_samples` (`orpheus-input/fuzz`) | ADC ladder samples and the power line | ≤ 1 key per ladder; the earphone band is never a key; changes only after two equal samples, each edge flips its key, edges in key order, held set = applied edges |
+| `power_samples` (`orpheus-power/fuzz`) | charger status, battery ADC, cable, presence results | charge code never above the 200 mA code (rule 3) and only stock codes; no cable ⇒ stopped, no current; detection only at cable insertion; no current in Full/Fault/NoBattery; percentage monotonic in 0–100; smoothed reading within the raw range |
+| `ui_keys` (`sim/fuzz`) | taps, holds, presses/releases, waits, system events (`set:`), settings by id with any value, appearance, language, jumps to screens | navigation depth 1–8; dirty rectangles inside the panel; a long Back (no dialog, unlocked, screen on) ends at Home; a full redraw equals the incremental frame (golden-consistent redraws; skipped for the rate-limited Levels view and the open F-UI-1 corners) |
+
+The 14 old targets kept their bodies (the `orpheus-img` ones moved into a
+shared `src/lib.rs`).
+
+### 8.2 Corpora and runs
+
+Committed corpora: 30 targets, 13.5 k files, 15 MB, every file ≤ 64 KiB
+(`tests/fuzz-corpus/<target>/`); dictionaries for `otp_uri`, `otp_vault`,
+`bt_frame`, `usb_scsi`, `proto_records`, `settings_mount`, `index_open`,
+`library_open`. Seeds from the crates' encoders and fixtures and from the
+synthetic conformance corpus (`xtask test fuzz-seeds`). Runs: every new
+target 10 min after its last fix (`ui_keys`: five 10-minute runs, each
+ended by a finding, see §8.4), every old target 5 min; corpora minimised
+with `cargo fuzz cmin`. The codec and picture corpora grew to 2–8 MB each
+and were re-merged with `-max_len=4096` to stay under 20 MB (FLAC lost
+most of its grown corpus that way; the seeds were written back).
+
+Executions in the last run of each target (ASan): `otp_uri` 22.2 M
+(37 k/s), `otp_vault` 179 k (298/s, one KDF per unlock), `bt_frame` 1.6 M,
+`bt_tx` 3.7 M, `usb_scsi` 0.9 M, `usb_devchan` 20.7 M, `proto_records`
+55.7 M, `settings_mount` 161 k, `index_open` 1.1 M, `library_open` 0.6 M,
+`player_queue` 4.0 M, `player_resume` 2.3 M, `sd_registers` 2.2 M,
+`input_samples` 19.3 M, `power_samples` 12.1 M, `ui_keys` 1–10/s (a
+simulator per input; the simulator's library build costs ≈ 0.35 s); in
+5 min the codec targets 10 k (FLAC, Opus) to 5.9 M (`meta`), `mount_walk`
+75 k, `decode` 41 k, `thumb` 0.7 M. These are bounded runs, not the
+plateau runs of 08 (≥ 24 h per target): part 2.
+
+### 8.3 Coverage per crate, before and after
+
+"Fuzz only": `xtask cover --fuzz-only` (new), the corpus replays alone;
+percentages are of the files some fuzz binary contains (66 project files
+are in none; total 48,171 / 61,729 regions). Before VER-4 there was no
+corpus: the only fuzz input was `tests/regress/flac/nostop-36e2acf7`, so
+fuzz coverage was ≈ 0. "Host + fuzz": `xtask cover` (the host tests,
+which now also replay every corpus on stable, and the fuzz replays); the
+"before" column is §2, measured on the tree of `e92443f` (later packages
+added code, e.g. the simulator's Bluetooth fakes, which is why
+`orpheus-sim`'s percentage fell).
+
+| Crate | Fuzz only, before | Fuzz only, after: regions / lines / branches (covered/total regions of the files a fuzz binary contains) | Host + fuzz, before (regions) | Host + fuzz, after (regions / lines / branches) |
+|---|---:|---:|---:|---:|
+| atj2157-pac | 0 | — (in no fuzz binary) | 98.74 % | 98.74 / 98.32 / 66.67 % |
+| orpheus-apps | 0 | 66.47 / 65.99 / 55.70 % (3993/6007) | 81.83 % | 86.01 / 83.75 / 71.60 % |
+| orpheus-audio | ≈ 0 (one input) | 67.64 / 68.39 / 76.97 % (581/859) | 83.53 % | 92.92 / 92.84 / 85.92 % |
+| orpheus-bt | 0 | 80.76 / 81.41 / 84.93 % (1146/1419) | 96.27 % | 98.34 / 97.91 / 87.50 % |
+| orpheus-codec-conformance | ≈ 0 (one input) | 23.08 / 24.86 / 15.77 % (295/1278) | 10.71 % | 30.01 / 31.57 / 24.65 % |
+| orpheus-codec-flac | ≈ 0 (one input) | 83.82 / 85.69 / 74.77 % (689/822) | 80.90 % | 86.86 / 88.34 / 76.61 % |
+| orpheus-codec-mp3 | 0 | 89.51 / 89.00 / 80.39 % (2048/2288) | 74.08 % | 89.82 / 89.22 / 80.94 % |
+| orpheus-codec-opus | 0 | 95.82 / 95.83 / 88.26 % (8060/8412) | 37.13 % | 95.56 / 95.56 / 89.11 % |
+| orpheus-codec-speex | 0 | 87.40 / 86.23 / 76.29 % (1734/1984) | 79.09 % | 88.84 / 87.61 / 78.69 % |
+| orpheus-codec-vorbis | 0 | 90.41 / 94.30 / 80.18 % (1583/1751) | 9.56 % | 90.66 / 94.42 / 80.18 % |
+| orpheus-codec-wav | 0 | 86.96 / 91.31 / 80.48 % (1040/1196) | 65.59 % | 89.35 / 92.77 / 82.31 % |
+| orpheus-codecs | ≈ 0 (one input) | 88.89 / 88.89 / 100.00 % (64/72) | 29.17 % | 94.44 / 95.56 / 100.00 % |
+| orpheus-dsp | 0 | — (in no fuzz binary) | 91.17 % | 91.17 / 90.82 / 84.49 % |
+| orpheus-fs | 0 | 80.67 / 82.06 / 76.47 % (3686/4569) | 89.94 % | 91.68 / 92.32 / 84.53 % |
+| orpheus-host | 0 | 0.00 / 0.00 / 0.00 % (0/1088) | 8.40 % | 8.40 / 7.13 / 0.67 % |
+| orpheus-img | 0 | 84.14 / 85.10 / 73.13 % (4297/5107) | 96.50 % | 96.94 / 97.41 / 90.40 % |
+| orpheus-index | 0 | 58.57 / 61.17 / 71.83 % (1626/2776) | 92.20 % | 93.45 / 95.32 / 87.43 % |
+| orpheus-input | 0 | 96.51 / 95.95 / 100.00 % (83/86) | 92.09 % | 100.00 / 100.00 / 100.00 % |
+| orpheus-library | 0 | 83.43 / 85.19 / 67.14 % (2935/3518) | 89.26 % | 91.80 / 93.69 / 81.00 % |
+| orpheus-meta | 0 | 70.45 / 74.56 / 64.01 % (1416/2010) | 89.62 % | 93.15 / 92.42 / 81.75 % |
+| orpheus-ogg | 0 | 83.55 / 85.45 / 77.97 % (640/766) | 80.68 % | 89.69 / 89.16 / 84.32 % |
+| orpheus-otp | 0 | 85.53 / 87.53 / 81.82 % (975/1140) | 95.30 % | 96.72 / 96.82 / 89.66 % |
+| orpheus-pager | 0 | — (in no fuzz binary) | 93.45 % | 93.45 / 93.70 / 80.43 % |
+| orpheus-player | 0 | 80.64 / 80.00 / 89.50 % (1029/1276) | 89.46 % | 97.00 / 96.68 / 87.30 % |
+| orpheus-power | 0 | 97.69 / 97.30 / 100.00 % (127/130) | 97.97 % | 99.13 / 98.54 / 95.45 % |
+| orpheus-proto | 0 | 86.14 / 84.01 / 66.67 % (522/606) | 93.60 % | 97.55 / 99.81 / 94.44 % |
+| orpheus-sdcard | 0 | 100.00 / 100.00 / 100.00 % (116/116) | 93.06 % | 100.00 / 100.00 / 66.67 % |
+| orpheus-settings | 0 | 94.30 / 96.76 / 87.50 % (364/386) | 94.41 % | 95.86 / 97.84 / 88.10 % |
+| orpheus-sim | 0 | 49.21 / 53.52 / 48.92 % (1937/3936) | 83.65 % | 75.61 / 79.30 / 67.57 % |
+| orpheus-ui | 0 | 83.05 / 82.58 / 73.77 % (3233/3893) | 91.75 % | 93.22 / 91.85 / 82.12 % |
+| orpheus-usb | 0 | 83.83 / 81.13 / 88.02 % (1042/1243) | 96.16 % | 98.19 / 96.17 / 94.20 % |
+| xtask | 0 | — (in no fuzz binary) | 16.08 % | 16.75 / 18.01 / 70.00 % |
+| TOTAL | ≈ 0 | 78.04 / 78.44 / 72.37 % (48171/61729) | 72.16 % | 83.27 / 83.37 / 80.81 % |
+
+Rows in `metrics/coverage.csv` (sources `fuzz` and `host+fuzz`).
+
+### 8.4 Findings
+
+Every reproducer is kept: fixed ones under `tests/regress/<target>/`,
+replayed on every `cargo test` by the crate's `fuzz_corpus` test (and by
+`xtask cover --fuzz` and `xtask test asan`); open ones that still fail
+under `tests/regress-open/<target>/` (moved to `tests/regress/` with the
+fix).
+
+| Id | Where | What | Reproducer | State |
+|---|---|---|---|---|
+| F-BT-1 | `orpheus-bt` `proto::volume_from_sink`, `Transmitter` (event 0x26) | A sink volume above AVRCP's 127 (the module's "no absolute volume", 128 from a BlueZ sink) mapped to a player volume of up to 62 on the 0–31 scale and was stored as the player's volume: 128 became 31, the maximum, pushed to the next sink at its connection | `tests/regress/bt_tx/sink-volume-above-127`, `tests/regress/bt_frame/volume-from-sink-above-127` | **fixed**: clamped to 127; a report above 127 is passed on but leaves the volume |
+| F-SET-1 | `orpheus-settings` `Store::scan` | Bytes programmed after the end-of-log marker (foreign data, bit rot) were programmed over by the next record (NOR only clears bits): the value read back corrupted and was lost at the next mount | `tests/regress/settings_mount/program-over-garbage-after-log-end`; unit test `garbage_after_the_log_end` | **fixed**: a non-erased tail counts as full, the next write compacts into an erased sector |
+| F-SET-2 | `orpheus-settings` `Store::remove` | On a full store a key cannot be removed: the deletion marker needs room and compaction counts the removed value as live, so `remove` returns `Error::Full` and the value stays | `tests/regress/settings_mount/remove-when-full` (the target accepts `Full`) | **open** (an error, not corruption). Idea: drop the key from the index before compacting for a deletion |
+| F-USB-1 | `orpheus-usb` `msc::mmc` READ DVD STRUCTURE | With an allocation length below 21 the plan's head (21 bytes) was longer than its length, against `Plan::DataInPadded` (the transport clipped it) | `tests/regress/usb_scsi/dvd-structure-head-over-allocation` | **fixed** |
+| F-IDX-1 | `orpheus-index` `Index::seek_letter`, `LetterTable::load`/`push`; `orpheus-library` `Library::seek_letter` | A letter jump returned a run's first row as stored, unchecked: a damaged index or library moved the UI past the end of the listing; the RAM letter table accepted unordered runs | `tests/regress/index_open/letter-jump-outside-listing` | **fixed**: `Error::Corrupt`; the table refuses runs not in row order inside the listing |
+| F-LIB-1 | `orpheus-library` queries | `u32` row offsets computed from file values (`id * TRK_ROW`, `(first + i) * 4`, `l.first + first + k`) overflowed on a damaged file (a panic with overflow checks, a wrapped read without); `text` underflowed when the pool end in the header lies past the pool section | `tests/regress/library_open/row-offset-overflow` | **fixed**: 64-bit offsets checked against the section, row ids checked |
+| F-LIB-2 | `orpheus-library` `Library::file_len` | Below the header size when every section ends inside the header | `tests/regress/library_open/file-len-below-header` | **fixed** |
+| F-PLY-1 | `orpheus-player` `PlayQueue { len: 0 }` | The previous shuffle order stayed: `order()` described N items of an empty queue | `tests/regress/player_resume/empty-queue-keeps-old-shuffle` | **fixed** |
+| F-PLY-2 | `orpheus-player` `next_pos` (repeat one) | A bookmark played with an empty queue and repeat one: at its end the player asked to open (and read ahead) queue item 0 of the empty queue | `tests/regress/player_resume/repeat-one-bookmark-empty-queue` | **fixed**: repeat one only for a position the queue has |
+| F-UI-1 | `orpheus-ui` `VolumeOverlay::draw` | The overlay's anti-aliased corners blend over what is under them and compound when the overlay is redrawn over itself (each volume step); the committed `volume_*` goldens show compounded corners. Cosmetic | `tests/regress/ui_keys/volume-overlay-corners` | **open**: needs a UI decision (corners over the background, as the toast does, or the content repainted first) and re-blessed goldens; the `ui_keys` oracle skips the four corner squares while an overlay is up |
+| F-UI-2 | `orpheus-ui` `Shell::draw` | Content, a menu or a dialog redrawn under a shown volume overlay or toast covered it until it expired (e.g. a focus moving under the overlay) | `tests/regress/ui_keys/content-redrawn-over-volume-overlay`, `menu-redrawn-over-volume-overlay` | **fixed**: the overlays are drawn again when anything drawn in the frame touched them (`Gfx::drew_into`) |
+| F-UI-3 | `orpheus-apps` Now Playing | The remaining time came from the position in ms while the row redraws once a second: it showed a second off until the next redraw | `tests/regress/ui_keys/remaining-time-off-by-one` | **fixed**: from the whole elapsed seconds |
+| F-UI-4 | `orpheus-apps` Now Playing (incremental redraw) | Last `ui_keys` run: Music › OK (the YOASOBI queue, a two-line Japanese title), 2.85 s later a full redraw differs from the incremental frame in 16 pixels at x 6–9, y 94–97, just above the elapsed time (the once-a-second progress-row redraw and the full layout disagree there); not analysed further | `tests/regress-open/ui_keys/now-playing-redraw-left-of-elapsed-time` (`goto:Music ok wait:2850`) | **open** |
+| S-1 | `orpheus-sim` `Media::new` | VER-5 LeakSanitizer: every `Media` leaked its cache slots (§4) | — | **fixed**: `Volume::into_parts`, a slot pool in the simulator |
+
+Oracle corrections (the target was wrong, not the code; no reproducer
+kept): a REQUEST SENSE CDB too short to hold the allocation length gets 18
+bytes by design; the RAM letter table reads a letter that is not a
+character as "no letter" while the file query stops there (compared on
+verified files only); a header repaired by the target may carry any
+counts (the verified-file oracles apply to unrepaired headers only);
+`Command::Requeue` keeps the current position inside a non-empty queue by
+contract (`queue::edit`); Now Playing's Levels view redraws at most every
+66 ms by design.

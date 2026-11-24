@@ -3,7 +3,7 @@
 //!
 //! * `metrics/coverage.csv`: the per-crate rows of the last `xtask cover`
 //!   (`target/orpheus/coverage/summary.csv`), tagged with the commit and
-//!   source (`host` or `host+fuzz`) they were measured on.
+//!   source (`host`, `fuzz` or `host+fuzz`) they were measured on.
 //! * `metrics/static.csv`: from the last `xtask build` (`target/orpheus/
 //!   firmware.elf` and `layout.json`, or `--elf`): resident/bss/stack bytes,
 //!   other regions, panic sites, page counts, slot bytes, and the 40 largest
