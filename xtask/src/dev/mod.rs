@@ -4,7 +4,7 @@
 //! * NOR writes only inside the dual-boot free region, and only after
 //!   `backup-verify` passed in this process;
 //! * no command powers the player off;
-//! * one process at a time: a lock file in `target/yoton/`.
+//! * one process at a time: a lock file in `target/orpheus/`.
 
 mod hil;
 mod ram;
@@ -16,12 +16,12 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use orpheus_host::adfu::{Adfu, yoton_dir};
+use orpheus_host::{device, image, nor};
+use orpheus_proto::layout::dual;
+use orpheus_proto::mem::{FB_BASE, FB_H, FB_SIZE, FB_W};
+use orpheus_proto::{fault, mailbox, result};
 use sha2::{Digest, Sha256};
-use yoton_host::adfu::{Adfu, yoton_dir};
-use yoton_host::{device, image, nor};
-use yoton_proto::layout::dual;
-use yoton_proto::mem::{FB_BASE, FB_H, FB_SIZE, FB_W};
-use yoton_proto::{fault, mailbox, result};
 
 use crate::args::{Args, num};
 use crate::util::{log, out_dir};
@@ -39,9 +39,9 @@ cargo xtask dev <subcommand>
   usbtest [--cycles N]          USB-1 acceptance: enumerate, control sizes, re-enumeration
   stage IMAGE|NAME|FILE.yfw      write a YFW1 slot to slot A (0x762000)
   install-stage2                 replace stage 2 at 0x7DF400 (keeps the vendor record copy)
-  keys 'ok wait:300 hold:menu'  inject keys into running yotonrs
-  info                          developer-channel INFO of running yotonrs
-  put LOCAL /.yoton/PATH         upload a file to the card (through the firmware's FS)
+  keys 'ok wait:300 hold:menu'  inject keys into running orpheus
+  info                          developer-channel INFO of running orpheus
+  put LOCAL /.orpheus/PATH         upload a file to the card (through the firmware's FS)
   stats [--irq]                 executor idle time, pager and UI counters (--irq: per line)
   time [--set]                  read (or set from the host, UTC) the player's clock
   cmd 'play /x.mp3' [--wait S]  firmware test command, then print the reply
@@ -52,7 +52,7 @@ cargo xtask dev <subcommand>
   shot OUT.png                  screenshot of the frame buffer
   nordump ADDR LEN OUT          read NOR (raw)
   backup-verify                 check the vendor NOR backups
-  save-rockbox                  dump the installed Rockbox region of NOR to target/yoton/
+  save-rockbox                  dump the installed Rockbox region of NOR to target/orpheus/
   restore rockbox [--verify]    write the saved Rockbox region back (--verify: compare only)
   restore vendor [--verify | --i-have-a-backup]
                                 compare with / write back the stock NOR backup (whole chip)
@@ -103,17 +103,17 @@ pub fn cmd(args: &mut Args) -> Result<String> {
         "cmd" => {
             let text = args.positional("command text")?;
             let wait = args.value("wait").map(|s| num(&s)).transpose()?.unwrap_or(2);
-            let d = yoton_host::devchan::DevChannel::open(Duration::from_secs(3))?;
-            d.control_out(yoton_proto::devchan::REQ_TEST, 0, 0, text.as_bytes())?;
+            let d = orpheus_host::devchan::DevChannel::open(Duration::from_secs(3))?;
+            d.control_out(orpheus_proto::devchan::REQ_TEST, 0, 0, text.as_bytes())?;
             std::thread::sleep(Duration::from_secs(u64::from(wait)));
-            let r = d.control_in(yoton_proto::devchan::REQ_TEST, 0, 0, 1024)?;
+            let r = d.control_in(orpheus_proto::devchan::REQ_TEST, 0, 0, 1024)?;
             println!("{}", String::from_utf8_lossy(&r));
             Ok("reply printed".into())
         }
         "stats" => {
-            let d = yoton_host::devchan::DevChannel::open(Duration::from_secs(3))?;
+            let d = orpheus_host::devchan::DevChannel::open(Duration::from_secs(3))?;
             if args.flag("irq") {
-                let r = d.control_in(yoton_proto::devchan::REQ_STATS, 1, 0, 256)?;
+                let r = d.control_in(orpheus_proto::devchan::REQ_STATS, 1, 0, 256)?;
                 let mut out = String::from("interrupts per line:");
                 for (i, c) in r.chunks_exact(4).enumerate() {
                     let v = u32::from_le_bytes([c[0], c[1], c[2], c[3]]);
@@ -123,7 +123,7 @@ pub fn cmd(args: &mut Args) -> Result<String> {
                 }
                 return Ok(out);
             }
-            let r = d.control_in(yoton_proto::devchan::REQ_STATS, 0, 0, 128)?;
+            let r = d.control_in(orpheus_proto::devchan::REQ_STATS, 0, 0, 128)?;
             let w: Vec<u32> =
                 r.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
             let g = |i: usize| w.get(i).copied().unwrap_or(0);
@@ -157,17 +157,17 @@ pub fn cmd(args: &mut Args) -> Result<String> {
         }
         "put" => {
             let local = args.positional("LOCAL file")?;
-            let remote = args.positional("REMOTE path under /.yoton/")?;
-            if !remote.starts_with("/.yoton/") {
-                bail!("uploads go under /.yoton/ only (CLAUDE.md rule 5)");
+            let remote = args.positional("REMOTE path under /.orpheus/")?;
+            if !remote.starts_with("/.orpheus/") {
+                bail!("uploads go under /.orpheus/ only (CLAUDE.md rule 5)");
             }
             let data = std::fs::read(&local)?;
-            let d = yoton_host::devchan::DevChannel::open(Duration::from_secs(3))?;
-            let reply = |d: &yoton_host::devchan::DevChannel| -> Result<String> {
-                Ok(String::from_utf8_lossy(&d.control_in(yoton_proto::devchan::REQ_TEST, 0, 0, 256)?)
+            let d = orpheus_host::devchan::DevChannel::open(Duration::from_secs(3))?;
+            let reply = |d: &orpheus_host::devchan::DevChannel| -> Result<String> {
+                Ok(String::from_utf8_lossy(&d.control_in(orpheus_proto::devchan::REQ_TEST, 0, 0, 256)?)
                     .into_owned())
             };
-            let wait_for = |d: &yoton_host::devchan::DevChannel, want: &str| -> Result<()> {
+            let wait_for = |d: &orpheus_host::devchan::DevChannel, want: &str| -> Result<()> {
                 let t0 = std::time::Instant::now();
                 loop {
                     let r = reply(d)?;
@@ -183,28 +183,28 @@ pub fn cmd(args: &mut Args) -> Result<String> {
                     std::thread::sleep(Duration::from_millis(5));
                 }
             };
-            d.control_out(yoton_proto::devchan::REQ_TEST, 0, 0, format!("fcreate {remote}").as_bytes())?;
+            d.control_out(orpheus_proto::devchan::REQ_TEST, 0, 0, format!("fcreate {remote}").as_bytes())?;
             wait_for(&d, "put 0")?;
             let t0 = std::time::Instant::now();
             let mut sent = 0usize;
             for chunk in data.chunks(1024) {
-                d.control_out(yoton_proto::devchan::REQ_PUT, 0, 0, chunk)?;
+                d.control_out(orpheus_proto::devchan::REQ_PUT, 0, 0, chunk)?;
                 sent += chunk.len();
                 wait_for(&d, &format!("put {sent}"))?;
             }
-            d.control_out(yoton_proto::devchan::REQ_TEST, 0, 0, b"fclose")?;
+            d.control_out(orpheus_proto::devchan::REQ_TEST, 0, 0, b"fclose")?;
             wait_for(&d, &format!("closed {sent}"))?;
             Ok(format!("{sent} bytes -> {remote} in {:.1} s", t0.elapsed().as_secs_f32()))
         }
         "time" => {
-            let d = yoton_host::devchan::DevChannel::open(Duration::from_secs(3))?;
+            let d = orpheus_host::devchan::DevChannel::open(Duration::from_secs(3))?;
             if args.flag("set") {
                 let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
                 let (y, mo, da, h, mi, se) = civil(now);
                 let yb = (y as u16).to_le_bytes();
-                d.control_out(yoton_proto::devchan::REQ_TIME, 0, 0, &[yb[0], yb[1], mo, da, h, mi, se])?;
+                d.control_out(orpheus_proto::devchan::REQ_TIME, 0, 0, &[yb[0], yb[1], mo, da, h, mi, se])?;
             }
-            let t = d.control_in(yoton_proto::devchan::REQ_TIME, 0, 0, 7)?;
+            let t = d.control_in(orpheus_proto::devchan::REQ_TIME, 0, 0, 7)?;
             if t.len() < 7 {
                 bail!("clock not set");
             }
@@ -219,7 +219,7 @@ pub fn cmd(args: &mut Args) -> Result<String> {
             ))
         }
         "info" => {
-            let d = yoton_host::devchan::DevChannel::open(Duration::from_secs(3))?;
+            let d = orpheus_host::devchan::DevChannel::open(Duration::from_secs(3))?;
             let i = d.info()?;
             Ok(format!(
                 "uptime {} ms, battery {} mV, flags {:#x}, build {}, stack free {} of {} B",
@@ -272,7 +272,7 @@ pub fn cmd(args: &mut Args) -> Result<String> {
         "shot" => {
             let out = PathBuf::from(args.positional("OUT.png")?);
             if device::state() == device::State::Yotonrs {
-                let d = yoton_host::devchan::DevChannel::open(Duration::from_secs(3))?;
+                let d = orpheus_host::devchan::DevChannel::open(Duration::from_secs(3))?;
                 let fb = d.frame()?;
                 image::write_rgb565_png(&fb, FB_W, FB_H, &out)?;
                 return Ok(format!("-> {} (developer channel)", out.display()));
@@ -423,14 +423,15 @@ pub fn read_persistent(
     ))
 }
 
-/// Key names in scripts (yoton_input::Key order).
+/// Key names in scripts (orpheus_input::Key order).
 const KEY_NAMES: [&str; 10] =
     ["power", "back", "menu", "ok", "prev", "next", "up", "down", "volup", "voldown"];
 
 /// `ok`, `down*3`, `hold:menu` (800 ms), `long:power` (4.5 s), `wait:300`.
 fn keys(script: &str) -> Result<String> {
-    let d = yoton_host::devchan::DevChannel::open(Duration::from_secs(3))?;
-    let send = |k: u8, down: bool| d.control_out(yoton_proto::devchan::REQ_KEYS, 0, 0, &[k, u8::from(down)]);
+    let d = orpheus_host::devchan::DevChannel::open(Duration::from_secs(3))?;
+    let send =
+        |k: u8, down: bool| d.control_out(orpheus_proto::devchan::REQ_KEYS, 0, 0, &[k, u8::from(down)]);
     let idx = |n: &str| KEY_NAMES.iter().position(|x| *x == n).map(|i| i as u8);
     let mut n = 0;
     for tok in script.split_whitespace() {

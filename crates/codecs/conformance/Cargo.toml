@@ -1,5 +1,5 @@
 [package]
-name = "yoton-codec-conformance"
+name = "orpheus-codec-conformance"
 description = "Host conformance harness, robustness checks, fuzz-target bodies and benchmark for the codecs (07 §3.3–3.4)"
 version.workspace = true
 edition.workspace = true
@@ -8,10 +8,10 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-yoton-audio = { path = "../../yoton-audio" }
-yoton-codecs = { path = ".." }
-yoton-meta = { path = "../../yoton-meta" }
-yoton-ogg = { path = "../ogg" }
+orpheus-audio = { path = "../../orpheus-audio" }
+orpheus-codecs = { path = ".." }
+orpheus-meta = { path = "../../orpheus-meta" }
+orpheus-ogg = { path = "../ogg" }
 md-5 = "0.10"
 
 [lints]

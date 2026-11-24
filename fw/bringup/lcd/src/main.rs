@@ -16,9 +16,9 @@
 use atj2157_hal::{self as hal, dma, executor, log, pac, persist, time, wdt};
 use embassy_executor::Spawner;
 use embassy_time::Timer;
+use orpheus_proto::result::Verdict;
 use static_cell::StaticCell;
 use yoton_bsp::display::{self, Backlight, Display};
-use yoton_proto::result::Verdict;
 
 fn rgb(r: u8, g: u8, b: u8) -> u16 {
     (u16::from(r >> 3) << 11) | (u16::from(g >> 2) << 5) | u16::from(b >> 3)

@@ -10,7 +10,7 @@ pub fn root() -> PathBuf {
 
 /// Output directory for generated artefacts.
 pub fn out_dir() -> PathBuf {
-    let d = root().join("target").join("yoton");
+    let d = root().join("target").join("orpheus");
     let _ = std::fs::create_dir_all(&d);
     d
 }

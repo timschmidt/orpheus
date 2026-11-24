@@ -1,23 +1,23 @@
-//! `yoton-sim [--demo] [--script "ok down*3 shot:x"] [--out DIR] [--window]`
+//! `orpheus-sim [--demo] [--script "ok down*3 shot:x"] [--out DIR] [--window]`
 //!
-//! Runs the `yoton-apps` screens, or with `--demo` the toolkit's widget demo.
+//! Runs the `orpheus-apps` screens, or with `--demo` the toolkit's widget demo.
 //!
 //! Headless by default: runs the script and writes each `shot:` as
-//! `DIR/<name>.png` (default `target/yoton/shots`). `--window` (needs the
+//! `DIR/<name>.png` (default `target/orpheus/shots`). `--window` (needs the
 //! `window` feature) opens a 4× window after the script: arrows = Up/Down/
 //! Prev/Next, Enter = OK, Backspace/Esc = Back, M = Menu, +/- = volume,
-//! P = Power, S = screenshot. `YOTON_FALLBACK_FON=<file>@<offset>` uses a
+//! P = Power, S = screenshot. `ORPHEUS_FALLBACK_FON=<file>@<offset>` uses a
 //! 33-byte-record font file (e.g. the vendor UNICODE.FON in a NOR dump) as
 //! the fallback font instead of the Unifont subset.
 
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use yoton_sim::{AppSim, DemoSim, Host, Sim};
+use orpheus_sim::{AppSim, DemoSim, Host, Sim};
 
 fn main() -> Result<()> {
     let mut script = String::new();
-    let mut out = PathBuf::from("target/yoton/shots");
+    let mut out = PathBuf::from("target/orpheus/shots");
     let mut window = false;
     let mut demo = false;
     let mut args = std::env::args().skip(1);
@@ -28,7 +28,7 @@ fn main() -> Result<()> {
             "--window" | "-w" => window = true,
             "--demo" => demo = true,
             "--help" | "-h" => {
-                println!("yoton-sim [--script SCRIPT] [--out DIR] [--window]");
+                println!("orpheus-sim [--script SCRIPT] [--out DIR] [--window]");
                 return Ok(());
             }
             other => bail!("unknown argument `{other}`"),
@@ -60,10 +60,10 @@ fn run<H: Host>(mut sim: Sim<H>, script: &str, out: &std::path::Path, window: bo
 
 #[cfg(feature = "window")]
 fn run_window<H: Host>(sim: Sim<H>, out: &std::path::Path) -> Result<()> {
-    yoton_sim::window::run(sim, out)
+    orpheus_sim::window::run(sim, out)
 }
 
 #[cfg(not(feature = "window"))]
 fn run_window<H: Host>(_sim: Sim<H>, _out: &std::path::Path) -> Result<()> {
-    bail!("built without the `window` feature (cargo run -p yoton-sim --features window -- --window)")
+    bail!("built without the `window` feature (cargo run -p orpheus-sim --features window -- --window)")
 }

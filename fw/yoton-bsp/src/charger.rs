@@ -1,5 +1,5 @@
 //! Charger and battery hardware (03-hal-drivers §10). Decisions are made by
-//! `yoton_power::charger`; this module only reads status and applies
+//! `orpheus_power::charger`; this module only reads status and applies
 //! commands with the stock firmware's register sequence (system.md §3.1).
 //!
 //! Fields written: `CHGEN`, `ENTKLE`, `CHG_CURRENT`, `ENBATDT`, `ENCHGATDT`
@@ -11,7 +11,7 @@
 use atj2157_hal::delay::spin_us;
 use atj2157_hal::pac::pmu::{self, chg_ctl, chg_det, wake_pd};
 use embassy_time::{Duration, Instant, Timer};
-pub use yoton_power::charger::{ChargeState, Charger, Command, Inputs};
+pub use orpheus_power::charger::{ChargeState, Charger, Command, Inputs};
 
 /// Enable the battery ADC (`PMUADC_CTL` bit 1). [DS]
 pub fn init() {

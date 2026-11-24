@@ -7,7 +7,7 @@
 //! One task on the RT executor reads, decodes and fills the PCM ring; the
 //! DAC DMA runs in reload mode over the ring and its half/complete
 //! interrupts say which half is free. The same task owns the mounted card
-//! and the playback service (`yoton_player::Player`, WP AU-5): the UI's
+//! and the playback service (`orpheus_player::Player`, WP AU-5): the UI's
 //! player requests become player events, the decode loop feeds it what
 //! happens (opened, position, reader at end, decoder ended or failed,
 //! ticks) and carries out its actions (open, seek, pause, resume, stop).
@@ -35,18 +35,18 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::waitqueue::AtomicWaker;
 use embassy_time::Timer;
-use static_cell::ConstStaticCell;
-use yoton_audio::{
+use orpheus_audio::{
     ByteSource, ContainerInfo, OpenError, PcmBlock, Probe, SeekSource, SeekStep, SourceError, Step, probe,
 };
+use orpheus_fs::{CacheSlot, DirEntry, File, MountOptions, OpenMode, Volume};
+use orpheus_index::Progress;
+use orpheus_index::card::{CardIo, Handles, Mode};
+use orpheus_player::image::{IMAGE_LEN, decode_queue, encode_queue, queue_file_len};
+use orpheus_player::{Command, Event, TrackRef};
+use orpheus_proto::hash::crc32_update;
+use orpheus_ui::event::Source;
+use static_cell::ConstStaticCell;
 use yoton_bsp::card::Card;
-use yoton_fs::{CacheSlot, DirEntry, File, MountOptions, OpenMode, Volume};
-use yoton_index::Progress;
-use yoton_index::card::{CardIo, Handles, Mode};
-use yoton_player::image::{IMAGE_LEN, decode_queue, encode_queue, queue_file_len};
-use yoton_player::{Command, Event, TrackRef};
-use yoton_proto::hash::crc32_update;
-use yoton_ui::event::Source;
 
 use crate::media::{self, Flow, OpenReq, PlayReq, Req, Server, Target};
 
@@ -181,7 +181,7 @@ static STOP: AtomicBool = AtomicBool::new(false);
 
 // ------------------------------------------------------------ stream ring
 
-/// 16 KiB: RAM does not allow `yoton_audio::MAX_PEEK` (28 KiB) plus a
+/// 16 KiB: RAM does not allow `orpheus_audio::MAX_PEEK` (28 KiB) plus a
 /// refill unit next to the resident audio path. Ogg pages up to ~15.5 KiB
 /// play; a stream that needs more ends with an error (open, STATUS).
 const RING: usize = 16 * 1024;
@@ -426,11 +426,27 @@ pub static CARD_OUT: Channel<CriticalSectionRawMutex, Card, 1> = Channel::new();
 pub static CARD_BACK: Channel<CriticalSectionRawMutex, Card, 1> = Channel::new();
 
 async fn mount(card: Card) -> Option<Volume<'static, Card>> {
-    let opts = MountOptions { read_only: false, write_prefix: Some("/.yoton"), partition: None };
+    let opts = MountOptions { read_only: false, write_prefix: Some("/.orpheus"), partition: None };
     // SAFETY: exactly one Volume exists at a time; the previous one was
     // unmounted (consumed) before this borrow is created.
     let cache = unsafe { &mut *(&raw mut CACHE) };
-    Volume::mount(card, cache, opts).await.ok()
+    let mut vol = Volume::mount(card, cache, opts).await.ok()?;
+    // The project was renamed (yotonrs → Orpheus, 2026-11-24): its card
+    // folder moves from `/.yoton` to `/.orpheus` once, keeping the queue,
+    // resume point, indexes and caches (owner's decision). Only this one
+    // directory rename runs without the write prefix.
+    if vol.exists("/.yoton").await == Ok(true) && vol.exists("/.orpheus").await == Ok(false) {
+        vol.set_write_prefix(None);
+        let ok = vol.rename("/.yoton", "/.orpheus").await.is_ok();
+        vol.set_write_prefix(Some("/.orpheus"));
+        let _ = vol.flush().await;
+        atj2157_hal::log::line(if ok {
+            b"card: /.yoton moved to /.orpheus"
+        } else {
+            b"card: moving /.yoton failed"
+        });
+    }
+    Some(vol)
 }
 
 fn ext_of(path: &str) -> Option<&[u8]> {
@@ -516,7 +532,7 @@ static SLOW_UNDERRUNS: AtomicU32 = AtomicU32::new(0);
 /// Seek the decoder to `frame`, refilling the ring from the new position.
 /// Returns the frame it landed on.
 async fn seek_to(
-    dec: &mut yoton_codecs::AnyDecoder<'_>,
+    dec: &mut orpheus_codecs::AnyDecoder<'_>,
     ring: &mut Ring,
     vol: &mut Volume<'static, Card>,
     f: &mut File,
@@ -581,7 +597,7 @@ async fn play_file(
     };
     let hint = ContainerInfo { format, gapless: None, stream_len: None };
     let plan = loop {
-        match yoton_codecs::inspect(format, ring, &hint) {
+        match orpheus_codecs::inspect(format, ring, &hint) {
             Ok(p) => break p,
             Err(OpenError::NeedData(_)) if !ring.eof => {
                 ring.fill(vol, &mut f).await;
@@ -596,7 +612,7 @@ async fn play_file(
     // writes while it plays (text window, player state).
     let (dec_mem, spare) = arena.split_at_mut(plan.arena);
     let (mut dec, info) =
-        yoton_codecs::open(format, ring, dec_mem, &hint).map_err(|_| &b"open decoder failed"[..])?;
+        orpheus_codecs::open(format, ring, dec_mem, &hint).map_err(|_| &b"open decoder failed"[..])?;
     if info.channels == 0 || info.channels > 2 {
         return Err(b"channels not supported");
     }
@@ -606,7 +622,7 @@ async fn play_file(
     let chain = unsafe { (*(&raw mut CHAIN)).assume_init_mut() };
     mark(6);
     let out_rate = chain
-        .set_format(yoton_dsp::Format {
+        .set_format(orpheus_dsp::Format {
             rate: info.rate,
             channels: info.channels,
             kind: info.sample,
@@ -966,7 +982,7 @@ fn scratch32(n: usize) -> &'static mut [i32] {
 
 /// DSP chain between decoder and DAC (AU-6), ~4 KiB; written once at the
 /// start of the audio task, used only by it.
-static mut CHAIN: core::mem::MaybeUninit<yoton_dsp::Chain> = core::mem::MaybeUninit::uninit();
+static mut CHAIN: core::mem::MaybeUninit<orpheus_dsp::Chain> = core::mem::MaybeUninit::uninit();
 
 /// Build the DSP chain. Called from `main` before the executors start: a
 /// `Chain` is 4 KiB and built by value, which inside the audio task's
@@ -975,7 +991,7 @@ static mut CHAIN: core::mem::MaybeUninit<yoton_dsp::Chain> = core::mem::MaybeUni
 #[inline(never)]
 pub fn init_chain() {
     // SAFETY: before any task runs; afterwards only the audio task uses it.
-    unsafe { (*(&raw mut CHAIN)).write(yoton_dsp::Chain::new(yoton_dsp::OutWidth::Bits16, false)) };
+    unsafe { (*(&raw mut CHAIN)).write(orpheus_dsp::Chain::new(orpheus_dsp::OutWidth::Bits16, false)) };
 }
 
 static SERVER: ConstStaticCell<Server> = ConstStaticCell::new(Server::new());
@@ -1069,23 +1085,23 @@ async fn open_target(
     let title = media::Name::title(name);
     media::player_update(|p| {
         p.title = title;
-        p.file = yoton_apps::services::FileRef { dir: l.dir, index: l.index };
+        p.file = orpheus_apps::services::FileRef { dir: l.dir, index: l.index };
     });
     Some((f, track, ext, n))
 }
 
-/// Open a file for writing under `/.yoton/`, creating the folder if needed.
+/// Open a file for writing under `/.orpheus/`, creating the folder if needed.
 async fn create(vol: &mut Volume<'static, Card>, path: &str, mode: OpenMode) -> Option<File> {
     match vol.open(path, mode).await {
         Ok(f) => Some(f),
         Err(_) => {
-            let _ = vol.create_dir("/.yoton").await;
+            let _ = vol.create_dir("/.orpheus").await;
             vol.open(path, mode).await.ok()
         }
     }
 }
 
-/// Write the changed part of the player store to `/.yoton/player.bin`
+/// Write the changed part of the player store to `/.orpheus/player.bin`
 /// (in place: each value has its own CRC, the resume slots alternate) and
 /// flush the volume. Called only while no audio is being output (pause,
 /// stop, track change, before a card hand-over or power-off): a card write
@@ -1107,7 +1123,7 @@ async fn save_store(vol: &mut Volume<'static, Card>, srv: &mut Server, scratch: 
     mark(0);
 }
 
-/// Write the queue to `/.yoton/queue.bin` (from the idle decoder arena).
+/// Write the queue to `/.orpheus/queue.bin` (from the idle decoder arena).
 async fn save_queue(vol: &mut Volume<'static, Card>, arena: &mut [u8], srv: &Server) {
     let Some(n) = encode_queue(vol.serial(), &srv.queue[..srv.qlen as usize], arena) else { return };
     let Some(mut f) = create(vol, media::QUEUE_FILE, OpenMode::Truncate).await else { return };
@@ -1280,7 +1296,7 @@ pub fn put_chunk(data: &[u8]) -> bool {
 }
 
 /// Upload loop (`fcreate PATH`): appends chunks until `fclose` arrives as
-/// a command; writes only where the volume allows (`/.yoton/`).
+/// a command; writes only where the volume allows (`/.orpheus/`).
 async fn upload(vol: &mut Volume<'static, Card>, arena: &mut [u8], path: &str) {
     let mut f = match vol.open(path, OpenMode::Truncate).await {
         Ok(f) => f,
@@ -1485,10 +1501,10 @@ pub async fn audio() {
             // SAFETY: initialised in main; this task is its only user.
             let chain = unsafe { (*(&raw mut CHAIN)).assume_init_mut() };
             mark(50);
-            let r = chain.set_format(yoton_dsp::Format {
+            let r = chain.set_format(orpheus_dsp::Format {
                 rate: 44_100,
                 channels: 2,
-                kind: yoton_audio::SampleKind::I16,
+                kind: orpheus_audio::SampleKind::I16,
                 bits: 16,
             });
             mark(51);
@@ -1523,7 +1539,7 @@ pub async fn audio() {
             let p = p.trim();
             pb[..p.len()].copy_from_slice(p.as_bytes());
             let path = core::str::from_utf8(&pb[..p.len()]).unwrap_or("");
-            // Parents one by one (only `/.yoton/…` is writable).
+            // Parents one by one (only `/.orpheus/…` is writable).
             for (i, _) in path.match_indices('/').skip(1) {
                 let _ = vol.create_dir(&path[..i]).await;
             }
@@ -1534,8 +1550,8 @@ pub async fn audio() {
             let mut acc = 0f32;
             for i in 0..2000u32 {
                 mark(40);
-                acc += yoton_dsp::math::exp2(core::hint::black_box(i as f32 * 0.001));
-                acc += yoton_dsp::math::log2(core::hint::black_box(1.0 + i as f32));
+                acc += orpheus_dsp::math::exp2(core::hint::black_box(i as f32 * 0.001));
+                acc += orpheus_dsp::math::log2(core::hint::black_box(1.0 + i as f32));
             }
             let us = time::now_us() - t0;
             reply(|w| {

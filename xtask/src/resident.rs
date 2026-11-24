@@ -68,7 +68,8 @@ pub fn check(elf: &Path, map: &Path, bin: &str) -> Result<Report> {
             continue;
         }
         let s = &g.nodes[n];
-        if yoton_pager::Page::of(s.addr).is_some() || yoton_pager::Page::of(s.addr + s.size - 1).is_some() {
+        if orpheus_pager::Page::of(s.addr).is_some() || orpheus_pager::Page::of(s.addr + s.size - 1).is_some()
+        {
             let mut chain = g.chain(&parent, n);
             if let Some(last) = chain.last_mut() {
                 *last = format!("{last} [{} at {:#x}]", s.out, s.addr);

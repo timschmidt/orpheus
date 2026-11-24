@@ -8,7 +8,7 @@ publish = false
 
 [dependencies]
 atj2157-hal = { path = "../../atj2157-hal" }
-yoton-proto.workspace = true
+orpheus-proto.workspace = true
 yoton-bsp = { path = "../../yoton-bsp" }
 embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }
 embassy-time = "0.5"
@@ -16,7 +16,7 @@ embassy-sync = "0.8"
 static_cell = "2"
 embassy-usb = { version = "0.6", default-features = false }
 embassy-futures = "0.1"
-yoton-usb = { path = "../../../crates/yoton-usb" }
+orpheus-usb = { path = "../../../crates/orpheus-usb" }
 
 [lints]
 workspace = true

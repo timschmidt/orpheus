@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use yoton_audio::{CodecId, OpenError};
+use orpheus_audio::{CodecId, OpenError};
 
 use crate::compare::{self, Diff};
 use crate::drive::{self, Cfg, Decoded, Fail};
@@ -87,7 +87,7 @@ pub struct Opts {
 #[derive(Debug, Clone, Default)]
 pub struct Row {
     pub name: String,
-    pub info: Option<yoton_audio::StreamInfo>,
+    pub info: Option<orpheus_audio::StreamInfo>,
     pub failures: Vec<String>,
     pub reference: String,
     pub md5: Option<bool>,
@@ -342,7 +342,7 @@ fn robust_check(e: &Entry, file: &[u8], row: &mut Row) {
                 Fail::Probe
                 | Fail::Open(_)
                 | Fail::ArenaBudget { .. }
-                | Fail::Decode(yoton_audio::DecodeError::Unsupported(_)),
+                | Fail::Decode(orpheus_audio::DecodeError::Unsupported(_)),
             ) => {}
             Err(f) => {
                 bad += 1;

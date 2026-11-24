@@ -1,10 +1,10 @@
-//! Links saved by the linker wrapper `tools/yoton-ld` (configured in
+//! Links saved by the linker wrapper `tools/orpheus-ld` (configured in
 //! `fw/.cargo/config.toml`), run again with another linker script.
 //!
 //! rustc links every device binary through the wrapper, which records the
 //! complete `rust-lld -flavor gnu` command line and copies the input objects
 //! (the fat-LTO object and `symbols.o` are temporary files rustc deletes) to
-//! `fw/target/thumbv7em-none-eabihf/<profile>/yoton-link/<crate>/`. Linking
+//! `fw/target/thumbv7em-none-eabihf/<profile>/orpheus-link/<crate>/`. Linking
 //! again from there takes well under a second and needs no recompilation.
 
 use std::path::{Path, PathBuf};
@@ -29,14 +29,14 @@ pub fn profile_dir(release: bool) -> PathBuf {
 
 impl SavedLink {
     pub fn load(release: bool, bin: &str) -> Result<Self> {
-        let dir = profile_dir(release).join("yoton-link").join(bin.replace('-', "_"));
+        let dir = profile_dir(release).join("orpheus-link").join(bin.replace('-', "_"));
         if dir.join("unsupported").exists() {
             bail!("{}: {}", dir.display(), std::fs::read_to_string(dir.join("unsupported"))?.trim());
         }
         let args_path = dir.join("args");
         let text = std::fs::read_to_string(&args_path).with_context(|| {
             format!(
-                "no saved link at {} (is fw/.cargo/config.toml using tools/yoton-ld?)",
+                "no saved link at {} (is fw/.cargo/config.toml using tools/orpheus-ld?)",
                 args_path.display()
             )
         })?;

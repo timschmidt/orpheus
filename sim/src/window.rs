@@ -6,7 +6,7 @@ use std::time::{Duration, Instant as StdInstant};
 
 use anyhow::{Context, Result};
 use minifb::{Key as MKey, KeyRepeat, Window, WindowOptions};
-use yoton_ui::Key;
+use orpheus_ui::Key;
 
 use crate::{Host, Sim};
 
@@ -30,7 +30,7 @@ fn map(k: MKey) -> Option<Key> {
 
 pub fn run<H: Host>(mut sim: Sim<H>, out: &Path) -> Result<()> {
     let (w, h) = (128 * SCALE, 128 * SCALE);
-    let mut win = Window::new("yoton-sim", w, h, WindowOptions::default()).context("open window")?;
+    let mut win = Window::new("orpheus-sim", w, h, WindowOptions::default()).context("open window")?;
     win.set_target_fps(60);
     let mut buf = vec![0u32; w * h];
     let start = StdInstant::now();
@@ -58,7 +58,7 @@ pub fn run<H: Host>(mut sim: Sim<H>, out: &Path) -> Result<()> {
             sim.advance(now - sim.now.0);
         }
         for (i, px) in sim.fb.iter().enumerate() {
-            let [r, g, b] = yoton_ui::color::to_rgb888(*px);
+            let [r, g, b] = orpheus_ui::color::to_rgb888(*px);
             let c = (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b);
             let (x, y) = (i % 128, i / 128);
             for dy in 0..SCALE {

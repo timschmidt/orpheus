@@ -1,0 +1,13 @@
+[package]
+name = "orpheus-settings"
+description = "Power-cut-safe, wear-levelled key-value store on NOR sectors (settings, vault)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dev-dependencies]
+embassy-futures = "0.1"
+
+[lints]
+workspace = true

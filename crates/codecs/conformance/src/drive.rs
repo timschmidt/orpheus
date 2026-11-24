@@ -3,12 +3,12 @@
 //! through a simulated stream ring, checking the decoder contract on every
 //! call.
 
-use yoton_audio::probe::Probe;
-use yoton_audio::{
+use orpheus_audio::probe::Probe;
+use orpheus_audio::{
     ByteSource, ContainerInfo, DecodeError, Format, MAX_PEEK, OpenError, PcmBlock, SeekSource, SeekStep,
     SliceSource, Step, StreamInfo,
 };
-use yoton_codecs::AnyDecoder;
+use orpheus_codecs::AnyDecoder;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Cfg {
@@ -85,7 +85,7 @@ pub fn probe(
         return Ok((f, ContainerInfo { format: f, ..ContainerInfo::default() }));
     }
     for _ in 0..10_000 {
-        match yoton_audio::probe(src, ext.map(str::as_bytes)) {
+        match orpheus_audio::probe(src, ext.map(str::as_bytes)) {
             Probe::Found(f) => return Ok((f, ContainerInfo { format: f, ..ContainerInfo::default() })),
             Probe::Skip(n) => {
                 let to = src.position().saturating_add(n);
@@ -111,7 +111,7 @@ pub fn open<'a>(
 ) -> Result<(AnyDecoder<'a>, StreamInfo, usize), Fail> {
     let mut tries = 0u32;
     let plan = loop {
-        match yoton_codecs::inspect(format, src, hint) {
+        match orpheus_codecs::inspect(format, src, hint) {
             Ok(p) => break p,
             Err(OpenError::NeedData(n)) => {
                 if n <= src.available() || n > MAX_PEEK {
@@ -129,7 +129,7 @@ pub fn open<'a>(
     if plan.arena > cfg.arena {
         return Err(Fail::ArenaBudget { need: plan.arena, budget: cfg.arena });
     }
-    let (d, info) = yoton_codecs::open(format, src, arena, hint).map_err(Fail::Open)?;
+    let (d, info) = orpheus_codecs::open(format, src, arena, hint).map_err(Fail::Open)?;
     if info != plan.info {
         return Err(Fail::Contract("open info differs from inspect"));
     }
@@ -205,7 +205,7 @@ pub fn decode_file(file: &[u8], cfg: &Cfg, ext: Option<&str>) -> Result<Decoded,
     let (mut d, info, plan) = open(&mut src, cfg, format, &hint, &mut arena)?;
     let mut out = Decoded {
         info,
-        wide: info.sample == yoton_audio::SampleKind::I32,
+        wide: info.sample == orpheus_audio::SampleKind::I32,
         arena_plan: plan,
         ..Decoded::default()
     };

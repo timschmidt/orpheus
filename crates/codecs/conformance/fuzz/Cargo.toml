@@ -1,10 +1,10 @@
 # cargo-fuzz targets (nightly only; 07 §3.4). Run through
 # `cargo xtask test fuzz-smoke`, or directly:
 #   cd crates/codecs/conformance/fuzz && cargo +nightly fuzz run --fuzz-dir . <target>
-# The target bodies live in `yoton_codec_conformance::fuzz` so the stable
+# The target bodies live in `orpheus_codec_conformance::fuzz` so the stable
 # smoke run exercises the same code.
 [package]
-name = "yoton-codec-fuzz"
+name = "orpheus-codec-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2024"
@@ -14,7 +14,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-yoton-codec-conformance = { path = ".." }
+orpheus-codec-conformance = { path = ".." }
 
 # Its own workspace: nightly and libFuzzer stay out of the host workspace.
 [workspace]

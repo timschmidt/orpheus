@@ -79,7 +79,7 @@ Also needed after a cold boot before USB or DMA into RAM works **[HW]**
 
 The memory controller also has **bank-tag registers** (`0xC0040080 + 4n`) with
 which the vendor OS maps virtual windows onto SRAM0 and pages on UsageFault
-(system.md §10). yotonrs does not use them in the baseline; they are a
+(system.md §10). Orpheus does not use them in the baseline; they are a
 possible way to add SRAM0-backed code cache later (U-MEM-1).
 
 ## 4. Peripheral blocks
@@ -167,7 +167,7 @@ latch). Earphone present: LRADC1 in 385–591 with no key **[code]** (U-AUD-5).
 
 Design consequence: the table is from the datasheet; the stock firmware uses
 only a few of these lines (it polls keys, SD, UART and the charger), so each
-line yotonrs relies on beyond T0, USB and DMA 5 is confirmed in its driver's
+line Orpheus relies on beyond T0, USB and DMA 5 is confirmed in its driver's
 bring-up image before the driver depends on it.
 
 DMA channel plan (any channel can serve any device; the mode word selects it):
@@ -293,7 +293,7 @@ dev poke/peek` sessions; anything needing instruments or the case open is a
 | U-PWR-2 | `CMU_SYSCLK` bit 8 and [25:24] | Bus clock at high levels | system.md T2 | PWR-1 |
 | U-PWR-3 | SPI0 clock source/divisor encoding | Pager read speed at each configuration | system.md T3 | PG-1 |
 | U-PWR-4 | Can DEVPLL / COREPLL be off, HOSC divided, 32 kHz selected, with what wake-up | Deep idle | Stepwise in a bring-up image with timer wake; current needs a meter (**user check**), software proxy = battery ADC slope | PWR-3b |
-| U-PMU-1 | ~~Charge current per code~~ **Answered [DS]** (code 4 = 200 mA, code 1 = 50 mA). Remaining: end-voltage field (`CHG_VLOT`, `STOPV`) values the stock firmware leaves; behaviour of `CHG_DET` during a full charge | Safety, UI | Dump `CHG_CTL`/`CHG_DET` under the stock firmware while charging (boot stock, then ADFU read is not possible — read them from yotonrs right after a stock session with charger running, or decode the vendor writes); log a full charge cycle | PWR-2 |
+| U-PMU-1 | ~~Charge current per code~~ **Answered [DS]** (code 4 = 200 mA, code 1 = 50 mA). Remaining: end-voltage field (`CHG_VLOT`, `STOPV`) values the stock firmware leaves; behaviour of `CHG_DET` during a full charge | Safety, UI | Dump `CHG_CTL`/`CHG_DET` under the stock firmware while charging (boot stock, then ADFU read is not possible — read them from Orpheus right after a stock session with charger running, or decode the vendor writes); log a full charge cycle | PWR-2 |
 | U-PMU-2 | **S3 standby** (`POWER_CTL` bit 1, `VOUT_CTL[9:5]`): does RAM survive; does the SoC resume in place or restart through the ROM; which wake sources work; current drawn | Standby with alarms, background step counting, instant resume | Bring-up image: write a RAM pattern and a mailbox marker, arm the RTC alarm 10 s ahead with `WKEN_CTL` bit 4, enter S3 (clear `EN_S1` with `EN_S3` set — derive the exact sequence from the datasheet text first), observe over USB what comes back and whether the pattern survived. Needs a person only if nothing wakes it (reset pinhole) | PWR-3c |
 | U-PMU-3 | Wake from **off**: bits are documented (§7); confirm DC5V-insert, alarm and key wake on this board | Alarms, charging screen, unattended tests | Alarm case is fully automatic (arm alarm, power off, watch USB re-enumerate); DC5V case needs a re-plug (**user check**) | PWR-3a |
 | U-PMU-4 | ~~Long-press timing~~ **Answered [DS]** (§7). Choose values: long press 1.5 s, hardware reset after 8 s | Recovery UX | **User check**: hold Power 8 s on a deliberately hung test image | PWR-3a |

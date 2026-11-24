@@ -11,7 +11,7 @@ exclude = ["fw"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/timschmidt/yotonrs"
+repository = "https://github.com/timschmidt/orpheus"
 rust-version = "1.98"
 
 [workspace.lints.rust]
@@ -27,7 +27,7 @@ chunks_exact_to_as_chunks = "allow"
 manual_is_multiple_of = "allow"
 
 [workspace.dependencies]
-yoton-proto = { path = "crates/yoton-proto" }
+orpheus-proto = { path = "crates/orpheus-proto" }
 
 [profile.release]
 opt-level = "s"

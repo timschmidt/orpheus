@@ -1,12 +1,12 @@
 //! Test language packs (Russian, Japanese) in the `YLN1` format of
-//! `yoton_apps::strings`, built on the host. They exercise the pack
+//! `orpheus_apps::strings`, built on the host. They exercise the pack
 //! mechanism and give the golden images Cyrillic and CJK text; they are not
 //! reviewed translations (WP UI-7 owns real language packs). Entries left
 //! out fall back to English, as a partial pack would on the device.
 
 use std::sync::OnceLock;
 
-use yoton_apps::strings::{COUNT, Lang, Str};
+use orpheus_apps::strings::{COUNT, Lang, Str};
 
 /// Build a pack from (id, text) pairs.
 #[must_use]

@@ -1,4 +1,4 @@
-//! eFuse controller, `0xC0020000`. **READ-ONLY for yotonrs** (CLAUDE.md
+//! eFuse controller, `0xC0020000`. **READ-ONLY for orpheus** (CLAUDE.md
 //! rule 3): this module exposes only addresses and [`RoReg`] read accessors;
 //! it has no [`crate::Reg`] and no write path. The memory map (datasheet
 //! §3.4) prints the block as "-"; there is no register chapter. Everything

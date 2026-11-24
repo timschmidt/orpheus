@@ -2,9 +2,9 @@
 //! (05 §3), navigation stack and resume records (05 §5.1), lock and wake,
 //! overlays, and dirty-rectangle economy.
 
-use yoton_sim::DemoSim as Sim;
-use yoton_ui::Key;
-use yoton_ui::gfx::{CONTENT, STATUS_BAR, STRIP};
+use orpheus_sim::DemoSim as Sim;
+use orpheus_ui::Key;
+use orpheus_ui::gfx::{CONTENT, STATUS_BAR, STRIP};
 
 fn sim(script: &str) -> Sim {
     let mut s = Sim::new();

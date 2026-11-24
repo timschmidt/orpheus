@@ -13,9 +13,9 @@
 use atj2157_hal::clock::{self, Level};
 use atj2157_hal::{self as hal, executor, log, nor, pac, persist, time, wdt};
 use embassy_executor::Spawner;
+use orpheus_proto::hash::crc32;
+use orpheus_proto::result::Verdict;
 use static_cell::{ConstStaticCell, StaticCell};
-use yoton_proto::hash::crc32;
-use yoton_proto::result::Verdict;
 
 #[repr(C, align(4))]
 struct Buf([u32; 16384]);

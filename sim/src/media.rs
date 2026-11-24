@@ -1,5 +1,5 @@
 //! The simulator's Files and Music back end: the card image mounted
-//! through `yoton-fs` (copy-on-write), a windowed browse listing that
+//! through `orpheus-fs` (copy-on-write), a windowed browse listing that
 //! behaves like the firmware's (first visit of a big folder in on-disk
 //! order, sorted shortly after; rows outside the window are not
 //! available until `want` + `Event::Data`), text windows, and a fake player
@@ -8,17 +8,17 @@
 
 use std::collections::{HashMap, HashSet};
 
-use yoton_apps::browse::{DirId, EntryKind, FileRef, is_hidden_name, kind_of, letter_of, natural_cmp};
-use yoton_apps::services::{
+use orpheus_apps::browse::{DirId, EntryKind, FileRef, is_hidden_name, kind_of, letter_of, natural_cmp};
+use orpheus_apps::services::{
     ArtSize, Bookmark, BrowseFilter, DateTime, Entry, Levels, LibraryState, Listing, LyricLine, PicError,
     PicInfo, PicReq, PicSource, PicState, PlayerCmd, PlayerState, QueueEntry, SortBy, TrackInfo, data,
 };
-use yoton_audio::{Format, SliceSource};
-use yoton_fs::host::{OverlayDisk, block_on};
-use yoton_fs::{CacheSlot, DirEntry, MountOptions, OpenMode, Volume};
-use yoton_ui::event::{DataReady, Event, Source};
-use yoton_ui::geom::Rect;
-use yoton_ui::gfx::Gfx;
+use orpheus_audio::{Format, SliceSource};
+use orpheus_fs::host::{OverlayDisk, block_on};
+use orpheus_fs::{CacheSlot, DirEntry, MountOptions, OpenMode, Volume};
+use orpheus_ui::event::{DataReady, Event, Source};
+use orpheus_ui::geom::Rect;
+use orpheus_ui::gfx::Gfx;
 
 use crate::{card, pictures};
 
@@ -72,7 +72,7 @@ fn fnv(s: &str) -> u32 {
     s.bytes().fold(0x811C_9DC5u32, |h, b| (h ^ u32::from(b)).wrapping_mul(0x0100_0193))
 }
 
-fn conv_time(t: yoton_fs::DateTime) -> DateTime {
+fn conv_time(t: orpheus_fs::DateTime) -> DateTime {
     DateTime {
         year: t.year,
         month: t.month,
@@ -110,7 +110,7 @@ pub fn make_art(seed: u32, size: usize) -> Vec<u16> {
             let ring = if ((r * 9.0) as u32) % 2 == 0 { 1.0 } else { 0.82 };
             let mix = |p: f32, q: f32| ((p * (1.0 - t) + q * t) * ring * 0.85 + 0.08).clamp(0.0, 1.0);
             let (rr, gg, bb) = (mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2));
-            out.push(yoton_ui::color::rgb((rr * 255.0) as u8, (gg * 255.0) as u8, (bb * 255.0) as u8));
+            out.push(orpheus_ui::color::rgb((rr * 255.0) as u8, (gg * 255.0) as u8, (bb * 255.0) as u8));
         }
     }
     out
@@ -211,7 +211,7 @@ impl Media {
         self.dir_paths.get(&dir.0).cloned().unwrap_or_default()
     }
 
-    /// Read a directory through yoton-fs (host memory: the simulator may
+    /// Read a directory through orpheus-fs (host memory: the simulator may
     /// hold it; the service interface only ever shows a window).
     fn read_dir(&mut self, dir: DirId) -> Vec<HostEntry> {
         let base = self.path_of_dir(dir);
@@ -429,7 +429,7 @@ impl Media {
             art: None,
         };
         if let Ok(t) =
-            yoton_meta::read_all(&mut SliceSource::new(&data), Format::Mpeg, yoton_meta::Opts::default())
+            orpheus_meta::read_all(&mut SliceSource::new(&data), Format::Mpeg, orpheus_meta::Opts::default())
         {
             if !t.title.is_empty() {
                 item.title = t.title.as_str().to_string();
@@ -442,7 +442,7 @@ impl Media {
         }
         let lrc_path = format!("{}.lrc", path.rsplit_once('.').map_or(path, |(s, _)| s));
         let lrc = self.read_file(&lrc_path);
-        let mut r = yoton_meta::lrc::LrcReader::new(yoton_meta::CodePage::default());
+        let mut r = orpheus_meta::lrc::LrcReader::new(orpheus_meta::CodePage::default());
         for line in lrc.split(|&b| b == b'\n') {
             if let Some(l) = r.parse_line(line) {
                 for t in &l.times[..usize::from(l.n)] {

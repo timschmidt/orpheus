@@ -35,7 +35,7 @@ pub const SRAM2_WINDOW: (u32, u32) = (0x0020_0000, 0x0020_7FFF);
 pub const SRAM3_WINDOW: (u32, u32) = (0x0030_0000, 0x0030_7FFF);
 
 /// Bank-tag registers `+0x80 + 4n`, n = 1..17 (vendor virtual windows of
-/// 128 KiB; unused by yotonrs). \[code\] system.md §10.
+/// 128 KiB; unused by orpheus). \[code\] system.md §10.
 #[must_use]
 pub const fn bank_tag(n: usize) -> Reg {
     Reg::at(BASE + 0x80 + 4 * n)

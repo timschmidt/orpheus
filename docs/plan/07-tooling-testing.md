@@ -11,9 +11,9 @@ extend it with every driver; a feature without an automated check is not done.
 In `/home/tim/Documents/GitHub/yoton/` (the research repository; treat it as
 read-only reference, do not commit to it):
 
-| Item | What it does | Fate in yotonrs |
+| Item | What it does | Fate in Orpheus |
 |---|---|---|
-| `yoton.py`, `actions_probe.py` | ADFU (boot-ROM recovery) transport over USB, `ymon` RAM monitor upload, read/write any address, run payloads, NOR dump/program, reboot helpers, RGB565 → PNG | Port to Rust as the `yoton-host` library + `cargo xtask dev …` (WP-T-2). Until the port passes its tests, call the Python through `/home/tim/Documents/GitHub/yoton/.venv/bin/python` |
+| `yoton.py`, `actions_probe.py` | ADFU (boot-ROM recovery) transport over USB, `ymon` RAM monitor upload, read/write any address, run payloads, NOR dump/program, reboot helpers, RGB565 → PNG | Port to Rust as the `orpheus-host` library + `cargo xtask dev …` (WP-T-2). Until the port passes its tests, call the Python through `/home/tim/Documents/GitHub/yoton/.venv/bin/python` |
 | `payloads/ymon.c` (+ `ymon_s.S`) | The monitor that runs in RAM at `0x118000` under the boot ROM: memory access, fault-protected calls, host abort | Use the built `ymon.bin` at first; rewrite as a `no_std` Rust payload in WP-T-6 so that no C remains in the tree |
 | `payloads/norprog.c`, `norprog0.c`, `nordump.c`, `spinor.h` | NOR erase/program/read payloads; `norprog` refuses addresses outside `0x762000–0x7DFFFF`, `norprog0` handles sector 0 | Same: reuse, then port. **Keep the address guards** |
 | `payloads/ym03boot1.c`, `ym03stub.c` | The two-stage NOR boot stub now installed on the player (it boots Rockbox) | Replaced by Rust stages in 02-architecture §"Boot chain" |
@@ -41,21 +41,21 @@ talk to the player.
 
 | Command | Purpose |
 |---|---|
-| `xtask build [--release] [--layout dual\|full] [--features …]` | Build the firmware ELF, then run `pagelink`; outputs `target/yoton/firmware.yfw` (partition image), `resident.bin`, `pages.bin`, `firmware.map`, `layout.json` |
+| `xtask build [--release] [--layout dual\|full] [--features …]` | Build the firmware ELF, then run `pagelink`; outputs `target/orpheus/firmware.yfw` (partition image), `resident.bin`, `pages.bin`, `firmware.map`, `layout.json` |
 | `xtask pagelink` | The two-pass link and page packing (02 §"Demand paging") |
 | `xtask size [--check]` | Size report: resident text/rodata/data/bss per crate, paged code/rodata per crate, RAM map by region and by mode pool; `--check` fails when a budget in `budgets.toml` is exceeded |
 | `xtask check-resident` | Static proof that nothing reachable from an interrupt or fault handler lives in a paged section (§4.3) |
 | `xtask sim [--script file] [--shot dir]` | Run the desktop simulator, optionally scripted and headless |
 | `xtask test [host\|golden\|codecs\|fuzz-smoke\|all]` | Host test suites (§3) |
 | `xtask bringup <name>` | Build one bring-up image (small RAM-only binary under `bringup/`) |
-| `xtask dev state` *(dev)* | Which mode the player is in: ADFU ROM, ymon, yotonrs (any personality), Rockbox, stock; battery voltage if readable |
-| `xtask dev adfu` *(dev)* | Bring the player to ADFU + ymon from whatever is running (vendor SCSI reboot command for Rockbox/stock, EP0 request for yotonrs, nothing if already there) |
+| `xtask dev state` *(dev)* | Which mode the player is in: ADFU ROM, ymon, Orpheus (any personality), Rockbox, stock; battery voltage if readable |
+| `xtask dev adfu` *(dev)* | Bring the player to ADFU + ymon from whatever is running (vendor SCSI reboot command for Rockbox/stock, EP0 request for Orpheus, nothing if already there) |
 | `xtask dev ram <image> [--test name] [--wait s]` *(dev)* | Load a resident-only image to `0x100000` through ymon and start it; with `--test`, arm test mode, wait for the self-reboot, collect the result block, log ring and screenshot |
 | `xtask dev stage [--layout …]` *(dev)* | Write the firmware partition (and page store) to NOR with verify; refuses without verified backups; never touches sector 0 |
 | `xtask dev install-boot --i-have-a-backup` *(dev)* | Install or update the boot stages; the only command that writes sector 0 |
 | `xtask dev install-full --i-have-a-backup` *(dev)* | Switch to the full-flash layout (02 §2.4); user decision D-2 only |
 | `xtask dev log [--follow]` *(dev)* | Fetch and decode the defmt ring (running firmware via EP0, or post-mortem via ADFU) |
-| `xtask dev shot out.png` *(dev)* | Screenshot: EP0 frame-buffer read when yotonrs runs, RAM read at `0x158000` in ADFU |
+| `xtask dev shot out.png` *(dev)* | Screenshot: EP0 frame-buffer read when Orpheus runs, RAM read at `0x158000` in ADFU |
 | `xtask dev keys "ok wait:500 down down hold:menu"` *(dev)* | Inject key events into the running firmware |
 | `xtask dev hil <suite>` *(dev)* | Run an on-device test suite end to end (§5) |
 | `xtask dev prof [--faults\|--pc]` *(dev)* | Collect a page-fault or PC-sample profile and symbolise it; `--update-hot` rewrites `hot.toml` |
@@ -68,9 +68,9 @@ commands are documented in `yoton.py` and FINDINGS.md §3, §11.
 ## 3. Host-side testing (no device)
 
 Design rule that makes this possible: **only `atj2157-hal`, `yoton-bsp` and the
-`firmware` binary depend on the hardware.** Every other crate (`yoton-fs`,
-`yoton-audio`, all codecs, `yoton-ui`, `yoton-apps`, `yoton-usb` classes,
-`yoton-bt` protocol logic, `yoton-otp`, `yoton-pager`'s policy code) is
+`firmware` binary depend on the hardware.** Every other crate (`orpheus-fs`,
+`orpheus-audio`, all codecs, `orpheus-ui`, `orpheus-apps`, `orpheus-usb` classes,
+`orpheus-bt` protocol logic, `orpheus-otp`, `orpheus-pager`'s policy code) is
 `#![no_std]` with a `std` test configuration and takes its I/O through traits
 (`embedded-storage-async`-style block device, `embedded-io-async`, the service
 traits in 05 §5.1, `embassy-usb-driver`).
@@ -94,15 +94,15 @@ traits in 05 §5.1, `embassy-usb-driver`).
 
 ### 3.2 Simulator and golden images
 
-`sim/` is a desktop binary that links the same `yoton-ui` and `yoton-apps`
+`sim/` is a desktop binary that links the same `orpheus-ui` and `orpheus-apps`
 crates as the firmware and provides host implementations of the service traits:
 
 * display → an in-memory 128 × 128 RGB565 buffer; optional SDL2 window through
   `embedded-graphics-simulator` at 4× scale; PNG export;
 * keys → keyboard in the window, or a script (`ok`, `down*5`, `hold:menu`,
   `wait:300`, `shot:name`, `expect-screen:NowPlaying`);
-* storage → a host directory or a FAT/exFAT image file through `yoton-fs`;
-* audio → the real `yoton-audio` pipeline and codecs writing to a WAV file or
+* storage → a host directory or a FAT/exFAT image file through `orpheus-fs`;
+* audio → the real `orpheus-audio` pipeline and codecs writing to a WAV file or
   the sound card; timing simulated so buffer logic is exercised;
 * time → `embassy-time` std driver with a controllable mock clock for tests;
 * radio, Bluetooth, sensors, USB, power → scriptable fakes that produce the
@@ -112,7 +112,7 @@ crates as the firmware and provides host implementations of the service traits:
 Golden-image tests: each scripted journey ends in `shot:` commands; the PNGs
 are compared byte-for-byte with `sim/golden/*.png`. `xtask test golden
 --bless` rewrites them; a human-readable contact sheet
-(`target/yoton/golden.html`) shows old/new/diff for review. **Every screen in
+(`target/orpheus/golden.html`) shows old/new/diff for review. **Every screen in
 05-ui-apps has at least one golden image**, in the Dark theme and one in
 Light, with Latin, Cyrillic and CJK sample text.
 
@@ -154,7 +154,7 @@ kept as regression inputs under `tests/regress/`.
 
 `cargo fmt --check`; `cargo clippy --workspace --all-targets -- -D warnings`
 with `clippy::pedantic` selectively enabled; `#![forbid(unsafe_code)]` in every
-crate except `atj2157-pac`, `atj2157-hal`, `yoton-pager`, `firmware` and the
+crate except `atj2157-pac`, `atj2157-hal`, `orpheus-pager`, `firmware` and the
 boot stages, where each `unsafe` block carries a `// SAFETY:` line. No `alloc`
 anywhere in firmware crates (the `firmware` binary does not define a global
 allocator, so a dependency that needs one fails to link — keep it that way).
@@ -208,8 +208,8 @@ exception was active" with the stacked PC in the persistent trace (02
 | State of the player | How the host talks to it |
 |---|---|
 | Boot ROM ADFU (`10d6:10d6`) | Native ADFU commands; upload `ymon`, then full memory access |
-| yotonrs running, any USB personality | **Developer channel on endpoint 0** (vendor requests, 06 §"Developer channel"): log ring read, frame-buffer read, key injection, settings/stat queries, test-command mailbox, reboot (normal, ADFU, stock) |
-| yotonrs running, USB personality with no host function or hung | Watchdog → boot counter → ADFU after 3 failed starts (boot stage 2); then post-mortem reads |
+| Orpheus running, any USB personality | **Developer channel on endpoint 0** (vendor requests, 06 §"Developer channel"): log ring read, frame-buffer read, key injection, settings/stat queries, test-command mailbox, reboot (normal, ADFU, stock) |
+| Orpheus running, USB personality with no host function or hung | Watchdog → boot counter → ADFU after 3 failed starts (boot stage 2); then post-mortem reads |
 | Rockbox / stock mass storage | Vendor SCSI `CC` identify + `CB 21` → reboots into ADFU |
 | Powered off | Needs a human (Power key) unless wake-on-VBUS is confirmed (01-hardware unknown U-PMU-3). **Automated tests must never power the player off** until that is known; use reboot instead |
 
@@ -221,7 +221,7 @@ itself.
 
 ### 5.2 Persistent areas (fixed addresses, shared by firmware and host)
 
-Defined once in the `yoton-proto` crate (used by firmware, boot stages and
+Defined once in the `orpheus-proto` crate (used by firmware, boot stages and
 xtask):
 
 | Area | Address | Content |
@@ -246,7 +246,7 @@ xtask dev hil <suite>
     start (jump to image, or watchdog reset to boot from NOR)
     wait for the device to re-enumerate as ADFU (timeout per test)
     read result block, fault record, log ring, frame buffer
-    decode, compare, archive under target/yoton/hil/<suite>/<test>/
+    decode, compare, archive under target/orpheus/hil/<suite>/<test>/
 ```
 
 In test mode the firmware runs the named test task instead of (or beside) the
@@ -263,7 +263,7 @@ driver exists because it is much faster than reboot cycles.
 | `drivers` | One test per driver: timer accuracy vs host clock, LCD pattern + read-back of panel ID, key ADC idle values, SD init + CMD18/CMD25 pattern test on a **scratch file region** (§7), NOR read/erase/program in the scratch sector, DAC DMA cadence (interrupt gap histogram), ADC capture statistics, I2C device scan, RTC set/read/alarm, PMU readings, UART loopback if pins allow | Per-test thresholds in the test source |
 | `pager` | Fault-rate and latency statistics under scripted UI load; forced eviction storm; fault-in-exception counter | Zero fatal faults; counter zero; latency ≤ 300 µs per line |
 | `audio` | Decode each corpus file from the card: PCM **CRC over the stream handed to the DAC DMA** compared with the host reference CRC; underrun counter; CPU % per clock level; gapless join check | CRC equal for lossless, tolerance check via captured PCM window for lossy; zero underruns incl. during scripted UI stress |
-| `fs` | On-device create/write/read/rename/delete in `/.yoton/test/`, then host-side `fsck` after switching to card-reader mode | Clean fsck, content hashes equal |
+| `fs` | On-device create/write/read/rename/delete in `/.orpheus/test/`, then host-side `fsck` after switching to card-reader mode | Clean fsck, content hashes equal |
 | `usb` | Enumerate each personality; MSC read/write speed and data integrity on the scratch area; CD-ROM image hash; HID reports captured on the host; suspend/resume; cable reconnect via soft detach | Hashes equal; no enumeration errors in the host's kernel log (`journalctl -k` snapshot before/after) |
 | `power` | Clock-level sweep with a CPU benchmark; idle statistics (time in WFI); battery ADC logging; charger state transitions | Benchmark scales with clock; WFI share ≥ 95 % at idle Home screen |
 | `soak` | 2 h playlist playback with periodic UI scripts and seeks | No fault, no underrun, no drift between played samples and wall clock beyond crystal tolerance |
@@ -280,7 +280,7 @@ driver exists because it is much faster than reboot cycles.
    exists) and check the tone frequency and level. If not available, analogue
    correctness (pops, hiss, channel swap, level) is a **user-assisted check**.
 4. User-assisted checks are collected in `docs/USER-CHECKS.md` with exact
-   instructions ("play `/yoton-test/lr.wav`; expect a 1 kHz tone on the left
+   instructions ("play `/.orpheus/test/lr.wav`; expect a 1 kHz tone on the left
    only, then the right only"). A worker adds entries; the user ticks them off.
    Milestone gates list which user checks they need.
 
@@ -342,9 +342,9 @@ These are repeated in `CLAUDE.md`; they are here with their reasons.
    not leave it in a state that needs a key press: every test ends in a reboot
    to ADFU or to the installed firmware.
 6. **The card holds the owner's music.** Automated tests write only inside
-   `/.yoton/` (create it if needed) and never format, repartition, or run raw
+   `/.orpheus/` (create it if needed) and never format, repartition, or run raw
    block writes outside files they created. Raw-block driver tests use the LBA
-   range of a pre-allocated scratch file (`/.yoton/test/scratch.bin`, located
+   range of a pre-allocated scratch file (`/.orpheus/test/scratch.bin`, located
    through the file system, extents verified contiguous). MSC write tests from
    the host go through the mounted file system into the same directory.
 7. **Rockbox is the working reference on the device** until milestone M2
@@ -362,9 +362,9 @@ These are repeated in `CLAUDE.md`; they are here with their reasons.
 ## 8. Tooling work packages
 
 * **WP-T-1 Workspace and proto**: Cargo workspace, toolchain pin, lint config,
-  `yoton-proto` (addresses, mailbox, result block, developer-channel request
+  `orpheus-proto` (addresses, mailbox, result block, developer-channel request
   numbers), `budgets.toml`, `xtask` skeleton with `build`, `size`, `test`.
-* **WP-T-2 Host transport**: `yoton-host` (ADFU, ymon protocol, NOR payload
+* **WP-T-2 Host transport**: `orpheus-host` (ADFU, ymon protocol, NOR payload
   drivers, PNG), `xtask dev state/adfu/ram/peek/poke/dump/shot/backup-verify`.
   Acceptance: byte-identical NOR dump of the scratch sector vs `yoton.py`;
   screenshot of the running Rockbox frame buffer.

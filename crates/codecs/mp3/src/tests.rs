@@ -1,7 +1,7 @@
 use std::vec::Vec;
 
 use super::*;
-use yoton_audio::SliceSource;
+use orpheus_audio::SliceSource;
 
 /// 0.3 s of a 1 kHz sine at 44.1 kHz mono, 32 kbit/s, with a LAME tag
 /// (made by ffmpeg/libmp3lame).

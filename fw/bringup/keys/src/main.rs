@@ -5,7 +5,7 @@
 //! 20), sampling every 10 ms through the debouncer. Records what it saw.
 //!
 //! Counters:
-//!  0 keys ever seen (bit mask, yoton_input::Key order)
+//!  0 keys ever seen (bit mask, orpheus_input::Key order)
 //!  1 ladder 1 idle value at start      5 ladder 2 min
 //!  2 ladder 2 idle value at start      6 edges seen
 //!  3 ladder 1 min                      7 samples
@@ -17,11 +17,11 @@
 use atj2157_hal::{self as hal, dma, executor, log, pac, persist, wdt};
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Instant, Ticker, Timer};
+use orpheus_proto::result::Verdict;
 use static_cell::StaticCell;
 use yoton_bsp::display::{Backlight, Display};
 use yoton_bsp::keys::{self, Debouncer, Key, Keys};
 use yoton_bsp::{display, tiny};
-use yoton_proto::result::Verdict;
 
 const BG: u16 = tiny::rgb(0, 0, 0);
 const FG: u16 = tiny::rgb(255, 255, 255);

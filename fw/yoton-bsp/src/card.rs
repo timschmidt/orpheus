@@ -1,8 +1,8 @@
-//! The microSD card as a `yoton_fs::BlockDevice` (SD0, DMA channel 4).
+//! The microSD card as a `orpheus_fs::BlockDevice` (SD0, DMA channel 4).
 
 use atj2157_hal::dma;
 use atj2157_hal::sd::{self, Error, Sd};
-pub use yoton_fs::BlockDevice;
+pub use orpheus_fs::BlockDevice;
 
 use crate::pins;
 

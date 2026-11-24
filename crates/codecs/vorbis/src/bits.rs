@@ -2,8 +2,8 @@
 //! view). Reads past the end return zeros and set `eop` (Vorbis I §2.1.4:
 //! end-of-packet is a normal condition during audio decode).
 
-use yoton_audio::View;
-use yoton_ogg::ranges::Packet;
+use orpheus_audio::View;
+use orpheus_ogg::ranges::Packet;
 
 pub(crate) struct Bits<'a> {
     v: View<'a>,

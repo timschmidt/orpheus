@@ -16,7 +16,7 @@
 //! after the packets completed on the found page, so the next packet starts
 //! exactly at that page's granule position.
 
-use yoton_audio::{ByteSource, MAX_PEEK, View};
+use orpheus_audio::{ByteSource, MAX_PEEK, View};
 
 use crate::{HEADER_MIN, PageHeader, Sync, crc_page_bytes, crc_update, sync_page};
 

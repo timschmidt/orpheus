@@ -1,10 +1,10 @@
-//! yoton-sim: the desktop simulator (07 §3.2).
+//! orpheus-sim: the desktop simulator (07 §3.2).
 //!
-//! A headless 128 × 128 RGB565 frame buffer driven by the same `yoton-ui`
+//! A headless 128 × 128 RGB565 frame buffer driven by the same `orpheus-ui`
 //! code as the firmware, simulated time (so every run is deterministic), key
 //! scripts, PNG export, and (feature `window`) a 4× window. Two hosts:
 //! [`DemoSim`] runs the toolkit's widget demo (UI-1 golden images),
-//! [`AppSim`] runs the real `yoton-apps` screens over scriptable fake
+//! [`AppSim`] runs the real `orpheus-apps` screens over scriptable fake
 //! services (UI-2 onwards).
 //!
 //! Script language (whitespace- or comma-separated commands):
@@ -34,14 +34,14 @@ pub mod system;
 pub mod window;
 
 use anyhow::{Context, Result, bail};
-use yoton_ui::event::Event;
-use yoton_ui::font::{GlyphCache, GlyphSource};
-use yoton_ui::gfx::{DirtySet, FB_PIXELS, Fallback, Gfx};
-use yoton_ui::input::{KeyGate, KeyMapper};
-use yoton_ui::nav::{Arg, Nav, ScreenId, ScreenSet};
-use yoton_ui::shell::{Requests, Shell, System};
-use yoton_ui::theme::{Accent, Palette, Theme};
-use yoton_ui::{Instant, Key};
+use orpheus_ui::event::Event;
+use orpheus_ui::font::{GlyphCache, GlyphSource};
+use orpheus_ui::gfx::{DirtySet, FB_PIXELS, Fallback, Gfx};
+use orpheus_ui::input::{KeyGate, KeyMapper};
+use orpheus_ui::nav::{Arg, Nav, ScreenId, ScreenSet};
+use orpheus_ui::shell::{Requests, Shell, System};
+use orpheus_ui::theme::{Accent, Palette, Theme};
+use orpheus_ui::{Instant, Key};
 
 use crate::fallback::{FonFile, HexFont};
 
@@ -61,7 +61,7 @@ impl Shot {
 /// RGB565 frame to PNG bytes through the host image helpers.
 pub fn png_bytes(fb: &[u16]) -> Result<Vec<u8>> {
     let bytes: Vec<u8> = fb.iter().flat_map(|p| p.to_le_bytes()).collect();
-    yoton_host::image::rgb565_png_bytes(&bytes, 128, 128)
+    orpheus_host::image::rgb565_png_bytes(&bytes, 128, 128)
 }
 
 /// What differs between simulated systems.
@@ -118,7 +118,7 @@ pub struct Sim<H: Host> {
 
 /// The widget demo of UI-1.
 pub type DemoSim = Sim<system::SimSystem>;
-/// The apps of `yoton-apps` over fake services.
+/// The apps of `orpheus-apps` over fake services.
 pub type AppSim = Sim<apps::HostServices>;
 
 impl<H: Host> Default for Sim<H> {
@@ -134,7 +134,7 @@ impl<H: Host> Sim<H> {
         Self::with_font(Box::new(HexFont::subset()))
     }
 
-    /// Use the font file named by `YOTON_FALLBACK_FON` if set (development
+    /// Use the font file named by `ORPHEUS_FALLBACK_FON` if set (development
     /// only, e.g. the vendor font in a NOR dump).
     #[must_use]
     pub fn new_dev_font() -> Self {
@@ -261,7 +261,7 @@ impl<H: Host> Sim<H> {
     pub fn advance(&mut self, ms: u64) {
         let end = self.now.0 + ms;
         while self.now.0 < end {
-            let mut next = end.min(self.now.0 + u64::from(yoton_ui::shell::TICK_MS));
+            let mut next = end.min(self.now.0 + u64::from(orpheus_ui::shell::TICK_MS));
             if let Some(d) = self.mapper.next_deadline() {
                 next = next.min(d.0.max(self.now.0 + 1));
             }

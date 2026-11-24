@@ -12,7 +12,7 @@
 #
 # [[cluster]]
 # name = "mp3-frame"
-# symbols = ["yoton_codec_mp3::frame::*", "yoton_codec_mp3::imdct::*"]
+# symbols = ["orpheus_codec_mp3::frame::*", "orpheus_codec_mp3::imdct::*"]
 
 # The paged toy: three functions spread over the generated code, packed
 # together (checked by `cargo xtask test pagelink`).

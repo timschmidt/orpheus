@@ -1,6 +1,6 @@
 //! The Bluetooth task (WP BT-2, device side; 06 §4.2, bluetooth.md).
 //!
-//! Owns the transmitter module: `yoton_bt::driver::Driver` (state machine,
+//! Owns the transmitter module: `orpheus_bt::driver::Driver` (state machine,
 //! command layer, frame codec; ~1.3 KB, in a static) over `yoton_bsp::bt`
 //! (UART1, GPIO20 enable, GPIO31 host-busy). Receive path, switchable for
 //! the first hardware runs (`bt rx …`): a DMA ring (default, no
@@ -42,11 +42,11 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer, with_timeout};
+use orpheus_bt::driver::{Driver, Port, SHUTDOWN_WAIT_MS};
+use orpheus_bt::transmitter::Device;
+use orpheus_bt::{Addr, Config, Key, Output, State};
+use orpheus_ui::event::{BtState, Source};
 use yoton_bsp::bt::{self as hw, Link, Mode};
-use yoton_bt::driver::{Driver, Port, SHUTDOWN_WAIT_MS};
-use yoton_bt::transmitter::Device;
-use yoton_bt::{Addr, Config, Key, Output, State};
-use yoton_ui::event::{BtState, Source};
 
 use crate::audio::Writer;
 
@@ -239,7 +239,7 @@ struct Session {
 
 impl Session {
     fn on_output(&mut self, o: Output) {
-        use yoton_player::Command;
+        use orpheus_player::Command;
         match o {
             Output::Enable(true) => self.restart_pending = false,
             Output::Connected(a) => {

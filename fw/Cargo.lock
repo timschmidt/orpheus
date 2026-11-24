@@ -24,9 +24,9 @@ dependencies = [
  "embassy-time-driver",
  "embassy-time-queue-utils",
  "embassy-usb-driver",
- "yoton-pager",
- "yoton-proto",
- "yoton-sdcard",
+ "orpheus-pager",
+ "orpheus-proto",
+ "orpheus-sdcard",
 ]
 
 [[package]]
@@ -68,9 +68,9 @@ dependencies = [
  "embassy-executor",
  "embassy-sync",
  "embassy-time",
+ "orpheus-proto",
  "static_cell",
  "yoton-bsp",
- "yoton-proto",
 ]
 
 [[package]]
@@ -81,10 +81,10 @@ dependencies = [
  "embassy-executor",
  "embassy-sync",
  "embassy-time",
+ "orpheus-power",
+ "orpheus-proto",
  "static_cell",
  "yoton-bsp",
- "yoton-power",
- "yoton-proto",
 ]
 
 [[package]]
@@ -95,9 +95,9 @@ dependencies = [
  "embassy-executor",
  "embassy-sync",
  "embassy-time",
+ "orpheus-proto",
  "static_cell",
  "yoton-bsp",
- "yoton-proto",
 ]
 
 [[package]]
@@ -108,8 +108,8 @@ dependencies = [
  "embassy-executor",
  "embassy-sync",
  "embassy-time",
+ "orpheus-proto",
  "static_cell",
- "yoton-proto",
 ]
 
 [[package]]
@@ -120,9 +120,9 @@ dependencies = [
  "embassy-executor",
  "embassy-sync",
  "embassy-time",
+ "orpheus-proto",
  "static_cell",
  "yoton-bsp",
- "yoton-proto",
 ]
 
 [[package]]
@@ -133,10 +133,10 @@ dependencies = [
  "embassy-executor",
  "embassy-sync",
  "embassy-time",
+ "orpheus-input",
+ "orpheus-proto",
  "static_cell",
  "yoton-bsp",
- "yoton-input",
- "yoton-proto",
 ]
 
 [[package]]
@@ -147,9 +147,9 @@ dependencies = [
  "embassy-executor",
  "embassy-sync",
  "embassy-time",
+ "orpheus-proto",
  "static_cell",
  "yoton-bsp",
- "yoton-proto",
 ]
 
 [[package]]
@@ -160,9 +160,9 @@ dependencies = [
  "embassy-executor",
  "embassy-sync",
  "embassy-time",
+ "orpheus-proto",
  "static_cell",
  "yoton-bsp",
- "yoton-proto",
 ]
 
 [[package]]
@@ -171,9 +171,9 @@ version = "0.1.0"
 dependencies = [
  "atj2157-hal",
  "embassy-executor",
+ "orpheus-pager",
+ "orpheus-proto",
  "static_cell",
- "yoton-pager",
- "yoton-proto",
 ]
 
 [[package]]
@@ -184,10 +184,10 @@ dependencies = [
  "embassy-executor",
  "embassy-sync",
  "embassy-time",
+ "orpheus-proto",
+ "orpheus-sdcard",
  "static_cell",
  "yoton-bsp",
- "yoton-proto",
- "yoton-sdcard",
 ]
 
 [[package]]
@@ -200,10 +200,10 @@ dependencies = [
  "embassy-sync",
  "embassy-time",
  "embassy-usb",
+ "orpheus-proto",
+ "orpheus-usb",
  "static_cell",
  "yoton-bsp",
- "yoton-proto",
- "yoton-usb",
 ]
 
 [[package]]
@@ -547,25 +547,25 @@ dependencies = [
  "embassy-time",
  "embassy-usb",
  "embassy-usb-driver",
+ "orpheus-apps",
+ "orpheus-audio",
+ "orpheus-bt",
+ "orpheus-codecs",
+ "orpheus-dsp",
+ "orpheus-fs",
+ "orpheus-img",
+ "orpheus-index",
+ "orpheus-input",
+ "orpheus-meta",
+ "orpheus-pager",
+ "orpheus-player",
+ "orpheus-power",
+ "orpheus-proto",
+ "orpheus-settings",
+ "orpheus-ui",
+ "orpheus-usb",
  "static_cell",
- "yoton-apps",
- "yoton-audio",
  "yoton-bsp",
- "yoton-bt",
- "yoton-codecs",
- "yoton-dsp",
- "yoton-fs",
- "yoton-img",
- "yoton-index",
- "yoton-input",
- "yoton-meta",
- "yoton-pager",
- "yoton-player",
- "yoton-power",
- "yoton-proto",
- "yoton-settings",
- "yoton-ui",
- "yoton-usb",
 ]
 
 [[package]]
@@ -708,11 +708,181 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
+name = "orpheus-apps"
+version = "0.1.0"
+dependencies = [
+ "orpheus-power",
+ "orpheus-ui",
+]
+
+[[package]]
+name = "orpheus-audio"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
+name = "orpheus-bt"
+version = "0.1.0"
+
+[[package]]
+name = "orpheus-codec-flac"
+version = "0.1.0"
+dependencies = [
+ "orpheus-audio",
+]
+
+[[package]]
+name = "orpheus-codec-mp3"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "orpheus-audio",
+]
+
+[[package]]
+name = "orpheus-codec-opus"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "orpheus-audio",
+ "orpheus-ogg",
+]
+
+[[package]]
+name = "orpheus-codec-speex"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "orpheus-audio",
+ "orpheus-ogg",
+]
+
+[[package]]
+name = "orpheus-codec-vorbis"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "orpheus-audio",
+ "orpheus-ogg",
+]
+
+[[package]]
+name = "orpheus-codec-wav"
+version = "0.1.0"
+dependencies = [
+ "orpheus-audio",
+]
+
+[[package]]
+name = "orpheus-codecs"
+version = "0.1.0"
+dependencies = [
+ "orpheus-audio",
+ "orpheus-codec-flac",
+ "orpheus-codec-mp3",
+ "orpheus-codec-opus",
+ "orpheus-codec-speex",
+ "orpheus-codec-vorbis",
+ "orpheus-codec-wav",
+]
+
+[[package]]
+name = "orpheus-dsp"
+version = "0.1.0"
+dependencies = [
+ "orpheus-audio",
+]
+
+[[package]]
+name = "orpheus-fs"
+version = "0.1.0"
+
+[[package]]
+name = "orpheus-img"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "orpheus-audio",
+]
+
+[[package]]
+name = "orpheus-index"
+version = "0.1.0"
+dependencies = [
+ "orpheus-apps",
+ "orpheus-fs",
+]
+
+[[package]]
+name = "orpheus-input"
+version = "0.1.0"
+
+[[package]]
+name = "orpheus-meta"
+version = "0.1.0"
+dependencies = [
+ "orpheus-audio",
+]
+
+[[package]]
+name = "orpheus-ogg"
+version = "0.1.0"
+dependencies = [
+ "orpheus-audio",
+]
+
+[[package]]
+name = "orpheus-pager"
+version = "0.1.0"
+
+[[package]]
+name = "orpheus-player"
+version = "0.1.0"
+dependencies = [
+ "orpheus-fs",
+ "orpheus-proto",
+]
+
+[[package]]
+name = "orpheus-power"
+version = "0.1.0"
+
+[[package]]
+name = "orpheus-proto"
+version = "0.1.0"
+
+[[package]]
+name = "orpheus-sdcard"
+version = "0.1.0"
+
+[[package]]
+name = "orpheus-settings"
+version = "0.1.0"
+
+[[package]]
+name = "orpheus-ui"
+version = "0.1.0"
+dependencies = [
+ "embedded-graphics-core",
+]
+
+[[package]]
+name = "orpheus-usb"
+version = "0.1.0"
+dependencies = [
+ "embassy-usb",
+ "embassy-usb-driver",
+ "orpheus-proto",
+]
+
+[[package]]
 name = "payload-norprog"
 version = "0.1.0"
 dependencies = [
  "atj2157-hal",
- "yoton-proto",
+ "orpheus-proto",
 ]
 
 [[package]]
@@ -1044,185 +1214,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "yoton-apps"
-version = "0.1.0"
-dependencies = [
- "yoton-power",
- "yoton-ui",
-]
-
-[[package]]
-name = "yoton-audio"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
-]
-
-[[package]]
 name = "yoton-bsp"
 version = "0.1.0"
 dependencies = [
  "atj2157-hal",
  "embassy-futures",
  "embassy-time",
- "yoton-fs",
- "yoton-input",
- "yoton-power",
- "yoton-proto",
- "yoton-settings",
-]
-
-[[package]]
-name = "yoton-bt"
-version = "0.1.0"
-
-[[package]]
-name = "yoton-codec-flac"
-version = "0.1.0"
-dependencies = [
- "yoton-audio",
-]
-
-[[package]]
-name = "yoton-codec-mp3"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "yoton-audio",
-]
-
-[[package]]
-name = "yoton-codec-opus"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "yoton-audio",
- "yoton-ogg",
-]
-
-[[package]]
-name = "yoton-codec-speex"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "yoton-audio",
- "yoton-ogg",
-]
-
-[[package]]
-name = "yoton-codec-vorbis"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "yoton-audio",
- "yoton-ogg",
-]
-
-[[package]]
-name = "yoton-codec-wav"
-version = "0.1.0"
-dependencies = [
- "yoton-audio",
-]
-
-[[package]]
-name = "yoton-codecs"
-version = "0.1.0"
-dependencies = [
- "yoton-audio",
- "yoton-codec-flac",
- "yoton-codec-mp3",
- "yoton-codec-opus",
- "yoton-codec-speex",
- "yoton-codec-vorbis",
- "yoton-codec-wav",
-]
-
-[[package]]
-name = "yoton-dsp"
-version = "0.1.0"
-dependencies = [
- "yoton-audio",
-]
-
-[[package]]
-name = "yoton-fs"
-version = "0.1.0"
-
-[[package]]
-name = "yoton-img"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "yoton-audio",
-]
-
-[[package]]
-name = "yoton-index"
-version = "0.1.0"
-dependencies = [
- "yoton-apps",
- "yoton-fs",
-]
-
-[[package]]
-name = "yoton-input"
-version = "0.1.0"
-
-[[package]]
-name = "yoton-meta"
-version = "0.1.0"
-dependencies = [
- "yoton-audio",
-]
-
-[[package]]
-name = "yoton-ogg"
-version = "0.1.0"
-dependencies = [
- "yoton-audio",
-]
-
-[[package]]
-name = "yoton-pager"
-version = "0.1.0"
-
-[[package]]
-name = "yoton-player"
-version = "0.1.0"
-dependencies = [
- "yoton-fs",
- "yoton-proto",
-]
-
-[[package]]
-name = "yoton-power"
-version = "0.1.0"
-
-[[package]]
-name = "yoton-proto"
-version = "0.1.0"
-
-[[package]]
-name = "yoton-sdcard"
-version = "0.1.0"
-
-[[package]]
-name = "yoton-settings"
-version = "0.1.0"
-
-[[package]]
-name = "yoton-ui"
-version = "0.1.0"
-dependencies = [
- "embedded-graphics-core",
-]
-
-[[package]]
-name = "yoton-usb"
-version = "0.1.0"
-dependencies = [
- "embassy-usb",
- "embassy-usb-driver",
- "yoton-proto",
+ "orpheus-fs",
+ "orpheus-input",
+ "orpheus-power",
+ "orpheus-proto",
+ "orpheus-settings",
 ]

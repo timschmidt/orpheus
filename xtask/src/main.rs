@@ -29,7 +29,7 @@ usage: cargo xtask <command> [options]
 
   build [--debug] [--bin NAME] [--layout dual|full] [--features F]
                                    build the firmware (fw/) and pagelink it:
-                                   target/yoton/firmware.yfw, resident.bin,
+                                   target/orpheus/firmware.yfw, resident.bin,
                                    pages.bin, layout.json
   pagelink [--bin NAME] [--no-build] [--paged PATTERN,..]
                                    the two-pass paged link alone

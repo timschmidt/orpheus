@@ -28,9 +28,9 @@ extern crate std;
 mod frame;
 
 use frame::{FrameError, FrameHeader, Params};
-use yoton_audio::arena::{self, Arena};
-use yoton_audio::source::skip;
-use yoton_audio::{
+use orpheus_audio::arena::{self, Arena};
+use orpheus_audio::source::skip;
+use orpheus_audio::{
     ByteSource, CodecId, ContainerInfo, DecodeError, Decoder, MAX_PEEK, OpenError, PcmBlock, Plan,
     SampleKind, SeekSource, SeekStep, Step, StreamInfo, Unsupported, View,
 };

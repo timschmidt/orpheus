@@ -1,0 +1,18 @@
+[package]
+name = "orpheus-index"
+description = "Sorted directory index on the card: bounded-RAM external merge sort and windowed queries (04 §6.2)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+orpheus-apps = { path = "../orpheus-apps" }
+orpheus-fs = { path = "../orpheus-fs" }
+
+[dev-dependencies]
+orpheus-fs = { path = "../orpheus-fs", features = ["std"] }
+
+[lints]
+workspace = true

@@ -9,8 +9,8 @@ MEMORY
     SRAM1 (rw)  : ORIGIN = 0x00158000, LENGTH = 0x8000
 }
 
-YOTON_FLAT_PASS = 1;
+ORPHEUS_FLAT_PASS = 1;
 /* Page counts (the generated pass-2 script sets the real ones). The
- * firmware reads them as `&__yoton_code_pages as *const u8 as usize`. */
-__yoton_code_pages = 0;
-__yoton_rodata_pages = 0;
+ * firmware reads them as `&__orpheus_code_pages as *const u8 as usize`. */
+__orpheus_code_pages = 0;
+__orpheus_rodata_pages = 0;

@@ -9,10 +9,10 @@
 //! that `check-resident` must report with its chain.
 
 use anyhow::{Context, Result, bail, ensure};
+use orpheus_pager::sim::{Kind as Access, Machine};
+use orpheus_pager::{PAGE_SIZE, Page, RO_GROUP_SIZE, RO_WIN};
+use orpheus_proto::slot::{LAYOUT_DUAL, SlotHeader};
 use sha2::{Digest, Sha256};
-use yoton_pager::sim::{Kind as Access, Machine};
-use yoton_pager::{PAGE_SIZE, Page, RO_GROUP_SIZE, RO_WIN};
-use yoton_proto::slot::{LAYOUT_DUAL, SlotHeader};
 
 use crate::linkgraph::Graph;
 use crate::pagelink::{self, Layout, Options, SRAM0, artefacts};
@@ -92,7 +92,7 @@ pub fn run() -> Result<String> {
         ensure!(s.placement == "resident" && s.reason.starts_with("closure:"), "{sym}: {}", s.reason);
     }
     ensure!(
-        section(&l, "<yoton_pager::PagerCore>::fault")?.placement == "resident",
+        section(&l, "<orpheus_pager::PagerCore>::fault")?.placement == "resident",
         "PagerCore::fault paged"
     );
     ensure!(section(&l, "bringup_pagetoy::generated::work_17")?.placement == "paged", "work_17 not paged");
@@ -117,8 +117,8 @@ pub fn run() -> Result<String> {
     let r0 = h.resident_off as usize;
     ensure!(slot[r0..r0 + resident.len()] == resident[..], "resident image in slot");
     ensure!(slot[h.pages_off as usize..] == store[..], "page store in slot");
-    ensure!(h.pages_crc == yoton_proto::hash::crc32(&store), "pages crc");
-    ensure!(h.resident_sum == yoton_proto::hash::sum32(&resident), "resident sum");
+    ensure!(h.pages_crc == orpheus_proto::hash::crc32(&store), "pages crc");
+    ensure!(h.resident_sum == orpheus_proto::hash::sum32(&resident), "resident sum");
     ensure!(store.len() == ((l.pages.code + l.pages.rodata) * PAGE_SIZE) as usize, "store size");
 
     // check-resident on the real layout.

@@ -1,7 +1,7 @@
 use std::vec::Vec;
 
 use super::*;
-use yoton_audio::SliceSource;
+use orpheus_audio::SliceSource;
 
 fn corpus(name: &str) -> Option<Vec<u8>> {
     std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/corpus").join(name))

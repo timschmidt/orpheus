@@ -5,7 +5,7 @@
 //! contract (`NeedData` that cannot be satisfied, an empty PCM block), or a
 //! stream that does not end within the iteration budget.
 
-use yoton_audio::{Format, SeekStep};
+use orpheus_audio::{Format, SeekStep};
 
 use crate::drive::{self, Cfg, Fail, Next};
 use crate::rng::Rng;
@@ -27,9 +27,9 @@ fn verdict(r: Result<(), Fail>) {
 /// Decode `file` to the end; after `seek_after` blocks, seek to `target`.
 fn run(file: &[u8], cfg: &Cfg, seek_after: Option<(u32, u64)>) -> Result<(), Fail> {
     let mut src = if cfg.ring == 0 {
-        yoton_audio::SliceSource::new(file)
+        orpheus_audio::SliceSource::new(file)
     } else {
-        yoton_audio::SliceSource::ring(file, cfg.ring)
+        orpheus_audio::SliceSource::ring(file, cfg.ring)
     };
     let (format, hint) = drive::probe(&mut src, cfg, None)?;
     let mut arena = vec![0u8; cfg.arena];
@@ -55,10 +55,10 @@ fn run(file: &[u8], cfg: &Cfg, seek_after: Option<(u32, u64)>) -> Result<(), Fai
                 match d.seek(&mut src, target).map_err(Fail::Decode)? {
                     SeekStep::Done(_) => break,
                     SeekStep::NeedData(n) => {
-                        if n <= yoton_audio::ByteSource::available(&src) || n > yoton_audio::MAX_PEEK {
+                        if n <= orpheus_audio::ByteSource::available(&src) || n > orpheus_audio::MAX_PEEK {
                             return Err(Fail::Contract("seek NeedData out of range"));
                         }
-                        if yoton_audio::ByteSource::at_end(&src) {
+                        if orpheus_audio::ByteSource::at_end(&src) {
                             return Err(Fail::Contract("seek NeedData at the end"));
                         }
                         drive::refill(&mut src, cfg);
@@ -106,26 +106,29 @@ pub fn flac(data: &[u8]) {
 }
 
 pub fn vorbis(data: &[u8]) {
-    decode_with(data, Some(Format::Ogg(yoton_audio::OggCodec::Vorbis)));
+    decode_with(data, Some(Format::Ogg(orpheus_audio::OggCodec::Vorbis)));
 }
 
 pub fn opus(data: &[u8]) {
-    decode_with(data, Some(Format::Ogg(yoton_audio::OggCodec::Opus)));
+    decode_with(data, Some(Format::Ogg(orpheus_audio::OggCodec::Opus)));
 }
 
 pub fn speex(data: &[u8]) {
-    decode_with(data, Some(Format::Ogg(yoton_audio::OggCodec::Speex)));
+    decode_with(data, Some(Format::Ogg(orpheus_audio::OggCodec::Speex)));
 }
 
 /// The Ogg packet readers alone (zero-copy and reassembling), over a
 /// simulated ring.
 pub fn ogg(data: &[u8]) {
-    use yoton_audio::{ByteSource, SliceSource};
-    use yoton_ogg::{Next, assembled, ranges};
+    use orpheus_audio::{ByteSource, SliceSource};
+    use orpheus_ogg::{Next, assembled, ranges};
     let Some((&sel, file)) = data.split_first() else { return };
     let chunk = CHUNKS[usize::from(sel) % CHUNKS.len()];
     let feed = |src: &mut SliceSource<'_>, n: usize| {
-        assert!(n > src.available() && n <= yoton_audio::MAX_PEEK && !src.at_end(), "ogg NeedData contract");
+        assert!(
+            n > src.available() && n <= orpheus_audio::MAX_PEEK && !src.at_end(),
+            "ogg NeedData contract"
+        );
         if chunk == 0 { src.refill() } else { src.trickle(chunk) }
     };
     let mut src = SliceSource::ring(file, 32 * 1024);
@@ -134,7 +137,7 @@ pub fn ogg(data: &[u8]) {
     for _ in 0..drive::budget(file.len()) {
         match r.next(&mut src) {
             Next::Packet(p) => {
-                let v = yoton_audio::View::of(&src);
+                let v = orpheus_audio::View::of(&src);
                 let _ = p.byte(&v, p.len.saturating_sub(1));
                 r.commit(&mut src, &p);
             }
@@ -168,9 +171,9 @@ pub fn ogg(data: &[u8]) {
 
 /// Probe only.
 pub fn probe(data: &[u8]) {
-    let src = yoton_audio::SliceSource::new(data);
-    let _ = yoton_audio::probe(&src, Some(b"mp3"));
-    let _ = yoton_audio::probe(&src, None);
+    let src = orpheus_audio::SliceSource::new(data);
+    let _ = orpheus_audio::probe(&src, Some(b"mp3"));
+    let _ = orpheus_audio::probe(&src, None);
 }
 
 /// A named target body.
@@ -180,8 +183,8 @@ pub type Target = (&'static str, fn(&[u8]));
 /// refill size. It must finish without breaking the `NeedData` contract
 /// and with a bounded number of `Continue`s.
 pub fn meta(data: &[u8]) {
-    use yoton_audio::{ByteSource, SliceSource};
-    use yoton_meta::{MetaStep, Opts, TagReader, Tags};
+    use orpheus_audio::{ByteSource, SliceSource};
+    use orpheus_meta::{MetaStep, Opts, TagReader, Tags};
     let Some((&sel, file)) = data.split_first() else { return };
     let format = [Format::Mpeg, Format::Flac, Format::Wav, Format::Aiff][usize::from(sel & 3)];
     let chunk = CHUNKS[usize::from(sel >> 2) % CHUNKS.len()];
@@ -207,11 +210,11 @@ pub fn meta(data: &[u8]) {
 
 /// LRC and SYLT readers over arbitrary bytes.
 pub fn lyrics(data: &[u8]) {
-    use yoton_audio::SliceSource;
-    use yoton_meta::lrc::{LrcReader, LrcStep};
-    use yoton_meta::sylt::{SyltReader, SyltStep};
+    use orpheus_audio::SliceSource;
+    use orpheus_meta::lrc::{LrcReader, LrcStep};
+    use orpheus_meta::sylt::{SyltReader, SyltStep};
     let mut src = SliceSource::ring(data, 4096);
-    let mut r = LrcReader::new(yoton_meta::CodePage::Windows1251);
+    let mut r = LrcReader::new(orpheus_meta::CodePage::Windows1251);
     for _ in 0..drive::budget(data.len()) {
         match r.next(&mut src) {
             LrcStep::Done => break,
@@ -220,7 +223,7 @@ pub fn lyrics(data: &[u8]) {
         }
     }
     let mut src = SliceSource::new(data);
-    let mut s = SyltReader::new(data.len() as u32, yoton_meta::CodePage::Latin1);
+    let mut s = SyltReader::new(data.len() as u32, orpheus_meta::CodePage::Latin1);
     for _ in 0..drive::budget(data.len()) {
         if !matches!(s.next(&mut src), SyltStep::Entry(_)) {
             return;

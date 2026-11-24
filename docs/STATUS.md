@@ -9,8 +9,8 @@ of every session. Newest entries first in §3.
 |---|---|
 | Plan | `docs/PLAN.md`, `docs/plan/`. **D-2 decided 2026-11-24 by the user: full-flash layout** ("wipe the original firmware and take over the full player hardware") |
 | Code | Host workspace (`crates/*`, `sim`, `xtask`) and device workspace (`fw/`: `atj2157-hal`, `yoton-bsp`, `firmware`, `boot/stage2`, `payloads/norprog`, `bringup/*`) |
-| Player | **Runs yotonrs from NOR, full layout.** Stock firmware and the Rockbox port are erased. Card: the owner's music (exFAT/FAT, 238.3 GB), read only except `/.yoton/` |
-| NOR | Sector 0: Rockbox-port stage 1 (unchanged). `0x001000`: full slot A (yotonrs, 544,768 B). `0x7DA000` settings, `0x7DE000` vault, `0x7DF400` Rust stage 2 (876 B, tries full A, full B, dual slot; no stock-firmware path). `0x7E0000–0x7FFFFF` vendor data, untouched. Backups: `yoton/dumps/nor_backup_8m.bin` (stock, verified), `local/nor-before-full.bin` (the chip just before the switch), `local/rockbox-nor-0x762000.bin`, `local/stage2-previous.bin`. Way back: `xtask dev restore vendor --i-have-a-backup` (`--verify` compares) |
+| Player | **Runs Orpheus from NOR, full layout.** Stock firmware and the Rockbox port are erased. Card: the owner's music (exFAT/FAT, 238.3 GB), read only except `/.orpheus/` |
+| NOR | Sector 0: Rockbox-port stage 1 (unchanged). `0x001000`: full slot A (Orpheus, 544,768 B). `0x7DA000` settings, `0x7DE000` vault, `0x7DF400` Rust stage 2 (876 B, tries full A, full B, dual slot; no stock-firmware path). `0x7E0000–0x7FFFFF` vendor data, untouched. Backups: `yoton/dumps/nor_backup_8m.bin` (stock, verified), `local/nor-before-full.bin` (the chip just before the switch), `local/rockbox-nor-0x762000.bin`, `local/stage2-previous.bin`. Way back: `xtask dev restore vendor --i-have-a-backup` (`--verify` compares) |
 | Host | Fedora 43, Rust 1.98.1 pinned. Root disk nearly full (≈ 14 GB free after deleting worker build output) |
 | Current milestone | M1–M3 device parts done; M4 (Files/Music) and M5 (playback) running on the player; host side of M6–M8 packages largely done |
 
@@ -29,15 +29,15 @@ of every session. Newest entries first in §3.
 | PWR-3a | mostly done (device) | Power-off: card flushed, Bluetooth 0x24, screen off, vendor PMU sequence (wake on long press or USB plug-in); in test mode a reboot instead (verified). Auto-off (setting, no key, nothing playing, no cable) and low-battery off (< 3.30 V for 10 s, no cable) through the same path — not testable with the cable in: user checks 11 and 15. Alarm wake not done |
 | RTC-1 | done (device) | set/read over the developer channel (`xtask dev time [--set]`); alarm untested; once lost after a ymon reset (U-RTC open) |
 | USB-4 | done (device) | Card-reader personality: card handed between the card task and USB; write-protected test mode; mid-track switch and hand-back verified. 2.3 MB/s read (open) |
-| FS-1 | done | `yoton-fs` |
-| FS-2 / AU-5 firmware | first cut on the player; **`yoton-player` wired in (built, not yet run on the player)** | Files lists the card (sorted through the directory index since AU-12 firmware), text viewer window, Now Playing. The card task drives `yoton_player::Player`: folder queue in RAM and `/.yoton/queue.bin`, resume record and bookmarks in `/.yoton/player.bin`, seek, shuffle/repeat (settings), A–B, sleep timer, Up next. Not done: gapless prefetch, fades, queue edits, Shuffle all. User check 13 |
+| FS-1 | done | `orpheus-fs` |
+| FS-2 / AU-5 firmware | first cut on the player; **`orpheus-player` wired in (built, not yet run on the player)** | Files lists the card (sorted through the directory index since AU-12 firmware), text viewer window, Now Playing. The card task drives `orpheus_player::Player`: folder queue in RAM and `/.orpheus/queue.bin`, resume record and bookmarks in `/.orpheus/player.bin`, seek, shuffle/repeat (settings), A–B, sleep timer, Up next. Not done: gapless prefetch, fades, queue edits, Shuffle all. User check 13 |
 | UI-1, UI-2, UI-3, UI-4 | done (host); running on the player | 457 golden images |
 | AU-1…AU-4, AU-7, AU-8, AU-9 | done (host); on the player: MP3/FLAC/WAV and Speex at 48 MHz, Vorbis at 144 MHz (clock floor), **Opus too slow** | Opus CELT touches more code per frame than the 32 KB code cache holds; ends with "decoder too slow for this player" (abort after 8 underruns) instead of a reset. Needs a bigger code cache or a resident hot path (RAM decision). Ogg pages over ~15.5 KB fail (16 KiB ring < `MAX_PEEK` 28 KiB; RAM) |
-| AU-6 | done (host); **working on the player** | `yoton-dsp` chain between decoder and DAC, fed by the Sound settings; works on a scratch copy of the decoder output; while any stage is active during playback the clock floor is 96 MHz (EQ + bass + crossfeed: 0 underruns, ≈ 90 % idle). WSOLA not done; Levels meter not wired |
-| AU-12 (directory index) | host done; **firmware wired in (built, not yet run on the player)** | `yoton-index` + its `card` adapters over `yoton-fs` (host-tested on FAT32/exFAT images). Files/Music › Folders sorted (Name/Date/Size, hidden per setting), letter jump from the index's letter runs, play queue in listing order. Library index, tag browsing, playlists, Favourites: not started |
-| AU-14 | done (host); **device: Pictures app and album art (built, not yet run on the player)** | `yoton-img`. Pictures (folders + pictures, list mode), viewer (fit/fill, rotate, next/prev, slideshow), album art made at track open and cached in `/.yoton/cache/art`. Not done: thumbnail grid, 100 % + pan, wallpaper, delete, per-file rotation memory. User check 14 |
-| OTP-1, BT-1, USB-6 | done (host) | `yoton-otp`, `yoton-bt`, MMC/CD-ROM in `yoton-usb` |
-| BT-2 (device) | **built, not yet run on the player** | UART1 driver (`atj2157_hal::uart`, `yoton_bsp::bt`), `yoton_bt::driver`, firmware `bt` task, `BluetoothService`, shutdown 0x24 on power-off. Module off at boot; `bt probe/on/off/status/scan/connect/listen/shutdown/rx/tx` test commands. Not done: volume policy, metadata at track change, pairing UI, U-BT-2 |
+| AU-6 | done (host); **working on the player** | `orpheus-dsp` chain between decoder and DAC, fed by the Sound settings; works on a scratch copy of the decoder output; while any stage is active during playback the clock floor is 96 MHz (EQ + bass + crossfeed: 0 underruns, ≈ 90 % idle). WSOLA not done; Levels meter not wired |
+| AU-12 (directory index) | host done; **firmware wired in (built, not yet run on the player)** | `orpheus-index` + its `card` adapters over `orpheus-fs` (host-tested on FAT32/exFAT images). Files/Music › Folders sorted (Name/Date/Size, hidden per setting), letter jump from the index's letter runs, play queue in listing order. Library index, tag browsing, playlists, Favourites: not started |
+| AU-14 | done (host); **device: Pictures app and album art (built, not yet run on the player)** | `orpheus-img`. Pictures (folders + pictures, list mode), viewer (fit/fill, rotate, next/prev, slideshow), album art made at track open and cached in `/.orpheus/cache/art`. Not done: thumbnail grid, 100 % + pan, wallpaper, delete, per-file rotation memory. User check 14 |
+| OTP-1, BT-1, USB-6 | done (host) | `orpheus-otp`, `orpheus-bt`, MMC/CD-ROM in `orpheus-usb` |
+| BT-2 (device) | **built, not yet run on the player** | UART1 driver (`atj2157_hal::uart`, `yoton_bsp::bt`), `orpheus_bt::driver`, firmware `bt` task, `BluetoothService`, shutdown 0x24 on power-off. Module off at boot; `bt probe/on/off/status/scan/connect/listen/shutdown/rx/tx` test commands. Not done: volume policy, metadata at track change, pairing UI, U-BT-2 |
 
 ## 3. Session log
 
@@ -58,7 +58,7 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   (enable line last up / first down, pads parked low when off as the
   vendor does), `Listen` (both UART pads as pulled-up inputs, nothing
   driven, edges counted while the module starts: board side of U-BT-1).
-* `yoton-bt`: `driver` (sans-I/O glue: `Port` trait, power on/off,
+* `orpheus-bt`: `driver` (sans-I/O glue: `Port` trait, power on/off,
   bounded power-off shutdown, stats, the enable line re-checked against
   the state after every drain); transmitter `shutdown` (0x24 once, no
   resend, refused unless the module is up; no restart afterwards); the
@@ -119,9 +119,9 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   again only when the overlay goes), battery/minute/volume/USB events no
   longer force a full redraw. Dropped: `scale::rgb888`/`feed_rgb565`
   (unused).
-* `yoton-index`: `Spec::images_only` (filter bit 4; index files of the
+* `orpheus-index`: `Spec::images_only` (filter bit 4; index files of the
   Pictures listing are their own `…-n4.idx`; older files still parse).
-* `yoton-img` (host-tested): `art::cover_rank` (`cover`, `folder`, `front`,
+* `orpheus-img` (host-tested): `art::cover_rank` (`cover`, `folder`, `front`,
   `album`, `AlbumArt…` with a picture extension), `art::Tee` (one decode,
   two scalers), `CacheKind::meta` (an entry's metadata without reading
   its pixels), `Orient::quarter_turns`.
@@ -145,10 +145,10 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   viewer shows "Stop playback to view pictures" (chosen over small-only
   decoding: even BMP/QOI need the scaler's 3 KiB) and retries by itself
   when playback stops. **Album art** is made when a track opens, before the
-  codec takes the arena: cache lookup (`/.yoton/cache/art`, 52 × 52
+  codec takes the arena: cache lookup (`/.orpheus/cache/art`, 52 × 52
   `Axxx.YTC` and 128 × 128 `Bxxx.YTC` buckets) keyed by the track's
   locator, size and mtime → else the embedded front cover (ID3 `APIC`,
-  FLAC `PICTURE` via `yoton-meta`; tag reader and tags placed in the
+  FLAC `PICTURE` via `orpheus-meta`; tag reader and tags placed in the
   arena) → else the folder's best `cover/folder/front…` picture (cached
   under the cover file's key; looked for once per folder). One decode
   feeds both sizes (`Tee`); the big copy only for JPEG/BMP/QOI (PNG and
@@ -159,7 +159,7 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   copy shows the small one centred on black. The art is never resident.
 * Pictures on Home (`app_available`); Files opens pictures in the viewer
   too (next/prev skip non-pictures).
-* Simulator: `PictureService` decodes for real (`yoton-img`, 64 KiB
+* Simulator: `PictureService` decodes for real (`orpheus-img`, 64 KiB
   arena) from a second read-only mount of the card; the card has
   `Aurora.png`, `Lake.bmp`, `Sunset.qoi` (generated, `sim/src/pictures.rs`,
   part of the card image's cache key) besides the two damaged stubs.
@@ -168,13 +168,13 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   `media_files_notice_*` now opens `/Images` (pictures open the viewer).
 * RAM (`xtask build`, `__stack_bottom`, this worktree): main stack
   23,768 → 21,696 B (−2,072). Resident rodata +1,760 B: the panic-location
-  paths of 14 `yoton-img`/`yoton-meta` files (≈ 1.35 KB here; each path is
+  paths of 14 `orpheus-img`/`orpheus-meta` files (≈ 1.35 KB here; each path is
   42 B shorter in the main checkout, so expect ≈ −1.5 KB there) plus the
   new strings in the merged string section; `.data` +144 (`SERVER`: art
   key, folder art, generation; `PIC_RESULT`), `.bss` +160 (UI future +128,
   picture statics). Audio task future unchanged (6,192 B). Paged: code
-  52 → 62 pages (`yoton_img` 45 KB, `Decoder::step` alone 28.5 KB;
-  `yoton_meta` 11.5 KB), rodata 14 → 16; slot 626,688 → 724,992 B.
+  52 → 62 pages (`orpheus_img` 45 KB, `Decoder::step` alone 28.5 KB;
+  `orpheus_meta` 11.5 KB), rodata 14 → 16; slot 626,688 → 724,992 B.
   Deepest new RT paths: art from the cache while playing nests ≈ 2.2 KB +
   file system under `play_file` (the existing browse path ≈ 1 KB);
   `Decoder::step` 776 B + IDCT 352 B. Check the stack high-water mark
@@ -186,21 +186,21 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 
 ### 2026-11-24 — AU-12 firmware: the directory index in the card task (worker, no hardware)
 
-* `yoton-index` additions (host-tested): module `card` — `Storage`,
-  `DirSource`, `NameSource` over a `yoton-fs` volume. The traits are
-  synchronous, `yoton-fs` is async: each call is polled to completion
+* `orpheus-index` additions (host-tested): module `card` — `Storage`,
+  `DirSource`, `NameSource` over a `orpheus-fs` volume. The traits are
+  synchronous, `orpheus-fs` is async: each call is polled to completion
   with the caller's task `Context` (`card::spin`; the SD driver's timers
   register with the card task's waker). Index files live in
-  `/.yoton/index/X/DDDDDDDD-SF.idx` (X = last hex digit of the directory:
+  `/.orpheus/index/X/DDDDDDDD-SF.idx` (X = last hex digit of the directory:
   16 shards keep name lookups short with thousands of folders), merge
-  scratch in `/.yoton/index/sort-a|b.tmp` (or `sort-c|d.tmp` for a build
+  scratch in `/.orpheus/index/sort-a|b.tmp` (or `sort-c|d.tmp` for a build
   that runs while another is suspended); directories created on first
   use; open files cached per session (`Handles`) and closed at its end.
   `Index::read_letter_runs`, `LetterTable<N>` (letter runs in RAM, 4 B
   each, answers `letter`/`seek_letter` exactly like the index). Tests:
   build in slots that suspend/resume and close their files, a second
   build on the other scratch pair in between, query, find, rebuild after a
-  change, `fsck` clean, mounted with the `/.yoton` write prefix (FAT32
+  change, `fsck` clean, mounted with the `/.orpheus` write prefix (FAT32
   and exFAT images made with `mkfs`); letter table vs index on random
   folders.
 * Firmware flow (`media.rs`): every `Browse` makes the usual counting pass
@@ -239,9 +239,9 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   focus hint 12 B, UI task future +32 B, audio task future unchanged
   (6,192 B; the 840-B `DirEntry` of a build step lives in it, not on the
   stack), ≈ 600 B resident merged strings — the panic-location paths of
-  the new `yoton-index` files (absolute paths: shorter in the main
+  the new `orpheus-index` files (absolute paths: shorter in the main
   checkout than in a worker's worktree). Paged code +4 pages
-  (`yoton_index` 17.4 KB). Stack frames of the new sync paths: build step
+  (`orpheus_index` 17.4 KB). Stack frames of the new sync paths: build step
   ≈ 0.9 KB + file system, window from the index ≈ 0.9 KB + `Index::rows`
   0.5 KB (served also during playback; check the stack high-water mark).
 * Not done: the quick stamp (an index is only used after the counting
@@ -250,9 +250,9 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   builds in a row leak all but the last partial file until that folder is
   built again; Music library index, playlists, Favourites (rest of AU-12).
 
-### 2026-11-24 — AU-5 firmware: yoton-player in the card task (worker, no hardware)
+### 2026-11-24 — AU-5 firmware: orpheus-player in the card task (worker, no hardware)
 
-* The card task (RT executor) owns a `yoton_player::Player` (in the
+* The card task (RT executor) owns a `orpheus_player::Player` (in the
   `Server` static, built in a non-inlined function). UI commands arrive as
   `media::PlayReq` on a new `PLAY` channel, checked after every decoded
   block (and waited on while paused); media requests (`REQS`: browse, text,
@@ -266,17 +266,17 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   `Resume` (DAC stopped while paused), `Stop`. `Prefetch` is not carried
   out: the next track opens after the current one played out (no gapless).
   No fades yet.
-* Files on the card (formats in `yoton_player::image`, host-tested):
-  `/.yoton/queue.bin` (magic `YQU1`, count, queue id = CRC-32 of serial and
+* Files on the card (formats in `orpheus_player::image`, host-tested):
+  `/.orpheus/queue.bin` (magic `YQU1`, count, queue id = CRC-32 of serial and
   locators, serial, 8-byte locators, CRC-32), written when a folder is
-  queued; `/.yoton/player.bin` (588 B: resume slots A/B, 64 B each, then the
+  queued; `/.orpheus/player.bin` (588 B: resume slots A/B, 64 B each, then the
   bookmarks, 460 B, magic `YBM2`, each value with its own CRC), written in
   place (only the changed span) at pause, stop, track start, card
   hand-over and power-off — never while audio is being output (a card
   write can outlast the PCM ring), so there is no 60-s save while playing.
   Both are loaded after mount; the resume track's title is resolved and
   offered as Music → Resume.
-* `yoton-player` changes: getters (`len`, `queue_id`, `ab`, `sleep_timer`),
+* `orpheus-player` changes: getters (`len`, `queue_id`, `ab`, `sleep_timer`),
   bookmarks carry the sample rate (for their time in the list; `Player`
   624 → 752 B), `SleepAfterMs(0)` also cancels "after this track", a
   shuffled `PlayQueue` picks a seed whose order starts at the chosen item
@@ -286,7 +286,7 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 * RAM (`xtask build`, `__stack_bottom`): stack 24,752 → 22,968 B
   (−1,784 B). Of that, +1,796 B is resident MP3 seek code
   (`Mp3Decoder::find` 1,142 B, `record` 166 B, more `parse_head`, rodata),
-  resident through the `yoton_codec_mp3::*` rule — it could be paged by
+  resident through the `orpheus_codec_mp3::*` rule — it could be paged by
   excluding those symbols in `resident.toml` (not mine to edit). Data and
   bss net −16 B: the player (752 B) and resume slots went into `Server`,
   the text-viewer buffer (1,536 B) moved out of it into the decoder arena
@@ -302,13 +302,39 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — project renamed to Orpheus (lead, owner's request)
+
+* "yotonrs" → **Orpheus** everywhere (docs, plan, code, configuration,
+  USB strings, build id `orpheus-fw`, xtask state name); crates `yoton-*`
+  → `orpheus-*` except `yoton-bsp` (board support for the Yoton YM03 —
+  owner's choice); `yoton_*` symbols, linker symbols, section names and
+  environment variables (`ORPHEUS_BLESS`, …) renamed; `tools/orpheus-ld`,
+  `tools/udev/99-orpheus.rules`, output directory `target/orpheus/`. Not
+  renamed: the hardware ("Yoton YM03"), the reference repository
+  (`/home/tim/Documents/GitHub/yoton/`, `yoton.py`, payloads), the on-flash
+  magics (`YST2`, `YFW1`, … — stage 1 in sector 0 checks `YST2`), and this
+  checkout's folder name (`…/GitHub/yotonrs`; renaming it is up to the
+  owner).
+* Card folder `/.yoton/` → `/.orpheus/` (owner's choice: move the old
+  data). The firmware renames it once at mount (write guard lifted for that
+  single rename via the new `Volume::set_write_prefix`); on the player the
+  queue, resume record, indexes, art cache and test files moved over.
+  First version remounted twice and gave `mount` a 10.5 KB stack frame (744 B
+  of stack left after boot); now a single mount.
+* Logo: a lyre (owner's request) — `docs/logo/orpheus-lyre.svg` (README)
+  and the 24×24 `LYRE` icon on the boot/About screens (goldens re-blessed).
+* Open: the stack peak after start + playback is ≈ 22.4 KB of 25.3 KB; the
+  UI task (6.0 KB frame) and the audio task (5.1 KB) should shrink. The
+  orpheus-img test fixtures race when generated fresh by several test
+  binaries at once (passes when run alone).
+
 ### 2026-11-24 — implementation session 3 (lead)
 
 * Merged AU-14 (device): Pictures app and album art. On the player: Home
-  shows Pictures; Show hidden → `/.yoton/test`: a 1600×1200 JPEG letterboxed,
+  shows Pictures; Show hidden → `/.orpheus/test`: a 1600×1200 JPEG letterboxed,
   a truncated JPEG shows "Cannot show this picture", BMP and PNG render, Down
   rotates by 90°. Album art on the player: an MP3 with an embedded JPEG cover
-  (uploaded to `/.yoton/test/`) shows it in Now Playing's Big art view; the
+  (uploaded to `/.orpheus/test/`) shows it in Now Playing's Big art view; the
   first open of a track with new art costs underruns (9 here) while the
   cover is decoded — open item: decode art without stopping the DAC feed, or
   before the previous track ends. The owner's album files showed no art
@@ -370,7 +396,7 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 
 ### 2026-11-24 — implementation session 2, part 7 (lead)
 
-* Merged AU-12 firmware (worker): Files lists through `/.yoton/index/`. On
+* Merged AU-12 firmware (worker): Files lists through `/.orpheus/index/`. On
   the player: the root (35 entries) is sorted at once; a 231-entry folder
   shows on-disk order first and re-sorts in the background within ~20 s;
   playing from it, seeking and browsing while playing work.
@@ -384,10 +410,10 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 
 ### 2026-11-24 — implementation session 2, part 6 (lead)
 
-* Merged AU-12 host (`yoton-index`, worker) and AU-5 firmware (yoton-player
+* Merged AU-12 host (`orpheus-index`, worker) and AU-5 firmware (orpheus-player
   driving playback, worker). On the player: Files → folder → OK on track 2
-  plays with "2 / 231"; Next → "3 / 231"; OK pauses; `/.yoton/queue.bin`
-  and `/.yoton/player.bin` written; after a normal reboot Music offers
+  plays with "2 / 231"; Next → "3 / 231"; OK pauses; `/.orpheus/queue.bin`
+  and `/.orpheus/player.bin` written; after a normal reboot Music offers
   "Resume ‹title›", which continues the same track at the paused position;
   holding Next seeks. Fixed: the DAC kept running during a seek (7
   underruns per seek, close to the too-slow abort); it now stops for the
@@ -397,15 +423,15 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 
 * Upload path for test files (user-approved): developer-channel `PUT`
   request (≤ 4 KiB per transfer, buffer in the idle decoder arena),
-  `fcreate`/`fclose` commands, `xtask dev put LOCAL /.yoton/PATH`; writes go
-  through yoton-fs (write prefix `/.yoton`). ≈ 50 KB/s. Uploaded Vorbis,
-  Opus (1 s and 0.25 s pages) and Speex test files to `/.yoton/test/`.
+  `fcreate`/`fclose` commands, `xtask dev put LOCAL /.orpheus/PATH`; writes go
+  through orpheus-fs (write prefix `/.orpheus`). ≈ 50 KB/s. Uploaded Vorbis,
+  Opus (1 s and 0.25 s pages) and Speex test files to `/.orpheus/test/`.
 * Results above; codec clock floors (Vorbis/Opus: High) set by the audio
   task. Found: the output CRC32 (bitwise, per frame) cost a large share of
   48 MHz; now only with `crc on` (MP3 at 48 MHz: ≈ 87 % idle). A `NeedData`
   the full ring cannot satisfy now ends the track instead of spinning. A
   `REQ_PUT` arm compiled as a catch-all binding (missing import) — caught by
-  the yoton-usb tests; `xtask build` does not run clippy, the gate does.
+  the orpheus-usb tests; `xtask build` does not run clippy, the gate does.
 
 ### 2026-11-24 — implementation session 2, part 4 (lead)
 
@@ -425,7 +451,7 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 
 ### 2026-11-24 — implementation session 2, part 3 (lead)
 
-* Audio hot path resident (`resident.toml`: `yoton_codec_mp3::*` and the
+* Audio hot path resident (`resident.toml`: `orpheus_codec_mp3::*` and the
   DSP stages' `process` functions), stream ring 32 → 16 KiB, decoder arena
   72 → 64 KiB (largest measured need: Opus 59,488 B). MP3 at 48 MHz now
   ≈ 80 % idle (was ≈ 53 % with the MP3 cluster, ≈ 0 % before), 0 underruns,
@@ -435,7 +461,7 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   starves thread mode).
 * **Open: DSP chain hangs on the player.** With any single stage active
   (bass, crossfeed or EQ) playback stops inside `Chain::process` (breadcrumb
-  5) until the watchdog fires; also with all of yoton-dsp resident, so not
+  5) until the watchdog fires; also with all of orpheus-dsp resident, so not
   paging. The same sequence (`set_format` 44.1 kHz i16 stereo, flat, then
   the stage) runs in milliseconds on the host. Next: run the chain in thread
   mode on the player (needs RAM: start-up uses 23–28 KB of the 32 KB stack,
@@ -479,13 +505,13 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   0x1000 (10.2 s), 0x63000–0x7DA000 erased (1,907 sectors, 35.6 s); boots;
   the 544,768-byte image with Opus and Speex (too big for the dual slot)
   boots from full slot A.
-* Merged worker results: OTP-1, BT-1, USB-6, AU-5 (`yoton-player`), AU-7,
+* Merged worker results: OTP-1, BT-1, USB-6, AU-5 (`orpheus-player`), AU-7,
   AU-6, UI-3/UI-4, AU-14, AU-8/AU-9 with the Ogg layers unified.
 
 
 ### 2026-11-24 — AU-8/AU-7 Ogg reconciliation (worker)
 
-* AU-7 (Vorbis, on main) and AU-8 (Opus, Speex) each wrote a `yoton-ogg`.
+* AU-7 (Vorbis, on main) and AU-8 (Opus, Speex) each wrote a `orpheus-ogg`.
   Merged into one crate with a shared core and two packet readers:
   * core (`lib.rs`, `seek.rs`): `PageHeader::parse`, `crc_update` /
     `page_crc`, page sync, the generic answer `Next<P>` (`Packet`,
@@ -511,17 +537,17 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   (unchanged; SILK seek tolerance −50 dBFS kept as AU-8 set it, user
   decision still open); Speex −99.9 … −119.6 dBFS, max 4 LSB (within the
   AU-9 figures).
-* Code size (thumbv7em, opt-level s, before LTO): `yoton-ogg` 7.7 KB for
+* Code size (thumbv7em, opt-level s, before LTO): `orpheus-ogg` 7.7 KB for
   both readers and the bisection (AU-8's alone was 4.8 KB). `AnyDecoder`
   on thumbv7em: 984 B (Vorbis variant; Opus 784 B, Speex 608 B).
 
 ### 2026-11-24 — AU-9 Speex (worker)
 
-* `crates/codecs/speex` (`yoton-codec-speex`): libspeex 1.2.1 decoder
+* `crates/codecs/speex` (`orpheus-codec-speex`): libspeex 1.2.1 decoder
   (BSD-3, `LICENSE-XIPH-SPEEX`) in `f32` (float build; no `f64`), NB/WB/UWB,
   every sub-mode, vocoder/null modes, DTX, enhancer on (libspeex default,
   as ffmpeg leaves it), intensity stereo, any frames per packet, native
-  8/16/32 kHz output. Uses `yoton-ogg` unchanged.
+  8/16/32 kHz output. Uses `orpheus-ogg` unchanged.
 * Conformance (31-file corpus, references from ffmpeg `-c:a libspeex`):
   −97 … −120 dBFS RMS, max 5 LSB, lengths exact. Length convention: ffmpeg
   trims nothing for Speex (granules start at −look-ahead, every frame is
@@ -538,7 +564,7 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 
 ### 2026-11-24 — AU-8 Opus (worker)
 
-* `crates/codecs/ogg` (`yoton-ogg`): page parsing, CRC (checked before use
+* `crates/codecs/ogg` (`orpheus-ogg`): page parsing, CRC (checked before use
   for pages ≤ `MAX_PEEK`, streamed for larger ones), packet reassembly into
   a caller buffer, serial selection, chained-stream hand-over, granule
   bisection seek. Written here because AU-7 had not created one yet: the
@@ -625,13 +651,13 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 | 2026-11-23 | DAC consumption at 44.1 / 48 kHz | 44,168–44,229 / 48,076 Hz | `hil drivers/audio` |
 | 2026-11-23 | SD sequential read, 64 KiB / 4 KiB requests | 9,294 / 3,432 KiB/s | `hil drivers/sd` |
 | 2026-11-23 | Battery raw at rest / charging | 801 / 828 (≈ 3.74 V) | `hil drivers/charge` |
-| 2026-11-24 | Opus vs libopus float, RFC 8251 vectors (24 decodes) | range-exact; RMS ≤ −128.9 dBFS, max 1 LSB | `cargo test -p yoton-codec-opus --release` (`OPUS_VECTORS`) |
+| 2026-11-24 | Opus vs libopus float, RFC 8251 vectors (24 decodes) | range-exact; RMS ≤ −128.9 dBFS, max 1 LSB | `cargo test -p orpheus-codec-opus --release` (`OPUS_VECTORS`) |
 | 2026-11-24 | Opus arena high-water stereo / mono | 59,488 B / 42.1 KiB (budget 64 KiB) | `xtask test codecs --filter opus/` |
-| 2026-11-24 | Opus code size thumbv7em (before LTO) | 117.6 KB (+ yoton-ogg 4.8 KB) | `xtask test codec-size` |
+| 2026-11-24 | Opus code size thumbv7em (before LTO) | 117.6 KB (+ orpheus-ogg 4.8 KB) | `xtask test codec-size` |
 | 2026-11-24 | Speex vs libspeex (ffmpeg), 31 files | −97 … −120 dBFS RMS, max 5 LSB | `xtask test codecs --filter speex/` |
 | 2026-11-24 | Speex arena NB / WB / UWB | 4,872 / 7,768 / 11,048 B (budget 12 KiB) | same |
 | 2026-11-24 | Speex code size thumbv7em (before LTO) | 32.9 KB | `xtask test codec-size` |
-| 2026-11-24 | yoton-ogg code size thumbv7em (before LTO), both readers + bisection | 7,673 B | `xtask test codec-size` |
+| 2026-11-24 | orpheus-ogg code size thumbv7em (before LTO), both readers + bisection | 7,673 B | `xtask test codec-size` |
 | 2026-11-24 | Vorbis / Opus / Speex after the Ogg merge | −114.7…−122.3 / −88.4…−138.4 / −99.9…−119.6 dBFS | `xtask test codecs --gen` |
 | 2026-11-24 | MP3 48 kHz album file via `dev cmd play`, Home screen, 48 MHz | real time, 0 underruns, main idle 52 %, ≈ 790 NOR line loads/s | `xtask dev stats` |
 | 2026-11-24 | Same file started from Files (Now Playing), 48 MHz | main idle ≈ 0 %, decode ≈ 56 %, UI draw ≈ 35 % → USB starved | `xtask dev stats` |
@@ -654,8 +680,8 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 | 2026-11-24 | Upload over the developer channel | 165 KB in 3.3 s (≈ 50 KB/s) | `xtask dev put` |
 | 2026-11-24 | Main stack peak after all formats + DSP (28.0 KB stack) | 19.2 KB | INFO stack high-water |
 | 2026-11-24 | Firmware with the directory index (AU-12 firmware) | resident 81,844 B, main stack 21,464 B (−1,512), 52 code + 14 rodata pages, slot 626,688 B | `xtask build`, `nm` `__stack_bottom` |
-| 2026-11-24 | Firmware with yoton-player (AU-5 firmware) | resident 80,724 B (was 79,084), bss 122,608 B, main stack 22,968 B (was 24,752), 48 code + 14 rodata pages | `xtask build`, `llvm-nm` `__stack_bottom` |
-| 2026-11-24 | Firmware with BT-2 device side (worktree build) | resident +160 B, bss +2,136 B, main stack −2,288 B; `yoton_bt::driver::Driver` 1,328 B | `xtask build`, `llvm-nm` `__stack_bottom` |
+| 2026-11-24 | Firmware with orpheus-player (AU-5 firmware) | resident 80,724 B (was 79,084), bss 122,608 B, main stack 22,968 B (was 24,752), 48 code + 14 rodata pages | `xtask build`, `llvm-nm` `__stack_bottom` |
+| 2026-11-24 | Firmware with BT-2 device side (worktree build) | resident +160 B, bss +2,136 B, main stack −2,288 B; `orpheus_bt::driver::Driver` 1,328 B | `xtask build`, `llvm-nm` `__stack_bottom` |
 | 2026-11-24 | Firmware with Pictures and album art (AU-14 device), worker worktree build | resident 81,444 B (was 79,532), bss 123,160 B (was 123,000), main stack 21,696 B (was 23,768), 62 code + 16 rodata pages (was 52 + 14), slot 724,992 B | `xtask build`, `nm` `__stack_bottom` |
 
 
@@ -667,4 +693,4 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 * Answered 2026-11-24: Bluetooth shutdown command 0x24 **is** part of normal
   power-off (BT-2 adds it to the power-off path); the −50 dBFS Opus SILK seek
   tolerance is accepted; test files may be added to the card (under
-  `/.yoton/test/`).
+  `/.orpheus/test/`).

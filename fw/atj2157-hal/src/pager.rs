@@ -1,5 +1,5 @@
 //! Demand pager, device side (docs/plan/02-architecture.md §3). The policy
-//! is `yoton_pager::PagerCore` (host-tested); this module owns the MPU, the
+//! is `orpheus_pager::PagerCore` (host-tested); this module owns the MPU, the
 //! MemManage entry and the NOR line reads. **Resident**, like the NOR
 //! driver: nothing here may reach paged code.
 //!
@@ -10,7 +10,7 @@
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use yoton_pager::{Action, PagerCore, RegionMap, mpu};
+use orpheus_pager::{Action, PagerCore, RegionMap, mpu};
 
 struct Shared(UnsafeCell<PagerCore>);
 // SAFETY: touched only from the MemManage handler (priority 0, never
@@ -89,7 +89,7 @@ pub fn init(store: u32, ncode: u32, nro: u32) {
 
 /// Statistics of the core (faults, loads, remaps…).
 #[must_use]
-pub fn stats() -> yoton_pager::Stats {
+pub fn stats() -> orpheus_pager::Stats {
     // SAFETY: a plain read of counters; a torn read only skews statistics.
     unsafe { (*CORE.0.get()).stats() }
 }
@@ -99,7 +99,7 @@ pub fn stats() -> yoton_pager::Stats {
 /// the crash path otherwise.
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.resident.pager")]
-extern "C" fn yoton_pager_fault(frame: *const u32, exc_return: u32, ipsr: u32) {
+extern "C" fn orpheus_pager_fault(frame: *const u32, exc_return: u32, ipsr: u32) {
     let cfsr = r(SCB_CFSR);
     let mmfar = r(SCB_MMFAR);
     // SAFETY: `frame` is the stacked exception frame handed over by the

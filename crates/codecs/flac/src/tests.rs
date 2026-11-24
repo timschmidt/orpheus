@@ -3,7 +3,7 @@ use std::vec::Vec;
 use md5::{Digest, Md5};
 
 use super::*;
-use yoton_audio::SliceSource;
+use orpheus_audio::SliceSource;
 
 /// 0.15 s of two sines, 44.1 kHz stereo 16-bit, `flac -5 -b 1152`.
 const S16: &[u8] = include_bytes!("../tests/data/sine_44100_2.flac");

@@ -13,7 +13,7 @@
 //! One logical stream is followed (the first one seen); pages of other
 //! streams are skipped; a new stream after ours (chaining) ends it.
 
-use yoton_audio::{ByteSource, MAX_PEEK, View};
+use orpheus_audio::{ByteSource, MAX_PEEK, View};
 
 use crate::{HEADER_MIN, NO_GRANULE, PageHeader, Parse, page_crc};
 

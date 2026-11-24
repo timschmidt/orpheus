@@ -6,8 +6,8 @@
 //! run. Program/erase suspend for concurrent page faults is U-NOR-2 work.
 
 use atj2157_hal::nor;
-use yoton_proto::layout::dual;
-pub use yoton_settings::{Error, Store};
+use orpheus_proto::layout::dual;
+pub use orpheus_settings::{Error, Store};
 
 /// A NOR window `[base, base + len)` inside the writable region.
 pub struct NorRegion {
@@ -37,7 +37,7 @@ impl NorRegion {
     }
 }
 
-impl yoton_settings::Nor for NorRegion {
+impl orpheus_settings::Nor for NorRegion {
     type Error = nor::Error;
 
     async fn read(&mut self, off: u32, buf: &mut [u8]) -> Result<(), nor::Error> {

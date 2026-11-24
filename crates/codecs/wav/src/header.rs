@@ -5,7 +5,7 @@
 //! (large `LIST`/`id3 `/picture chunks before the audio), in which case the
 //! decoder walks the remaining chunks itself, consuming as it goes.
 
-use yoton_audio::{MAX_PEEK, OpenError, Unsupported, View};
+use orpheus_audio::{MAX_PEEK, OpenError, Unsupported, View};
 
 use crate::conv::Enc;
 

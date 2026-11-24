@@ -106,10 +106,10 @@ rebuilding the `embassy-usb` device and re-attaching.
 Every personality also answers the **developer channel** on endpoint 0 (§2.5),
 so tools work regardless of what the player is presenting.
 
-Identity: the Rockbox port borrows Actions' vendor id (`10D6:1157`). yotonrs
+Identity: the Rockbox port borrows Actions' vendor id (`10D6:1157`). Orpheus
 uses the pid.codes test id `1209:0001` during development and a product id
 requested from pid.codes for release (decision D-3 in PLAN.md). Strings:
-manufacturer "yotonrs", product per personality, serial from the eFuse-derived
+manufacturer "Orpheus", product per personality, serial from the eFuse-derived
 device id (read-only use of the eFuse words; docs/hw/system.md §5.5).
 
 ### 2.4 Mass storage (card reader)
@@ -238,7 +238,7 @@ documented byte for byte in docs/hw/bluetooth.md §3–4).
 
 ### 4.2 In scope: transmitter role
 
-Crate `yoton-bt` (protocol, host-testable) + `yoton-bsp::bt` (UART, pins).
+Crate `orpheus-bt` (protocol, host-testable) + `yoton-bsp::bt` (UART, pins).
 
 * **Link**: UART1 with RX by DMA (channel 8) into a ring polled every
   10 ms, TX by DMA (channel 9, mode `0x00228200`). As built (BT-2 device):
@@ -322,7 +322,7 @@ authenticator typing stays on USB.
 ### 5.1 Function
 
 HOTP (RFC 4226) and TOTP (RFC 6238): SHA-1, SHA-256, SHA-512; 6 or 8 digits;
-30 or 60 s periods; up to 32 entries. Crate `yoton-otp` on RustCrypto `hmac`,
+30 or 60 s periods; up to 32 entries. Crate `orpheus-otp` on RustCrypto `hmac`,
 `sha1`, `sha2` (all `no_std`, allocation-free).
 
 ### 5.2 Storage and what it does and does not protect against
@@ -349,7 +349,7 @@ HOTP (RFC 4226) and TOTP (RFC 6238): SHA-1, SHA-256, SHA-512; 6 or 8 digits;
 
 TOTP needs UTC within a few seconds. Sources: the developer channel's TIME
 request from a host utility (`xtask time-sync`, also built as a standalone
-`yoton-time` binary); RDS clock time if the tuner provides it; manual setting.
+`orpheus-time` binary); RDS clock time if the tuner provides it; manual setting.
 The RTC's drift is measured between two synchronisations and stored as a
 correction (seconds per day). The app shows when the clock was last set and
 warns if the RTC reports having stopped (docs/hw/system.md T6 decides how that
@@ -391,5 +391,5 @@ release, not part of the committed scope.
 * **WP-BT-2 Transmitter role**: state machine, pairing UI, AVRCP bridge,
   volume policy, auto-reconnect, power handling.
 * **WP-BT-3 Investigation track** (§4.3), report in docs/hw/bluetooth.md.
-* **WP-OTP-1 `yoton-otp`, vault, PIN flow, time sync**; **WP-OTP-2 typing and
+* **WP-OTP-1 `orpheus-otp`, vault, PIN flow, time sync**; **WP-OTP-2 typing and
   provisioning.**

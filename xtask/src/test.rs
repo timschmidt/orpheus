@@ -5,9 +5,9 @@
 //! * `codecs [--gen] [--filter S] [--quick]`: the codec conformance suite
 //!   (07 §3.3). `--gen` (re)builds the corpus in `tests/corpus/` with ffmpeg,
 //!   sox and flac; it is also built when missing. The checks run in the
-//!   `yoton-codec-conformance` binary with overflow checks on. Then the
+//!   `orpheus-codec-conformance` binary with overflow checks on. Then the
 //!   RFC 8251 Opus vectors (fetched into `tests/vectors/` when missing) run
-//!   as the opus crate's tests. `YOTON_CORPUS` overrides the corpus path.
+//!   as the opus crate's tests. `ORPHEUS_CORPUS` overrides the corpus path.
 //! * `fuzz-smoke [--secs N]`: the stable mutation smoke run over every fuzz
 //!   target, then each `cargo fuzz` target for N seconds (default 60) when a
 //!   nightly toolchain and cargo-fuzz are installed (07 §3.4); inputs kept
@@ -65,9 +65,9 @@ fn golden(bless: bool) -> Result<String> {
         return Ok("no simulator yet (golden tests not run)".into());
     }
     let mut c = cargo();
-    c.current_dir(root()).args(["test", "--quiet", "--package", "yoton-sim", "--test", "golden"]);
+    c.current_dir(root()).args(["test", "--quiet", "--package", "orpheus-sim", "--test", "golden"]);
     if bless {
-        c.env("YOTON_BLESS", "1");
+        c.env("ORPHEUS_BLESS", "1");
     }
     run(&mut c)?;
     Ok(if bless { "golden images re-blessed".into() } else { "golden tests passed".into() })
@@ -76,10 +76,10 @@ fn golden(bless: bool) -> Result<String> {
 // ---------------------------------------------------------------------------
 // Codec conformance (07 §3.3)
 
-/// `tests/corpus/`, or `$YOTON_CORPUS` (a scratch corpus while working on
+/// `tests/corpus/`, or `$ORPHEUS_CORPUS` (a scratch corpus while working on
 /// one codec's generator).
 fn corpus_dir() -> PathBuf {
-    std::env::var_os("YOTON_CORPUS").map_or_else(|| root().join("tests").join("corpus"), PathBuf::from)
+    std::env::var_os("ORPHEUS_CORPUS").map_or_else(|| root().join("tests").join("corpus"), PathBuf::from)
 }
 
 /// The conformance binary, built with overflow checks and debug assertions
@@ -87,7 +87,7 @@ fn corpus_dir() -> PathBuf {
 fn conformance() -> Command {
     let mut c = cargo();
     c.current_dir(root())
-        .args(["run", "--quiet", "--release", "-p", "yoton-codec-conformance", "--target-dir"])
+        .args(["run", "--quiet", "--release", "-p", "orpheus-codec-conformance", "--target-dir"])
         .arg(root().join("target").join("conformance"))
         .env("CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS", "true")
         .env("CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS", "true")
@@ -116,7 +116,7 @@ fn codecs(regen: bool, filter: Option<&str>, quick: bool) -> Result<String> {
     let vectors = fetch_opus_vectors();
     // The RFC 8251 Opus vectors (range-exact, ≤ −80 dBFS) run as the opus
     // crate's tests; they skip themselves when the vectors are missing.
-    run(cargo().current_dir(root()).args(["test", "--quiet", "--release", "-p", "yoton-codec-opus"]))?;
+    run(cargo().current_dir(root()).args(["test", "--quiet", "--release", "-p", "orpheus-codec-opus"]))?;
     Ok(format!("codec conformance passed; {vectors}"))
 }
 
@@ -1020,11 +1020,11 @@ fn fuzz_targets() -> Result<Vec<String>> {
 }
 
 /// A nightly toolchain new enough for the workspace's `rust-version`
-/// (`YOTON_FUZZ_TOOLCHAIN`, else the newest installed `nightly*`) that has
+/// (`ORPHEUS_FUZZ_TOOLCHAIN`, else the newest installed `nightly*`) that has
 /// cargo-fuzz.
 fn fuzz_toolchain() -> Option<String> {
     let mut candidates: Vec<String> = Vec::new();
-    if let Ok(t) = std::env::var("YOTON_FUZZ_TOOLCHAIN") {
+    if let Ok(t) = std::env::var("ORPHEUS_FUZZ_TOOLCHAIN") {
         candidates.push(t);
     }
     let list = Command::new("rustup").args(["toolchain", "list"]).output().ok()?;
@@ -1133,16 +1133,16 @@ fn fuzz_smoke(secs: u64) -> Result<String> {
 
 /// Codec crates measured by `codec-size`.
 const SIZE_CRATES: [&str; 10] = [
-    "yoton-audio",
-    "yoton-codec-wav",
-    "yoton-codec-mp3",
-    "yoton-codec-flac",
-    "yoton-ogg",
-    "yoton-codec-vorbis",
-    "yoton-codec-opus",
-    "yoton-codec-speex",
-    "yoton-meta",
-    "yoton-player",
+    "orpheus-audio",
+    "orpheus-codec-wav",
+    "orpheus-codec-mp3",
+    "orpheus-codec-flac",
+    "orpheus-ogg",
+    "orpheus-codec-vorbis",
+    "orpheus-codec-opus",
+    "orpheus-codec-speex",
+    "orpheus-meta",
+    "orpheus-player",
 ];
 
 fn codec_size() -> Result<String> {

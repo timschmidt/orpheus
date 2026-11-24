@@ -8,13 +8,13 @@ publish = false
 
 [dependencies]
 atj2157-hal = { path = "../atj2157-hal" }
-yoton-proto.workspace = true
+orpheus-proto.workspace = true
 embassy-time = "0.5"
-yoton-fs = { path = "../../crates/yoton-fs" }
-yoton-settings = { path = "../../crates/yoton-settings" }
+orpheus-fs = { path = "../../crates/orpheus-fs" }
+orpheus-settings = { path = "../../crates/orpheus-settings" }
 embassy-futures = "0.1"
-yoton-power = { path = "../../crates/yoton-power" }
-yoton-input = { path = "../../crates/yoton-input" }
+orpheus-power = { path = "../../crates/orpheus-power" }
+orpheus-input = { path = "../../crates/orpheus-input" }
 
 [lints]
 workspace = true

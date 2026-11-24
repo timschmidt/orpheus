@@ -5,7 +5,7 @@
 //!
 //! * **\[DS\]** — ATJ2157 Datasheet V1.2 (`docs/vendor/atj2157-datasheet-v1.2.txt`),
 //!   with the section number;
-//! * **\[HW\]** — verified on the player (by the Rockbox port or a yotonrs
+//! * **\[HW\]** — verified on the player (by the Rockbox port or a orpheus
 //!   bring-up image);
 //! * **\[code\]** — seen in vendor or port code, not verified by us;
 //! * **\[inferred\]** — deduced; treat as a hypothesis.
@@ -13,7 +13,7 @@
 //! Access model: a [`Reg`] is a fixed MMIO address with volatile `read`,
 //! `write` and `modify`. Fields are [`Field`] constants (shift + width) or
 //! plain bit masks (`u32` constants). [`RoReg`] is a read-only register for
-//! blocks yotonrs must never write (the eFuse controller). Vendor and port
+//! blocks orpheus must never write (the eFuse controller). Vendor and port
 //! values are named `VENDOR_*` / `PORT_*` constants with their provenance;
 //! the crate contains no driver code. The crate has no notion of ownership;
 //! the HAL (`fw/atj2157-hal`) decides who may touch which block.
@@ -115,7 +115,7 @@ impl Reg {
 }
 
 /// A 32-bit memory-mapped register that this crate only lets you read (used
-/// for blocks yotonrs must never write, such as the eFuse controller).
+/// for blocks orpheus must never write, such as the eFuse controller).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct RoReg(usize);

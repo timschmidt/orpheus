@@ -13,10 +13,10 @@ use atj2157_hal::{self as hal, executor, log, pac, time, usb, wdt};
 use embassy_executor::Spawner;
 use embassy_time::Timer;
 use embassy_usb::{Builder, Config};
+use orpheus_proto::devchan::{self as dc, Info};
+use orpheus_proto::{logring, mem};
+use orpheus_usb::devchan::{DevChannel, Target};
 use static_cell::{ConstStaticCell, StaticCell};
-use yoton_proto::devchan::{self as dc, Info};
-use yoton_proto::{logring, mem};
-use yoton_usb::devchan::{DevChannel, Target};
 
 const REATTACH: u16 = 0x10;
 static REBOOT: AtomicU16 = AtomicU16::new(0xFFFF);
@@ -120,7 +120,7 @@ extern "C" fn main() -> ! {
 
     let driver = usb::Driver::new();
     let mut config = Config::new(dc::DEV_VID, dc::DEV_PID);
-    config.manufacturer = Some("yotonrs");
+    config.manufacturer = Some("orpheus");
     config.product = Some("YM03 bring-up (usb)");
     config.serial_number = Some("0001");
     config.max_power = 100;

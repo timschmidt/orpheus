@@ -137,9 +137,9 @@ option).
   implemented with the panel's MADCTL and a swapped key map for Up/Down and
   Prev/Next.
 
-## 5. Toolkit (crate `yoton-ui`)
+## 5. Toolkit (crate `orpheus-ui`)
 
-`yoton-ui` is `no_std`, has no allocator, and knows nothing about hardware. It
+`orpheus-ui` is `no_std`, has no allocator, and knows nothing about hardware. It
 draws through `embedded_graphics::draw_target::DrawTarget<Color = Rgb565>` and
 receives `Event`s. The same crate runs on the device and in the desktop
 simulator.
@@ -202,7 +202,7 @@ pub trait Screen {
 
 All user-visible strings go through a string table (`tr!(Id)`), English built
 in. Additional languages are resource files loaded into a small arena
-(`.yoton/lang/xx.ylang` on the card, or in the NOR resource area); the table
+(`.orpheus/lang/xx.ylang` on the card, or in the NOR resource area); the table
 format is defined in WP-UI-7 and is not needed before the polish milestone, but
 **no string literal may be drawn directly** from the first screen on.
 
@@ -299,7 +299,7 @@ Recently added · Bookmarks.
 * Before the library index exists (first use, or card changed), the tag-based
   entries show "Building library… n files" with a progress row, while
   **Folders and Shuffle all work immediately** (folder walk, no index).
-* The index is a file on the card (`.yoton/library.ydb`), built by a background
+* The index is a file on the card (`.orpheus/library.ydb`), built by a background
   task at low priority, incrementally (per-directory signature of entry count,
   sizes and timestamps), pausing while audio buffers are low. Format and RAM
   bounds: 04-audio §"Library index".
@@ -365,7 +365,7 @@ playback.
 
 A browser over the card. Directories first, then files, natural sort
 ("Track 2" before "Track 10"), case-insensitive. Hidden and system entries
-(`.yoton`, dot-files, `System Volume Information`) hidden unless enabled.
+(`.orpheus`, dot-files, `System Volume Information`) hidden unless enabled.
 
 * Row: type icon (folder, audio, playlist, image, text, disk image, firmware,
   other), name, size for files when focused.
@@ -381,7 +381,7 @@ A browser over the card. Directories first, then files, natural sort
 * Large directories: listing never loads a whole directory into RAM. The
   browser keeps a sorted **window**; the sort order of directories with more
   than 128 entries is kept in a cache file per directory under
-  `.yoton/cache/`, validated by a signature of the directory contents, so
+  `.orpheus/cache/`, validated by a signature of the directory contents, so
   paging is immediate after the first visit (04-audio §"Directory index").
   First visit shows names in on-disk order immediately and re-sorts when the
   index is ready, keeping the focused item in place.
@@ -480,7 +480,7 @@ length (± 0.1 %) and no dropped blocks (encoder block counter contiguous).
 
 * Browser: 3 × 3 thumbnail grid (40 × 30 cells) with a name line in the strip,
   or list mode; thumbnails are generated lazily (JPEG DC-only decode is used
-  for speed), cached under `.yoton/cache/thumbs/`, and never block navigation.
+  for speed), cached under `.orpheus/cache/thumbs/`, and never block navigation.
 * Viewer: full screen, fit inside by default. OK cycles Fit → Fill → 100 %
   (pan with the direction keys; Prev/Next at an edge go to the neighbouring
   image). Prev/Next: previous/next image in the folder.

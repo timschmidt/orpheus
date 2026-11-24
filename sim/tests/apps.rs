@@ -1,12 +1,12 @@
-//! Behaviour of the `yoton-apps` screens over the simulated services
+//! Behaviour of the `orpheus-apps` screens over the simulated services
 //! (WP UI-2): every Settings group is walked, settings apply immediately,
 //! dialogs, USB, battery, lock, language.
 
-use yoton_apps::services::{PowerRequest, StorageRequest, UsbMode};
-use yoton_apps::settings::{GROUPS, SettingId, id};
-use yoton_apps::{App, settings};
-use yoton_sim::AppSim;
-use yoton_sim::apps::Logged;
+use orpheus_apps::services::{PowerRequest, StorageRequest, UsbMode};
+use orpheus_apps::settings::{GROUPS, SettingId, id};
+use orpheus_apps::{App, settings};
+use orpheus_sim::AppSim;
+use orpheus_sim::apps::Logged;
 
 fn sim(script: &str) -> AppSim {
     let mut s = AppSim::new();
@@ -192,7 +192,7 @@ fn charging_screen_starts_player() {
 fn every_app_has_an_icon_and_label() {
     for a in App::ALL {
         assert_eq!(a.icon().data.len(), 24 * 24 / 4);
-        assert!(!yoton_apps::Lang::ENGLISH.get(a.label()).is_empty());
+        assert!(!orpheus_apps::Lang::ENGLISH.get(a.label()).is_empty());
     }
     assert!(settings::def(SettingId(0x0304)).is_some());
 }

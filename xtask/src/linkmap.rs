@@ -118,7 +118,7 @@ mod tests {
     use super::*;
 
     const SAMPLE: &str = "     VMA      LMA     Size Align Out     In      Symbol
-       0        0        0     1 YOTON_FLAT_PASS = 1
+       0        0        0     1 ORPHEUS_FLAT_PASS = 1
   200000   200000       1e     2 .pg_code
   200000   200000       1e     2         /p/t.o:(.text.paged_fn)
   200000   200000        0     1                 $t

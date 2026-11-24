@@ -5,7 +5,7 @@
 //! sends it to the boot ROM's USB recovery.
 
 use atj2157_pac::rtc::{self, wd};
-use yoton_proto::mailbox;
+use orpheus_proto::mailbox;
 
 /// Feed the watchdog.
 #[inline]

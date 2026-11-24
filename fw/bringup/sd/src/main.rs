@@ -16,10 +16,10 @@
 use atj2157_hal::sd::{self, Error, Sd};
 use atj2157_hal::{self as hal, dma, executor, log, pac, persist, time, wdt};
 use embassy_executor::Spawner;
+use orpheus_proto::hash::crc32;
+use orpheus_proto::result::Verdict;
 use static_cell::{ConstStaticCell, StaticCell};
 use yoton_bsp::pins;
-use yoton_proto::hash::crc32;
-use yoton_proto::result::Verdict;
 
 /// 64 KiB DMA buffer in SRAM0 (word aligned).
 #[repr(C, align(4))]

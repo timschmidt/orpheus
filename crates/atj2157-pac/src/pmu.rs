@@ -98,7 +98,7 @@ pub mod chg_ctl {
     pub const VENDOR_CHG_CURRENT_200MA: u32 = 4;
     /// Vendor current while BATADC < 0x280: code 1 = 50 mA. \[code\]
     pub const VENDOR_CHG_CURRENT_50MA: u32 = 1;
-    /// Highest code yotonrs may ever select.
+    /// Highest code orpheus may ever select.
     pub const MAX_ALLOWED_CHG_CURRENT: u32 = VENDOR_CHG_CURRENT_200MA;
     /// Bits the vendor clears on every charger stop/reprogram. \[code\]
     pub const VENDOR_STOP_CLEAR: u32 = CHGEN | ENTKLE | ENBATDT | ENCHGATDT;
@@ -312,7 +312,7 @@ pub const SVCCADC_DATA: Reg = Reg::at(BASE + 0x7C);
 
 /// Whole-register `VOUT_CTL` value the vendor eFuse reader writes (the reset
 /// defaults with `VCCB` = 0xA and reserved bits 25/23 set). VERBATIM; the
-/// eFuse is not read by yotonrs without a user decision. \[code\] system.md §5.5.
+/// eFuse is not read by orpheus without a user decision. \[code\] system.md §5.5.
 pub const VENDOR_EFUSE_READ: u32 = 0x32E7_5114;
 
 #[cfg(test)]

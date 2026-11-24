@@ -5,9 +5,9 @@ use core::sync::atomic::{AtomicU16, Ordering};
 use atj2157_hal::{executor, log, time, usb, wdt};
 use embassy_time::Timer;
 use embassy_usb::{Builder, Config};
-use yoton_proto::devchan::{self as dc, Info};
-use yoton_proto::{logring, mem};
-use yoton_usb::devchan::{DevChannel, Target};
+use orpheus_proto::devchan::{self as dc, Info};
+use orpheus_proto::{logring, mem};
+use orpheus_usb::devchan::{DevChannel, Target};
 
 const REATTACH: u16 = 0x10;
 static REBOOT: AtomicU16 = AtomicU16::new(0xFFFF);
@@ -23,7 +23,7 @@ impl Target for Fw {
             uptime_ms: (time::now_us() / 1000) as u32,
             battery_mv: crate::state::snapshot().millivolts,
             flags: u16::from(usb::high_speed()),
-            build_id: *b"yotonrs-fw\0\0\0\0\0\0",
+            build_id: *b"orpheus-fw\0\0\0\0\0\0",
             // Stack high-water: free bytes (low half) of the total (high).
             reserved: (atj2157_hal::rt::stack_unused().min(0xFFFF) as u32)
                 | ((atj2157_hal::rt::stack_size().min(0xFFFF) as u32) << 16),
@@ -94,7 +94,7 @@ impl Target for Fw {
     }
     fn keys(&mut self, events: &[(u8, bool)]) {
         for &(k, down) in events {
-            if let Some(key) = yoton_input::Key::from_index(k) {
+            if let Some(key) = orpheus_input::Key::from_index(k) {
                 let _ = crate::KEYS.try_send((key, down));
             }
         }
@@ -309,7 +309,7 @@ impl embassy_usb::Handler for MscClass {
 
 /// Card as the MSC block device (512-byte blocks).
 struct CardDev<'a>(&'a mut yoton_bsp::card::Card);
-impl yoton_usb::msc::BlockDevice for CardDev<'_> {
+impl orpheus_usb::msc::BlockDevice for CardDev<'_> {
     type Error = ();
     async fn read(&mut self, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
         let (s, _) = buf.as_chunks_mut::<512>();
@@ -324,7 +324,7 @@ impl yoton_usb::msc::BlockDevice for CardDev<'_> {
 fn builder(product: &'static str) -> Builder<'static, usb::Driver> {
     let driver = usb::Driver::new();
     let mut config = Config::new(dc::DEV_VID, dc::DEV_PID);
-    config.manufacturer = Some("yotonrs");
+    config.manufacturer = Some("orpheus");
     config.product = Some(product);
     config.serial_number = Some("0001");
     config.max_power = 100;
@@ -379,21 +379,21 @@ async fn run_msc() -> Personality {
         let ep_out = alt.endpoint_bulk_out(None, 512);
         drop(func);
         let mut dev = b.build();
-        let unit = yoton_usb::msc::scsi::Unit {
-            kind: yoton_usb::msc::scsi::DeviceKind::Disk,
+        let unit = orpheus_usb::msc::scsi::Unit {
+            kind: orpheus_usb::msc::scsi::DeviceKind::Disk,
             removable: true,
             block_size: 512,
             blocks,
             read_only: MSC_READ_ONLY.load(core::sync::atomic::Ordering::Relaxed),
             present: true,
-            vendor: *b"yotonrs ",
+            vendor: *b"orpheus ",
             product: *b"YM03 microSD    ",
             revision: *b"0001",
         };
         // SAFETY: the card is with this task until `CARD_BACK.send` below,
         // after this scope (and the borrow) ends.
         let buf = unsafe { crate::audio::usb_buffer() };
-        let mut bot = yoton_usb::msc::bot::Bot::new(ep_in, ep_out, CardDev(&mut card), unit, buf);
+        let mut bot = orpheus_usb::msc::bot::Bot::new(ep_in, ep_out, CardDev(&mut card), unit, buf);
         let pump = async {
             loop {
                 embassy_usb_driver::Endpoint::wait_enabled(&mut bot.ep_in).await;

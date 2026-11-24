@@ -1,9 +1,9 @@
 //! The persistent area at the top of SRAM0 (`0x137C00..0x138000`): fault
-//! record, HIL result block and boot mailbox, laid out by `yoton-proto`.
+//! record, HIL result block and boot mailbox, laid out by `orpheus-proto`.
 //! Volatile word accesses only; the linker script keeps every Rust object
 //! out of this area.
 
-use yoton_proto::{fault, mailbox, result};
+use orpheus_proto::{fault, mailbox, result};
 
 #[inline]
 fn wr(addr: u32, v: u32) {

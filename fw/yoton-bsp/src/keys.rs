@@ -1,8 +1,8 @@
 //! Key hardware: two ADC ladders and the power-key level (01-hardware §5,
-//! port `button-yotonym03.c` [HW]). Decoding is in `yoton-input`.
+//! port `button-yotonym03.c` [HW]). Decoding is in `orpheus-input`.
 
 use atj2157_hal::pac::{Reg, cmu, gpio, pmu};
-pub use yoton_input::{Debouncer, Edge, Key, Keys, Sample, decode, earphones_present};
+pub use orpheus_input::{Debouncer, Edge, Key, Keys, Sample, decode, earphones_present};
 
 use crate::pins;
 

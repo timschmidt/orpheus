@@ -1,7 +1,7 @@
 //! Granule bisection over a seekable source, independent of the packet
 //! reader that resumes afterwards.
 
-use yoton_audio::{SeekSource, SourceError};
+use orpheus_audio::{SeekSource, SourceError};
 
 use crate::{Sync, sync_page};
 

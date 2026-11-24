@@ -1,7 +1,7 @@
 use std::vec::Vec;
 
 use super::*;
-use yoton_audio::SliceSource;
+use orpheus_audio::SliceSource;
 
 fn decode_all(file: &[u8], ring: usize, chunk: usize) -> (StreamInfo, Vec<i16>, usize) {
     let mut src = if ring == 0 { SliceSource::new(file) } else { SliceSource::ring(file, ring) };

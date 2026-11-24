@@ -13,9 +13,9 @@
 use atj2157_hal::i2c_soft::{Error, SoftI2c};
 use atj2157_hal::{self as hal, executor, log, pac, persist, wdt};
 use embassy_executor::Spawner;
+use orpheus_proto::result::Verdict;
 use static_cell::StaticCell;
 use yoton_bsp::pins;
-use yoton_proto::result::Verdict;
 
 fn code(e: Error) -> u32 {
     0xEE00_0000

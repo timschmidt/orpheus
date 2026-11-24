@@ -49,7 +49,7 @@
 //!   decoder skims (parses without decoding) packets up to
 //!   [`PREROLL_FRAMES`] frames before the target, starting from the first
 //!   audio page for streams of up to [`SKIM_LIMIT`] bytes and otherwise
-//!   from the page an Ogg bisection (`yoton-ogg`) finds; it then decodes
+//!   from the page an Ogg bisection (`orpheus-ogg`) finds; it then decodes
 //!   the pre-roll from a fresh state and drops the samples before the
 //!   target. Skimming keeps what never converges by itself: the noise
 //!   seeds, the vocoder's memories and pulse phase, the DTX flag and the
@@ -97,15 +97,15 @@ mod tables;
 
 use bits::Bits;
 use nb::NbState;
-use sb::{Low, SbState};
-use stereo::Stereo;
-use yoton_audio::arena::{self, Arena};
-use yoton_audio::{
+use orpheus_audio::arena::{self, Arena};
+use orpheus_audio::{
     ByteSource, CodecId, ContainerInfo, DecodeError, Decoder, MAX_PEEK, OpenError, PcmBlock, Plan,
     SampleKind, SeekSource, SeekStep, Step, StreamInfo, Unsupported, View,
 };
-use yoton_ogg::assembled::{Next, PacketReader};
-use yoton_ogg::{Bisect, HEADER_MIN, PageHeader, Parse, page_crc};
+use orpheus_ogg::assembled::{Next, PacketReader};
+use orpheus_ogg::{Bisect, HEADER_MIN, PageHeader, Parse, page_crc};
+use sb::{Low, SbState};
+use stereo::Stereo;
 
 /// Packet buffer: ten ultra-wideband stereo frames at the highest rate
 /// take about 1.2 KB; longer packets are truncated (the frames in the kept
@@ -316,7 +316,7 @@ impl SpeexDecoder<'_> {
 
     /// Account for a packet the reader delivered: header skipping, offset
     /// discovery. `true` when it is an audio packet.
-    fn take_packet(&mut self, p: &yoton_ogg::assembled::Packet, pos: u64) -> bool {
+    fn take_packet(&mut self, p: &orpheus_ogg::assembled::Packet, pos: u64) -> bool {
         if self.headers_left > 0 {
             self.headers_left -= 1;
             if self.headers_left == 0 && self.audio_start.is_none() {
@@ -638,11 +638,11 @@ impl<'a> Decoder<'a> for SpeexDecoder<'a> {
                     let r = b.step(src)?;
                     st.phase = SeekPhase::Bisect(b);
                     match r {
-                        yoton_ogg::SeekStep::NeedData(n) => {
+                        orpheus_ogg::SeekStep::NeedData(n) => {
                             self.seek = Some(st);
                             return Ok(SeekStep::NeedData(n));
                         }
-                        yoton_ogg::SeekStep::Done(found) => {
+                        orpheus_ogg::SeekStep::Done(found) => {
                             let offset = self.offset.unwrap_or(0);
                             let audio = self.audio_start.unwrap_or(self.stream_start);
                             let at = found.map(|(pos, g)| (pos, (g as i64).saturating_sub(offset)));

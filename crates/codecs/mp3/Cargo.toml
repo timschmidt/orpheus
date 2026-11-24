@@ -1,5 +1,5 @@
 [package]
-name = "yoton-codec-mp3"
+name = "orpheus-codec-mp3"
 description = "MP3 (MPEG-1/2/2.5 Layer III) decoder in the codec arena: minimp3's algorithm via mbop3, with a ring-aware stream layer"
 version.workspace = true
 edition.workspace = true
@@ -12,7 +12,7 @@ rust-version.workspace = true
 exact = []
 
 [dependencies]
-yoton-audio = { path = "../../yoton-audio" }
+orpheus-audio = { path = "../../orpheus-audio" }
 bytemuck = { version = "1.25", default-features = false, features = ["derive", "min_const_generics"] }
 
 [lints]

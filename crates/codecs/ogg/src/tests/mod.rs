@@ -1,7 +1,7 @@
 mod assembled;
 mod ranges;
 
-use yoton_audio::View;
+use orpheus_audio::View;
 
 use super::*;
 

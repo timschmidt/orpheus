@@ -33,7 +33,7 @@ Two tracks run side by side from the start:
 |---|---|---|---|
 | M0 | Foundations | Workspace, host tools, simulator shell, PAC from the datasheet | Rockbox untouched |
 | M1 | Bring-up in RAM | Every basic peripheral proven by a RAM-loaded test image; battery charging managed | Rockbox untouched (images run from RAM) |
-| M2 | Boot and paging | yotonrs boots from NOR through its own stage 2 with the pager; clock levels; HIL harness complete | **yotonrs replaces Rockbox in the free NOR region** (restorable) |
+| M2 | Boot and paging | Orpheus boots from NOR through its own stage 2 with the pager; clock levels; HIL harness complete | **Orpheus replaces Rockbox in the free NOR region** (restorable) |
 | M3 | Storage and USB link | Card + file system, settings store, USB driver with the developer channel | Live debugging over USB |
 | M4 | UI foundation | Toolkit, Home, Settings, system screens on the device; RTC; power basics | Looks like a product; plays nothing yet |
 | M5 | **Daily driver** | Folder-based playback (WAV, MP3, FLAC), Files, Now Playing, card reader, power states | Replaces Rockbox for everyday use |
@@ -52,8 +52,8 @@ before it is the shortest path there; do not pull later features forward.
 
 | WP | Content | Spec | Dev | Size | Acceptance |
 |---|---|---|---|---|---|
-| T-1 | Workspace, toolchain pin, lints, `yoton-proto`, `budgets.toml`, `xtask` skeleton (`build`, `size`, `test`) | 02 §9, 07 §8 | H | S | Empty firmware crate builds for `thumbv7em-none-eabihf`; gate script runs |
-| T-2 | `yoton-host`: ADFU, ymon, NOR payload control, PNG; `xtask dev state/adfu/ram/peek/dump/shot/backup-verify/restore` | 07 §1–2 | D | M | Screenshot of the running Rockbox UI via ADFU; scratch-sector dump identical to `yoton.py`; `restore rockbox` rehearsed as a dry run (verify only) |
+| T-1 | Workspace, toolchain pin, lints, `orpheus-proto`, `budgets.toml`, `xtask` skeleton (`build`, `size`, `test`) | 02 §9, 07 §8 | H | S | Empty firmware crate builds for `thumbv7em-none-eabihf`; gate script runs |
+| T-2 | `orpheus-host`: ADFU, ymon, NOR payload control, PNG; `xtask dev state/adfu/ram/peek/dump/shot/backup-verify/restore` | 07 §1–2 | D | M | Screenshot of the running Rockbox UI via ADFU; scratch-sector dump identical to `yoton.py`; `restore rockbox` rehearsed as a dry run (verify only) |
 | HAL-0 | `atj2157-pac` from the datasheet: PMU, oscillators, CMU, RMU, RTC/timers/watchdog, DMA, SPI, UART, TWI, DAC, ADC, LCD, PWM, LRADC, GPIO; SD and USB from the port's headers and `usb_controller.md` | 03 §1, 01 §1 | H | M | Register addresses and the fields the Rockbox port uses match `atj2157.h`; every field tagged with its source |
 | T-4a | Simulator shell: window, headless frame buffer, key scripts, golden harness with one dummy screen | 07 §3.2 | H | S | `xtask test golden` passes and fails correctly on a changed pixel |
 
@@ -77,7 +77,7 @@ All images are RAM-only (< 96 KiB), loaded by `xtask dev ram`.
 | WP | Content | Spec | Dev | Size | Acceptance |
 |---|---|---|---|---|---|
 | T-3 | `xtask pagelink`, `resident.toml`, `hot.toml`, `check-resident`, `PagerCore` host tests | 02 §3, 07 §4.3 | H | M | Toy firmware splits into resident + pages; simulated-MPU trace tests pass; `check-resident` catches a planted violation |
-| PG-1 | `NorCore`, pager on device, slot format, stage 2 in Rust, crash screen, boot counter; U-NOR-1, U-PWR-3 | 02 §2–3, 03 §6 | D | L | Boots from NOR without keys ten times; `hil pager`; `restore rockbox` verified for real once, then yotonrs re-staged |
+| PG-1 | `NorCore`, pager on device, slot format, stage 2 in Rust, crash screen, boot counter; U-NOR-1, U-PWR-3 | 02 §2–3, 03 §6 | D | L | Boots from NOR without keys ten times; `hil pager`; `restore rockbox` verified for real once, then Orpheus re-staged |
 | PWR-1 | Clock governor: 1.0 V core supply, levels `Low`…`High` (then `Turbo`), self-test, statistics | 03 §2 | D | M | 03 §2.4 acceptance |
 | XIP-1 | Time-boxed look at the hardware SPI cache (two sessions maximum) | 01 U-XIP-1 | D | S | A written verdict in 01-hardware: works (with a design note for replacing the pager) or does not (with what was tried) |
 | T-8 | Profilers (PC sampling, fault log), `hot.toml` loop | 07 §5.6 | D | S | Profile of the demo UI; regenerated `hot.toml` reduces faults measurably |
@@ -90,7 +90,7 @@ the Rockbox port is no longer installed and how to bring it back.
 | WP | Content | Spec | Dev | Size | Acceptance |
 |---|---|---|---|---|---|
 | FS-1 | File system decision and implementation: FAT12/16/32 + exFAT, long names, extents, write support | 02 §6, 07 §3.1 | H | L | Host suite incl. `fsck` and power-cut tests |
-| FS-2 | File system on the device: mount the owner's card read-only first, then writes inside `/.yoton/` | 02 §6 | D | S | `hil fs`; directory listing equals the host's (compare via card-reader mode later, via known files now) |
+| FS-2 | File system on the device: mount the owner's card read-only first, then writes inside `/.orpheus/` | 02 §6 | D | S | `hil fs`; directory listing equals the host's (compare via card-reader mode later, via known files now) |
 | PG-2 | NOR writes with suspend, settings store; U-NOR-2 | 03 §6 | D | M | 03 §6 acceptance |
 | USB-1 | USB controller driver, vendor-only device, first developer-channel requests; U-USB questions | 06 §2.1–2.2, §7 | D | L | Enumerates at high speed 100/100 times; control transfers of every size class correct |
 | USB-2 | Developer channel complete, host side, `xtask dev log/shot/keys/stats/test/time` live | 06 §2.5 | D | M | `hil smoke` runs in live mode in under 10 s |
@@ -168,7 +168,7 @@ per codec: one listening pass with real files of that format.
 | WP | Content | Spec | Dev | Size | User |
 |---|---|---|---|---|---|
 | USB-5 | HID keyboard interface; U-USB-11 | 06 §2.3, §5 | D | S–M | — |
-| OTP-1 | `yoton-otp`, vault, PIN flow, time sync tool | 06 §5 | H+D | M | — |
+| OTP-1 | `orpheus-otp`, vault, PIN flow, time sync tool | 06 §5 | H+D | M | — |
 | OTP-2 | Authenticator app, typing, provisioning, `TextEntry`/PIN pad | 05 §7.9 | H+D | M | Log in to a test account with a typed code |
 | USB-6 | Disk and CD emulation, USB Drive app, QEMU boot test | 06 §3, 05 §7.10 | H+D | L | Boot one real PC from an ISO (if no QEMU pass-through) |
 | USB-7 | USB audio (stretch; U-USB-12) | 06 §2.3 | D | M | Listen |
@@ -199,7 +199,7 @@ T-1 ─┬─ T-2 ── HAL-1 ─┬─ T-5 ── (every D package)
      ├─ T-3 ── PG-1 ─┬─ PWR-1
      │               ├─ PG-2 ── settings ── SYS-1
      │               └─ USB-1 ── USB-2 ── live HIL (speeds up everything after)
-     └─ T-4a ── UI-1 ── UI-2 … (host track, limited only by service traits in yoton-apps)
+     └─ T-4a ── UI-1 ── UI-2 … (host track, limited only by service traits in orpheus-apps)
 FS-1, T-7, AU-4, AU-5, codec host work: host track, any time after T-1
 ```
 
@@ -226,7 +226,7 @@ Rules of thumb for whoever assigns sessions:
 | USB controller surprises with interrupt/isochronous endpoints | Medium | HID or USB audio delayed | Both are after M5; mass storage path is already proven by the port |
 | Bluetooth module pin/level assumptions wrong | Low | BT delayed | Identity test both ways round first; module is self-contained |
 | Player needs a human after a bad state (power-off, hang) | Certain, occasionally | Stalls unattended work | Watchdog + boot counter + ADFU; hardware 8 s long-press reset; no automated power-off; worker stops and asks rather than retrying blind |
-| Card data damaged by a file-system bug | Low | Severe for the owner | Read-only mount first; writes confined to `/.yoton/`; host `fsck` after every write suite; the owner should keep a backup of the card (ask once, at FS-2) |
+| Card data damaged by a file-system bug | Low | Severe for the owner | Read-only mount first; writes confined to `/.orpheus/`; host `fsck` after every write suite; the owner should keep a backup of the card (ask once, at FS-2) |
 | Battery harmed by charger misuse | Low | Severe | Vendor values only, documented currents, early PWR-2, user meter check |
 | Third-party crates immature | High | Rework | Each adopted only through our tests; ports as fallback are already planned |
 | Scope | High | Never finishing | M5 gate first; everything after is ordered by user value; stretch items marked |

@@ -1,6 +1,6 @@
-# yoton-codec-mp3
+# orpheus-codec-mp3
 
-MP3 decoder for yotonrs (04-audio §4.1, priority A, WP AU-2): MPEG-1,
+MP3 decoder for Orpheus (04-audio §4.1, priority A, WP AU-2): MPEG-1,
 MPEG-2 and MPEG-2.5 Layer III, CBR/VBR/ABR, joint/mid-side/intensity/dual
 stereo, CRC-protected frames, Xing/Info/VBRI headers, LAME gapless data,
 ID3v1/ID3v2/APEv2 tags inside the stream skipped.
@@ -19,7 +19,7 @@ Candidates (docs/research/rust-ecosystem.md §3), all MIT OR Apache-2.0:
 | `nanoaudio-mp3` | Wrapper over `nanomp3-core` with its own pipeline traits |
 
 Adopted: **mbop3's frame decoder, vendored** (its `bits`, `header`,
-`layer3`, `synth`, `tables` files, changes marked `yoton:`; `state.rs` is its
+`layer3`, `synth`, `tables` files, changes marked `orpheus:`; `state.rs` is its
 `decoder.rs` reworked). Vendoring rather than depending is needed because
 the state must be a `Pod` struct carved out of the arena (no `unsafe`), and
 frame sync must work on a split ring view with the `NeedData` contract.

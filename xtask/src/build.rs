@@ -15,7 +15,7 @@ pub struct Built {
 }
 
 /// Build package `pkg` (binary `bin`) in the device workspace and write the
-/// flat image next to the ELF in `target/yoton/` (RAM-only images).
+/// flat image next to the ELF in `target/orpheus/` (RAM-only images).
 pub fn build_fw(pkg: &str, bin: &str, release: bool, features: Option<&str>) -> Result<Built> {
     let elf = cargo_build(pkg, bin, release, features)?;
     let (bytes, load_addr) = flatten(&elf)?;
@@ -88,7 +88,7 @@ pub fn flatten(elf: &Path) -> Result<(Vec<u8>, u32)> {
 
 pub fn cmd_build(args: &mut Args) -> Result<String> {
     // The firmware is a paged image: cargo links pass 1, pagelink the rest
-    // (target/yoton/firmware.yfw, resident.bin, pages.bin, layout.json).
+    // (target/orpheus/firmware.yfw, resident.bin, pages.bin, layout.json).
     let mut forwarded = vec!["--bin".to_string(), args.value("bin").unwrap_or_else(|| "firmware".into())];
     if args.flag("debug") {
         forwarded.push("--debug".into());
@@ -112,9 +112,9 @@ pub fn cmd_bringup(args: &mut Args) -> Result<String> {
 pub fn build_bringup(name: &str, release: bool) -> Result<Built> {
     let pkg = format!("bringup-{name}");
     let b = build_fw(&pkg, &pkg, release, None)?;
-    let max = yoton_proto::mem::RAM_IMAGE_MAX as usize;
-    if b.load_addr != yoton_proto::mem::IMAGE_BASE {
-        bail!("{pkg} loads at {:#x}, expected {:#x}", b.load_addr, yoton_proto::mem::IMAGE_BASE);
+    let max = orpheus_proto::mem::RAM_IMAGE_MAX as usize;
+    if b.load_addr != orpheus_proto::mem::IMAGE_BASE {
+        bail!("{pkg} loads at {:#x}, expected {:#x}", b.load_addr, orpheus_proto::mem::IMAGE_BASE);
     }
     if b.size > max {
         bail!("{pkg} is {} bytes; RAM images must stay below ymon ({max} bytes)", b.size);

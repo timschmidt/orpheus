@@ -1,4 +1,4 @@
-# yotonrs — development plan
+# Orpheus — development plan
 
 A pure-Rust, Embassy-based firmware for the Yoton YM03 MP3 player (Actions
 ATJ2157), replacing both the stock firmware's functions and the Rockbox port
@@ -94,7 +94,7 @@ Written up in `docs/hw/` (four reverse-engineering reports),
 3. **One 104 KiB mode pool** re-partitioned for playback, recording, USB
    storage, pictures (02 §1.3); full 32 KiB frame buffer kept for
    screenshot-based testing.
-4. **Dual-boot NOR layout by default** (stock firmware stays bootable; yotonrs
+4. **Dual-boot NOR layout by default** (stock firmware stays bootable; Orpheus
    lives in the 480 KiB the Rockbox port uses now), the installed 512-byte
    stage 1 is kept, stage 2 is rewritten; a full-flash layout is an opt-in
    later (02 §2).
@@ -121,14 +121,14 @@ Defaults are what workers assume until told otherwise.
 
 | Id | Decision | Default | Why it matters |
 |---|---|---|---|
-| D-1 | Licence of yotonrs | MIT OR Apache-2.0; only permissively licensed sources may be ported; the GPL Rockbox tree is a hardware reference only | A GPL choice would allow porting Rockbox's codecs directly |
+| D-1 | Licence of Orpheus | MIT OR Apache-2.0; only permissively licensed sources may be ported; the GPL Rockbox tree is a hardware reference only | A GPL choice would allow porting Rockbox's codecs directly |
 | D-2 | When to give up the stock firmware for the full-flash layout | **Decided 2026-11-24 by the user: now** (stock firmware erased, full layout installed) | Dual-boot limited the firmware to 480 KiB |
 | D-3 | USB identity | pid.codes test id `1209:0001` in development; apply for a product id before release | The Rockbox port borrows Actions' vendor id |
 | D-4 | Use of the 288 MHz / 1.3 V level | No | Above the reset-default core voltage; vendor-used, but probably unnecessary |
 | D-5 | Open the case for a board inspection (Bluetooth chip marking, analogue tap, debug pads) | Not required | Would identify the Bluetooth chip, locate its audio tap and might expose SWD |
 | D-6 | Experiments with the Bluetooth module's own firmware | No | Recovery from a failed module upgrade is unknown |
 | D-7 | Publishing `docs/hw/` and `docs/vendor/` | Kept out of git by `.gitignore` (the `yoton` repository treats vendor-derived analysis the same way) | Remove the ignore lines to publish the reverse-engineering reports; the datasheet copy should stay local |
-| D-8 | Rockbox on the player | Replaced by yotonrs at milestone M2; restorable with one command | The player is the Rockbox reference until then |
+| D-8 | Rockbox on the player | Replaced by Orpheus at milestone M2; restorable with one command | The player is the Rockbox reference until then |
 
 Also needed from the user along the way: the checks in
 [USER-CHECKS.md](USER-CHECKS.md) (listening, looking, pressing keys,

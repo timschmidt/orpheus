@@ -1,6 +1,6 @@
 //! Codec conformance harness (07 §3.3–3.4, WP T-7).
 //!
-//! * [`drive`]: runs any built decoder through the facade (`yoton-codecs`)
+//! * [`drive`]: runs any built decoder through the facade (`orpheus-codecs`)
 //!   over a simulated stream ring, checking the decoder contract.
 //! * [`checks`]: the per-file checks against the generated corpus
 //!   (`tests/corpus/`, made by `cargo xtask test codecs --gen`): reference

@@ -1,9 +1,9 @@
 //! Pictures for the simulated card (made here, deterministic) and the
-//! simulator's picture decoding: the real `yoton-img` decoders and scaler,
+//! simulator's picture decoding: the real `orpheus-img` decoders and scaler,
 //! run at once into the screen (the firmware runs them in its card task).
 
-use yoton_apps::services::{PicError, PicFormat, PicInfo};
-use yoton_img::{Decoder, Error, Fit, Format, Options, Orient, Placement, Scaler, SliceSource, Target};
+use orpheus_apps::services::{PicError, PicFormat, PicInfo};
+use orpheus_img::{Decoder, Error, Fit, Format, Options, Orient, Placement, Scaler, SliceSource, Target};
 
 type Rgb = [u8; 3];
 
@@ -91,7 +91,7 @@ pub fn tree(w: u32, h: u32) -> Vec<Rgb> {
 /// RGB565 bytes (little-endian) of a picture, for the PNG writer.
 #[must_use]
 pub fn to_rgb565_le(px: &[Rgb]) -> Vec<u8> {
-    px.iter().flat_map(|&c| yoton_img::scale::rgb565(c).to_le_bytes()).collect()
+    px.iter().flat_map(|&c| orpheus_img::scale::rgb565(c).to_le_bytes()).collect()
 }
 
 /// A 24-bit bottom-up BMP.

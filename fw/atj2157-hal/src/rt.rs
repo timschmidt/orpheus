@@ -131,11 +131,11 @@ core::arch::global_asm!(
     ".ltorg",
     "",
     // Fault shim: r0 = stacked frame, r1 = EXC_RETURN, r2 = IPSR.
-    ".section .text.yoton_fault_shim, \"ax\"",
-    ".global yoton_fault_shim",
-    ".type yoton_fault_shim, %function",
+    ".section .text.orpheus_fault_shim, \"ax\"",
+    ".global orpheus_fault_shim",
+    ".type orpheus_fault_shim, %function",
     ".thumb_func",
-    "yoton_fault_shim:",
+    "orpheus_fault_shim:",
     "    tst lr, #4",
     "    ite eq",
     "    mrseq r0, msp",
@@ -152,10 +152,10 @@ core::arch::global_asm!(
     // MemManage: the pager. Same frame/EXC_RETURN/IPSR arguments; returns
     // when the fault was served.
     ".section .text.resident.memmanage, \"ax\"",
-    ".global yoton_memmanage",
-    ".type yoton_memmanage, %function",
+    ".global orpheus_memmanage",
+    ".type orpheus_memmanage, %function",
     ".thumb_func",
-    "yoton_memmanage:",
+    "orpheus_memmanage:",
     "    tst lr, #4",
     "    ite eq",
     "    mrseq r0, msp",
@@ -163,7 +163,7 @@ core::arch::global_asm!(
     "    mov r1, lr",
     "    mrs r2, ipsr",
     "    push {{r4, lr}}",
-    "    bl yoton_pager_fault",
+    "    bl orpheus_pager_fault",
     "    pop {{r4, pc}}",
     fault = sym fault_entry,
     emerg = sym EMERGENCY_STACK,
@@ -208,8 +208,8 @@ pub fn stack_guard_range() -> (u32, u32) {
 
 unsafe extern "C" {
     fn _start();
-    fn yoton_fault_shim();
-    fn yoton_memmanage();
+    fn orpheus_fault_shim();
+    fn orpheus_memmanage();
     static __stack_top: u32;
     static __stack_bottom: u32;
 }
@@ -226,7 +226,7 @@ pub union Vector {
 }
 
 const RESERVED: Vector = Vector { reserved: 0 };
-const FAULT: Vector = Vector { handler: yoton_fault_shim };
+const FAULT: Vector = Vector { handler: orpheus_fault_shim };
 const DISPATCH: Vector = Vector { handler: irq_entry };
 
 /// The vector table (aligned to 512 bytes by the linker script; 80 entries).
@@ -239,7 +239,7 @@ pub static __vectors: [Vector; 16 + N_IRQ] = {
     v[1] = Vector { handler: _start };
     v[2] = FAULT; // NMI
     v[3] = FAULT; // HardFault
-    v[4] = Vector { handler: yoton_memmanage }; // MemManage: the pager
+    v[4] = Vector { handler: orpheus_memmanage }; // MemManage: the pager
     v[5] = FAULT; // BusFault
     v[6] = FAULT; // UsageFault
     v[7] = RESERVED;

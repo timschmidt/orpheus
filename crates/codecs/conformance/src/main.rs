@@ -1,5 +1,5 @@
-//! `yoton-codec-conformance run <corpus> [--filter S] [--no-robust] [--seeks N]`
-//! `yoton-codec-conformance fuzz-smoke <corpus> [--iters N]`
+//! `orpheus-codec-conformance run <corpus> [--filter S] [--no-robust] [--seeks N]`
+//! `orpheus-codec-conformance fuzz-smoke <corpus> [--iters N]`
 //!
 //! Run by `cargo xtask test codecs` / `fuzz-smoke`. Prints one line per file
 //! and a verdict line last; exits non-zero on any failure.
@@ -10,8 +10,8 @@ use std::process::ExitCode;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use yoton_codec_conformance::checks::{self, Entry, Opts, Row};
-use yoton_codec_conformance::{fuzz, rng::Rng};
+use orpheus_codec_conformance::checks::{self, Entry, Opts, Row};
+use orpheus_codec_conformance::{fuzz, rng::Rng};
 
 struct Args {
     cmd: String,
@@ -122,12 +122,12 @@ fn run(a: &Args) -> Result<bool, String> {
     }
     println!();
     println!("{} files, {} failed", rows.len(), failed);
-    let joins: Vec<_> = yoton_codec_conformance::join::manifest(&a.dir)
+    let joins: Vec<_> = orpheus_codec_conformance::join::manifest(&a.dir)
         .into_iter()
         .filter(|j| a.filter.as_ref().is_none_or(|f| j.name.contains(f.as_str()) || f.contains("gapless")))
         .collect();
     for j in &joins {
-        match yoton_codec_conformance::join::check(j) {
+        match orpheus_codec_conformance::join::check(j) {
             Ok(s) => println!("ok   gapless join {:<8} {s}", j.name),
             Err(e) => {
                 failed += 1;
@@ -157,7 +157,7 @@ fn fuzz_smoke(a: &Args) -> Result<bool, String> {
         let Ok(rd) = std::fs::read_dir(regress.join(name)) else { continue };
         for e in rd.flatten() {
             if let Ok(input) = std::fs::read(e.path()) {
-                yoton_codec_conformance::set_context(&format!("regression {name}/{}", e.path().display()));
+                orpheus_codec_conformance::set_context(&format!("regression {name}/{}", e.path().display()));
                 f(&input);
             }
         }
@@ -171,7 +171,7 @@ fn fuzz_smoke(a: &Args) -> Result<bool, String> {
         for i in 0..per {
             let seed = &seeds[rng.below(seeds.len() as u64) as usize];
             let input = fuzz::mutate(seed, &mut rng);
-            yoton_codec_conformance::set_context(&format!("fuzz {name} case {k}/{i}"));
+            orpheus_codec_conformance::set_context(&format!("fuzz {name} case {k}/{i}"));
             f(&input);
         }
     });
@@ -180,7 +180,7 @@ fn fuzz_smoke(a: &Args) -> Result<bool, String> {
 }
 
 fn main() -> ExitCode {
-    yoton_codec_conformance::install_panic_hook();
+    orpheus_codec_conformance::install_panic_hook();
     let a = match args() {
         Ok(a) => a,
         Err(e) => {

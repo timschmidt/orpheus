@@ -3,9 +3,9 @@
 //! could overflow, so a bad stream decodes to noise and fails its CRC
 //! instead of panicking.
 
-use yoton_audio::View;
-use yoton_audio::bits::BitReader;
-use yoton_audio::crc::{crc8, crc16};
+use orpheus_audio::View;
+use orpheus_audio::bits::BitReader;
+use orpheus_audio::crc::{crc8, crc16};
 
 /// What the frame header says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

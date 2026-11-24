@@ -23,8 +23,8 @@ use atj2157_hal::interrupt::Level;
 use atj2157_hal::{self as hal, dac, executor, log, pac, persist, time, wdt};
 use embassy_executor::Spawner;
 use embassy_time::Timer;
+use orpheus_proto::result::Verdict;
 use static_cell::StaticCell;
-use yoton_proto::result::Verdict;
 
 const CH: usize = 5;
 const HALF_FRAMES: usize = 1024;

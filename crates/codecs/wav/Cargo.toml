@@ -1,5 +1,5 @@
 [package]
-name = "yoton-codec-wav"
+name = "orpheus-codec-wav"
 description = "WAV, AIFF/AIFF-C and AU decoder: integer and float PCM, A-law, µ-law, IMA and MS ADPCM"
 version.workspace = true
 edition.workspace = true
@@ -7,7 +7,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-yoton-audio = { path = "../../yoton-audio" }
+orpheus-audio = { path = "../../orpheus-audio" }
 
 [lints]
 workspace = true

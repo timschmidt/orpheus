@@ -8,8 +8,8 @@ publish = false
 
 [dependencies]
 atj2157-hal = { path = "../../atj2157-hal" }
-yoton-proto.workspace = true
-yoton-pager = { path = "../../../crates/yoton-pager" }
+orpheus-proto.workspace = true
+orpheus-pager = { path = "../../../crates/orpheus-pager" }
 embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }
 static_cell = "2"
 

@@ -69,5 +69,5 @@ SECTIONS
 }
 
 ASSERT(__stack_top - __stack_bottom >= 0x3000, "less than 12 KiB left for the stack");
-ASSERT(YOTON_FLAT_PASS || __image_end <= 0x118000, "resident image overlaps ymon at 0x118000");
+ASSERT(ORPHEUS_FLAT_PASS || __image_end <= 0x118000, "resident image overlaps ymon at 0x118000");
 ASSERT(!DEFINED(__vectors) || __vectors % 512 == 0, "vector table not 512-aligned");

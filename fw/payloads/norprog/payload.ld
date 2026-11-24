@@ -1,5 +1,5 @@
 /*
- * ymon RAM payload: loaded at 0x11E000 (yoton_proto::mem::YMON_PAYLOAD),
+ * ymon RAM payload: loaded at 0x11E000 (orpheus_proto::mem::YMON_PAYLOAD),
  * entered at its first byte as a Thumb function that returns a pointer to
  * a {addr, size} result. Arguments at 0x11F800, data buffer at 0x122000.
  * The HAL's start-up code and vector table are not wanted here.

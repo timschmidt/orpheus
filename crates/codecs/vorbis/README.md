@@ -1,7 +1,7 @@
-# yoton-codec-vorbis
+# orpheus-codec-vorbis
 
-Ogg Vorbis decoder for yotonrs (04-audio §4.1, priority A, WP AU-7), with
-the Ogg layer in `crates/codecs/ogg` (`yoton-ogg`: its zero-copy
+Ogg Vorbis decoder for Orpheus (04-audio §4.1, priority A, WP AU-7), with
+the Ogg layer in `crates/codecs/ogg` (`orpheus-ogg`: its zero-copy
 `ranges::Reader` and the shared granule `Bisect`).
 
 ## Decision: written from the specification
@@ -50,7 +50,7 @@ Foreign logical streams are skipped; chaining ends the stream.
 Exact by the spec's arithmetic: the first packet yields nothing, each later
 one the span between block centres; the end is trimmed to the last page's
 granule position. Seeking bisects on page granule positions
-(`yoton_ogg::Bisect`, shared with Opus and Speex; header pages and pages
+(`orpheus_ogg::Bisect`, shared with Opus and Speex; header pages and pages
 without packet ends ignored), lands on the last page whose granule ≤
 target, decodes with output dropped until a granule position fixes the
 position, then hands out from the exact target sample. Targets before the

@@ -25,7 +25,7 @@ would replace §3 if it succeeds.
 
 The Rockbox port in `/home/tim/Documents/GitHub/yoton/ext/rockbox`
 (`firmware/target/arm/atj2157/`) solved 1 with an MPU-driven demand pager and
-proved it on this hardware (320 kbit/s MP3 with the UI running). yotonrs keeps
+proved it on this hardware (320 kbit/s MP3 with the UI running). Orpheus keeps
 that mechanism and rebuilds everything above it around Embassy.
 
 ## 1. Memory map and budget
@@ -101,7 +101,7 @@ Notes:
 ### 1.3 The mode pool
 
 The largest RAM consumers never run at the same time, so one 104 KiB region is
-handed out by a small **lease allocator** (`yoton-audio::pool`): a lease is a
+handed out by a small **lease allocator** (`orpheus-audio::pool`): a lease is a
 `&'static mut [u8]` slice with an owner tag; the pool has a fixed partition
 table per mode, and a mode switch waits until every lease of the old mode has
 been returned.
@@ -135,7 +135,7 @@ borrowers back before playback of that file starts.
 
 8 MiB Zbit NOR (JEDEC `5E 40 17`) on SPI0. The vendor image is stored
 **scrambled**; the SPI controller descrambles on the fly when its CTL bit 12 is
-set. Everything yotonrs writes is stored plain.
+set. Everything Orpheus writes is stored plain.
 
 | NOR range | Content today |
 |---|---|
@@ -165,7 +165,7 @@ mask ROM ──► stage 1 (NOR 0, 512 B, loaded to 0x101000)
 ```
 
 * **Stage 1 stays as installed.** Its contract (load 1 KiB from `0x7DF400`,
-  magic `"YST2"`, entry at offset `0x11`) is all yotonrs needs, so sector 0 is
+  magic `"YST2"`, entry at offset `0x11`) is all Orpheus needs, so sector 0 is
   not rewritten during development. A Rust rewrite of stage 1 (for a tree with
   no C at all) is the last, optional step of the release milestone because it
   is the only work that needs a sector-0 write.
@@ -335,9 +335,9 @@ exactly, with host tests replaying recorded traces, 07 §3.1).
    miss. Hot loops are either resident (§3.4) or packed together by profile
    (§3.5).
 
-### 3.3 Implementation plan (`yoton-pager`, with `xtask pagelink`)
+### 3.3 Implementation plan (`orpheus-pager`, with `xtask pagelink`)
 
-* `yoton-pager` (resident, `no_std`, `unsafe` allowed): MPU setup, the line
+* `orpheus-pager` (resident, `no_std`, `unsafe` allowed): MPU setup, the line
   cache and region pool as a pure data structure (`PagerCore`, host-testable),
   the MemManage entry in `global_asm!`, the NOR line reader (shared with the
   NOR driver), statistics, optional fault log ring, the stack guard region.
@@ -362,7 +362,7 @@ exactly, with host tests replaying recorded traces, 07 §3.1).
   5. extract the resident image and the page store from the ELF, write the
      slot image and `layout.json` (section → page, sizes, margins).
 * Classification rules live in `resident.toml`: path-prefix patterns over
-  demangled symbol names (`yoton_pager::`, `atj2157_hal::irq::`,
+  demangled symbol names (`orpheus_pager::`, `atj2157_hal::irq::`,
   `embassy_executor::raw::`, `embassy_time_driver`, `memcpy`/`memset`
   builtins, …), explicit sections (`.text.resident.*`, `.rodata.resident.*`
   via a `#[resident]` attribute macro for our own code), and whatever
@@ -551,7 +551,7 @@ the stock kernel does) and "full" are reported to the UI.
 ```
 apps / audio / usb classes
         │  files, directories, extents
-yoton-fs:  volume manager ─ FAT12/16/32 ─ exFAT ─ long names ─ path walk
+orpheus-fs:  volume manager ─ FAT12/16/32 ─ exFAT ─ long names ─ path walk
         │  512-byte sectors; metadata through an 8-sector cache, file data by direct multi-block transfer
 sd protocol layer: init, CMD6 high-speed switch, CMD17/18/24/25 (+CMD23), CMD12, CMD13 busy polling, error recovery
         │
@@ -578,7 +578,7 @@ Requirements:
   before power-off.
 * FAT32 is what the owner's 256 GB card uses today; exFAT is what cards come
   formatted with. Both are required. Whether to adopt an existing crate or
-  write `yoton-fs` is decided in WP-FS-1 from
+  write `orpheus-fs` is decided in WP-FS-1 from
   [docs/research/rust-ecosystem.md](../research/rust-ecosystem.md) §5
   (candidates found there: `embedded-fatfs` for FAT and `exfat-slim` for
   exFAT, both async over `block-device-driver`; the Embassy project's `sdio`
@@ -645,7 +645,7 @@ Fonts:
 ## 9. Crate layout
 
 ```
-yotonrs/
+orpheus/
 ├── Cargo.toml                 workspace; profiles; lints
 ├── rust-toolchain.toml        pinned stable + thumbv7em-none-eabihf
 ├── .cargo/config.toml         target, rustflags, xtask alias
@@ -654,30 +654,30 @@ yotonrs/
 │   ├── atj2157-pac            registers (hand-written, one module per block)
 │   ├── atj2157-hal            drivers + Embassy glue: clocks, gpio/mfp, dma, nor, sd, lcm, pwm, dac, adc,
 │   │                          usb (embassy-usb-driver), uart, i2c, rtc, pmu, timers/time driver, wdt, critical section
-│   ├── yoton-pager            §3
+│   ├── orpheus-pager            §3
 │   ├── yoton-bsp              this board: pins, key ladders, panel init, tuner, motion sensor, Bluetooth module, power policy
-│   ├── yoton-proto            shared constants and wire formats (firmware ↔ boot ↔ host)
-│   ├── yoton-fs               §6
-│   ├── yoton-audio            pipeline, rings, pool, DSP, metadata, library index, playlists
-│   ├── codecs/                yoton-codec-{wav,mp3,flac,vorbis,opus,speex,aac,…}  one crate each, host-testable
-│   ├── yoton-img              JPEG/PNG/BMP/GIF/QOI streaming decoders and scaler
-│   ├── yoton-ui               toolkit (05 §5)
-│   ├── yoton-apps             screens and app logic over service traits
-│   ├── yoton-usb              personalities and classes: MSC/SCSI disk + CD-ROM, HID, developer channel, (UAC)
-│   ├── yoton-bt               Bluetooth: per docs/hw/bluetooth.md
-│   └── yoton-otp              HOTP/TOTP and the vault
+│   ├── orpheus-proto            shared constants and wire formats (firmware ↔ boot ↔ host)
+│   ├── orpheus-fs               §6
+│   ├── orpheus-audio            pipeline, rings, pool, DSP, metadata, library index, playlists
+│   ├── codecs/                orpheus-codec-{wav,mp3,flac,vorbis,opus,speex,aac,…}  one crate each, host-testable
+│   ├── orpheus-img              JPEG/PNG/BMP/GIF/QOI streaming decoders and scaler
+│   ├── orpheus-ui               toolkit (05 §5)
+│   ├── orpheus-apps             screens and app logic over service traits
+│   ├── orpheus-usb              personalities and classes: MSC/SCSI disk + CD-ROM, HID, developer channel, (UAC)
+│   ├── orpheus-bt               Bluetooth: per docs/hw/bluetooth.md
+│   └── orpheus-otp              HOTP/TOTP and the vault
 ├── firmware/                  the binary: memory layout, task wiring, service implementations
 ├── boot/stage2/  boot/stage1/ boot stages
 ├── payloads/                  RAM payloads for ADFU (ymon, NOR programmer) — Rust
 ├── bringup/                   small RAM-only test images, one per driver
 ├── sim/                       desktop simulator and golden-image tests
-├── xtask/  crates/yoton-host  host tooling
+├── xtask/  crates/orpheus-host  host tooling
 ├── tests/                     corpus generators, HIL suites, regress inputs
 └── docs/
 ```
 
-Dependency rules: `yoton-ui`, `yoton-apps`, `yoton-audio`, codecs, `yoton-fs`,
-`yoton-img`, `yoton-otp` never depend on `atj2157-*` or `yoton-bsp`.
+Dependency rules: `orpheus-ui`, `orpheus-apps`, `orpheus-audio`, codecs, `orpheus-fs`,
+`orpheus-img`, `orpheus-otp` never depend on `atj2157-*` or `yoton-bsp`.
 `atj2157-hal` knows the SoC, not the board. `yoton-bsp` knows the board.
 `firmware` is the only crate that knows everything.
 

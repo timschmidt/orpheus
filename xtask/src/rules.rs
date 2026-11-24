@@ -214,8 +214,8 @@ mod tests {
         assert!(glob("*", ""));
         assert!(glob("a?c", "abc"));
         assert!(!glob("a?c", "ac"));
-        assert!(glob("yoton_pager::*", "yoton_pager::PagerCore::fault"));
-        assert!(!glob("yoton_pager::*", "yoton_pagers::x"));
+        assert!(glob("orpheus_pager::*", "orpheus_pager::PagerCore::fault"));
+        assert!(!glob("orpheus_pager::*", "orpheus_pagers::x"));
         assert!(glob("*::raw::*::poll", "embassy_executor::raw::TaskStorage<F>::poll"));
         assert!(symbol_matches("embassy_executor::raw::*", "<embassy_executor::raw::Executor>::poll"));
     }

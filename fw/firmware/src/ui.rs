@@ -3,16 +3,16 @@
 use atj2157_hal::dma;
 use embassy_futures::select::{Either4, select4};
 use embassy_time::{Duration, Instant as TInstant, Timer};
-use yoton_apps::screens::{self, AppScreen};
-use yoton_apps::services::{self, PowerRequest};
+use orpheus_apps::screens::{self, AppScreen};
+use orpheus_apps::services::{self, PowerRequest};
+use orpheus_input::Key as HwKey;
+use orpheus_ui::event::{Event, Instant, Key, ServiceEvent};
+use orpheus_ui::gfx::{DirtySet, Gfx};
+use orpheus_ui::input::KeyMapper;
+use orpheus_ui::nav::Arg;
+use orpheus_ui::shell::{Requests, Shell, TICK_MS};
 use yoton_bsp::display::{self, Backlight, Display};
 use yoton_bsp::settings::{NorRegion, Store};
-use yoton_input::Key as HwKey;
-use yoton_ui::event::{Event, Instant, Key, ServiceEvent};
-use yoton_ui::gfx::{DirtySet, Gfx};
-use yoton_ui::input::KeyMapper;
-use yoton_ui::nav::Arg;
-use yoton_ui::shell::{Requests, Shell, TICK_MS};
 
 use crate::services::{Action, Fw};
 use crate::{BATTERY, KEYS, state};
@@ -111,7 +111,7 @@ impl Ui {
         while let Some(a) = self.fw.actions.pop() {
             if let Action::Usb(m) = a {
                 let p = match m {
-                    yoton_apps::services::UsbMode::FileTransfer => crate::usbdev::Personality::FileTransfer,
+                    orpheus_apps::services::UsbMode::FileTransfer => crate::usbdev::Personality::FileTransfer,
                     _ => crate::usbdev::Personality::Dev,
                 };
                 crate::usbdev::MSC_READ_ONLY.store(false, core::sync::atomic::Ordering::Relaxed);
@@ -132,8 +132,8 @@ impl Ui {
         // Sound settings to the audio task (published only on change).
         {
             let st = &self.fw.settings;
-            let g = |k: u16| st.get(yoton_apps::settings::SettingId(k));
-            let eq = yoton_apps::settings::eq_gains(g(0x0101), |id| st.get(id));
+            let g = |k: u16| st.get(orpheus_apps::settings::SettingId(k));
+            let eq = orpheus_apps::settings::eq_gains(g(0x0101), |id| st.get(id));
             let snd = crate::media::Sound {
                 eq,
                 bass: g(0x0103) as i8,
@@ -274,7 +274,7 @@ pub async fn ui() {
                 if k == crate::bt::LAST_KEY && len == 6 {
                     let mut a = [0u8; 6];
                     a.copy_from_slice(&b[..6]);
-                    bt_last = Some(yoton_bt::Addr(a));
+                    bt_last = Some(orpheus_bt::Addr(a));
                 }
             }
         }
@@ -307,7 +307,7 @@ pub async fn ui() {
             Either4::Fourth(tag) => {
                 ui.fw.sync(tag);
                 let (first, count) = (ui.fw.browse.first, ui.fw.browse.n);
-                let ev = Event::Data(yoton_ui::event::DataReady { tag, first, count });
+                let ev = Event::Data(orpheus_ui::event::DataReady { tag, first, count });
                 let r = ui.shell.event(&mut ui.fw, ev, now());
                 ui.handle(r);
             }
@@ -364,9 +364,9 @@ pub async fn ui() {
             let st = state::snapshot();
             let idle = matches!(
                 ui.fw.player.source,
-                yoton_ui::event::Source::Idle | yoton_ui::event::Source::Paused
+                orpheus_ui::event::Source::Idle | orpheus_ui::event::Source::Paused
             );
-            let mins = match ui.fw.settings.get(yoton_apps::settings::SettingId(0x0403)) {
+            let mins = match ui.fw.settings.get(orpheus_apps::settings::SettingId(0x0403)) {
                 1 => 5,
                 2 => 10,
                 3 => 15,

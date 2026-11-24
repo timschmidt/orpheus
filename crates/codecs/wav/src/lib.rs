@@ -29,9 +29,9 @@ pub use conv::{alaw, f32_bits_to_i32, f64_bits_to_i32, ulaw};
 use adpcm::{Ima, Ms};
 use conv::Enc;
 use header::{Kind, Layout};
-use yoton_audio::arena::{self, Arena};
-use yoton_audio::source::skip;
-use yoton_audio::{
+use orpheus_audio::arena::{self, Arena};
+use orpheus_audio::source::skip;
+use orpheus_audio::{
     ByteSource, CodecId, ContainerInfo, DecodeError, Decoder, OpenError, PcmBlock, Plan, SampleKind,
     SeekSource, SeekStep, Step, StreamInfo, View,
 };

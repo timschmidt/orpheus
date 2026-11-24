@@ -16,9 +16,9 @@
 
 use atj2157_hal::{self as hal, executor, log, nor, pac, persist, time, wdt};
 use embassy_executor::Spawner;
+use orpheus_proto::hash::crc32;
+use orpheus_proto::result::Verdict;
 use static_cell::{ConstStaticCell, StaticCell};
-use yoton_proto::hash::crc32;
-use yoton_proto::result::Verdict;
 
 const SCRATCH: u32 = 0x0076_3000;
 const PAGE: u32 = 0x0076_4000;

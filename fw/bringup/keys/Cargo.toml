@@ -8,9 +8,9 @@ publish = false
 
 [dependencies]
 atj2157-hal = { path = "../../atj2157-hal" }
-yoton-proto.workspace = true
+orpheus-proto.workspace = true
 yoton-bsp = { path = "../../yoton-bsp" }
-yoton-input = { path = "../../../crates/yoton-input" }
+orpheus-input = { path = "../../../crates/orpheus-input" }
 embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }
 embassy-time = "0.5"
 embassy-sync = "0.8"

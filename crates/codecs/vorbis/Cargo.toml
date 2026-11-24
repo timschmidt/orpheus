@@ -1,5 +1,5 @@
 [package]
-name = "yoton-codec-vorbis"
+name = "orpheus-codec-vorbis"
 description = "Ogg Vorbis decoder in the codec arena, written from the Vorbis I specification"
 version.workspace = true
 edition.workspace = true
@@ -7,8 +7,8 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-yoton-audio = { path = "../../yoton-audio" }
-yoton-ogg = { path = "../ogg" }
+orpheus-audio = { path = "../../orpheus-audio" }
+orpheus-ogg = { path = "../ogg" }
 bytemuck = { version = "1.25", default-features = false, features = ["derive", "min_const_generics"] }
 
 [lints]

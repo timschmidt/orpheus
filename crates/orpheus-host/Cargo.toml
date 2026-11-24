@@ -1,0 +1,17 @@
+[package]
+name = "orpheus-host"
+description = "Host-side transport to the player: ADFU boot ROM, ymon monitor, NOR payloads, developer channel, screenshots"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+orpheus-proto.workspace = true
+nusb = "0.2"
+png = "0.18"
+anyhow = "1"
+libc = "0.2"
+
+[lints]
+workspace = true

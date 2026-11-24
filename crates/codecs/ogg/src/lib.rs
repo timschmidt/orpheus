@@ -34,7 +34,7 @@
 #[cfg(test)]
 extern crate std;
 
-use yoton_audio::{ByteSource, MAX_PEEK, View};
+use orpheus_audio::{ByteSource, MAX_PEEK, View};
 
 pub mod assembled;
 pub mod ranges;

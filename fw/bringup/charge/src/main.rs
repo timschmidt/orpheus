@@ -17,12 +17,12 @@
 use atj2157_hal::{self as hal, dma, executor, log, pac, persist, wdt};
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Ticker};
+use orpheus_power::gauge;
+use orpheus_proto::result::Verdict;
 use static_cell::StaticCell;
 use yoton_bsp::charger::{self, ChargeState, Charger};
 use yoton_bsp::display::{self, Backlight, Display};
 use yoton_bsp::tiny;
-use yoton_power::gauge;
-use yoton_proto::result::Verdict;
 
 fn state_name(s: ChargeState) -> &'static [u8] {
     match s {

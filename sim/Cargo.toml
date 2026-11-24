@@ -1,6 +1,6 @@
 [package]
-name = "yoton-sim"
-description = "Desktop simulator for the yoton UI: headless frame buffer, optional window, key scripts, golden images (07 §3.2)"
+name = "orpheus-sim"
+description = "Desktop simulator for the Orpheus UI: headless frame buffer, optional window, key scripts, golden images (07 §3.2)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,14 +12,14 @@ publish = false
 window = ["dep:minifb"]
 
 [dependencies]
-yoton-ui = { path = "../crates/yoton-ui" }
-yoton-apps = { path = "../crates/yoton-apps" }
-yoton-power = { path = "../crates/yoton-power" }
-yoton-fs = { path = "../crates/yoton-fs", features = ["std"] }
-yoton-meta = { path = "../crates/yoton-meta" }
-yoton-audio = { path = "../crates/yoton-audio" }
-yoton-img = { path = "../crates/yoton-img" }
-yoton-host = { path = "../crates/yoton-host" }
+orpheus-ui = { path = "../crates/orpheus-ui" }
+orpheus-apps = { path = "../crates/orpheus-apps" }
+orpheus-power = { path = "../crates/orpheus-power" }
+orpheus-fs = { path = "../crates/orpheus-fs", features = ["std"] }
+orpheus-meta = { path = "../crates/orpheus-meta" }
+orpheus-audio = { path = "../crates/orpheus-audio" }
+orpheus-img = { path = "../crates/orpheus-img" }
+orpheus-host = { path = "../crates/orpheus-host" }
 anyhow = "1"
 minifb = { version = "0.29", optional = true, default-features = false, features = ["x11"] }
 

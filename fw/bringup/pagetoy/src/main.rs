@@ -24,14 +24,14 @@ use core::hint::black_box;
 
 use atj2157_hal::{self as hal, executor, log, persist, wdt};
 use embassy_executor::Spawner;
+use orpheus_pager::{Action, PagerCore};
+use orpheus_proto::result::Verdict;
 use static_cell::StaticCell;
-use yoton_pager::{Action, PagerCore};
-use yoton_proto::result::Verdict;
 
 unsafe extern "C" {
     /// Page counts set by the pass-2 linker script (absolute symbols).
-    static __yoton_code_pages: u8;
-    static __yoton_rodata_pages: u8;
+    static __orpheus_code_pages: u8;
+    static __orpheus_rodata_pages: u8;
 }
 
 static HELPER_TABLE: [u32; 64] = {
@@ -61,8 +61,8 @@ fn planted_violation(pc: u32) -> u32 {
 /// Stand-in MemManage handler (resident root of this image).
 #[unsafe(no_mangle)]
 pub extern "C" fn toy_memmanage(addr: u32, pc: u32) -> u32 {
-    let ncode = (&raw const __yoton_code_pages) as u32;
-    let nro = (&raw const __yoton_rodata_pages) as u32;
+    let ncode = (&raw const __orpheus_code_pages) as u32;
+    let nro = (&raw const __orpheus_rodata_pages) as u32;
     let mut core = PagerCore::new();
     core.init(ncode, nro);
     let mut code = handler_helper(addr);

@@ -23,8 +23,8 @@ use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Ticker, Timer};
+use orpheus_proto::result::Verdict;
 use static_cell::StaticCell;
-use yoton_proto::result::Verdict;
 
 const WINDOW_MS: u64 = 10_000;
 const BACKLIGHT_PIN: u8 = 22;
@@ -76,7 +76,7 @@ async fn blink() {
 #[embassy_executor::task]
 async fn supervisor(test_id: u32) {
     let mut r = persist::Results::begin(test_id);
-    if test_id == yoton_proto::hash::fnv1a(b"fault") {
+    if test_id == orpheus_proto::hash::fnv1a(b"fault") {
         // Deliberate UsageFault: the HIL harness checks that a decoded
         // fault record comes back.
         log::line(b"hello: deliberate fault");

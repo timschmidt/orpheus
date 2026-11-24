@@ -2,9 +2,9 @@
 //! use. Everything is plain state that scripts can set (`set:battery=8`).
 
 use anyhow::{Result, bail};
-use yoton_ui::event::{BtState, Source};
-use yoton_ui::shell::System;
-use yoton_ui::widgets::bars::{MiniPlayer, Status};
+use orpheus_ui::event::{BtState, Source};
+use orpheus_ui::shell::System;
+use orpheus_ui::widgets::bars::{MiniPlayer, Status};
 
 /// Sample-text language of the demo screens.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -177,9 +177,9 @@ impl crate::Host for SimSystem {
 
     fn palette(
         &self,
-        theme: yoton_ui::theme::Theme,
-        accent: yoton_ui::theme::Accent,
-    ) -> yoton_ui::theme::Palette {
+        theme: orpheus_ui::theme::Theme,
+        accent: orpheus_ui::theme::Accent,
+    ) -> orpheus_ui::theme::Palette {
         theme.palette(accent)
     }
 
@@ -191,12 +191,12 @@ impl crate::Host for SimSystem {
         Ok(true)
     }
 
-    fn set(&mut self, kv: &str) -> Result<Vec<yoton_ui::event::Event>> {
+    fn set(&mut self, kv: &str) -> Result<Vec<orpheus_ui::event::Event>> {
         SimSystem::set(self, kv)?;
         Ok(Vec::new())
     }
 
-    fn screen_by_name(name: &str) -> Option<yoton_ui::nav::ScreenId> {
+    fn screen_by_name(name: &str) -> Option<orpheus_ui::nav::ScreenId> {
         crate::demo::screen_by_name(name)
     }
 }

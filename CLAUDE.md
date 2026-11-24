@@ -1,4 +1,4 @@
-# yotonrs — rules for workers
+# Orpheus — rules for workers
 
 Pure-Rust, Embassy-based firmware for the Yoton YM03 (Actions ATJ2157:
 Cortex-M4F, 320 KiB RAM, 8 MiB SPI NOR that is not memory-mapped). The plan is
@@ -20,7 +20,7 @@ in `docs/PLAN.md`; start every session there and in `docs/STATUS.md`.
 ## Hard rules (the player is real hardware with a lithium cell and the owner's music)
 
 1. Never write NOR sector 0 or the vendor data at `0x7E0000` and above. The
-   player runs the full layout since 2026-11-24 (decision D-2): yotonrs owns
+   player runs the full layout since 2026-11-24 (decision D-2): Orpheus owns
    `0x001000–0x7DFFFF`, written only through `xtask dev stage` /
    `install-stage2` / `install-full`. Only `xtask dev install-boot
    --i-have-a-backup` and `restore vendor --i-have-a-backup` may touch
@@ -33,7 +33,7 @@ in `docs/PLAN.md`; start every session there and in `docs/STATUS.md`.
    (`0xC0020000`) is read-only.
 4. Never power the player off from an automated test; end every test in a
    reboot. Never leave it needing a key press.
-5. On the card, write only inside `/.yoton/`. Never format, repartition or
+5. On the card, write only inside `/.orpheus/`. Never format, repartition or
    raw-write outside files the test created.
 6. Do not send Bluetooth module commands 0x20–0x24, 0x28, 0x2C or 0x7F outside
    the package that owns them; never the upgrade commands without the user.
@@ -52,7 +52,7 @@ in `docs/PLAN.md`; start every session there and in `docs/STATUS.md`.
   page fault under PRIMASK is fatal.
 * Code reachable from interrupt or fault handlers is resident;
   `xtask check-resident` proves it. Data paths with deadlines use DMA.
-* Only `atj2157-pac`, `atj2157-hal`, `yoton-bsp`, `yoton-pager`, `firmware`
+* Only `atj2157-pac`, `atj2157-hal`, `yoton-bsp`, `orpheus-pager`, `firmware`
   and the boot stages may know the hardware or use `unsafe`. Everything else
   is host-testable and tested on the host first.
 * RAM and size budgets live in `budgets.toml`; exceeding one needs the
@@ -61,7 +61,7 @@ in `docs/PLAN.md`; start every session there and in `docs/STATUS.md`.
 * Hardware facts learned go into `docs/plan/01-hardware.md` §9 and the source
   document in the same commit as the code that relies on them. Sequences
   copied from the vendor without understanding are marked `VERBATIM`.
-* Do not copy code from the Rockbox tree (GPL) into yotonrs; licence decision
+* Do not copy code from the Rockbox tree (GPL) into Orpheus; licence decision
   D-1 in `docs/PLAN.md`.
 
 ## Done means

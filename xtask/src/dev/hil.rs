@@ -3,13 +3,13 @@
 use std::path::Path;
 
 use anyhow::{Result, bail};
-use yoton_host::adfu::Adfu;
-use yoton_host::image;
-use yoton_proto::fault::{FaultRecord, cfsr_bits};
-use yoton_proto::logring;
-use yoton_proto::mailbox::BootInfo;
-use yoton_proto::mem::{FB_BASE, FB_H, FB_SIZE, FB_W};
-use yoton_proto::result::Verdict;
+use orpheus_host::adfu::Adfu;
+use orpheus_host::image;
+use orpheus_proto::fault::{FaultRecord, cfsr_bits};
+use orpheus_proto::logring;
+use orpheus_proto::mailbox::BootInfo;
+use orpheus_proto::mem::{FB_BASE, FB_H, FB_SIZE, FB_W};
+use orpheus_proto::result::Verdict;
 
 use super::read_persistent;
 use crate::util::{log, out_dir};
@@ -84,7 +84,7 @@ pub fn print_results(d: &mut Adfu, elf: Option<&Path>) -> Result<String> {
     }
 }
 
-/// Results + screenshot archived under `target/yoton/hil/<name>/`.
+/// Results + screenshot archived under `target/orpheus/hil/<name>/`.
 pub fn collect(d: &mut Adfu, name: &str, elf: Option<&Path>) -> Result<String> {
     let dir = out_dir().join("hil").join(name);
     std::fs::create_dir_all(&dir)?;
@@ -92,7 +92,7 @@ pub fn collect(d: &mut Adfu, name: &str, elf: Option<&Path>) -> Result<String> {
     let png = dir.join("screen.png");
     image::write_rgb565_png(&fb, FB_W, FB_H, &png)?;
     log(&format!("screen -> {}", png.display()));
-    let r = d.read(yoton_proto::result::BASE, yoton_proto::result::SIZE)?;
+    let r = d.read(orpheus_proto::result::BASE, orpheus_proto::result::SIZE)?;
     std::fs::write(dir.join("result.bin"), r)?;
     print_results(d, elf)
 }
@@ -115,7 +115,7 @@ pub enum Expect {
     /// Result block with verdict PASS and no fault record.
     Pass,
     /// A fault record of this kind (deliberate-fault tests).
-    Fault(yoton_proto::fault::Kind),
+    Fault(orpheus_proto::fault::Kind),
 }
 
 pub struct Case {
@@ -127,7 +127,7 @@ pub struct Case {
 
 /// Suites (07 §5.4). Grows with every driver; `smoke` is the gate's suite.
 pub fn suite(name: &str) -> Option<&'static [Case]> {
-    use yoton_proto::fault::Kind;
+    use orpheus_proto::fault::Kind;
     const SMOKE: &[Case] = &[
         Case { image: "hello", test: "hello", expect: Expect::Pass, wait_s: 40 },
         Case { image: "hello", test: "fault", expect: Expect::Fault(Kind::UsageFault), wait_s: 20 },

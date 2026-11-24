@@ -1,0 +1,24 @@
+[package]
+name = "orpheus-fs-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+orpheus-fs = { path = "..", features = ["std"] }
+
+# Its own workspace: not part of the host workspace (nightly only).
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "mount_walk"
+path = "fuzz_targets/mount_walk.rs"
+test = false
+doc = false
+bench = false

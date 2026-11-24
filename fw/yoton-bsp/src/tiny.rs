@@ -1,5 +1,5 @@
 //! Minimal drawing for bring-up and crash screens: rectangles and a 5×7
-//! upper-case font (own bitmaps). The real UI is `yoton-ui`; this stays
+//! upper-case font (own bitmaps). The real UI is `orpheus-ui`; this stays
 //! small enough to be resident for the crash screen.
 
 pub const W: usize = 128;

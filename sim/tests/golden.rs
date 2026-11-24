@@ -1,14 +1,14 @@
 //! Golden-image tests (07 §3.2). Each case is a key script; its `shot:`
 //! frames are encoded as PNG and compared byte-for-byte with
-//! `sim/golden/<name>.png`. `YOTON_BLESS=1` (or `cargo xtask test golden
+//! `sim/golden/<name>.png`. `ORPHEUS_BLESS=1` (or `cargo xtask test golden
 //! --bless`) rewrites them. Every run writes a contact sheet to
-//! `target/yoton/golden.html` with old, new and diff images.
+//! `target/orpheus/golden.html` with old, new and diff images.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use yoton_sim::{AppSim, DemoSim, Shot, png_bytes};
+use orpheus_sim::{AppSim, DemoSim, Shot, png_bytes};
 
 const THEMES: [&str; 2] = ["dark", "light"];
 const LANGS: [&str; 3] = ["latin", "cyrillic", "cjk"];
@@ -81,14 +81,14 @@ fn golden_dir() -> PathBuf {
 fn out_dir() -> PathBuf {
     let target = std::env::var_os("CARGO_TARGET_DIR")
         .map_or_else(|| root().parent().unwrap_or(&root()).join("target"), PathBuf::from);
-    target.join("yoton")
+    target.join("orpheus")
 }
 
 fn bless() -> bool {
-    std::env::var("YOTON_BLESS").is_ok_and(|v| !v.is_empty() && v != "0")
+    std::env::var("ORPHEUS_BLESS").is_ok_and(|v| !v.is_empty() && v != "0")
 }
 
-/// Scripts starting with `@apps` run the `yoton-apps` screens; the others
+/// Scripts starting with `@apps` run the `orpheus-apps` screens; the others
 /// the UI-1 widget demo.
 fn run_case(script: &str) -> Vec<Shot> {
     let r = match script.strip_prefix("@apps ") {
@@ -246,7 +246,7 @@ enum Verdict {
 }
 
 fn rgb_of(fb: &[u16]) -> Vec<u8> {
-    fb.iter().flat_map(|p| yoton_ui::color::to_rgb888(*p)).collect()
+    fb.iter().flat_map(|p| orpheus_ui::color::to_rgb888(*p)).collect()
 }
 
 /// Compare a new frame (and its PNG) with the golden PNG bytes.
@@ -255,11 +255,11 @@ fn compare(new_fb: &[u16], new_png: &[u8], old_png: Option<&[u8]>) -> (Verdict, 
     if old == new_png {
         return (Verdict::Same, None);
     }
-    let dir = std::env::temp_dir().join(format!("yoton-golden-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("orpheus-golden-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let p = dir.join(format!("{:x}.png", old.len() ^ new_png.len() ^ (old.as_ptr() as usize)));
     std::fs::write(&p, old).unwrap();
-    let decoded = yoton_host::image::read_png_rgb(&p);
+    let decoded = orpheus_host::image::read_png_rgb(&p);
     let _ = std::fs::remove_file(&p);
     let new_rgb = rgb_of(new_fb);
     let Ok((128, 128, old_rgb)) = decoded else {
@@ -289,7 +289,7 @@ fn compare(new_fb: &[u16], new_png: &[u8], old_png: Option<&[u8]>) -> (Verdict, 
 fn rgb_png(rgb: &[u8]) -> Vec<u8> {
     // Pack RGB888 into RGB565-free PNG via the frame path: build a u16
     // frame that expands back to these colours closely enough for review.
-    let fb: Vec<u16> = rgb.chunks(3).map(|c| yoton_ui::color::rgb(c[0], c[1], c[2])).collect();
+    let fb: Vec<u16> = rgb.chunks(3).map(|c| orpheus_ui::color::rgb(c[0], c[1], c[2])).collect();
     png_bytes(&fb).unwrap()
 }
 
@@ -377,7 +377,7 @@ fn golden_images() {
 fn write_contact_sheet(out: &Path, rows: &[Row], stale: &[String]) {
     let mut h = String::new();
     h.push_str(
-        "<!doctype html><meta charset=utf-8><title>yoton golden images</title>\
+        "<!doctype html><meta charset=utf-8><title>Orpheus golden images</title>\
          <style>body{font:14px system-ui;background:#222;color:#ddd;margin:16px}\
          img{width:256px;height:256px;image-rendering:pixelated;background:#000}\
          td{padding:4px 8px;vertical-align:top}.bad{color:#f66}.ok{color:#6c6}\

@@ -11,7 +11,7 @@ const MAX_SCF: i32 = 255 + BITS_DEQUANTIZER_OUT * 4 - 210;
 const MAX_SCFI: i32 = (MAX_SCF + 3) & !3;
 
 /// Side info of one granule of one channel.
-// yoton: Pod, so that the decoder state can live in the codec arena.
+// orpheus: Pod, so that the decoder state can live in the codec arena.
 #[derive(Clone, Copy, bytemuck::Zeroable, bytemuck::Pod)]
 #[repr(C)]
 pub(crate) struct GrInfo {

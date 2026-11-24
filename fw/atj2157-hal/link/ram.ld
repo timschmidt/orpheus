@@ -8,7 +8,7 @@
  *   0x100000  .init (_start), .vectors (512-aligned), .text, .rodata, .data
  *   ...       .bss
  *   ...       stack (12 KiB, painted)            ends at 0x137400
- *   0x137400  log ring (2 KiB, yoton_proto::logring::ALT_BASE)
+ *   0x137400  log ring (2 KiB, orpheus_proto::logring::ALT_BASE)
  *   0x137C00  persistent area (fault record, result block, mailbox)
  */
 ENTRY(_start)

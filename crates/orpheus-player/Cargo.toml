@@ -1,0 +1,17 @@
+[package]
+name = "orpheus-player"
+description = "Playback service: queue, shuffle, repeat, gapless hand-over, resume points, bookmarks (04 §2.2, §6.3, §6.5)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+orpheus-fs = { path = "../orpheus-fs" }
+orpheus-proto = { path = "../orpheus-proto" }
+
+[dev-dependencies]
+orpheus-fs = { path = "../orpheus-fs", features = ["std"] }
+
+[lints]
+workspace = true

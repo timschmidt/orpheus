@@ -5,7 +5,7 @@
 //! asks for a picture while it draws (`PictureService::show_picture`); after
 //! that frame went to the panel the UI lends the frame buffer and sends a
 //! [`PicJob`] (`media::Req::Picture`). This task writes the job's box of the
-//! frame buffer — a decoder through the `yoton-img` scaler, or a cached
+//! frame buffer — a decoder through the `orpheus-img` scaler, or a cached
 //! thumbnail read straight from the card — and hands the frame buffer back
 //! with `tag::PICTURE`; the screen then marks the box dirty. The UI draws
 //! nothing in between and may take a job back before it started
@@ -18,9 +18,9 @@
 //! is shown from the cache only ([`serve_playing`], between ring refills).
 //!
 //! **Album art** is made when a track opens, before the audio decoder takes
-//! the arena ([`track_art`]): the art cache (`/.yoton/cache/art`, `YTC1`
+//! the arena ([`track_art`]): the art cache (`/.orpheus/cache/art`, `YTC1`
 //! buckets: 52 × 52 `A…`, 128 × 128 `B…`) is checked for the track; on a
-//! miss the embedded picture (ID3 `APIC`, FLAC `PICTURE`, via `yoton-meta`)
+//! miss the embedded picture (ID3 `APIC`, FLAC `PICTURE`, via `orpheus-meta`)
 //! is decoded once into both sizes (the big one only for JPEG, BMP and QOI:
 //! PNG and GIF need the arena for themselves) and stored; without one, the
 //! folder's `cover.jpg`/`folder.jpg`/… is used (cached under the cover
@@ -34,15 +34,15 @@ use core::task::{Context, Poll};
 
 use atj2157_hal::time;
 use embassy_time::Timer;
-use yoton_apps::services::{ArtSize, FileRef, PicError, PicFormat, PicInfo, PicSource, PicState};
-use yoton_audio::{ByteSource, SeekSource};
-use yoton_fs::{DirEntry, File, Locator, OpenMode};
-use yoton_img::art::{Tee, cover_rank};
-use yoton_img::thumb::{ART, ART_BIG, CacheFile, CacheKind, ThumbKey, ThumbMeta};
-use yoton_img::{Decoder, Fit, Format, Info, Options, Orient, Placement, RowSink, Scaler, Step, Target};
-use yoton_index::card::spin;
-use yoton_meta::{MetaStep, Opts, TagReader, Tags};
-use yoton_player::TrackRef;
+use orpheus_apps::services::{ArtSize, FileRef, PicError, PicFormat, PicInfo, PicSource, PicState};
+use orpheus_audio::{ByteSource, SeekSource};
+use orpheus_fs::{DirEntry, File, Locator, OpenMode};
+use orpheus_img::art::{Tee, cover_rank};
+use orpheus_img::thumb::{ART, ART_BIG, CacheFile, CacheKind, ThumbKey, ThumbMeta};
+use orpheus_img::{Decoder, Fit, Format, Info, Options, Orient, Placement, RowSink, Scaler, Step, Target};
+use orpheus_index::card::spin;
+use orpheus_meta::{MetaStep, Opts, TagReader, Tags};
+use orpheus_player::TrackRef;
 
 use crate::audio::{Ring, boost};
 use crate::media::{self, PicJob, Server, Vol};
@@ -189,8 +189,8 @@ fn pic_info(i: Info) -> PicInfo {
     PicInfo { width: i.width, height: i.height, format: Some(format), reduced: i.interlaced }
 }
 
-fn pic_error(e: yoton_img::Error) -> PicError {
-    use yoton_img::Error as E;
+fn pic_error(e: orpheus_img::Error) -> PicError {
+    use orpheus_img::Error as E;
     match e {
         E::UnknownFormat | E::Unsupported(_) => PicError::Unsupported,
         E::Arena { .. } => PicError::TooLarge,
@@ -204,7 +204,7 @@ fn pic_error(e: yoton_img::Error) -> PicError {
 enum Stop {
     Cancelled,
     Io,
-    Img(yoton_img::Error),
+    Img(orpheus_img::Error),
 }
 
 /// The UI cancelled the running job (a key).
@@ -251,7 +251,7 @@ async fn run(
             t0 = time::now_us();
         }
     }
-    Err(Stop::Img(yoton_img::Error::Corrupt))
+    Err(Stop::Img(orpheus_img::Error::Corrupt))
 }
 
 /// Place `v()` at the start of `buf` (aligned); returns it and the rest.
@@ -316,7 +316,7 @@ fn carve_u16(buf: &mut [u8], n: usize) -> Option<(&mut [u16], &mut [u8])> {
 
 /// A bucket file of the art cache, read and written synchronously (the
 /// `CacheFile` trait) by spinning the file system with the card task's
-/// context, like the index files (`yoton_index::card`).
+/// context, like the index files (`orpheus_index::card`).
 struct CardFile<'a, 'c> {
     vol: &'a mut Vol,
     cx: &'a mut Context<'c>,
@@ -373,7 +373,7 @@ impl BucketPath {
 }
 
 /// Open the bucket of `key`; for writing it is created (with its folders,
-/// all under `/.yoton/`).
+/// all under `/.orpheus/`).
 async fn open_bucket(vol: &mut Vol, kind: &CacheKind, key: &ThumbKey, write: bool) -> Option<File> {
     let p = BucketPath::new(kind, key);
     if !write {
@@ -382,7 +382,7 @@ async fn open_bucket(vol: &mut Vol, kind: &CacheKind, key: &ThumbKey, write: boo
     if let Ok(f) = vol.open(p.as_str(), OpenMode::Create).await {
         return Some(f);
     }
-    for d in ["/.yoton", "/.yoton/cache", kind.dir] {
+    for d in ["/.orpheus", "/.orpheus/cache", kind.dir] {
         let _ = vol.create_dir(d).await;
     }
     vol.open(p.as_str(), OpenMode::Create).await.ok()
@@ -548,8 +548,8 @@ async fn embedded(
     ring: &mut Ring,
     arena: &mut [u8],
     e: &DirEntry,
-) -> Option<yoton_meta::Located> {
-    use yoton_audio::Format as A;
+) -> Option<orpheus_meta::Located> {
+    use orpheus_audio::Format as A;
     let ext = e.name().rsplit_once('.').map_or("", |(_, x)| x);
     let is = |x: &str| ext.eq_ignore_ascii_case(x);
     let format = if is("mp3") || is("mp2") {
@@ -634,7 +634,7 @@ async fn make_art(
     ring: &mut Ring,
     arena: &mut [u8],
     e: &DirEntry,
-    at: Option<yoton_meta::Located>,
+    at: Option<orpheus_meta::Located>,
     key: &ThumbKey,
 ) -> bool {
     let Ok(mut f) = vol.open_entry(e) else { return false };
@@ -660,7 +660,7 @@ async fn make_art(
                 head[..n].copy_from_slice(&a[..n]);
                 head[n..].copy_from_slice(&b[..8 - n]);
             })
-            .and_then(|()| yoton_img::probe(&head))
+            .and_then(|()| orpheus_img::probe(&head))
         else {
             break;
         };
@@ -670,7 +670,7 @@ async fn make_art(
                 ok = true;
                 break;
             }
-            Err(Stop::Img(yoton_img::Error::Arena { .. })) if big => {}
+            Err(Stop::Img(orpheus_img::Error::Arena { .. })) if big => {}
             Err(_) => break,
         }
     }
@@ -693,7 +693,7 @@ async fn decode_art(
         fit: Fit::Cover,
         ..Placement::fit(u16::from(kind.w), u16::from(kind.h))
     };
-    let oom = Stop::Img(yoton_img::Error::Arena { needed: 0, capacity: arena.len() });
+    let oom = Stop::Img(orpheus_img::Error::Arena { needed: 0, capacity: arena.len() });
     let (small, rest) = carve_u16(arena, usize::from(ART.w) * usize::from(ART.h)).ok_or(Stop::Io)?;
     let (ws, rest) = carve_u32(rest, Scaler::need_words(usize::from(ART.w))).ok_or(Stop::Io)?;
     let mut s1 =

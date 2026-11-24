@@ -1,27 +1,27 @@
-//! The firmware's implementation of the `yoton-apps` service traits, from
+//! The firmware's implementation of the `orpheus-apps` service traits, from
 //! state the tasks publish (battery, cable) and the settings cache.
 
 use core::sync::atomic::Ordering;
 
-use yoton_apps::browse::letter_of;
-use yoton_apps::services::{
+use orpheus_apps::browse::letter_of;
+use orpheus_apps::services::{
     self, BatteryInfo, BluetoothService, CardInfo, CardState, ClockService, DateTime, PlaybackService,
     Playing, PowerRequest, PowerService, SettingsService, StorageRequest, StorageService, SystemService,
     UsbMode, UsbService, UsbState,
 };
-use yoton_apps::services::{
+use orpheus_apps::services::{
     Bookmark, BrowseFilter, BrowseService, DirId, Entry, FileOp, FileRef, Levels, LibraryState, Listing,
     LyricLine, PicReq, PicSource, PicState, PictureService, PlayerCmd, PlayerService, PlayerState,
     QueueEntry, TextService, TrackInfo,
 };
-use yoton_apps::settings::{SettingId, SettingsCache, id};
-use yoton_apps::{App, Lang};
-use yoton_ui::event::Source;
-use yoton_ui::event::{BtState, Event, ServiceEvent};
-use yoton_ui::geom::Rect;
-use yoton_ui::gfx::Gfx;
-use yoton_ui::shell::System;
-use yoton_ui::widgets::bars::{MiniPlayer, Status};
+use orpheus_apps::settings::{SettingId, SettingsCache, id};
+use orpheus_apps::{App, Lang};
+use orpheus_ui::event::Source;
+use orpheus_ui::event::{BtState, Event, ServiceEvent};
+use orpheus_ui::geom::Rect;
+use orpheus_ui::gfx::Gfx;
+use orpheus_ui::shell::System;
+use orpheus_ui::widgets::bars::{MiniPlayer, Status};
 
 use crate::{media, state};
 
@@ -68,7 +68,7 @@ pub struct Fw {
     /// Bluetooth as last published by the Bluetooth task; a newly
     /// connected device for the UI to save.
     bt: crate::bt::Snap,
-    pub bt_to_save: Option<yoton_bt::Addr>,
+    pub bt_to_save: Option<orpheus_bt::Addr>,
     /// The picture asked for in the frame being drawn (panel box), lent
     /// to the card task after the frame (`ui`); the state of the last one.
     pub pic_want: core::cell::Cell<Option<(Rect, PicReq)>>,
@@ -234,7 +234,7 @@ impl Fw {
         let slot = media::PIC_SLOT.load(Ordering::Acquire);
         if slot == 0 {
             self.sync(media::tag::PICTURE);
-            self.pending.push(Event::Data(yoton_ui::event::DataReady {
+            self.pending.push(Event::Data(orpheus_ui::event::DataReady {
                 tag: media::tag::PICTURE,
                 first: 0,
                 count: 0,
@@ -248,7 +248,7 @@ impl Fw {
     /// with `Event::Data(PICTURE)` and asks again.
     fn picture_dropped(&mut self) {
         self.pic_state.set(PicState::Pending);
-        self.pending.push(Event::Data(yoton_ui::event::DataReady {
+        self.pending.push(Event::Data(orpheus_ui::event::DataReady {
             tag: media::tag::PICTURE,
             first: 0,
             count: 0,
@@ -298,7 +298,7 @@ impl Fw {
     /// table fits ([`media::LETTERS`]).
     fn with_letters<R>(
         &self,
-        f: impl FnOnce(&yoton_index::LetterTable<{ media::LETTER_RUNS }>) -> R,
+        f: impl FnOnce(&orpheus_index::LetterTable<{ media::LETTER_RUNS }>) -> R,
     ) -> Option<R> {
         let w = &*self.browse;
         if !w.listing.sorted {
@@ -346,7 +346,7 @@ impl Fw {
 
     /// After the settings are loaded: the Bluetooth task gets them. The
     /// module stays off in a host test whatever the setting says.
-    pub fn bt_boot(&mut self, last: Option<yoton_bt::Addr>) {
+    pub fn bt_boot(&mut self, last: Option<orpheus_bt::Addr>) {
         let on = self.settings.get(id::BLUETOOTH) != 0 && atj2157_hal::persist::test_request().is_none();
         let reconnect = self.settings.get(BT_RECONNECT) != 0;
         crate::bt::request(crate::bt::Req::Boot { on, reconnect, last });
@@ -385,7 +385,7 @@ impl Fw {
 
     /// Player settings go to the player when they change.
     fn setting_to_player(&self, sid: SettingId) {
-        use yoton_player::{Command, Repeat};
+        use orpheus_player::{Command, Repeat};
         let v = self.settings.get(sid);
         let c = match sid {
             id::SHUFFLE => Command::Shuffle(v != 0),
@@ -612,7 +612,7 @@ impl BrowseService for Fw {
         self.path[..self.depth].iter().find(|p| p.0 == dir).map_or("", |p| p.2.as_str())
     }
     fn file_op(&mut self, _op: FileOp) -> bool {
-        // Writes only inside /.yoton/ (CLAUDE.md rule 5) until FS-3.
+        // Writes only inside /.orpheus/ (CLAUDE.md rule 5) until FS-3.
         false
     }
 }
@@ -722,7 +722,7 @@ impl PlayerService for Fw {
     }
     fn command(&mut self, c: PlayerCmd) {
         use media::PlayReq;
-        use yoton_player::Command;
+        use orpheus_player::Command;
         let r = match c {
             PlayerCmd::PlayPause => PlayReq::Cmd(Command::Toggle),
             PlayerCmd::Stop => PlayReq::Stop,

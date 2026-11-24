@@ -7,9 +7,9 @@ license.workspace = true
 publish = false
 
 [dependencies]
-yoton-proto.workspace = true
-yoton-host = { path = "../crates/yoton-host" }
-yoton-pager = { path = "../crates/yoton-pager", features = ["sim"] }
+orpheus-proto.workspace = true
+orpheus-host = { path = "../crates/orpheus-host" }
+orpheus-pager = { path = "../crates/orpheus-pager", features = ["sim"] }
 anyhow = "1"
 object = { version = "0.37", default-features = false, features = ["read_core", "elf", "std"] }
 toml = "0.8"

@@ -238,7 +238,7 @@ to them (checked in disassembly for the hot loops).
 
 ### 4.4 Metadata
 
-One parser crate (`yoton-audio::meta`), bounded output (each field truncated
+One parser crate (`orpheus-audio::meta`), bounded output (each field truncated
 to 127 bytes UTF-8): ID3v1, ID3v2.2/2.3/2.4 (Latin-1 with configurable code
 page, UTF-16, UTF-8, unsynchronisation, compressed frames skipped), APEv2,
 Vorbis comments, FLAC metadata blocks, MP4 `ilst`, WAV `LIST/INFO`. Fields:
@@ -250,7 +250,7 @@ more than they are given.
 Lyrics: `.lrc` next to the file (time-tagged, UTF-8 or the tag code page) or
 embedded USLT/`LYRICS`. Album art: embedded picture, else `cover.jpg`,
 `folder.jpg`, `front.jpg`, `AlbumArt*.jpg` in the file's directory; decoded
-once to a 56 × 56 RGB565 thumbnail cached under `.yoton/cache/art/`.
+once to a 56 × 56 RGB565 thumbnail cached under `.orpheus/cache/art/`.
 
 ## 5. DSP, recording and radio audio
 
@@ -315,7 +315,7 @@ path.
 ## 6. Indexes on the card
 
 Large libraries must be browsable with a few kilobytes of RAM. Everything
-here lives under `/.yoton/` on the card, is versioned, and is disposable:
+here lives under `/.orpheus/` on the card, is versioned, and is disposable:
 delete it and the firmware rebuilds it.
 
 ### 6.1 Collation
@@ -365,7 +365,7 @@ and index rows store locators; exported playlists store paths.
 
 ### 6.5 Queue and shuffle
 
-The queue is a list of locators in `/.yoton/queue.bin` (a library query
+The queue is a list of locators in `/.orpheus/queue.bin` (a library query
 result or a directory listing materialised when playback starts), of which
 only a window is in RAM. Shuffle is a keyed permutation of the index range
 (a 4-round Feistel network with cycle walking), so any queue length shuffles

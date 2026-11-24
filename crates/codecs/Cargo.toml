@@ -1,5 +1,5 @@
 [package]
-name = "yoton-codecs"
+name = "orpheus-codecs"
 description = "Static dispatch over the built codecs (04 §2.1): one enum, one match per frame"
 version.workspace = true
 edition.workspace = true
@@ -14,21 +14,21 @@ path = "lib.rs"
 
 [features]
 default = ["wav", "mp3", "flac", "vorbis", "opus", "speex"]
-wav = ["dep:yoton-codec-wav"]
-mp3 = ["dep:yoton-codec-mp3"]
-flac = ["dep:yoton-codec-flac"]
-vorbis = ["dep:yoton-codec-vorbis"]
-opus = ["dep:yoton-codec-opus"]
-speex = ["dep:yoton-codec-speex"]
+wav = ["dep:orpheus-codec-wav"]
+mp3 = ["dep:orpheus-codec-mp3"]
+flac = ["dep:orpheus-codec-flac"]
+vorbis = ["dep:orpheus-codec-vorbis"]
+opus = ["dep:orpheus-codec-opus"]
+speex = ["dep:orpheus-codec-speex"]
 
 [dependencies]
-yoton-audio = { path = "../yoton-audio" }
-yoton-codec-wav = { path = "wav", optional = true }
-yoton-codec-mp3 = { path = "mp3", optional = true }
-yoton-codec-flac = { path = "flac", optional = true }
-yoton-codec-vorbis = { path = "vorbis", optional = true }
-yoton-codec-opus = { path = "opus", optional = true }
-yoton-codec-speex = { path = "speex", optional = true }
+orpheus-audio = { path = "../orpheus-audio" }
+orpheus-codec-wav = { path = "wav", optional = true }
+orpheus-codec-mp3 = { path = "mp3", optional = true }
+orpheus-codec-flac = { path = "flac", optional = true }
+orpheus-codec-vorbis = { path = "vorbis", optional = true }
+orpheus-codec-opus = { path = "opus", optional = true }
+orpheus-codec-speex = { path = "speex", optional = true }
 
 [lints]
 workspace = true

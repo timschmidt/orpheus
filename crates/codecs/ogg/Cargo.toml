@@ -1,5 +1,5 @@
 [package]
-name = "yoton-ogg"
+name = "orpheus-ogg"
 description = "Ogg page and packet layer (RFC 3533) over a ByteSource: CRC, zero-copy range packets or packets reassembled into a caller buffer, granule bisection seek; no allocation"
 version.workspace = true
 edition.workspace = true
@@ -7,7 +7,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-yoton-audio = { path = "../../yoton-audio" }
+orpheus-audio = { path = "../../orpheus-audio" }
 
 [lints]
 workspace = true

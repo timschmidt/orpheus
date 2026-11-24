@@ -1,19 +1,19 @@
 //! Demo screens: one per toolkit widget, with Latin, Cyrillic and CJK
 //! sample text. `Home` is the T-4a dummy screen. These are test fixtures, not
-//! the product's screens (those live in `yoton-apps`, WP UI-2 onwards), so
+//! the product's screens (those live in `orpheus-apps`, WP UI-2 onwards), so
 //! the sample strings are drawn directly instead of through `tr!`.
 
-use yoton_ui::event::{DIALOG_CANCELLED, Event, Key, Source, UiEvent};
-use yoton_ui::font::FontId;
-use yoton_ui::geom::Rect;
-use yoton_ui::gfx::{Align, Gfx};
-use yoton_ui::icons;
-use yoton_ui::menu::MenuBuilder;
-use yoton_ui::nav::{Arg, Cx, Dirty, Nav, Resume, Screen, ScreenId, ScreenSet, StripUse, Wants};
-use yoton_ui::theme::Role;
-use yoton_ui::widgets::dialog::DialogSpec;
-use yoton_ui::widgets::list::{Accessory, Item, ListAction, ListSource, ListView, Row};
-use yoton_ui::widgets::misc::{draw_big_value, draw_progress, draw_spinner};
+use orpheus_ui::event::{DIALOG_CANCELLED, Event, Key, Source, UiEvent};
+use orpheus_ui::font::FontId;
+use orpheus_ui::geom::Rect;
+use orpheus_ui::gfx::{Align, Gfx};
+use orpheus_ui::icons;
+use orpheus_ui::menu::MenuBuilder;
+use orpheus_ui::nav::{Arg, Cx, Dirty, Nav, Resume, Screen, ScreenId, ScreenSet, StripUse, Wants};
+use orpheus_ui::theme::Role;
+use orpheus_ui::widgets::dialog::DialogSpec;
+use orpheus_ui::widgets::list::{Accessory, Item, ListAction, ListSource, ListView, Row};
+use orpheus_ui::widgets::misc::{draw_big_value, draw_progress, draw_spinner};
 
 use crate::system::{Lang, SimSystem};
 
@@ -297,7 +297,7 @@ fn save_list(l: &ListView) -> Resume {
     Resume { focus: l.focus, top: l.top, ..Resume::default() }
 }
 
-fn restore_list(l: &mut ListView, src: &dyn ListSource, r: &Resume, now: yoton_ui::Instant) {
+fn restore_list(l: &mut ListView, src: &dyn ListSource, r: &Resume, now: orpheus_ui::Instant) {
     l.top = r.top;
     l.set_focus(src, r.focus, ROWS, now);
 }
@@ -358,7 +358,7 @@ impl Screen<SimSystem> for HomeScreen {
         Wants {
             strip: StripUse::Hint(self.lang.pick(HOME_HINT)),
             ticks: self.list.wants_ticks(),
-            title: Some("yoton"),
+            title: Some("Orpheus"),
             ..Wants::default()
         }
     }
@@ -437,7 +437,7 @@ impl Screen<SimSystem> for LibraryScreen {
     fn event(&mut self, cx: &mut C<'_>, ev: &Event) -> Nav {
         let lang = self.lang;
         match *ev {
-            Event::Key(Key::Back, yoton_ui::KeyPhase::Up { held: false }) => return Nav::Pop,
+            Event::Key(Key::Back, orpheus_ui::KeyPhase::Up { held: false }) => return Nav::Pop,
             Event::Ui(UiEvent::Menu { id, value }) => {
                 match id {
                     1 => {

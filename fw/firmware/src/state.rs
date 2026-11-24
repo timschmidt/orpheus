@@ -4,7 +4,7 @@ use core::cell::Cell;
 use core::sync::atomic::AtomicBool;
 
 use critical_section::Mutex;
-use yoton_power::charger::ChargeState;
+use orpheus_power::charger::ChargeState;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Snapshot {

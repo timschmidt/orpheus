@@ -1,4 +1,4 @@
-//! yotonrs firmware (docs/plan/02-architecture.md §4, WP SYS-1).
+//! orpheus firmware (docs/plan/02-architecture.md §4, WP SYS-1).
 //!
 //! Start-up (`main`, resident): NOR, the pager from the slot header, HAL,
 //! clock level, then the tasks:
@@ -34,15 +34,15 @@ use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Ticker, Timer};
+use orpheus_power::gauge;
+use orpheus_proto::layout;
+use orpheus_proto::slot::{LAYOUT_FULL, SlotHeader};
 use static_cell::StaticCell;
 use yoton_bsp::charger::{self, Charger};
 use yoton_bsp::keys;
-use yoton_power::gauge;
-use yoton_proto::layout;
-use yoton_proto::slot::{LAYOUT_FULL, SlotHeader};
 
 /// Key edges from the ladders and from the developer channel.
-pub static KEYS: Channel<CriticalSectionRawMutex, (yoton_input::Key, bool), 16> = Channel::new();
+pub static KEYS: Channel<CriticalSectionRawMutex, (orpheus_input::Key, bool), 16> = Channel::new();
 /// Battery/cable changes for the UI.
 pub static BATTERY: Channel<CriticalSectionRawMutex, (), 2> = Channel::new();
 

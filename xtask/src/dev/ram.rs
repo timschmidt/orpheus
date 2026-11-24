@@ -5,12 +5,12 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
-use yoton_host::bot;
-use yoton_proto::devchan::{ADFU_PID, ADFU_VID};
-use yoton_proto::hash::fnv1a;
-use yoton_proto::mailbox::{self, FLAG_RETURN_ADFU, Mailbox};
-use yoton_proto::mem::{IMAGE_BASE, RAM_IMAGE_MAX};
-use yoton_proto::{fault, result};
+use orpheus_host::bot;
+use orpheus_proto::devchan::{ADFU_PID, ADFU_VID};
+use orpheus_proto::hash::fnv1a;
+use orpheus_proto::mailbox::{self, FLAG_RETURN_ADFU, Mailbox};
+use orpheus_proto::mem::{IMAGE_BASE, RAM_IMAGE_MAX};
+use orpheus_proto::{fault, result};
 
 use super::{hil, to_ymon};
 use crate::args::{Args, num};

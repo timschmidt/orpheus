@@ -8,7 +8,7 @@ publish = false
 
 [dependencies]
 atj2157-hal = { path = "../../atj2157-hal" }
-yoton-proto.workspace = true
+orpheus-proto.workspace = true
 yoton-bsp = { path = "../../yoton-bsp" }
 embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }
 embassy-time = "0.5"

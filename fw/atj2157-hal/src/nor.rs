@@ -7,12 +7,12 @@
 //!   drained by DMA channel 0 (mode `0x00200088`) as the mask ROM does [HW].
 //! * Program/erase: WREN, PP (0x02, ≤ 256 bytes within a page), SE (0x20,
 //!   4 KiB), status polling. Every write path checks
-//!   `yoton_proto::layout::dual_writable` — nothing below `0x762000` or in
+//!   `orpheus_proto::layout::dual_writable` — nothing below `0x762000` or in
 //!   the boot sector region outside the free area is ever written.
 
 use atj2157_pac::spi::spi0;
 use atj2157_pac::{Reg, cmu, rmu};
-use yoton_proto::layout::{dual_writable, full_writable};
+use orpheus_proto::layout::{dual_writable, full_writable};
 
 /// Set once the firmware runs from a full-layout slot (or a payload works
 /// on one): widens the write guard from the dual-boot free region to the

@@ -6,23 +6,23 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
-use yoton_audio::{
+use orpheus_audio::{
     ByteSource, ContainerInfo, DecodeError, Decoder, Format, OggCodec, OpenError, Plan, SeekSource, SeekStep,
     Step, StreamInfo, Unsupported,
 };
 
 #[cfg(feature = "flac")]
-pub use yoton_codec_flac::FlacDecoder;
+pub use orpheus_codec_flac::FlacDecoder;
 #[cfg(feature = "mp3")]
-pub use yoton_codec_mp3::Mp3Decoder;
+pub use orpheus_codec_mp3::Mp3Decoder;
 #[cfg(feature = "opus")]
-pub use yoton_codec_opus::OpusDecoder;
+pub use orpheus_codec_opus::OpusDecoder;
 #[cfg(feature = "speex")]
-pub use yoton_codec_speex::SpeexDecoder;
+pub use orpheus_codec_speex::SpeexDecoder;
 #[cfg(feature = "vorbis")]
-pub use yoton_codec_vorbis::VorbisDecoder;
+pub use orpheus_codec_vorbis::VorbisDecoder;
 #[cfg(feature = "wav")]
-pub use yoton_codec_wav::WavDecoder;
+pub use orpheus_codec_wav::WavDecoder;
 
 /// One open decoder of any built codec.
 ///

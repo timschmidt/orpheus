@@ -33,7 +33,7 @@ vector_skip = [0, 1]
 [resident]
 symbols = [
     # The pager and everything a fault touches.
-    "yoton_pager::*",
+    "orpheus_pager::*",
     # Start-up, vectors, IRQ dispatch, fault capture, critical section,
     # interrupt control, the time driver, the persistent area, watchdog.
     "atj2157_hal::rt::*",
@@ -69,9 +69,9 @@ exclude = [
     "embassy_executor::raw::TaskStorage<*>::poll*",
     # MP3 code that runs once per open or seek, not per frame: paged
     # (it gives ~2.5 KiB of RAM back to the stack).
-    "yoton_codec_mp3::Mp3Decoder>::find*",
-    "yoton_codec_mp3::parse_head*",
-    "yoton_codec_mp3::parse_vbr_tag*",
+    "orpheus_codec_mp3::Mp3Decoder>::find*",
+    "orpheus_codec_mp3::parse_head*",
+    "orpheus_codec_mp3::parse_vbr_tag*",
     "embassy_executor::raw::util::UninitCell<*",
 ]
 
@@ -104,17 +104,17 @@ roots = [
 symbols = [
     "main",
     "firmware::main",
-    "yoton_codec_mp3::*",
-    "yoton_dsp::chain::*process*",
-    "yoton_dsp::chain::*run*",
-    "yoton_dsp::eq::*process*",
-    "yoton_dsp::biquad::*process*",
-    "yoton_dsp::crossfeed::*process*",
-    "yoton_dsp::limiter::*process*",
-    "yoton_dsp::matrix::*process*",
-    "yoton_dsp::gain::*process*",
-    "yoton_dsp::fade::*process*",
-    "yoton_dsp::meter::*",
+    "orpheus_codec_mp3::*",
+    "orpheus_dsp::chain::*process*",
+    "orpheus_dsp::chain::*run*",
+    "orpheus_dsp::eq::*process*",
+    "orpheus_dsp::biquad::*process*",
+    "orpheus_dsp::crossfeed::*process*",
+    "orpheus_dsp::limiter::*process*",
+    "orpheus_dsp::matrix::*process*",
+    "orpheus_dsp::gain::*process*",
+    "orpheus_dsp::fade::*process*",
+    "orpheus_dsp::meter::*",
 ]
 
 [bin.bringup-pagetoy]

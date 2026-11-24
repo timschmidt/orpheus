@@ -30,7 +30,7 @@ const MB_INFO: *mut u32 = 0x0013_7FFC as *mut u32;
 const ADFU_MAGIC: u32 = 0x5546_4441;
 const COUNT_TAG: u32 = 0x0059_4D42;
 
-/// `yoton_proto::layout::SLOTS`.
+/// `orpheus_proto::layout::SLOTS`.
 const SLOTS: [u32; 3] = [0x0000_1000, 0x0020_0000, 0x0076_2000];
 const HDR_TMP: u32 = 0x0010_2000; // below stage 2, above the ROM's use
 const YFW1: u32 = 0x3157_4659;

@@ -1,7 +1,7 @@
 use std::vec::Vec;
 
 use super::*;
-use yoton_audio::SliceSource;
+use orpheus_audio::SliceSource;
 
 fn le16(v: &mut Vec<u8>, x: u16) {
     v.extend_from_slice(&x.to_le_bytes());
@@ -63,7 +63,7 @@ fn run(file: &[u8], cap: usize, chunk: usize) -> (StreamInfo, Vec<i32>) {
             Ok(Step::Pcm(PcmBlock::I16(s))) => out.extend(s.iter().map(|&x| i32::from(x))),
             Ok(Step::Pcm(PcmBlock::I32(s))) => out.extend_from_slice(s),
             Ok(Step::NeedData(n)) => {
-                assert!(n > src.available() && n <= yoton_audio::MAX_PEEK);
+                assert!(n > src.available() && n <= orpheus_audio::MAX_PEEK);
                 src.trickle(chunk);
             }
             Ok(Step::EndOfStream) => return (info, out),

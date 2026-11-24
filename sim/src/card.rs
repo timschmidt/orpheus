@@ -1,5 +1,5 @@
 //! The simulated microSD card: a FAT16 image formatted here (deterministic,
-//! no external tools) and filled through `yoton-fs` itself, so browsing in
+//! no external tools) and filled through `orpheus-fs` itself, so browsing in
 //! the simulator goes through the real file-system code. Built once per
 //! process; every simulator mounts a copy-on-write overlay of it.
 //!
@@ -10,8 +10,8 @@
 
 use std::sync::OnceLock;
 
-use yoton_fs::host::{RamDisk, block_on};
-use yoton_fs::{CacheSlot, MountOptions, OpenMode, Volume};
+use orpheus_fs::host::{RamDisk, block_on};
+use orpheus_fs::{CacheSlot, MountOptions, OpenMode, Volume};
 
 use crate::pictures;
 
@@ -28,7 +28,7 @@ pub fn mkfs_fat16(sectors: u32) -> Vec<u8> {
     let fat_sectors = 32u16;
     let b = &mut img[..512];
     b[0..3].copy_from_slice(&[0xEB, 0x3C, 0x90]);
-    b[3..11].copy_from_slice(b"YOTONSIM");
+    b[3..11].copy_from_slice(b"ORPHESIM");
     b[11..13].copy_from_slice(&512u16.to_le_bytes());
     b[13] = spc;
     b[14..16].copy_from_slice(&reserved.to_le_bytes());
@@ -46,7 +46,7 @@ pub fn mkfs_fat16(sectors: u32) -> Vec<u8> {
     b[36] = 0x80;
     b[38] = 0x29;
     b[39..43].copy_from_slice(&0x5953_4D31u32.to_le_bytes());
-    b[43..54].copy_from_slice(b"YOTON CARD ");
+    b[43..54].copy_from_slice(b"ORPHEUS SIM");
     b[54..62].copy_from_slice(b"FAT16   ");
     b[510] = 0x55;
     b[511] = 0xAA;
@@ -160,7 +160,7 @@ fn build() -> Vec<u8> {
     let mut write = |vol: &mut Volume<'_, RamDisk>, path: &str, data: &[u8]| {
         // Spread modification times over 2026 so "Sort by date" means something.
         day = day.wrapping_add(7);
-        vol.set_time(yoton_fs::DateTime {
+        vol.set_time(orpheus_fs::DateTime {
             year: 2026,
             month: 1 + (day / 28) % 12,
             day: 1 + day % 28,
@@ -189,7 +189,7 @@ fn build() -> Vec<u8> {
         "/Pictures",
         "/Images",
         "/Recordings",
-        "/.yoton",
+        "/.orpheus",
     ];
     for d in dirs {
         block_on(vol.create_dir(d)).unwrap_or_else(|e| panic!("{d}: {e:?}"));
@@ -226,7 +226,7 @@ fn build() -> Vec<u8> {
     write(&mut vol, "/Books/Lyrics.lrc", b"[00:01.00]la la la\n");
     write(&mut vol, "/Pictures/Iceland.jpg", &[0xFF, 0xD8, 0xFF, 0xE0]);
     let (w, h) = (240, 160);
-    let png = yoton_host::image::rgb565_png_bytes(&pictures::to_rgb565_le(&pictures::aurora(w, h)), w, h)
+    let png = orpheus_host::image::rgb565_png_bytes(&pictures::to_rgb565_le(&pictures::aurora(w, h)), w, h)
         .expect("png");
     write(&mut vol, "/Pictures/Aurora.png", &png);
     write(&mut vol, "/Pictures/Lake.bmp", &pictures::bmp(160, 96, &pictures::lake(160, 96)));
@@ -234,18 +234,18 @@ fn build() -> Vec<u8> {
     write(&mut vol, "/Pictures/Москва.png", b"\x89PNG\r\n\x1a\n");
     write(&mut vol, "/Images/rescue.iso", &[0u8; 2048]);
     write(&mut vol, "/Images/boot.img", &[0u8; 512]);
-    write(&mut vol, "/README.TXT", b"Yoton simulated card.\nThis file has an 8.3 name only.\n");
+    write(&mut vol, "/README.TXT", b"Orpheus simulated card.\nThis file has an 8.3 name only.\n");
     write(&mut vol, "/update.yfw", b"YFW1");
     write(&mut vol, "/otpauth.txt", b"otpauth://totp/Example:me?secret=JBSWY3DPEHPK3PXP\n");
-    write(&mut vol, "/.yoton/library.ydb", b"");
+    write(&mut vol, "/.orpheus/library.ydb", b"");
     write(&mut vol, "/.hidden-notes.txt", b"hidden");
     block_on(vol.flush()).expect("flush");
     vol.into_device().data
 }
 
 /// The card image (built on first use, shared). Building takes seconds
-/// (5000 creates through yoton-fs), so it is cached in
-/// `target/yoton/card-<hash of this source file>.img`.
+/// (5000 creates through orpheus-fs), so it is cached in
+/// `target/orpheus/card-<hash of this source file>.img`.
 pub fn image() -> &'static [u8] {
     static IMG: OnceLock<Vec<u8>> = OnceLock::new();
     IMG.get_or_init(|| {
@@ -258,7 +258,7 @@ pub fn image() -> &'static [u8] {
             || std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("target"),
             std::path::PathBuf::from,
         );
-        let path = target.join("yoton").join(format!("card-{key:016x}.img"));
+        let path = target.join("orpheus").join(format!("card-{key:016x}.img"));
         if let Ok(b) = std::fs::read(&path)
             && b.len() == SECTORS as usize * 512
         {
@@ -290,7 +290,7 @@ mod tests {
             block_on(Volume::mount(RamDisk::from_bytes(img.to_vec()), &mut cache, MountOptions::default()))
                 .unwrap();
         let mut cur = block_on(vol.open_dir("/Music/Big folder")).unwrap();
-        let mut e = yoton_fs::DirEntry::new();
+        let mut e = orpheus_fs::DirEntry::new();
         let mut n = 0;
         while block_on(vol.read_dir(&mut cur, &mut e)).unwrap() {
             n += 1;

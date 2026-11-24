@@ -1,11 +1,11 @@
-//! `xtask dev stage` / `install-stage2`: put yotonrs into the free NOR
+//! `xtask dev stage` / `install-stage2`: put orpheus into the free NOR
 //! region (dual-boot layout, 02 §2.4). Nothing below 0x762000 is written.
 
 use anyhow::{Context, Result, bail};
-use yoton_host::nor;
-use yoton_proto::hash::{crc32, sum32};
-use yoton_proto::layout::{NOR_SIZE, SECTOR, STAGE2_MAGIC, dual, full};
-use yoton_proto::slot::{LAYOUT_DUAL, LAYOUT_FULL, SlotHeader};
+use orpheus_host::nor;
+use orpheus_proto::hash::{crc32, sum32};
+use orpheus_proto::layout::{NOR_SIZE, SECTOR, STAGE2_MAGIC, dual, full};
+use orpheus_proto::slot::{LAYOUT_DUAL, LAYOUT_FULL, SlotHeader};
 
 use super::{backup_verify, to_ymon};
 use crate::args::Args;
@@ -41,11 +41,11 @@ pub fn slot_image(resident: &[u8], pages: &[u8], code_pages: u32, rodata_pages: 
     out
 }
 
-/// The yotonrs NOR payload (`fw/payloads/norprog`), built and flattened.
+/// The orpheus NOR payload (`fw/payloads/norprog`), built and flattened.
 pub fn norprog_payload() -> Result<Vec<u8>> {
     let b = crate::build::build_fw("payload-norprog", "payload-norprog", true, None)?;
     let (img, base) = crate::build::flatten(&b.elf)?;
-    if base != yoton_proto::mem::YMON_PAYLOAD || img.len() > 0x1800 {
+    if base != orpheus_proto::mem::YMON_PAYLOAD || img.len() > 0x1800 {
         bail!("NOR payload invalid: base {base:#x}, {} bytes", img.len());
     }
     Ok(img)
@@ -53,7 +53,7 @@ pub fn norprog_payload() -> Result<Vec<u8>> {
 
 /// Which layout the player has: full when slot A of the full layout holds
 /// a valid header.
-pub fn player_layout(d: &mut yoton_host::adfu::Adfu) -> Result<u32> {
+pub fn player_layout(d: &mut orpheus_host::adfu::Adfu) -> Result<u32> {
     let (h, _) = nor::read(d, full::SLOT_A, 128)?;
     Ok(if SlotHeader::from_bytes(&h).is_ok() { LAYOUT_FULL } else { LAYOUT_DUAL })
 }
@@ -108,7 +108,7 @@ pub fn cmd_install_full(args: &mut Args) -> Result<String> {
     if !args.flag("i-have-a-backup") {
         bail!("install-full erases the stock firmware; pass --i-have-a-backup (decision D-2)");
     }
-    let what = args.next_positional().unwrap_or_else(|| "target/yoton/firmware.yfw".into());
+    let what = args.next_positional().unwrap_or_else(|| "target/orpheus/firmware.yfw".into());
     let mut slot = read_slot(&what)?;
     if slot.len() as u32 > full::SLOT_A_SIZE {
         bail!("slot image {} bytes > full slot A {} bytes", slot.len(), full::SLOT_A_SIZE);
@@ -183,7 +183,7 @@ pub fn cmd_restore_vendor(args: &mut Args) -> Result<String> {
     if !args.flag("i-have-a-backup") {
         bail!("restore vendor rewrites the whole chip including sector 0; pass --i-have-a-backup");
     }
-    // The vendor data above 0x7E0000 is never written by yotonrs; where it
+    // The vendor data above 0x7E0000 is never written by orpheus; where it
     // differs from the backup, the stock firmware updated it after the
     // backup was taken (checked on 2026-11-24), so the newer data stays.
     let payload = norprog_payload()?;
@@ -205,7 +205,7 @@ pub fn cmd_restore_vendor(args: &mut Args) -> Result<String> {
 pub fn cmd_install_stage2(_args: &mut Args) -> Result<String> {
     let b = crate::build::build_fw("stage2", "stage2", true, None)?;
     let (img, base) = crate::build::flatten(&b.elf)?;
-    if base != yoton_proto::layout::STAGE2_LOAD {
+    if base != orpheus_proto::layout::STAGE2_LOAD {
         bail!("stage 2 links at {base:#x}, expected 0x102400");
     }
     if img.len() > dual::STAGE2_MAX as usize
@@ -242,25 +242,25 @@ pub fn cmd_stage2_ramtest(args: &mut Args) -> Result<String> {
     let adfu = args.flag("adfu");
     let b = crate::build::build_fw("stage2", "stage2", true, None)?;
     let (img, base) = crate::build::flatten(&b.elf)?;
-    if base != yoton_proto::layout::STAGE2_LOAD || img.len() > 1024 {
+    if base != orpheus_proto::layout::STAGE2_LOAD || img.len() > 1024 {
         bail!("stage 2 image invalid");
     }
     let mut d = to_ymon()?;
-    let mut mb = yoton_proto::mailbox::Mailbox::default();
+    let mut mb = orpheus_proto::mailbox::Mailbox::default();
     if adfu {
-        mb.adfu = yoton_proto::mailbox::ADFU_MAGIC;
+        mb.adfu = orpheus_proto::mailbox::ADFU_MAGIC;
     }
-    d.write(yoton_proto::mailbox::BASE, &mb.to_bytes())?;
-    d.write(yoton_proto::result::BASE, &[0u8; yoton_proto::result::SIZE])?;
-    d.write(yoton_proto::fault::BASE, &[0u8; yoton_proto::fault::SIZE])?;
+    d.write(orpheus_proto::mailbox::BASE, &mb.to_bytes())?;
+    d.write(orpheus_proto::result::BASE, &[0u8; orpheus_proto::result::SIZE])?;
+    d.write(orpheus_proto::fault::BASE, &[0u8; orpheus_proto::fault::SIZE])?;
     d.write_verify(base, &img, 0x200)?;
     d.jump(base + 0x10)?;
     d.close();
     log("stage 2 started from RAM; watching the bus");
     let t0 = std::time::Instant::now();
-    let mut last = yoton_host::device::State::Ymon;
+    let mut last = orpheus_host::device::State::Ymon;
     while t0.elapsed() < std::time::Duration::from_secs(40) {
-        let s = yoton_host::device::state();
+        let s = orpheus_host::device::state();
         if s != last {
             log(&format!("  {:5.1} s: {}", t0.elapsed().as_secs_f32(), s.name()));
             last = s;

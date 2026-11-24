@@ -1,6 +1,6 @@
-# yoton-codec-flac
+# orpheus-codec-flac
 
-FLAC decoder for yotonrs (04-audio §4.1, priority A, WP AU-3), written from
+FLAC decoder for Orpheus (04-audio §4.1, priority A, WP AU-3), written from
 RFC 9639.
 
 Supported: native FLAC; block sizes 16–8192 (fixed and variable blocking);

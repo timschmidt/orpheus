@@ -14,7 +14,7 @@ bench = false
 
 [dependencies]
 atj2157-hal = { path = "../../atj2157-hal" }
-yoton-proto.workspace = true
+orpheus-proto.workspace = true
 
 [lints]
 workspace = true

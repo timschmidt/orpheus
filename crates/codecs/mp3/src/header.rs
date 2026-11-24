@@ -1,6 +1,6 @@
 //! MPEG audio frame header parsing and frame sync.
 //!
-//! yoton: frame sync is done by the stream layer; the sync helpers here
+//! orpheus: frame sync is done by the stream layer; the sync helpers here
 //! are unused.
 
 #![allow(dead_code)]

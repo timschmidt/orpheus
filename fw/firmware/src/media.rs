@@ -1,6 +1,6 @@
 //! Card-backed services for the UI (WP FS-2 / AU-5 firmware part): folder
 //! listings, the text viewer window, the play queue and the playback
-//! service (`yoton-player`).
+//! service (`orpheus-player`).
 //!
 //! The task that owns the mounted volume (`audio`) serves [`Req`]s, also
 //! between ring refills while a track plays, and [`PlayReq`]s (checked
@@ -9,8 +9,8 @@
 //! (or, for the player snapshot, on every loop) and turns it into
 //! `Event::Data`.
 //!
-//! Listings are sorted through the directory index (AU-12, `yoton-index`,
-//! files under `/.yoton/index/`): a folder whose index is current (its
+//! Listings are sorted through the directory index (AU-12, `orpheus-index`,
+//! files under `/.orpheus/index/`): a folder whose index is current (its
 //! signature is checked during the counting pass every browse makes) is
 //! served from it at once (`sorted: true`; names through the locators).
 //! Otherwise the on-disk listing goes out with `sorted: false` and the
@@ -20,11 +20,11 @@
 //! the arena); the sorted listing follows as another `Data(BROWSE)`.
 //!
 //! The queue is the audio files of one folder (in the listing's order when
-//! the folder's index is current), kept in RAM and in `/.yoton/queue.bin`;
+//! the folder's index is current), kept in RAM and in `/.orpheus/queue.bin`;
 //! the player's resume record and bookmarks are a RAM image
-//! ([`StoreImage`]) written to `/.yoton/player.bin` at safe moments (pause,
+//! ([`StoreImage`]) written to `/.orpheus/player.bin` at safe moments (pause,
 //! stop, track change, card hand-over, power-off). Formats:
-//! `yoton_player::image`.
+//! `orpheus_player::image`.
 //!
 //! Not yet: tags and art in the track info, queue edits (remove,
 //! move, play next, add), Shuffle all, persistence of text positions.
@@ -35,12 +35,12 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use critical_section::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
-use yoton_apps::browse::{EntryKind, is_hidden_name, kind_of};
-use yoton_apps::services::{BrowseFilter, DateTime, DirId, FileRef, Listing, PicReq, PicState};
-use yoton_index::LetterTable;
-use yoton_player::image::StoreImage;
-use yoton_player::{Action, Actions, Bookmark, Command, Config, Event, Player, Repeat, State, TrackRef};
-use yoton_ui::event::Source;
+use orpheus_apps::browse::{EntryKind, is_hidden_name, kind_of};
+use orpheus_apps::services::{BrowseFilter, DateTime, DirId, FileRef, Listing, PicReq, PicState};
+use orpheus_index::LetterTable;
+use orpheus_player::image::StoreImage;
+use orpheus_player::{Action, Actions, Bookmark, Command, Config, Event, Player, Repeat, State, TrackRef};
+use orpheus_ui::event::Source;
 
 /// Rows per listing window.
 pub const WINDOW: u32 = 32;
@@ -58,10 +58,10 @@ pub const QWIN: usize = 8;
 /// Bytes kept of a title in the Up-next and bookmark windows.
 pub const SHORT: usize = 23;
 /// Bookmarks the player keeps.
-pub const BOOKMARKS: usize = yoton_player::store::MAX_BOOKMARKS;
-/// Files of the playback state (only `/.yoton/` is writable).
-pub const QUEUE_FILE: &str = "/.yoton/queue.bin";
-pub const PLAYER_FILE: &str = "/.yoton/player.bin";
+pub const BOOKMARKS: usize = orpheus_player::store::MAX_BOOKMARKS;
+/// Files of the playback state (only `/.orpheus/` is writable).
+pub const QUEUE_FILE: &str = "/.orpheus/queue.bin";
+pub const PLAYER_FILE: &str = "/.orpheus/player.bin";
 
 /// Folders up to this many entries are indexed at once when the card task
 /// is idle (one or two scratch runs), instead of in the background.
@@ -78,7 +78,7 @@ pub const FOCUS_SCAN_PLAYING: u32 = 1024;
 pub const LETTER_RUNS: usize = 80;
 
 pub mod tag {
-    pub use yoton_apps::services::data::{BROWSE, PICTURE, QUEUE, TEXT};
+    pub use orpheus_apps::services::data::{BROWSE, PICTURE, QUEUE, TEXT};
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -509,13 +509,13 @@ fn cmd(c: Command) -> Event {
 use core::future::poll_fn;
 use core::task::Poll;
 
+use orpheus_fs::{DirCursor, DirEntry, Locator, Volume};
+use orpheus_index::card::{CardIo, Handles, Mode, is_dot, spin, src_entry};
+use orpheus_index::{Builder, FileName, Index, Progress, Signature, Spec, Storage, Suspended};
 use yoton_bsp::card::Card;
-use yoton_fs::{DirCursor, DirEntry, Locator, Volume};
-use yoton_index::card::{CardIo, Handles, Mode, is_dot, spin, src_entry};
-use yoton_index::{Builder, FileName, Index, Progress, Signature, Spec, Storage, Suspended};
 
 pub type Vol = Volume<'static, Card>;
-/// One session of index I/O on the card (see `yoton_index::card`).
+/// One session of index I/O on the card (see `orpheus_index::card`).
 pub type Io<'a, 'c> = CardIo<'a, 'static, 'c, Card>;
 
 fn loc(f: FileRef) -> Locator {
@@ -526,7 +526,7 @@ fn fref(l: Locator) -> FileRef {
     FileRef { dir: l.dir, index: l.index }
 }
 
-fn date(d: yoton_fs::DateTime) -> DateTime {
+fn date(d: orpheus_fs::DateTime) -> DateTime {
     DateTime {
         year: d.year,
         month: d.month,
@@ -559,7 +559,7 @@ pub async fn with_io<R>(vol: &mut Vol, mode: Mode, f: impl FnOnce(&Io<'_, '_>) -
     .await
 }
 
-const ROW0: yoton_index::Row = yoton_index::Row {
+const ROW0: orpheus_index::Row = orpheus_index::Row {
     loc: Locator { dir: 0, index: 0 },
     size: 0,
     mtime: 0,
@@ -600,7 +600,7 @@ pub struct Server {
     orphan: Option<FileName>,
     pub queue: [Locator; QUEUE],
     pub qlen: u32,
-    /// Identity of the queue (`yoton_player::image::queue_id`).
+    /// Identity of the queue (`orpheus_player::image::queue_id`).
     pub queue_id: u32,
     /// Changes with the queue or its order.
     qgen: u32,
@@ -631,7 +631,7 @@ impl Server {
             dir: DirId(u32::MAX),
             entry: None,
             filter: BrowseFilter {
-                sort: yoton_apps::services::SortBy::Name,
+                sort: orpheus_apps::services::SortBy::Name,
                 hidden: false,
                 audio_only: false,
                 images_only: false,
@@ -1165,7 +1165,7 @@ impl Server {
                 _ => found = self.queue_from_disk(vol, entry, start).await,
             }
         }
-        self.queue_id = yoton_player::image::queue_id(vol.serial(), &self.queue[..self.qlen as usize]);
+        self.queue_id = orpheus_player::image::queue_id(vol.serial(), &self.queue[..self.qlen as usize]);
         found
     }
 
@@ -1179,7 +1179,7 @@ impl Server {
     }
 
     /// Shuffle all: walk the card's visible folders (hidden ones such as
-    /// `/.yoton` skipped, depth ≤ 8, no recursion) and keep a uniform sample
+    /// `/.orpheus` skipped, depth ≤ 8, no recursion) and keep a uniform sample
     /// of up to `QUEUE` audio files (reservoir sampling).
     pub async fn build_all_queue(&mut self, vol: &mut Vol, seed: u32) {
         self.qgen = self.qgen.wrapping_add(1);
@@ -1254,7 +1254,7 @@ impl Server {
                 }
             }
         }
-        self.queue_id = yoton_player::image::queue_id(vol.serial(), &self.queue[..self.qlen as usize]);
+        self.queue_id = orpheus_player::image::queue_id(vol.serial(), &self.queue[..self.qlen as usize]);
     }
 
     /// The queue item a file is, if it may be queued: visible audio files.
@@ -1565,9 +1565,9 @@ pub fn publish_sound(s: Sound) {
 }
 
 /// Apply the published Sound settings to a chain.
-pub fn apply_sound(chain: &mut yoton_dsp::Chain) {
-    use yoton_dsp::eq::{EQ5_FREQS, EQ5_Q100};
-    use yoton_dsp::{Band, ChannelMode, CrossfeedParams, RgMode, RgSettings};
+pub fn apply_sound(chain: &mut orpheus_dsp::Chain) {
+    use orpheus_dsp::eq::{EQ5_FREQS, EQ5_Q100};
+    use orpheus_dsp::{Band, ChannelMode, CrossfeedParams, RgMode, RgSettings};
     let s = critical_section::with(|cs| *SOUND.borrow(cs).borrow());
     let bands: [Band; 5] =
         core::array::from_fn(|i| Band::peaking(EQ5_FREQS[i], EQ5_Q100, i16::from(s.eq[i]) * 100));

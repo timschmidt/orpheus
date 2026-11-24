@@ -1,8 +1,8 @@
 //! A tiny text log ring for bring-up images, in the persistent log-ring
-//! format of `yoton_proto::logring` (NUL-separated lines). The firmware will
+//! format of `orpheus_proto::logring` (NUL-separated lines). The firmware will
 //! put defmt frames into the same ring; the host prints printable bytes.
 
-use yoton_proto::logring;
+use orpheus_proto::logring;
 
 /// Where this image's ring lives (`ALT_BASE` in SRAM0 for RAM images).
 const BASE: u32 = logring::ALT_BASE;

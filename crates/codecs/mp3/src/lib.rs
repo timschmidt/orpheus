@@ -4,9 +4,9 @@
 //!   0.1.0 (MIT OR Apache-2.0; minimp3 is CC0) with its state made a `Pod`
 //!   struct that lives in the codec arena (`state.rs`; `bits.rs`,
 //!   `header.rs`, `layer3.rs`, `synth.rs`, `tables.rs` are mbop3's files
-//!   with the changes marked `yoton:`). Single-precision float: the M4F's
+//!   with the changes marked `orpheus:`). Single-precision float: the M4F's
 //!   FPU does the IMDCT and synthesis; no `f64` anywhere.
-//! * Stream layer (this file, written for yotonrs): frame sync over the ring
+//! * Stream layer (this file, written for orpheus): frame sync over the ring
 //!   (a frame is accepted when the next header matches, or once locked),
 //!   ID3v1/ID3v2/APE tags in the stream skipped, Xing/Info/VBRI frames
 //!   parsed and not decoded, gapless trims from the LAME tag applied exactly
@@ -41,14 +41,14 @@ mod state;
 mod synth;
 mod tables;
 
-use state::{MAX_SAMPLES_PER_FRAME, State};
-use yoton_audio::arena::{self, Arena};
-use yoton_audio::probe::{MpegHeader, PROBE_WINDOW, Sync, find_mpeg_sync, id3v2_len};
-use yoton_audio::source::skip;
-use yoton_audio::{
+use orpheus_audio::arena::{self, Arena};
+use orpheus_audio::probe::{MpegHeader, PROBE_WINDOW, Sync, find_mpeg_sync, id3v2_len};
+use orpheus_audio::source::skip;
+use orpheus_audio::{
     ByteSource, CodecId, ContainerInfo, DecodeError, Decoder, MAX_PEEK, OpenError, PcmBlock, Plan,
     SampleKind, SeekSource, SeekStep, Step, StreamInfo, Unsupported, View,
 };
+use state::{MAX_SAMPLES_PER_FRAME, State};
 
 /// An output sample type of the vendored synthesis (`i16` only here).
 pub(crate) trait Sample: Copy + Default {

@@ -1,6 +1,6 @@
-# yoton-codec-wav
+# orpheus-codec-wav
 
-WAV-family decoder for yotonrs (04-audio §4.1, priority A, WP AU-1).
+WAV-family decoder for Orpheus (04-audio §4.1, priority A, WP AU-1).
 
 | Container | Encodings |
 |---|---|

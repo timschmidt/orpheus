@@ -7,13 +7,13 @@
 //! (`Unsupported::Channels`). A chained file ends at the end of its first
 //! logical stream.
 
-use yoton_audio::arena::{self, Arena};
-use yoton_audio::{
+use orpheus_audio::arena::{self, Arena};
+use orpheus_audio::{
     ByteSource, CodecId, ContainerInfo, DecodeError, Decoder, OpenError, PcmBlock, Plan, SampleKind,
     SeekSource, SeekStep, Step, StreamInfo, Unsupported, View,
 };
-use yoton_ogg::assembled::{Next, PacketReader};
-use yoton_ogg::{Bisect, HEADER_MIN, PageHeader, Parse};
+use orpheus_ogg::assembled::{Next, PacketReader};
+use orpheus_ogg::{Bisect, HEADER_MIN, PageHeader, Parse};
 
 use crate::celt::{CeltState, MEM_PER_CH};
 use crate::opus_dec::{OpusDec, OpusState, REGION_WORDS_PER_CH, scratch_words};
@@ -79,7 +79,7 @@ fn parse_head(src: &dyn ByteSource) -> Result<OpusHead, OpenError> {
             OpenError::NeedData(h.total())
         });
     }
-    if yoton_ogg::page_crc(&v, h.total()) != h.crc || !h.bos() {
+    if orpheus_ogg::page_crc(&v, h.total()) != h.crc || !h.bos() {
         return Err(Unsupported::BadHeader.into());
     }
     let b = v.skip(h.header_len).take(h.body_len);
@@ -346,11 +346,11 @@ impl<'a> Decoder<'a> for OpusDecoder<'a> {
         };
         let r = b.step(src).map_err(DecodeError::Source)?;
         match r {
-            yoton_ogg::SeekStep::NeedData(n) => {
+            orpheus_ogg::SeekStep::NeedData(n) => {
                 self.seek = Some(b);
                 Ok(SeekStep::NeedData(n))
             }
-            yoton_ogg::SeekStep::Done(found) => {
+            orpheus_ogg::SeekStep::Done(found) => {
                 self.seek = None;
                 self.reset_stream();
                 match found {

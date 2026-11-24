@@ -1,0 +1,19 @@
+[package]
+name = "orpheus-img"
+description = "Streaming picture decoders (JPEG, PNG, GIF, BMP, QOI), the scaler to the RGB565 screen and the thumbnail cache format (04 §7)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+orpheus-audio = { path = "../orpheus-audio" }
+# Plain-old-data tables placed in the caller's arena (the crate the arena uses).
+bytemuck = { version = "1.25", default-features = false, features = ["derive", "min_const_generics"] }
+
+[dev-dependencies]
+orpheus-meta = { path = "../orpheus-meta" }
+
+[lints]
+workspace = true

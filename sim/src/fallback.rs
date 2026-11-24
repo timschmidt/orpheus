@@ -5,7 +5,7 @@
 //!   golden images.
 //! * [`FonFile`]: a 33-byte-record font file read in place, like the device
 //!   reads its NOR resource. Point it at the vendor's `UNICODE.FON` inside the
-//!   NOR dump for development (`YOTON_FALLBACK_FON=<file>@<offset>`); never for
+//!   NOR dump for development (`ORPHEUS_FALLBACK_FON=<file>@<offset>`); never for
 //!   golden images, and the data is never committed.
 
 use std::collections::HashMap;
@@ -14,7 +14,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use yoton_ui::font::{FALLBACK_RECORD, GlyphSource};
+use orpheus_ui::font::{FALLBACK_RECORD, GlyphSource};
 
 /// The committed Unifont subset (SIL OFL 1.1, see `assets/OFL-unifont.txt`).
 pub const UNIFONT_SUBSET: &str = include_str!("../assets/unifont-subset.hex");
@@ -117,10 +117,10 @@ impl FonFile {
         Ok(FonFile { f, offset, baseline })
     }
 
-    /// From `YOTON_FALLBACK_FON=<path>@<offset>[@<baseline>]` (offset in
+    /// From `ORPHEUS_FALLBACK_FON=<path>@<offset>[@<baseline>]` (offset in
     /// hex with `0x` or decimal; baseline defaults to 13, the vendor font's).
     pub fn from_env() -> Option<FonFile> {
-        let v = std::env::var("YOTON_FALLBACK_FON").ok()?;
+        let v = std::env::var("ORPHEUS_FALLBACK_FON").ok()?;
         let mut parts = v.split('@');
         let path = parts.next()?;
         let off = parts.next().map_or(Some(0), parse_num)?;

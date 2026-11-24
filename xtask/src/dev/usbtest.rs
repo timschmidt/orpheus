@@ -3,10 +3,10 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
-use yoton_host::devchan::DevChannel;
-use yoton_host::nusb;
-use yoton_host::{bot, image};
-use yoton_proto::devchan::{ADFU_PID, ADFU_VID, DEV_PID, DEV_VID, REBOOT_ADFU};
+use orpheus_host::devchan::DevChannel;
+use orpheus_host::nusb;
+use orpheus_host::{bot, image};
+use orpheus_proto::devchan::{ADFU_PID, ADFU_VID, DEV_PID, DEV_VID, REBOOT_ADFU};
 
 use crate::args::{Args, num};
 use crate::util::{log, out_dir};
@@ -33,7 +33,7 @@ pub fn cmd(args: &mut Args) -> Result<String> {
         1usize, 2, 7, 8, 63, 64, 65, 127, 128, 129, 255, 256, 511, 512, 513, 1000, 1023, 1024, 2048, 4095,
         4096,
     ] {
-        let got = d.control_in(yoton_proto::devchan::REQ_PEEK, 0x0000, 0x0010, n as u16)?;
+        let got = d.control_in(orpheus_proto::devchan::REQ_PEEK, 0x0000, 0x0010, n as u16)?;
         if got.len() != n || got[..] != blob[..n] {
             log(&format!("  PEEK {n} bytes: MISMATCH (got {})", got.len()));
             fails += 1;
@@ -57,7 +57,7 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     let mut d = d;
     for i in 0..cycles {
         let old = d.info.device_address();
-        d.control_out(yoton_proto::devchan::REQ_REBOOT, 0x10, 0, &[])?;
+        d.control_out(orpheus_proto::devchan::REQ_REBOOT, 0x10, 0, &[])?;
         drop(d);
         // Re-enumeration gives the device a new bus address.
         let t = Instant::now();

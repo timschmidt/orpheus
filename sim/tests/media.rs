@@ -3,12 +3,12 @@
 //! scrolling, delete, text viewer, queue from a folder, transport keys,
 //! Now Playing views, equaliser editing.
 
-use yoton_apps::AppScreen;
-use yoton_apps::browse::DirId;
-use yoton_apps::services::{BrowseService, PlayerService, TextService};
-use yoton_apps::settings::id;
-use yoton_sim::AppSim;
-use yoton_sim::card::BIG;
+use orpheus_apps::AppScreen;
+use orpheus_apps::browse::DirId;
+use orpheus_apps::services::{BrowseService, PlayerService, TextService};
+use orpheus_apps::settings::id;
+use orpheus_sim::AppSim;
+use orpheus_sim::card::BIG;
 
 fn sim(script: &str) -> AppSim {
     let mut s = AppSim::new();
@@ -55,7 +55,7 @@ fn natural_sort_and_dirs_first() {
     assert_eq!(names, ["Big folder", "Podcasts", "Sigur Rós", "YOASOBI", "Кино"]);
     run(&mut s, "back back next ok wait:100");
     let first = s.sys.entry(0).unwrap().name.to_string();
-    assert_eq!(first, "Books", "hidden .yoton not shown by default");
+    assert_eq!(first, "Books", "hidden .orpheus not shown by default");
 }
 
 #[test]
@@ -125,7 +125,7 @@ fn transport_keys() {
     run(&mut s, "prev");
     assert_eq!(s.sys.player().queue_pos, 0, "Prev at the start goes back");
     run(&mut s, "ok");
-    assert_eq!(s.sys.player().source, yoton_ui::event::Source::Paused);
+    assert_eq!(s.sys.player().source, orpheus_ui::event::Source::Paused);
     run(&mut s, "ok");
     // Seek accelerates: 3 s held moves far more than 2 s/step would.
     let before = s.sys.player().position_ms;
@@ -133,7 +133,7 @@ fn transport_keys() {
     let moved = s.sys.player().position_ms - before;
     assert!(moved > 60_000, "seek moved {moved} ms");
     run(&mut s, "hold:ok");
-    assert_eq!(s.sys.player().source, yoton_ui::event::Source::Paused, "OK held: stop");
+    assert_eq!(s.sys.player().source, orpheus_ui::event::Source::Paused, "OK held: stop");
 }
 
 #[test]
@@ -161,7 +161,7 @@ fn equaliser_edit_copies_preset_to_custom() {
     assert_eq!(s.sys.settings.get(id::EQUALISER), 9, "Custom 1");
     assert_eq!(s.sys.settings.get(id::EQ_BAND0), 6, "Rock's +5 dB, plus one");
     run(&mut s, "next down*20");
-    assert_eq!(s.sys.settings.get(yoton_apps::settings::SettingId(id::EQ_BAND0.0 + 1)), -12, "clamped");
+    assert_eq!(s.sys.settings.get(orpheus_apps::settings::SettingId(id::EQ_BAND0.0 + 1)), -12, "clamped");
 }
 
 #[test]

@@ -1,32 +1,32 @@
-//! Host implementation of the `yoton-apps` service traits: plain state with
+//! Host implementation of the `orpheus-apps` service traits: plain state with
 //! scriptable fakes (`set:battery=8`, `set:card=absent`, `set:usb=host` …)
 //! and a log of everything the screens asked for.
 
 use std::cell::Cell;
 
 use anyhow::{Result, bail};
-use yoton_apps::screens::{self, AppScreen};
-use yoton_apps::services::{
+use orpheus_apps::screens::{self, AppScreen};
+use orpheus_apps::services::{
     self, BatteryInfo, BluetoothService, CardInfo, CardState, ClockService, DateTime, FsKind,
     PlaybackService, Playing, PowerRequest, PowerService, SettingsService, StorageRequest, StorageService,
     SystemService, UsbMode, UsbService, UsbState,
 };
-use yoton_apps::services::{
+use orpheus_apps::services::{
     Bookmark, BrowseFilter, BrowseService, DirId, Entry, FileOp, FileRef, Levels, LibraryState, Listing,
     LyricLine, PicReq, PicState, PictureService, PlayerCmd, PlayerService, PlayerState, QueueEntry,
     TextService, TrackInfo,
 };
-use yoton_apps::settings::{SettingId, SettingsCache, id, lang_code};
-use yoton_apps::{App, Lang};
-use yoton_power::charger::ChargeState;
-use yoton_ui::event::{BtState, Event, ServiceEvent, Source};
-use yoton_ui::geom::Rect;
-use yoton_ui::gfx::Gfx;
-use yoton_ui::input::KeyGate;
-use yoton_ui::nav::{Arg, ScreenId};
-use yoton_ui::shell::System;
-use yoton_ui::theme::{Accent, Palette, Theme};
-use yoton_ui::widgets::bars::{MiniPlayer, Status};
+use orpheus_apps::settings::{SettingId, SettingsCache, id, lang_code};
+use orpheus_apps::{App, Lang};
+use orpheus_power::charger::ChargeState;
+use orpheus_ui::event::{BtState, Event, ServiceEvent, Source};
+use orpheus_ui::geom::Rect;
+use orpheus_ui::gfx::Gfx;
+use orpheus_ui::input::KeyGate;
+use orpheus_ui::nav::{Arg, ScreenId};
+use orpheus_ui::shell::System;
+use orpheus_ui::theme::{Accent, Palette, Theme};
+use orpheus_ui::widgets::bars::{MiniPlayer, Status};
 
 use crate::media::Media;
 use crate::{Host, packs};

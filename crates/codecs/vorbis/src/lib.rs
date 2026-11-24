@@ -39,14 +39,14 @@ mod setup;
 
 use audio::{Block, Buffers};
 use bits::Bits;
-use setup::{Book, Floor1, Ident, MAX_X, Mapping, Mode, Residue, Setup, SetupError, Sizes};
-use yoton_audio::arena::{self, Arena};
-use yoton_audio::{
+use orpheus_audio::arena::{self, Arena};
+use orpheus_audio::{
     ByteSource, CodecId, ContainerInfo, DecodeError, Decoder, MAX_PEEK, OpenError, PcmBlock, Plan,
     SampleKind, SeekSource, SeekStep, Step, StreamInfo, Unsupported, View,
 };
-use yoton_ogg::ranges::{Next, Packet, PageErr, Reader, peek_packets};
-use yoton_ogg::{Bisect, NO_GRANULE};
+use orpheus_ogg::ranges::{Next, Packet, PageErr, Reader, peek_packets};
+use orpheus_ogg::{Bisect, NO_GRANULE};
+use setup::{Book, Floor1, Ident, MAX_X, Mapping, Mode, Residue, Setup, SetupError, Sizes};
 
 /// PCM handed out per call, in frames.
 const OUT_FRAMES: usize = 512;
@@ -175,7 +175,7 @@ impl VorbisDecoder<'_> {
     fn load_setup(&mut self, v: View<'_>, p: &Packet) -> Result<(), DecodeError> {
         let fail = |e: SetupError| DecodeError::Unsupported(bad(e));
         let sz = setup::setup(&mut Bits::new(v, p), &self.id, None).map_err(fail)?;
-        let full = |e: yoton_audio::ArenaFull| {
+        let full = |e: orpheus_audio::ArenaFull| {
             DecodeError::Unsupported(Unsupported::ArenaTooSmall { needed: e.needed, capacity: e.capacity })
         };
         let ar = &mut self.arena;
@@ -468,13 +468,13 @@ impl<'a> Decoder<'a> for VorbisDecoder<'a> {
             _ => Bisect::new(audio_off, src.len().unwrap_or(u64::MAX), frame, serial),
         };
         match b.step(src)? {
-            yoton_ogg::SeekStep::NeedData(n) => {
+            orpheus_ogg::SeekStep::NeedData(n) => {
                 self.seek = Some(b);
                 Ok(SeekStep::NeedData(n))
             }
             // Pages of granule 0 (only the first audio packet ends there)
             // position nothing: start from the first audio packet instead.
-            yoton_ogg::SeekStep::Done(found) => {
+            orpheus_ogg::SeekStep::Done(found) => {
                 let at = found.filter(|&(_, g)| g > 0).map(|(off, _)| off);
                 self.land(src, at, frame)
             }

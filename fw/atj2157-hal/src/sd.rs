@@ -7,11 +7,11 @@
 //! controller does not wait for the card's busy signal, so the driver polls
 //! CMD13 until the card is back in `tran` and ready for data.
 //!
-//! The card protocol (initialisation, CSD parsing) uses `yoton-sdcard`.
+//! The card protocol (initialisation, CSD parsing) uses `orpheus-sdcard`.
 
 use atj2157_pac::{cmu, dma as pdma, gpio, rmu, sd};
 use embassy_time::{Duration, Instant, Timer};
-use yoton_sdcard::{self as card, Cid, Csd, Ocr, R128, Status, cmd};
+use orpheus_sdcard::{self as card, Cid, Csd, Ocr, R128, Status, cmd};
 
 use crate::dma::Channel;
 

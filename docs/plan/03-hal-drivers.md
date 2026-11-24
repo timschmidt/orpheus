@@ -53,7 +53,7 @@ lower the core supply from the reset default of 1.2 V to 1.0 V** (code
 `0x0C`), which the stock firmware uses for everything up to 144 MHz. `Turbo`
 is still below the reset-default voltage. `Max` raises the supply above the
 default (within the regulator's documented range and the datasheet's 288 MHz
-rating) and is what stock does for UI bursts and recording; yotonrs should
+rating) and is what stock does for UI bursts and recording; Orpheus should
 not need it.
 
 ### 2.2 Level change (resident, interrupts masked with BASEPRI)
@@ -84,7 +84,7 @@ They do not follow the core clock, with two caveats the drivers must handle:
   the bus timing depends on the core/bus clock (U-LCM-1). Until the timing
   fields are understood the display driver does the same (mux to HOSC, blit by
   DMA, mux back; COREPLL keeps running).
-* **DEVPLL** (vendor: always 180 MHz) is off by default in yotonrs and is
+* **DEVPLL** (vendor: always 180 MHz) is off by default in Orpheus and is
   requested by drivers that want it (SD high speed, fast NOR, LCD clock above
   HOSC-derived rates) through the same request mechanism as core levels.
 
@@ -218,7 +218,7 @@ mode `0x9600`, and the special channel at `0xC0071000`).
 * Byte order: the PIO path sends high byte first; find the DMA mode that does
   the same or keep the frame buffer in panel byte order and convert in `Gfx`
   (U-LCM-2). Screenshots must still decode correctly on the host: record the
-  byte order in `yoton-proto`.
+  byte order in `orpheus-proto`.
 * Bring-up image `lcd`: colour bars, 1-pixel grid, text; read back four
   rectangles from the panel and compare; screenshot via ADFU.
 
@@ -259,7 +259,7 @@ Facts: `sdmmc-yotonym03.c` **[HW]** (register use, command types, DMA channel
   resp_type)`, `read_blocks`/`write_blocks` with DMA and an `async` wait on
   the DMA interrupt plus controller status; errors mapped (timeout, CRC,
   other); the clock stopped between bursts.
-* `sd` protocol module (in `yoton-fs` or its own crate, host-testable against
+* `sd` protocol module (in `orpheus-fs` or its own crate, host-testable against
   a card model): identification, SDHC/SDXC, CMD6 high-speed switch when
   U-SD-1 passes, CMD18/CMD25 with CMD23 pre-count, CMD12, CMD13 ready polling
   after writes, retry policy (3 tries, re-init on persistent errors), card
@@ -354,11 +354,11 @@ Facts: `pcm-yotonym03.c` **[HW]**; audio.md §1–2, §4, §6.3.
   (`+0x2C` bits 16–23) for FM and line-in.
 * Volume mapping: user steps → digital volume code with the amplifier gain at
   its music value (7); the vendor's 32-entry table (audio.md §2.3) is the
-  reference for the range; yotonrs uses 41 steps of equal dB inside the same
+  reference for the range; Orpheus uses 41 steps of equal dB inside the same
   range once U-AUD-1 gives the scale.
 * Stream: DMA channel 5, 16-bit stereo mode; auto-reload over the PCM ring if
   U-DMA-2 passes, else chained transfers with the pager poll hook.
-* `AudioOut` trait towards `yoton-audio`: `start(rate)`, `stop()`,
+* `AudioOut` trait towards `orpheus-audio`: `start(rate)`, `stop()`,
   `position()`, `set_volume()`, `mute()`, `route(Bypass)`, statistics.
 
 ## 13. ADC and inputs (in WP-AU-13)
@@ -419,7 +419,7 @@ Facts: fm-i2c-imu.md.
   region (the stock firmware leaves 75 µs everywhere), RSSI, stereo flag,
   power-down. Avoid 95.9–96.1 MHz in auto-scan (reference harmonic). RDS:
   only if the id says an RDS-capable variant; then group decoding for PS, RT
-  and CT in `yoton-apps::radio` with host tests on recorded group streams.
+  and CT in `orpheus-apps::radio` with host tests on recorded group streams.
   Audio: the analogue bypass of §12; volume = tuner volume × amplifier gain
   (the vendor's 32-entry pair table is the starting point).
 * **Accelerometer (MiraMEMS DA2xx family at `0x27`)**: id read (U-ACC-1),
@@ -428,7 +428,7 @@ Facts: fm-i2c-imu.md.
   counting if accuracy holds), suspend (`0x11 ← 0x80`) otherwise and at boot.
   If the identified part has a FIFO, a step counter or a usable interrupt
   pin, use them (fewer wake-ups); the baseline assumes none.
-* **Step detector** (`yoton-apps::steps`, host-tested): magnitude of the
+* **Step detector** (`orpheus-apps::steps`, host-tested): magnitude of the
   3-axis vector, low-pass, adaptive threshold between running max and min,
   minimum 200 ms and maximum 2 s step interval, a "regularity" gate of four
   consecutive plausible steps before counting starts (suppresses bus rides
@@ -446,7 +446,7 @@ Facts: system.md §7; bluetooth.md §2. UART1 at `0xC00E0000` for the Bluetooth
 module (DMA in both directions, baud = 24 MHz / divisor in both halves of
 `+0x10`). UART0 at `0xC00D0000` is a debug port whose TX pad is disabled in
 the shipped configuration and shared with SD detect on this board: not used
-by yotonrs (logging goes through the developer channel).
+by Orpheus (logging goes through the developer channel).
 
 ## 17. USB device controller
 
