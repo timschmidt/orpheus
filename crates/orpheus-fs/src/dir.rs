@@ -62,6 +62,8 @@ impl WalkSlot {
     }
 }
 
+/// A small cache of resolved directory paths, so repeated walks to the
+/// same folder skip the directory reads.
 #[derive(Clone, Copy, Default)]
 pub struct WalkCache {
     slots: [WalkSlot; WALK_SLOTS],
@@ -71,6 +73,7 @@ pub struct WalkCache {
 }
 
 impl WalkCache {
+    /// A cache with no entries.
     pub const EMPTY: WalkCache = WalkCache {
         slots: [WalkSlot {
             first: 0,

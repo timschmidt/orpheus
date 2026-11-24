@@ -19,6 +19,7 @@
 //! the arena. Output: `i16` for ≤ 16-bit streams, left-justified `i32`
 //! above.
 
+#![warn(missing_docs)]
 #![no_std]
 #![forbid(unsafe_code)]
 
@@ -146,6 +147,7 @@ struct SeekSt {
     started: bool,
 }
 
+/// An open FLAC stream (native FLAC or FLAC in Ogg).
 pub struct FlacDecoder<'a> {
     head: StreamHead,
     planar: &'a mut [i32],

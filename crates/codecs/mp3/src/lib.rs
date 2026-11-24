@@ -19,6 +19,7 @@
 //! Layers I and II and free-format streams are refused
 //! (`Unsupported::Encoding`).
 
+#![warn(missing_docs)]
 #![no_std]
 #![forbid(unsafe_code)]
 // The vendored files keep minimp3's constants and indexing.
@@ -238,6 +239,7 @@ enum Found {
     Junk,
 }
 
+/// An open MPEG audio (MP3) stream; its state lives in the arena.
 pub struct Mp3Decoder<'a> {
     st: &'a mut State,
     fbuf: &'a mut [u8],

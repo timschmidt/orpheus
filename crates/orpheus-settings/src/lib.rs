@@ -20,14 +20,17 @@
 //! value of that key and never disturbs others. The newest valid record
 //! for a key (highest sector sequence, then highest offset) wins.
 
+#![warn(missing_docs)]
 #![no_std]
 #![forbid(unsafe_code)]
 
 #[cfg(test)]
 extern crate std;
 
+/// Erase unit of the NOR region, bytes.
 pub const SECTOR: u32 = 4096;
-pub const MAGIC: u32 = 0x5445_5359; // "YSET"
+/// Sector header magic, `"YSET"`.
+pub const MAGIC: u32 = 0x5445_5359;
 const HDR: u32 = 16;
 const REC_HDR: u32 = 12;
 const STATE_ACTIVE: u32 = 0x0000_FFFF;
@@ -42,19 +45,28 @@ pub const MAX_KEYS: usize = 128;
 /// start; `erase` takes a sector-aligned offset.
 #[allow(async_fn_in_trait)]
 pub trait Nor {
+    /// The driver's error.
     type Error;
+    /// Read `buf.len()` bytes at `off`.
     async fn read(&mut self, off: u32, buf: &mut [u8]) -> Result<(), Self::Error>;
     /// Program bytes (only clears bits); `off` and `data.len()` multiples of 4.
     async fn program(&mut self, off: u32, data: &[u8]) -> Result<(), Self::Error>;
+    /// Erase the sector at `sector_off`.
     async fn erase(&mut self, sector_off: u32) -> Result<(), Self::Error>;
 }
 
+/// Why a store operation failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error<E> {
+    /// The NOR driver failed.
     Nor(E),
+    /// The value is longer than [`MAX_VALUE`] (or the key is reserved).
     TooLarge,
+    /// No room left, even after compaction.
     Full,
+    /// The caller's buffer is shorter than the value.
     BufferTooSmall,
+    /// More than [`MAX_KEYS`] distinct keys.
     TooManyKeys,
 }
 
@@ -72,6 +84,7 @@ struct Slot {
     len: u16,
 }
 
+/// A wear-levelled key-value store over `N` NOR sectors.
 pub struct Store<F: Nor, const N: usize> {
     nor: F,
     active: usize,
@@ -245,10 +258,12 @@ impl<F: Nor, const N: usize> Store<F, N> {
     }
 
     /// Keys currently present.
+    /// The keys that hold a value.
     pub fn keys(&self) -> impl Iterator<Item = u16> + '_ {
         self.index[..self.n_keys].iter().filter(|s| s.len != DELETED).map(|s| s.key)
     }
 
+    /// Store `value` under `key`, replacing any older value.
     pub async fn set(&mut self, key: u16, value: &[u8]) -> Result<(), Error<F::Error>> {
         if value.len() > MAX_VALUE || key == 0xFFFF {
             return Err(Error::TooLarge);
@@ -259,6 +274,7 @@ impl<F: Nor, const N: usize> Store<F, N> {
         self.append(key, value.len() as u16, value).await
     }
 
+    /// Delete the value under `key` (nothing happens if there is none).
     pub async fn remove(&mut self, key: u16) -> Result<(), Error<F::Error>> {
         if self.index[..self.n_keys].iter().any(|s| s.key == key && s.len != DELETED) {
             self.append(key, DELETED, &[]).await?;

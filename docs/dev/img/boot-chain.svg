@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 330" width="720" height="330" role="img" aria-labelledby="t d">
+  <title id="t">Boot chain</title>
+  <desc id="d">Mask ROM loads stage 1 from NOR offset 0; stage 1 loads stage 2; stage 2 either enters USB recovery or copies the resident image of the first valid slot to RAM and jumps to it.</desc>
+  <style>
+    .bg{fill:#f8f8fa}.box{fill:#e2e5eb;stroke:#585e68}.hi{fill:#206edc}.warn{fill:#c42020;fill-opacity:.12;stroke:#c42020}
+    .t{fill:#121418;font:600 13px system-ui,sans-serif}.s{fill:#121418;font:12px system-ui,sans-serif}.w{fill:#fff;font:12px system-ui,sans-serif}.wt{fill:#fff;font:600 13px system-ui,sans-serif}
+    .ln{stroke:#585e68;stroke-width:1.5;fill:none;marker-end:url(#ar)}.ah{fill:#585e68}
+    @media (prefers-color-scheme:dark){.bg{fill:#0e1014}.box{fill:#242830;stroke:#969ca8}.t,.s{fill:#eef0f4}.ln{stroke:#969ca8}.ah{fill:#969ca8}.warn{fill:#ff6058;fill-opacity:.15;stroke:#ff6058}}
+  </style>
+  <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker></defs>
+  <rect class="bg" width="720" height="330"/>
+  <rect class="box" x="20" y="20" width="200" height="50"/>
+  <text class="t" x="32" y="42">Mask ROM</text>
+  <text class="s" x="32" y="60">checks the boot record</text>
+  <path class="ln" d="M120 70V96"/>
+  <rect class="box" x="20" y="98" width="200" height="50"/>
+  <text class="t" x="32" y="120">Stage 1 (NOR 0, 512 B)</text>
+  <text class="s" x="32" y="138">loads 1 KiB from 0x7DF400</text>
+  <path class="ln" d="M120 148V174"/>
+  <rect class="box" x="20" y="176" width="200" height="66"/>
+  <text class="t" x="32" y="198">Stage 2 (Rust, ≤ 1 KiB)</text>
+  <text class="s" x="32" y="216">counts boot attempts,</text>
+  <text class="s" x="32" y="232">reads keys and mailbox</text>
+  <path class="ln" d="M220 196H300"/>
+  <rect class="warn" x="302" y="166" width="190" height="66"/>
+  <text class="t" x="314" y="188">USB recovery (ADFU)</text>
+  <text class="s" x="314" y="206">mailbox "ADFU", Next held,</text>
+  <text class="s" x="314" y="222">or 3 failed starts</text>
+  <path class="ln" d="M120 242V268"/>
+  <rect class="box" x="20" y="270" width="200" height="50"/>
+  <text class="t" x="32" y="292">First valid slot</text>
+  <text class="s" x="32" y="310">full A, full B, dual slot</text>
+  <path class="ln" d="M220 295H300"/>
+  <rect class="hi" x="302" y="262" width="400" height="58"/>
+  <text class="wt" x="314" y="284">Firmware: resident image copied to 0x100000</text>
+  <text class="w" x="314" y="304">crt0, watchdog, pager, clocks, executors, tasks</text>
+  <text class="s" x="514" y="190">The firmware clears the boot</text>
+  <text class="s" x="514" y="206">counter after 30 s of healthy</text>
+  <text class="s" x="514" y="222">running.</text>
+</svg>

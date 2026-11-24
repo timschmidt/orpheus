@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 420" width="720" height="420" role="img" aria-labelledby="t d">
+  <title id="t">Crates and their dependencies</title>
+  <desc id="d">Device crates in fw/ depend on the shared no_std crates in crates/; the simulator and xtask use the same shared crates on the desktop. Arrows point from a crate to what it uses.</desc>
+  <style>
+    .bg{fill:#f8f8fa}.box{fill:#e2e5eb;stroke:#585e68}.dev{fill:#206edc}.grp{fill:none;stroke:#585e68;stroke-dasharray:5 4}
+    .t{fill:#121418;font:600 13px system-ui,sans-serif}.s{fill:#121418;font:12px ui-monospace,monospace}.c{fill:#585e68;font:12px system-ui,sans-serif}.w{fill:#fff;font:12px ui-monospace,monospace}.wt{fill:#fff;font:600 13px system-ui,sans-serif}
+    .ln{stroke:#585e68;stroke-width:1.5;fill:none;marker-end:url(#ar)}.ah{fill:#585e68}
+    @media (prefers-color-scheme:dark){.bg{fill:#0e1014}.box{fill:#242830;stroke:#969ca8}.grp{stroke:#969ca8}.t,.s{fill:#eef0f4}.c{fill:#969ca8}.ln{stroke:#969ca8}.ah{fill:#969ca8}}
+  </style>
+  <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker></defs>
+  <rect class="bg" width="720" height="420"/>
+
+  <rect class="grp" x="10" y="10" width="300" height="300"/>
+  <text class="c" x="20" y="28">fw/ — Cortex-M4F only; knows the hardware</text>
+  <rect class="dev" x="20" y="38" width="130" height="30"/><text class="wt" x="30" y="58">firmware</text>
+  <rect class="dev" x="20" y="88" width="130" height="30"/><text class="w" x="30" y="108">yoton-bsp</text>
+  <rect class="dev" x="20" y="138" width="130" height="30"/><text class="w" x="30" y="158">atj2157-hal</text>
+  <rect class="box" x="170" y="138" width="130" height="30"/><text class="s" x="180" y="158">atj2157-pac</text>
+  <rect class="dev" x="20" y="200" width="130" height="30"/><text class="w" x="30" y="220">boot/stage2</text>
+  <rect class="dev" x="170" y="200" width="130" height="30"/><text class="w" x="180" y="220">payloads/</text>
+  <text class="c" x="20" y="190">board → SoC → registers</text><text class="c" x="20" y="256">stage 2; NOR programmer; bringup/:</text><text class="c" x="20" y="272">one RAM image per driver test</text>
+  <path class="ln" d="M85 68V86"/><path class="ln" d="M85 118V136"/><path class="ln" d="M150 153H168"/>
+
+  <rect class="grp" x="330" y="10" width="380" height="300"/>
+  <text class="c" x="340" y="28">crates/ — no_std, no hardware, tested on the host</text>
+  <rect class="box" x="340" y="38" width="170" height="54"/>
+  <text class="t" x="350" y="56">UI and apps</text>
+  <text class="s" x="350" y="74">orpheus-apps, -ui</text>
+  <rect class="box" x="530" y="38" width="170" height="54"/>
+  <text class="t" x="540" y="56">Media</text>
+  <text class="s" x="540" y="74">-player, -library,</text>
+  <text class="s" x="540" y="88">-index, -meta</text>
+  <rect class="box" x="340" y="108" width="170" height="70"/>
+  <text class="t" x="350" y="126">Audio</text>
+  <text class="s" x="350" y="144">-audio, -dsp, codecs/</text>
+  <text class="s" x="350" y="160">(wav mp3 flac ogg</text>
+  <text class="s" x="350" y="174">vorbis opus speex)</text>
+  <rect class="box" x="530" y="108" width="170" height="70"/>
+  <text class="t" x="540" y="126">Storage, pictures</text>
+  <text class="s" x="540" y="144">-fs, -sdcard,</text>
+  <text class="s" x="540" y="160">-settings, -img</text>
+  <rect class="box" x="340" y="194" width="170" height="70"/>
+  <text class="t" x="350" y="212">System</text>
+  <text class="s" x="350" y="230">-power, -input, -bt,</text>
+  <text class="s" x="350" y="246">-usb, -otp</text>
+  <rect class="box" x="530" y="194" width="170" height="70"/>
+  <text class="t" x="540" y="212">Shared formats</text>
+  <text class="s" x="540" y="230">orpheus-proto,</text>
+  <text class="s" x="540" y="246">orpheus-pager (core)</text>
+  <text class="c" x="340" y="296">crate names: orpheus-…</text>
+
+  <path class="ln" d="M150 53H328"/>
+  <path class="ln" d="M150 103H328"/>
+
+  <rect class="grp" x="10" y="326" width="700" height="84"/>
+  <text class="c" x="20" y="348">desktop</text>
+  <rect class="box" x="20" y="358" width="200" height="42"/>
+  <text class="t" x="30" y="376">sim/ (orpheus-sim)</text>
+  <text class="c" x="30" y="393">simulator, golden images</text>
+  <rect class="box" x="250" y="358" width="200" height="42"/>
+  <text class="t" x="260" y="376">xtask/</text>
+  <text class="c" x="260" y="393">build, test, gate, site, dev</text>
+  <rect class="box" x="480" y="358" width="220" height="42"/>
+  <text class="t" x="490" y="376">crates/orpheus-host</text>
+  <text class="c" x="490" y="393">USB: ADFU, ymon, dev channel</text>
+  <path class="ln" d="M120 358C120 330 330 340 338 312"/>
+  <path class="ln" d="M350 358V312"/>
+  <path class="ln" d="M450 379H478"/>
+</svg>

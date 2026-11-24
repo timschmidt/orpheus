@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 470" width="720" height="470" role="img" aria-labelledby="t d">
+  <title id="t">Orpheus memory map</title>
+  <desc id="d">Left: the four RAM blocks and what Orpheus keeps in each. Right: the 8 MiB NOR flash in the full layout.</desc>
+  <style>
+    .bg{fill:#f8f8fa}.box{fill:#e2e5eb;stroke:#585e68;stroke-width:1}.hi{fill:#206edc}.no{fill:#c42020;fill-opacity:.12;stroke:#c42020}
+    .t{fill:#121418;font:600 13px system-ui,sans-serif}.s{fill:#121418;font:11px system-ui,sans-serif}.a{fill:#585e68;font:11px ui-monospace,monospace}.w{fill:#fff;font:11px system-ui,sans-serif}
+    @media (prefers-color-scheme:dark){.bg{fill:#0e1014}.box{fill:#242830;stroke:#969ca8}.t,.s{fill:#eef0f4}.a{fill:#969ca8}.no{fill:#ff6058;fill-opacity:.15;stroke:#ff6058}}
+  </style>
+  <rect class="bg" width="720" height="470"/>
+  <text class="t" x="20" y="24">RAM: 320 KiB in four blocks</text>
+  <text class="a" x="20" y="50">0x100000</text>
+  <text class="t" x="100" y="50">SRAM0 · 224 KiB</text>
+  <rect class="hi" x="100" y="58" width="240" height="44"/>
+  <text class="w" x="108" y="76">resident image: vectors, pager,</text>
+  <text class="w" x="108" y="94">interrupts, executors, hot code</text>
+  <rect class="box" x="100" y="102" width="240" height="24"/>
+  <text class="s" x="108" y="119">statics (.data, .bss), task storage</text>
+  <rect class="box" x="100" y="126" width="240" height="44"/>
+  <text class="s" x="108" y="144">mode pool: decoder arena, stream</text>
+  <text class="s" x="108" y="162">ring, picture and USB buffers</text>
+  <rect class="box" x="100" y="170" width="240" height="24"/>
+  <text class="s" x="108" y="187">one stack (MPU guard below it)</text>
+  <rect class="box" x="100" y="194" width="240" height="24"/>
+  <text class="s" x="108" y="211">persistent 1 KiB (fault record)</text>
+  <text class="a" x="20" y="211">0x137C00</text>
+  <text class="a" x="20" y="250">0x158000</text>
+  <text class="t" x="100" y="250">SRAM1 · 32 KiB</text>
+  <rect class="box" x="100" y="258" width="240" height="24"/>
+  <text class="s" x="108" y="275">frame buffer 128 × 128 RGB565</text>
+  <text class="a" x="20" y="314">0x200000</text>
+  <text class="t" x="100" y="314">SRAM2 · 32 KiB</text>
+  <rect class="box" x="100" y="322" width="240" height="24"/>
+  <text class="s" x="108" y="339">code page cache: 4 slots × 8 KiB</text>
+  <text class="a" x="20" y="378">0x300000</text>
+  <text class="t" x="100" y="378">SRAM3 · 32 KiB</text>
+  <rect class="box" x="100" y="386" width="240" height="24"/>
+  <text class="s" x="108" y="403">rodata page cache: 2 slots × 8 KiB</text>
+  <rect class="box" x="100" y="410" width="240" height="44"/>
+  <text class="s" x="108" y="428">PCM ring 12 KiB, log ring 2 KiB,</text>
+  <text class="s" x="108" y="446">pager tables, shared state</text>
+
+  <text class="t" x="380" y="24">NOR flash: 8 MiB, not memory-mapped</text>
+  <text class="a" x="380" y="50">0x000000</text>
+  <rect class="no" x="460" y="38" width="240" height="24"/>
+  <text class="s" x="468" y="55">boot record + stage 1 (never written)</text>
+  <text class="a" x="380" y="80">0x001000</text>
+  <rect class="hi" x="460" y="64" width="240" height="70"/>
+  <text class="w" x="468" y="84">slot A: the firmware</text>
+  <text class="w" x="468" y="102">header, resident image,</text>
+  <text class="w" x="468" y="120">8 KiB code and rodata pages</text>
+  <text class="a" x="380" y="152">0x200000</text>
+  <rect class="box" x="460" y="136" width="240" height="50"/>
+  <text class="s" x="468" y="156">slot B (updates write the</text>
+  <text class="s" x="468" y="174">inactive slot; planned)</text>
+  <text class="a" x="380" y="204">0x400000</text>
+  <rect class="box" x="460" y="188" width="240" height="50"/>
+  <text class="s" x="468" y="208">resources: font pack, language</text>
+  <text class="s" x="468" y="226">packs (planned)</text>
+  <text class="a" x="380" y="256">0x640000</text>
+  <rect class="box" x="460" y="240" width="240" height="50"/>
+  <text class="s" x="468" y="260">reserved</text>
+  <text class="a" x="380" y="308">0x7DA000</text>
+  <rect class="box" x="460" y="292" width="240" height="24"/>
+  <text class="s" x="468" y="309">settings store (16 KiB)</text>
+  <text class="a" x="380" y="334">0x7DE000</text>
+  <rect class="box" x="460" y="318" width="240" height="24"/>
+  <text class="s" x="468" y="335">authenticator vault (4 KiB)</text>
+  <text class="a" x="380" y="360">0x7DF400</text>
+  <rect class="box" x="460" y="344" width="240" height="24"/>
+  <text class="s" x="468" y="361">stage 2 (Rust, ≤ 1 KiB)</text>
+  <text class="a" x="380" y="386">0x7E0000</text>
+  <rect class="no" x="460" y="370" width="240" height="40"/>
+  <text class="s" x="468" y="388">vendor data, 128 KiB</text>
+  <text class="s" x="468" y="404">(never written)</text>
+  <text class="s" x="380" y="440">Writable by Orpheus: 0x001000–0x7DFFFF.</text>
+</svg>

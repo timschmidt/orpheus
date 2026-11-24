@@ -71,6 +71,7 @@
 //! 2 KiB packet buffer: 4872 B narrowband, 7768 B wideband, 11048 B
 //! ultra-wideband (mono and stereo alike) of the 12 KiB budget.
 
+#![warn(missing_docs)]
 #![no_std]
 #![forbid(unsafe_code)]
 #![allow(
@@ -264,6 +265,7 @@ struct SeekSt {
     phase: SeekPhase,
 }
 
+/// An open Ogg Speex stream.
 pub struct SpeexDecoder<'a> {
     head: Head,
     reader: PacketReader,

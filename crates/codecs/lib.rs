@@ -3,6 +3,7 @@
 //! Cargo features select the codecs (`wav`, `mp3`, `flac`, `vorbis`,
 //! `opus`, `speex`).
 
+#![warn(missing_docs)]
 #![no_std]
 #![forbid(unsafe_code)]
 
@@ -33,16 +34,22 @@ pub use orpheus_codec_wav::WavDecoder;
 #[allow(clippy::large_enum_variant)]
 pub enum AnyDecoder<'a> {
     #[cfg(feature = "wav")]
+    /// WAV.
     Wav(WavDecoder<'a>),
     #[cfg(feature = "mp3")]
+    /// MP3.
     Mp3(Mp3Decoder<'a>),
     #[cfg(feature = "flac")]
+    /// FLAC.
     Flac(FlacDecoder<'a>),
     #[cfg(feature = "vorbis")]
+    /// Ogg Vorbis.
     Vorbis(VorbisDecoder<'a>),
     #[cfg(feature = "opus")]
+    /// Ogg Opus.
     Opus(OpusDecoder<'a>),
     #[cfg(feature = "speex")]
+    /// Ogg Speex.
     Speex(SpeexDecoder<'a>),
 }
 
@@ -170,14 +177,17 @@ fn open_speex<'a>(src: &mut dyn ByteSource, arena: &'a mut [u8], hint: &Containe
 }
 
 impl AnyDecoder<'_> {
+    /// Decode the next frame ([`Decoder::decode`]).
     pub fn decode(&mut self, src: &mut dyn ByteSource) -> Result<Step<'_>, DecodeError> {
         each!(self, d => d.decode(src))
     }
 
+    /// Reposition to sample frame `frame` ([`Decoder::seek`]).
     pub fn seek(&mut self, src: &mut dyn SeekSource, frame: u64) -> Result<SeekStep, DecodeError> {
         each!(self, d => d.seek(src, frame))
     }
 
+    /// Arena bytes in use ([`Decoder::arena_used`]).
     #[must_use]
     pub fn arena_used(&self) -> usize {
         each!(self, d => d.arena_used())

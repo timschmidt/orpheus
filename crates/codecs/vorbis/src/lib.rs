@@ -24,6 +24,7 @@
 //! Refused: floor type 0 (no encoder since 2001 writes it), more than 8
 //! channels, codebooks with more than 32 767 entries.
 
+#![warn(missing_docs)]
 #![no_std]
 #![forbid(unsafe_code)]
 // Index loops mirror the specification's pseudocode.
@@ -128,6 +129,7 @@ struct Emit {
     active: bool,
 }
 
+/// An open Ogg Vorbis stream; every buffer lives in the arena.
 pub struct VorbisDecoder<'a> {
     arena: Arena<'a>,
     id: Ident,

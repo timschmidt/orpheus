@@ -14,6 +14,7 @@
 //! Written from the format descriptions; no third-party decoder is used (see
 //! README.md).
 
+#![warn(missing_docs)]
 #![no_std]
 #![forbid(unsafe_code)]
 
@@ -72,6 +73,7 @@ enum Fill {
     Corrupt,
 }
 
+/// An open WAV (RIFF PCM) stream.
 pub struct WavDecoder<'a> {
     lay: Layout,
     out: &'a mut [i32],

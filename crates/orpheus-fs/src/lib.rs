@@ -17,6 +17,7 @@
 //! See the README for the RAM figures, the write-ordering rules and what is
 //! not supported.
 
+#![warn(missing_docs)]
 #![no_std]
 #![forbid(unsafe_code)]
 

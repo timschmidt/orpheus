@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 300" width="720" height="300" role="img" aria-labelledby="t d">
+  <title id="t">Demand paging</title>
+  <desc id="d">Paged code and rodata have their own virtual addresses aliased onto SRAM2 and SRAM3. A missing 1 KiB line raises MemManage; the handler reads the line from NOR into the slot, enables it in the MPU and returns, and the access runs again.</desc>
+  <style>
+    .bg{fill:#f8f8fa}.box{fill:#e2e5eb;stroke:#585e68}.hi{fill:#206edc}
+    .t{fill:#121418;font:600 13px system-ui,sans-serif}.s{fill:#121418;font:12px system-ui,sans-serif}.w{fill:#fff;font:12px system-ui,sans-serif}.wt{fill:#fff;font:600 13px system-ui,sans-serif}
+    .ln{stroke:#585e68;stroke-width:1.5;fill:none;marker-end:url(#ar)}.ah{fill:#585e68}
+    @media (prefers-color-scheme:dark){.bg{fill:#0e1014}.box{fill:#242830;stroke:#969ca8}.t,.s{fill:#eef0f4}.ln{stroke:#969ca8}.ah{fill:#969ca8}}
+  </style>
+  <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker></defs>
+  <rect class="bg" width="720" height="300"/>
+  <rect class="box" x="20" y="20" width="190" height="66"/>
+  <text class="t" x="32" y="42">Code runs or reads</text>
+  <text class="s" x="32" y="60">a paged address</text>
+  <text class="s" x="32" y="76">(0x2xxxxx or 0x34xxxx)</text>
+  <path class="ln" d="M210 53H262"/>
+  <rect class="box" x="264" y="20" width="190" height="66"/>
+  <text class="t" x="276" y="42">Line mapped?</text>
+  <text class="s" x="276" y="60">yes: runs at RAM speed</text>
+  <text class="s" x="276" y="76">no: MPU raises MemManage</text>
+  <path class="ln" d="M454 53H506"/>
+  <rect class="hi" x="508" y="20" width="192" height="122"/>
+  <text class="wt" x="520" y="42">Pager (priority 0)</text>
+  <text class="w" x="520" y="62">page, slot, line from</text>
+  <text class="w" x="520" y="78">the address; pick a region;</text>
+  <text class="w" x="520" y="94">read 1 KiB from NOR by</text>
+  <text class="w" x="520" y="110">DMA (≈ 180 µs); enable the</text>
+  <text class="w" x="520" y="126">line; return and retry</text>
+  <path class="ln" d="M604 142V170H115V88"/>
+  <text class="t" x="20" y="200">Why it works without the compiler knowing</text>
+  <text class="s" x="20" y="222">SRAM2 and SRAM3 ignore address bits above 14, so each 32 KiB block appears at 32 addresses per MiB.</text>
+  <text class="s" x="20" y="240">Every 8 KiB page gets its own address; code page p lives in slot p mod 4, rodata page q in slot q mod 2.</text>
+  <text class="s" x="20" y="258">Interrupts are masked with BASEPRI only, so a page fault can be served inside a critical section.</text>
+  <text class="s" x="20" y="276">Code that interrupt and fault handlers reach stays resident: xtask check-resident proves it.</text>
+</svg>
