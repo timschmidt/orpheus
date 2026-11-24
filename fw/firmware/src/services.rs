@@ -16,6 +16,7 @@ use orpheus_apps::services::{
 };
 use orpheus_apps::services::{BtDevice, BtList, BtPhase, BtRequest, StepsInfo, StepsService, ToolsService};
 use orpheus_apps::services::{PresetOp, Presets, RadioInfo, RadioPhase, RadioRequest, RadioService, Region};
+use orpheus_apps::services::{RecInfo, RecRequest, RecorderService, rec_settings};
 use orpheus_apps::settings::{SettingId, SettingsCache, id};
 use orpheus_apps::tools::Tools;
 use orpheus_apps::{App, Lang};
@@ -115,6 +116,10 @@ pub struct Fw {
     /// The minute the RTC alarm was last looked at (once a minute is
     /// enough: the next alarm moves only then).
     last_alarm_minute: u8,
+    /// The recorder as last seen (`crate::rec`, AU-13) and its file name.
+    rec: RecInfo,
+    rec_seq: u32,
+    rec_name: StrBuf<40>,
 }
 
 /// A frequency is saved as the radio's last one after playing this long
@@ -265,6 +270,9 @@ impl Fw {
             rtc_alarm: None,
             alarms_changed: true,
             last_alarm_minute: 0xFF,
+            rec: RecInfo::default(),
+            rec_seq: 0,
+            rec_name: StrBuf::new(),
         }
     }
 
@@ -558,6 +566,61 @@ impl Fw {
     /// become service events; new RDS text is converted to UTF-8; a
     /// finished auto-scan replaces the presets; a frequency played for a
     /// while becomes the one the radio starts at.
+    /// The recorder's state for the UI (`crate::rec::view`).
+    fn rec_info(&self) -> RecInfo {
+        let v = crate::rec::view();
+        let s = rec_settings(self);
+        RecInfo {
+            phase: v.phase,
+            source: s.source,
+            format: s.params.format,
+            rate: s.params.rate,
+            channels: s.params.channels,
+            elapsed_ms: v.elapsed_ms,
+            bar: [v.meters[0], v.meters[1]],
+            hold: [v.meters[2], v.meters[3]],
+            clip: v.clip,
+            gain_db: if s.chain.agc { i8::try_from(v.agc_db10 / 10).unwrap_or(0) } else { s.gain_db },
+            auto_gain: s.chain.agc,
+            left_s: v.left_s,
+            drops: v.dropouts,
+            marks: u16::try_from(v.marks).unwrap_or(u16::MAX),
+            fm_khz: if s.source == orpheus_apps::services::RecSource::Fm {
+                v.fm_khz.max(self.radio.khz)
+            } else {
+                0
+            },
+            ended: v.ended,
+        }
+    }
+
+    /// Copy the recorder's state (every UI loop): changes become service
+    /// events; a recording that ended says how.
+    pub fn sync_rec(&mut self) {
+        use orpheus_apps::services::rec_event;
+        let seq = crate::rec::view().seq;
+        let info = self.rec_info();
+        if seq == self.rec_seq && info == self.rec {
+            return;
+        }
+        let other = |v| Event::Service(ServiceEvent::Other { kind: services::other::RECORDER, value: v });
+        if info.ended.is_some()
+            && (self.rec.ended != info.ended || info.phase != self.rec.phase)
+            && !info.phase.is_recording()
+            && self.rec.phase.is_recording()
+        {
+            self.pending.push(other(rec_event::ENDED));
+        }
+        if info.phase.is_recording() != self.rec.phase.is_recording() {
+            let src = if info.phase.is_recording() { Source::Recording } else { Source::Idle };
+            self.pending.push(Event::Service(ServiceEvent::Playback(src)));
+        }
+        crate::rec::file_name(&mut self.rec_name);
+        self.pending.push(other(rec_event::STATE));
+        self.rec = info;
+        self.rec_seq = seq;
+    }
+
     pub fn sync_radio(&mut self, now_ms: u64) {
         use orpheus_apps::services::radio_event;
         use orpheus_fm::Phase;
@@ -820,6 +883,15 @@ impl StorageService for Fw {
 
 impl PlaybackService for Fw {
     fn playing(&self) -> Option<Playing<'_>> {
+        // Recording (AU-13): the status bar's red dot; no playback.
+        if self.rec.phase.is_recording() {
+            return Some(Playing {
+                source: Source::Recording,
+                title: self.rec_name.as_str(),
+                artist: "",
+                progress: 0,
+            });
+        }
         // The radio plays only while the music is stopped (05 §7.3).
         if self.radio.phase.is_on() {
             return Some(Playing {
@@ -936,9 +1008,16 @@ impl BrowseService for Fw {
     fn dir_name(&self, dir: DirId) -> &str {
         self.path[..self.depth].iter().find(|p| p.0 == dir).map_or("", |p| p.2.as_str())
     }
-    fn file_op(&mut self, _op: FileOp) -> bool {
-        // Writes only inside /.orpheus/ (CLAUDE.md rule 5) until FS-3.
-        false
+    fn file_op(&mut self, op: FileOp) -> bool {
+        // Writes only inside /.orpheus/ (CLAUDE.md rule 5) until FS-3;
+        // the one exception is deleting a recording in /Recordings (UI-5b,
+        // checked again by the card task).
+        match op {
+            FileOp::Delete(f) => {
+                let dir = crate::rec::rec_dir();
+                dir != 0 && f.dir == dir && media::try_request(media::Req::Delete(f))
+            }
+        }
     }
 }
 
@@ -1206,6 +1285,48 @@ impl BluetoothService for Fw {
             BtRequest::Disconnect => Req::Disconnect,
             BtRequest::Forget(a) => Req::Forget(addr(a)),
         });
+    }
+}
+
+impl RecorderService for Fw {
+    fn recorder(&self) -> RecInfo {
+        // Only the Recorder app asks: the meters run while it does.
+        crate::rec::keepalive();
+        self.rec_info()
+    }
+    fn rec_request(&mut self, r: RecRequest) {
+        use crate::rec::Cmd;
+        let s = rec_settings(self);
+        let c = match r {
+            RecRequest::Arm => Cmd::Arm(s),
+            RecRequest::Disarm => Cmd::Disarm,
+            RecRequest::Start => {
+                // No playback while recording (05 §7.5).
+                if matches!(self.player.source, Source::Playing | Source::Paused) {
+                    PlayerService::command(self, PlayerCmd::Stop);
+                }
+                let fm = if self.radio.phase == RadioPhase::Playing { self.radio.khz } else { 0 };
+                Cmd::Start { s, fm_khz: fm, dev: None }
+            }
+            RecRequest::Pause => Cmd::Pause,
+            RecRequest::Resume => Cmd::Resume,
+            RecRequest::Stop => Cmd::Stop,
+            RecRequest::Mark => Cmd::Mark,
+            RecRequest::Gain(_) => Cmd::Gain(s.gain_db),
+        };
+        crate::rec::request(c);
+    }
+    fn rec_name(&self) -> &str {
+        self.rec_name.as_str()
+    }
+    fn rec_dir(&mut self) -> Option<DirId> {
+        let d = crate::rec::rec_dir();
+        (d != 0).then_some(DirId(d))
+    }
+    fn rec_has_line_in(&self) -> bool {
+        // No line input on the YM03 that anyone has found (U-AUD-4); the
+        // developer command can still try `rec start line`.
+        false
     }
 }
 

@@ -1676,6 +1676,7 @@ pub fn init_chain() {
     crate::drain::init();
     crate::sensor::init();
     crate::fm::init();
+    crate::rec::init();
 }
 
 static SERVER: ConstStaticCell<Server> = ConstStaticCell::new(Server::new());
@@ -2090,7 +2091,7 @@ async fn hand_over(vol: &mut Volume<'static, Card>, srv: &mut Server, scratch: &
 
 /// Something for the idle loop is waiting.
 pub(crate) fn work_waiting() -> bool {
-    !CMDS.is_empty() || !media::REQS.is_empty() || !media::PLAY.is_empty()
+    !CMDS.is_empty() || !media::REQS.is_empty() || !media::PLAY.is_empty() || !crate::rec::REQ.is_empty()
 }
 
 /// Background index building while the card task is idle (AU-12): steps
@@ -2439,11 +2440,12 @@ pub async fn audio() {
     let srv = SERVER.take();
     atj2157_hal::log::line(b"audio: mounted, loading state");
     load_state(&mut vol, arena, srv).await;
+    crate::rec::find_dir(&mut vol).await;
     atj2157_hal::log::line(b"audio: state loaded");
     loop {
         // A request left over from playback, else wait for one.
         let r = if let Some(p) = srv.pending_play.take() {
-            Either3::Third(p)
+            Either3::Third(Either::First(p))
         } else if let Some(r) = srv.pending.take() {
             Either3::Second(r)
         } else {
@@ -2470,7 +2472,13 @@ pub async fn audio() {
             if crate::library::wait_ms(srv) == Some(0) && !srv.wants_build() && !work_waiting() {
                 crate::library::slot(&mut vol, srv, arena).await;
             }
-            let next = select3(CMDS.receive(), media::REQS.receive(), media::PLAY.receive());
+            // Player requests and the recorder's (AU-13) share the third
+            // arm.
+            let next = select3(
+                CMDS.receive(),
+                media::REQS.receive(),
+                select(media::PLAY.receive(), crate::rec::REQ.receive()),
+            );
             match crate::library::wait_ms(srv) {
                 Some(ms) => match select(next, Timer::after_millis(ms.max(1))).await {
                     Either::First(r) => r,
@@ -2500,8 +2508,14 @@ pub async fn audio() {
                 }
                 continue;
             }
-            Either3::Third(p) => {
+            Either3::Third(Either::First(p)) => {
                 player_request(&mut vol, &mut ring, arena, srv, p).await;
+                continue;
+            }
+            Either3::Third(Either::Second(c)) => {
+                // Recording (AU-13): the arena is the recorder's until it
+                // is done.
+                crate::rec::run(&mut vol, arena, c).await;
                 continue;
             }
         };

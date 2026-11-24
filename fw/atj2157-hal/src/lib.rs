@@ -9,6 +9,7 @@
 // buffer that a DMA engine also writes.
 #![allow(clippy::deref_addrof)]
 
+pub mod adc;
 pub mod clock;
 mod cs;
 pub mod dac;

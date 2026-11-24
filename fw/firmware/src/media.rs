@@ -143,6 +143,10 @@ pub enum Req {
     Sensor,
     /// An alert started (`audio::ALERT`): wakes the idle loop to sound it.
     Alert,
+    /// Delete a recording (Recorder › Recordings…; `rec::delete` allows
+    /// only files in `/Recordings`). In this queue so that the listing
+    /// asked for after it already lacks the file.
+    Delete(FileRef),
 }
 
 /// A picture for a box of the frame buffer (`PictureService`). The UI
@@ -879,6 +883,10 @@ impl Server {
                 true
             }
             Req::Alert => true,
+            Req::Delete(f) => {
+                crate::rec::delete(vol, f).await;
+                true
+            }
             Req::Text { file, offset } => {
                 self.text(vol, file, offset, scratch).await;
                 true

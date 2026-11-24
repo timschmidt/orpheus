@@ -563,6 +563,7 @@ dependencies = [
  "orpheus-player",
  "orpheus-power",
  "orpheus-proto",
+ "orpheus-rec",
  "orpheus-settings",
  "orpheus-steps",
  "orpheus-ui",
@@ -716,6 +717,7 @@ version = "0.1.0"
 dependencies = [
  "orpheus-fm",
  "orpheus-power",
+ "orpheus-rec",
  "orpheus-steps",
  "orpheus-ui",
 ]
@@ -872,6 +874,10 @@ version = "0.1.0"
 
 [[package]]
 name = "orpheus-proto"
+version = "0.1.0"
+
+[[package]]
+name = "orpheus-rec"
 version = "0.1.0"
 
 [[package]]
