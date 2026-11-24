@@ -1859,6 +1859,54 @@ async fn save_store(vol: &mut Volume<'static, Card>, srv: &mut Server, scratch: 
     mark(0);
 }
 
+// ------------------------------------------------------------ authenticator
+
+/// The Authenticator's import file (OTP-2, `media::OtpJob`): read it into
+/// the bytes the UI lent, or overwrite it with zeros and delete it.
+pub(crate) async fn otp_file(vol: &mut Volume<'static, Card>, j: &media::OtpJob) {
+    if !media::otp_start(j) {
+        return;
+    }
+    let r = if j.delete { otp_delete(vol).await } else { otp_read(vol, j).await };
+    media::otp_done(j, r);
+}
+
+async fn otp_read(vol: &mut Volume<'static, Card>, j: &media::OtpJob) -> i32 {
+    let Ok(mut f) = vol.open(media::OTP_FILE, OpenMode::Read).await else { return media::OTP_NONE };
+    if f.size() > u64::from(j.cap) {
+        let _ = vol.close(f).await;
+        return media::OTP_TOO_LARGE;
+    }
+    // SAFETY: the UI lent `buf..buf + cap` (part of its frame buffer) for
+    // this job and neither draws nor reads it until `OTP_SLOT` is 0 again
+    // (`media::otp_done`); `otp_start` made this task the only user.
+    let dst = unsafe { core::slice::from_raw_parts_mut(j.buf as *mut u8, j.cap as usize) };
+    let n = vol.read_exact_or_eof(&mut f, dst).await;
+    let _ = vol.close(f).await;
+    match n {
+        Ok(n) => i32::try_from(n).unwrap_or(media::OTP_IO),
+        Err(_) => media::OTP_IO,
+    }
+}
+
+/// Overwrite the file with zeros, then delete it (the card's flash may
+/// keep old copies; the app says so).
+async fn otp_delete(vol: &mut Volume<'static, Card>) -> i32 {
+    let Ok(mut f) = vol.open(media::OTP_FILE, OpenMode::ReadWrite).await else { return media::OTP_NONE };
+    let zeros = [0u8; 64];
+    let mut left = f.size();
+    f.set_position(0);
+    let mut ok = true;
+    while left > 0 && ok {
+        let n = left.min(64) as usize;
+        ok = vol.write(&mut f, &zeros[..n]).await.is_ok();
+        left -= n as u64;
+    }
+    ok &= vol.close(f).await.is_ok() && vol.flush().await.is_ok();
+    ok &= vol.remove(media::OTP_FILE).await.is_ok() && vol.flush().await.is_ok();
+    if ok { 0 } else { media::OTP_IO }
+}
+
 // ------------------------------------------------------------ battery log
 
 /// Choose the battery log's file number if not done yet: one more than the

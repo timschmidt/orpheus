@@ -262,6 +262,9 @@ impl Target for Fw {
         c.text[..c.len].copy_from_slice(&data[..c.len]);
         crate::audio::CMDS.try_send(c).is_ok()
     }
+    fn provision(&mut self, uri: &[u8]) -> bool {
+        crate::vault::provision(uri)
+    }
     fn test_reply(&mut self, buf: &mut [u8]) -> usize {
         critical_section::with(|cs| {
             let r = crate::audio::REPLY.borrow(cs).borrow();
@@ -288,6 +291,9 @@ pub async fn supervisor() {
             t => {
                 Timer::after_millis(50).await;
                 log::line(b"usb: reboot requested");
+                // RAM survives a reboot into the ROM's USB mode: no
+                // authenticator key may be left in it (06 §5.2).
+                crate::vault::wipe_secrets();
                 wdt::reboot(if t == dc::REBOOT_ADFU { wdt::Target::Adfu } else { wdt::Target::Normal });
             }
         }

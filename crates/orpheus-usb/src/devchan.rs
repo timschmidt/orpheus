@@ -13,8 +13,8 @@
 use embassy_usb::Handler;
 use embassy_usb::control::{InResponse, OutResponse, Recipient, Request, RequestType};
 use orpheus_proto::devchan::{
-    self as dc, Info, REQ_FRAME, REQ_INFO, REQ_KEYS, REQ_LOG, REQ_PEEK, REQ_PUT, REQ_REBOOT, REQ_STATS,
-    REQ_TEST, REQ_TIME,
+    self as dc, Info, REQ_FRAME, REQ_INFO, REQ_KEYS, REQ_LOG, REQ_PEEK, REQ_PROVISION, REQ_PUT, REQ_REBOOT,
+    REQ_STATS, REQ_TEST, REQ_TIME,
 };
 
 /// What the firmware provides to the channel.
@@ -55,6 +55,13 @@ pub trait Target {
     /// TEST IN: the reply of the last command; bytes written.
     fn test_reply(&mut self, _buf: &mut [u8]) -> usize {
         0
+    }
+    /// PROVISION OUT: one `otpauth://` URI for the authenticator (06 §2.5,
+    /// §5.4). Accepted only while the vault is unlocked; the entry is added
+    /// after the user confirms it on the player. The target must wipe its
+    /// copy of the data once handled.
+    fn provision(&mut self, _uri: &[u8]) -> bool {
+        false
     }
 }
 
@@ -101,6 +108,13 @@ impl<T: Target> Handler for DevChannel<T> {
             }
             REQ_TEST => {
                 if self.target.test_command(data) {
+                    OutResponse::Accepted
+                } else {
+                    OutResponse::Rejected
+                }
+            }
+            REQ_PROVISION => {
+                if self.target.provision(data) {
                     OutResponse::Accepted
                 } else {
                     OutResponse::Rejected
@@ -186,6 +200,7 @@ mod tests {
     struct Fake {
         reboot: Option<u16>,
         keys: Vec<(u8, bool)>,
+        uri: Vec<u8>,
     }
 
     impl Target for Fake {
@@ -213,6 +228,10 @@ mod tests {
         }
         fn keys(&mut self, events: &[(u8, bool)]) {
             self.keys.extend_from_slice(events);
+        }
+        fn provision(&mut self, uri: &[u8]) -> bool {
+            self.uri = uri.to_vec();
+            uri.starts_with(b"otpauth://")
         }
         fn request_reboot(&mut self, target: u16) {
             self.reboot = Some(target);
@@ -282,5 +301,20 @@ mod tests {
             Some(InResponse::Accepted(b)) => assert_eq!(b, &[5, 0, 0, 0, 7, 0, 0, 0]),
             _ => panic!("stats"),
         }
+    }
+
+    #[test]
+    fn provision_reaches_the_target() {
+        let mut d = DevChannel::new(Fake::default());
+        let uri = b"otpauth://totp/A?secret=GEZDGNBV";
+        assert!(matches!(
+            d.control_out(req(false, REQ_PROVISION, 0, 0, uri.len() as u16), uri),
+            Some(OutResponse::Accepted)
+        ));
+        assert_eq!(d.target.uri, uri);
+        assert!(matches!(
+            d.control_out(req(false, REQ_PROVISION, 0, 0, 3), b"bad"),
+            Some(OutResponse::Rejected)
+        ));
     }
 }

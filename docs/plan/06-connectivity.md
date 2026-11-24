@@ -474,14 +474,32 @@ with an implausible date).
 
 ### 5.4 Provisioning and output
 
-* Import: `otpauth://` URIs, one per line, from `/otpauth.txt`; the file is
-  overwritten with zeros and deleted after a successful import (note in the UI
-  that flash cards may keep old copies). Or the PROVISION request of the
-  developer channel. Or manual entry with the Base32 keyboard.
+* Import: `otpauth://` URIs, one per line, from `/.orpheus/otp-import.txt`
+  (inside `/.orpheus/`, CLAUDE.md rule 5; OTP-2); the file is overwritten
+  with zeros and deleted after an import that took every line (a file with
+  lines that were not understood is kept); the UI notes that flash cards may
+  keep old copies. Or the PROVISION request of the developer channel
+  (`cargo xtask dev otp-add 'otpauth://…'`; only while the vault is
+  unlocked, added after an on-screen confirmation). Or manual entry with the
+  Base32 keyboard (not built yet).
 * Output: on screen; typed over the USB keyboard interface (boot-protocol
   keyboard, so it also works in firmware set-up screens and full-disk-
   encryption prompts), digits as top-row or keypad usages (setting, for
-  layouts where the top row needs Shift), optional Enter.
+  layouts where the top row needs Shift), optional Enter. Built in USB-5 /
+  OTP-2 (2026-11-24): the keyboard personality (developer channel + HID boot
+  keyboard, 1 interrupt IN endpoint, 8-byte reports, bInterval 4), the
+  computer's layout as a setting (US, UK, German, French; characters behind
+  dead keys are refused before anything is typed), a press and an
+  all-released report per character 12 ms apart, all keys released on
+  suspend, reset and personality change. `orpheus-hid` holds descriptors,
+  reports, layouts and the typist for the Bluetooth transport too (BT-4).
+* RAM (OTP-2): while unlocked the firmware keeps only the 32-byte key; the
+  tag is checked at unlock by streaming the sector through Poly1305, records
+  are decrypted one at a time on demand, and changes borrow 3.8 KiB of the
+  frame buffer for the moment of the write (wiped after, screen redrawn).
+  The key derivation runs to the end in one UI step (≈ 0.3 s at 144 MHz).
+  Device id for the KDF: a fixed label until the eFuse words can be read
+  without PMU writes (§5.2; changing it later needs a new vault).
 
 ### 5.5 Later, optional: FIDO U2F / CTAP2
 

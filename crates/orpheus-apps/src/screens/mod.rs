@@ -1,6 +1,7 @@
 //! The screens and their dispatch enum (static, no heap: only the top
 //! screen holds state; covered screens are rebuilt from resume records).
 
+mod auth;
 mod bluetooth;
 mod clocks;
 mod edit;
@@ -16,6 +17,7 @@ mod steps;
 mod system;
 mod text;
 
+pub use auth::AuthScreen;
 pub use bluetooth::{BluetoothScreen, BtConnectScreen, BtView, bt_kind_icon, connect_arg, phase_label};
 pub use clocks::{
     AlarmDaysScreen, AlertScreen, PICK_ALARM, PICK_TIMER, ToolsScreen, push_days, push_hm, push_hms,
@@ -105,6 +107,8 @@ pub const STOPWATCH: ScreenId = ScreenId(35);
 pub const ALARM_DAYS: ScreenId = ScreenId(36);
 /// The timer or an alarm ringing (pushed over any screen).
 pub const ALERT: ScreenId = ScreenId(37);
+/// The Authenticator (05 §7.9, OTP-2).
+pub const AUTHENTICATOR: ScreenId = ScreenId(38);
 
 /// One variant per screen. Only the top screen exists, so the enum's size
 /// (its largest variant, the list screen) is the UI's screen RAM.
@@ -133,6 +137,7 @@ pub enum AppScreen {
     Tools(ToolsScreen),
     AlarmDays(AlarmDaysScreen),
     Alert(AlertScreen),
+    Auth(AuthScreen),
 }
 
 macro_rules! each {
@@ -161,6 +166,7 @@ macro_rules! each {
             AppScreen::Tools($s) => $e,
             AppScreen::AlarmDays($s) => $e,
             AppScreen::Alert($s) => $e,
+            AppScreen::Auth($s) => $e,
         }
     };
 }
@@ -234,6 +240,7 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             STOPWATCH => AppScreen::Tools(ToolsScreen::default()),
             ALARM_DAYS => AppScreen::AlarmDays(AlarmDaysScreen::default()),
             ALERT => AppScreen::Alert(AlertScreen::default()),
+            AUTHENTICATOR => AppScreen::Auth(AuthScreen::default()),
             _ => AppScreen::Home(HomeScreen::default()),
         }
     }
@@ -267,6 +274,7 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             AppScreen::Tools(_) => STOPWATCH,
             AppScreen::AlarmDays(_) => ALARM_DAYS,
             AppScreen::Alert(_) => ALERT,
+            AppScreen::Auth(_) => AUTHENTICATOR,
         }
     }
 
@@ -299,6 +307,7 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             AppScreen::Tools(_) => "Stopwatch",
             AppScreen::AlarmDays(_) => "AlarmDays",
             AppScreen::Alert(_) => "Alert",
+            AppScreen::Auth(_) => "Authenticator",
         }
     }
 

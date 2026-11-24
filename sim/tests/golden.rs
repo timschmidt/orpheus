@@ -162,6 +162,66 @@ fn media_cases(add: &mut dyn FnMut(String, String)) {
     radio_cases(add);
     steps_cases(add);
     tools_cases(add);
+    auth_cases(add);
+}
+
+/// OTP-2 / USB-5: the Authenticator over the vault service and the fake
+/// computer on the USB keyboard (`sim/src/auth.rs`; demo vault PIN 1234:
+/// GitHub, Proton, Bank (HOTP, 8 digits), Mastodon, Госуслуги (60 s), AWS
+/// (8 digits), 日本). Home grid: the ninth app. Pad keys: OK presses the
+/// focused key (the cursor starts on 1), hold OK finishes. List menu on
+/// the first row: Import, Move down, Delete…, Time check, Change PIN,
+/// Lock, Wipe vault…; on a big code: Type the code, (Next code,) Delete…,
+/// Time check, Lock.
+fn auth_cases(add: &mut dyn FnMut(String, String)) {
+    let app = "goto:Authenticator wait:100 expect-screen:Authenticator";
+    let open = format!("set:vault=unlocked {app}");
+    let locked = format!("set:vault=locked {app}");
+    let journeys: &[(&str, String)] = &[
+        ("warning", "next*8 ok wait:100 expect-screen:Authenticator".into()),
+        ("setup", format!("{app} ok")),
+        ("setup_digits", format!("{app} ok ok next ok next ok down ok")),
+        ("confirm", format!("{app} ok ok next ok next ok down ok hold:ok wait:50")),
+        ("mismatch", format!("{app} ok ok*4 hold:ok ok*3 next ok hold:ok wait:50")),
+        ("locked", locked.clone()),
+        ("unlocking", format!("{locked} ok next ok next ok down ok press:ok wait:510")),
+        ("wrong", format!("{locked} ok*4 hold:ok wait:200")),
+        ("backoff", format!("set:vault=locked set:wrongpin=4 {app} ok ok")),
+        ("list", open.clone()),
+        ("list_end", format!("{open} down*6")),
+        ("code", format!("{open} ok wait:50")),
+        ("code_60s", format!("{open} down*4 ok wait:50")),
+        ("code_hotp", format!("{open} down*2 ok wait:50")),
+        ("code_hotp_next", format!("{open} down*2 ok wait:50 menu down ok wait:100")),
+        ("menu", format!("{open} menu")),
+        ("code_menu", format!("{open} ok wait:50 menu")),
+        ("typed", format!("set:usb=host {open} ok wait:50 ok wait:100")),
+        ("no_computer", format!("{open} ok wait:50 ok wait:100")),
+        ("delete", format!("{open} menu down*2 ok")),
+        ("time_check", format!("{open} menu down*3 ok")),
+        ("no_clock", format!("set:clockvalid=0 {open}")),
+        ("no_clock_code", format!("set:clockvalid=0 {open} ok wait:50")),
+        ("empty", format!("set:vault=empty {app}")),
+        ("imported", format!("set:vault=empty set:otpfile=demo {app} menu ok wait:100")),
+        ("import_kept", format!("set:vault=empty set:otpfile=bad {app} menu ok wait:100")),
+        ("no_file", format!("set:vault=empty {app} menu ok wait:100")),
+        ("provision", format!("{open} set:provision=demo wait:50")),
+        ("change_pin", format!("{open} menu down*4 ok")),
+        ("wipe", format!("{open} menu down*6 ok")),
+        ("damaged", format!("set:vault=damaged {app}")),
+    ];
+    for t in ["dark", "light"] {
+        for l in ["latin", "cyrillic", "cjk"] {
+            for (name, script) in journeys {
+                add(format!("auth_{name}_{t}_{l}"), format!("@apps theme:{t} lang:{l} {script}"));
+            }
+        }
+    }
+    add("auth_list_amber".into(), format!("@apps theme:amber {open}"));
+    add("auth_code_amber".into(), format!("@apps theme:amber {open} ok wait:50"));
+    add("auth_locked_amber".into(), format!("@apps theme:amber {locked}"));
+    // Settings › USB with the keyboard rows (group 9).
+    add("auth_usb_settings_dark_latin".into(), "@apps prev ok down*8 ok down*5".into());
 }
 
 /// UI-5c: Steps over the fake accelerometer (`sim/src/steps.rs`). Home

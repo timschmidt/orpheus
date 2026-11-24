@@ -70,7 +70,7 @@ pub const AUDIO_EXTS: &[&str] = &[
 pub fn kind_of(name: &str, is_dir: bool) -> EntryKind {
     if is_dir {
         EntryKind::Dir
-    } else if name.eq_ignore_ascii_case("otpauth.txt") {
+    } else if name.eq_ignore_ascii_case("otpauth.txt") || name.eq_ignore_ascii_case("otp-import.txt") {
         EntryKind::OtpImport
     } else if ext_is(name, AUDIO_EXTS) {
         EntryKind::Audio

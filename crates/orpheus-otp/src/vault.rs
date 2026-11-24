@@ -45,6 +45,16 @@
 //! given key, so a nonce never repeats even with a poor entropy source; a
 //! new PIN means a new salt and a new key.
 //!
+//! # Two ways in
+//!
+//! [`Unlocked`] (OTP-1) holds the whole plaintext in its own 3.9 KiB. The
+//! firmware (OTP-2) keeps only the [`Key`]: the tag is checked at unlock by
+//! streaming the sector through Poly1305 ([`Vault::finish_unlock_key`]),
+//! records are decrypted one at a time with the stream cipher seeked to
+//! their offset ([`Vault::read_entry`]), and changes go through a
+//! [`Payload`] in a buffer the caller lends for the moment of the write.
+//! Both produce and accept the same sector.
+//!
 //! # Power cuts
 //!
 //! A write is erase, header, payload, commit word. A cut before the commit
@@ -52,9 +62,13 @@
 //! be provisioned again. Writes happen only when entries change, an HOTP
 //! counter advances, the PIN changes, or (rarely) for bitmap compaction.
 
+use chacha20::XChaCha20;
+use chacha20::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
 use chacha20poly1305::aead::AeadInOut;
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use hmac::{Hmac, KeyInit, Mac};
+use poly1305::Poly1305;
+use poly1305::universal_hash::UniversalHash;
 use sha2::Sha256;
 use zeroize::Zeroize;
 
@@ -172,6 +186,12 @@ impl UnlockJob {
     /// Run up to `n` iterations; `true` when the key is ready.
     pub fn step(&mut self, n: u32) -> bool {
         self.kdf.step(n)
+    }
+
+    /// Iterations still to run.
+    #[must_use]
+    pub fn remaining(&self) -> u32 {
+        self.kdf.remaining()
     }
 }
 
@@ -390,10 +410,15 @@ impl<S: Storage> Vault<S> {
         iterations: u32,
         rng: &mut impl Entropy,
     ) -> Result<(), VaultError<S::Error>> {
-        let iterations = iterations.clamp(kdf::MIN_ITERATIONS, kdf::MAX_ITERATIONS);
-        let mut salt = [0u8; SALT_LEN];
-        rng.fill(&mut salt);
-        u.key = kdf::derive(secret, &salt, device_id, iterations);
+        let job = Self::begin_rekey(secret, kind, device_id, iterations, rng);
+        let RekeyJob { kdf, salt, kind, iterations } = job;
+        u.key = kdf.finish();
+        self.new_header(&salt, kind, iterations);
+        self.save(u, rng).await
+    }
+
+    /// A fresh header for a new salt (generation 0, nothing committed).
+    fn new_header(&mut self, salt: &[u8; SALT_LEN], kind: SecretKind, iterations: u32) {
         let mut h = [0xFFu8; HDR];
         h[..4].copy_from_slice(&MAGIC);
         h[O_VERSION] = VERSION;
@@ -405,9 +430,8 @@ impl<S: Storage> Vault<S> {
         h[O_KIND + 1] = 0;
         h[O_ITER..O_ITER + 4].copy_from_slice(&iterations.to_le_bytes());
         h[O_GEN..O_GEN + 4].copy_from_slice(&0u32.to_le_bytes());
-        h[O_SALT..O_SALT + SALT_LEN].copy_from_slice(&salt);
+        h[O_SALT..O_SALT + SALT_LEN].copy_from_slice(salt);
         self.hdr = h;
-        self.save(u, rng).await
     }
 
     /// Encrypt and write `u` (fresh nonce, generation + 1).
@@ -416,31 +440,43 @@ impl<S: Storage> Vault<S> {
         u: &mut Unlocked,
         rng: &mut impl Entropy,
     ) -> Result<(), VaultError<S::Error>> {
+        let len = u.len;
+        self.seal(&u.key, &mut u.buf[..len], rng).await
+    }
+
+    /// Encrypt `plain` in place, write it, decrypt it back. The nonce is
+    /// derived from the key, the next generation and fresh entropy.
+    async fn seal(
+        &mut self,
+        key: &[u8; 32],
+        plain: &mut [u8],
+        rng: &mut impl Entropy,
+    ) -> Result<(), VaultError<S::Error>> {
         let generation = le32(&self.hdr, O_GEN).wrapping_add(1);
         let mut random = [0u8; 32];
         rng.fill(&mut random);
-        let mut m = <Hmac<Sha256> as KeyInit>::new_from_slice(&u.key).map_err(|_| VaultError::Corrupt)?;
+        let mut m = <Hmac<Sha256> as KeyInit>::new_from_slice(key).map_err(|_| VaultError::Corrupt)?;
         m.update(b"orpheus-otp/nonce");
         m.update(&generation.to_le_bytes());
         m.update(&random);
         let n = m.finalize().into_bytes();
         let mut h = self.hdr;
         h[O_GEN..O_GEN + 4].copy_from_slice(&generation.to_le_bytes());
-        h[O_LEN..O_LEN + 2].copy_from_slice(&(u.len as u16).to_le_bytes());
+        h[O_LEN..O_LEN + 2].copy_from_slice(&(plain.len() as u16).to_le_bytes());
         h[O_LEN + 2] = 0;
         h[O_LEN + 3] = 0;
         h[O_NONCE..O_NONCE + 24].copy_from_slice(&n[..24]);
         let nonce = XNonce::try_from(&h[O_NONCE..O_NONCE + 24]).map_err(|_| VaultError::Corrupt)?;
-        let c = cipher(&u.key);
+        let c = cipher(key);
         let tag = c
-            .encrypt_inout_detached(&nonce, &h[..AAD_END], (&mut u.buf[..u.len]).into())
+            .encrypt_inout_detached(&nonce, &h[..AAD_END], (&mut *plain).into())
             .map_err(|_| VaultError::Full)?;
         h[O_TAG..O_TAG + 16].copy_from_slice(&tag);
         h[O_COMMIT..O_COMMIT + 4].fill(0xFF);
-        let r = self.write_sector(&h, &u.buf[..u.len]).await;
+        let r = self.write_sector(&h, &*plain).await;
         // Back to plaintext whatever happened (the tag is ours, so this
         // cannot fail).
-        let _ = c.decrypt_inout_detached(&nonce, &h[..AAD_END], (&mut u.buf[..u.len]).into(), &tag);
+        let _ = c.decrypt_inout_detached(&nonce, &h[..AAD_END], (&mut *plain).into(), &tag);
         r?;
         self.hdr = h;
         self.hdr[O_COMMIT..O_COMMIT + 4].fill(0);
@@ -525,100 +561,548 @@ impl Unlocked {
         self.len
     }
 
-    /// Byte range of record `i` (including its length byte).
-    fn record(&self, i: usize) -> Option<(usize, usize)> {
-        if i >= self.len() {
-            return None;
-        }
-        let mut o = 1;
-        for _ in 0..i {
-            o += 1 + usize::from(*self.buf.get(o)?);
-        }
-        let n = 1 + usize::from(*self.buf.get(o)?);
-        (o + n <= self.len).then_some((o, o + n))
-    }
-
     /// A copy of entry `i`.
     #[must_use]
     pub fn entry(&self, i: usize) -> Option<Entry> {
-        let (s, e) = self.record(i)?;
-        let r = &self.buf[s + 1..e];
-        if r.len() < REC_FIXED {
-            return None;
-        }
-        let alg = Algorithm::from_id(r[1])?;
-        let period = u32::from(u16::from_le_bytes([r[3], r[4]]));
-        let counter = u64::from_le_bytes(r[5..13].try_into().ok()?);
-        let kind = match r[0] {
-            0 => Kind::Totp { period },
-            1 => Kind::Hotp { counter },
-            _ => return None,
-        };
-        let (sl, il, al) = (usize::from(r[13]), usize::from(r[14]), usize::from(r[15]));
-        let body = r.get(16..16 + sl + il + al)?;
-        let issuer = core::str::from_utf8(&body[sl..sl + il]).ok()?;
-        let account = core::str::from_utf8(&body[sl + il..]).ok()?;
-        Entry::new(kind, alg, r[2], &body[..sl], issuer, account).ok()
+        rec_entry(&self.buf, self.len, i)
     }
 
     /// Append an entry (in RAM; [`Vault::save`] writes it).
     pub fn push<E>(&mut self, e: &Entry) -> Result<(), VaultError<E>> {
-        if self.len() >= MAX_ENTRIES {
-            return Err(VaultError::TooManyEntries);
-        }
-        let (secret, issuer, account) =
-            (e.secret(), e.issuer.as_str().as_bytes(), e.account.as_str().as_bytes());
-        debug_assert!(
-            secret.len() <= MAX_SECRET && issuer.len() <= MAX_ISSUER && account.len() <= MAX_ACCOUNT
-        );
-        let body = 1 + REC_FIXED + secret.len() + issuer.len() + account.len();
-        let o = self.len;
-        if o + body > PAYLOAD_MAX {
-            return Err(VaultError::Full);
-        }
-        let (kind, period, counter) = match e.kind {
-            Kind::Totp { period } => (0u8, period as u16, 0u64),
-            Kind::Hotp { counter } => (1u8, 0u16, counter),
-        };
-        let b = &mut self.buf[o..o + body];
-        b[0] = (body - 1) as u8;
-        b[1] = kind;
-        b[2] = e.alg.id();
-        b[3] = e.digits;
-        b[4..6].copy_from_slice(&period.to_le_bytes());
-        b[6..14].copy_from_slice(&counter.to_le_bytes());
-        b[14] = secret.len() as u8;
-        b[15] = issuer.len() as u8;
-        b[16] = account.len() as u8;
-        let mut p = REC_FIXED + 1;
-        for s in [secret, issuer, account] {
-            b[p..p + s.len()].copy_from_slice(s);
-            p += s.len();
-        }
-        self.len += body;
-        self.buf[0] += 1;
-        Ok(())
+        rec_push(&mut self.buf, &mut self.len, e)
     }
 
     /// Remove entry `i` (in RAM).
     pub fn remove<E>(&mut self, i: usize) -> Result<(), VaultError<E>> {
-        let (s, e) = self.record(i).ok_or(VaultError::BadIndex)?;
-        self.buf.copy_within(e..self.len, s);
-        let n = e - s;
-        self.len -= n;
-        self.buf[self.len..self.len + n].zeroize();
-        self.buf[0] -= 1;
-        Ok(())
+        rec_remove(&mut self.buf, &mut self.len, i)
     }
 
     /// Set the HOTP counter of entry `i` (in RAM).
     pub fn set_counter<E>(&mut self, i: usize, counter: u64) -> Result<(), VaultError<E>> {
-        let (s, _) = self.record(i).ok_or(VaultError::BadIndex)?;
-        if self.buf[s + 1] != 1 {
+        rec_set_counter(&mut self.buf, self.len, i, counter)
+    }
+}
+
+// ------------------------------------------------------------ records
+//
+// The payload's record list, shared by `Unlocked` (OTP-1, the whole
+// payload in its own buffer) and `Payload` (the firmware's: the caller's
+// buffer, OTP-2).
+
+/// Byte range of record `i` (including its length byte).
+fn rec_range(buf: &[u8], len: usize, i: usize) -> Option<(usize, usize)> {
+    if i >= usize::from(*buf.first()?) {
+        return None;
+    }
+    let mut o = 1;
+    for _ in 0..i {
+        o += 1 + usize::from(*buf.get(o)?);
+    }
+    let n = 1 + usize::from(*buf.get(o)?);
+    (o + n <= len).then_some((o, o + n))
+}
+
+/// Decode a record body (after its length byte).
+fn rec_decode(r: &[u8]) -> Option<Entry> {
+    if r.len() < REC_FIXED {
+        return None;
+    }
+    let alg = Algorithm::from_id(r[1])?;
+    let period = u32::from(u16::from_le_bytes([r[3], r[4]]));
+    let counter = u64::from_le_bytes(r[5..13].try_into().ok()?);
+    let kind = match r[0] {
+        0 => Kind::Totp { period },
+        1 => Kind::Hotp { counter },
+        _ => return None,
+    };
+    let (sl, il, al) = (usize::from(r[13]), usize::from(r[14]), usize::from(r[15]));
+    let body = r.get(16..16 + sl + il + al)?;
+    let issuer = core::str::from_utf8(&body[sl..sl + il]).ok()?;
+    let account = core::str::from_utf8(&body[sl + il..]).ok()?;
+    Entry::new(kind, alg, r[2], &body[..sl], issuer, account).ok()
+}
+
+fn rec_entry(buf: &[u8], len: usize, i: usize) -> Option<Entry> {
+    let (s, e) = rec_range(buf, len, i)?;
+    rec_decode(&buf[s + 1..e])
+}
+
+fn rec_push<E>(buf: &mut [u8], len: &mut usize, e: &Entry) -> Result<(), VaultError<E>> {
+    if usize::from(buf[0]) >= MAX_ENTRIES {
+        return Err(VaultError::TooManyEntries);
+    }
+    let (secret, issuer, account) = (e.secret(), e.issuer.as_str().as_bytes(), e.account.as_str().as_bytes());
+    debug_assert!(secret.len() <= MAX_SECRET && issuer.len() <= MAX_ISSUER && account.len() <= MAX_ACCOUNT);
+    let body = 1 + REC_FIXED + secret.len() + issuer.len() + account.len();
+    let o = *len;
+    if o + body > buf.len().min(PAYLOAD_MAX) {
+        return Err(VaultError::Full);
+    }
+    let (kind, period, counter) = match e.kind {
+        Kind::Totp { period } => (0u8, period as u16, 0u64),
+        Kind::Hotp { counter } => (1u8, 0u16, counter),
+    };
+    let b = &mut buf[o..o + body];
+    b[0] = (body - 1) as u8;
+    b[1] = kind;
+    b[2] = e.alg.id();
+    b[3] = e.digits;
+    b[4..6].copy_from_slice(&period.to_le_bytes());
+    b[6..14].copy_from_slice(&counter.to_le_bytes());
+    b[14] = secret.len() as u8;
+    b[15] = issuer.len() as u8;
+    b[16] = account.len() as u8;
+    let mut p = REC_FIXED + 1;
+    for s in [secret, issuer, account] {
+        b[p..p + s.len()].copy_from_slice(s);
+        p += s.len();
+    }
+    *len += body;
+    buf[0] += 1;
+    Ok(())
+}
+
+fn rec_remove<E>(buf: &mut [u8], len: &mut usize, i: usize) -> Result<(), VaultError<E>> {
+    let (s, e) = rec_range(buf, *len, i).ok_or(VaultError::BadIndex)?;
+    buf.copy_within(e..*len, s);
+    let n = e - s;
+    *len -= n;
+    buf[*len..*len + n].zeroize();
+    buf[0] -= 1;
+    Ok(())
+}
+
+fn rec_set_counter<E>(buf: &mut [u8], len: usize, i: usize, counter: u64) -> Result<(), VaultError<E>> {
+    let (s, _) = rec_range(buf, len, i).ok_or(VaultError::BadIndex)?;
+    if buf[s + 1] != 1 {
+        return Err(VaultError::BadIndex);
+    }
+    buf[s + 6..s + 14].copy_from_slice(&counter.to_le_bytes());
+    Ok(())
+}
+
+/// Exchange records `i` and `i + 1` (Move up/down in the app).
+fn rec_swap_next<E>(buf: &mut [u8], len: usize, i: usize) -> Result<(), VaultError<E>> {
+    let (a, m) = rec_range(buf, len, i).ok_or(VaultError::BadIndex)?;
+    let (_, b) = rec_range(buf, len, i + 1).ok_or(VaultError::BadIndex)?;
+    // Rotate [a, b) left by the first record's length.
+    buf[a..b].rotate_left(m - a);
+    Ok(())
+}
+
+// ------------------------------------------------- key-only access (OTP-2)
+//
+// The firmware cannot spare the 3.9 KiB of an `Unlocked` while the app is
+// open (06 §5.2, RAM budget of OTP-2). It keeps only the [`Key`], checks
+// the tag at unlock by streaming the sector through Poly1305, and decrypts
+// single records on demand with the stream cipher positioned at their
+// offset. Changes decrypt the whole payload into a buffer the caller lends
+// for the duration ([`Payload`], wiped when dropped). The sector format is
+// the same; this is only another way to read and write it.
+
+/// Size of one record, the largest there can be.
+pub const RECORD_MAX: usize = 1 + REC_FIXED + MAX_SECRET + MAX_ISSUER + MAX_ACCOUNT;
+
+/// The vault key. Wiped on drop: drop it on lock, screen-off and before a
+/// reboot into ADFU.
+pub struct Key([u8; 32]);
+
+impl Drop for Key {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+/// A started create or change of PIN: a new salt, the derivation in steps
+/// ([`RekeyJob::step`]) so the caller can yield.
+pub struct RekeyJob {
+    kdf: Pbkdf2,
+    salt: [u8; SALT_LEN],
+    kind: SecretKind,
+    iterations: u32,
+}
+
+impl RekeyJob {
+    /// Run up to `n` iterations; `true` when the key is ready.
+    pub fn step(&mut self, n: u32) -> bool {
+        self.kdf.step(n)
+    }
+
+    /// Iterations still to run, of [`RekeyJob::iterations`].
+    #[must_use]
+    pub fn remaining(&self) -> u32 {
+        self.kdf.remaining()
+    }
+
+    #[must_use]
+    pub fn iterations(&self) -> u32 {
+        self.iterations
+    }
+}
+
+/// The decrypted payload in a buffer the caller lent; the buffer is wiped
+/// when this is dropped.
+pub struct Payload<'b> {
+    buf: &'b mut [u8],
+    len: usize,
+}
+
+impl Drop for Payload<'_> {
+    fn drop(&mut self) {
+        self.buf.zeroize();
+    }
+}
+
+impl<'b> Payload<'b> {
+    /// An empty payload in `buf` (at least one byte; at most
+    /// [`PAYLOAD_MAX`] of it are used).
+    pub fn empty<E>(buf: &'b mut [u8]) -> Result<Self, VaultError<E>> {
+        let first = buf.first_mut().ok_or(VaultError::Full)?;
+        *first = 0;
+        Ok(Payload { buf, len: 1 })
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        usize::from(self.buf[0])
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Payload bytes in use.
+    #[must_use]
+    pub fn used(&self) -> usize {
+        self.len
+    }
+
+    #[must_use]
+    pub fn entry(&self, i: usize) -> Option<Entry> {
+        rec_entry(self.buf, self.len, i)
+    }
+
+    pub fn push<E>(&mut self, e: &Entry) -> Result<(), VaultError<E>> {
+        rec_push(self.buf, &mut self.len, e)
+    }
+
+    pub fn remove<E>(&mut self, i: usize) -> Result<(), VaultError<E>> {
+        rec_remove(self.buf, &mut self.len, i)
+    }
+
+    pub fn set_counter<E>(&mut self, i: usize, counter: u64) -> Result<(), VaultError<E>> {
+        rec_set_counter(self.buf, self.len, i, counter)
+    }
+
+    /// Exchange entries `i` and `i + 1`.
+    pub fn swap_next<E>(&mut self, i: usize) -> Result<(), VaultError<E>> {
+        rec_swap_next(self.buf, self.len, i)
+    }
+
+    /// An entry with the same secret, issuer and account is already there
+    /// (imports skip it).
+    #[must_use]
+    pub fn contains(&self, e: &Entry) -> bool {
+        (0..self.len())
+            .filter_map(|i| self.entry(i))
+            .any(|x| x.secret() == e.secret() && x.issuer == e.issuer && x.account == e.account)
+    }
+}
+
+fn stream(key: &[u8; 32], nonce: &[u8]) -> XChaCha20 {
+    let mut n = [0u8; 24];
+    n.copy_from_slice(&nonce[..24]);
+    <XChaCha20 as KeyIvInit>::new(&(*key).into(), &n.into())
+}
+
+impl<S: Storage> Vault<S> {
+    /// Start a create or a change of PIN: draws a new salt.
+    pub fn begin_rekey(
+        secret: &[u8],
+        kind: SecretKind,
+        device_id: &[u8],
+        iterations: u32,
+        rng: &mut impl Entropy,
+    ) -> RekeyJob {
+        let iterations = iterations.clamp(kdf::MIN_ITERATIONS, kdf::MAX_ITERATIONS);
+        let mut salt = [0u8; SALT_LEN];
+        rng.fill(&mut salt);
+        RekeyJob { kdf: Pbkdf2::new(secret, &salt, device_id, iterations), salt, kind, iterations }
+    }
+
+    /// Create an empty vault (erasing whatever was there) with a finished
+    /// [`RekeyJob`]; returns its key.
+    pub async fn finish_create(
+        &mut self,
+        job: RekeyJob,
+        rng: &mut impl Entropy,
+    ) -> Result<Key, VaultError<S::Error>> {
+        let RekeyJob { kdf, salt, kind, iterations } = job;
+        let key = Key(kdf.finish());
+        self.new_header(&salt, kind, iterations);
+        let mut empty = [0u8; 1];
+        self.seal(&key.0, &mut empty, rng).await?;
+        Ok(key)
+    }
+
+    /// Change the PIN: re-encrypt `p` (the payload opened with the old
+    /// key) under a new salt and key; returns the new key.
+    pub async fn finish_rekey(
+        &mut self,
+        job: RekeyJob,
+        p: &mut Payload<'_>,
+        rng: &mut impl Entropy,
+    ) -> Result<Key, VaultError<S::Error>> {
+        let RekeyJob { kdf, salt, kind, iterations } = job;
+        let key = Key(kdf.finish());
+        let old = self.hdr;
+        self.new_header(&salt, kind, iterations);
+        let r = self.seal(&key.0, &mut p.buf[..p.len], rng).await;
+        if r.is_err() {
+            self.hdr = old;
+        }
+        r.map(|()| key)
+    }
+
+    /// [`finish_unlock`](Self::finish_unlock) without the plaintext: the
+    /// tag is checked by streaming the ciphertext through `chunk` (any
+    /// size of 16 bytes or more). A bitmap that needs compacting is left
+    /// for [`compact_with`](Self::compact_with) ([`needs_compaction`](Self::needs_compaction)).
+    pub async fn finish_unlock_key(
+        &mut self,
+        job: UnlockJob,
+        now_ms: u64,
+        chunk: &mut [u8],
+    ) -> Result<Key, VaultError<S::Error>> {
+        let UnlockJob { kdf, attempt } = job;
+        let key = Key(kdf.finish());
+        if !self.verify_stream(&key, chunk).await? {
+            self.not_before_ms = now_ms + u64::from(backoff::delay_s(self.failures)) * 1000;
+            return Err(VaultError::WrongKey);
+        }
+        if self.count(&key).await? > MAX_ENTRIES {
+            return Err(VaultError::Corrupt);
+        }
+        if attempt < BITS {
+            self.clear_bit(O_SUCCESS, attempt).await?;
+        }
+        self.failures = 0;
+        self.not_before_ms = 0;
+        Ok(key)
+    }
+
+    /// Three quarters of the attempt bitmap are used: compact at the next
+    /// chance ([`compact_with`](Self::compact_with)).
+    #[must_use]
+    pub fn needs_compaction(&self) -> bool {
+        self.valid && self.attempts >= COMPACT_AT
+    }
+
+    /// Rewrite header and ciphertext with fresh bitmaps, through `buf`
+    /// (at least the payload length; wiped after).
+    pub async fn compact_with(&mut self, buf: &mut [u8]) -> Result<(), VaultError<S::Error>> {
+        let len = self.payload_len();
+        let ct = buf.get_mut(..len).ok_or(VaultError::Full)?;
+        self.storage.read(O_PAYLOAD as u32, ct).await.map_err(VaultError::Storage)?;
+        let h = self.hdr;
+        let r = self.write_sector(&h, ct).await;
+        ct.zeroize();
+        r?;
+        self.attempts = 0;
+        Ok(())
+    }
+
+    fn payload_len(&self) -> usize {
+        usize::from(u16::from_le_bytes([self.hdr[O_LEN], self.hdr[O_LEN + 1]])).min(PAYLOAD_MAX)
+    }
+
+    /// Check the tag over header and ciphertext without decrypting.
+    async fn verify_stream(&mut self, key: &Key, chunk: &mut [u8]) -> Result<bool, VaultError<S::Error>> {
+        let step = chunk.len() / 16 * 16;
+        if step == 0 {
+            return Err(VaultError::Full);
+        }
+        let len = self.payload_len();
+        let mut c = stream(&key.0, &self.hdr[O_NONCE..O_NONCE + 24]);
+        let mut mac_key = [0u8; 32];
+        c.try_apply_keystream(&mut mac_key).map_err(|_| VaultError::Corrupt)?;
+        let mut mac = <Poly1305 as poly1305::universal_hash::KeyInit>::new(&mac_key.into());
+        mac_key.zeroize();
+        mac.update_padded(&self.hdr[..AAD_END]);
+        let mut off = 0;
+        while off < len {
+            let n = step.min(len - off);
+            self.storage
+                .read((O_PAYLOAD + off) as u32, &mut chunk[..n])
+                .await
+                .map_err(VaultError::Storage)?;
+            mac.update_padded(&chunk[..n]);
+            off += n;
+        }
+        let mut lens = [0u8; 16];
+        lens[..8].copy_from_slice(&(AAD_END as u64).to_le_bytes());
+        lens[8..].copy_from_slice(&(len as u64).to_le_bytes());
+        mac.update_padded(&lens);
+        let mut tag = [0u8; 16];
+        tag.copy_from_slice(&self.hdr[O_TAG..O_TAG + 16]);
+        Ok(mac.verify(&tag.into()).is_ok())
+    }
+
+    /// Decrypt payload bytes `off..off + out.len()` from the sector.
+    async fn read_plain(
+        &mut self,
+        key: &Key,
+        off: usize,
+        out: &mut [u8],
+    ) -> Result<(), VaultError<S::Error>> {
+        if off + out.len() > self.payload_len() {
+            return Err(VaultError::Corrupt);
+        }
+        self.storage.read((O_PAYLOAD + off) as u32, out).await.map_err(VaultError::Storage)?;
+        let mut c = stream(&key.0, &self.hdr[O_NONCE..O_NONCE + 24]);
+        c.try_seek(64 + off as u64).map_err(|_| VaultError::Corrupt)?;
+        c.try_apply_keystream(out).map_err(|_| VaultError::Corrupt)?;
+        Ok(())
+    }
+
+    /// Number of entries (unlocked with `key`).
+    pub async fn count(&mut self, key: &Key) -> Result<usize, VaultError<S::Error>> {
+        let mut b = [0u8; 1];
+        self.read_plain(key, 0, &mut b).await?;
+        Ok(usize::from(b[0]))
+    }
+
+    /// Entry `i`, decrypted from the sector (the record only).
+    pub async fn read_entry(&mut self, key: &Key, i: usize) -> Result<Entry, VaultError<S::Error>> {
+        if i >= self.count(key).await? {
             return Err(VaultError::BadIndex);
         }
-        self.buf[s + 6..s + 14].copy_from_slice(&counter.to_le_bytes());
-        Ok(())
+        let len = self.payload_len();
+        let mut o = 1usize;
+        let mut b = [0u8; 1];
+        for _ in 0..i {
+            self.read_plain(key, o, &mut b).await?;
+            o += 1 + usize::from(b[0]);
+        }
+        self.read_plain(key, o, &mut b).await?;
+        let n = 1 + usize::from(b[0]);
+        if o + n > len || n > RECORD_MAX {
+            return Err(VaultError::Corrupt);
+        }
+        let mut rec = [0u8; RECORD_MAX];
+        self.read_plain(key, o, &mut rec[..n]).await?;
+        let e = rec_decode(&rec[1..n]);
+        rec.zeroize();
+        e.ok_or(VaultError::Corrupt)
+    }
+
+    /// Decrypt the whole payload into `buf` (wiped when the returned
+    /// [`Payload`] is dropped). `buf` must hold [`PAYLOAD_MAX`] bytes so
+    /// entries can be added.
+    pub async fn open<'b>(
+        &mut self,
+        key: &Key,
+        buf: &'b mut [u8],
+    ) -> Result<Payload<'b>, VaultError<S::Error>> {
+        let len = self.payload_len();
+        if buf.len() < PAYLOAD_MAX {
+            return Err(VaultError::Full);
+        }
+        let p = Payload { buf, len };
+        self.storage.read(O_PAYLOAD as u32, &mut p.buf[..len]).await.map_err(VaultError::Storage)?;
+        let nonce = XNonce::try_from(&self.hdr[O_NONCE..O_NONCE + 24]).map_err(|_| VaultError::Corrupt)?;
+        let tag =
+            chacha20poly1305::Tag::try_from(&self.hdr[O_TAG..O_TAG + 16]).map_err(|_| VaultError::Corrupt)?;
+        cipher(&key.0)
+            .decrypt_inout_detached(&nonce, &self.hdr[..AAD_END], (&mut p.buf[..len]).into(), &tag)
+            .map_err(|_| VaultError::WrongKey)?;
+        if len == 0 || usize::from(p.buf[0]) > MAX_ENTRIES {
+            return Err(VaultError::Corrupt);
+        }
+        Ok(p)
+    }
+
+    /// Encrypt and write `p` (fresh nonce, generation + 1); `p` is
+    /// plaintext again afterwards.
+    pub async fn save_payload(
+        &mut self,
+        key: &Key,
+        p: &mut Payload<'_>,
+        rng: &mut impl Entropy,
+    ) -> Result<(), VaultError<S::Error>> {
+        let len = p.len;
+        self.seal(&key.0, &mut p.buf[..len], rng).await
+    }
+
+    /// Advance HOTP entry `index` in `p` and write; the code is returned
+    /// only after the counter is stored.
+    pub async fn hotp_next_payload(
+        &mut self,
+        key: &Key,
+        p: &mut Payload<'_>,
+        index: usize,
+        rng: &mut impl Entropy,
+    ) -> Result<Code, VaultError<S::Error>> {
+        let e = p.entry(index).ok_or(VaultError::BadIndex)?;
+        let Kind::Hotp { counter } = e.kind else { return Err(VaultError::BadIndex) };
+        p.set_counter(index, counter.wrapping_add(1))?;
+        self.save_payload(key, p, rng).await?;
+        Ok(e.code(0))
+    }
+}
+
+/// Entropy for salts and nonces from events the firmware sees (key-press
+/// times in microseconds, battery readings, the clock): each is hashed into
+/// a 32-byte pool; output is HMAC-SHA-256 of the pool over a counter, and
+/// the pool is ratcheted after each request. The player has no known
+/// hardware random source; nonce uniqueness does not depend on this
+/// (module docs), salt quality does.
+pub struct Pool {
+    state: [u8; 32],
+    counter: u64,
+}
+
+impl Drop for Pool {
+    fn drop(&mut self) {
+        self.state.zeroize();
+    }
+}
+
+impl Default for Pool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Pool {
+    #[must_use]
+    pub const fn new() -> Self {
+        Pool { state: [0; 32], counter: 0 }
+    }
+
+    /// Hash `data` into the pool.
+    pub fn mix(&mut self, data: &[u8]) {
+        use sha2::Digest;
+        let mut h = Sha256::new();
+        h.update(self.state);
+        h.update(data);
+        self.state.copy_from_slice(&h.finalize());
+    }
+}
+
+impl Entropy for Pool {
+    fn fill(&mut self, buf: &mut [u8]) {
+        for chunk in buf.chunks_mut(32) {
+            self.counter += 1;
+            let Ok(mut m) = <Hmac<Sha256> as KeyInit>::new_from_slice(&self.state) else { return };
+            m.update(b"orpheus-otp/pool");
+            m.update(&self.counter.to_le_bytes());
+            let out = m.finalize().into_bytes();
+            chunk.copy_from_slice(&out[..chunk.len()]);
+        }
+        let c = self.counter.to_le_bytes();
+        self.mix(&c);
     }
 }
 
@@ -952,5 +1436,190 @@ mod tests {
             }
             assert_eq!(le32(&v.hdr, O_GEN), 21);
         });
+    }
+
+    // ------------------------------------------- key-only access (OTP-2)
+
+    fn hotp(issuer: &str, counter: u64) -> Entry {
+        Entry::new(Kind::Hotp { counter }, Algorithm::Sha256, 8, b"hotp-secret-0123", issuer, "acct").unwrap()
+    }
+
+    /// A vault with three entries written through `Unlocked` (OTP-1's path).
+    fn three(nor: &mut Nor, rng: &mut Rng) {
+        block_on(async {
+            let mut v = Vault::new(nor);
+            let mut u = v.create(b"2468", SecretKind::Pin, DEV, IT, rng).await.unwrap();
+            u.push::<Cut>(&totp("GitHub", b"12345678901234567890")).unwrap();
+            u.push::<Cut>(&hotp("Bank", 7)).unwrap();
+            u.push::<Cut>(&totp("Mail €", &[0x5A; 64])).unwrap();
+            v.save(&mut u, rng).await.unwrap();
+        });
+    }
+
+    async fn key_unlock(v: &mut Vault<&mut Nor>, pin: &[u8], chunk: usize) -> Result<Key, VaultError<Cut>> {
+        v.load(0).await.unwrap();
+        let mut job = v.begin_unlock(pin, DEV, 0).await?;
+        while !job.step(100) {}
+        let mut c = std::vec![0u8; chunk];
+        v.finish_unlock_key(job, 0, &mut c).await
+    }
+
+    #[test]
+    fn key_path_reads_what_unlocked_wrote() {
+        let mut nor = Nor::new();
+        let mut rng = Rng(11);
+        three(&mut nor, &mut rng);
+        let reference: Vec<Entry> = block_on(async {
+            let mut v = Vault::new(&mut nor);
+            v.load(0).await.unwrap();
+            let u = v.unlock(b"2468", DEV, 0).await.unwrap();
+            (0..u.len()).map(|i| u.entry(i).unwrap()).collect()
+        });
+        for chunk in [16, 17, 100, 256, 4096] {
+            block_on(async {
+                let mut v = Vault::new(&mut nor);
+                let k = key_unlock(&mut v, b"2468", chunk).await.unwrap();
+                assert_eq!(v.count(&k).await.unwrap(), 3);
+                for (i, want) in reference.iter().enumerate() {
+                    assert_eq!(&v.read_entry(&k, i).await.unwrap(), want, "entry {i}, chunk {chunk}");
+                }
+                assert_eq!(v.read_entry(&k, 3).await.err(), Some(VaultError::BadIndex));
+                assert_eq!(v.failures(), 0);
+            });
+        }
+    }
+
+    #[test]
+    fn key_path_rejects_wrong_pin_and_tampering() {
+        let mut nor = Nor::new();
+        let mut rng = Rng(12);
+        three(&mut nor, &mut rng);
+        let clean = nor.mem.clone();
+        block_on(async {
+            let mut v = Vault::new(&mut nor);
+            assert_eq!(key_unlock(&mut v, b"1357", 64).await.err(), Some(VaultError::WrongKey));
+            assert_eq!(v.failures(), 1);
+            assert_eq!(v.wait_ms(0), 1000, "back-off as on the OTP-1 path");
+        });
+        // One ciphertext bit, the tag.
+        for (off, bit) in [(O_PAYLOAD + 40, 0x01u8), (O_PAYLOAD + 2, 0x80), (O_TAG + 3, 0x10)] {
+            let mut n2 = Nor { mem: clean.clone(), erases: 0, programs: 0, cut_after: None };
+            n2.mem[off] ^= bit;
+            block_on(async {
+                let mut v = Vault::new(&mut n2);
+                assert_eq!(key_unlock(&mut v, b"2468", 64).await.err(), Some(VaultError::WrongKey), "{off}");
+            });
+        }
+    }
+
+    #[test]
+    fn payload_edits_round_trip_and_wipe() {
+        let mut nor = Nor::new();
+        let mut rng = Rng(13);
+        three(&mut nor, &mut rng);
+        let mut buf = std::vec![0u8; PAYLOAD_MAX];
+        block_on(async {
+            let mut v = Vault::new(&mut nor);
+            let k = key_unlock(&mut v, b"2468", 256).await.unwrap();
+            {
+                let mut p = v.open(&k, &mut buf).await.unwrap();
+                assert_eq!(p.len(), 3);
+                assert!(p.contains(&totp("GitHub", b"12345678901234567890")));
+                assert!(!p.contains(&totp("GitHub", b"other")));
+                p.remove::<Cut>(0).unwrap();
+                p.swap_next::<Cut>(0).unwrap();
+                p.push::<Cut>(&totp("New", b"abcdefghij")).unwrap();
+                v.save_payload(&k, &mut p, &mut rng).await.unwrap();
+                // HOTP: the counter is stored before the code is returned.
+                let c = v.hotp_next_payload(&k, &mut p, 1, &mut rng).await.unwrap();
+                assert_eq!(c, hotp("Bank", 7).code(0));
+                assert_eq!(p.entry(1).unwrap().kind, Kind::Hotp { counter: 8 });
+                assert_eq!(
+                    v.hotp_next_payload(&k, &mut p, 0, &mut rng).await.err(),
+                    Some(VaultError::BadIndex)
+                );
+                assert_eq!(p.swap_next::<Cut>(2).err(), Some(VaultError::BadIndex));
+            }
+            assert!(buf.iter().all(|&b| b == 0), "the lent buffer is wiped");
+            // The OTP-1 path reads the result.
+            let u = v.unlock(b"2468", DEV, 0).await.unwrap();
+            let names: Vec<_> = (0..u.len())
+                .map(|i| std::string::String::from(u.entry(i).unwrap().issuer.as_str()))
+                .collect();
+            assert_eq!(names, ["Mail €", "Bank", "New"]);
+            assert_eq!(u.entry(1).unwrap().kind, Kind::Hotp { counter: 8 });
+            // A buffer too small for additions is refused.
+            let mut small = [0u8; 64];
+            assert_eq!(v.open(&k, &mut small).await.err(), Some(VaultError::Full));
+        });
+        assert!(!nor.mem.windows(5).any(|w| w == b"abcde"), "no plaintext on flash");
+    }
+
+    #[test]
+    fn stepwise_create_and_change_pin() {
+        let mut nor = Nor::new();
+        let mut rng = Rng(14);
+        let mut buf = std::vec![0u8; PAYLOAD_MAX];
+        block_on(async {
+            let mut v = Vault::new(&mut nor);
+            let mut job = Vault::<&mut Nor>::begin_rekey(b"1111", SecretKind::Pin, DEV, IT, &mut rng);
+            let mut steps = 0u32;
+            while !job.step(64) {
+                steps += 1;
+            }
+            assert!(steps + 1 >= IT / 64);
+            let k = v.finish_create(job, &mut rng).await.unwrap();
+            assert_eq!(v.count(&k).await.unwrap(), 0);
+            let mut p = v.open(&k, &mut buf).await.unwrap();
+            p.push::<Cut>(&totp("A", b"aaaaaaaaaa")).unwrap();
+            v.save_payload(&k, &mut p, &mut rng).await.unwrap();
+            let mut job = Vault::<&mut Nor>::begin_rekey(b"2222", SecretKind::Pin, DEV, IT, &mut rng);
+            while !job.step(500) {}
+            let k2 = v.finish_rekey(job, &mut p, &mut rng).await.unwrap();
+            drop(p);
+            assert_eq!(v.read_entry(&k2, 0).await.unwrap().issuer.as_str(), "A");
+            assert_eq!(key_unlock(&mut v, b"1111", 64).await.err(), Some(VaultError::WrongKey));
+        });
+        block_on(async {
+            let mut v = Vault::new(&mut nor);
+            v.load(10_000).await.unwrap();
+            let u = v.unlock(b"2222", DEV, 11_000).await.unwrap();
+            assert_eq!(u.entry(0).unwrap().issuer.as_str(), "A");
+        });
+    }
+
+    #[test]
+    fn compaction_through_a_lent_buffer() {
+        let mut nor = Nor::new();
+        let mut rng = Rng(15);
+        three(&mut nor, &mut rng);
+        let mut buf = std::vec![0u8; PAYLOAD_MAX];
+        block_on(async {
+            let mut v = Vault::new(&mut nor);
+            for _ in 0..COMPACT_AT {
+                drop(key_unlock(&mut v, b"2468", 256).await.unwrap());
+            }
+            assert!(v.needs_compaction());
+            v.compact_with(&mut buf).await.unwrap();
+            assert!(!v.needs_compaction());
+            assert!(buf.iter().all(|&b| b == 0));
+            let k = key_unlock(&mut v, b"2468", 256).await.unwrap();
+            assert_eq!(v.read_entry(&k, 2).await.unwrap().issuer.as_str(), "Mail €");
+        });
+    }
+
+    #[test]
+    fn pool_output_depends_on_what_was_mixed() {
+        let mut a = Pool::new();
+        let mut b = Pool::new();
+        a.mix(&1u64.to_le_bytes());
+        b.mix(&2u64.to_le_bytes());
+        let (mut x, mut y, mut z) = ([0u8; 40], [0u8; 40], [0u8; 40]);
+        a.fill(&mut x);
+        b.fill(&mut y);
+        a.fill(&mut z);
+        assert_ne!(x, y);
+        assert_ne!(x, z, "each request differs");
+        assert!(x.iter().any(|&v| v != 0));
     }
 }

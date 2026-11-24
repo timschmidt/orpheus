@@ -11,6 +11,7 @@ use orpheus_apps::services::{
     PlaybackService, Playing, PowerRequest, PowerService, SettingsService, StorageRequest, StorageService,
     SystemService, UsbMode, UsbService, UsbState,
 };
+use orpheus_apps::services::{AuthEntry, AuthOutcome, AuthRequest, AuthService, Code, VaultState};
 use orpheus_apps::services::{
     Bookmark, BrowseFilter, BrowseService, DirId, Entry, FileOp, FileRef, Levels, LibList, LibListing,
     LibNow, LibRow, LibraryService, LibraryState, Listing, LyricLine, PicReq, PicState, PictureService,
@@ -31,6 +32,7 @@ use orpheus_ui::shell::System;
 use orpheus_ui::theme::{Accent, Palette, Theme};
 use orpheus_ui::widgets::bars::{MiniPlayer, Status};
 
+use crate::auth::SimAuth;
 use crate::bt::FakeBt;
 use crate::media::Media;
 use crate::radio::SimRadio;
@@ -94,6 +96,9 @@ pub struct HostServices {
     now_ms: u64,
     /// An alert lit the screen.
     wake: bool,
+    /// The Authenticator's vault and the fake computer on the USB
+    /// keyboard (OTP-2, USB-5).
+    pub auth: SimAuth,
 }
 
 impl Default for HostServices {
@@ -133,6 +138,7 @@ impl Default for HostServices {
             clock_ms: 0,
             now_ms: 0,
             wake: false,
+            auth: SimAuth::default(),
         }
     }
 }
@@ -665,6 +671,10 @@ impl Host for HostServices {
                 self.lock_request = on;
             }
             "dual" => self.dual_boot = on,
+            "vault" => self.auth.set_vault(v)?,
+            "otpfile" => self.auth.set_file(v),
+            "provision" => self.auth.set_provision(),
+            "wrongpin" => self.auth.wrong_pins(v.parse()?),
             "volume" => self.volume = v.parse()?,
             _ => {
                 // `set:0x0304=1`: any setting by key.
@@ -702,6 +712,7 @@ impl Host for HostServices {
             "RadioPresets" => screens::RADIO_PRESETS,
             "Steps" => screens::STEPS,
             "Stopwatch" => screens::STOPWATCH,
+            "Authenticator" => screens::AUTHENTICATOR,
             _ => return None,
         })
     }
@@ -730,12 +741,21 @@ impl Host for HostServices {
             gate.screen_on = true;
         }
         self.locked = gate.locked;
+        // The vault locks when the screen goes off (05 §7.9).
+        if !gate.screen_on {
+            self.auth.screen_off();
+        }
     }
 
     fn take_events(&mut self) -> Vec<Event> {
         let mut e = core::mem::take(&mut self.events);
         e.extend(self.media.take_events());
+        e.extend(self.auth.take_events());
         e
+    }
+
+    fn typed(&self) -> &str {
+        self.auth.typed()
     }
 
     fn advance(&mut self, ms: u64) {
@@ -749,6 +769,7 @@ impl Host for HostServices {
         }
         self.radio.advance(ms);
         self.radio_events();
+        self.auth.advance(ms);
         self.now_ms += ms;
         if self.clock_run {
             self.tick_clock(ms);
@@ -765,6 +786,40 @@ impl Host for HostServices {
             }
             self.events.push(Event::Service(ServiceEvent::Other { kind: services::other::TOOLS, value: e }));
         }
+    }
+}
+
+impl AuthService for HostServices {
+    fn vault(&self) -> VaultState {
+        self.auth.state()
+    }
+    fn unix_time(&self) -> Option<u64> {
+        self.clock_valid.then(|| services::unix_of(&self.clock))
+    }
+    fn auth_entry(&mut self, i: usize) -> Option<AuthEntry> {
+        self.auth.entry(i)
+    }
+    fn auth_code(&mut self, i: usize) -> Option<Code> {
+        let t = self.unix_time();
+        self.auth.code(i, t)
+    }
+    fn auth_request(&mut self, r: AuthRequest) {
+        let t = self.unix_time();
+        let cfg = orpheus_hid::TypistConfig {
+            layout: orpheus_hid::Layout::from_index(
+                u8::try_from(self.settings.get(id::KBD_LAYOUT)).unwrap_or(0),
+            ),
+            keypad_digits: self.settings.get(id::KEYPAD_DIGITS) != 0,
+            ..orpheus_hid::TypistConfig::default()
+        };
+        let enter = self.settings.get(id::ENTER_AFTER_CODE) != 0;
+        self.auth.request(r, t, self.usb, cfg, enter);
+    }
+    fn auth_outcome(&self) -> AuthOutcome {
+        self.auth.outcome
+    }
+    fn provision_pending(&self) -> Option<AuthEntry> {
+        self.auth.provision_pending()
     }
 }
 

@@ -84,7 +84,13 @@ impl Ui {
         }
     }
 
-    async fn after(&mut self, _fb: &mut [u16]) {
+    async fn after(&mut self, fb: &mut [u16]) {
+        self.settle();
+        // The Authenticator (OTP-2): key derivation, vault changes with the
+        // frame buffer as scratch, import file, typing results.
+        if self.fw.auth_step(fb, now().0, self.shell.gate.screen_on) {
+            self.shell.invalidate();
+        }
         self.settle();
         // Settings changed by the screens go to NOR.
         if let Some(store) = self.store.as_mut() {
@@ -128,7 +134,11 @@ impl Ui {
             if let Action::Power(p) = a {
                 match p {
                     PowerRequest::Restart => atj2157_hal::wdt::reboot(atj2157_hal::wdt::Target::Normal),
-                    PowerRequest::Recovery => atj2157_hal::wdt::reboot(atj2157_hal::wdt::Target::Adfu),
+                    PowerRequest::Recovery => {
+                        // RAM survives the ROM's USB mode: no key in it.
+                        crate::vault::wipe_secrets();
+                        atj2157_hal::wdt::reboot(atj2157_hal::wdt::Target::Adfu)
+                    }
                     PowerRequest::LockKeys => self.shell.gate.locked = true,
                     PowerRequest::PowerOff => self.power_off().await,
                     // Power-off (PWR-3a) and the stock-firmware request
@@ -212,8 +222,9 @@ impl Ui {
         if hold != 0 && ((atj2157_hal::time::now_us() / 1000) as u32).wrapping_sub(hold) > u32::MAX / 2 {
             return;
         }
-        // A picture job has the frame buffer (`pictures`).
-        if !self.screen_on || self.fw.pic_lent.is_some() {
+        // A picture job has the frame buffer (`pictures`), or the card task
+        // is reading the Authenticator's import file into it (`vault`).
+        if !self.screen_on || self.fw.pic_lent.is_some() || self.fw.otp_lent() {
             return;
         }
         if self.fw.pic_after_overlay && !self.shell.overlay_shown() {
@@ -351,6 +362,7 @@ pub async fn ui() {
     fw.init_player();
     fw.bt_boot(bt_last);
     fw.radio_boot();
+    fw.auth_boot(now().0);
     let ui = new_ui(fw, store, disp, bl, now());
     ui.shell.invalidate();
     let fb = fb.as_mut_slice();
@@ -376,6 +388,10 @@ pub async fn ui() {
         if ui.fw.tools.ringing().is_some() {
             deadline = deadline.min(t.0 + 250);
         }
+        // A key derivation waits one frame; the import file is awaited.
+        if ui.fw.auth_busy() {
+            deadline = deadline.min(t.0 + 2);
+        }
         let wait = Duration::from_millis(deadline.saturating_sub(t.0).max(1));
         match select4(KEYS.receive(), BATTERY.receive(), Timer::after(wait), crate::media::READY.receive())
             .await
@@ -390,6 +406,8 @@ pub async fn ui() {
             Either4::First((k, down)) => {
                 let t = now();
                 last_key_ms = t.0;
+                // Key timing feeds the vault's entropy pool (salts, nonces).
+                ui.fw.auth.mix(&atj2157_hal::time::now_us().to_le_bytes());
                 // A key: a picture still coming is not waited for (the
                 // volume overlay can wait).
                 if down && !matches!(k, HwKey::VolUp | HwKey::VolDown) {

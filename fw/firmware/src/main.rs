@@ -34,6 +34,7 @@ mod services;
 mod state;
 mod ui;
 mod usbdev;
+mod vault;
 
 use atj2157_hal::clock::{self, Level};
 use atj2157_hal::{self as hal, executor, log, nor, pac, pager, persist, wdt};

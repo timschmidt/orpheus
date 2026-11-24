@@ -172,9 +172,9 @@ per codec: one listening pass with real files of that format.
 
 | WP | Content | Spec | Dev | Size | User |
 |---|---|---|---|---|---|
-| USB-5 | HID keyboard interface; U-USB-11 | 06 §2.3, §5 | D | S–M | — |
+| USB-5 | HID keyboard interface; U-USB-11. **Built 2026-11-24, not yet run on the player** (keyboard personality, `orpheus-hid`, `kbd` test commands) | 06 §2.3, §5 | D | S–M | — |
 | OTP-1 | `orpheus-otp`, vault, PIN flow, time sync tool | 06 §5 | H+D | M | — |
-| OTP-2 | Authenticator app, typing, provisioning, `TextEntry`/PIN pad | 05 §7.9 | H+D | M | Log in to a test account with a typed code |
+| OTP-2 | Authenticator app, typing, provisioning, `TextEntry`/PIN pad. **Built 2026-11-24, not yet run on the player** (PIN pad, list, big code, typing, import, PROVISION; not built: `TextEntry`/manual entry, rename, passphrase) | 05 §7.9 | H+D | M | Log in to a test account with a typed code (user check 23) |
 | USB-6 | Disk and CD emulation, USB Drive app, QEMU boot test | 06 §3, 05 §7.10 | H+D | L | Boot one real PC from an ISO (if no QEMU pass-through) |
 | USB-7 | USB audio (stretch; U-USB-12) | 06 §2.3 | D | M | Listen |
 

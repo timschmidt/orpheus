@@ -10,6 +10,9 @@ use orpheus_apps::services::{
     UsbMode, UsbService, UsbState,
 };
 use orpheus_apps::services::{
+    AuthEntry, AuthOutcome, AuthRequest, AuthService, Code, VaultState, auth_event, other,
+};
+use orpheus_apps::services::{
     Bookmark, BrowseFilter, BrowseService, DirId, Entry, FileOp, FileRef, Levels, LibList, LibListing,
     LibNow, LibRow, LibraryService, LibraryState, Listing, LyricLine, PicReq, PicSource, PicState,
     PictureService, PlayerCmd, PlayerService, PlayerState, QueueEntry, TextService, TrackInfo,
@@ -115,6 +118,19 @@ pub struct Fw {
     /// The minute the RTC alarm was last looked at (once a minute is
     /// enough: the next alarm moves only then).
     last_alarm_minute: u8,
+    /// The Authenticator (OTP-2, `crate::vault`): the service core in its
+    /// static, the last outcome, an operation waiting for the scratch, the
+    /// import file's phase and job number, the typing job awaited
+    /// (`kbd::FINISHED` when it was queued).
+    pub(crate) auth: &'static mut orpheus_otp::service::Authenticator<crate::vault::NorVault>,
+    pub(crate) auth_outcome: orpheus_apps::services::AuthOutcome,
+    pub(crate) auth_op: Option<crate::vault::AuthOp>,
+    /// A key derivation asked for (run in `Ui::after` after one frame of
+    /// "Unlocking…"); the flag: that frame was drawn.
+    pub(crate) auth_pending: Option<(orpheus_apps::services::VaultWork, orpheus_apps::services::Pin, bool)>,
+    pub(crate) otp_phase: crate::vault::OtpPhase,
+    pub(crate) otp_seq: u32,
+    pub(crate) kbd_seen: Option<u32>,
 }
 
 /// A frequency is saved as the radio's last one after playing this long
@@ -265,6 +281,13 @@ impl Fw {
             rtc_alarm: None,
             alarms_changed: true,
             last_alarm_minute: 0xFF,
+            auth: crate::vault::init(),
+            auth_outcome: orpheus_apps::services::AuthOutcome::None,
+            auth_op: None,
+            auth_pending: None,
+            otp_phase: crate::vault::OtpPhase::Idle,
+            otp_seq: 0,
+            kbd_seen: None,
         }
     }
 
@@ -381,6 +404,9 @@ impl Fw {
             }
             _ => None,
         });
+        if tag == media::tag::OTP {
+            self.otp_sync();
+        }
         // The listing arrived or was re-sorted: the rows the screen shows
         // may not be in the new window.
         if let Some((first, count)) = again {
@@ -1384,6 +1410,94 @@ pub fn alarm_status() {
     });
 }
 
+impl AuthService for Fw {
+    fn vault(&self) -> VaultState {
+        match &self.auth_pending {
+            Some((work, ..)) => VaultState::Working { work: *work, percent: 0 },
+            None => self.auth.state(now_ms()),
+        }
+    }
+    fn unix_time(&self) -> Option<u64> {
+        crate::vault::unix_now()
+    }
+    fn auth_entry(&mut self, i: usize) -> Option<AuthEntry> {
+        embassy_futures::block_on(self.auth.entry(i)).ok().map(|e| AuthEntry::of(&e))
+    }
+    fn auth_code(&mut self, i: usize) -> Option<Code> {
+        let t = crate::vault::unix_now();
+        embassy_futures::block_on(self.auth.code(i, t)).ok().flatten()
+    }
+    fn auth_request(&mut self, r: AuthRequest) {
+        use crate::vault::AuthOp;
+        let now = now_ms();
+        let op = match r {
+            AuthRequest::Touch => {
+                self.auth.touch(now);
+                None
+            }
+            AuthRequest::Unlock(pin) => {
+                self.auth_pending = Some((orpheus_apps::services::VaultWork::Unlock, pin, false));
+                self.pending.push(Event::Service(ServiceEvent::Other {
+                    kind: other::AUTH,
+                    value: auth_event::STATE,
+                }));
+                None
+            }
+            AuthRequest::Create(pin) => {
+                self.auth_pending = Some((orpheus_apps::services::VaultWork::Create, pin, false));
+                self.pending.push(Event::Service(ServiceEvent::Other {
+                    kind: other::AUTH,
+                    value: auth_event::STATE,
+                }));
+                None
+            }
+            AuthRequest::ChangePin(pin) => {
+                self.auth_pending = Some((orpheus_apps::services::VaultWork::ChangePin, pin, false));
+                self.pending.push(Event::Service(ServiceEvent::Other {
+                    kind: other::AUTH,
+                    value: auth_event::STATE,
+                }));
+                None
+            }
+            AuthRequest::Lock => {
+                self.auth.lock();
+                self.pending.push(Event::Service(ServiceEvent::Other {
+                    kind: other::AUTH,
+                    value: auth_event::STATE,
+                }));
+                None
+            }
+            AuthRequest::Type(i) => {
+                self.auth_type(i);
+                None
+            }
+            AuthRequest::Import => Some(AuthOp::Import),
+            AuthRequest::NextCode(i) => Some(AuthOp::NextCode(i)),
+            AuthRequest::Delete(i) => Some(AuthOp::Delete(i)),
+            AuthRequest::SwapNext(i) => Some(AuthOp::SwapNext(i)),
+            AuthRequest::Provision(true) => Some(AuthOp::AddProvision),
+            AuthRequest::Provision(false) => {
+                crate::vault::reject_provision();
+                None
+            }
+            AuthRequest::Wipe => Some(AuthOp::Wipe),
+        };
+        if op.is_some() {
+            self.auth_op = op;
+        }
+    }
+    fn auth_outcome(&self) -> AuthOutcome {
+        self.auth_outcome
+    }
+    fn provision_pending(&self) -> Option<AuthEntry> {
+        crate::vault::provision_pending()
+    }
+}
+
+fn now_ms() -> u64 {
+    embassy_time::Instant::now().as_millis()
+}
+
 impl SystemService for Fw {
     fn lang(&self) -> Lang {
         Lang::ENGLISH
@@ -1423,6 +1537,7 @@ impl SystemService for Fw {
                 | App::Radio
                 | App::Steps
                 | App::Stopwatch
+                | App::Authenticator
         )
     }
     fn dual_boot(&self) -> bool {

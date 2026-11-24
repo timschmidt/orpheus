@@ -38,6 +38,8 @@ of every session. Newest entries first in §3.
 | AU-12 (directory index, music library) | host done; **firmware wired in (built, not yet run on the player)** | `orpheus-index` + its `card` adapters over `orpheus-fs` (host-tested on FAT32/exFAT images). Files/Music › Folders sorted (Name/Date/Size, hidden per setting), letter jump from the index's letter runs, play queue in listing order. **Music library** (`orpheus-library`) built in the card task's idle loop, Music › Artists/Albums/Songs/Genres/Recently added, Play/Shuffle, Shuffle all from the library, Go to album/artist. Playlists, Favourites: not started. User check 16 |
 | AU-14 | done (host); **device: Pictures app and album art (built, not yet run on the player)** | `orpheus-img`. Pictures (folders + pictures, list mode), viewer (fit/fill, rotate, next/prev, slideshow), album art made at track open and cached in `/.orpheus/cache/art`. Not done: thumbnail grid, 100 % + pan, wallpaper, delete, per-file rotation memory. User check 14 |
 | OTP-1, BT-1, USB-6 | done (host) | `orpheus-otp`, `orpheus-bt`, MMC/CD-ROM in `orpheus-usb` |
+| USB-5 | **built, not yet run on the player** | Keyboard personality (developer channel + HID boot keyboard, 1 interrupt IN, 8-byte reports, bInterval 4), `orpheus-hid` (descriptor, reports, US/UK/DE/FR layouts, paced typist, fake host; for BT-4 too), `kbd on/off/type/status/layout/keypad/delay`, Settings › USB › Keyboard layout / Digits from keypad / Enter after code, udev rule (owner: reinstall). U-USB-11 open |
+| OTP-2 | **built (host + firmware), not yet run on the player** | Authenticator app (PIN pad, list with codes and countdown, big code, type over USB, import from `/.orpheus/otp-import.txt`, PROVISION 0x0B + `xtask dev otp-add`, delete/move/next code/change PIN/wipe), key-only vault access in `orpheus-otp`, 190 goldens. Not built: manual entry/`TextEntry`, rename, passphrase. User check 23 |
 | BT-2 (device) | **built, not yet run on the player** | UART1 driver (`atj2157_hal::uart`, `yoton_bsp::bt`), `orpheus_bt::driver`, firmware `bt` task, `BluetoothService`, shutdown 0x24 on power-off. Module off at boot; `bt probe/on/off/status/scan/connect/listen/shutdown/rx/tx` test commands. Not done: volume policy, metadata at track change, pairing UI, U-BT-2 |
 | SENS-1 | **built, not yet run on the player** | `orpheus-steps` (detector, history, trace format; synthetic-trace tests), `yoton_bsp::accel` (no FIFO: part unidentified, U-ACC-1), `firmware::sensor` task (25 Hz, SRAM3 state), `/.orpheus/steps.bin`, `acc read/regs/trace`, `steps status`. User check 20 |
 | UI-5c | **built (host + firmware), not yet run on the player** | Steps app (Today/Week, goal, distance/kcal, settings, reset), 73 goldens (UI-5d: 98) |
@@ -50,6 +52,183 @@ of every session. Newest entries first in §3.
 | WEB-1 | done (host); not published | `cargo xtask site [--check]` → `target/orpheus/site/`; Home, Manual, Developers, Hardware, Changelog, FAQ, Try it and Install (placeholders for WEB-2/WEB-3). Deploy only with repository variable `PAGES_ENABLED=true`. User: review the site |
 
 ## 3. Session log
+
+### 2026-11-24 — USB-5 + OTP-2: USB HID keyboard and the Authenticator app (worker, no hardware)
+
+* **`orpheus-hid`** (new host crate, `no_std`, no `unsafe`, 9 tests): the
+  boot keyboard report descriptor (HID 1.11 B.1, 63 bytes: 8 modifier bits,
+  reserved byte, 5 LED bits out, 6 key slots over usages 0–101; the same
+  8 bytes in boot and report protocol), `KeyboardReport`/`Leds`, usage ids;
+  the computer's layout (US, UK, German, French) as **one** table
+  `char_of(layout, usage, level)` that the typist searches and the fake
+  host decodes with, so they cannot disagree; characters behind dead keys
+  (German `^` `` ` ``, French `~` `` ` ``) are refused before anything is
+  sent; `Typist` (one press and one all-released report per character,
+  pause 2–500 ms, default 12), `type_text` over a `Transport` trait (USB
+  now; the Bluetooth module in BT-4) — cancel and transport errors end with
+  an all-released report; `FakeHost` (what a computer types; counts
+  overlapping keys).
+* **USB-5 firmware** (`firmware::kbd`, `usbdev`): `Personality::Keyboard` =
+  the developer channel's vendor interface + `embassy_usb::class::hid`
+  writer (subclass boot, protocol keyboard, 1 interrupt IN endpoint, max
+  packet 8, bInterval 4: 4 ms at full speed, 1 ms at high speed). Class
+  requests: SET_REPORT (LEDs), boot/report protocol (both accepted), GET_REPORT
+  (all released). One job at a time (≤ 64 characters, wiped after); it
+  waits for the computer's SET_CONFIGURATION (≤ 8 s, else back to the
+  developer personality and the job ends "no computer") plus 300 ms for the
+  HID driver; stops on suspend, bus reset and personality change with an
+  all-released report, sends one more after a resume. Typing never switches
+  away from the card reader (refused). Endpoints: developer 0, card reader
+  2 FIFOs, keyboard 1 FIFO (of 4). Developer commands `kbd on|off`, `kbd
+  type <text>` (printable ASCII, `\n` = Enter), `kbd status`, `kbd layout
+  us|uk|de|fr|setting`, `kbd keypad on|off|setting`, `kbd delay <ms>`, `usb
+  kbd`; INFO's personality field is now 0 developer / 1 card reader / 2
+  keyboard. Settings › USB: Keyboard layout, Digits from keypad, Enter after
+  code (on); the USB dialog's Keyboard and "When connected: Keyboard" select
+  the personality.
+* **OTP-2 host**: `orpheus-otp` gains a key-only way into the **same**
+  sector format: `finish_unlock_key` (Poly1305 streamed over the sector in
+  256-byte pieces), `count`/`read_entry` (XChaCha20 seeked to one record),
+  `Payload` (the caller's buffer, wiped on drop: push/remove/swap/contains),
+  `open`/`save_payload`/`hotp_next_payload`, stepwise `begin_rekey` +
+  `finish_create`/`finish_rekey`, `compact_with`, and an entropy `Pool`
+  (SHA-256 mixing, HMAC output, ratchet). `service::Authenticator`: state,
+  PIN flow with OTP-1's back-off, 60-s relock, import report (a file is
+  "consumed" only if every line was taken), provisioning, HOTP shown code,
+  delete, move, wipe; the key derivation is a caller-held `Job`. Both paths
+  cross-checked (entries written by `Unlocked` read by the key path and
+  back, tamper and wrong PIN, chunk sizes 16–4096). `orpheus-otp` 35 tests
+  (+14); `orpheus-usb` PROVISION (0x0B) handled (+1 test).
+* **Authenticator app** (`orpheus-apps::screens::auth`, `AuthService`,
+  `unix_of`): one screen with modes. The honest limit once before set-up
+  ("A PIN stops casual use, not someone with a cable."); PIN pad (3 × 4
+  keys; Up/Down/Prev/Next move, OK presses, Back deletes or leaves, hold OK
+  finishes), set-up with confirmation, unlock with "Wrong PIN · Wait N s"
+  (the digits stay during the wait), "Unlocking…"; list: name, code in
+  16-px numerals (8-digit codes in the bold UI font), a bar for the seconds
+  left (red in the last 5 s), the focused account in the strip, dashes and
+  "Clock not set" without a valid RTC; big code (28 px, grouped 3 + 3 / 4 +
+  4, bar and seconds; OK types it, Enter after if set); menus Import from
+  card, Next code (HOTP), Move up/down, Delete…, Time check (UTC), Change
+  PIN, Lock, Wipe vault…, Type the code; provisioning confirmation; import
+  report ("File deleted … The card may keep old copies." / "File kept").
+  Back locks; 60 s without a key and screen-off lock. Files opens the app on
+  `otp-import.txt`/`otpauth.txt`. 67 strings (RU/JA test-pack entries,
+  within the committed Unifont subset).
+* **OTP-2 firmware** (`firmware::vault`): `NorVault` on `0x7DE000`; only the
+  key while unlocked. A key derivation runs to the end in one UI step after
+  one frame of "Unlocking…" (clock raised to 144 MHz; ≈ 0.3 s estimated,
+  not measured) — its state is on the stack only then. Vault changes borrow
+  the first 3,840 bytes of the frame buffer between frames (zeroed after,
+  screen redrawn). Import: the card task reads `/.orpheus/otp-import.txt`
+  (≤ 8 KiB) into frame-buffer bytes with the picture viewer's slot protocol
+  (`media::OtpJob`, `Req::Otp`; the UI draws nothing meanwhile, 5-s
+  reclaim), the UI imports and wipes the bytes; if every line was taken the
+  card task overwrites the file with zeros and deletes it. Provisioning:
+  REQUEST 0x0B → `vault::provision` (only while unlocked) → confirmation on
+  the player; host side `cargo xtask dev otp-add 'otpauth://…'`. The key
+  and any provisioning request are zeroed before every developer-channel
+  reboot and Recovery mode; key presses, battery and RTC feed the entropy
+  pool. **KDF device id**: a fixed label `orpheus-ym03` (reading the eFuse
+  words needs PMU writes, CLAUDE.md rule 3; changing it later makes vaults
+  unreadable). Iterations: `DEFAULT_ITERATIONS` (6000), not calibrated.
+* **Simulator**: `sim/src/auth.rs` — the real service on a RAM sector, a
+  demo vault (PIN 1234: GitHub, Proton, Bank HOTP 8 digits, Mastodon,
+  Госуслуги 60 s, AWS SHA-256 8 digits, 日本), import file, provisioning, a
+  fake computer typing through the real typist; `set:vault=…`,
+  `set:otpfile=…`, `set:provision=demo`, `set:wrongpin=N`, script check
+  `expect-typed:287082↵`. 9 behaviour tests (`sim/tests/auth.rs`: set-up,
+  back-off, typing in four layouts and keypad, no computer/clock/HOTP code,
+  import, provisioning, delete/move, relock, change PIN/wipe). **190 new
+  goldens** (31 journeys × dark/light × Latin/Cyrillic/CJK, 3 amber,
+  Settings › USB), 2 re-blessed (`app_group08_*`: the three keyboard rows).
+  Looked at: contact sheets of every journey in dark/Latin, light/Cyrillic,
+  dark/CJK, light/CJK and the extras; strings shortened until nothing
+  important was cut.
+* **udev**: `tools/udev/99-orpheus.rules` gains the USB keyboard
+  (`0003:1209:0001.*`): hidraw mode 0666 and `LIBINPUT_IGNORE_DEVICE=1`.
+  **The owner must reinstall the rules** (`sudo cp tools/udev/99-orpheus.rules
+  /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm
+  trigger`). With the rule the player cannot type into that computer's
+  desktop (the second line is what stops it).
+* **RAM** (measured in this worktree, `cargo xtask build`): `__stack_bottom`
+  `0x1327C0` → `0x132F60` (**+1,952 B**; budget for the package +1 KiB).
+  Static RAM: `.bss` 123,000 → 123,384 (+384: the service core 224 B
+  without the derivation state, `Fw` +48, HID class state 36, atomics),
+  `.data` +272 (the provisioning slot 192 B — an `Entry` handed from the
+  USB task to the UI —, the keyboard job 76 B): **+656 B**. The rest,
+  resident rodata +1,336 B, is ~1,184 B of **panic-location file paths**
+  of the new source files (`.rodata.str1.1` is linker-generated, so
+  resident): 8 workspace paths of ~100 bytes here (~56 in the main
+  checkout, so ≈ +1.6 KB there) plus `embassy-usb` hid.rs and `cipher`
+  stream.rs. Measured: the resident image holds **14,643 bytes of such
+  paths today** (158 files); `--remap-path-prefix` for the workspace and
+  `$CARGO_HOME/registry/src/*` in `fw/.cargo/config.toml` would cut that to
+  ≈ 4 KB — recommended as a project-wide change, not made here (it changes
+  every build and panic record). AppScreen did not grow (the screen caches
+  names and codes, not entries). SRAM3: unchanged. Resident code: unchanged
+  (`check-resident`: ok, 48 sections from 16 roots, none paged). The key
+  derivation and the vault writes run on the stack (≈ 1–1.5 KB at the UI
+  task's top level, estimated): check the stack high-water (`info`) on the
+  player.
+* **Gate** (host): `cargo fmt --all --check`, `cargo clippy --workspace
+  --all-targets -- -D warnings`, `cargo test --workspace` (123 test
+  binaries; the first run hit a full disk in `orpheus-fs` powercut, re-run
+  clean), `cargo xtask test golden` (blessed, then passing); firmware:
+  `cargo fmt --all --check`, `cargo clippy --workspace -- -D warnings`,
+  `cargo xtask build` (resident 85,348 B, 94 code + 18 rodata pages),
+  `cargo xtask check-resident` (ok). Not run: anything on the player.
+* **Not done**: `TextEntry` and manual entry (Base32 keyboard), rename,
+  passphrase vaults, iteration calibration, the eFuse device id, drift and
+  last-sync in Time check (only UTC now), FIDO; a manual page.
+* **Open**: U-USB-11 (interrupt FIFO type 3 with the Actions DMA; one
+  8-byte DMA per report, 12 ms apart, the DMA wait times out after 500 ms
+  when the host does not poll); whether macOS/Windows accept the combined
+  vendor + HID device; the unlock time at 144 MHz; the stack peak during a
+  vault write. User check 23.
+* **Device test plan (lead; workstation as USB host; reinstall the udev
+  rules first so the test keystrokes never reach the desktop)**:
+  1. Stage, boot; `cargo xtask dev info` (personality 0). `cargo xtask dev
+     cmd "kbd status"` → `mode=other ready=0 … layout=us delay=12`.
+  2. `cargo xtask dev cmd "kbd on"`; the player re-attaches (≈ 1 s). Then
+     `lsusb -v -d 1209:0001` → two interfaces (vendor FF, HID 03/01/01) and
+     endpoint 0x81 Interrupt, 8 bytes, bInterval 4; `dmesg` →
+     `hid-generic … input,hidraw…: USB HID v1.10 Keyboard [orpheus YM03
+     keyboard]`; `udevadm info /dev/input/eventN | grep LIBINPUT_IGNORE`
+     → 1. `cargo xtask dev cmd "kbd status"` → `mode=keyboard ready=1`;
+     developer channel commands still work (`info`, `shot`).
+  3. Read the reports raw: `sudo cat /dev/hidrawN | xxd` (or
+     `hid-recorder`), then `cargo xtask dev cmd "kbd type Hello, 2026!\n"`.
+     Expect 26 reports of 8 bytes: press/release pairs (`02 00 0b …` for
+     Shift+H, then all zeros), ending all zeros; `kbd status` `typed=13
+     last=3` (3 = done). Repeat with `kbd layout de` and type `zy@`:
+     usages `1d`/`1c` swapped, `@` as `40 00 14 …` (Right Alt + Q); `kbd
+     layout fr` + `kbd keypad on` + `kbd type 123456`: usages 59..5E, no
+     modifier. `kbd delay 2` and `kbd delay 500` change the pace. U-USB-11
+     is answered when no report is lost or doubled (count them) at delay 2
+     and 12; record the result in 01-hardware §9.
+  4. Suspend: `kbd delay 500`, `kbd type abcdefghijklmnop`, then suspend
+     the workstation's USB port (`echo auto > …/power/control` with a 2-s
+     autosuspend, or `systemctl suspend`); after resume `kbd status`
+     `last=5` (cancelled) and the last report read is all zeros.
+  5. `cargo xtask dev cmd "usb msc ro"`, then `kbd type x` → "the card
+     reader is attached"; `usb dev`.
+  6. Authenticator: `cargo xtask dev time --set`; Home → Authenticator
+     (`keys` or by hand): the PIN note, PIN 1234 twice; `cargo xtask dev
+     put <file with the 7 demo lines of sim/src/auth.rs> /.orpheus/otp-import.txt`;
+     Menu → Import from card → "File deleted · 7 added"; `cargo xtask dev
+     cmd "ls /.orpheus"` shows no `otp-import.txt`. Compare GitHub's code
+     with `oathtool --totp -b GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ`. With the
+     player in keyboard mode and `/dev/hidrawN` read: OK on GitHub, OK
+     again → the 6 digits and Enter (`28`) arrive; the toast says "Typed".
+     `cargo xtask dev otp-add 'otpauth://totp/Test:me?secret=JBSWY3DPEHPK3PXP'`
+     → the player asks "Add this account?"; Add → 8 entries. Back (locks);
+     reopen with a wrong PIN twice → "Wait 2 s"; power key (screen off) →
+     locked. `cargo xtask dev stats` / `info`: stack free still ≥ 3 KiB
+     after an unlock and an import (the derivation and the vault write run
+     on the stack). Time an unlock (log ring timestamps or a stopwatch).
+  7. End with `cargo xtask dev cmd "usb dev"` (developer personality) and a
+     reboot (rule 4).
 
 ### 2026-11-24 — FM-1 fix after the first device run: radio RAM overlapped the step counter's, id read fallback, `fm on` stops music (worker, no hardware)
 
