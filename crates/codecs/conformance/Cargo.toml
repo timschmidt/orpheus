@@ -11,6 +11,7 @@ publish = false
 yoton-audio = { path = "../../yoton-audio" }
 yoton-codecs = { path = ".." }
 yoton-meta = { path = "../../yoton-meta" }
+yoton-ogg = { path = "../ogg" }
 md-5 = "0.10"
 
 [lints]

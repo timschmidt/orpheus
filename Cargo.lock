@@ -1163,6 +1163,7 @@ dependencies = [
  "yoton-audio",
  "yoton-codecs",
  "yoton-meta",
+ "yoton-ogg",
 ]
 
 [[package]]
@@ -1182,6 +1183,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "yoton-codec-vorbis"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "yoton-audio",
+ "yoton-ogg",
+]
+
+[[package]]
 name = "yoton-codec-wav"
 version = "0.1.0"
 dependencies = [
@@ -1195,6 +1205,7 @@ dependencies = [
  "yoton-audio",
  "yoton-codec-flac",
  "yoton-codec-mp3",
+ "yoton-codec-vorbis",
  "yoton-codec-wav",
 ]
 
@@ -1222,6 +1233,13 @@ version = "0.1.0"
 
 [[package]]
 name = "yoton-meta"
+version = "0.1.0"
+dependencies = [
+ "yoton-audio",
+]
+
+[[package]]
+name = "yoton-ogg"
 version = "0.1.0"
 dependencies = [
  "yoton-audio",

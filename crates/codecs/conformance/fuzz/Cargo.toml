@@ -54,6 +54,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "vorbis"
+path = "fuzz_targets/vorbis.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ogg"
+path = "fuzz_targets/ogg.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "meta"
 path = "fuzz_targets/meta.rs"
 test = false
