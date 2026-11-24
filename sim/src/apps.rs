@@ -9,6 +9,10 @@ use yoton_apps::services::{
     PlaybackService, Playing, PowerRequest, PowerService, SettingsService, StorageRequest, StorageService,
     SystemService, UsbMode, UsbService, UsbState,
 };
+use yoton_apps::services::{
+    ArtSize, Bookmark, BrowseFilter, BrowseService, DirId, Entry, FileOp, FileRef, Levels, LibraryState,
+    Listing, LyricLine, PlayerCmd, PlayerService, PlayerState, QueueEntry, TextService, TrackInfo,
+};
 use yoton_apps::settings::{SettingId, SettingsCache, id, lang_code};
 use yoton_apps::{App, Lang};
 use yoton_power::charger::ChargeState;
@@ -19,6 +23,7 @@ use yoton_ui::shell::System;
 use yoton_ui::theme::{Accent, Palette, Theme};
 use yoton_ui::widgets::bars::{MiniPlayer, Status};
 
+use crate::media::Media;
 use crate::{Host, packs};
 
 /// Something the screens asked the services to do.
@@ -50,6 +55,7 @@ pub struct HostServices {
     lock_request: bool,
     pub root: (ScreenId, Arg),
     pub log: Vec<Logged>,
+    pub media: Media,
     events: Vec<Event>,
 }
 
@@ -74,6 +80,7 @@ impl Default for HostServices {
             lock_request: false,
             root: (screens::HOME, Arg(0)),
             log: Vec::new(),
+            media: Media::new(),
             events: Vec::new(),
         }
     }
@@ -160,6 +167,10 @@ impl StorageService for HostServices {
 
 impl PlaybackService for HostServices {
     fn playing(&self) -> Option<Playing<'_>> {
+        if let Some((title, artist, playing, progress)) = self.media.title_artist() {
+            let source = if playing { Source::Playing } else { Source::Paused };
+            return Some(Playing { source, title, artist, progress });
+        }
         self.playing.map(|(title, artist, source, progress)| Playing { source, title, artist, progress })
     }
 
@@ -368,6 +379,46 @@ impl Host for HostServices {
                 self.clock.minute = m.parse()?;
                 evs.push(Event::Service(ServiceEvent::Minute));
             }
+            "library" => {
+                self.media.library = match v {
+                    "ready" => LibraryState::Ready,
+                    "missing" => LibraryState::Missing,
+                    _ => LibraryState::Building { files: 1287 },
+                };
+            }
+            "queue" => {
+                // Start an album: takk, kino, yoasobi, podcast.
+                let path = match v {
+                    "kino" => "/Music/Кино/Звезда по имени Солнце",
+                    "yoasobi" => "/Music/YOASOBI/THE BOOK",
+                    "podcast" => "/Music/Podcasts",
+                    _ => "/Music/Sigur Rós/Takk…",
+                };
+                self.media.learn(path);
+                if let Some(dir) = self.media.dir_id(path) {
+                    PlayerService::command(self, PlayerCmd::PlayDir { dir, start: None, shuffle: false });
+                }
+            }
+            "track" => {
+                let n: u32 = v.parse()?;
+                PlayerService::command(self, PlayerCmd::Jump(n));
+            }
+            "pos" => {
+                let ms: u32 = v.parse()?;
+                PlayerService::command(self, PlayerCmd::SeekTo(ms));
+            }
+            "pause" => {
+                if on && self.media.state().source == Source::Playing {
+                    PlayerService::command(self, PlayerCmd::PlayPause);
+                }
+            }
+            "resume" => {
+                self.media.learn("/Music/Sigur Rós/Takk…");
+                self.media.set_resume("/Music/Sigur Rós/Takk…/02 Hoppípolla.mp3");
+            }
+            "bookmark" => {
+                PlayerService::command(self, PlayerCmd::Bookmark);
+            }
             "locked" => {
                 self.locked = on;
                 self.lock_request = on;
@@ -390,6 +441,10 @@ impl Host for HostServices {
     fn screen_by_name(name: &str) -> Option<ScreenId> {
         Some(match name {
             "Home" => screens::HOME,
+            "Music" => screens::MUSIC,
+            "Files" => screens::FILES,
+            "NowPlaying" => screens::NOW_PLAYING,
+            "Equaliser" => screens::EQUALISER,
             "Boot" => screens::BOOT,
             "Settings" => screens::SETTINGS,
             "PowerMenu" => screens::POWER_MENU,
@@ -426,7 +481,105 @@ impl Host for HostServices {
     }
 
     fn take_events(&mut self) -> Vec<Event> {
-        core::mem::take(&mut self.events)
+        let mut e = core::mem::take(&mut self.events);
+        e.extend(self.media.take_events());
+        e
+    }
+
+    fn advance(&mut self, ms: u64) {
+        let repeat = self.settings.get(id::REPEAT);
+        self.media.advance(ms, repeat);
+    }
+}
+
+impl BrowseService for HostServices {
+    fn browse(&mut self, dir: DirId, filter: BrowseFilter) -> Listing {
+        self.media.browse(dir, filter)
+    }
+    fn listing(&self) -> Listing {
+        self.media.listing()
+    }
+    fn entry(&self, i: u32) -> Option<Entry<'_>> {
+        self.media.entry(i)
+    }
+    fn want(&mut self, first: u32, count: u32) {
+        self.media.want(first, count);
+    }
+    fn position(&self, f: FileRef) -> Option<u32> {
+        self.media.position(f)
+    }
+    fn letter(&self, i: u32) -> Option<char> {
+        self.media.letter(i)
+    }
+    fn seek_letter(&self, from: u32, forward: bool) -> Option<(u32, char)> {
+        self.media.seek_letter(from, forward)
+    }
+    fn dir_name(&self, dir: DirId) -> &str {
+        self.media.dir_name(dir)
+    }
+    fn file_op(&mut self, op: FileOp) -> bool {
+        match op {
+            FileOp::Delete(f) => self.media.delete(f),
+        }
+    }
+}
+
+impl TextService for HostServices {
+    fn text_open(&mut self, f: FileRef) -> Option<u32> {
+        self.media.text_open(f)
+    }
+    fn text_window(&self) -> (u32, &[u8]) {
+        self.media.text_window()
+    }
+    fn want_text(&mut self, offset: u32) {
+        self.media.want_text(offset);
+    }
+    fn text_position(&self, f: FileRef) -> u32 {
+        self.media.text_position(f)
+    }
+    fn set_text_position(&mut self, f: FileRef, offset: u32) {
+        self.media.set_text_position(f, offset);
+    }
+}
+
+impl PlayerService for HostServices {
+    fn player(&self) -> PlayerState {
+        self.media.state()
+    }
+    fn track(&self) -> Option<TrackInfo<'_>> {
+        self.media.track()
+    }
+    fn queue_entry(&self, i: u32) -> Option<QueueEntry<'_>> {
+        self.media.queue_entry(i)
+    }
+    fn want_queue(&mut self, _first: u32, _count: u32) {}
+    fn art(&self, size: ArtSize) -> Option<&[u16]> {
+        self.media.art(size)
+    }
+    fn lyrics_count(&self) -> u32 {
+        self.media.lyrics_count()
+    }
+    fn lyric(&self, i: u32) -> Option<LyricLine<'_>> {
+        self.media.lyric(i)
+    }
+    fn levels(&self) -> Levels {
+        self.media.levels()
+    }
+    fn resume_title(&self) -> Option<&str> {
+        self.media.resume_title()
+    }
+    fn bookmark_count(&self) -> u32 {
+        self.media.bookmark_count()
+    }
+    fn bookmark(&self, i: u32) -> Option<Bookmark<'_>> {
+        self.media.bookmark(i)
+    }
+    fn library(&self) -> LibraryState {
+        self.media.library
+    }
+    fn command(&mut self, c: PlayerCmd) {
+        let repeat = self.settings.get(id::REPEAT);
+        self.media.command(c, repeat);
     }
 }
 

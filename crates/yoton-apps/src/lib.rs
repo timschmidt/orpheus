@@ -9,6 +9,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+pub mod browse;
 pub mod icons;
 pub mod screens;
 pub mod services;
@@ -20,6 +21,12 @@ pub use services::Services;
 pub use strings::{Lang, Str};
 
 use yoton_ui::icons::Icon2;
+
+/// True if `word` fits in `w` pixels, or is CJK (which breaks anywhere).
+#[doc(hidden)]
+pub fn strings_fit(g: &mut yoton_ui::Gfx<'_>, word: &str, font: yoton_ui::FontId, w: i16) -> bool {
+    word.chars().any(yoton_ui::text::is_cjk) || g.measure(word, font) <= w
+}
 
 /// The eleven apps on Home, in grid order (05 §6.2).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

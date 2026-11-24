@@ -23,8 +23,10 @@
 //! | `goto:Library` | push a screen directly |
 
 pub mod apps;
+pub mod card;
 pub mod demo;
 pub mod fallback;
+pub mod media;
 pub mod packs;
 pub mod system;
 #[cfg(feature = "window")]
@@ -87,6 +89,8 @@ pub trait Host: System + Default + Sized {
     fn take_events(&mut self) -> Vec<Event> {
         Vec::new()
     }
+    /// Simulated time passes (playback position, pending loads).
+    fn advance(&mut self, _ms: u64) {}
 }
 
 /// The simulator: frame buffer, input mapper, shell and fake services.
@@ -260,7 +264,10 @@ impl<H: Host> Sim<H> {
             if let Some(d) = self.mapper.next_deadline() {
                 next = next.min(d.0.max(self.now.0 + 1));
             }
+            let dt = next - self.now.0;
             self.now = Instant(next);
+            self.sys.advance(dt);
+            self.settle();
             self.pump();
             if self.shell.wants_ticks(&self.sys) {
                 let r = self.shell.tick(&mut self.sys, self.now);

@@ -103,6 +103,36 @@ pub trait ListSource {
     fn letter(&self, _i: u32) -> Option<char> {
         None
     }
+    /// The first row after (`forward`) or the first row of the group before
+    /// row `from` whose letter differs from `from`'s: letter jump. The
+    /// default scans with [`ListSource::letter`]; windowed sources answer
+    /// from their index instead (a 5000-entry folder is never scanned).
+    fn seek_letter(&self, from: u32, forward: bool) -> Option<(u32, char)> {
+        let n = self.len();
+        let cur = self.letter(from)?;
+        let mut i = from;
+        loop {
+            if forward {
+                i += 1;
+                if i >= n {
+                    return None;
+                }
+            } else {
+                i = i.checked_sub(1)?;
+            }
+            if let Some(l) = self.letter(i)
+                && l != cur
+                && !matches!(self.row(i), Row::Header(_))
+            {
+                if !forward {
+                    while i > 0 && self.letter(i - 1) == Some(l) {
+                        i -= 1;
+                    }
+                }
+                return Some((i, l));
+            }
+        }
+    }
 }
 
 /// What a key did to the list.
@@ -135,6 +165,8 @@ pub struct ListView {
     /// Pixels by which the focused row's text overflows (measured on draw).
     overflow: i16,
     jump: Option<char>,
+    /// Auto-repeats since the key went down (scroll acceleration).
+    repeats: u16,
     drawn: Drawn,
 }
 
@@ -171,6 +203,7 @@ impl ListView {
             focus_since: Instant(0),
             overflow: 0,
             jump: None,
+            repeats: 0,
             drawn: Drawn { valid: false, focus: 0, top: 0, len: 0, marquee: 0, jump: None },
         }
     }
@@ -282,35 +315,24 @@ impl ListView {
     }
 
     fn jump_letter(&mut self, src: &dyn ListSource, forward: bool) -> bool {
-        let n = src.len();
-        let Some(cur) = src.letter(self.focus) else { return false };
-        let mut i = self.focus;
-        loop {
-            if forward {
-                i += 1;
-                if i >= n {
-                    return false;
-                }
-            } else {
-                if i == 0 {
-                    return false;
-                }
-                i -= 1;
+        match src.seek_letter(self.focus, forward) {
+            Some((i, l)) => {
+                self.focus = i;
+                self.jump = Some(l);
+                true
             }
-            match src.letter(i) {
-                Some(l) if l != cur && Self::focusable(src, i) => {
-                    if !forward {
-                        // Land on the first row of that letter.
-                        while i > 0 && src.letter(i - 1) == Some(l) {
-                            i -= 1;
-                        }
-                    }
-                    self.focus = i;
-                    self.jump = Some(l);
-                    return true;
-                }
-                _ => {}
-            }
+            None => false,
+        }
+    }
+
+    /// Rows moved per auto-repeat while Up/Down is held: 1, then 5, then 20
+    /// (with the mapper's 8 → 30 repeats/s that is up to 600 rows/s, so a
+    /// 5000-entry folder is crossed in about 10 s; letter jump is faster).
+    fn repeat_rows(&self) -> u32 {
+        match self.repeats {
+            0..20 => 1,
+            20..40 => 5,
+            _ => 20,
         }
     }
 
@@ -318,8 +340,18 @@ impl ListView {
     pub fn handle(&mut self, src: &dyn ListSource, ev: &Event, rows: u32, now: Instant) -> ListAction {
         let Event::Key(k, p) = *ev else { return ListAction::None };
         let moved = match (k, p) {
-            (Key::Up, KeyPhase::Down | KeyPhase::Repeat) => self.step(src, false),
-            (Key::Down, KeyPhase::Down | KeyPhase::Repeat) => self.step(src, true),
+            (Key::Up | Key::Down, KeyPhase::Down) => {
+                self.repeats = 0;
+                self.step(src, k == Key::Down)
+            }
+            (Key::Up | Key::Down, KeyPhase::Repeat) => {
+                self.repeats = self.repeats.saturating_add(1);
+                let mut moved = false;
+                for _ in 0..self.repeat_rows() {
+                    moved |= self.step(src, k == Key::Down);
+                }
+                moved
+            }
             (Key::Prev | Key::Next, KeyPhase::Up { held: false }) => self.page(src, k == Key::Next, rows),
             (Key::Prev | Key::Next, KeyPhase::Hold) => {
                 if src.letter(self.focus).is_some() {

@@ -252,6 +252,8 @@ pub enum Notice {
     /// A Settings entry not built yet.
     NotYetSettings,
     BatteryLow,
+    /// No app opens this file type.
+    Unsupported,
 }
 
 impl Notice {
@@ -263,6 +265,7 @@ impl Notice {
             Notice::NotYet(a) => 0x300 | a as u32,
             Notice::NotYetSettings => 0x400,
             Notice::BatteryLow => 0x500,
+            Notice::Unsupported => 0x600,
         }
     }
 
@@ -275,6 +278,7 @@ impl Notice {
                 Notice::NotYet(App::from_index(u8::try_from(a & 0xFF).unwrap_or(0)).unwrap_or(App::Settings))
             }
             5 => Notice::BatteryLow,
+            6 => Notice::Unsupported,
             _ => Notice::NotYetSettings,
         }
     }
@@ -313,6 +317,7 @@ impl<S: Services + ?Sized> Screen<S> for NoticeScreen {
             Notice::NotYet(app) => (app.icon(), Role::TextDim, app.label(), Str::NotYetAction),
             Notice::NotYetSettings => (&icons::SETTINGS, Role::TextDim, Str::NotYet, Str::NotYetAction),
             Notice::BatteryLow => (&icons::WARNING, Role::Warning, Str::BatteryLow, Str::BatteryLowAction),
+            Notice::Unsupported => (&icons::CARD, Role::TextDim, Str::CannotOpen, Str::CannotOpenAction),
         };
         let c = g.c(role);
         g.icon2((w - 24) / 2, 10, icon, c);

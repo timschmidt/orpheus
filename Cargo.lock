@@ -1260,7 +1260,10 @@ dependencies = [
  "anyhow",
  "minifb",
  "yoton-apps",
+ "yoton-audio",
+ "yoton-fs",
  "yoton-host",
+ "yoton-meta",
  "yoton-power",
  "yoton-ui",
 ]

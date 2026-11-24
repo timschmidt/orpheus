@@ -198,6 +198,12 @@ pub mod id {
     pub const OUTPUT: SettingId = SettingId(0x0604);
     pub const USB_WHEN_CONNECTED: SettingId = SettingId(0x0901);
     pub const LANGUAGE: SettingId = SettingId(0x0A01);
+    pub const FILES_SORT: SettingId = SettingId(0x0D01);
+    pub const SHOW_HIDDEN: SettingId = SettingId(0x0D02);
+    pub const NP_VIEW: SettingId = SettingId(0x0D03);
+    /// Custom 1 bands 0..5, then Custom 2 bands 0..5.
+    pub const EQ_BAND0: SettingId = SettingId(0x0D10);
+    pub const SPEED: SettingId = SettingId(0x0206);
 }
 
 const SOUND: &[Setting] = &[
@@ -335,6 +341,69 @@ const SYSTEM: &[Setting] = &[
     a(0x0C06, Str::RecoveryMode, Action::Recovery),
 ];
 
+/// Now Playing views (05 §7.1), in Up/Down order.
+pub const NP_VIEWS: &[Choice] = ch![
+    S(Str::ViewStandard),
+    S(Str::ViewBigArt),
+    S(Str::ViewLyrics),
+    S(Str::ViewUpNext),
+    S(Str::ViewDetails),
+    S(Str::ViewLevels)
+];
+
+/// Equaliser band centres (05 §7.1), Hz.
+pub const EQ_BANDS_HZ: [u32; 5] = [60, 230, 910, 3600, 14000];
+
+/// Gains in dB of the built-in presets (EQ_PRESETS order, without the two
+/// custom curves, which are settings).
+pub const EQ_GAINS: [[i8; 5]; 9] = [
+    [0, 0, 0, 0, 0],
+    [5, 3, -1, 3, 5],
+    [-1, 2, 4, 2, -1],
+    [3, 2, -1, 2, 4],
+    [4, 3, 0, 2, 3],
+    [5, 2, 0, 2, 5],
+    [5, 4, 0, 1, 3],
+    [7, 4, 0, 0, 0],
+    [-2, 0, 3, 4, 1],
+];
+
+/// Settings that belong to apps rather than to a Settings group (stored
+/// like the others; edited in the apps).
+pub const APP_ITEMS: &[Setting] = &[
+    c(0x0D01, Str::SortBy, ch![S(Str::SortName), S(Str::SortDate), S(Str::SortSize)], 0),
+    t(0x0D02, Str::ShowHidden, 0),
+    c(0x0D03, Str::NpView, NP_VIEWS, 0),
+    r(0x0D10, Str::EqCustom1, -12, 12, 1, Unit::Db, 0),
+    r(0x0D11, Str::EqCustom1, -12, 12, 1, Unit::Db, 0),
+    r(0x0D12, Str::EqCustom1, -12, 12, 1, Unit::Db, 0),
+    r(0x0D13, Str::EqCustom1, -12, 12, 1, Unit::Db, 0),
+    r(0x0D14, Str::EqCustom1, -12, 12, 1, Unit::Db, 0),
+    r(0x0D15, Str::EqCustom2, -12, 12, 1, Unit::Db, 0),
+    r(0x0D16, Str::EqCustom2, -12, 12, 1, Unit::Db, 0),
+    r(0x0D17, Str::EqCustom2, -12, 12, 1, Unit::Db, 0),
+    r(0x0D18, Str::EqCustom2, -12, 12, 1, Unit::Db, 0),
+    r(0x0D19, Str::EqCustom2, -12, 12, 1, Unit::Db, 0),
+];
+
+/// The five band gains (dB) of equaliser preset `preset` (an
+/// `EQUALISER` value), reading the custom curves from `get`.
+pub fn eq_gains(preset: i16, get: impl Fn(SettingId) -> i16) -> [i8; 5] {
+    let p = usize::try_from(preset).unwrap_or(0);
+    match EQ_GAINS.get(p) {
+        Some(g) => *g,
+        None => {
+            let base = if p == 9 { 0 } else { 5 };
+            let mut g = [0i8; 5];
+            for (i, v) in g.iter_mut().enumerate() {
+                let key = id::EQ_BAND0.0 + base + u16::try_from(i).unwrap_or(0);
+                *v = i8::try_from(get(SettingId(key))).unwrap_or(0);
+            }
+            g
+        }
+    }
+}
+
 /// A Settings group.
 #[derive(Clone, Copy, Debug)]
 pub struct Group {
@@ -360,7 +429,7 @@ pub static GROUPS: [Group; 12] = [
 
 /// Every item, group by group.
 pub fn all() -> impl Iterator<Item = &'static Setting> {
-    GROUPS.iter().flat_map(|g| g.items.iter())
+    GROUPS.iter().flat_map(|g| g.items.iter()).chain(APP_ITEMS.iter())
 }
 
 /// Look an item up by key.
@@ -370,7 +439,7 @@ pub fn def(id: SettingId) -> Option<&'static Setting> {
 }
 
 /// Number of stored items.
-pub const STORED: usize = 51;
+pub const STORED: usize = 64;
 
 /// Position among stored items (cache index).
 #[must_use]
@@ -497,7 +566,7 @@ pub fn format_choice<const N: usize>(ch: Choice, lang: Lang, out: &mut StrBuf<N>
 #[derive(Clone, Debug)]
 pub struct SettingsCache {
     vals: [i16; STORED],
-    dirty: u64,
+    dirty: u128,
 }
 
 impl Default for SettingsCache {
@@ -542,7 +611,7 @@ impl SettingsCache {
         match self.vals.get_mut(i) {
             Some(slot) if *slot != v => {
                 *slot = v;
-                self.dirty |= 1 << i;
+                self.dirty |= 1u128 << i;
                 true
             }
             _ => false,
@@ -552,13 +621,13 @@ impl SettingsCache {
     /// Back to defaults; every item is marked for writing.
     pub fn reset(&mut self) {
         *self = SettingsCache::new();
-        self.dirty = (1u64 << STORED) - 1;
+        self.dirty = (1u128 << STORED) - 1;
     }
 
     /// Pending writes as (store key, bytes); clears the marks.
     pub fn take_dirty(&mut self) -> impl Iterator<Item = (u16, [u8; 2])> + '_ {
         let d = core::mem::take(&mut self.dirty);
-        all().filter(|s| s.stored()).enumerate().filter(move |(i, _)| d & (1 << i) != 0).map(|(i, s)| {
+        all().filter(|s| s.stored()).enumerate().filter(move |(i, _)| d & (1u128 << i) != 0).map(|(i, s)| {
             let v = self.vals.get(i).copied().unwrap_or(s.default);
             (s.id.0, encode(v))
         })
@@ -588,7 +657,7 @@ mod tests {
             }
         }
         assert_eq!(all().filter(|s| s.stored()).count(), STORED);
-        const { assert!(STORED <= 64) };
+        const { assert!(STORED <= 128) };
     }
 
     #[test]

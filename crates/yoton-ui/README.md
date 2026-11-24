@@ -113,7 +113,7 @@ back as `Event::Ui(UiEvent::Dialog { .. })` / `UiEvent::Menu { .. }`.
 | Item | Bytes | Notes |
 |---|---:|---|
 | `Shell<T, S>` excluding the top screen | 1 400 | nav stack 548 (8 × 68), open menu sheet 360, dialog 144, toast 64, volume 16, requests 192, bookkeeping |
-| `Shell<AppScreen, _>` with the largest `yoton-apps` screen | ≈ 2 036 | under the 2 KiB of 05 §5.1 |
+| `Shell<AppScreen, _>` with the largest `yoton-apps` screen | ≈ 2 044 | under the 2 KiB of 05 §5.1 |
 | `KeyMapper` | 312 | 10 key states + 16-event queue |
 | `KeyGate` | 6 | inside `Shell` |
 | `GlyphCache` | 2 252 | 64 fallback glyphs (02 §7: 2.2 KiB) |
@@ -207,4 +207,8 @@ it in place at random offsets (U-NOR-3) needs the player and is not checked.
   draw_slider`, `Item::wide_value` (information rows), `UiRequests::toast_for`
   and `invalidate_all`, `StrBuf::push_str_or_ellipsis`, and line-start rules
   in `Gfx::wrap` (no line begins with `。`, `、`, `）`, small kana …).
+* Added in UI-3/UI-4: `ListSource::seek_letter` (letter jump answered by
+  the source, so windowed lists are never scanned), accelerated held
+  Up/Down in `ListView` (1, then 5, then 20 rows per repeat: about 10 s
+  across 5000 rows), 1-bit `TEXT`, `CHIP`, `KEY` row icons.
 * Screen-change slide animation belongs to UI-7.

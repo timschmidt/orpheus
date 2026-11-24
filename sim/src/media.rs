@@ -1,0 +1,824 @@
+//! The simulator's Files and Music back end: the card image mounted
+//! through `yoton-fs` (copy-on-write), a windowed browse listing that
+//! behaves like the firmware's (first visit of a big folder in on-disk
+//! order, sorted shortly after; rows outside the window are not
+//! available until `want` + `Event::Data`), text windows, and a fake player
+//! that reads real ID3 tags and `.lrc` files from the card and advances
+//! with simulated time.
+
+use std::collections::{HashMap, HashSet};
+
+use yoton_apps::browse::{DirId, EntryKind, FileRef, is_hidden_name, kind_of, letter_of, natural_cmp};
+use yoton_apps::services::{
+    ArtSize, Bookmark, BrowseFilter, DateTime, Entry, Levels, LibraryState, Listing, LyricLine, PlayerCmd,
+    PlayerState, QueueEntry, SortBy, TrackInfo, data,
+};
+use yoton_audio::{Format, SliceSource};
+use yoton_fs::host::{OverlayDisk, block_on};
+use yoton_fs::{CacheSlot, DirEntry, MountOptions, OpenMode, Volume};
+use yoton_ui::event::{DataReady, Event, Source};
+
+use crate::card;
+
+/// Rows the browse window holds (the firmware keeps about two pages).
+pub const WINDOW: u32 = 32;
+/// Folders larger than this are listed in on-disk order on the first
+/// visit while their index is "built" (04 §6.2).
+pub const SORT_IN_RAM: usize = 128;
+/// Simulated latencies.
+const LOAD_MS: u64 = 40;
+const SORT_MS: u64 = 400;
+
+#[derive(Clone, Debug)]
+pub struct HostEntry {
+    pub name: String,
+    pub kind: EntryKind,
+    pub size: u64,
+    pub modified: DateTime,
+    pub file: FileRef,
+    pub child: DirId,
+    pub hidden: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct QItem {
+    pub file: FileRef,
+    pub path: String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub duration: u32,
+    pub size: u64,
+    pub lyrics: Vec<(Option<u32>, String)>,
+    pub art: Option<u32>,
+}
+
+fn fnv(s: &str) -> u32 {
+    s.bytes().fold(0x811C_9DC5u32, |h, b| (h ^ u32::from(b)).wrapping_mul(0x0100_0193))
+}
+
+fn conv_time(t: yoton_fs::DateTime) -> DateTime {
+    DateTime {
+        year: t.year,
+        month: t.month,
+        day: t.day,
+        hour: t.hour,
+        minute: t.minute,
+        second: t.second,
+        weekday: 0,
+    }
+}
+
+/// Deterministic album art: a two-colour diagonal gradient with rings.
+#[must_use]
+pub fn make_art(seed: u32, size: usize) -> Vec<u16> {
+    let hue = |k: u32| -> (f32, f32, f32) {
+        let h = f32::from(u16::try_from(k % 360).unwrap_or(0)) / 60.0;
+        let x = 1.0 - ((h % 2.0) - 1.0).abs();
+        match h as u32 {
+            0 => (1.0, x, 0.0),
+            1 => (x, 1.0, 0.0),
+            2 => (0.0, 1.0, x),
+            3 => (0.0, x, 1.0),
+            4 => (x, 0.0, 1.0),
+            _ => (1.0, 0.0, x),
+        }
+    };
+    let (a, b) = (hue(seed), hue(seed / 7 + 140));
+    let n = size as f32;
+    let mut out = Vec::with_capacity(size * size);
+    for y in 0..size {
+        for x in 0..size {
+            let t = (x + y) as f32 / (2.0 * n);
+            let (dx, dy) = (x as f32 - n * 0.62, y as f32 - n * 0.38);
+            let r = (dx * dx + dy * dy).sqrt() / n;
+            let ring = if ((r * 9.0) as u32) % 2 == 0 { 1.0 } else { 0.82 };
+            let mix = |p: f32, q: f32| ((p * (1.0 - t) + q * t) * ring * 0.85 + 0.08).clamp(0.0, 1.0);
+            let (rr, gg, bb) = (mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2));
+            out.push(yoton_ui::color::rgb((rr * 255.0) as u8, (gg * 255.0) as u8, (bb * 255.0) as u8));
+        }
+    }
+    out
+}
+
+pub struct Media {
+    vol: Volume<'static, OverlayDisk<'static>>,
+    dir_paths: HashMap<u32, String>,
+    file_paths: HashMap<FileRef, String>,
+    listing: Listing,
+    filter: BrowseFilter,
+    rows: Vec<HostEntry>,
+    sorted_later: Option<(Vec<HostEntry>, u64)>,
+    indexed: HashSet<u32>,
+    win0: u32,
+    pending_win: Option<(u32, u64)>,
+    text: Vec<u8>,
+    text_file: Option<FileRef>,
+    text_win: u32,
+    text_pending: Option<(u32, u64)>,
+    positions: HashMap<FileRef, u32>,
+    // Player.
+    queue: Vec<QItem>,
+    pos: usize,
+    position: u32,
+    playing: bool,
+    a: Option<u32>,
+    b: Option<u32>,
+    bookmarks: Vec<(String, u32)>,
+    resume: Option<QItem>,
+    pub library: LibraryState,
+    art_small: Vec<u16>,
+    art_full: Vec<u16>,
+    art_for: Option<u32>,
+    pub log: Vec<String>,
+    queue_pending: Option<u64>,
+    events: Vec<Event>,
+}
+
+impl Default for Media {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Media {
+    #[must_use]
+    pub fn new() -> Media {
+        let cache: &'static mut [CacheSlot] = Box::leak(vec![CacheSlot::EMPTY; 16].into_boxed_slice());
+        let disk = OverlayDisk::new(card::image());
+        let vol =
+            block_on(Volume::mount(disk, cache, MountOptions::default())).expect("mount the card image");
+        let mut dir_paths = HashMap::new();
+        dir_paths.insert(0, String::new());
+        Media {
+            vol,
+            dir_paths,
+            file_paths: HashMap::new(),
+            listing: Listing::default(),
+            filter: BrowseFilter::default(),
+            rows: Vec::new(),
+            sorted_later: None,
+            indexed: HashSet::new(),
+            win0: 0,
+            pending_win: None,
+            text: Vec::new(),
+            text_file: None,
+            text_win: 0,
+            text_pending: None,
+            positions: HashMap::new(),
+            queue: Vec::new(),
+            pos: 0,
+            position: 0,
+            playing: false,
+            a: None,
+            b: None,
+            bookmarks: Vec::new(),
+            resume: None,
+            library: LibraryState::Building { files: 1287 },
+            art_small: Vec::new(),
+            art_full: Vec::new(),
+            art_for: None,
+            log: Vec::new(),
+            queue_pending: None,
+            events: Vec::new(),
+        }
+    }
+
+    pub fn take_events(&mut self) -> Vec<Event> {
+        std::mem::take(&mut self.events)
+    }
+
+    fn data(&mut self, tag: u16) {
+        self.events.push(Event::Data(DataReady { tag, first: 0, count: 0 }));
+    }
+
+    fn path_of_dir(&self, dir: DirId) -> String {
+        self.dir_paths.get(&dir.0).cloned().unwrap_or_default()
+    }
+
+    /// Read a directory through yoton-fs (host memory: the simulator may
+    /// hold it; the service interface only ever shows a window).
+    fn read_dir(&mut self, dir: DirId) -> Vec<HostEntry> {
+        let base = self.path_of_dir(dir);
+        let path = if base.is_empty() { "/".to_string() } else { base.clone() };
+        let Ok(mut cur) = block_on(self.vol.open_dir(&path)) else { return Vec::new() };
+        let mut e = DirEntry::new();
+        let mut out = Vec::new();
+        while let Ok(true) = block_on(self.vol.read_dir(&mut cur, &mut e)) {
+            let name = e.name().to_string();
+            let is_dir = e.is_dir();
+            let loc = e.locator();
+            let file = FileRef { dir: loc.dir, index: loc.index };
+            let full = format!("{base}/{name}");
+            let child = if is_dir { DirId(e.first_cluster()) } else { DirId::ROOT };
+            if is_dir {
+                self.dir_paths.insert(child.0, full.clone());
+            }
+            self.file_paths.insert(file, full);
+            out.push(HostEntry {
+                kind: kind_of(&name, is_dir),
+                hidden: is_hidden_name(&name) || e.attributes() & 0x06 != 0,
+                name,
+                size: e.size(),
+                modified: conv_time(e.modified()),
+                file,
+                child,
+            });
+        }
+        out
+    }
+
+    fn sort(rows: &mut [HostEntry], by: SortBy) {
+        rows.sort_by(|x, y| {
+            let dirs = (y.kind == EntryKind::Dir).cmp(&(x.kind == EntryKind::Dir));
+            dirs.then_with(|| match by {
+                SortBy::Name => std::cmp::Ordering::Equal,
+                SortBy::Date => {
+                    let k = |e: &HostEntry| {
+                        (
+                            e.modified.year,
+                            e.modified.month,
+                            e.modified.day,
+                            e.modified.hour,
+                            e.modified.minute,
+                        )
+                    };
+                    k(y).cmp(&k(x))
+                }
+                SortBy::Size => y.size.cmp(&x.size),
+            })
+            .then_with(|| natural_cmp(&x.name, &y.name))
+        });
+    }
+
+    pub fn browse(&mut self, dir: DirId, filter: BrowseFilter) -> Listing {
+        if self.listing.dir == dir && self.filter == filter && !self.rows.is_empty() {
+            return self.listing;
+        }
+        let mut rows: Vec<HostEntry> = self
+            .read_dir(dir)
+            .into_iter()
+            .filter(|e| filter.hidden || !e.hidden)
+            .filter(|e| {
+                !filter.audio_only
+                    || matches!(e.kind, EntryKind::Dir | EntryKind::Audio | EntryKind::Playlist)
+            })
+            .collect();
+        let big = rows.len() > SORT_IN_RAM && !self.indexed.contains(&dir.0);
+        let mut sorted = rows.clone();
+        Self::sort(&mut sorted, filter.sort);
+        if big {
+            self.sorted_later = Some((sorted, SORT_MS));
+            self.indexed.insert(dir.0);
+        } else {
+            rows = sorted;
+            self.sorted_later = None;
+        }
+        let count = u32::try_from(rows.len()).unwrap_or(u32::MAX);
+        self.rows = rows;
+        self.filter = filter;
+        self.listing = Listing { dir, count, sorted: !big, complete: true };
+        self.win0 = 0;
+        self.pending_win = None;
+        self.listing
+    }
+
+    pub fn listing(&self) -> Listing {
+        self.listing
+    }
+
+    pub fn entry(&self, i: u32) -> Option<Entry<'_>> {
+        if i < self.win0 || i >= self.win0 + WINDOW {
+            return None;
+        }
+        let e = self.rows.get(usize::try_from(i).ok()?)?;
+        Some(Entry {
+            name: &e.name,
+            kind: e.kind,
+            size: e.size,
+            modified: e.modified,
+            file: e.file,
+            child: e.child,
+        })
+    }
+
+    pub fn want(&mut self, first: u32, count: u32) {
+        if first >= self.win0 && first + count <= self.win0 + WINDOW {
+            return;
+        }
+        let start = first.saturating_sub(WINDOW / 4);
+        self.pending_win = Some((start, LOAD_MS));
+    }
+
+    pub fn position(&self, f: FileRef) -> Option<u32> {
+        self.rows.iter().position(|e| e.file == f).and_then(|p| u32::try_from(p).ok())
+    }
+
+    pub fn letter(&self, i: u32) -> Option<char> {
+        self.entry(i).and_then(|e| letter_of(e.name))
+    }
+
+    pub fn seek_letter(&self, from: u32, forward: bool) -> Option<(u32, char)> {
+        // The firmware answers this from the directory index; here the
+        // whole sorted listing is at hand.
+        let at = |i: usize| self.rows.get(i).and_then(|e| letter_of(&e.name));
+        let from = usize::try_from(from).ok()?;
+        let cur = at(from)?;
+        if forward {
+            let i = (from + 1..self.rows.len()).find(|&i| at(i).is_some_and(|l| l != cur))?;
+            Some((u32::try_from(i).ok()?, at(i)?))
+        } else {
+            let mut i = (0..from).rev().find(|&i| at(i).is_some_and(|l| l != cur))?;
+            let l = at(i)?;
+            while i > 0 && at(i - 1) == Some(l) {
+                i -= 1;
+            }
+            Some((u32::try_from(i).ok()?, l))
+        }
+    }
+
+    pub fn dir_name(&self, dir: DirId) -> &str {
+        self.dir_paths.get(&dir.0).map_or("", |p| p.rsplit('/').next().unwrap_or(""))
+    }
+
+    pub fn delete(&mut self, f: FileRef) -> bool {
+        let Some(path) = self.file_paths.get(&f).cloned() else { return false };
+        let ok = block_on(self.vol.remove(&path)).is_ok();
+        if ok {
+            self.log.push(format!("deleted {path}"));
+            let (dir, filter) = (self.listing.dir, self.filter);
+            self.rows.clear();
+            self.browse(dir, filter);
+        }
+        ok
+    }
+
+    fn read_file(&mut self, path: &str) -> Vec<u8> {
+        let Ok(mut f) = block_on(self.vol.open(path, OpenMode::Read)) else { return Vec::new() };
+        let mut buf = vec![0u8; usize::try_from(f.size()).unwrap_or(0)];
+        let n = block_on(self.vol.read_exact_or_eof(&mut f, &mut buf)).unwrap_or(0);
+        buf.truncate(n);
+        buf
+    }
+
+    // ------------------------------------------------------------ text
+
+    pub fn text_open(&mut self, f: FileRef) -> Option<u32> {
+        let path = self.file_paths.get(&f)?.clone();
+        self.text = self.read_file(&path);
+        self.text_file = Some(f);
+        self.text_win = u32::MAX;
+        u32::try_from(self.text.len()).ok()
+    }
+
+    pub fn text_window(&self) -> (u32, &[u8]) {
+        if self.text_win == u32::MAX {
+            return (0, &[]);
+        }
+        let s = usize::try_from(self.text_win).unwrap_or(0);
+        let e = (s + 1536).min(self.text.len());
+        (self.text_win, self.text.get(s..e).unwrap_or(&[]))
+    }
+
+    pub fn want_text(&mut self, offset: u32) {
+        let (ws, win) = self.text_window();
+        let have = self.text_win != u32::MAX
+            && offset >= ws
+            && (offset as usize + 600 <= ws as usize + win.len()
+                || ws as usize + win.len() == self.text.len());
+        if !have {
+            self.text_pending = Some((offset.saturating_sub(512) / 512 * 512, LOAD_MS));
+        }
+    }
+
+    pub fn text_position(&self, f: FileRef) -> u32 {
+        self.positions.get(&f).copied().unwrap_or(0)
+    }
+
+    pub fn set_text_position(&mut self, f: FileRef, offset: u32) {
+        self.positions.insert(f, offset);
+    }
+
+    // ------------------------------------------------------------ player
+
+    fn load_item(&mut self, file: FileRef, path: &str) -> QItem {
+        let data = self.read_file(path);
+        let stem = path.rsplit('/').next().unwrap_or(path);
+        let stem = stem.rsplit_once('.').map_or(stem, |(s, _)| s);
+        let mut item = QItem {
+            file,
+            path: path.to_string(),
+            title: stem.to_string(),
+            artist: String::new(),
+            album: String::new(),
+            duration: 150_000 + (fnv(path) % 150) * 1000 + fnv(stem) % 1000,
+            size: data.len() as u64 * 9000 + 3_000_000,
+            lyrics: Vec::new(),
+            art: None,
+        };
+        if let Ok(t) =
+            yoton_meta::read_all(&mut SliceSource::new(&data), Format::Mpeg, yoton_meta::Opts::default())
+        {
+            if !t.title.is_empty() {
+                item.title = t.title.as_str().to_string();
+            }
+            item.artist = t.artist.as_str().to_string();
+            item.album = t.album.as_str().to_string();
+        }
+        if !item.album.is_empty() {
+            item.art = Some(fnv(&item.album));
+        }
+        let lrc_path = format!("{}.lrc", path.rsplit_once('.').map_or(path, |(s, _)| s));
+        let lrc = self.read_file(&lrc_path);
+        let mut r = yoton_meta::lrc::LrcReader::new(yoton_meta::CodePage::default());
+        for line in lrc.split(|&b| b == b'\n') {
+            if let Some(l) = r.parse_line(line) {
+                for t in &l.times[..usize::from(l.n)] {
+                    item.lyrics.push((Some(*t), l.text.as_str().to_string()));
+                }
+            }
+        }
+        item.lyrics.sort_by_key(|l| l.0);
+        item
+    }
+
+    fn audio_in(&mut self, dir: DirId) -> Vec<(FileRef, String)> {
+        let mut rows = self.read_dir(dir);
+        Self::sort(&mut rows, SortBy::Name);
+        let base = self.path_of_dir(dir);
+        rows.into_iter()
+            .filter(|e| e.kind == EntryKind::Audio)
+            .map(|e| (e.file, format!("{base}/{}", e.name)))
+            .collect()
+    }
+
+    fn walk_audio(&mut self, dir: DirId, out: &mut Vec<(FileRef, String)>, depth: u8) {
+        out.extend(self.audio_in(dir));
+        if depth == 0 {
+            return;
+        }
+        let mut rows = self.read_dir(dir);
+        Self::sort(&mut rows, SortBy::Name);
+        for e in rows.into_iter().filter(|e| e.kind == EntryKind::Dir && !e.hidden) {
+            self.walk_audio(e.child, out, depth - 1);
+        }
+    }
+
+    fn shuffle<T>(v: &mut [T], seed: u32) {
+        let mut s = seed | 1;
+        for i in (1..v.len()).rev() {
+            s ^= s << 13;
+            s ^= s >> 17;
+            s ^= s << 5;
+            v.swap(i, s as usize % (i + 1));
+        }
+    }
+
+    fn set_queue(&mut self, files: Vec<(FileRef, String)>, start: usize) {
+        self.queue = files.iter().map(|(f, p)| self.load_item(*f, p)).collect();
+        self.pos = start.min(self.queue.len().saturating_sub(1));
+        self.position = 0;
+        self.playing = !self.queue.is_empty();
+        self.a = None;
+        self.b = None;
+        self.refresh_art();
+    }
+
+    fn refresh_art(&mut self) {
+        let seed = self.queue.get(self.pos).and_then(|q| q.art);
+        if seed != self.art_for {
+            self.art_for = seed;
+            if let Some(s) = seed {
+                self.art_small = make_art(s, 52);
+                self.art_full = make_art(s, 128);
+            }
+        }
+    }
+
+    fn current(&self) -> Option<&QItem> {
+        self.queue.get(self.pos)
+    }
+
+    pub fn command(&mut self, c: PlayerCmd, repeat: i16) {
+        self.log.push(format!("{c:?}"));
+        match c {
+            PlayerCmd::PlayPause => {
+                if self.queue.is_empty() {
+                    if self.resume.is_some() {
+                        self.command(PlayerCmd::Resume, repeat);
+                    }
+                } else {
+                    self.playing = !self.playing;
+                }
+            }
+            PlayerCmd::Stop => {
+                self.playing = false;
+                self.position = 0;
+                self.resume = None;
+            }
+            PlayerCmd::Next => self.next(repeat, true),
+            PlayerCmd::Prev => {
+                self.pos = self.pos.saturating_sub(1);
+                self.position = 0;
+            }
+            PlayerCmd::SeekTo(ms) => self.position = ms.min(self.current().map_or(0, |q| q.duration)),
+            PlayerCmd::SeekBy(d) => {
+                let dur = self.current().map_or(0, |q| q.duration);
+                self.position =
+                    u32::try_from((i64::from(self.position) + i64::from(d)).clamp(0, i64::from(dur)))
+                        .unwrap_or(0);
+            }
+            PlayerCmd::Jump(n) => {
+                if (n as usize) < self.queue.len() {
+                    self.pos = n as usize;
+                    self.position = 0;
+                    self.playing = true;
+                }
+            }
+            PlayerCmd::Remove(n) => {
+                if (n as usize) < self.queue.len() && n as usize != self.pos {
+                    self.queue.remove(n as usize);
+                    if (n as usize) < self.pos {
+                        self.pos -= 1;
+                    }
+                }
+            }
+            PlayerCmd::MoveUp(n) => {
+                let n = n as usize;
+                if n > self.pos + 1 && n < self.queue.len() {
+                    self.queue.swap(n, n - 1);
+                }
+            }
+            PlayerCmd::MoveDown(n) => {
+                let n = n as usize;
+                if n > self.pos && n + 1 < self.queue.len() {
+                    self.queue.swap(n, n + 1);
+                }
+            }
+            PlayerCmd::PlayDir { dir, start, shuffle } => {
+                let mut files = self.audio_in(dir);
+                let mut at = start.and_then(|s| files.iter().position(|(f, _)| *f == s)).unwrap_or(0);
+                if shuffle {
+                    Self::shuffle(&mut files, 0x5EED);
+                    at = 0;
+                }
+                self.set_queue(files, at);
+            }
+            PlayerCmd::ShuffleAll => {
+                let mut files = Vec::new();
+                let music =
+                    self.dir_paths.iter().find(|(_, p)| p.as_str() == "/Music").map(|(k, _)| DirId(*k));
+                let root = music.unwrap_or_else(|| {
+                    let _ = self.read_dir(DirId::ROOT);
+                    self.dir_paths
+                        .iter()
+                        .find(|(_, p)| p.as_str() == "/Music")
+                        .map_or(DirId::ROOT, |(k, _)| DirId(*k))
+                });
+                self.walk_audio(root, &mut files, 3);
+                // The 5000 empty files of the big folder are not music.
+                let sizes: Vec<bool> = files.iter().map(|(_, p)| !p.contains("/Big folder/")).collect();
+                let mut k = sizes.into_iter();
+                files.retain(|_| k.next().unwrap_or(true));
+                Self::shuffle(&mut files, 0xC0FFEE);
+                self.set_queue(files, 0);
+            }
+            PlayerCmd::PlayNext(f) | PlayerCmd::AddToQueue(f) => {
+                if let Some(p) = self.file_paths.get(&f).cloned() {
+                    let item = self.load_item(f, &p);
+                    let at =
+                        if matches!(c, PlayerCmd::PlayNext(_)) { self.pos + 1 } else { self.queue.len() };
+                    self.queue.insert(at.min(self.queue.len()), item);
+                }
+            }
+            PlayerCmd::SetA => self.a = Some(self.position),
+            PlayerCmd::SetB => self.b = Some(self.position),
+            PlayerCmd::ClearAb => {
+                self.a = None;
+                self.b = None;
+            }
+            PlayerCmd::Bookmark => {
+                if let Some(q) = self.current() {
+                    let t = q.title.clone();
+                    self.bookmarks.push((t, self.position));
+                }
+            }
+            PlayerCmd::Favourite => {}
+            PlayerCmd::PlayBookmark(i) => {
+                if let Some((t, at)) = self.bookmarks.get(i as usize).cloned()
+                    && let Some(p) = self.queue.iter().position(|q| q.title == t)
+                {
+                    self.pos = p;
+                    self.position = at;
+                    self.playing = true;
+                }
+            }
+            PlayerCmd::Resume => {
+                if let Some(q) = self.resume.take() {
+                    self.queue = vec![q];
+                    self.pos = 0;
+                    self.playing = true;
+                }
+            }
+        }
+        self.refresh_art();
+        self.queue_pending = Some(LOAD_MS);
+    }
+
+    fn next(&mut self, repeat: i16, user: bool) {
+        if repeat == 1 && !user {
+            self.position = 0;
+            return;
+        }
+        if self.pos + 1 < self.queue.len() {
+            self.pos += 1;
+        } else if repeat == 2 {
+            self.pos = 0;
+        } else {
+            self.playing = false;
+        }
+        self.position = 0;
+        self.refresh_art();
+    }
+
+    /// Simulated time passes.
+    pub fn advance(&mut self, ms: u64, repeat: i16) {
+        if self.playing
+            && let Some(q) = self.current()
+        {
+            let dur = q.duration;
+            self.position = self.position.saturating_add(u32::try_from(ms).unwrap_or(0));
+            if let (Some(a), Some(b)) = (self.a, self.b)
+                && b > a
+                && self.position >= b
+            {
+                self.position = a;
+            }
+            if self.position >= dur {
+                self.next(repeat, false);
+            }
+        }
+        let tick = |p: &mut Option<(u32, u64)>| -> Option<u32> {
+            let (v, left) = (*p)?;
+            if left <= ms {
+                *p = None;
+                Some(v)
+            } else {
+                *p = Some((v, left - ms));
+                None
+            }
+        };
+        if let Some(w) = tick(&mut self.pending_win) {
+            self.win0 = w;
+            self.data(data::BROWSE);
+        }
+        if let Some(t) = tick(&mut self.text_pending) {
+            self.text_win = t;
+            self.data(data::TEXT);
+        }
+        if let Some((rows, left)) = self.sorted_later.take() {
+            if left <= ms {
+                self.rows = rows;
+                self.listing.sorted = true;
+                self.data(data::BROWSE);
+            } else {
+                self.sorted_later = Some((rows, left - ms));
+            }
+        }
+        if let Some(left) = self.queue_pending.take() {
+            if left <= ms {
+                self.data(data::QUEUE);
+            } else {
+                self.queue_pending = Some(left - ms);
+            }
+        }
+    }
+
+    pub fn state(&self) -> PlayerState {
+        let Some(q) = self.current() else { return PlayerState::default() };
+        PlayerState {
+            source: if self.playing { Source::Playing } else { Source::Paused },
+            position_ms: self.position,
+            duration_ms: q.duration,
+            queue_pos: u32::try_from(self.pos).unwrap_or(0),
+            queue_len: u32::try_from(self.queue.len()).unwrap_or(0),
+            a_ms: self.a,
+            b_ms: self.b,
+            buffer_pct: 87,
+            cpu_pct: 23,
+        }
+    }
+
+    pub fn track(&self) -> Option<TrackInfo<'_>> {
+        let q = self.current()?;
+        Some(TrackInfo {
+            title: &q.title,
+            artist: &q.artist,
+            album: &q.album,
+            file: q.file,
+            path: &q.path,
+            size: q.size,
+            codec: "MP3",
+            sample_rate: 44_100,
+            bits: 16,
+            channels: 2,
+            bitrate_kbps: 320,
+            gain_cdb: (self.pos == 0).then_some(-620),
+        })
+    }
+
+    pub fn queue_entry(&self, i: u32) -> Option<QueueEntry<'_>> {
+        if self.queue_pending.is_some() {
+            return None;
+        }
+        let q = self.queue.get(i as usize)?;
+        Some(QueueEntry { title: &q.title, artist: &q.artist, duration_ms: q.duration })
+    }
+
+    pub fn art(&self, size: ArtSize) -> Option<&[u16]> {
+        self.art_for?;
+        Some(match size {
+            ArtSize::Small => &self.art_small,
+            ArtSize::Full => &self.art_full,
+        })
+    }
+
+    pub fn lyrics_count(&self) -> u32 {
+        self.current().map_or(0, |q| u32::try_from(q.lyrics.len()).unwrap_or(0))
+    }
+
+    pub fn lyric(&self, i: u32) -> Option<LyricLine<'_>> {
+        let (t, s) = self.current()?.lyrics.get(i as usize)?;
+        Some(LyricLine { time_ms: *t, text: s })
+    }
+
+    pub fn levels(&self) -> Levels {
+        let t = self.position as f32 / 1000.0;
+        let wave = |f: f32, ph: f32| (t * f + ph).sin() * 0.5 + 0.5;
+        let mut bands = [0u8; 16];
+        for (i, b) in bands.iter_mut().enumerate() {
+            let fi = i as f32;
+            let base = 1.0 - fi / 20.0;
+            *b = ((base * (0.55 + 0.45 * wave(1.3 + fi * 0.37, fi))) * 230.0) as u8;
+        }
+        let l = (170.0 + 70.0 * wave(2.1, 0.0)) as u8;
+        let r = (160.0 + 80.0 * wave(1.7, 1.0)) as u8;
+        Levels { peak: [l, r], hold: [l.saturating_add(14), r.saturating_add(10)], bands }
+    }
+
+    pub fn resume_title(&self) -> Option<&str> {
+        self.resume.as_ref().map(|q| q.title.as_str())
+    }
+
+    /// Set a resume point (as after a power cycle) for scripts.
+    pub fn set_resume(&mut self, path: &str) {
+        let f = self.file_paths.iter().find(|(_, p)| p.as_str() == path).map(|(f, _)| *f);
+        let item = self.load_item(f.unwrap_or_default(), path);
+        self.resume = Some(item);
+        self.queue.clear();
+        self.playing = false;
+    }
+
+    /// Make sure the paths under `dir_path` are known (scripts).
+    pub fn learn(&mut self, dir_path: &str) {
+        let mut d = DirId::ROOT;
+        let mut path = String::new();
+        let _ = self.read_dir(d);
+        for part in dir_path.split('/').filter(|s| !s.is_empty()) {
+            path = format!("{path}/{part}");
+            if let Some((k, _)) = self.dir_paths.iter().find(|(_, p)| **p == path) {
+                d = DirId(*k);
+                let _ = self.read_dir(d);
+            }
+        }
+    }
+
+    pub fn bookmark_count(&self) -> u32 {
+        u32::try_from(self.bookmarks.len()).unwrap_or(0)
+    }
+
+    pub fn bookmark(&self, i: u32) -> Option<Bookmark<'_>> {
+        let (t, p) = self.bookmarks.get(i as usize)?;
+        Some(Bookmark { title: t, position_ms: *p })
+    }
+
+    #[must_use]
+    pub fn active(&self) -> bool {
+        !self.queue.is_empty()
+    }
+
+    pub fn title_artist(&self) -> Option<(&str, &str, bool, u16)> {
+        let q = self.current()?;
+        let prog = u16::try_from(u64::from(self.position) * 1000 / u64::from(q.duration.max(1))).unwrap_or(0);
+        Some((&q.title, &q.artist, self.playing, prog))
+    }
+
+    /// The dir id of a path learnt so far.
+    pub fn dir_id(&self, path: &str) -> Option<DirId> {
+        self.dir_paths.iter().find(|(_, p)| p.as_str() == path).map(|(k, _)| DirId(*k))
+    }
+
+    pub fn file_ref(&self, path: &str) -> Option<FileRef> {
+        self.file_paths.iter().find(|(_, p)| p.as_str() == path).map(|(f, _)| *f)
+    }
+}
