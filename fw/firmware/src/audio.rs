@@ -18,11 +18,24 @@
 //! (`build_slot`, AU-12) and the music library (`crate::library::slot`)
 //! on the end of the decoder arena.
 //!
-//! Not yet: gapless hand-over (the player's `Prefetch` is not carried out;
-//! the next track opens after the current one has played out), the fades
-//! of 04 §2.2 around pause and seek, periodic resume saves while playing
-//! (a card write between blocks could underrun; the state is saved at
-//! pause, stop, track change, card hand-over and power-off instead).
+//! Gapless (04 §2.2): when the reader has read the current file to its
+//! end the player asks for the next one (`Prefetch`): it is opened and the
+//! reader goes on into it in the same stream ring
+//! (`orpheus_audio::StreamRing`). When the decoder ends, the player answers
+//! `Open { gapless }`: the PCM ring and the DAC keep running (no drain, no
+//! silence), the ring hands the next stream over and the next decoder is
+//! opened on its bytes in the same arena (`play_item`); the decoders trim
+//! their own encoder delay and padding, so the join is sample-exact. A
+//! different sample rate drains the PCM ring and restarts the DAC instead.
+//! The clock is at its top level for the hand-over; the track's album art
+//! (cache only) and library place follow between the next ring refills.
+//! A track change the user makes (Next, a jump, a new queue) still stops
+//! the output and starts fresh.
+//!
+//! Not yet: the fades of 04 §2.2 around pause and seek, periodic resume
+//! saves while playing (a card write between blocks could underrun; the
+//! state is saved at pause, stop, track change, card hand-over and
+//! power-off instead; a gapless track change does not save).
 
 use core::future::poll_fn;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -36,8 +49,10 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::waitqueue::AtomicWaker;
 use embassy_time::Timer;
+use orpheus_audio::ring::{Space, Target as Part};
 use orpheus_audio::{
-    ByteSource, ContainerInfo, OpenError, PcmBlock, Probe, SeekSource, SeekStep, SourceError, Step, probe,
+    ByteSource, ContainerInfo, OpenError, PcmBlock, Probe, SeekSource, SeekStep, SourceError, Step,
+    StreamRing, probe,
 };
 use orpheus_fs::{CacheSlot, DirEntry, File, MountOptions, OpenMode, Volume};
 use orpheus_index::Progress;
@@ -190,88 +205,125 @@ const RING: usize = 16 * 1024;
 struct RingBuf([u8; RING]);
 static RING_BUF: ConstStaticCell<RingBuf> = ConstStaticCell::new(RingBuf([0; RING]));
 
-/// The stream ring over one file (also the picture decoders' source while
-/// no track is loaded, `pictures`).
+/// The stream ring over the current file, and the next file read ahead
+/// after it (gapless); also the picture decoders' source while no track is
+/// loaded (`pictures`).
+///
+/// The files are kept here, not moved through the playback loop's frames:
+/// a `File` is 64 bytes and the RT task's stack is what limits it.
 pub(crate) struct Ring {
-    buf: &'static mut [u8; RING],
-    rd: u64,
-    wr: u64,
-    len: Option<u64>,
-    pub(crate) eof: bool,
-    /// A decoder seek moved the read position: the next `fill` reads the
-    /// file from `wr`.
-    pub(crate) reseek: bool,
+    s: StreamRing<'static>,
+    /// The file played (`play_file`; the pictures pass their own).
+    file: Option<File>,
+    /// The queue item read ahead after it (`Action::Prefetch`), and its
+    /// file.
+    next: Option<Next>,
+    next_file: Option<File>,
+}
+
+pub(crate) struct Next {
+    item: u32,
+    track: TrackRef,
+    ext: [u8; 8],
+    ext_len: u8,
+    title: media::Name,
 }
 
 impl ByteSource for Ring {
     fn peek(&self, n: usize) -> Option<(&[u8], &[u8])> {
-        if self.available() < n {
-            return None;
-        }
-        let start = (self.rd % RING as u64) as usize;
-        let first = n.min(RING - start);
-        Some((&self.buf[start..start + first], &self.buf[..n - first]))
+        self.s.peek(n)
     }
     fn available(&self) -> usize {
-        (self.wr - self.rd) as usize
+        self.s.available()
     }
     fn consume(&mut self, n: usize) {
-        self.rd += n.min(self.available()) as u64;
+        self.s.consume(n);
     }
     fn position(&self) -> u64 {
-        self.rd
+        self.s.position()
     }
     fn len(&self) -> Option<u64> {
-        self.len
+        self.s.len()
     }
     fn at_end(&self) -> bool {
-        self.eof
+        self.s.at_end()
     }
 }
 
-/// A seek flushes the ring; the playback loop refills it from the new
-/// position (`Ring::fill`).
+/// A seek flushes the ring (and what was read of the next file); the
+/// playback loop refills it from the new position (`Ring::fill`).
 impl SeekSource for Ring {
     fn seek(&mut self, pos: u64) -> Result<(), SourceError> {
-        let len = self.len.ok_or(SourceError::NotSeekable)?;
-        if pos > len {
-            return Err(SourceError::OutOfRange);
-        }
-        self.rd = pos;
-        self.wr = pos;
-        self.eof = pos >= len;
-        self.reseek = true;
-        Ok(())
+        self.s.seek(pos)
     }
 }
 
 impl Ring {
+    /// A new current file of `len` bytes; a file read ahead is forgotten.
     pub(crate) fn reset(&mut self, len: u64) {
-        self.rd = 0;
-        self.wr = 0;
-        self.len = Some(len);
-        self.eof = false;
-        self.reseek = false;
+        self.s.reset(Some(len));
+        self.cancel_next();
     }
 
-    /// Read from the file into free space (sector-sized pieces where it can).
-    pub(crate) async fn fill(&mut self, vol: &mut Volume<'static, Card>, f: &mut File) -> bool {
-        if self.reseek {
-            self.reseek = false;
-            f.set_position(self.wr);
+    /// The current file has been read to its end.
+    pub(crate) fn eof(&self) -> bool {
+        self.s.eof()
+    }
+
+    /// A seek moved the read position and nothing was read there yet.
+    pub(crate) fn reseek(&self) -> bool {
+        self.s.reseek_pending()
+    }
+
+    /// Forget the file read ahead.
+    fn cancel_next(&mut self) {
+        self.s.cancel_next();
+        self.next = None;
+        self.next_file = None;
+    }
+
+    /// The decoder of the current file ended and the player opens `t`:
+    /// if that is the file read ahead, it becomes the current one (its
+    /// bytes stay in the ring) and its title is published. Returns its
+    /// identity and extension.
+    #[inline(never)]
+    fn hand_over(&mut self, t: Target) -> Option<(TrackRef, [u8; 8], u8)> {
+        let Target::Item(i) = t else { return None };
+        if self.next.as_ref().is_none_or(|n| n.item != i) || self.next_file.is_none() || !self.s.hand_over() {
+            return None;
         }
+        self.file = self.next_file.take();
+        let n = self.next.take()?;
+        publish_track(n.track, &n.title);
+        Some((n.track, n.ext, n.ext_len))
+    }
+
+    /// Read into free space (sector-sized pieces where it can): the
+    /// current file (`f`, else the ring's own) to its end, then the file
+    /// read ahead.
+    pub(crate) async fn fill(&mut self, vol: &mut Volume<'static, Card>, mut f: Option<&mut File>) -> bool {
         let mut any = false;
-        while !self.eof && RING - self.available() >= 512 {
-            let start = (self.wr % RING as u64) as usize;
-            let space = (RING - self.available()).min(RING - start).min(16384);
-            match vol.read(f, &mut self.buf[start..start + space]).await {
-                Ok(0) => self.eof = true,
+        loop {
+            let Ring { s, file: own, next_file, .. } = self;
+            let Some(Space { target, seek, buf }) = s.space(512, 16384) else { break };
+            let file = match target {
+                Part::Current => match (f.as_deref_mut(), own) {
+                    (Some(f), _) | (None, Some(f)) => f,
+                    (None, None) => break,
+                },
+                Part::Next => match next_file {
+                    Some(n) => n,
+                    None => break,
+                },
+            };
+            if let Some(p) = seek {
+                file.set_position(p);
+            }
+            match vol.read(file, buf).await {
+                Ok(0) | Err(_) => s.end(target),
                 Ok(n) => {
-                    self.wr += n as u64;
+                    s.wrote(target, n);
                     any = true;
-                }
-                Err(_) => {
-                    self.eof = true;
                 }
             }
         }
@@ -375,8 +427,11 @@ impl PcmOut {
         self.running = true;
     }
 
+    /// Pad the current half with silence, let everything play out, stop.
     async fn finish(&mut self) {
-        // Pad the current half with silence and let it play out.
+        if !self.running && self.written == 0 && self.fill == 0 {
+            return;
+        }
         while self.fill != 0 {
             self.push(0).await;
         }
@@ -464,6 +519,10 @@ struct Start {
     frame: u64,
     paused: bool,
     track: Option<TrackRef>,
+    /// The previous track's decoder ended and the ring holds this file
+    /// already (handed over): the DAC is still running with the previous
+    /// track's last samples.
+    gapless: bool,
 }
 
 /// How a file's playback ended.
@@ -475,6 +534,9 @@ enum End {
     /// A request for the idle loop is waiting (`Server::pending` or
     /// `pending_play`: card hand-over, power-off, a new queue).
     Pending,
+    /// A gapless hand-over cannot go on (another sample rate): open the
+    /// same item again the ordinary way.
+    Again,
 }
 
 /// The playback loop's next step after the player answered.
@@ -489,8 +551,10 @@ async fn play_path(
     path: &str,
     srv: &mut Server,
 ) -> Result<End, &'static [u8]> {
-    let f = vol.open(path, OpenMode::Read).await.map_err(|_| &b"open failed"[..])?;
-    play_file(vol, ring, arena, f, ext_of(path), srv, Start { frame: 0, paused: false, track: None }).await
+    ring.file = Some(vol.open(path, OpenMode::Read).await.map_err(|_| &b"open failed"[..])?);
+    let mut out = PcmOut::new();
+    let st = Start { frame: 0, paused: false, track: None, gapless: false };
+    play_file(vol, ring, arena, ext_of(path), srv, &mut out, st).await
 }
 
 fn codec_name(ext: Option<&[u8]>) -> &'static str {
@@ -533,13 +597,12 @@ static LAST_SERVE_MS: AtomicU32 = AtomicU32::new(0);
 /// Underruns that count towards [`MAX_UNDERRUNS`].
 static SLOW_UNDERRUNS: AtomicU32 = AtomicU32::new(0);
 
-/// Seek the decoder to `frame`, refilling the ring from the new position.
-/// Returns the frame it landed on.
+/// Seek the decoder to `frame`, refilling the ring (its own file) from the
+/// new position. Returns the frame it landed on.
 async fn seek_to(
     dec: &mut orpheus_codecs::AnyDecoder<'_>,
     ring: &mut Ring,
     vol: &mut Volume<'static, Card>,
-    f: &mut File,
     frame: u64,
 ) -> Option<u64> {
     mark(9);
@@ -548,7 +611,7 @@ async fn seek_to(
         match dec.seek(ring, frame) {
             Ok(SeekStep::Done(at)) => return Some(at),
             Ok(SeekStep::NeedData(_)) => {
-                if (ring.eof && !ring.reseek) || (!ring.fill(vol, f).await && !ring.eof) {
+                if (ring.eof() && !ring.reseek()) || (!ring.fill(vol, None).await && !ring.eof()) {
                     return None;
                 }
             }
@@ -564,19 +627,46 @@ fn failed(srv: &mut Server, driven: bool, why: &'static [u8]) -> Result<End, &'s
     if driven { Ok(after(srv.feed(Event::DecoderFailed))) } else { Err(why) }
 }
 
+/// Read ahead into queue item `item` after the current file (the player's
+/// `Prefetch`): open it now; the ring reads it once the current file is
+/// read to its end. A file that cannot be opened is simply not read ahead
+/// (the open at the track change fails and the player moves on).
+async fn prefetch(vol: &mut Volume<'static, Card>, ring: &mut Ring, srv: &Server, item: u32) {
+    ring.cancel_next();
+    let mut title = media::Name::EMPTY;
+    let got = open_target(vol, srv, Target::Item(item), Some(&mut title), &mut ring.next_file).await;
+    if let (Some((track, ext, ext_len)), Some(f)) = (got, ring.next_file.as_ref()) {
+        ring.s.begin_next(Some(f.size()));
+        ring.next = Some(Next { item, track, ext, ext_len, title });
+    }
+}
+
+/// At a gapless track change, between ring refills: the track's place in
+/// the music library and its album art from the cache (the decoder holds
+/// the arena, nothing is made now).
+async fn track_meta(vol: &mut Volume<'static, Card>, srv: &mut Server, t: TrackRef) {
+    crate::library::find_now(vol, srv, t.locator()).await;
+    crate::pictures::track_art_cached(vol, srv, t.locator()).await;
+}
+
+/// Play the ring's file (`Ring::file`).
 #[allow(clippy::too_many_lines)]
 async fn play_file(
     vol: &mut Volume<'static, Card>,
     ring: &mut Ring,
     arena: &mut [u8],
-    mut f: File,
     ext: Option<&[u8]>,
     srv: &mut Server,
+    out: &mut PcmOut,
     st: Start,
 ) -> Result<End, &'static [u8]> {
     mark(10);
-    ring.reset(f.size());
-    ring.fill(vol, &mut f).await;
+    let size = ring.file.as_ref().map_or(0, File::size);
+    if !st.gapless {
+        ring.reset(size);
+        out.crc = 0xFFFF_FFFF;
+    }
+    ring.fill(vol, None).await;
     // Probe, skipping leading tags.
     let format = loop {
         match probe(ring, ext) {
@@ -585,16 +675,12 @@ async fn play_file(
                 if (n as usize) <= ring.available() {
                     ring.consume(n as usize);
                 } else {
-                    let target = ring.position() + n;
-                    f.set_position(target);
-                    ring.reset(f.size());
-                    ring.rd = target;
-                    ring.wr = target;
-                    ring.fill(vol, &mut f).await;
+                    ring.s.skip_to(ring.position() + n);
+                    ring.fill(vol, None).await;
                 }
             }
-            Probe::NeedData(_) if !ring.eof => {
-                ring.fill(vol, &mut f).await;
+            Probe::NeedData(_) if !ring.eof() => {
+                ring.fill(vol, None).await;
             }
             _ => return Err(b"unknown format"),
         }
@@ -603,14 +689,22 @@ async fn play_file(
     let plan = loop {
         match orpheus_codecs::inspect(format, ring, &hint) {
             Ok(p) => break p,
-            Err(OpenError::NeedData(_)) if !ring.eof => {
-                ring.fill(vol, &mut f).await;
+            Err(OpenError::NeedData(_)) if !ring.eof() => {
+                ring.fill(vol, None).await;
             }
             Err(_) => return Err(b"unsupported stream"),
         }
     };
     if plan.arena + SPARE > arena.len() {
         return Err(b"arena too small");
+    }
+    // SAFETY: initialised at the start of the audio task, which is the only
+    // user.
+    let chain = unsafe { (*(&raw mut CHAIN)).assume_init_mut() };
+    if st.gapless && plan.info.rate != chain.format().rate {
+        // Another sample rate: the previous track plays out and this one
+        // opens again, fresh (`play_item`).
+        return Ok(End::Again);
     }
     // The decoder's part of the arena, and the rest for file reads and
     // writes while it plays (text window, player state).
@@ -621,9 +715,8 @@ async fn play_file(
         return Err(b"channels not supported");
     }
     // DSP chain: sets the DAC rate (88.2-192 kHz sources are decimated).
-    // SAFETY: initialised at the start of the audio task, which is the only
-    // user.
-    let chain = unsafe { (*(&raw mut CHAIN)).assume_init_mut() };
+    // The same format as the previous track keeps its state (no reset at a
+    // gapless join).
     mark(6);
     let out_rate = chain
         .set_format(orpheus_dsp::Format {
@@ -641,7 +734,7 @@ async fn play_file(
     // Start inside the track (resume, bookmark): before any output.
     let mut pos = 0u64;
     if st.frame > 0 {
-        match seek_to(&mut dec, ring, vol, &mut f, st.frame).await {
+        match seek_to(&mut dec, ring, vol, st.frame).await {
             Some(at) => pos = at,
             None => {
                 CODEC_FLOOR.store(0, Ordering::Relaxed);
@@ -650,18 +743,20 @@ async fn play_file(
             }
         }
     }
-    mark(7);
-    media::apply_sound(chain);
+    if !st.gapless {
+        mark(7);
+        media::apply_sound(chain);
+    }
     mark(8);
     let dsp = DSP_ON.load(Ordering::Relaxed);
-    dac::set_rate(out_rate);
+    if !out.running {
+        dac::set_rate(out_rate);
+    }
     RATE.store(out_rate, Ordering::Relaxed);
     let stereo = info.channels == 2;
     let ch = if stereo { 2 } else { 1 };
-    let mut out = PcmOut::new();
     let rate = u64::from(info.rate);
     let ms_of = move |frame: u64| (frame * 1000 / rate.max(1)) as u32;
-    let size = f.size();
     media::player_update(|p| {
         p.source = if st.paused { Source::Paused } else { Source::Playing };
         p.position_ms = ms_of(pos);
@@ -675,9 +770,14 @@ async fn play_file(
     let driven = st.track.is_some();
     if let Some(track) = st.track {
         srv.feed(Event::Opened { track, rate: info.rate, frames: info.frames });
-        // A track change: save while the DAC is not running yet.
-        save_store(vol, srv, spare).await;
+        // A track change: save while the DAC is not running yet (at a
+        // gapless one it runs: the next safe moment saves).
+        if !out.running {
+            save_store(vol, srv, spare).await;
+        }
     }
+    // Album art and library place of a track that came in gapless.
+    let mut meta_due = st.gapless;
     PLAYING.store(true, Ordering::Relaxed);
     STOP.store(false, Ordering::Relaxed);
     let t0 = time::now_us();
@@ -744,12 +844,22 @@ async fn play_file(
             if fl.stop {
                 break 'play Ok(End::Idle);
             }
+            if fl.cancel {
+                // The next track changed: whatever was read ahead goes, and
+                // the reader's end is reported again (a new `Prefetch`).
+                ring.cancel_next();
+                reader_end = false;
+            }
+            if let Some(item) = fl.prefetch() {
+                prefetch(vol, ring, srv, item).await;
+                LAST_SERVE_MS.store((time::now_us() / 1000) as u32, Ordering::Relaxed);
+            }
             if let Some(target) = fl.seek {
                 // Stop the DAC for the seek: the bisection reads the card for
                 // a while, which is not an underrun (and must not count
                 // towards the too-slow abort).
                 out.stop();
-                match seek_to(&mut dec, ring, vol, &mut f, target).await {
+                match seek_to(&mut dec, ring, vol, target).await {
                     Some(at) => {
                         pos = at;
                         reader_end = false;
@@ -852,10 +962,15 @@ async fn play_file(
                 if ring.available() < RING / 2 {
                     let a = time::now_us();
                     mark(1);
-                    ring.fill(vol, &mut f).await;
+                    ring.fill(vol, None).await;
                     let b = time::now_us();
                     mark(2);
                     let go_on = serve_one(vol, srv, spare).await;
+                    if meta_due && let Some(t) = st.track {
+                        meta_due = false;
+                        track_meta(vol, srv, t).await;
+                        LAST_SERVE_MS.store((time::now_us() / 1000) as u32, Ordering::Relaxed);
+                    }
                     mark(0);
                     T_FILL.fetch_add((b - a) as u32, Ordering::Relaxed);
                     T_SERVE.fetch_add((time::now_us() - b) as u32, Ordering::Relaxed);
@@ -863,18 +978,19 @@ async fn play_file(
                         break 'play Ok(End::Pending);
                     }
                 }
-                if driven && ring.eof && !reader_end {
+                if driven && ring.eof() && !reader_end {
                     reader_end = true;
-                    // The player answers with `Prefetch` (not carried out).
+                    // The player answers with `Prefetch`: the next file is
+                    // read after this one (gapless).
                     flow.merge(srv.feed(Event::ReaderAtEnd));
                 }
             }
             Ok(Step::NeedData(_)) => {
-                if ring.eof {
+                if ring.eof() {
                     natural = true;
                     break 'play Ok(End::Idle);
                 }
-                if !ring.fill(vol, &mut f).await {
+                if !ring.fill(vol, None).await {
                     // The ring is full and the decoder still wants more:
                     // it can never be satisfied; end the track instead of
                     // spinning.
@@ -897,19 +1013,38 @@ async fn play_file(
             }
         }
     };
-    // At the natural end play out what is queued, then ask the player what
-    // comes next.
-    let end = if natural {
-        out.finish().await;
-        if driven {
-            let fl = srv.feed(Event::DecoderEnded);
-            if fl.open.is_none() && !fl.stop {
-                srv.feed(Event::Drained);
+    // At the natural end ask the player what comes next: the file read
+    // ahead is handed over with the DAC running (gapless), anything else
+    // first plays out what is queued.
+    let mut gapless = false;
+    let end = if natural && driven {
+        let fl = srv.feed(Event::DecoderEnded);
+        match fl.open {
+            Some(o)
+                if o.gapless && !o.paused && ring.next.as_ref().is_some_and(|n| o.target.is_item(n.item)) =>
+            {
+                gapless = true;
+                // Underruns while the next decoder opens are not the
+                // decoder's (no too-slow abort).
+                LAST_SERVE_MS.store((time::now_us() / 1000) as u32, Ordering::Relaxed);
+                Ok(End::Open(o))
             }
-            Ok(after(fl))
-        } else {
-            end
+            Some(mut o) => {
+                out.finish().await;
+                o.gapless = false;
+                Ok(End::Open(o))
+            }
+            None => {
+                out.finish().await;
+                if !fl.stop {
+                    srv.feed(Event::Drained);
+                }
+                Ok(End::Idle)
+            }
         }
+    } else if natural {
+        out.finish().await;
+        end
     } else {
         if out.running {
             out.stop();
@@ -919,9 +1054,16 @@ async fn play_file(
     CRC.store(!out.crc, Ordering::Relaxed);
     DECODE_US.store(decode_us as u32, Ordering::Relaxed);
     PLAY_US.store((time::now_us() - t0) as u32, Ordering::Relaxed);
-    PLAYING.store(false, Ordering::Relaxed);
-    CODEC_FLOOR.store(0, Ordering::Relaxed);
-    dsp_clock_floor(false);
+    if gapless {
+        // The top clock level for the hand-over (Vorbis sets up its
+        // codebooks while the PCM ring plays out).
+        CODEC_FLOOR.store(2, Ordering::Relaxed);
+        dsp_clock_floor(false);
+    } else {
+        PLAYING.store(false, Ordering::Relaxed);
+        CODEC_FLOOR.store(0, Ordering::Relaxed);
+        dsp_clock_floor(false);
+    }
     end
 }
 
@@ -1009,7 +1151,8 @@ static SERVER: ConstStaticCell<Server> = ConstStaticCell::new(Server::new());
 // ------------------------------------------------------------ the player
 
 /// Play what the player asked for, then whatever it asks for next, until
-/// it stops (or a request for the idle loop arrives).
+/// it stops (or a request for the idle loop arrives). The PCM output lives
+/// across the tracks: a gapless change keeps it running.
 async fn run_player(
     vol: &mut Volume<'static, Card>,
     ring: &mut Ring,
@@ -1017,63 +1160,90 @@ async fn run_player(
     srv: &mut Server,
     first: OpenReq,
 ) {
+    let mut out = PcmOut::new();
     let mut next = Some(first);
     while let Some(o) = next.take() {
         for c in [&FRAMES, &UNDERRUNS, &SLOW_UNDERRUNS, &CORRUPT] {
             c.store(0, Ordering::Relaxed);
         }
         STOP.store(false, Ordering::Relaxed);
-        next = match play_item(vol, ring, arena, srv, o).await {
+        next = match play_item(vol, ring, arena, srv, &mut out, o).await {
             End::Open(o) => Some(o),
-            End::Idle | End::Pending => None,
+            End::Idle | End::Pending | End::Again => None,
         };
     }
+    if out.running {
+        out.stop();
+    }
+    ring.cancel_next();
+    ring.file = None;
+    PLAYING.store(false, Ordering::Relaxed);
+    CODEC_FLOOR.store(0, Ordering::Relaxed);
+    dsp_clock_floor(false);
     STOP.store(false, Ordering::Relaxed);
     media::player_update(|p| p.source = Source::Idle);
     save_store(vol, srv, arena).await;
 }
 
 /// Open and play one file for the player; a file that cannot be opened or
-/// decoded is reported as `OpenFailed`.
+/// decoded is reported as `OpenFailed`. A gapless open takes the file read
+/// ahead (its bytes are in the ring, the DAC still plays the previous
+/// track's end); its album art and library place follow while it plays.
 async fn play_item(
     vol: &mut Volume<'static, Card>,
     ring: &mut Ring,
     arena: &mut [u8],
     srv: &mut Server,
-    o: OpenReq,
+    out: &mut PcmOut,
+    mut o: OpenReq,
 ) -> End {
-    let Some((f, track, ext, n)) = open_target(vol, srv, o.target).await else {
-        return after(srv.feed(Event::OpenFailed));
-    };
-    // Its place in the music library ("Go to album / artist").
-    crate::library::find_now(vol, srv, track.locator()).await;
-    // Album art while the arena is still free (AU-14).
-    crate::pictures::track_art(vol, ring, arena, srv, track.locator()).await;
-    let ext = (n > 0).then_some(&ext[..n]);
-    match play_file(
-        vol,
-        ring,
-        arena,
-        f,
-        ext,
-        srv,
-        Start { frame: o.frame, paused: o.paused, track: Some(track) },
-    )
-    .await
-    {
-        Ok(end) => end,
-        Err(_) => after(srv.feed(Event::OpenFailed)),
+    loop {
+        let handed = if o.gapless { ring.hand_over(o.target) } else { None };
+        let gapless = handed.is_some();
+        let (track, ext, n) = match handed {
+            Some(h) => h,
+            None => {
+                // The previous track's end plays out (after a gapless
+                // hand-over that could not go on, too).
+                out.finish().await;
+                let Some(h) = open_target(vol, srv, o.target, None, &mut ring.file).await else {
+                    return after(srv.feed(Event::OpenFailed));
+                };
+                // Its place in the music library ("Go to album / artist").
+                crate::library::find_now(vol, srv, h.0.locator()).await;
+                // Album art while the arena is still free (AU-14).
+                crate::pictures::track_art(vol, ring, arena, srv, h.0.locator()).await;
+                h
+            }
+        };
+        let ext = ext.get(..usize::from(n)).filter(|e| !e.is_empty());
+        let st = if gapless {
+            Start { frame: 0, paused: false, track: Some(track), gapless }
+        } else {
+            Start { frame: o.frame, paused: o.paused, track: Some(track), gapless }
+        };
+        match play_file(vol, ring, arena, ext, srv, out, st).await {
+            // Another rate, or the file read ahead cannot be played: open
+            // it again after the previous track has played out (a broken
+            // file then fails as usual).
+            Ok(End::Again) | Err(_) if gapless => o.gapless = false,
+            Ok(end) => return end,
+            Err(_) => return after(srv.feed(Event::OpenFailed)),
+        }
     }
 }
 
-/// Open the file of `t` (a track must still carry its name: the entry may
-/// have been replaced) and publish its title. Returns the file, its
-/// identity and its extension.
+/// Open the file of `t` into `file` (a track must still carry its name:
+/// the entry may have been replaced); its title goes to `keep` (a file
+/// read ahead), else it is published. Returns its identity and extension.
 async fn open_target(
     vol: &mut Volume<'static, Card>,
     srv: &Server,
     t: Target,
-) -> Option<(File, TrackRef, [u8; 8], usize)> {
+    keep: Option<&mut media::Name>,
+    file: &mut Option<File>,
+) -> Option<(TrackRef, [u8; 8], u8)> {
+    *file = None;
     let l = match t {
         Target::Item(i) => *srv.queue[..srv.qlen as usize].get(i as usize)?,
         Target::Track(t) => t.locator(),
@@ -1085,7 +1255,7 @@ async fn open_target(
     {
         return None;
     }
-    let f = vol.open_entry(&e).ok()?;
+    *file = Some(vol.open_entry(&e).ok()?);
     let name = e.name();
     let track = TrackRef::new(vol.serial(), l, name);
     let mut ext = [0u8; 8];
@@ -1094,12 +1264,20 @@ async fn open_target(
         n = x.len().min(ext.len());
         ext[..n].copy_from_slice(&x.as_bytes()[..n]);
     }
-    let title = media::Name::title(name);
+    match keep {
+        Some(k) => *k = media::Name::title(name),
+        None => publish_track(track, &media::Name::title(name)),
+    }
+    Some((track, ext, n as u8))
+}
+
+/// The track now playing, for the UI.
+fn publish_track(t: TrackRef, title: &media::Name) {
+    let l = t.locator();
     media::player_update(|p| {
-        p.title = title;
+        p.title = *title;
         p.file = orpheus_apps::services::FileRef { dir: l.dir, index: l.index };
     });
-    Some((f, track, ext, n))
 }
 
 /// Open a file for writing under `/.orpheus/`, creating the folder if needed.
@@ -1135,13 +1313,16 @@ async fn save_store(vol: &mut Volume<'static, Card>, srv: &mut Server, scratch: 
     mark(0);
 }
 
-/// Write the queue to `/.orpheus/queue.bin` (from the idle decoder arena).
-async fn save_queue(vol: &mut Volume<'static, Card>, arena: &mut [u8], srv: &Server) {
-    let Some(n) = encode_queue(vol.serial(), &srv.queue[..srv.qlen as usize], arena) else { return };
-    let Some(mut f) = create(vol, media::QUEUE_FILE, OpenMode::Truncate).await else { return };
-    let _ = vol.write(&mut f, &arena[..n]).await;
-    let _ = vol.close(f).await;
-    let _ = vol.flush().await;
+/// Write the queue to `/.orpheus/queue.bin` (encoded in `arena`, free
+/// decoder-arena memory: 2,068 bytes for 256 items). True if written.
+async fn save_queue(vol: &mut Volume<'static, Card>, arena: &mut [u8], srv: &Server) -> bool {
+    let Some(n) = encode_queue(vol.serial(), &srv.queue[..srv.qlen as usize], arena) else { return false };
+    mark(12);
+    let Some(mut f) = create(vol, media::QUEUE_FILE, OpenMode::Truncate).await else { return false };
+    let wrote = vol.write(&mut f, &arena[..n]).await.is_ok();
+    let ok = vol.close(f).await.is_ok() && wrote && vol.flush().await.is_ok();
+    mark(0);
+    ok
 }
 
 /// After mounting: the queue and the player store from the card (read
@@ -1438,7 +1619,8 @@ pub async fn audio() {
     reply(|w| {
         w.s(b"card: mounted");
     });
-    let mut ring = Ring { buf: &mut RING_BUF.take().0, rd: 0, wr: 0, len: None, eof: true, reseek: false };
+    let mut ring =
+        Ring { s: StreamRing::new(&mut RING_BUF.take().0), file: None, next: None, next_file: None };
     // SAFETY: this task is the arena's owner; the USB task borrows it only
     // while this task waits for the card (`usb_buffer`).
     let full: &'static mut [u8] = unsafe { &mut (*(&raw mut ARENA_BUF)).0 };

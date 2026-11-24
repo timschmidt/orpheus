@@ -462,16 +462,26 @@ pub enum Target {
     Track(TrackRef),
 }
 
+impl Target {
+    /// Queue item `i`.
+    #[must_use]
+    pub fn is_item(self, i: u32) -> bool {
+        matches!(self, Target::Item(x) if x == i)
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct OpenReq {
     pub target: Target,
     pub frame: u64,
     pub paused: bool,
+    /// The previous track ended and this one was read ahead: hand over
+    /// without stopping the DAC (`audio::play_item`).
+    pub gapless: bool,
 }
 
 /// The player's actions for one event, as the playback loop carries them
-/// out. `Prefetch` is not carried out (no gapless read-ahead yet: the
-/// next track opens after the current one has played out).
+/// out.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Flow {
     pub open: Option<OpenReq>,
@@ -479,6 +489,11 @@ pub struct Flow {
     /// `Some(true)`: pause, `Some(false)`: resume.
     pub pause: Option<bool>,
     pub stop: bool,
+    /// Forget the file read ahead (before `prefetch`).
+    pub cancel: bool,
+    /// Read this queue item ahead after the current file (item + 1: the
+    /// flow stays as small as before, it is returned by value a lot).
+    prefetch: Option<core::num::NonZeroU32>,
 }
 
 impl Flow {
@@ -486,17 +501,27 @@ impl Flow {
         let mut f = Flow::default();
         for a in out.iter() {
             match a {
-                Action::Open { item, start_frame, paused, .. } => {
-                    f.open = Some(OpenReq { target: Target::Item(item), frame: start_frame, paused });
+                Action::Open { item, start_frame, paused, gapless } => {
+                    f.open =
+                        Some(OpenReq { target: Target::Item(item), frame: start_frame, paused, gapless });
                 }
                 Action::OpenTrack { track, start_frame, paused } => {
-                    f.open = Some(OpenReq { target: Target::Track(track), frame: start_frame, paused });
+                    f.open = Some(OpenReq {
+                        target: Target::Track(track),
+                        frame: start_frame,
+                        paused,
+                        gapless: false,
+                    });
                 }
                 Action::Seek { frame } => f.seek = Some(frame),
                 Action::Pause => f.pause = Some(true),
                 Action::Resume => f.pause = Some(false),
                 Action::Stop => f.stop = true,
-                Action::Prefetch { .. } | Action::CancelPrefetch => {}
+                Action::Prefetch { item } => f.prefetch = core::num::NonZeroU32::new(item.wrapping_add(1)),
+                Action::CancelPrefetch => {
+                    f.cancel = true;
+                    f.prefetch = None;
+                }
             }
         }
         f
@@ -514,11 +539,29 @@ impl Flow {
         if o.pause.is_some() {
             self.pause = o.pause;
         }
+        if o.cancel {
+            self.cancel = true;
+            self.prefetch = None;
+        }
+        if o.prefetch.is_some() {
+            self.prefetch = o.prefetch;
+        }
+    }
+
+    /// The queue item to read ahead, if any.
+    #[must_use]
+    pub fn prefetch(&self) -> Option<u32> {
+        self.prefetch.map(|p| p.get() - 1)
     }
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.open.is_none() && self.seek.is_none() && self.pause.is_none() && !self.stop
+        self.open.is_none()
+            && self.seek.is_none()
+            && self.pause.is_none()
+            && !self.stop
+            && !self.cancel
+            && self.prefetch.is_none()
     }
 }
 
