@@ -53,6 +53,129 @@ symbols = [
     "orpheus_audio::source::WindowSource>::*",
 ]
 
+# Opus (AU-8). Measured per 20 ms frame (opusbench in an emulator, mapped
+# onto the firmware layout and replayed through the pager simulator; see
+# STATUS 2026-11-24 AU-8 Opus speed): CELT touches ~33 code lines and ~13
+# rodata lines, SILK ~27 code lines. Three clusters in this order so that
+# a CELT stream uses `opus-celt` + `opus-frame` (contiguous) and a SILK
+# stream `opus-frame` + `opus-silk` (contiguous), each within the 32
+# physical lines as far as it goes. The CELT rodata (twiddles, bit reversal,
+# window, allocation and energy tables, 15.5 KB) fills rodata group 0, the
+# whole 16-line rodata cache; the SILK tables follow in group 1.
+[[cluster]]
+name = "opus-celt"
+bins = ["firmware"]
+symbols = [
+    "orpheus_codec_opus::celt::decoder::decode",
+    "orpheus_codec_opus::celt::decoder::unquant_*",
+    "orpheus_codec_opus::celt::rate::*",
+    "orpheus_codec_opus::celt::bands::quant_*",
+    "orpheus_codec_opus::celt::bands::compute_theta",
+    "orpheus_codec_opus::celt::bands::haar1",
+    "orpheus_codec_opus::celt::bands::stereo_merge",
+    "orpheus_codec_opus::celt::bands::*interleave_hadamard",
+    "orpheus_codec_opus::celt::bands::bitexact_*",
+    "orpheus_codec_opus::celt::vq::alg_unquant",
+    "orpheus_codec_opus::celt::vq::decode_pulses",
+    "orpheus_codec_opus::celt::vq::ncwrs_urow",
+    "orpheus_codec_opus::celt::vq::cwrsi_row",
+    "orpheus_codec_opus::celt::vq::unext",
+    "orpheus_codec_opus::celt::vq::uprev",
+    "orpheus_codec_opus::celt::vq::exp_rotation*",
+    "orpheus_codec_opus::celt::vq::extract_collapse_mask",
+    "orpheus_codec_opus::celt::vq::renormalise_vector",
+    "orpheus_codec_opus::celt::math::sqrt",
+    "orpheus_codec_opus::celt::math::ldexp",
+    "orpheus_codec_opus::celt::math::exp2",
+    "orpheus_codec_opus::celt::math::cos_*",
+    "orpheus_codec_opus::celt::math::sin_poly",
+    "orpheus_codec_opus::celt::math::isqrt32",
+    "orpheus_codec_opus::celt::math::frac_mul16",
+    "orpheus_codec_opus::celt::bands::denormalise_bands",
+    "orpheus_codec_opus::celt::decoder::synthesis",
+    "orpheus_codec_opus::celt::mdct::*",
+    "orpheus_codec_opus::celt::decoder::comb_filter",
+    "orpheus_codec_opus::celt::decoder::deemphasis",
+    # rodata: the 20 ms long-block and the short-block MDCT sizes first.
+    "orpheus_codec_opus::celt::tables::MDCT_TRIG_1920",
+    "orpheus_codec_opus::celt::tables::FFT_TWIDDLES",
+    "orpheus_codec_opus::celt::tables::BITREV480",
+    "orpheus_codec_opus::celt::tables::WINDOW",
+    "orpheus_codec_opus::celt::tables::MDCT_TRIG_240",
+    "orpheus_codec_opus::celt::tables::BITREV60",
+    "orpheus_codec_opus::celt::tables::E_PROB_MODEL",
+    "orpheus_codec_opus::celt::tables::CACHE_*",
+    "orpheus_codec_opus::celt::tables::BAND_ALLOCATION",
+    "orpheus_codec_opus::celt::tables::EBANDS",
+    "orpheus_codec_opus::celt::tables::LOGN",
+    "orpheus_codec_opus::celt::modes::EMEANS",
+    "orpheus_codec_opus::celt::modes::FFT_STATES",
+    "orpheus_codec_opus::celt::decoder::*_ICDF",
+    "orpheus_codec_opus::celt::decoder::TF_SELECT_TABLE",
+    "orpheus_codec_opus::celt::decoder::*_COEF",
+    "orpheus_codec_opus::celt::decoder::comb_filter::GAINS",
+    "orpheus_codec_opus::celt::bands::ORDERY_TABLE",
+    "orpheus_codec_opus::celt::bands::quant_band::BIT_*",
+    "orpheus_codec_opus::celt::rate::LOG2_FRAC_TABLE",
+    "orpheus_codec_opus::celt::math::exp2::L",
+    "orpheus_codec_opus::celt::vq::exp_rotation::SPREAD_FACTOR",
+    "*EcDec>::tell_frac::CORRECTION",
+    "orpheus_ogg::CRC",
+    "orpheus_codec_opus::celt::tables::MDCT_TRIG_960",
+    "orpheus_codec_opus::celt::tables::MDCT_TRIG_480",
+    "orpheus_codec_opus::celt::tables::BITREV240",
+    "orpheus_codec_opus::celt::tables::BITREV120",
+]
+
+# What every Opus frame runs, CELT or SILK: the packet loop, the Ogg packet
+# reader, the range decoder, the float to i16 output.
+[[cluster]]
+name = "opus-frame"
+bins = ["firmware"]
+symbols = [
+    "<orpheus_codec_opus::ogg_opus::OpusDecoder as orpheus_audio::decoder::Decoder>::decode",
+    "orpheus_codec_opus::ogg_opus::OpusDecoder>::emit",
+    "orpheus_codec_opus::packet::*",
+    "orpheus_codec_opus::entdec::*",
+    "orpheus_ogg::assembled::PacketReader>::next_packet",
+    "orpheus_ogg::crc_update",
+    "orpheus_ogg::crc_view",
+    "orpheus_audio::source::View>::*",
+    # The range check of `copy_within` (not inlined; called per band):
+    # elsewhere it shared a physical line with `quant_band` and the two
+    # evicted each other ~50 times in a frame with short blocks.
+    "core::slice::index::range::<core::ops::range::Range<usize>>",
+    "<orpheus_codec_opus::opus_dec::OpusDec>::output",
+    "<orpheus_codec_opus::opus_dec::OpusDec>::float_to_i16",
+    "orpheus_codec_opus::pcm::soft_clip",
+]
+
+[[cluster]]
+name = "opus-silk"
+bins = ["firmware"]
+symbols = [
+    # Transient CELT frames only: kept out of `opus-celt` so that it and
+    # `opus-frame` fit the 32 physical lines together.
+    "orpheus_codec_opus::celt::bands::anti_collapse",
+    "<orpheus_codec_opus::opus_dec::OpusDec>::silk_part",
+    "<orpheus_codec_opus::opus_dec::OpusDec>::silk_run",
+    "orpheus_codec_opus::silk::decode_indices::*",
+    "orpheus_codec_opus::silk::decode_pulses::*",
+    "orpheus_codec_opus::silk::decode_*",
+    "orpheus_codec_opus::silk::nlsf::*",
+    "orpheus_codec_opus::silk::lpc::*",
+    "orpheus_codec_opus::silk::macros::*",
+    "orpheus_codec_opus::silk::stereo::*",
+    "orpheus_codec_opus::silk::resampler::*",
+    "orpheus_codec_opus::silk::plc::*",
+    "orpheus_codec_opus::silk::cng::*",
+    "<orpheus_codec_opus::opus_dec::OpusDec>::mix_extras",
+    "<orpheus_codec_opus::opus_dec::OpusDec>::decode_long",
+    "<orpheus_codec_opus::opus_dec::OpusDec>::finish_long",
+    "<orpheus_codec_opus::opus_dec::OpusDec>::silk_only_pcm",
+    "orpheus_codec_opus::silk::*",
+]
+
 # The paged toy: three functions spread over the generated code, packed
 # together (checked by `cargo xtask test pagelink`).
 [[cluster]]

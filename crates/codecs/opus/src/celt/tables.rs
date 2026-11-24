@@ -702,7 +702,10 @@ pub static BITREV60: [i16; 60] = [
     11, 23, 35, 47, 59,
 ];
 
-pub static MDCT_TWIDDLES: [f32; 1800] = [
+/// MDCT twiddles of the 1920-point inverse MDCT, shift 0 (20 ms long blocks): part of
+/// libopus's `mdct_twiddles960` (one table per size, so the per-frame
+/// paged-rodata working set holds only the sizes a stream uses).
+pub static MDCT_TRIG_1920: [f32; 960] = [
     0.99999994,
     0.99999321,
     0.99997580,
@@ -1663,6 +1666,12 @@ pub static MDCT_TWIDDLES: [f32; 1800] = [
     -0.99995571,
     -0.99998116,
     -0.99999589,
+];
+
+/// MDCT twiddles of the 960-point inverse MDCT, shift 1 (10 ms long blocks): part of
+/// libopus's `mdct_twiddles960` (one table per size, so the per-frame
+/// paged-rodata working set holds only the sizes a stream uses).
+pub static MDCT_TRIG_960: [f32; 480] = [
     0.99999964,
     0.99997288,
     0.99990326,
@@ -2143,6 +2152,12 @@ pub static MDCT_TWIDDLES: [f32; 1800] = [
     -0.99982297,
     -0.99992472,
     -0.99998361,
+];
+
+/// MDCT twiddles of the 480-point inverse MDCT, shift 2 (5 ms long blocks): part of
+/// libopus's `mdct_twiddles960` (one table per size, so the per-frame
+/// paged-rodata working set holds only the sizes a stream uses).
+pub static MDCT_TRIG_480: [f32; 240] = [
     0.99999869,
     0.99989158,
     0.99961317,
@@ -2383,6 +2398,12 @@ pub static MDCT_TWIDDLES: [f32; 1800] = [
     -0.99929196,
     -0.99969882,
     -0.99993443,
+];
+
+/// MDCT twiddles of the 240-point inverse MDCT, shift 3 (2.5 ms frames and every short block): part of
+/// libopus's `mdct_twiddles960` (one table per size, so the per-frame
+/// paged-rodata working set holds only the sizes a stream uses).
+pub static MDCT_TRIG_240: [f32; 120] = [
     0.99999464,
     0.99956632,
     0.99845290,

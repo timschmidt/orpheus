@@ -64,13 +64,16 @@ pub const NO_GRANULE: u64 = u64::MAX;
 /// 10–28 KB at 96–256 kbit/s (read packet by packet).
 pub const CHECKED_PAGE: usize = 8 * 1024;
 
-const fn crc_table() -> [u32; 256] {
-    let mut t = [0u32; 256];
+/// The CRC of each 4-bit value (a nibble at a time: 64 bytes instead of a
+/// 1 KiB byte table, which on the player is one paged rodata line less in
+/// every Ogg decoder's per-frame working set).
+const fn crc_table() -> [u32; 16] {
+    let mut t = [0u32; 16];
     let mut i = 0;
-    while i < 256 {
-        let mut c = (i as u32) << 24;
+    while i < 16 {
+        let mut c = (i as u32) << 28;
         let mut k = 0;
-        while k < 8 {
+        while k < 4 {
             c = if c & 0x8000_0000 != 0 { (c << 1) ^ 0x04C1_1DB7 } else { c << 1 };
             k += 1;
         }
@@ -80,13 +83,15 @@ const fn crc_table() -> [u32; 256] {
     t
 }
 
-static CRC: [u32; 256] = crc_table();
+static CRC: [u32; 16] = crc_table();
 
 /// Continue the Ogg CRC-32 over `data`.
 #[must_use]
 pub fn crc_update(mut crc: u32, data: &[u8]) -> u32 {
     for &b in data {
-        crc = (crc << 8) ^ CRC[usize::from((crc >> 24) as u8 ^ b)];
+        crc ^= u32::from(b) << 24;
+        crc = (crc << 4) ^ CRC[(crc >> 28) as usize];
+        crc = (crc << 4) ^ CRC[(crc >> 28) as usize];
     }
     crc
 }

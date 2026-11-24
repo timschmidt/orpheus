@@ -177,7 +177,7 @@ type Slot = Option<Suspended>;
 /// Bytes at the end of the decoder arena that hold the build's [`Slot`]
 /// (the arena the card task lends to everything else is shorter by this
 /// much). No playback uses that part: the largest decoder need (Opus,
-/// 59,488 B) plus the 2 KiB kept free while playing leave 4 KiB of the
+/// 60,008 B) plus the 2 KiB kept free while playing leave 3.4 KiB of the
 /// 64 KiB unused.
 pub const STATE: usize = (core::mem::size_of::<Slot>() + 7) & !7;
 

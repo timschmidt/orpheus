@@ -8,7 +8,7 @@
 use super::math::{exp2, frac_mul16, isqrt32, rsqrt, sqrt};
 use super::modes::{EBANDS, EMEANS, LOGN, NB_EBANDS, cache_row};
 use super::rate::{QTHETA_OFFSET, QTHETA_OFFSET_TWOPHASE, bits2pulses, get_pulses, pulses2bits};
-use super::vq::{MAX_N, alg_unquant, renormalise_vector};
+use super::vq::{MAX_N, ROW_LEN, alg_unquant, renormalise_vector};
 use crate::entdec::{BITRES, EcDec, ilog};
 
 pub const SPREAD_AGGRESSIVE: i32 = 3;
@@ -72,7 +72,8 @@ pub fn denormalise_bands(
     }
 }
 
-/// `anti_collapse`.
+/// `anti_collapse` (transient frames only: out of line).
+#[inline(never)]
 pub fn anti_collapse(
     xbuf: &mut [f32],
     collapse_masks: &[u8],
@@ -204,7 +205,8 @@ pub struct BandCtx<'a, 'b> {
     pub seed: u32,
     pub disable_inv: bool,
     pub avoid_split_noise: bool,
-    /// Offset of the `MAX_N`-float temporary area in the work slice.
+    /// Offset of the `MAX_N`-float temporary area in the work slice,
+    /// followed by the `ROW_LEN` words of the PVQ row.
     pub tmp: usize,
 }
 
@@ -444,7 +446,10 @@ fn quant_partition(
                     let k = get_pulses(q);
                     let end = (xo + n).min(buf.len());
                     let (main, rest) = buf.split_at_mut(ctx.tmp);
-                    let iy: &mut [i32] = bytemuck::cast_slice_mut(&mut rest[..MAX_N]);
+                    let (iy, row) = rest.split_at_mut(MAX_N);
+                    let iy: &mut [i32] = bytemuck::cast_slice_mut(iy);
+                    let rl = ROW_LEN.min(row.len());
+                    let row: &mut [u32] = bytemuck::cast_slice_mut(&mut row[..rl]);
                     cm = alg_unquant(
                         &mut main[xo..end],
                         n,
@@ -454,6 +459,7 @@ fn quant_partition(
                         ctx.ec,
                         f.gain,
                         iy,
+                        row,
                     );
                 } else {
                     let cm_mask = ((1u64 << f.bb.clamp(0, 31)) - 1) as u32;
@@ -573,7 +579,7 @@ fn quant_band(
         buf.copy_within(lb..lb + n, ls);
         lowband = Some(ls);
     }
-    const BIT_INTERLEAVE: [u8; 16] = [0, 1, 1, 1, 2, 3, 3, 3, 2, 3, 3, 3, 2, 3, 3, 3];
+    static BIT_INTERLEAVE: [u8; 16] = [0, 1, 1, 1, 2, 3, 3, 3, 2, 3, 3, 3, 2, 3, 3, 3];
     for k in 0..recombine {
         if let Some(lb) = lowband {
             haar1(&mut buf[lb..lb + n], n >> k, 1 << k);
@@ -612,7 +618,7 @@ fn quant_band(
         cm |= cm >> bb;
         haar1(&mut buf[x..x + n], n_b, bb as usize);
     }
-    const BIT_DEINTERLEAVE: [u8; 16] =
+    static BIT_DEINTERLEAVE: [u8; 16] =
         [0x00, 0x03, 0x0C, 0x0F, 0x30, 0x33, 0x3C, 0x3F, 0xC0, 0xC3, 0xCC, 0xCF, 0xF0, 0xF3, 0xFC, 0xFF];
     for k in 0..recombine {
         cm = u32::from(BIT_DEINTERLEAVE[(cm & 0xF) as usize]);

@@ -8,6 +8,12 @@
 //! place, so results differ from libopus only by rounding. No `f64`.
 
 /// Correctly rounded square root (0 for negative or NaN input).
+///
+/// The root of the (scaled) mantissa is estimated in `f32` (reciprocal
+/// square root by Newton steps, a few units off) and then corrected and
+/// rounded exactly in integers: the same result as the bit-by-bit integer
+/// root it replaced (checked for every normal `f32`), at about a third of
+/// the instructions. Subnormals take the bit-by-bit path.
 #[must_use]
 pub fn sqrt(x: f32) -> f32 {
     if !(x > 0.0) {
@@ -16,6 +22,41 @@ pub fn sqrt(x: f32) -> f32 {
     if x == f32::INFINITY {
         return x;
     }
+    let bits = x.to_bits();
+    let e = ((bits >> 23) & 0xFF) as i32;
+    if e == 0 {
+        return sqrt_bitwise(x);
+    }
+    let m = u64::from(bits & 0x7F_FFFF | 0x80_0000);
+    // x = m * 2^(e - 150); M = m << shift in [2^46, 2^48), even exponent.
+    let mut ex = e - 150;
+    let shift = if (ex - 23) & 1 != 0 { 24 } else { 23 };
+    let mm = m << shift;
+    ex -= shift;
+    // sqrt(M) in [2^23, 2^24) from an f32 estimate (M's top 32 bits,
+    // rounded to 24 in the conversion).
+    let mf = ((mm >> 16) as u32) as f32 * 65536.0;
+    let mut y = f32::from_bits(0x5F37_59DF - (mf.to_bits() >> 1));
+    for _ in 0..3 {
+        y *= 1.5 - 0.5 * mf * y * y;
+    }
+    let mut r = u64::from((mf * y) as u32);
+    while r * r > mm {
+        r -= 1;
+    }
+    while (r + 1) * (r + 1) <= mm {
+        r += 1;
+    }
+    // Round to nearest: up when M - r^2 > r (no ties for integer M).
+    if mm - r * r > r {
+        r += 1;
+    }
+    ldexp(r as f32, ex / 2)
+}
+
+/// [`sqrt`] by the bit-by-bit integer root of the mantissa (subnormals).
+#[cold]
+fn sqrt_bitwise(x: f32) -> f32 {
     let bits = x.to_bits();
     let mut e = ((bits >> 23) & 0xFF) as i32;
     let mut m = u64::from(bits & 0x7F_FFFF);
@@ -105,7 +146,7 @@ pub fn exp2(x: f32) -> f32 {
     let n = if x >= 0.0 { (x + 0.5) as i32 } else { -((-x + 0.5) as i32) };
     let f = x - n as f32;
     // 2^f = e^(f ln 2), f in [-0.5, 0.5]: Taylor series to degree 8.
-    const L: [f32; 9] = [
+    static L: [f32; 9] = [
         1.0,
         0.693_147_2,
         0.240_226_5,
@@ -209,6 +250,19 @@ mod tests {
         }
         assert_eq!(sqrt(0.0), 0.0);
         assert_eq!(sqrt(4.0), 2.0);
+        // Every 13th mantissa at both exponent parities and the extremes
+        // (the result depends on the mantissa and the exponent's parity;
+        // all normal floats were checked once against `sqrt_bitwise`).
+        for e in [1u32, 2, 126, 127, 253, 254] {
+            for m in (0..1u32 << 23).step_by(13).chain([0x7F_FFFF, 1, 2]) {
+                let x = f32::from_bits(e << 23 | m);
+                assert_eq!(sqrt(x).to_bits(), sqrt_bitwise(x).to_bits(), "{x}");
+            }
+        }
+        for m in [1u32, 2, 3, 0x40_0000, 0x7F_FFFF] {
+            let x = f32::from_bits(m);
+            assert_eq!(sqrt(x).to_bits(), (f64::from(x).sqrt() as f32).to_bits(), "{x}");
+        }
     }
 
     #[test]

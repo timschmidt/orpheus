@@ -18,7 +18,7 @@ const RESAMPLER_ORDER_FIR_12: usize = 8;
 
 /// `delay_matrix_dec`: input delay by internal rate (8/12/16 kHz) and
 /// output rate (8/12/16/24/48 kHz).
-const DELAY_MATRIX_DEC: [[i8; 5]; 3] = [[4, 0, 2, 0, 0], [0, 9, 4, 7, 4], [0, 3, 12, 7, 7]];
+static DELAY_MATRIX_DEC: [[i8; 5]; 3] = [[4, 0, 2, 0, 0], [0, 9, 4, 7, 4], [0, 3, 12, 7, 7]];
 
 /// `rateID`.
 fn rate_id(r: i32) -> usize {

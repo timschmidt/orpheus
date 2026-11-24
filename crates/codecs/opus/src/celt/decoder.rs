@@ -24,7 +24,7 @@ use crate::entdec::{BITRES, EcDec};
 pub const MEM_PER_CH: usize = DECODE_BUFFER_SIZE + OVERLAP;
 /// Scratch floats [`decode`] needs (`X` for two channels and the band
 /// normalisation area; the concealment fits in the same space).
-pub const SCRATCH_LEN: usize = 2 * 960 + NORM_LEN + super::vq::MAX_N;
+pub const SCRATCH_LEN: usize = 2 * 960 + NORM_LEN + super::vq::MAX_N + super::vq::ROW_LEN;
 
 const PLC_PITCH_LAG_MAX: usize = 720;
 const PLC_PITCH_LAG_MIN: usize = 100;
@@ -241,7 +241,7 @@ fn comb_filter(
     window: Option<&[f32]>,
     mut overlap: usize,
 ) {
-    const GAINS: [[f32; 3]; 3] = [
+    static GAINS: [[f32; 3]; 3] = [
         [0.306_640_63, 0.217_041_02, 0.129_638_67],
         [0.463_867_2, 0.268_066_4, 0.0],
         [0.799_804_7, 0.100_097_656, 0.0],
@@ -402,6 +402,10 @@ fn synthesis(
     }
 }
 
+// Cold paths (after a loss) are kept out of line: the per-frame code of
+// `decode` stays compact in the code cache (hot.toml `opus-celt`).
+#[cold]
+#[inline(never)]
 fn prefilter_and_fold(st: &CeltState, mem: &mut [f32], n: usize) {
     let cc = st.channels as usize;
     let mut etmp = [0f32; OVERLAP];
@@ -428,6 +432,37 @@ fn prefilter_and_fold(st: &CeltState, mem: &mut [f32], n: usize) {
     }
 }
 
+/// The band energies of the first frame after a loss (inter-frame
+/// prediction from concealed energies).
+#[cold]
+#[inline(never)]
+fn energy_after_loss(st: &mut CeltState, start: usize, end: usize, lm: usize) {
+    for ch in 0..2 {
+        let missing = 10.min(st.loss_duration >> lm);
+        let safety = match lm {
+            0 => 1.5,
+            1 => 0.5,
+            _ => 0.0,
+        };
+        for i in start..end {
+            let k = ch * NB_EBANDS + i;
+            if st.old_band_e[k] < st.old_log_e[k].max(st.old_log_e2[k]) {
+                let e0 = st.old_band_e[k];
+                let e1 = st.old_log_e[k];
+                let e2 = st.old_log_e2[k];
+                let slope = (e1 - e0).max(0.5 * (e2 - e0));
+                let e0 = e0 - (0.0f32).max((1 + missing) as f32 * slope);
+                st.old_band_e[k] = (-20.0f32).max(e0);
+            } else {
+                st.old_band_e[k] = st.old_band_e[k].min(st.old_log_e[k]).min(st.old_log_e2[k]);
+            }
+            st.old_band_e[k] -= safety;
+        }
+    }
+}
+
+#[cold]
+#[inline(never)]
 fn decode_lost(st: &mut CeltState, mem: &mut [f32], n: usize, lm: usize, scratch: &mut [f32]) {
     let c_count = st.channels as usize;
     let loss_duration = st.loss_duration;
@@ -683,28 +718,7 @@ pub fn decode<'d>(
     let short_blocks = transient;
     let intra_ener = if tell + 3 <= total_bits { dec.bit_logp(3) } else { false };
     if !intra_ener && st.loss_duration != 0 {
-        for ch in 0..2 {
-            let missing = 10.min(st.loss_duration >> lm);
-            let safety = match lm {
-                0 => 1.5,
-                1 => 0.5,
-                _ => 0.0,
-            };
-            for i in start..end {
-                let k = ch * NB_EBANDS + i;
-                if st.old_band_e[k] < st.old_log_e[k].max(st.old_log_e2[k]) {
-                    let e0 = st.old_band_e[k];
-                    let e1 = st.old_log_e[k];
-                    let e2 = st.old_log_e2[k];
-                    let slope = (e1 - e0).max(0.5 * (e2 - e0));
-                    let e0 = e0 - (0.0f32).max((1 + missing) as f32 * slope);
-                    st.old_band_e[k] = (-20.0f32).max(e0);
-                } else {
-                    st.old_band_e[k] = st.old_band_e[k].min(st.old_log_e[k]).min(st.old_log_e2[k]);
-                }
-                st.old_band_e[k] -= safety;
-            }
-        }
+        energy_after_loss(st, start, end, lm);
     }
     unquant_coarse_energy(&mut st.old_band_e, start, end, intra_ener, dec, c, lm);
     let mut tf_res = [0i32; NB_EBANDS];

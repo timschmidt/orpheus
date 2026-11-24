@@ -239,6 +239,10 @@ impl<'a> Decoder<'a> for OpusDecoder<'a> {
         Ok((d, info))
     }
 
+    // Not inlined into `orpheus_codecs::AnyDecoder::decode` (26 KB with
+    // every codec's frame loop): its own section, packed with the rest of
+    // the per-frame code by hot.toml.
+    #[inline(never)]
     fn decode(&mut self, src: &mut dyn ByteSource) -> Result<Step<'_>, DecodeError> {
         let ch = usize::from(self.head.channels);
         loop {

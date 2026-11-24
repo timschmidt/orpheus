@@ -4,7 +4,7 @@
 //!
 //! Complex values are interleaved `[re, im]` pairs in an `f32` slice.
 
-use super::modes::{FFT_STATES, FFT_TWIDDLES, FftState, MDCT_N, MDCT_TWIDDLES};
+use super::modes::{FFT_STATES, FFT_TWIDDLES, FftState, MDCT_N};
 
 #[inline]
 fn tw(i: usize) -> (f32, f32) {
@@ -197,16 +197,13 @@ pub fn mdct_backward(
     shift: usize,
     stride: usize,
 ) {
-    let mut n = MDCT_N;
-    let mut toff = 0usize;
-    for _ in 0..shift {
-        n >>= 1;
-        toff += n;
-    }
-    let trig = &MDCT_TWIDDLES[toff..];
+    let n = MDCT_N >> shift;
     let n2 = n >> 1;
     let n4 = n >> 2;
     let st = &FFT_STATES[shift];
+    // Per size (not a `match`: its jump table would be anonymous rodata
+    // outside the hot.toml cluster).
+    let trig = st.trig;
     let ho = overlap >> 1;
     {
         let yp = &mut out[ho..ho + n2];

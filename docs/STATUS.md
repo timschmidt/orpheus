@@ -32,7 +32,7 @@ of every session. Newest entries first in §3.
 | FS-1 | done | `orpheus-fs` |
 | FS-2 / AU-5 firmware | first cut on the player; **`orpheus-player` wired in; gapless hand-over and queue edits (built, not yet run on the player)** | Files lists the card (sorted through the directory index since AU-12 firmware), text viewer window, Now Playing. The card task drives `orpheus_player::Player`: folder queue in RAM and `/.orpheus/queue.bin`, resume record and bookmarks in `/.orpheus/player.bin`, seek, shuffle/repeat (settings), A–B, sleep timer, Up next. Gapless read-ahead (`orpheus_audio::StreamRing`) and decoder re-open with the DAC running; Up next remove/move, Play next, Add to queue (256 max). Not done: fades. User checks 13, 17 |
 | UI-1, UI-2, UI-3, UI-4 | done (host); running on the player | 457 golden images |
-| AU-1…AU-4, AU-7, AU-8, AU-9 | done (host); on the player: MP3/FLAC/WAV and Speex at 48 MHz, Vorbis at 144 MHz (clock floor), **Opus too slow** | Opus CELT touches more code per frame than the 32 KB code cache holds; ends with "decoder too slow for this player" (abort after 8 underruns) instead of a reset. Needs a bigger code cache or a resident hot path (RAM decision). Ogg pages over ~15.5 KB fail (16 KiB ring < `MAX_PEEK` 28 KiB; RAM) |
+| AU-1…AU-4, AU-7, AU-8, AU-9 | done (host); on the player: MP3/FLAC/WAV and Speex at 48 MHz, Vorbis at 144 MHz (clock floor), **Opus too slow (fix built, not yet run on the player)** | Opus fix (AU-8, 2026-11-24): Ogg pages above 8 KiB read packet by packet (16 KiB ring); Opus frame code and tables packed in `hot.toml` clusters `opus-celt`/`opus-frame`/`opus-silk` and compacted: decoder alone 61.5 → 0 NOR line loads per CELT frame (emulator + pager replay). Hybrid (SILK + CELT) still pages (~17–52 loads per frame). `status` shows `dec:` (decoder µs and line loads per track) |
 | AU-6 | done (host); **working on the player** | `orpheus-dsp` chain between decoder and DAC, fed by the Sound settings; works on a scratch copy of the decoder output; while any stage is active during playback the clock floor is 96 MHz (EQ + bass + crossfeed: 0 underruns, ≈ 90 % idle). WSOLA not done; Levels meter not wired |
 | AU-12 (directory index, music library) | host done; **firmware wired in (built, not yet run on the player)** | `orpheus-index` + its `card` adapters over `orpheus-fs` (host-tested on FAT32/exFAT images). Files/Music › Folders sorted (Name/Date/Size, hidden per setting), letter jump from the index's letter runs, play queue in listing order. **Music library** (`orpheus-library`) built in the card task's idle loop, Music › Artists/Albums/Songs/Genres/Recently added, Play/Shuffle, Shuffle all from the library, Go to album/artist. Playlists, Favourites: not started. User check 16 |
 | AU-14 | done (host); **device: Pictures app and album art (built, not yet run on the player)** | `orpheus-img`. Pictures (folders + pictures, list mode), viewer (fit/fill, rotate, next/prev, slideshow), album art made at track open and cached in `/.orpheus/cache/art`. Not done: thumbnail grid, 100 % + pan, wallpaper, delete, per-file rotation memory. User check 14 |
@@ -41,6 +41,129 @@ of every session. Newest entries first in §3.
 | UI-6a | **on the player 2026-11-24** (connect, reconnect, audio, volume — policy changed, see session entry) | Bluetooth app (status, Pair new device, Paired devices, connect progress/failure, forget, reconnect switch), `BluetoothService` lists/requests, volume policy of 06 §4.2 (0x26 on connect and change, DAC reference −3 dB while the sink takes absolute volume), address text in written order. User check 17 |
 
 ## 3. Session log
+
+### 2026-11-24 — AU-8 (Opus) on the player: 16 KiB ring and paging fixed (worker, no hardware)
+
+From the lead's runs: `t_opus.opus` (one-second pages) ended with "stream
+needs a larger ring", `t_opus_p.opus` with "decoder too slow for this
+player", also at 288 MHz. Both are fixed on the host side; the device run
+is the lead's (test plan below).
+
+* **Ring.** ffmpeg and opusenc write one-second Ogg pages: measured over
+  the Opus corpus 1.0–2.5 KB (SILK), 3–8 KB (≤ 64 kbit/s), 10–28 KB
+  (96–256 kbit/s); Vorbis q6–q10 17–47 KB. The readers asked the ring to
+  hold any page up to `MAX_PEEK` (28 KiB) whole before using it; the
+  firmware ring is 16 KiB. New `orpheus_ogg::CHECKED_PAGE` = 8 KiB (half
+  the ring, its refill threshold): smaller pages are CRC-checked before
+  use as before, larger ones are read packet by packet with the CRC
+  checked as they stream past (a mismatch is reported after their
+  packets, as it already was above 28 KiB). Page `NeedData` ≤ 8 KiB. The
+  Vorbis reader uses the same bound (Vorbis files with large pages failed
+  the same way). Conformance now also decodes every Ogg Opus/Speex/Vorbis
+  file through a 16 KiB ring ("firmware ring": identical to the linear
+  decode).
+* **How the speed problem was measured** (no player): a bare-metal
+  harness of the Opus decoder built with the firmware's profile
+  (thumbv7em, opt-level s, fat LTO; function sizes identical to the
+  firmware's) runs in an emulator (unicorn, Cortex-M4) and records every
+  executed block and rodata read per decoded frame; the trace is mapped by
+  symbol onto the firmware's `layout.json` and replayed through
+  `orpheus_pager::sim::Machine` with the real `pages.bin`. Tools in the
+  worker's scratch directory (not committed: Python + unicorn); the
+  method is reproducible from this description.
+* **Measured before** (decoder alone, steady state, per 20 ms frame,
+  `music_96k`, CELT stereo): 799 k instructions, 44–46 code lines and
+  21–23 rodata lines touched (the caches hold 32 and 16), **61.5 NOR line
+  loads (max 161) and 258 faults per frame** ≈ 11 ms of line reads per
+  20 ms — with ≈ 7 ms of compute at 144 MHz it cannot keep up at any
+  clock, as seen. Causes: the Opus frame code was spread over 9 pages
+  (direct-mapped slot conflicts: `celt::decoder::decode` and
+  `mdct_backward` on the same physical lines), `OpusDecoder::decode` was
+  inlined into the 26 KB `AnyDecoder::decode`, the range decoder was
+  inlined at every call site, the hot tables were scattered (anonymous
+  constants among them), and a one-second page made the 1 KiB CRC table
+  and `PVQ_DATA` (5 KB) part of every frame. SILK WB mono: 304 k
+  instructions, 37–39 code lines, 32 loads per frame.
+* **Changes** (decoder output bit-identical: PCM hashes of all 43 corpus
+  files whole and through a 16 KiB ring, the RFC 8251 vectors):
+  * `hot.toml` clusters `opus-celt` (25 lines), `opus-frame` (7 lines:
+    packet loop, Ogg packet reader, range decoder, output) and `opus-silk`
+    (23 lines), after `gapless-join`; a CELT stream runs in
+    `opus-celt` + `opus-frame` (32 contiguous lines: no physical-line
+    conflict with itself), a SILK stream in `opus-frame` + `opus-silk`.
+    The CELT rodata (MDCT and FFT twiddles of the sizes in use, bit
+    reversal, window, allocation and energy tables, 15.5 KB) fills rodata
+    group 0; the SILK tables group 1.
+  * Code compaction: `OpusDecoder::decode` not inlined into the codec
+    dispatch; the range decoder's primitives out of line (decode 16.1 →
+    9.1 KB, SILK `decode_pulses` 5.5 → 1.5 KB, crate 117.6 → ~105 KB);
+    CELT concealment, post-loss energy and prefilter fold `#[cold]` out of
+    `decode`; `opus_dec::decode_frame` keeps only the CELT path inline
+    (SILK/hybrid, redundancy, transitions, long SILK frames in their own
+    functions); the soft clipper's slow path out of line.
+  * Rodata: hot `const` tables made named `static`s (clusterable): CELT
+    locals, all SILK tables; MDCT twiddles split per size
+    (`MDCT_TRIG_1920/960/480/240`, selected through `FftState`, no jump
+    table); the PVQ codebook row computed per band (libopus's
+    `SMALL_FOOTPRINT` `ncwrs_urow`/`cwrsi`/`uprev`; the table version
+    stays for out-of-range input; a test compares both over every
+    defined (N, K)) instead of reading the 5 KB U(N, K) table; the Ogg CRC
+    by nibbles (64-byte table instead of 1 KiB, all Ogg codecs).
+  * Compute: `sqrt` estimate-and-correct (same correctly rounded result,
+    checked for all 2^31 positive finite floats; ~⅓ of the instructions),
+    soft clipper skipped when nothing exceeds ±1 and no clipping is
+    carried over (identical output), float→i16 in place without a copy
+    and through `i32` (one `vcvt`). The PVQ row computation costs
+    ≈ +55 k instructions per stereo frame; net 799 k → 760 k.
+  * The PVQ row lives in the CELT scratch (arena), not on the stack:
+    Opus arena high-water 59,488 → **60,008 B** (stereo; mono +520 B),
+    firmware assert updated (65,536 − 2,048 spare − library state still
+    fits).
+* **Measured after** (same method, the firmware layout of this commit,
+  decoder alone, 10 warm-up frames skipped, per 20 ms block unless noted):
+
+  | File | Instructions | Code / rodata lines | NOR loads | Faults |
+  |---|---|---|---|---|
+  | music_96k (CELT stereo) | 760 k | 32 / 12 | 0 | 7 |
+  | celt_cbr_128k | 889 k | 32 / 12 | 0 | 7 |
+  | music_256k | 1,175 k | 32 / 12 | 0 | 7 |
+  | impulse_96k (transients) | 992 k | 32 / 9 | 0 | 3.5 |
+  | opusenc_96k | 760 k | 32 / 12 | 0 | 7 |
+  | mono_48k | 434 k | 32 / 12 | 0 | 7 |
+  | celt_fd10_96k (10 ms frames) | 434 k / 10 ms | 32 / 12 | 0 | 7 |
+  | celt_fd2.5_96k | 165 k / 2.5 ms | 32 / 9 | 0 | 7 |
+  | silk_wb_16k_mono | 265 k | 29 / 7 | 0 | 8 |
+  | silk_nb_8k_mono | 179 k | 29 / 8 | 2 | 12.5 |
+  | silk_wb_20k_stereo | 430 k | 29 / 5 | 0 | 8 |
+  | hybrid_fb_32k | 690 k | 32–54 / 12–21 | 17 (max 61) | 24 |
+  | hybrid_swb_24k | 690 k | 53 / 17 | 43 | 50 |
+  | opusenc_speech_24k_60ms (hybrid) | 744 k | 52 / 17 | 52 | 58 |
+
+  Hybrid (SILK + CELT in one frame, ≈ 24–32 kbit/s) needs both clusters,
+  54 lines: it still reloads ~20 lines twice per frame.
+* **Expected on the player** (estimate: cycles ≈ 1.3 × instructions, the
+  FPU benchmark scales linearly with the clock; NOR line 180 µs; plus the
+  playback loop's own paged lines, not measurable in the emulator, guessed
+  at 4–10 loads per frame): CELT 96 kbit/s stereo ≈ 6.8 ms compute + ≤ 2
+  ms paging per 20 ms at 144 MHz (≈ 45 %), ≈ 3.4 ms + ≤ 2 ms at 288 MHz;
+  256 kbit/s ≈ 10.5 ms at 144 MHz (≈ 60 %). SILK WB mono ≈ 7 ms per 20 ms
+  at 48 MHz, 2.4 ms at 144 MHz; SILK stereo 20 kbit/s ≈ 5.8 ms at 96 MHz.
+  Hybrid ≈ 6.2 ms + 3–9 ms paging at 144 MHz (45–75 %), ≈ 3.1 + 3–9 ms at
+  288 MHz. The codec clock floor stays High for Opus.
+* **Firmware:** `status` gains `dec: n= us= max_us= loads=` — this
+  track's decoder calls, µs inside them (sum, largest) and pager line
+  loads inside them (the decoder's own paging, apart from the loop's).
+  RAM: +16 B `.bss`. Resident image 83,508 → 83,204 B (−304: the CRC
+  table); code pages 74 → 73; slot 827,392 → 819,200 B.
+  `__stack_bottom` 0x132300 → 0x1321e0 (main stack +288 B).
+* **Stack:** the Opus decode chain's frames (from the firmware's
+  prologues): `OpusDecoder::decode` 748 B, `celt::decoder::decode`
+  1,660 B, `quant_partition` 532 B, `mdct_backward` 220 B.
+* Not done: hybrid still pages (needs ~22 fewer code lines or a larger
+  code cache); the playback loop's own lines per frame are unmeasured
+  (the `dec:` counters separate them on the device); no device run.
+* **Device test plan (lead):** see the AU-8 report; files
+  `/.orpheus/test/t_opus.opus`, `/.orpheus/test/t_opus_p.opus`.
 
 ### 2026-11-24 — AU-5 (gapless): join code clustered in `hot.toml`, per-codec open, read-ahead 256 KiB before the end (worker, no hardware)
 
@@ -1564,6 +1687,11 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 | 2026-11-24 | AU-5 bounded lookups (walk cache, stepwise library search, DMA headroom, underruns by cause), worker worktree build | resident 83,508 B (was 83,500), main stack −168 B (`__stack_bottom` 0x132128 → 0x1321d0); audio task poll 4,992 B, `play_file` 2,324 B (was 2,332) | `xtask build`, `llvm-nm`, `llvm-objdump` `sub sp` |
 | 2026-11-24 | AU-5 prepared next stream, player told after the join, underrun ledger, worker worktree build | resident 83,508 B (unchanged), main stack −208 B (`__stack_bottom` 0x1321d0 → 0x1322a0); audio task poll 4,992 B, `play_file` 2,244 B (was 2,324) | `xtask build`, `llvm-nm`, `llvm-objdump` `sub sp` |
 | 2026-11-24 | AU-5 preparation from the file's head, earlier read-ahead, per-join statistics, worker worktree build | resident 83,484 B (was 83,508), main stack −8 B (`__stack_bottom` 0x1322a0 → 0x1322a8); audio task poll 4,992 B, `play_file` 2,260 B (was 2,244) | `xtask build`, `llvm-nm`, `llvm-objdump` `sub sp` |
+
+| 2026-11-24 | Opus decoder alone per 20 ms CELT stereo frame (`music_96k`), before → after AU-8 (Opus) | 799 k → 760 k instructions; 44–46 → 32 code lines, 21–23 → 12 rodata lines; NOR line loads 61.5 (max 161) → 0; faults 258 → 7 | opusbench in unicorn, mapped onto `layout.json`, `orpheus_pager::sim` replay of `pages.bin` |
+| 2026-11-24 | Same, other streams after AU-8 (per 20 ms) | CELT 128/256 kbit/s 889 k / 1,175 k instr, 0 loads; SILK WB mono 265 k, 0 loads; SILK stereo 20 kbit/s 430 k, 0 loads; hybrid 24–32 kbit/s 690–744 k, 17–52 loads | same |
+| 2026-11-24 | Opus arena high-water stereo after AU-8 | 60,008 B (+520 B PVQ row) | `xtask test codecs --filter opus/` |
+| 2026-11-24 | Firmware with AU-8 (Opus), worker worktree build | resident 83,204 B (was 83,508), bss 122,072 B (was 122,056), `__stack_bottom` 0x132300 → 0x1321e0 (main stack +288 B), 73 code + 16 rodata pages (was 74 + 16), slot 819,200 B (was 827,392); clusters opus-celt 25, opus-frame 7, opus-silk 23 lines | `xtask build`, `llvm-nm` |
 
 | 2026-11-24 | Host coverage baseline (host tests + 1 fuzz regression input), regions / lines / branches | 72.16 % (60,678 / 84,088) / 71.78 % / 65.09 % | `xtask cover --fuzz` (+ `--add` re-runs), nightly-2026-11-05 |
 | 2026-11-24 | Instrumented coverage build of the host workspace, no debug info | ≈ 0.4 GB build + ≈ 1.1 GB test images in `target/cover/…/tmp` | `du` |

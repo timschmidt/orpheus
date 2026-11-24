@@ -84,7 +84,7 @@ impl<'a> EcDec<'a> {
         }
     }
 
-    #[inline]
+    #[inline(never)]
     fn normalize(&mut self) {
         while self.rng <= CODE_BOT {
             self.nbits_total += SYM_BITS as i32;
@@ -96,21 +96,21 @@ impl<'a> EcDec<'a> {
         }
     }
 
-    #[inline]
+    #[inline(never)]
     pub fn decode(&mut self, ft: u32) -> u32 {
         self.ext = self.rng / ft.max(1);
         let s = self.val / self.ext.max(1);
         ft - (s + 1).min(ft)
     }
 
-    #[inline]
+    #[inline(never)]
     pub fn decode_bin(&mut self, bits: u32) -> u32 {
         self.ext = self.rng >> bits;
         let s = self.val / self.ext.max(1);
         (1u32 << bits) - (s + 1).min(1u32 << bits)
     }
 
-    #[inline]
+    #[inline(never)]
     pub fn update(&mut self, fl: u32, fh: u32, ft: u32) {
         let s = self.ext.wrapping_mul(ft.wrapping_sub(fh));
         self.val = self.val.wrapping_sub(s);
@@ -119,7 +119,7 @@ impl<'a> EcDec<'a> {
     }
 
     /// A bit that is 1 with probability `1/(1 << logp)`.
-    #[inline]
+    #[inline(never)]
     pub fn bit_logp(&mut self, logp: u32) -> bool {
         let r = self.rng;
         let d = self.val;
@@ -134,7 +134,7 @@ impl<'a> EcDec<'a> {
     }
 
     /// A symbol from an inverse CDF table with `1 << ftb` total.
-    #[inline]
+    #[inline(never)]
     pub fn icdf(&mut self, icdf: &[u8], ftb: u32) -> i32 {
         let mut s = self.rng;
         let d = self.val;
@@ -156,7 +156,7 @@ impl<'a> EcDec<'a> {
     }
 
     /// As [`Self::icdf`] with 16-bit table entries.
-    #[inline]
+    #[inline(never)]
     pub fn icdf16(&mut self, icdf: &[u16], ftb: u32) -> i32 {
         let mut s = self.rng;
         let d = self.val;
@@ -234,7 +234,7 @@ impl<'a> EcDec<'a> {
     /// Bits used so far in 1/8 bit.
     #[must_use]
     pub fn tell_frac(&self) -> u32 {
-        const CORRECTION: [u32; 8] = [35733, 38967, 42495, 46340, 50535, 55109, 60097, 65535];
+        static CORRECTION: [u32; 8] = [35733, 38967, 42495, 46340, 50535, 55109, 60097, 65535];
         let nbits = (self.nbits_total as u32) << BITRES;
         let mut l = ilog(self.rng);
         let r = self.rng >> (l - 16);
