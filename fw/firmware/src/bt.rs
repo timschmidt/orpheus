@@ -96,7 +96,11 @@ pub enum Req {
     Disconnect,
     /// BT-3 investigation: send command `id` with up to 4 parameter bytes
     /// (restricted ids are refused by the encoder).
-    Cmd { id: u8, params: [u8; 4], len: u8 },
+    Cmd {
+        id: u8,
+        params: [u8; 4],
+        len: u8,
+    },
     /// The Bluetooth app (UI-6a): stop the inquiry; connect to an address
     /// (a running inquiry is stopped first); cancel an attempt; forget a
     /// pairing.

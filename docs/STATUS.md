@@ -1195,6 +1195,24 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — PWR-5 and four AU-5 fixes on the player (lead)
+
+* Merged PWR-5 (Performance setting, battery logger, `xtask drain report`,
+  `play-block` hot cluster, logger state in SRAM3) and the AU-5 fixes. On
+  the player: `playdir` plays (no reboot, 0 underruns, stack free 8,192 B);
+  **browsing a large folder during 48 kHz MP3: 0 underruns, `serve=0`**
+  (was 8–14); `playdir B` while A plays switches queues; the card
+  **remounts** after a card-reader session with the host still holding it;
+  the battery logger writes its first row after a minute
+  (`/.orpheus/test/drain-N-label.csv`); Opus 0 underruns (≈ 2,650 line
+  loads/s). Open: MP3 playback pages ≈ 20 % more than before (≈ 3,220
+  against ≈ 2,670 line loads/s, 24.6 against 18.4 loads per decode call,
+  0 underruns); the MP3 frame code is inlined into the paged
+  `AnyDecoder::decode` despite `resident.toml` (≈ 7 KiB to make it
+  resident) — to revisit with the hot-set work. Bit-rate display fix
+  host-tested only. User check 19 (unplugged battery runs at Normal and
+  Maximum) is ready for the owner.
+
 ### 2026-11-24 — AU-8: Opus plays on the player (lead)
 
 * Merged AU-8 (`cceac998` Ogg pages > 8 KiB read packet by packet; `730427ff`
