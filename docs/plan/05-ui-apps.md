@@ -612,7 +612,7 @@ settings service (debounced write).
 | USB | When connected (Ask / Charge only / File transfer / Keyboard / last image) · Read-only card reader · Developer channel (on in development builds) |
 | Language | English · (packs found on the card) |
 | Storage | Card info · Rebuild library · Clear caches · Check card · Format card… |
-| System | About (version, build id, serial, hardware, licences) · Update firmware… · Diagnostics · Start original firmware (dual-boot layout) · Factory reset… · Recovery mode |
+| System | About (version, build id, serial, hardware, licences) · Update firmware… · Diagnostics · Start original firmware (dual-boot layout) · Factory reset… · Recovery mode · Performance (Normal / Maximum, D-4; `docs/user/performance.md`) · Developer (hidden until OK is pressed five times in About: battery logger, PWR-5) |
 
 Diagnostics (also the bring-up aid for workers): key test (shows raw ladder
 values and decoded keys), display test (colour bars, gradients, pixel grid),

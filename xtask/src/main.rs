@@ -8,6 +8,7 @@ mod args;
 mod build;
 mod cover;
 mod dev;
+mod drain;
 mod gate;
 mod linkgraph;
 mod linkmap;
@@ -56,6 +57,9 @@ usage: cargo xtask <command> [options]
                                    the milestone gate (07 §6); --coverage adds the
                                    coverage report, --m11 enforces 100 % + ASan + Miri
   dev <subcommand>                 talk to the player (see `cargo xtask dev help`)
+  drain report FILE.csv [FILE…]    battery-logger files (PWR-5): duration, mV drop,
+                                   mV/h (end points and fit), time per clock level
+                                   and playing, a comparison table
 ";
 
 fn main() -> ExitCode {
@@ -75,6 +79,7 @@ fn main() -> ExitCode {
         "cover" => cover::cmd(&mut args),
         "metrics" => metrics::cmd(&mut args),
         "dev" => dev::cmd(&mut args),
+        "drain" => drain::cmd(&mut args),
         "help" | "-h" | "--help" => {
             print!("{USAGE}");
             return ExitCode::SUCCESS;

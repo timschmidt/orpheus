@@ -25,7 +25,8 @@ of every session. Newest entries first in §3.
 | LCD-1, INPUT-1, PWR-2, AU-0 | done pending user checks 7, 8, 9, 10 | |
 | SD-1, FM-0, USB-1, USB-3, PWR-1 | done | |
 | SYS-1 | done (first cut) | Firmware: tasks, settings in NOR, developer channel, watchdog task fed only on RT + main + UI progress (verified: a hung main executor resets in ≈ 3 s), test safety window |
-| PWR-2 governor | first cut | 48 ↔ 96 ↔ 144 MHz from main-executor idle share |
+| PWR-2 governor | first cut | 48 ↔ 96 ↔ 144 MHz from main-executor idle share; decision now `orpheus_power::governor` (host-tested) |
+| PWR-5 (D-4) | Max level verified on the player; **Performance setting, battery logger, `xtask drain report` built (not yet run on the player)** | Settings › System › Performance (Normal/Maximum: the governor's step above High is 288 MHz); battery logger to `/.orpheus/test/drain-<n>-<label>.csv` (`drain start/stop/status`, hidden System › Developer row); user check 19 (unplugged drain runs) |
 | PWR-3a | mostly done (device) | Power-off: card flushed, Bluetooth 0x24, screen off, vendor PMU sequence (wake on long press or USB plug-in); in test mode a reboot instead (verified). Auto-off (setting, no key, nothing playing, no cable) and low-battery off (< 3.30 V for 10 s, no cable) through the same path — not testable with the cable in: user checks 11 and 15. Alarm wake not done |
 | RTC-1 | done (device) | set/read over the developer channel (`xtask dev time [--set]`); alarm untested; once lost after a ymon reset (U-RTC open) |
 | USB-4 | done (device) | Card-reader personality: card handed between the card task and USB; write-protected test mode; mid-track switch and hand-back verified. 2.3 MB/s read (open) |
@@ -41,6 +42,70 @@ of every session. Newest entries first in §3.
 | UI-6a | **on the player 2026-11-24** (connect, reconnect, audio, volume — policy changed, see session entry) | Bluetooth app (status, Pair new device, Paired devices, connect progress/failure, forget, reconnect switch), `BluetoothService` lists/requests, volume policy of 06 §4.2 (0x26 on connect and change, DAC reference −3 dB while the sink takes absolute volume), address text in written order. User check 17 |
 
 ## 3. Session log
+
+### 2026-11-24 — PWR-5 (D-4): Performance setting, battery logger, drain report (worker, no hardware)
+
+* **Performance setting**: Settings › System › Performance, Normal /
+  Maximum, store key `0x0C07` (default Normal; stored settings 64 → 65,
+  the boot-time key buffer is now sized from `STORED`). Strings en/ru/ja.
+* **Governor decision as a pure function**: `orpheus_power::governor`
+  (`Governor::step(Input { idle_pct, current, floor, perf })`), used by the
+  firmware's 1 Hz governor. Normal = today's behaviour (Base ↔ Mid ↔ High,
+  up below 25 % idle, down after 3 s above 70 %, floor respected), with one
+  change: a `Max` level found under Normal goes to High at the next step
+  (so `clock 288` with `gov on` no longer sticks; pin with `gov off` as
+  before). Maximum: the step above High (or Turbo) is Max; down Max → High
+  with the same hysteresis. Tests include "never Max when Normal"
+  (2,000 random loads × every start level × every floor), hysteresis and
+  floor.
+* **Battery logger** (`orpheus_power::drain`, host-tested; firmware
+  `drain.rs`): the power task (already 1 Hz) samples while it runs; a row
+  per minute: `uptime_s,mv,mv_raw,percent,charge,cable,clock_mhz,s_low,
+  s_base,s_mid,s_high,s_turbo,s_max,playing_s,backlight,screen,bt,card_io`
+  (seconds per clock level and playing seconds since the last row; card
+  I/O = block-device operations, new counter `yoton_bsp::card::IO`).
+  Header line with label, file number, perf and stay; `# lost N rows`,
+  `# stop`, `# power-off` comments. 6 rows in RAM, a write is due at 5.
+  Writes go through the card task's file API: idle at once
+  (`media::Req::Drain` wakes the idle loop), while paused (DAC stopped),
+  while playing only after a refill with `ROOMY` headroom — never forced
+  like the other chores (ledger cause `serve`); the file number (scan of
+  `/.orpheus/test/`) only in the idle loop or a served request. Flushed at
+  `drain stop`, at power-off (auto-off and low battery included: the UI
+  ends the log before the card task's shutdown flush) and before a card
+  hand-over to USB. It adds no timer and does not touch auto-off unless
+  started with `stay`. In test mode power-off reboots before the flush
+  (unchanged rule 4 path), so the power-off row is only seen unplugged.
+* **Turned on by** `cargo xtask dev cmd "drain start [LABEL] [stay]"`,
+  `"drain stop"`, `"drain status"` (reply: state, file, written, pending,
+  lost, stay), or Settings › System › Developer (hidden: five OK presses in
+  About show it until restart): Battery log (label `normal`/`max` from the
+  Performance setting), Keep awake, Log file, Rows written.
+* **`cargo xtask drain report FILE…`**: per file duration, mV first → last
+  and drop, mV/h from the end points and from a least-squares fit (with
+  r²), share of time per clock level and playing, screen-on rows, card I/O
+  per minute; rows with the cable in are left out of the voltage figures;
+  a comparison table (and the second file's fit vs the first's). Tested on
+  synthetic CSVs and on output of the firmware's own formatter.
+* Goldens: 24 new (System scrolled to Performance, the choice, the About
+  unlock toast, the Developer rows; dark/light × latin/cyrillic/cjk; looked
+  at), 8 changed by one row more in System (scroll bar). 620 images.
+* **RAM**: `__stack_bottom` 0x132300 → 0x1324A8 (+424 B): `drain::LOG`
+  244 B (bss, all-zero `Log`), 13 B of atomics/flags, `Fw` +8 B, resident
+  rodata +161 B (UI strings in `.rodata.str1.1` +133, `.rodata.cst*` +28;
+  the logger's own literals are in paged statics). Task pools unchanged
+  (audio 7,560 B, ui 2,328 B, power 128 B). Resident 83,508 → 83,668 B
+  (text unchanged); paged code 74 → 75 pages.
+* Docs: 03 §2.1/§2.4 (as built), 08 PWR-5 row, `docs/user/performance.md`,
+  user check 19.
+* **Not run on the player.** Lead's test plan: in the final worker report
+  of this session (drain start/status/stop, a 6-minute playback run with
+  `status` underrun causes, Performance = Maximum reaching level 5 in
+  `stats` under load and never at Normal, auto-off with and without
+  `stay`), then user check 19.
+* Open: whether a card write at `ROOMY` headroom (≈ 52 ms) ever underruns
+  (the `ub:` serve counter will say; one write per 5 minutes); `card_io`
+  counts operations, not blocks.
 
 ### 2026-11-24 — AU-8 (Opus) on the player: 16 KiB ring and paging fixed (worker, no hardware)
 

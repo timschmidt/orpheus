@@ -62,11 +62,31 @@ pub enum PowerRequest {
     StartFromCharging,
 }
 
+/// The battery logger (PWR-5; Settings › System › Developer).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct DrainLog {
+    pub on: bool,
+    /// Auto-off is suppressed while it runs (or will be, when started).
+    pub stay: bool,
+    /// The file's number (`drain-<n>-….csv`; 0 until the card task chose
+    /// it).
+    pub file: u16,
+    /// Rows on the card.
+    pub rows: u32,
+}
+
 pub trait PowerService {
     fn battery(&self) -> BatteryInfo;
     /// Minutes left on the sleep timer, if running.
     fn sleep_timer_left(&self) -> Option<u16>;
     fn power(&mut self, req: PowerRequest);
+    /// The developer rows are shown (unlocked in About; until restart).
+    fn developer(&self) -> bool;
+    fn show_developer(&mut self);
+    fn drain_log(&self) -> DrainLog;
+    /// Start (labelled from the Performance setting) or stop the battery
+    /// logger; `stay` suppresses auto-off while it runs.
+    fn set_drain_log(&mut self, on: bool, stay: bool);
 }
 
 /// Local wall-clock time.

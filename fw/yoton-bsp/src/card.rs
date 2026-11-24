@@ -4,6 +4,14 @@ use atj2157_hal::dma;
 use atj2157_hal::sd::{self, Error, Sd};
 pub use orpheus_fs::BlockDevice;
 
+/// Card read and write operations since boot (wrapping): the battery
+/// logger's `card_io` column (PWR-5).
+pub static IO: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+fn count_io() {
+    IO.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+}
+
 use crate::pins;
 
 #[repr(C, align(4))]
@@ -43,6 +51,7 @@ impl BlockDevice for Card {
     type Error = Error;
 
     async fn read(&mut self, lba: u32, buf: &mut [[u8; 512]]) -> Result<(), Error> {
+        count_io();
         let flat = buf.as_flattened_mut();
         if dma_ok(flat.as_ptr(), flat.len()) {
             return self.sd.read(lba, flat).await;
@@ -56,6 +65,7 @@ impl BlockDevice for Card {
     }
 
     async fn write(&mut self, lba: u32, buf: &[[u8; 512]]) -> Result<(), Error> {
+        count_io();
         let flat = buf.as_flattened();
         if dma_ok(flat.as_ptr(), flat.len()) {
             return self.sd.write(lba, flat).await;

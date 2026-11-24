@@ -208,3 +208,35 @@ fn toast_over_own_strip_is_repainted() {
     let fresh = sim("set:card=absent wait:2200 ok expect-screen:Notice wait:100");
     assert_eq!(strip(&fresh.fb), strip(&s.fb));
 }
+
+/// D-4: Settings › System › Performance is a Normal / Maximum choice,
+/// stored like any other setting.
+#[test]
+fn performance_choice() {
+    let s = sim("prev ok down*11 ok down*6 ok expect-screen:Choice down ok expect-screen:SettingsGroup");
+    assert_eq!(s.sys.settings.get(id::PERFORMANCE), 1);
+    let d = settings::def(id::PERFORMANCE).unwrap();
+    assert_eq!((d.default, d.validate(2)), (0, 0), "Normal by default, out of range is Normal");
+}
+
+/// PWR-5: the Developer row is hidden until OK is pressed five times in
+/// About; it starts and stops the battery logger.
+#[test]
+fn developer_rows_unlock_and_logger() {
+    // Without the unlock the last System row is Performance.
+    let mut s = sim("prev ok down*11 ok down*9 ok expect-screen:Choice");
+    assert!(!s.sys.developer);
+    run(&mut s, "back back ok ok expect-screen:Info ok*4");
+    assert!(!s.sys.developer, "four presses are not enough");
+    run(&mut s, "ok");
+    assert!(s.sys.developer);
+    run(&mut s, "back down*9 ok expect-screen:Developer ok");
+    assert!(s.sys.drain.on && !s.sys.drain.stay);
+    assert_eq!(s.sys.drain.file, 1);
+    run(&mut s, "down ok");
+    assert!(s.sys.drain.on && s.sys.drain.stay);
+    run(&mut s, "up ok");
+    assert!(!s.sys.drain.on && s.sys.drain.stay);
+    run(&mut s, "ok");
+    assert_eq!(s.sys.drain.file, 2, "a new log is a new file");
+}

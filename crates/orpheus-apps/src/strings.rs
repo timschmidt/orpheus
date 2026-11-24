@@ -499,6 +499,16 @@ strings! {
     HintBtConnect = "Back cancel",
     // Queue edits (AU-5).
     QueueFull = "The queue is full",
+    // Performance setting (D-4) and the developer rows (PWR-5).
+    Performance = "Performance",
+    PerfNormal = "Normal",
+    PerfMaximum = "Maximum",
+    Developer = "Developer",
+    BatteryLog = "Battery log",
+    KeepAwake = "Keep awake",
+    LogFile = "Log file",
+    LogRows = "Rows written",
+    DeveloperOn = "Developer on",
 }
 
 /// Number of strings.

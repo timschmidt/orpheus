@@ -1555,6 +1555,7 @@ dependencies = [
  "object",
  "orpheus-host",
  "orpheus-pager",
+ "orpheus-power",
  "orpheus-proto",
  "rustc-demangle",
  "serde",

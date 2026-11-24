@@ -111,6 +111,10 @@ pub enum Req {
     LibList { list: LibList },
     /// Update the music library at the next idle moment.
     Rebuild,
+    /// The battery logger has something for the card (`crate::drain`):
+    /// written at once when idle; while playing only its file is chosen
+    /// here (the rows wait for room in the DAC's ring, `audio::play_file`).
+    Drain,
 }
 
 /// A picture for a box of the frame buffer (`PictureService`). The UI
@@ -817,6 +821,14 @@ impl Server {
             }
             Req::Rebuild => {
                 crate::library::rebuild(self);
+                true
+            }
+            Req::Drain => {
+                if idle {
+                    crate::drain::flush(vol, scratch).await;
+                } else {
+                    crate::drain::prepare(vol).await;
+                }
                 true
             }
             Req::Text { file, offset } => {

@@ -21,6 +21,7 @@
 
 mod audio;
 mod bt;
+mod drain;
 mod library;
 mod media;
 mod pictures;
@@ -35,7 +36,7 @@ use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Ticker, Timer};
-use orpheus_power::gauge;
+use orpheus_power::{gauge, governor};
 use orpheus_proto::layout;
 use orpheus_proto::slot::{LAYOUT_FULL, SlotHeader};
 use static_cell::StaticCell;
@@ -101,12 +102,41 @@ async fn power() {
             s.charge = charge;
             s.cable = i.cable;
         });
+        if drain::active() {
+            drain_sample(mv, i, pct, charge);
+        }
         if pct != last_pct {
             last_pct = pct;
             let _ = BATTERY.try_send(());
         }
         ticker.next().await;
     }
+}
+
+/// The battery logger's second (PWR-5): reads only (battery, charger state,
+/// clock level, what the other tasks publish).
+#[inline(never)]
+fn drain_sample(
+    mv: u32,
+    i: orpheus_power::charger::Inputs,
+    percent: u8,
+    charge: orpheus_power::charger::ChargeState,
+) {
+    use core::sync::atomic::Ordering::Relaxed;
+    drain::second(orpheus_power::drain::Sample {
+        uptime_s: (hal::time::now_us() / 1_000_000) as u32,
+        mv: mv.min(0xFFFF) as u16,
+        mv_raw: gauge::raw_to_mv(i.battery_raw).min(0xFFFF) as u16,
+        percent,
+        charge,
+        cable: i.cable,
+        level: governor::Level::from_index(clock::current() as u8),
+        playing: audio::PLAYING.load(Relaxed),
+        backlight: ui::BACKLIGHT.load(Relaxed),
+        screen: ui::SCREEN_ON.load(Relaxed),
+        bt: drain::bt_code(),
+        card_io: yoton_bsp::card::IO.load(Relaxed),
+    });
 }
 
 /// Feeds the watchdog only when the RT executor and the UI loop have made
@@ -133,55 +163,68 @@ pub static CLOCK_FLOOR: core::sync::atomic::AtomicU8 = core::sync::atomic::Atomi
 /// Governor on/off (test command `gov on|off`).
 pub static GOV_ON: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
 
-/// Clock governor (PWR-2, first cut): from the main executor's idle share
-/// over the last second, one level up when idle < 25 %, one level down
-/// after three seconds above 70 %. Range Base (48 MHz) .. High (144 MHz).
+/// Settings › System › Performance = Maximum (D-4, PWR-5), published by
+/// the UI: the governor's step above High is `Max` (288 MHz).
+pub static PERF_MAX: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Clock governor (PWR-2, PWR-5): from the main executor's idle share over
+/// the last second, one level up when idle < 25 %, one level down after
+/// three seconds above 70 % (`orpheus_power::governor`, host-tested).
+/// Range Base (48 MHz) .. High (144 MHz), or .. Max (288 MHz) with
+/// Performance = Maximum.
 struct Governor {
     last_idle: u32,
     last_t: u64,
-    calm: u8,
+    g: governor::Governor,
+}
+
+const fn policy_level(l: Level) -> governor::Level {
+    match l {
+        Level::Low => governor::Level::Low,
+        Level::Base => governor::Level::Base,
+        Level::Mid => governor::Level::Mid,
+        Level::High => governor::Level::High,
+        Level::Turbo => governor::Level::Turbo,
+        Level::Max => governor::Level::Max,
+    }
+}
+
+const fn hal_level(l: governor::Level) -> Level {
+    match l {
+        governor::Level::Low => Level::Low,
+        governor::Level::Base => Level::Base,
+        governor::Level::Mid => Level::Mid,
+        governor::Level::High => Level::High,
+        governor::Level::Turbo => Level::Turbo,
+        governor::Level::Max => Level::Max,
+    }
 }
 
 impl Governor {
     fn new() -> Self {
-        Self { last_idle: executor::idle_us(), last_t: hal::time::now_us(), calm: 0 }
+        Self { last_idle: executor::idle_us(), last_t: hal::time::now_us(), g: governor::Governor::new() }
     }
 
     fn step(&mut self) {
+        use core::sync::atomic::Ordering::Relaxed;
         let idle = executor::idle_us();
         let t = hal::time::now_us();
-        let dt = (t - self.last_t).max(1);
-        let pct = u64::from(idle.wrapping_sub(self.last_idle)) * 100 / dt;
+        let idle_pct = governor::idle_percent(u64::from(idle.wrapping_sub(self.last_idle)), t - self.last_t);
         self.last_idle = idle;
         self.last_t = t;
-        let cur = clock::current();
-        if pct < 25 {
-            self.calm = 0;
-            let up = match cur {
-                Level::Low | Level::Base => Some(Level::Mid),
-                Level::Mid => Some(Level::High),
-                _ => None,
-            };
-            if let Some(l) = up {
-                clock::set_level(l);
-            }
-        } else if pct > 70 {
-            self.calm = self.calm.saturating_add(1);
-            if self.calm >= 3 {
-                self.calm = 0;
-                let floor = CLOCK_FLOOR.load(core::sync::atomic::Ordering::Relaxed);
-                let down = match cur {
-                    Level::Turbo | Level::Max => Some(Level::High),
-                    Level::High if floor < 2 => Some(Level::Mid),
-                    Level::Mid if floor < 1 => Some(Level::Base),
-                    _ => None,
-                };
-                if let Some(l) = down {
-                    clock::set_level(l);
-                }
-            }
+        let perf = if PERF_MAX.load(Relaxed) {
+            governor::Performance::Maximum
         } else {
-            self.calm = 0;
+            governor::Performance::Normal
+        };
+        let input = governor::Input {
+            idle_pct,
+            current: policy_level(clock::current()),
+            floor: CLOCK_FLOOR.load(Relaxed),
+            perf,
+        };
+        if let Some(l) = self.g.step(input) {
+            clock::set_level(hal_level(l));
         }
     }
 }

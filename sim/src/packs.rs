@@ -400,6 +400,15 @@ pub const RU: &[(Str, &str)] = &[
     (HintBtScan, "OK подключить"),
     (HintBtConnect, "Назад — отмена"),
     (QueueFull, "Очередь заполнена"),
+    (Performance, "Производительность"),
+    (PerfNormal, "Обычная"),
+    (PerfMaximum, "Максимальная"),
+    (Developer, "Разработчик"),
+    (BatteryLog, "Журнал батареи"),
+    (KeepAwake, "Не выключать"),
+    (LogFile, "Файл журнала"),
+    (LogRows, "Записано строк"),
+    (DeveloperOn, "Разработчик: вкл."),
 ];
 
 pub const JA: &[(Str, &str)] = &[
@@ -749,4 +758,13 @@ pub const JA: &[(Str, &str)] = &[
     (HintBtScan, "OK 接続"),
     (HintBtConnect, "戻る キャンセル"),
     (QueueFull, "キューに追加できません"),
+    (Performance, "性能"),
+    (PerfNormal, "標準"),
+    (PerfMaximum, "最高"),
+    (Developer, "開発者"),
+    (BatteryLog, "バッテリーログ"),
+    (KeepAwake, "自動オフしない"),
+    (LogFile, "ログファイル"),
+    (LogRows, "行数"),
+    (DeveloperOn, "開発者: オン"),
 ];

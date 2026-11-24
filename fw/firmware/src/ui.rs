@@ -150,12 +150,20 @@ impl Ui {
                 crate::media::publish_sound(snd);
             }
         }
+        // Settings › System › Performance for the governor (D-4).
+        crate::PERF_MAX.store(
+            self.fw.settings.get(orpheus_apps::settings::id::PERFORMANCE) == 1,
+            core::sync::atomic::Ordering::Relaxed,
+        );
         // Screen on/off follows the gate.
         let on = self.shell.gate.screen_on;
         if on != self.screen_on {
             self.screen_on = on;
             self.disp.sleep(!on);
-            self.bl.set(if on { 12 } else { 0 });
+            let level: u8 = if on { 12 } else { 0 };
+            self.bl.set(u32::from(level));
+            BACKLIGHT.store(level, core::sync::atomic::Ordering::Relaxed);
+            SCREEN_ON.store(on, core::sync::atomic::Ordering::Relaxed);
             if on {
                 self.shell.invalidate();
             }
@@ -169,6 +177,8 @@ impl Ui {
             atj2157_hal::log::line(b"power-off in a test: rebooting instead");
             atj2157_hal::wdt::reboot(atj2157_hal::wdt::Target::Adfu);
         }
+        // The battery log's last row goes out with the card task's flush.
+        crate::drain::power_off();
         crate::media::SHUT_DOWN.store(false, core::sync::atomic::Ordering::Release);
         crate::media::play(crate::media::PlayReq::Shutdown);
         for _ in 0..100 {
@@ -247,6 +257,9 @@ pub static T_FLUSH: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU3
 /// Set by the developer channel while a screenshot is read (ms deadline,
 /// 0 = none): the UI does not draw until then.
 pub static SHOT_HOLD_UNTIL_MS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// Backlight level (0–16) and panel on, for the battery logger (PWR-5).
+pub static BACKLIGHT: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(12);
+pub static SCREEN_ON: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
 pub static SET_WRITES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 pub static SET_LAST: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
@@ -299,7 +312,9 @@ pub async fn ui() {
     *store = Store::<NorRegion, 4>::mount(NorRegion::settings()).await.ok();
     let mut bt_last = None;
     if let Some(s) = store.as_mut() {
-        let mut keys = [0u16; 64];
+        // Every stored setting (65 since PWR-5) and the Bluetooth address:
+        // after a factory reset all of them are in the store.
+        let mut keys = [0u16; orpheus_apps::settings::STORED + 8];
         let mut n = 0;
         for k in s.keys() {
             if n < keys.len() {
@@ -412,7 +427,14 @@ pub async fn ui() {
                 5 => 60,
                 _ => 0,
             };
-            if mins > 0 && idle && !st.cable && t.saturating_sub(last_key_ms) >= mins * 60_000 {
+            // A battery log started with `stay` keeps auto-off away
+            // (PWR-5); otherwise the logger changes nothing here.
+            if mins > 0
+                && idle
+                && !st.cable
+                && t.saturating_sub(last_key_ms) >= mins * 60_000
+                && !crate::drain::stay()
+            {
                 atj2157_hal::log::line(b"pwr: auto-off");
                 ui.power_off().await;
             }

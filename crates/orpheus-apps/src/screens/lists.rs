@@ -14,8 +14,9 @@ use orpheus_ui::widgets::list::{Accessory, ListAction, ListView};
 
 use super::rows::Rows;
 use super::{
-    BOOKMARKS, CHOICE, GOODBYE, GROUP, HOME_APPS, INFO, LIBRARY, LibraryScreen, MUSIC, MUSIC_FOLDERS, NOTICE,
-    NOW_PLAYING, Notice, PICKER, POWER_MENU, PROPERTIES, QUICK_PANEL, SETTINGS, SLIDER, USB_CONNECT,
+    BOOKMARKS, CHOICE, DEVELOPER, GOODBYE, GROUP, HOME_APPS, INFO, LIBRARY, LibraryScreen, MUSIC,
+    MUSIC_FOLDERS, NOTICE, NOW_PLAYING, Notice, PICKER, POWER_MENU, PROPERTIES, QUICK_PANEL, SETTINGS,
+    SLIDER, USB_CONNECT,
 };
 use crate::App;
 use crate::services::{
@@ -40,6 +41,8 @@ pub enum ListKind {
     Bookmarks,
     /// Properties of row `n` of the current listing.
     Properties(u32),
+    /// Settings › System › Developer: the battery logger (PWR-5).
+    Developer,
 }
 
 // Row tags that are not setting keys.
@@ -57,6 +60,12 @@ const T_LIBRARY: u16 = 210;
 const T_FOLDERS: u16 = 220;
 const T_BOOKMARKS: u16 = 221;
 const T_BUILDING: u16 = 222;
+const T_DRAIN: u16 = 300;
+const T_STAY: u16 = 301;
+const T_LOG_FILE: u16 = 302;
+const T_LOG_ROWS: u16 = 303;
+/// OK presses in About that show the developer rows.
+const DEV_TAPS: u8 = 5;
 
 /// Music root (05 §7.1): Now Playing, Resume, Shuffle all, the library
 /// lists (usable once the tag index exists), Folders, Bookmarks.
@@ -128,6 +137,31 @@ fn properties_rows<S: Services + ?Sized>(svc: &S, l: Lang, row: u32, rows: &mut 
         v.push_str(d.as_str());
     });
 }
+/// Settings › System › Developer (PWR-5): the battery logger, whether it
+/// keeps auto-off away, its file and the rows written.
+fn developer_rows<S: Services + ?Sized>(svc: &S, l: Lang, rows: &mut Rows) {
+    let d = svc.drain_log();
+    if let Some(r) = rows.push(l.get(Str::BatteryLog), T_DRAIN) {
+        r.acc = Accessory::Toggle(d.on);
+    }
+    if let Some(r) = rows.push(l.get(Str::KeepAwake), T_STAY) {
+        r.acc = Accessory::Toggle(d.stay);
+    }
+    if let Some(r) = rows.push(l.get(Str::LogFile), T_LOG_FILE) {
+        if d.on && d.file != 0 {
+            r.value.push_str("drain-");
+            r.value.push_u32(u32::from(d.file));
+        } else {
+            r.value.push_str("—");
+        }
+        r.dim = !d.on;
+    }
+    if let Some(r) = rows.push(l.get(Str::LogRows), T_LOG_ROWS) {
+        r.value.push_u32(d.rows);
+        r.dim = !d.on;
+    }
+}
+
 /// Dialog ids: action number + this.
 const DLG: u16 = 0x100;
 
@@ -137,6 +171,8 @@ pub struct ListScreen {
     rows: Rows,
     lang: Lang,
     always: bool,
+    /// OK presses in About (the developer rows' unlock).
+    taps: u8,
 }
 
 fn rows_visible() -> u32 {
@@ -177,6 +213,7 @@ const fn action_code(a: Action) -> u16 {
         Action::StartOriginal => 7,
         Action::FactoryReset => 8,
         Action::Recovery => 9,
+        Action::Developer => 10,
     }
 }
 
@@ -197,7 +234,14 @@ fn push_size(b: &mut StrBuf<24>, mib: u32) {
 impl ListScreen {
     #[must_use]
     pub fn new(kind: ListKind) -> ListScreen {
-        ListScreen { kind, list: ListView::new(), rows: Rows::default(), lang: Lang::ENGLISH, always: false }
+        ListScreen {
+            kind,
+            list: ListView::new(),
+            rows: Rows::default(),
+            lang: Lang::ENGLISH,
+            always: false,
+            taps: 0,
+        }
     }
 
     #[must_use]
@@ -214,6 +258,7 @@ impl ListScreen {
             ListKind::MusicRoot => MUSIC,
             ListKind::Bookmarks => BOOKMARKS,
             ListKind::Properties(_) => PROPERTIES,
+            ListKind::Developer => DEVELOPER,
         }
     }
 
@@ -231,6 +276,7 @@ impl ListScreen {
             ListKind::MusicRoot => "Music",
             ListKind::Bookmarks => "Bookmarks",
             ListKind::Properties(_) => "Properties",
+            ListKind::Developer => "Developer",
         }
     }
 
@@ -250,6 +296,7 @@ impl ListScreen {
             ListKind::MusicRoot => l.get(Str::AppMusic),
             ListKind::Bookmarks => l.get(Str::Bookmarks),
             ListKind::Properties(_) => l.get(Str::Properties),
+            ListKind::Developer => l.get(Str::Developer),
         }
     }
 
@@ -275,6 +322,9 @@ impl ListScreen {
                 let Some(grp) = GROUPS.get(usize::from(g)) else { return };
                 for s in grp.items {
                     if s.kind == Kind::Action(Action::StartOriginal) && !svc.dual_boot() {
+                        continue;
+                    }
+                    if s.kind == Kind::Action(Action::Developer) && !svc.developer() {
                         continue;
                     }
                     let v = svc.setting(s.id);
@@ -443,6 +493,7 @@ impl ListScreen {
                 }
             }
             ListKind::Properties(row) => properties_rows(svc, l, row, &mut rows),
+            ListKind::Developer => developer_rows(svc, l, &mut rows),
         }
         self.rows = rows;
         self.list.invalidate();
@@ -584,6 +635,7 @@ impl ListScreen {
                     Kind::Info(i) => Nav::Push(INFO, Arg(info_arg(i))),
                     Kind::Action(Action::SetTime) => Nav::Push(PICKER, Arg(0)),
                     Kind::Action(Action::SetDate) => Nav::Push(PICKER, Arg(1)),
+                    Kind::Action(Action::Developer) => Nav::Push(DEVELOPER, Arg(0)),
                     Kind::Action(Action::CheckCard) => {
                         cx.svc.storage(StorageRequest::CheckCard);
                         cx.ui.toast(lang.get(Str::Started));
@@ -609,7 +661,26 @@ impl ListScreen {
                 self.set(cx, sid, v);
                 Nav::Pop
             }
+            ListKind::Info(Info::About) => {
+                // Five OK presses show the developer rows (until restart).
+                self.taps = self.taps.saturating_add(1);
+                if self.taps >= DEV_TAPS {
+                    cx.svc.show_developer();
+                    cx.ui.toast(lang.get(Str::DeveloperOn));
+                }
+                Nav::Stay
+            }
             ListKind::Info(_) => Nav::Stay,
+            ListKind::Developer => {
+                let d = cx.svc.drain_log();
+                match tag {
+                    T_DRAIN => cx.svc.set_drain_log(!d.on, d.stay),
+                    T_STAY => cx.svc.set_drain_log(d.on, !d.stay),
+                    _ => return Nav::Stay,
+                }
+                self.refresh(cx.svc);
+                Nav::Stay
+            }
             ListKind::HomeApps => {
                 if App::from_index(u8::try_from(tag).unwrap_or(0)) != Some(App::Settings) {
                     let mask = cx.svc.setting(id::HOME_APPS) ^ (1 << tag);

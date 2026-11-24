@@ -1166,6 +1166,10 @@ async fn play_file(
                 media::player_update(|p| p.source = Source::Paused);
                 save_store(vol, srv, spare).await;
             }
+            // The battery log while the DAC is stopped (PWR-5).
+            if crate::drain::due() {
+                crate::drain::flush_rows(vol, spare).await;
+            }
             continue;
         }
         if held {
@@ -1360,6 +1364,13 @@ async fn play_file(
                         mark(0);
                         LAST_SERVE_MS.store((time::now_us() / 1000) as u32, Ordering::Relaxed);
                     }
+                }
+                // The battery log (PWR-5): only with room to spare, never
+                // forced like the chores above.
+                if crate::drain::due() && out.headroom() >= ROOMY {
+                    let t0 = now32();
+                    crate::drain::flush_rows(vol, spare).await;
+                    note(UB_SERVE, t0);
                 }
                 if driven && !reader_end && ring.s.file_left().is_some_and(|l| l <= READ_AHEAD_LEAD) {
                     reader_end = true;
@@ -1830,6 +1841,9 @@ async fn load_state(vol: &mut Volume<'static, Card>, arena: &mut [u8], srv: &mut
 async fn hand_over(vol: &mut Volume<'static, Card>, srv: &mut Server, scratch: &mut [u8]) {
     srv.play_req(PlayReq::Cmd(Command::Stop));
     save_store(vol, srv, scratch).await;
+    if crate::drain::due() {
+        crate::drain::flush(vol, scratch).await;
+    }
     srv.card_leaving(vol).await;
 }
 
@@ -1920,6 +1934,8 @@ async fn player_request(
             // `SHUT_DOWN` lets the power go.
             srv.feed(Event::Shutdown);
             save_store(vol, srv, arena).await;
+            // The battery log's last rows (the UI ended it).
+            crate::drain::flush(vol, arena).await;
             let _ = vol.flush().await;
             media::SHUT_DOWN.store(true, Ordering::Release);
             return;
@@ -2191,6 +2207,10 @@ pub async fn audio() {
         } else if let Some(r) = srv.pending.take() {
             Either3::Second(r)
         } else {
+            // The battery log (PWR-5) first: a minute's rows are small.
+            if crate::drain::due() && !work_waiting() {
+                crate::drain::flush(&mut vol, arena).await;
+            }
             if srv.wants_build() && !work_waiting() {
                 build_slot(&mut vol, srv, arena).await;
             }

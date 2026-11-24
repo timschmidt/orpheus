@@ -217,6 +217,9 @@ impl Target for Fw {
         if let Some(rest) = data.strip_prefix(b"bt ") {
             return crate::bt::test_command(rest);
         }
+        if let Some(rest) = data.strip_prefix(b"drain ") {
+            return crate::drain::test_command(rest);
+        }
         if CARD_WITH_USB.load(Ordering::Relaxed) {
             crate::audio::busy_reply();
             return true;

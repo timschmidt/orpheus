@@ -7,7 +7,7 @@ use std::cell::Cell;
 use anyhow::{Result, bail};
 use orpheus_apps::screens::{self, AppScreen};
 use orpheus_apps::services::{
-    self, BatteryInfo, BluetoothService, CardInfo, CardState, ClockService, DateTime, FsKind,
+    self, BatteryInfo, BluetoothService, CardInfo, CardState, ClockService, DateTime, DrainLog, FsKind,
     PlaybackService, Playing, PowerRequest, PowerService, SettingsService, StorageRequest, StorageService,
     SystemService, UsbMode, UsbService, UsbState,
 };
@@ -65,6 +65,12 @@ pub struct HostServices {
     pub media: Media,
     events: Vec<Event>,
     picture: Cell<PicState>,
+    /// The developer rows are shown (About × 5, or `set:developer=1`).
+    pub developer: bool,
+    /// The fake battery logger (PWR-5): `set:drain=on|off`, `set:drainrows=N`.
+    pub drain: DrainLog,
+    /// Files the fake logger has started (its next number).
+    drain_files: u16,
 }
 
 impl Default for HostServices {
@@ -91,6 +97,9 @@ impl Default for HostServices {
             media: Media::new(),
             events: Vec::new(),
             picture: Cell::new(PicState::Nothing),
+            developer: false,
+            drain: DrainLog::default(),
+            drain_files: 0,
         }
     }
 }
@@ -146,6 +155,27 @@ impl PowerService for HostServices {
             self.lock_request = true;
         }
         self.log.push(Logged::Power(req));
+    }
+
+    fn developer(&self) -> bool {
+        self.developer
+    }
+
+    fn show_developer(&mut self) {
+        self.developer = true;
+    }
+
+    fn drain_log(&self) -> DrainLog {
+        self.drain
+    }
+
+    fn set_drain_log(&mut self, on: bool, stay: bool) {
+        if on && !self.drain.on {
+            self.drain_files += 1;
+            self.drain = DrainLog { on: true, stay, file: self.drain_files, rows: 0 };
+        }
+        self.drain.on = on;
+        self.drain.stay = stay;
     }
 }
 
@@ -397,6 +427,9 @@ impl Host for HostServices {
                 self.settings.set(id::BLUETOOTH, i16::from(p != BtPhase::Off));
                 self.bt_events();
             }
+            "developer" => self.developer = on,
+            "drain" => self.set_drain_log(on, self.drain.stay),
+            "drainrows" => self.drain.rows = v.parse()?,
             "btfound" => {
                 self.bt.force_found(v.parse()?);
                 self.bt_events();

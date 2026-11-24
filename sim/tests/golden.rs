@@ -282,6 +282,15 @@ fn app_cases(add: &mut dyn FnMut(String, String)) {
         ("usb", "set:usb=host expect-screen:UsbConnect"),
         ("boot", "goto:Boot expect-screen:Boot"),
         ("goodbye", "hold:power ok expect-screen:Goodbye"),
+        // PWR-5 / D-4: System › Performance, its choice, the developer
+        // unlock in About and the Developer rows with a log running.
+        ("performance", "prev ok down*11 ok down*6"),
+        ("performance_choice", "prev ok down*11 ok down*6 ok expect-screen:Choice"),
+        ("developer_unlock", "prev ok down*11 ok ok expect-screen:Info ok*5 wait:200"),
+        (
+            "developer",
+            "set:developer=1 set:drain=on set:drainrows=42 prev ok down*11 ok down*7 ok expect-screen:Developer",
+        ),
     ];
     for t in ["dark", "light"] {
         for l in ["latin", "cyrillic", "cjk"] {

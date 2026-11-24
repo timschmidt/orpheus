@@ -10,6 +10,7 @@ publish = false
 orpheus-proto.workspace = true
 orpheus-host = { path = "../crates/orpheus-host" }
 orpheus-pager = { path = "../crates/orpheus-pager", features = ["sim"] }
+orpheus-power = { path = "../crates/orpheus-power" }
 anyhow = "1"
 object = { version = "0.37", default-features = false, features = ["read_core", "elf", "std"] }
 toml = "0.8"

@@ -82,6 +82,8 @@ pub const BT_SCAN: ScreenId = ScreenId(28);
 pub const BT_PAIRED: ScreenId = ScreenId(29);
 /// Connecting. Arg: [`connect_arg`].
 pub const BT_CONNECT: ScreenId = ScreenId(30);
+/// Settings › System › Developer (hidden until unlocked in About; PWR-5).
+pub const DEVELOPER: ScreenId = ScreenId(31);
 
 /// One variant per screen. Only the top screen exists, so the enum's size
 /// (its largest variant, the list screen) is the UI's screen RAM.
@@ -187,6 +189,7 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             EQUALISER => AppScreen::Equaliser(EqualiserScreen::default()),
             PROPERTIES => AppScreen::List(ListScreen::new(ListKind::Properties(0))),
             BOOKMARKS => AppScreen::List(ListScreen::new(ListKind::Bookmarks)),
+            DEVELOPER => AppScreen::List(ListScreen::new(ListKind::Developer)),
             LIBRARY => AppScreen::Library(LibraryScreen::default()),
             BLUETOOTH => AppScreen::Bluetooth(BluetoothScreen::new(BtView::Home)),
             BT_SCAN => AppScreen::Bluetooth(BluetoothScreen::new(BtView::Scan)),

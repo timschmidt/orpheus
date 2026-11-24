@@ -56,6 +56,8 @@ pub enum Action {
     StartOriginal,
     FactoryReset,
     Recovery,
+    /// The developer rows (hidden until unlocked in About; PWR-5).
+    Developer,
 }
 
 /// Read-only screens and values.
@@ -205,6 +207,8 @@ pub mod id {
     /// Custom 1 bands 0..5, then Custom 2 bands 0..5.
     pub const EQ_BAND0: SettingId = SettingId(0x0D10);
     pub const SPEED: SettingId = SettingId(0x0206);
+    /// Settings › System › Performance (D-4): 0 Normal, 1 Maximum.
+    pub const PERFORMANCE: SettingId = SettingId(0x0C07);
 }
 
 const SOUND: &[Setting] = &[
@@ -340,6 +344,8 @@ const SYSTEM: &[Setting] = &[
     a(0x0C04, Str::StartOriginal, Action::StartOriginal),
     a(0x0C05, Str::FactoryReset, Action::FactoryReset),
     a(0x0C06, Str::RecoveryMode, Action::Recovery),
+    c(0x0C07, Str::Performance, ch![S(Str::PerfNormal), S(Str::PerfMaximum)], 0),
+    a(0x0C08, Str::Developer, Action::Developer),
 ];
 
 /// Now Playing views (05 §7.1), in Up/Down order.
@@ -440,7 +446,7 @@ pub fn def(id: SettingId) -> Option<&'static Setting> {
 }
 
 /// Number of stored items.
-pub const STORED: usize = 64;
+pub const STORED: usize = 65;
 
 /// Position among stored items (cache index).
 #[must_use]

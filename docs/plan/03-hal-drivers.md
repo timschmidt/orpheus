@@ -44,7 +44,7 @@ peripheral clock derivations).
 | `Mid` | 96 MHz | COREPLL N = 16 | `0x0C` | after the level self-test |
 | `High` | 144 MHz | COREPLL N = 24 | `0x0C` | after the level self-test |
 | `Turbo` | 192 MHz | COREPLL N = 32 | `0x10` (1.1 V) | after the level self-test |
-| `Max` | 288 MHz | COREPLL N = 48, `CMU_SYSCLK` bit 8 set | `0x18` (1.3 V) | an option the user can choose (decision D-4, 2026-11-24; WP PWR-5). **Verified 2026-11-24**: self-test PASS, NOR ÷6 (`0x203`) = 48 MHz, compute 1.93–1.94× High, decode bit-identical; battery drain not yet characterised |
+| `Max` | 288 MHz | COREPLL N = 48, `CMU_SYSCLK` bit 8 set | `0x18` (1.3 V) | an option the user can choose (decision D-4, 2026-11-24; WP PWR-5): with Settings › System › Performance = Maximum the governor's step above High is `Max` (§2.4). **Verified 2026-11-24**: self-test PASS, NOR ÷6 (`0x203`) = 48 MHz, compute 1.93–1.94× High, decode bit-identical; battery drain not yet characterised (battery logger, user check 19) |
 
 Voltage codes per the datasheet (01 §7): `0x0C` = 1.0 V, `0x10` = 1.1 V,
 `0x14` = 1.2 V (the reset default), `0x18` = 1.3 V. All values are rows of the
@@ -100,6 +100,18 @@ pub fn stats() -> ClockStats;                  // seconds per level, seconds in 
 
 The governor runs the maximum of all requests (not the vendor's sum of
 votes), with 200 ms hysteresis on the way down. Policy numbers: 02 §5.1.
+
+**As built (PWR-2 first cut, PWR-5)**: the decision is a pure function,
+`orpheus_power::governor::Governor::step` (host-tested), run once a second
+by the firmware: idle share of the main executor below 25 % → one level up
+(Base → Mid → High); above 70 % for three steps in a row → one level down,
+never below the audio task's clock floor. The Performance setting
+(Settings › System › Performance, store key `0x0C07`) decides what lies
+above High: **Normal** (default) nothing — the governor never selects `Max`,
+and a `Max` it finds (a test pin with the governor on, or the setting just
+switched off) goes to High at the next step; **Maximum**: `Max` (288 MHz),
+with the same hysteresis on the way down (`Max` → High → Mid → Base).
+`Turbo` is still only reachable by a test pin.
 
 **WP-PWR-1** delivers levels `Low`/`Base`, then `Mid`/`High` through the
 self-test, the request API, statistics, and the SPI/LCM handling above.
