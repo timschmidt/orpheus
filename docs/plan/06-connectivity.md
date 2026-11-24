@@ -370,6 +370,13 @@ only the command that makes the module send reports is unknown (step 2).
 The project udev rule grants raw access to it and tells libinput to ignore
 it, so probes never type into the desktop.
 
+**Step 2, first pass (2026-11-24)**: `0x27` answers event `27 00`; `0x2D`,
+`0x32 00 01`, `0x05 16/17` are acknowledged; **`0x32 01 00` restarts the
+module** (event `0x23`, full start-up, reconnect). Next: with raw HID
+access, watch for reports after each candidate, and look in the vendor
+firmware for the senders of 0x32 and the meaning of its two bytes before
+probing more values.
+
 #### 4.3.2 Tilt pointer engine (WP SENS-2) — conditional (D-10)
 
 Built **only if** §4.3.1 finds a Bluetooth transport for mouse data; if not,
