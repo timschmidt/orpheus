@@ -6,6 +6,8 @@
 
 use yoton_power::charger::ChargeState;
 use yoton_ui::event::{BtState, Source};
+use yoton_ui::geom::Rect;
+use yoton_ui::gfx::Gfx;
 use yoton_ui::shell::System;
 use yoton_ui::theme::{Accent, Palette, Theme};
 use yoton_ui::widgets::bars::{MiniPlayer, Status};
@@ -205,6 +207,7 @@ pub trait Services:
     + BrowseService
     + TextService
     + PlayerService
+    + PictureService
     + SettingsService
     + PowerService
     + ClockService
@@ -221,6 +224,7 @@ impl<T> Services for T where
         + BrowseService
         + TextService
         + PlayerService
+        + PictureService
         + SettingsService
         + PowerService
         + ClockService
@@ -301,6 +305,9 @@ pub mod data {
     pub const TEXT: u16 = 3;
     /// Lyrics of the current track were loaded.
     pub const LYRICS: u16 = 4;
+    /// The picture asked for with `PictureService::show_picture` is in the
+    /// frame buffer (or could not be shown): see `picture_state`.
+    pub const PICTURE: u16 = 5;
 }
 
 /// Browser order (Files menu › Sort).
@@ -319,6 +326,17 @@ pub struct BrowseFilter {
     pub hidden: bool,
     /// Music › Folders: directories, audio and playlists only.
     pub audio_only: bool,
+    /// Pictures: directories and pictures only.
+    pub images_only: bool,
+}
+
+impl BrowseFilter {
+    /// Whether an entry of `kind` is listed (hidden entries aside).
+    #[must_use]
+    pub fn keeps(&self, kind: EntryKind) -> bool {
+        (!self.audio_only || matches!(kind, EntryKind::Dir | EntryKind::Audio | EntryKind::Playlist))
+            && (!self.images_only || matches!(kind, EntryKind::Dir | EntryKind::Image))
+    }
 }
 
 /// One row of a listing.
@@ -411,6 +429,10 @@ pub struct PlayerState {
     /// Stream ring fill and decoder CPU load, percent (Details view).
     pub buffer_pct: u8,
     pub cpu_pct: u8,
+    /// Album art of the current track: 0 while there is none (yet), else
+    /// a value that changes when it does (Now Playing redraws then and
+    /// asks for it with `PictureService::show_picture`).
+    pub art: u32,
 }
 
 /// The current track.
@@ -528,7 +550,6 @@ pub trait PlayerService {
     fn queue_entry(&self, i: u32) -> Option<QueueEntry<'_>>;
     /// Answer with `Event::Data(QUEUE)`.
     fn want_queue(&mut self, first: u32, count: u32);
-    fn art(&self, size: ArtSize) -> Option<&[u16]>;
     /// Lines of the current track's lyrics (`.lrc` beside the file or
     /// embedded); 0 if none.
     fn lyrics_count(&self) -> u32;
@@ -540,4 +561,109 @@ pub trait PlayerService {
     fn bookmark(&self, i: u32) -> Option<Bookmark<'_>>;
     fn library(&self) -> LibraryState;
     fn command(&mut self, c: PlayerCmd);
+}
+
+// ---------------------------------------------------------------- Pictures
+
+/// What to show.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PicSource {
+    /// A picture file on the card.
+    File(FileRef),
+    /// The current track's album art.
+    Art(ArtSize),
+}
+
+/// A picture to show in a box of the screen.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PicReq {
+    pub src: PicSource,
+    /// Crop to fill the box (else the whole picture, letterboxed).
+    pub fill: bool,
+    /// User rotation in quarter turns clockwise, after the EXIF orientation.
+    pub turns: u8,
+}
+
+impl PicReq {
+    #[must_use]
+    pub const fn art(size: ArtSize) -> PicReq {
+        PicReq { src: PicSource::Art(size), fill: true, turns: 0 }
+    }
+}
+
+/// Picture formats (Details).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PicFormat {
+    Jpeg,
+    Png,
+    Gif,
+    Bmp,
+    Qoi,
+}
+
+impl PicFormat {
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            PicFormat::Jpeg => "JPEG",
+            PicFormat::Png => "PNG",
+            PicFormat::Gif => "GIF",
+            PicFormat::Bmp => "BMP",
+            PicFormat::Qoi => "QOI",
+        }
+    }
+}
+
+/// What was shown.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PicInfo {
+    /// Stored size of the picture.
+    pub width: u32,
+    pub height: u32,
+    pub format: Option<PicFormat>,
+    /// Shown at reduced detail (progressive JPEG, interlaced PNG or GIF).
+    pub reduced: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PicError {
+    /// Not a picture format (or variant) the player reads.
+    Unsupported,
+    /// Damaged or cut short.
+    Corrupt,
+    /// Needs more decoder memory than there is.
+    TooLarge,
+    /// The file could not be read.
+    Io,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PicState {
+    /// Being put into the frame buffer; `Event::Data(PICTURE)` follows.
+    Pending,
+    /// In the box now.
+    Shown(PicInfo),
+    /// Nothing to show (the track has no album art).
+    Nothing,
+    /// The decoder memory belongs to the audio decoder while a track is
+    /// loaded: stop playback to view pictures.
+    Busy,
+    Failed(PicError),
+}
+
+/// Pictures are decoded by the service straight into the screen; nothing
+/// keeps a decoded picture in RAM (04 §7). On the player the card task
+/// writes the pixels into the frame buffer after the frame that asked for
+/// them was drawn: a screen draws a placeholder for `Pending`, and when
+/// `Event::Data(PICTURE)` says `Shown` it marks the box dirty without
+/// drawing into it (`Gfx::mark`). Whatever covers the box later (a menu,
+/// a toast) is undone by a full redraw, which asks for the picture again.
+pub trait PictureService {
+    /// Show `req` in `r` (local coordinates of `g`). The simulator draws at
+    /// once and answers `Shown`; the firmware answers `Pending`, or at once
+    /// `Busy` or `Nothing`.
+    fn show_picture(&self, g: &mut Gfx<'_>, r: Rect, req: PicReq) -> PicState;
+    /// The outcome of the last `show_picture` (after `Event::Data(PICTURE)`;
+    /// `Pending` before).
+    fn picture_state(&self) -> PicState;
 }

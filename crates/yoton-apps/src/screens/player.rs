@@ -20,7 +20,7 @@ use super::files::push_size;
 use super::rows::Rows;
 use super::{CHOICE, EQUALISER, FILES};
 use crate::icons;
-use crate::services::{ArtSize, FileOp, PlayerCmd, PlayerService, Services, data};
+use crate::services::{ArtSize, FileOp, PicReq, PicState, PlayerCmd, PlayerService, Services, data};
 use crate::settings::{self, EQ_BANDS_HZ, NP_VIEWS, SettingId, id};
 use crate::strings::{Lang, Str};
 
@@ -80,6 +80,7 @@ struct Snap {
     lyric: u32,
     qpos: u32,
     qlen: u32,
+    art: u32,
 }
 
 #[derive(Default)]
@@ -92,6 +93,9 @@ pub struct NowPlayingScreen {
     seek_repeats: u16,
     levels_at: Instant,
     now: Instant,
+    /// Album art asked for and not there yet; arrived (mark it).
+    art_pending: bool,
+    art_arrived: bool,
 }
 
 // Menu ids.
@@ -157,6 +161,7 @@ impl NowPlayingScreen {
             lyric: if self.view == V_LYRICS { Self::lyric_index(svc, p.position_ms) } else { 0 },
             qpos: p.queue_pos,
             qlen: p.queue_len,
+            art: p.art,
         }
     }
 
@@ -230,16 +235,22 @@ impl NowPlayingScreen {
         self.view == V_UP_NEXT || self.view == V_DETAILS
     }
 
-    fn draw_art(g: &mut Gfx<'_>, art: Option<&[u16]>, r: Rect, radius: i16) {
-        match art {
-            Some(px) => g.image(r.x, r.y, r.w, px),
-            None => {
-                let surf = g.c(Role::Surface);
-                g.fill_round(r, radius, surf);
-                let dim = g.c(Role::TextDim);
-                g.icon2(r.x + (r.w - 24) / 2, r.y + (r.h - 24) / 2, &icons::MUSIC, dim);
-            }
+    /// Album art in `r`, or the placeholder (also while it is on its way:
+    /// it replaces the placeholder in the frame buffer, see `art_arrived`).
+    fn draw_art<S: Services + ?Sized>(&mut self, svc: &S, g: &mut Gfx<'_>, size: ArtSize, r: Rect, radius: i16) {
+        let st = if svc.player().art == 0 { PicState::Nothing } else { svc.show_picture(g, r, PicReq::art(size)) };
+        self.art_pending = st == PicState::Pending;
+        if !matches!(st, PicState::Shown(_)) {
+            let surf = g.c(Role::Surface);
+            g.fill_round(r, radius, surf);
+            let dim = g.c(Role::TextDim);
+            g.icon2(r.x + (r.w - 24) / 2, r.y + (r.h - 24) / 2, &icons::MUSIC, dim);
         }
+    }
+
+    fn art_rect(&self, g: &Gfx<'_>) -> Rect {
+        let (w, h) = g.size();
+        if self.view == V_BIG_ART { Rect::new(0, 0, w, h) } else { Rect::new(4, 4, 52, 52) }
     }
 
     fn draw_idle(&self, g: &mut Gfx<'_>) {
@@ -293,11 +304,11 @@ impl NowPlayingScreen {
         g.icon((w - 10) / 2, 91, ic, text);
     }
 
-    fn draw_standard<S: Services + ?Sized>(&self, svc: &S, g: &mut Gfx<'_>) {
+    fn draw_standard<S: Services + ?Sized>(&mut self, svc: &S, g: &mut Gfx<'_>) {
         let (w, _) = g.size();
         let Some(t) = svc.track() else { return };
         let p = svc.player();
-        Self::draw_art(g, svc.art(ArtSize::Small), Rect::new(4, 4, 52, 52), 6);
+        self.draw_art(svc, g, ArtSize::Small, Rect::new(4, 4, 52, 52), 6);
         let tx = 62;
         let tw = w - tx - 4;
         let text = g.c(Role::Text);
@@ -347,13 +358,18 @@ impl NowPlayingScreen {
         self.draw_progress_rows(svc, g);
     }
 
-    fn draw_big_art<S: Services + ?Sized>(&self, svc: &S, g: &mut Gfx<'_>, overlay: bool) {
+    fn draw_big_art<S: Services + ?Sized>(&mut self, svc: &S, g: &mut Gfx<'_>, overlay: bool) {
         let (w, h) = g.size();
         g.clear(Role::Bg);
-        Self::draw_art(g, svc.art(ArtSize::Full), Rect::new(0, 0, w, h), 0);
-        if !overlay {
-            return;
+        self.draw_art(svc, g, ArtSize::Full, Rect::new(0, 0, w, h), 0);
+        if overlay {
+            Self::draw_overlay(svc, g);
         }
+    }
+
+    /// Big art's title band (over the art).
+    fn draw_overlay<S: Services + ?Sized>(svc: &S, g: &mut Gfx<'_>) {
+        let (w, h) = g.size();
         let Some(t) = svc.track() else { return };
         let p = svc.player();
         let band = Rect::new(0, h - 40, w, 40);
@@ -543,6 +559,13 @@ impl<S: Services + ?Sized> Screen<S> for NowPlayingScreen {
                 self.set_view(cx, v);
                 return Nav::Stay;
             }
+            Event::Data(d) if d.tag == data::PICTURE => {
+                if self.art_pending {
+                    self.art_pending = false;
+                    self.art_arrived = matches!(cx.svc.picture_state(), PicState::Shown(_));
+                }
+                return Nav::Stay;
+            }
             Event::Data(d) if d.tag == data::QUEUE || d.tag == data::LYRICS => {
                 self.list.invalidate();
                 self.drawn = None;
@@ -636,9 +659,22 @@ impl<S: Services + ?Sized> Screen<S> for NowPlayingScreen {
             return;
         }
         let same = self.drawn == Some(snap);
+        if dirty == Dirty::Changed && self.art_arrived {
+            // The art is in the frame buffer now (over the placeholder).
+            self.art_arrived = false;
+            if same && matches!(self.view, V_STANDARD | V_BIG_ART) && !idle {
+                let r = self.art_rect(g);
+                g.mark(r);
+                if self.view == V_BIG_ART && snap.overlay {
+                    Self::draw_overlay(svc, g);
+                }
+                return;
+            }
+        }
         if dirty == Dirty::Changed && same {
             return;
         }
+        self.art_arrived = false;
         let only_time = dirty == Dirty::Changed
             && self.view == V_STANDARD
             && self.drawn.is_some_and(|d| {
