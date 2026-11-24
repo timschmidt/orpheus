@@ -475,3 +475,75 @@ impl Default for Server {
         Self::new()
     }
 }
+
+// ------------------------------------------------------------- sound
+
+/// The Sound settings the audio task applies to its DSP chain (published
+/// by the UI when they change; `SOUND_GEN` tells the audio task to look).
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub struct Sound {
+    /// Five EQ band gains, dB (presets resolved by the UI).
+    pub eq: [i8; 5],
+    /// Bass shelf, dB.
+    pub bass: i8,
+    /// −10 … +10.
+    pub balance: i8,
+    /// Off, low, medium, high.
+    pub crossfeed: u8,
+    /// Stereo, mono, swap.
+    pub channels: u8,
+    /// Off, track, album, auto.
+    pub replaygain: u8,
+}
+
+pub static SOUND: Mutex<RefCell<Sound>> = Mutex::new(RefCell::new(Sound {
+    eq: [0; 5],
+    bass: 0,
+    balance: 0,
+    crossfeed: 0,
+    channels: 0,
+    replaygain: 0,
+}));
+pub static SOUND_GEN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// Publish new Sound settings (no-op when unchanged).
+pub fn publish_sound(s: Sound) {
+    let changed = critical_section::with(|cs| {
+        let mut cur = SOUND.borrow(cs).borrow_mut();
+        let c = *cur != s;
+        *cur = s;
+        c
+    });
+    if changed {
+        SOUND_GEN.fetch_add(1, core::sync::atomic::Ordering::Release);
+    }
+}
+
+/// Apply the published Sound settings to a chain.
+pub fn apply_sound(chain: &mut yoton_dsp::Chain) {
+    use yoton_dsp::eq::{EQ5_FREQS, EQ5_Q100};
+    use yoton_dsp::{Band, ChannelMode, CrossfeedParams, RgMode, RgSettings};
+    let s = critical_section::with(|cs| *SOUND.borrow(cs).borrow());
+    let bands: [Band; 5] =
+        core::array::from_fn(|i| Band::peaking(EQ5_FREQS[i], EQ5_Q100, i16::from(s.eq[i]) * 100));
+    chain.set_eq(&bands);
+    chain.set_bass(i16::from(s.bass) * 100);
+    chain.set_balance(s.balance.saturating_mul(10));
+    chain.set_crossfeed(match s.crossfeed {
+        1 => Some(CrossfeedParams::DEFAULT),
+        2 => Some(CrossfeedParams::CHU_MOY),
+        3 => Some(CrossfeedParams::MEIER),
+        _ => None,
+    });
+    chain.set_channel_mode(match s.channels {
+        1 => ChannelMode::Mono,
+        2 => ChannelMode::Swap,
+        _ => ChannelMode::Stereo,
+    });
+    let mode = match s.replaygain {
+        1 => RgMode::Track,
+        2 | 3 => RgMode::Album,
+        _ => RgMode::Off,
+    };
+    chain.set_replaygain(RgSettings { mode, ..RgSettings::default() });
+}

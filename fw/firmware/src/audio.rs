@@ -94,6 +94,23 @@ pub static RATE: AtomicU32 = AtomicU32::new(0);
 pub static DECODE_US: AtomicU32 = AtomicU32::new(0);
 pub static PLAY_US: AtomicU32 = AtomicU32::new(0);
 pub static PLAYING: AtomicBool = AtomicBool::new(false);
+/// Where the playback loop is (status diagnostics): 1 card read, 2 media
+/// request, 3 waiting for the DAC, 4 decoding, 5 DSP, 0 elsewhere.
+pub static WHERE: AtomicU32 = AtomicU32::new(0);
+/// DSP chain on/off (test command `dsp on|off`). Off by default: with the
+/// chain active, MP3 decoding plus DSP plus the UI thrash the four-slot code
+/// cache at 48 MHz until the watchdog fires (2026-11-24); on again once the
+/// hot path is resident or profile-packed (T-8).
+pub static DSP_ON: AtomicBool = AtomicBool::new(false);
+
+/// Breadcrumb that survives a watchdog reset: the last mailbox argument
+/// word (unused by the tests).
+fn mark(v: u32) {
+    WHERE.store(v, Ordering::Relaxed);
+    // SAFETY: persistent-area word, written only here.
+    unsafe { core::ptr::write_volatile(0x0013_7FEC as *mut u32, 0xB00D_0000 | v) };
+}
+static WRITTEN: AtomicU32 = AtomicU32::new(0);
 /// Live RT-side timing (µs, cumulative since start): decode, card reads,
 /// media requests served from inside playback, PCM ring waits.
 pub static T_DECODE: AtomicU32 = AtomicU32::new(0);
@@ -227,11 +244,16 @@ impl PcmOut {
                 self.start();
             }
             // Wait while both halves hold unplayed data.
+            WRITTEN.store(self.written, Ordering::Relaxed);
             if self.running {
+                mark(3);
                 core::future::poll_fn(|cx| {
                     PCM_WAKER.register(cx.waker());
                     let played = PLAYED.load(Ordering::Acquire);
-                    if self.written.wrapping_sub(played) < 2 || STOP.load(Ordering::Relaxed) {
+                    // Signed: after an underrun `played` is ahead of
+                    // `written`, which must count as room (it is accounted
+                    // for below), not as a wrapped huge backlog.
+                    if (self.written.wrapping_sub(played) as i32) < 2 || STOP.load(Ordering::Relaxed) {
                         core::task::Poll::Ready(())
                     } else {
                         core::task::Poll::Pending
@@ -361,6 +383,7 @@ async fn play_file(
     ext: Option<&[u8]>,
     srv: &mut Server,
 ) -> Result<(), &'static [u8]> {
+    mark(10);
     ring.reset(f.size());
     ring.fill(vol, &mut f).await;
     // Probe, skipping leading tags.
@@ -400,11 +423,29 @@ async fn play_file(
     }
     let (mut dec, info) = yoton_codecs::open(format, ring, &mut arena[..plan.arena], &hint)
         .map_err(|_| &b"open decoder failed"[..])?;
-    if !dac::RATES.contains(&info.rate) || info.channels == 0 || info.channels > 2 {
-        return Err(b"rate or channels not supported");
+    if info.channels == 0 || info.channels > 2 {
+        return Err(b"channels not supported");
     }
-    dac::set_rate(info.rate);
-    RATE.store(info.rate, Ordering::Relaxed);
+    // DSP chain: sets the DAC rate (88.2-192 kHz sources are decimated).
+    // SAFETY: initialised at the start of the audio task, which is the only
+    // user.
+    let chain = unsafe { (*(&raw mut CHAIN)).assume_init_mut() };
+    mark(6);
+    let out_rate = chain
+        .set_format(yoton_dsp::Format {
+            rate: info.rate,
+            channels: info.channels,
+            kind: info.sample,
+            bits: info.bits,
+        })
+        .map_err(|_| &b"rate not supported"[..])?;
+    let mut sound_gen = media::SOUND_GEN.load(Ordering::Acquire);
+    mark(7);
+    media::apply_sound(chain);
+    mark(8);
+    let dsp = DSP_ON.load(Ordering::Relaxed);
+    dac::set_rate(out_rate);
+    RATE.store(out_rate, Ordering::Relaxed);
     let stereo = info.channels == 2;
     let mut out = PcmOut::new();
     let rate = u64::from(info.rate);
@@ -443,17 +484,27 @@ async fn play_file(
             continue;
         }
         let d0 = time::now_us();
+        mark(4);
         let step = dec.decode(ring);
         let dt = time::now_us() - d0;
         decode_us += dt;
         T_DECODE.fetch_add(dt as u32, Ordering::Relaxed);
         match step {
-            Ok(Step::Pcm(block)) => {
+            Ok(Step::Pcm(mut block)) => {
+                let g = media::SOUND_GEN.load(Ordering::Acquire);
+                if g != sound_gen {
+                    sound_gen = g;
+                    mark(7);
+                    media::apply_sound(chain);
+                }
+                mark(5);
+                let n = if dsp { chain.process(&mut block) } else { block.len() };
+                mark(0);
                 // Copy out first: the block borrows the decoder.
                 match block {
                     PcmBlock::I16(s) => {
                         let ch = if stereo { 2 } else { 1 };
-                        for fr in s.chunks_exact(ch) {
+                        for fr in s[..n.min(s.len())].chunks_exact(ch) {
                             let l = fr[0] as u16;
                             let r = if stereo { fr[1] as u16 } else { l };
                             out.push(u32::from(l) | u32::from(r) << 16).await;
@@ -462,7 +513,7 @@ async fn play_file(
                     }
                     PcmBlock::I32(s) => {
                         let ch = if stereo { 2 } else { 1 };
-                        for fr in s.chunks_exact(ch) {
+                        for fr in s[..n.min(s.len())].chunks_exact(ch) {
                             let l = (fr[0] >> 16) as u16;
                             let r = if stereo { (fr[1] >> 16) as u16 } else { l };
                             out.push(u32::from(l) | u32::from(r) << 16).await;
@@ -474,9 +525,12 @@ async fn play_file(
                 media::player_update(|p| p.position_ms = (u64::from(frames) * 1000 / rate) as u32);
                 if ring.available() < RING / 2 {
                     let a = time::now_us();
+                    mark(1);
                     ring.fill(vol, &mut f).await;
                     let b = time::now_us();
+                    mark(2);
                     serve_one(vol, srv).await;
+                    mark(0);
                     T_FILL.fetch_add((b - a) as u32, Ordering::Relaxed);
                     T_SERVE.fetch_add((time::now_us() - b) as u32, Ordering::Relaxed);
                 }
@@ -549,6 +603,10 @@ async fn release(vol: Volume<'static, Card>) -> Option<Volume<'static, Card>> {
     }
     v
 }
+
+/// DSP chain between decoder and DAC (AU-6), ~4 KiB; written once at the
+/// start of the audio task, used only by it.
+static mut CHAIN: core::mem::MaybeUninit<yoton_dsp::Chain> = core::mem::MaybeUninit::uninit();
 
 static SERVER: ConstStaticCell<Server> = ConstStaticCell::new(Server::new());
 
@@ -625,7 +683,13 @@ pub fn status_reply() {
             .s(b" underruns=")
             .u(u64::from(UNDERRUNS.load(Ordering::Relaxed)))
             .s(b" corrupt=")
-            .u(u64::from(CORRUPT.load(Ordering::Relaxed)));
+            .u(u64::from(CORRUPT.load(Ordering::Relaxed)))
+            .s(b" where=")
+            .u(u64::from(WHERE.load(Ordering::Relaxed)))
+            .s(b" written=")
+            .u(u64::from(WRITTEN.load(Ordering::Relaxed)))
+            .s(b" played=")
+            .u(u64::from(PLAYED.load(Ordering::Relaxed)));
     });
 }
 
@@ -674,6 +738,8 @@ pub async fn audio() {
     // while this task waits for the card (`usb_buffer`).
     let arena: &mut [u8] = unsafe { &mut (*(&raw mut ARENA_BUF)).0 };
     let srv = SERVER.take();
+    // SAFETY: before any use; only this task touches the chain.
+    unsafe { (*(&raw mut CHAIN)).write(yoton_dsp::Chain::new(yoton_dsp::OutWidth::Bits16, false)) };
     loop {
         // A player request left over from playback, else wait for one.
         let r = match srv.pending.take() {

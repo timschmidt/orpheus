@@ -133,6 +133,32 @@ impl Target for Fw {
                 core::hint::spin_loop();
             }
         }
+        if let Some(rest) = data.strip_prefix(b"sound ") {
+            // Test: "sound g0 g1 g2 g3 g4 bass crossfeed" (dB, preset level).
+            let mut v = [0i8; 7];
+            for (i, w) in rest.split(|&b| b == b' ').filter(|w| !w.is_empty()).take(7).enumerate() {
+                let (neg, digits) = match w.split_first() {
+                    Some((b'-', d)) => (true, d),
+                    _ => (false, w),
+                };
+                let mut n = 0i8;
+                for &d in digits {
+                    n = n.saturating_mul(10).saturating_add((d.wrapping_sub(b'0') % 10) as i8);
+                }
+                v[i] = if neg { -n } else { n };
+            }
+            crate::media::publish_sound(crate::media::Sound {
+                eq: [v[0], v[1], v[2], v[3], v[4]],
+                bass: v[5],
+                crossfeed: v[6] as u8,
+                ..crate::media::Sound::default()
+            });
+            return true;
+        }
+        if data == b"dsp on" || data == b"dsp off" {
+            crate::audio::DSP_ON.store(data == b"dsp on", Ordering::Relaxed);
+            return true;
+        }
         if data == b"status" {
             crate::audio::status_reply();
             return true;

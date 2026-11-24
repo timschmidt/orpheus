@@ -44,6 +44,8 @@ struct Ui {
     bl: Backlight,
     screen_on: bool,
     store: Option<Store<NorRegion, 4>>,
+    /// Sound settings last published to the audio task.
+    sound: Option<crate::media::Sound>,
 }
 
 impl Ui {
@@ -120,6 +122,24 @@ impl Ui {
                     // (needs a stage-2 mailbox path) are not wired yet.
                     _ => {}
                 }
+            }
+        }
+        // Sound settings to the audio task (published only on change).
+        {
+            let st = &self.fw.settings;
+            let g = |k: u16| st.get(yoton_apps::settings::SettingId(k));
+            let eq = yoton_apps::settings::eq_gains(g(0x0101), |id| st.get(id));
+            let snd = crate::media::Sound {
+                eq,
+                bass: g(0x0103) as i8,
+                balance: g(0x0102) as i8,
+                crossfeed: g(0x0104) as u8,
+                channels: g(0x0105) as u8,
+                replaygain: g(0x0106) as u8,
+            };
+            if self.sound != Some(snd) {
+                self.sound = Some(snd);
+                crate::media::publish_sound(snd);
             }
         }
         // Screen on/off follows the gate.
@@ -203,7 +223,7 @@ pub async fn ui() {
     }
     let t = now();
     let shell = Shell::<AppScreen, Fw>::with_root(&mut fw, screens::HOME, Arg(0), t);
-    let mut ui = Ui { fw, shell, mapper: KeyMapper::new(), disp, bl, screen_on: true, store };
+    let mut ui = Ui { fw, shell, mapper: KeyMapper::new(), disp, bl, screen_on: true, store, sound: None };
     ui.shell.invalidate();
     let fb = fb.as_mut_slice();
     ui.draw(fb).await;

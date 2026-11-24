@@ -106,10 +106,18 @@ core::arch::global_asm!(
     "    ldr r1, [r0]",
     "    orr r1, r1, #0x10",
     "    str r1, [r0]",
-    // FPU: CP10/CP11 full access (lazy stacking is the reset default).
+    // FPU: CP10/CP11 full access. Lazy state preservation off (FPCCR:
+    // ASPEN = 1, LSPEN = 0): FP context is stacked eagerly on exception
+    // entry, so no deferred FP save can be pending when the pager's
+    // MemManage handler runs inside an FP-using RT handler.
     "    ldr r0, =0xe000ed88",
     "    ldr r1, [r0]",
     "    orr r1, r1, #0xf00000",
+    "    str r1, [r0]",
+    "    ldr r0, =0xe000ef34",
+    "    ldr r1, [r0]",
+    "    bic r1, r1, #0x40000000",
+    "    orr r1, r1, #0x80000000",
     "    str r1, [r0]",
     "    dsb",
     "    isb",

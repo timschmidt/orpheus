@@ -32,11 +32,25 @@ of every session. Newest entries first in §3.
 | FS-2 / AU-5 firmware | first cut on the player | Files lists the card (on-disk order, no sort until AU-12), text viewer window, folder play queue, Now Playing; `yoton-player` (queue/resume/bookmarks) not yet wired in |
 | UI-1, UI-2, UI-3, UI-4 | done (host); running on the player | 457 golden images |
 | AU-1…AU-4, AU-7, AU-8, AU-9 | done (host); MP3/FLAC/WAV played on the player | Vorbis/Opus/Speex not yet played on the player (no test files inside `/.yoton/`) |
-| AU-6 | done (host) | `yoton-dsp`; not wired into the firmware; WSOLA speed change not done |
+| AU-6 | done (host); wired into the firmware, **off by default** | `yoton-dsp` chain between decoder and DAC; Sound settings published by the UI. With the chain active, MP3 + DSP + UI thrash the 4-slot code cache at 48 MHz until the watchdog fires; a hot cluster for MP3 alone fixes plain playback, a second cluster for the DSP made it worse (direct-mapped slots). Needs T-8 profiling or a resident hot path. WSOLA not done |
 | AU-14 | done (host) | `yoton-img` |
 | OTP-1, BT-1, USB-6 | done (host) | `yoton-otp`, `yoton-bt`, MMC/CD-ROM in `yoton-usb` |
 
 ## 3. Session log
+
+### 2026-11-24 — implementation session 2, part 2 (lead)
+
+* User decisions: D-2 full layout (done), BT 0x24 in power-off, Opus seek
+  tolerance accepted, test files on the card allowed.
+* DSP chain wired (UI → `media::Sound` → audio task); `sound` and `dsp
+  on|off` test commands; persistent breadcrumb word `0x137FEC` for
+  watchdog post-mortems. Found and fixed: unsigned compare in the PCM ring
+  wait deadlocked playback after an underrun (DMA looped stale audio).
+* With Opus and Speex linked, MP3 decoding thrashed into the watchdog;
+  `hot.toml` cluster `mp3-decode` (8 lines) fixes it: 882,000 frames, 0
+  underruns, ≈ 53 % idle, ≈ 1,060 line loads/s at 48 MHz. DSP active still
+  thrashes (see AU-6); lazy FP stacking switched off (FPCCR.LSPEN = 0) on
+  the way, kept as the safer setting for FP in handlers.
 
 ### 2026-11-24 — implementation session 2 (lead)
 
@@ -229,6 +243,7 @@ of every session. Newest entries first in §3.
 * User checks 7–10 in `docs/USER-CHECKS.md` (picture, keys, charge current,
   tones). 8 and 10 are blocking for M4 and M5.
 * Decisions D-1, D-3 … D-8 in `docs/PLAN.md` §5 (defaults assumed); D-2 decided (full layout).
-* Bluetooth: should the shutdown command 0x24 be part of normal power-off (CLAUDE.md rule 6 keeps it out of automatic paths for now)?
-* Opus: keep the −50 dBFS seek tolerance for SILK on stationary tones?
-* Test files for Vorbis/Opus/Speex on the card: may they be copied into `/.yoton/test/` (needs a write path through the firmware's own FS, or a one-off read-write mount, which also sets the volume dirty flag)?
+* Answered 2026-11-24: Bluetooth shutdown command 0x24 **is** part of normal
+  power-off (BT-2 adds it to the power-off path); the −50 dBFS Opus SILK seek
+  tolerance is accepted; test files may be added to the card (under
+  `/.yoton/test/`).

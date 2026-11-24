@@ -552,6 +552,7 @@ dependencies = [
  "yoton-audio",
  "yoton-bsp",
  "yoton-codecs",
+ "yoton-dsp",
  "yoton-fs",
  "yoton-input",
  "yoton-pager",
@@ -1126,6 +1127,13 @@ dependencies = [
  "yoton-codec-speex",
  "yoton-codec-vorbis",
  "yoton-codec-wav",
+]
+
+[[package]]
+name = "yoton-dsp"
+version = "0.1.0"
+dependencies = [
+ "yoton-audio",
 ]
 
 [[package]]
