@@ -1,0 +1,15 @@
+[package]
+name = "orpheus-fm"
+description = "RDA5807-family FM tuner: register model, tuning, seek, scan, RDS, presets and the radio service state machine (03 §15, 05 §7.3)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+# A register-level fake tuner (stations with RSSI, stereo and RDS) for the
+# simulator; the crate's own tests always have it.
+fake = []
+
+[lints]
+workspace = true
