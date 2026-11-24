@@ -238,6 +238,34 @@ impl Index {
         Ok((rd32(&b, 0), rd32(&b, 4)))
     }
 
+    /// Letter runs `[first, first + out.len())` (clipped to
+    /// [`Index::letter_runs`]) as `(first row, letter)`, `None` for a run of
+    /// rows without a letter; returns how many were read. Small listings
+    /// can keep the whole table in RAM and answer letter jumps from it.
+    pub fn read_letter_runs<S: Storage>(
+        &self,
+        store: &mut S,
+        first: u32,
+        out: &mut [(u32, Option<char>)],
+    ) -> Result<usize, Error<S::Error>> {
+        let n = (self.h.letter_runs.saturating_sub(first) as usize).min(out.len());
+        let mut buf = [0u8; 32 * LETTER_RUN];
+        let mut done = 0;
+        while done < n {
+            let m = (n - done).min(32);
+            let b = &mut buf[..m * LETTER_RUN];
+            let off = self.runs_off() + (first + done as u32) * LETTER_RUN as u32;
+            if store.read_at(self.file, off, b)? != b.len() {
+                return Err(Error::Corrupt);
+            }
+            for (o, e) in out[done..done + m].iter_mut().zip(b.chunks_exact(LETTER_RUN)) {
+                *o = (rd32(e, 0), char::from_u32(rd32(e, 4)).filter(|&c| c != '\0'));
+            }
+            done += m;
+        }
+        Ok(n)
+    }
+
     /// Index of the letter run that holds row `i` (`i < count()`).
     fn run_of<S: Storage>(&self, store: &mut S, i: u32) -> Result<u32, Error<S::Error>> {
         let (mut lo, mut hi) = (0u32, self.h.letter_runs);

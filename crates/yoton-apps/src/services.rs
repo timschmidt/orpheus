@@ -365,6 +365,10 @@ pub trait BrowseService {
     fn want(&mut self, first: u32, count: u32);
     /// Where `f` is in the current listing (focus survives re-sorting).
     fn position(&self, f: FileRef) -> Option<u32>;
+    /// The file the UI has focused in the current listing. A service that
+    /// sorts in the background loads the window around it when the sorted
+    /// order arrives, so that [`BrowseService::position`] finds it then.
+    fn focus_hint(&mut self, _f: FileRef) {}
     /// Letter of row `i` ([`crate::browse::letter_of`]), if loaded.
     fn letter(&self, i: u32) -> Option<char>;
     /// Letter jump from row `from` (see `ListSource::seek_letter`),

@@ -4,7 +4,8 @@ mod common;
 
 use common::*;
 use yoton_index::{
-    Builder, Error, FileName, Index, Locator, MIN_SCRATCH, Probe, Progress, SortBy, Spec, Verifier,
+    Builder, Error, FileName, Index, LetterTable, Locator, MIN_SCRATCH, Probe, Progress, SortBy, Spec,
+    Verifier,
 };
 
 const NAME: Spec = Spec { sort: SortBy::Name, show_hidden: false, audio_only: false };
@@ -426,4 +427,46 @@ fn property_random_builds_match_full_sort() {
         check_listing(&mut store, &ix, &entries, spec);
         assert!(ix.verify(&mut store, &mut [0u8; 300]).unwrap());
     }
+}
+
+#[test]
+fn letter_table_answers_like_the_index() {
+    let mut r = Rng(0x1E77);
+    for n in [0usize, 1, 7, 300, 2000] {
+        let entries = random_dir(&mut r, n);
+        for &spec in ALL_SPECS {
+            let mut store = MemStore::new();
+            let mut src = MockDir::new(entries.clone());
+            let ix = build(&mut store, &mut src, spec, 4096);
+            let mut t = LetterTable::<128>::EMPTY;
+            let fits = t.load(&ix, &mut store).unwrap();
+            assert_eq!(
+                fits,
+                ix.letter_runs() as usize <= 128 && ix.letter_runs() > 0 || ix.letter_runs() == 0
+            );
+            if !fits || !t.is_loaded() {
+                assert_eq!(t, LetterTable::EMPTY);
+                continue;
+            }
+            for i in 0..ix.count() + 1 {
+                assert_eq!(t.letter(i), ix.letter(&mut store, i).unwrap(), "{spec:?} row {i}");
+                for fwd in [true, false] {
+                    assert_eq!(
+                        t.seek_letter(i, fwd),
+                        ix.seek_letter(&mut store, i, fwd).unwrap(),
+                        "{spec:?} {i} {fwd}"
+                    );
+                }
+            }
+        }
+    }
+    // Too many runs: not loaded.
+    let entries = random_dir(&mut r, 3000);
+    let spec = Spec { sort: SortBy::Size, show_hidden: true, audio_only: false };
+    let mut store = MemStore::new();
+    let ix = build(&mut store, &mut MockDir::new(entries), spec, 4096);
+    assert!(ix.letter_runs() > 128);
+    let mut t = LetterTable::<128>::EMPTY;
+    assert!(!t.load(&ix, &mut store).unwrap());
+    assert!(!t.is_loaded());
 }

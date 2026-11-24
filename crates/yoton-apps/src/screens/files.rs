@@ -186,9 +186,11 @@ impl FilesScreen {
         svc.want(self.list.top, ROWS + 1);
     }
 
-    fn remember_focus<S: Services + ?Sized>(&mut self, svc: &S) {
+    fn remember_focus<S: Services + ?Sized>(&mut self, svc: &mut S) {
         if let Some(e) = svc.entry(self.list.focus) {
-            self.focus_file = Some(e.file);
+            let f = e.file;
+            self.focus_file = Some(f);
+            svc.focus_hint(f);
         }
     }
 
@@ -406,6 +408,9 @@ impl<S: Services + ?Sized> Screen<S> for FilesScreen {
         let f = (r.data[8] == 1).then(|| FileRef::from_bytes(&r.data[..8]));
         let row = f.and_then(|f| cx.svc.position(f)).unwrap_or(r.focus);
         self.focus_file = f;
+        if let Some(f) = f {
+            cx.svc.focus_hint(f);
+        }
         self.list.top = r.top;
         self.focus_on(cx.svc, row, cx.now);
         self.want(cx.svc);

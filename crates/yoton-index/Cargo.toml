@@ -11,5 +11,8 @@ publish = false
 yoton-apps = { path = "../yoton-apps" }
 yoton-fs = { path = "../yoton-fs" }
 
+[dev-dependencies]
+yoton-fs = { path = "../yoton-fs", features = ["std"] }
+
 [lints]
 workspace = true

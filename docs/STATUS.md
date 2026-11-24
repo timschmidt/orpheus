@@ -30,14 +30,81 @@ of every session. Newest entries first in §3.
 | RTC-1 | done (device) | set/read over the developer channel (`xtask dev time [--set]`); alarm untested; once lost after a ymon reset (U-RTC open) |
 | USB-4 | done (device) | Card-reader personality: card handed between the card task and USB; write-protected test mode; mid-track switch and hand-back verified. 2.3 MB/s read (open) |
 | FS-1 | done | `yoton-fs` |
-| FS-2 / AU-5 firmware | first cut on the player; **`yoton-player` wired in (built, not yet run on the player)** | Files lists the card (on-disk order, no sort until AU-12), text viewer window, Now Playing. The card task drives `yoton_player::Player`: folder queue in RAM and `/.yoton/queue.bin`, resume record and bookmarks in `/.yoton/player.bin`, seek, shuffle/repeat (settings), A–B, sleep timer, Up next. Not done: gapless prefetch, fades, queue edits, Shuffle all. User check 13 |
+| FS-2 / AU-5 firmware | first cut on the player; **`yoton-player` wired in (built, not yet run on the player)** | Files lists the card (sorted through the directory index since AU-12 firmware), text viewer window, Now Playing. The card task drives `yoton_player::Player`: folder queue in RAM and `/.yoton/queue.bin`, resume record and bookmarks in `/.yoton/player.bin`, seek, shuffle/repeat (settings), A–B, sleep timer, Up next. Not done: gapless prefetch, fades, queue edits, Shuffle all. User check 13 |
 | UI-1, UI-2, UI-3, UI-4 | done (host); running on the player | 457 golden images |
 | AU-1…AU-4, AU-7, AU-8, AU-9 | done (host); on the player: MP3/FLAC/WAV and Speex at 48 MHz, Vorbis at 144 MHz (clock floor), **Opus too slow** | Opus CELT touches more code per frame than the 32 KB code cache holds; ends with "decoder too slow for this player" (abort after 8 underruns) instead of a reset. Needs a bigger code cache or a resident hot path (RAM decision). Ogg pages over ~15.5 KB fail (16 KiB ring < `MAX_PEEK` 28 KiB; RAM) |
 | AU-6 | done (host); **working on the player** | `yoton-dsp` chain between decoder and DAC, fed by the Sound settings; works on a scratch copy of the decoder output; while any stage is active during playback the clock floor is 96 MHz (EQ + bass + crossfeed: 0 underruns, ≈ 90 % idle). WSOLA not done; Levels meter not wired |
+| AU-12 (directory index) | host done; **firmware wired in (built, not yet run on the player)** | `yoton-index` + its `card` adapters over `yoton-fs` (host-tested on FAT32/exFAT images). Files/Music › Folders sorted (Name/Date/Size, hidden per setting), letter jump from the index's letter runs, play queue in listing order. Library index, tag browsing, playlists, Favourites: not started |
 | AU-14 | done (host) | `yoton-img` |
 | OTP-1, BT-1, USB-6 | done (host) | `yoton-otp`, `yoton-bt`, MMC/CD-ROM in `yoton-usb` |
 
 ## 3. Session log
+
+### 2026-11-24 — AU-12 firmware: the directory index in the card task (worker, no hardware)
+
+* `yoton-index` additions (host-tested): module `card` — `Storage`,
+  `DirSource`, `NameSource` over a `yoton-fs` volume. The traits are
+  synchronous, `yoton-fs` is async: each call is polled to completion
+  with the caller's task `Context` (`card::spin`; the SD driver's timers
+  register with the card task's waker). Index files live in
+  `/.yoton/index/X/DDDDDDDD-SF.idx` (X = last hex digit of the directory:
+  16 shards keep name lookups short with thousands of folders), merge
+  scratch in `/.yoton/index/sort-a|b.tmp` (or `sort-c|d.tmp` for a build
+  that runs while another is suspended); directories created on first
+  use; open files cached per session (`Handles`) and closed at its end.
+  `Index::read_letter_runs`, `LetterTable<N>` (letter runs in RAM, 4 B
+  each, answers `letter`/`seek_letter` exactly like the index). Tests:
+  build in slots that suspend/resume and close their files, a second
+  build on the other scratch pair in between, query, find, rebuild after a
+  change, `fsck` clean, mounted with the `/.yoton` write prefix (FAT32
+  and exFAT images made with `mkfs`); letter table vs index on random
+  folders.
+* Firmware flow (`media.rs`): every `Browse` makes the usual counting pass
+  and folds `Signature::add` into it. Then `Index::open(dir, spec)`; if it
+  is current the listing is served from it at once (`sorted: true`, rows
+  → names via `open_locator`, the window around the focused file, letter
+  table loaded). Otherwise: idle card task and ≤ 128 entries → built at
+  once (second scratch pair, no unsorted flash); else the on-disk listing
+  goes out (`sorted: false`) and the folder becomes the background build
+  target (one at a time; a new target replaces the old one, whose partial
+  file and scratch files are removed before the next build starts).
+  Background building (`audio::build_slot`) runs only in the idle loop:
+  steps of 64 entries/rows on the last 16 KiB of the decoder arena, a
+  sleep as long as the step took (≥ 2 ms, thread mode keeps ≥ half the
+  CPU), suspended (`Suspended` in the server) as soon as any request,
+  command or player request arrives. When it finishes and the folder is
+  still shown, the sorted listing is published (`Data(BROWSE)`, focus
+  kept). Windows of a sorted listing come from the index rows. The play
+  queue follows the listing's order when the folder's index is current.
+  Card hand-over drops the index state and removes a build in progress.
+* Names come from the directory entries through the index rows'
+  locators (one `open_locator` per row): the alternative, a full
+  directory pass per window, costs the whole directory for every window
+  of a large folder.
+* `BrowseService::focus_hint` (new, default no-op; Files calls it when the
+  focus moves or is restored): the card task publishes the window around
+  that file when a listing becomes sorted, so `position()` finds it.
+  `Fw`: re-browses when the filter changes (sort order, hidden files),
+  asks again for the rows the screen wants when the listing arrives or
+  becomes sorted (they were dropped before while the listing was
+  incomplete), letter jump from `media::LETTERS` (80 runs; larger tables,
+  e.g. date order of a big folder, fall back to the loaded window).
+* RAM (`xtask build`, `__stack_bottom`): stack 22,976 → 21,464 B
+  (−1,512 B). `SERVER` +536 B (build state with `Suspended` ≈ 320 B, two
+  directory cursors, the current `Index`, orphan name), `LETTERS` 336 B,
+  focus hint 12 B, UI task future +32 B, audio task future unchanged
+  (6,192 B; the 840-B `DirEntry` of a build step lives in it, not on the
+  stack), ≈ 600 B resident merged strings — the panic-location paths of
+  the new `yoton-index` files (absolute paths: shorter in the main
+  checkout than in a worker's worktree). Paged code +4 pages
+  (`yoton_index` 17.4 KB). Stack frames of the new sync paths: build step
+  ≈ 0.9 KB + file system, window from the index ≈ 0.9 KB + `Index::rows`
+  0.5 KB (served also during playback; check the stack high-water mark).
+* Not done: the quick stamp (an index is only used after the counting
+  pass confirms it, as before for the on-disk listing); `Index::find` for
+  the focus (a linear `position_of` pass instead); several abandoned
+  builds in a row leak all but the last partial file until that folder is
+  built again; Music library index, playlists, Favourites (rest of AU-12).
 
 ### 2026-11-24 — AU-5 firmware: yoton-player in the card task (worker, no hardware)
 
@@ -362,6 +429,7 @@ of every session. Newest entries first in §3.
 | 2026-11-24 | Opus 96 kbit/s 48 kHz | not real time at 48–144 MHz (paging-bound) | `dev cmd play` |
 | 2026-11-24 | Upload over the developer channel | 165 KB in 3.3 s (≈ 50 KB/s) | `xtask dev put` |
 | 2026-11-24 | Main stack peak after all formats + DSP (28.0 KB stack) | 19.2 KB | INFO stack high-water |
+| 2026-11-24 | Firmware with the directory index (AU-12 firmware) | resident 81,844 B, main stack 21,464 B (−1,512), 52 code + 14 rodata pages, slot 626,688 B | `xtask build`, `nm` `__stack_bottom` |
 | 2026-11-24 | Firmware with yoton-player (AU-5 firmware) | resident 80,724 B (was 79,084), bss 122,608 B, main stack 22,968 B (was 24,752), 48 code + 14 rodata pages | `xtask build`, `llvm-nm` `__stack_bottom` |
 
 

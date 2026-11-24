@@ -9,14 +9,24 @@
 //! (or, for the player snapshot, on every loop) and turns it into
 //! `Event::Data`.
 //!
-//! The queue is the audio files of one folder (on-disk order until the
-//! directory index of AU-12 sorts), kept in RAM and in `/.yoton/queue.bin`;
+//! Listings are sorted through the directory index (AU-12, `yoton-index`,
+//! files under `/.yoton/index/`): a folder whose index is current (its
+//! signature is checked during the counting pass every browse makes) is
+//! served from it at once (`sorted: true`; names through the locators).
+//! Otherwise the on-disk listing goes out with `sorted: false` and the
+//! index is built: at once for folders of up to [`INLINE_MAX`] entries
+//! when the card task is idle, else in the background while it is idle
+//! (`audio::build_slot`, between requests, suspended when playback takes
+//! the arena); the sorted listing follows as another `Data(BROWSE)`.
+//!
+//! The queue is the audio files of one folder (in the listing's order when
+//! the folder's index is current), kept in RAM and in `/.yoton/queue.bin`;
 //! the player's resume record and bookmarks are a RAM image
 //! ([`StoreImage`]) written to `/.yoton/player.bin` at safe moments (pause,
 //! stop, track change, card hand-over, power-off). Formats:
 //! `yoton_player::image`.
 //!
-//! Not yet: sorting, tags and art in the track info, queue edits (remove,
+//! Not yet: tags and art in the track info, queue edits (remove,
 //! move, play next, add), Shuffle all, persistence of text positions.
 
 use core::cell::RefCell;
@@ -26,6 +36,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use yoton_apps::browse::{EntryKind, is_hidden_name, kind_of};
 use yoton_apps::services::{BrowseFilter, DateTime, DirId, FileRef, Listing};
+use yoton_index::LetterTable;
 use yoton_player::image::StoreImage;
 use yoton_player::{Action, Actions, Bookmark, Command, Config, Event, Player, Repeat, State, TrackRef};
 use yoton_ui::event::Source;
@@ -50,6 +61,20 @@ pub const BOOKMARKS: usize = yoton_player::store::MAX_BOOKMARKS;
 /// Files of the playback state (only `/.yoton/` is writable).
 pub const QUEUE_FILE: &str = "/.yoton/queue.bin";
 pub const PLAYER_FILE: &str = "/.yoton/player.bin";
+
+/// Folders up to this many entries are indexed at once when the card task
+/// is idle (one or two scratch runs), instead of in the background.
+pub const INLINE_MAX: u32 = 128;
+/// Scratch for index builds: the last bytes of the idle decoder arena (the
+/// text window, the state files and uploads use its start).
+pub const INDEX_SCRATCH: usize = 16 * 1024;
+/// Directory entries (or rows) per build step in the background.
+pub const BUILD_BUDGET: u32 = 64;
+/// While playing, the focused file is looked for in sorted listings of at
+/// most this many rows (32 KiB of index, read between ring refills).
+pub const FOCUS_SCAN_PLAYING: u32 = 1024;
+/// Letter runs kept in RAM for letter jumps ([`LETTERS`]).
+pub const LETTER_RUNS: usize = 80;
 
 pub mod tag {
     pub use yoton_apps::services::data::{BROWSE, QUEUE, TEXT};
@@ -187,6 +212,9 @@ impl Row {
 #[derive(Clone, Copy)]
 pub struct BrowseWin {
     pub listing: Listing,
+    /// Changes with every listing the card task publishes (also when it
+    /// becomes sorted); [`LETTERS`] carries the one it belongs to.
+    pub lgen: u32,
     pub first: u32,
     pub n: u32,
     pub rows: [Row; WINDOW as usize],
@@ -195,6 +223,7 @@ pub struct BrowseWin {
 impl BrowseWin {
     pub const EMPTY: BrowseWin = BrowseWin {
         listing: Listing { dir: DirId(u32::MAX), count: 0, sorted: false, complete: false },
+        lgen: 0,
         first: 0,
         n: 0,
         rows: [Row::EMPTY; WINDOW as usize],
@@ -319,6 +348,18 @@ pub static TEXT: Mutex<RefCell<TextWin>> = Mutex::new(RefCell::new(TextWin::EMPT
 pub static PLAYER: Mutex<RefCell<PlayerSnap>> = Mutex::new(RefCell::new(PlayerSnap::IDLE));
 pub static QWINDOW: Mutex<RefCell<QueueWin>> = Mutex::new(RefCell::new(QueueWin::EMPTY));
 pub static BMS: Mutex<RefCell<BmWin>> = Mutex::new(RefCell::new(BmWin::EMPTY));
+/// The letter runs of the current sorted listing (listing generation,
+/// table): letter jumps are answered from here, without the card.
+pub static LETTERS: Mutex<RefCell<(u32, LetterTable<LETTER_RUNS>)>> =
+    Mutex::new(RefCell::new((0, LetterTable::EMPTY)));
+/// The file the Files screen has focused (`BrowseService::focus_hint`):
+/// when a listing becomes sorted, the window around it is published.
+static FOCUS: Mutex<core::cell::Cell<Option<FileRef>>> = Mutex::new(core::cell::Cell::new(None));
+
+/// Set (or, entering another folder, clear) the focus hint.
+pub fn set_focus(f: Option<FileRef>) {
+    critical_section::with(|cs| FOCUS.borrow(cs).set(f));
+}
 
 pub fn player_update(f: impl FnOnce(&mut PlayerSnap)) {
     critical_section::with(|cs| f(&mut PLAYER.borrow(cs).borrow_mut()));
@@ -405,10 +446,17 @@ fn cmd(c: Command) -> Event {
 
 // ------------------------------------------------------------- the server
 
+use core::future::poll_fn;
+use core::task::Poll;
+
 use yoton_bsp::card::Card;
 use yoton_fs::{DirCursor, DirEntry, Locator, Volume};
+use yoton_index::card::{CardIo, Handles, Mode, is_dot, spin, src_entry};
+use yoton_index::{Builder, FileName, Index, Progress, Signature, Spec, Storage, Suspended};
 
 pub type Vol = Volume<'static, Card>;
+/// One session of index I/O on the card (see `yoton_index::card`).
+pub type Io<'a, 'c> = CardIo<'a, 'static, 'c, Card>;
 
 fn loc(f: FileRef) -> Locator {
     Locator { dir: f.dir, index: f.index }
@@ -430,6 +478,48 @@ fn date(d: yoton_fs::DateTime) -> DateTime {
     }
 }
 
+/// The index-build part of the arena slice `buf`: its last
+/// [`INDEX_SCRATCH`] bytes.
+pub fn index_scratch(buf: &mut [u8]) -> &mut [u8] {
+    let l = buf.len();
+    &mut buf[l.saturating_sub(INDEX_SCRATCH)..]
+}
+
+/// Run `f` in an index session on the card. Inside the card task only:
+/// the file-system calls spin with its context. Files are closed after.
+pub async fn with_io<R>(vol: &mut Vol, mode: Mode, f: impl FnOnce(&Io<'_, '_>) -> R) -> R {
+    let mut f = Some(f);
+    poll_fn(|cx| {
+        let mut h = Handles::new();
+        let io = CardIo::new(vol, cx, &mut h, mode);
+        let r = f.take().map(|f| f(&io));
+        let _ = io.close_all();
+        r.map_or(Poll::Pending, Poll::Ready)
+    })
+    .await
+}
+
+const ROW0: yoton_index::Row = yoton_index::Row {
+    loc: Locator { dir: 0, index: 0 },
+    size: 0,
+    mtime: 0,
+    letter: None,
+    kind: EntryKind::Other,
+    hidden: false,
+};
+
+/// An index build, wanted or in progress (one at a time).
+#[derive(Clone, Copy)]
+pub struct Build {
+    dircl: u32,
+    spec: Spec,
+    /// The directory's first entry, and where the build's scan is.
+    start: DirCursor,
+    cur: DirCursor,
+    /// `None` until the first step.
+    st: Option<Suspended>,
+}
+
 /// Server state, owned by the card task.
 pub struct Server {
     dir: DirId,
@@ -437,6 +527,17 @@ pub struct Server {
     filter: BrowseFilter,
     count: u32,
     checkpoints: [u32; CHECKPOINTS],
+    /// The listing's directory identity (first cluster; the index's key).
+    dircl: u32,
+    /// The current index of the listing, when it is served sorted.
+    index: Option<Index>,
+    /// Listing generation ([`BrowseWin::lgen`]).
+    lgen: u32,
+    /// The background build.
+    build: Option<Build>,
+    /// The index file of an abandoned build, removed (with the scratch
+    /// files) before the next build starts.
+    orphan: Option<FileName>,
     pub queue: [Locator; QUEUE],
     pub qlen: u32,
     /// Identity of the queue (`yoton_player::image::queue_id`).
@@ -469,6 +570,11 @@ impl Server {
             },
             count: 0,
             checkpoints: [0; CHECKPOINTS],
+            dircl: u32::MAX,
+            index: None,
+            lgen: 0,
+            build: None,
+            orphan: None,
             queue: [Locator { dir: 0, index: 0 }; QUEUE],
             qlen: 0,
             queue_id: 0,
@@ -497,7 +603,7 @@ impl Server {
 
     fn matches(filter: BrowseFilter, e: &DirEntry) -> bool {
         let name = e.name();
-        if name == "." || name == ".." {
+        if is_dot(e) {
             return false;
         }
         if !filter.hidden && (is_hidden_name(name) || e.attributes() & 0x06 != 0) {
@@ -522,11 +628,12 @@ impl Server {
 
     /// Serve one request. Returns false for requests that belong to the
     /// idle loop (they are kept in `pending`). `scratch` (≥ `TEXT_WIN`
-    /// bytes): free decoder-arena memory for file reads.
-    pub async fn serve(&mut self, vol: &mut Vol, r: Req, scratch: &mut [u8]) -> bool {
+    /// bytes): free decoder-arena memory for file reads; `idle`: it is the
+    /// whole idle arena (no playback), so small folders are indexed at once.
+    pub async fn serve(&mut self, vol: &mut Vol, r: Req, scratch: &mut [u8], idle: bool) -> bool {
         match r {
             Req::Browse { dir, entry, filter } => {
-                self.browse(vol, dir, entry, filter).await;
+                self.browse(vol, dir, entry, filter, idle.then_some(scratch)).await;
                 true
             }
             Req::Want { first } => {
@@ -548,23 +655,39 @@ impl Server {
         }
     }
 
-    async fn browse(&mut self, vol: &mut Vol, dir: DirId, entry: Option<FileRef>, filter: BrowseFilter) {
+    async fn browse(
+        &mut self,
+        vol: &mut Vol,
+        dir: DirId,
+        entry: Option<FileRef>,
+        filter: BrowseFilter,
+        idle: Option<&mut [u8]>,
+    ) {
         self.dir = dir;
         self.entry = entry;
         self.filter = filter;
         self.count = 0;
-        let listing_of = |count, complete| Listing { dir, count, sorted: false, complete };
-        let Some(mut cur) = Self::cursor(vol, entry).await else {
+        self.index = None;
+        self.lgen = self.lgen.wrapping_add(1);
+        let lgen = self.lgen;
+        let listing_of = |count, sorted| Listing { dir, count, sorted, complete: true };
+        let Some(start) = Self::cursor(vol, entry).await else {
+            self.dircl = u32::MAX;
             critical_section::with(|cs| {
                 let mut w = BROWSE.borrow(cs).borrow_mut();
                 w.listing = listing_of(0, true);
+                w.lgen = lgen;
                 w.first = 0;
                 w.n = 0;
             });
             ready(tag::BROWSE);
             return;
         };
+        self.dircl = start.dir_cluster();
+        let mut cur = start;
         let mut e = DirEntry::new();
+        // The index's signature covers every entry, shown or not.
+        let mut sig = Signature::default();
         let mut n = 0u32;
         loop {
             let before = cur.index();
@@ -572,6 +695,10 @@ impl Server {
                 Ok(true) => {}
                 _ => break,
             }
+            if is_dot(&e) {
+                continue;
+            }
+            sig.add(&src_entry(&e), e.name());
             if !Self::matches(filter, &e) {
                 continue;
             }
@@ -585,16 +712,262 @@ impl Server {
             n += 1;
         }
         self.count = n;
+        let spec = Spec::from(filter);
+        // While playing, finding the focused file reads at most this many
+        // rows (a longer stall between ring refills could underrun).
+        let scan = if idle.is_some() { u32::MAX } else { FOCUS_SCAN_PLAYING };
+        if n >= 2 {
+            // Idle and small: index it now (on the second pair of scratch
+            // files: a background build may be suspended on the first).
+            let inline = idle.filter(|_| n <= INLINE_MAX).map(index_scratch);
+            let mode = if inline.is_some() { Mode::Write { alt: true } } else { Mode::Read };
+            let e = &mut e;
+            if let Some(ix) = with_io(vol, mode, |io| Self::resolve(io, start, spec, &sig, inline, e)).await {
+                self.claim(ix.file());
+                if self.build.is_some_and(|b| b.dircl == self.dircl && b.spec == spec) {
+                    // Done another way; its scratch files go with the next
+                    // build's start.
+                    self.build = None;
+                }
+                self.index = Some(ix);
+                with_io(vol, Mode::Read, |io| self.publish_index(io, &ix, None, scan, e)).await;
+                return;
+            }
+        }
         critical_section::with(|cs| {
             let mut w = BROWSE.borrow(cs).borrow_mut();
-            w.listing = listing_of(n, true);
+            // A single entry is in order already.
+            w.listing = listing_of(n, n <= 1);
+            w.lgen = lgen;
             w.first = 0;
             w.n = n.min(WINDOW);
         });
         ready(tag::BROWSE);
+        if n >= 2 {
+            self.want_build(start, spec);
+        }
+    }
+
+    /// The index to serve a listing from: the current one, or (idle,
+    /// small folder: `inline` is the scratch) one built now.
+    #[inline(never)]
+    fn resolve(
+        io: &Io<'_, '_>,
+        start: DirCursor,
+        spec: Spec,
+        sig: &Signature,
+        inline: Option<&mut [u8]>,
+        e: &mut DirEntry,
+    ) -> Option<Index> {
+        if let Ok(Some(ix)) = Index::open(&mut io.store(), start.dir_cluster(), spec)
+            && ix.is_current(sig)
+        {
+            return Some(ix);
+        }
+        let mut b = Builder::new(inline?, start.dir_cluster(), spec, 0)?;
+        let mut cur = start;
+        let mut src = io.dir(start, &mut cur, e);
+        // At most `INLINE_MAX` entries: a few steps.
+        for _ in 0..32 {
+            match b.step(&mut io.store(), &mut src, 256) {
+                Ok(Progress::Done(ix)) => return Some(ix),
+                Ok(_) => {}
+                Err(_) => return None,
+            }
+        }
+        None
+    }
+
+    /// Publish the sorted listing from `ix`: rows from near `first`;
+    /// `None` (a listing just sorted): around the focused file if it is
+    /// within the first `scan` rows, else from the top, and the letter
+    /// table.
+    #[inline(never)]
+    fn publish_index(&self, io: &Io<'_, '_>, ix: &Index, first: Option<u32>, scan: u32, e: &mut DirEntry) {
+        let count = ix.count();
+        let letters = first.is_none();
+        let first = first.or_else(|| self.focus_row(io, ix, scan)).unwrap_or(0);
+        let start = first.saturating_sub(WINDOW / 4).min(count.saturating_sub(1));
+        let n = Self::fill_rows(io, ix, start, e);
+        if letters {
+            Self::load_letters(io, ix, self.lgen);
+        }
+        let (dir, lgen) = (self.dir, self.lgen);
+        critical_section::with(|cs| {
+            let mut w = BROWSE.borrow(cs).borrow_mut();
+            w.listing = Listing { dir, count, sorted: true, complete: true };
+            w.lgen = lgen;
+            w.first = start;
+            w.n = n;
+        });
+        ready(tag::BROWSE);
+    }
+
+    /// The letter table of `ix` for listing generation `lgen`.
+    #[inline(never)]
+    fn load_letters(io: &Io<'_, '_>, ix: &Index, lgen: u32) {
+        let mut t = LetterTable::EMPTY;
+        if t.load(ix, &mut io.store()).is_err() {
+            t = LetterTable::EMPTY;
+        }
+        critical_section::with(|cs| *LETTERS.borrow(cs).borrow_mut() = (lgen, t));
+    }
+
+    /// Row of the focused file in `ix` (a pass over its rows; not for more
+    /// than `scan` rows).
+    #[inline(never)]
+    fn focus_row(&self, io: &Io<'_, '_>, ix: &Index, scan: u32) -> Option<u32> {
+        let f = critical_section::with(|cs| FOCUS.borrow(cs).get())?;
+        if f.dir != self.dircl || ix.count() > scan {
+            return None;
+        }
+        ix.position_of(&mut io.store(), loc(f)).ok()?
+    }
+
+    /// Rows `start..` of `ix` into the window (names through the
+    /// locators); returns how many.
+    #[inline(never)]
+    fn fill_rows(io: &Io<'_, '_>, ix: &Index, start: u32, e: &mut DirEntry) -> u32 {
+        let mut rows = [ROW0; 4];
+        let mut n = 0u32;
+        while n < WINDOW {
+            let want = ((WINDOW - n) as usize).min(rows.len());
+            let got = match ix.rows(&mut io.store(), start + n, &mut rows[..want]) {
+                Ok(g) if g > 0 => g,
+                _ => break,
+            };
+            for r in &rows[..got] {
+                let found = io.with_vol(|vol, cx| spin(cx, vol.open_locator(r.loc, e)).is_ok());
+                let row = if found {
+                    Self::row(e)
+                } else {
+                    Row { name: Name::new("?"), kind: r.kind, size: r.size, file: fref(r.loc), ..Row::EMPTY }
+                };
+                critical_section::with(|cs| BROWSE.borrow(cs).borrow_mut().rows[n as usize] = row);
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// The listing's index file is (being) written: not an orphan.
+    fn claim(&mut self, f: FileName) {
+        if self.orphan == Some(f) {
+            self.orphan = None;
+        }
+    }
+
+    /// Build the index of the listing in the background (replacing any
+    /// other build: the listing shown comes first).
+    fn want_build(&mut self, start: DirCursor, spec: Spec) {
+        let dircl = start.dir_cluster();
+        if self.build.is_some_and(|b| b.dircl == dircl && b.spec == spec) {
+            return;
+        }
+        if self.build.is_some_and(|b| b.st.is_some()) {
+            self.abandon_build();
+        }
+        self.claim(FileName::index(dircl, spec));
+        self.build = Some(Build { dircl, spec, start, cur: start, st: None });
+    }
+
+    // ------------------------------------------------- background build
+
+    /// A build is waiting for the idle card task.
+    #[must_use]
+    pub fn wants_build(&self) -> bool {
+        self.build.is_some()
+    }
+
+    /// Before a build starts: remove an abandoned build's files.
+    #[inline(never)]
+    pub fn clean_orphan(&mut self, io: &Io<'_, '_>) {
+        if self.build.is_some_and(|b| b.st.is_some()) {
+            return;
+        }
+        if let Some(f) = self.orphan.take() {
+            let mut s = io.store();
+            let _ = s.remove(f);
+            let _ = s.remove(FileName::TEMP_A);
+            let _ = s.remove(FileName::TEMP_B);
+        }
+    }
+
+    /// The background build on `scratch` (started or resumed).
+    pub fn resume_build<'s>(&mut self, scratch: &'s mut [u8]) -> Option<Builder<'s>> {
+        let b = self.build.as_ref()?;
+        let r = match b.st {
+            Some(st) => st.resume(scratch),
+            None => Builder::new(scratch, b.dircl, b.spec, 0),
+        };
+        if r.is_none() {
+            self.abandon_build();
+        }
+        r
+    }
+
+    /// One step of the background build (bounded by [`BUILD_BUDGET`]).
+    /// `None`: it failed.
+    #[inline(never)]
+    pub fn step_build(&mut self, io: &Io<'_, '_>, b: &mut Builder<'_>, e: &mut DirEntry) -> Option<Progress> {
+        let bl = self.build.as_mut()?;
+        let mut src = io.dir(bl.start, &mut bl.cur, e);
+        b.step(&mut io.store(), &mut src, BUILD_BUDGET).ok()
+    }
+
+    /// Stop the background build here (its state is kept for the next
+    /// slot); a build that cannot be suspended is given up.
+    #[inline(never)]
+    pub fn suspend_build(&mut self, io: &Io<'_, '_>, b: Builder<'_>) {
+        match b.suspend(&mut io.store()) {
+            Ok(st) => {
+                if let Some(bl) = self.build.as_mut() {
+                    bl.st = Some(st);
+                }
+            }
+            Err(_) => self.abandon_build(),
+        }
+    }
+
+    /// Give up the background build (its files go before the next one).
+    pub fn abandon_build(&mut self) {
+        if let Some(b) = self.build.take() {
+            self.orphan = Some(FileName::index(b.dircl, b.spec));
+        }
+    }
+
+    /// The background build finished: serve the listing from it if it is
+    /// still the one shown.
+    #[inline(never)]
+    pub fn build_done(&mut self, io: &Io<'_, '_>, ix: Index, e: &mut DirEntry) {
+        let Some(b) = self.build.take() else { return };
+        if b.dircl == self.dircl && b.spec == Spec::from(self.filter) && self.index.is_none() {
+            self.index = Some(ix);
+            self.publish_index(io, &ix, None, u32::MAX, e);
+        }
+    }
+
+    /// Before the card goes to the USB host: no index is trusted after it
+    /// comes back; a build in progress is given up and its files removed.
+    pub async fn card_leaving(&mut self, vol: &mut Vol) {
+        self.index = None;
+        self.dircl = u32::MAX;
+        if self.build.is_some_and(|b| b.st.is_some()) {
+            self.abandon_build();
+        }
+        self.build = None;
+        if self.orphan.is_some() {
+            with_io(vol, Mode::Write { alt: false }, |io| self.clean_orphan(io)).await;
+        }
     }
 
     async fn window(&mut self, vol: &mut Vol, first: u32) {
+        let mut e = DirEntry::new();
+        if let Some(ix) = self.index {
+            let e = &mut e;
+            with_io(vol, Mode::Read, |io| self.publish_index(io, &ix, Some(first), 0, e)).await;
+            return;
+        }
         let start = first.saturating_sub(WINDOW / 4).min(self.count.saturating_sub(1));
         let k = ((start / WINDOW) as usize).min(CHECKPOINTS - 1);
         let Some(mut cur) = Self::cursor(vol, self.entry).await else { return };
@@ -602,7 +975,6 @@ impl Server {
             return;
         }
         let mut skip = start - k as u32 * WINDOW;
-        let mut e = DirEntry::new();
         let mut n = 0u32;
         while n < WINDOW {
             match vol.read_dir(&mut cur, &mut e).await {
@@ -684,9 +1056,37 @@ impl Server {
         ready(tag::QUEUE);
     }
 
-    /// Fill the queue with the audio files of a folder (on-disk order).
-    /// Returns the item of `start`, if found.
+    /// Fill the queue with the audio files of a folder: in the listing's
+    /// order when it is the folder shown and its index is current, else in
+    /// on-disk order. Returns the item of `start`, if found.
     pub async fn build_queue(
+        &mut self,
+        vol: &mut Vol,
+        entry: Option<FileRef>,
+        start: Option<FileRef>,
+    ) -> Option<u32> {
+        self.qgen = self.qgen.wrapping_add(1);
+        let mut found = self.queue_from_disk(vol, entry, start).await;
+        if let Some(ix) = self.index
+            && entry == self.entry
+        {
+            let disk = self.qlen;
+            match with_io(vol, Mode::Read, |io| self.queue_from_index(io, &ix, start)).await {
+                Some((n, f)) if n == disk => found = f,
+                // The index and the folder disagree: on-disk order.
+                _ => found = self.queue_from_disk(vol, entry, start).await,
+            }
+        }
+        self.queue_id = yoton_player::image::queue_id(vol.serial(), &self.queue[..self.qlen as usize]);
+        found
+    }
+
+    /// The queue item a file is, if it may be queued: visible audio files.
+    fn queueable(name: &str, is_dir: bool, attr: u8) -> bool {
+        !is_dir && kind_of(name, false) == EntryKind::Audio && !is_hidden_name(name) && attr & 0x06 == 0
+    }
+
+    async fn queue_from_disk(
         &mut self,
         vol: &mut Vol,
         entry: Option<FileRef>,
@@ -694,7 +1094,6 @@ impl Server {
     ) -> Option<u32> {
         self.qlen = 0;
         self.queue_id = 0;
-        self.qgen = self.qgen.wrapping_add(1);
         let mut found = None;
         let mut cur = Self::cursor(vol, entry).await?;
         let mut e = DirEntry::new();
@@ -703,7 +1102,7 @@ impl Server {
                 Ok(true) => {}
                 _ => break,
             }
-            if e.is_dir() || kind_of(e.name(), false) != EntryKind::Audio || is_hidden_name(e.name()) {
+            if !Self::queueable(e.name(), e.is_dir(), e.attributes()) {
                 continue;
             }
             let l = e.locator();
@@ -713,8 +1112,39 @@ impl Server {
             self.queue[self.qlen as usize] = l;
             self.qlen += 1;
         }
-        self.queue_id = yoton_player::image::queue_id(vol.serial(), &self.queue[..self.qlen as usize]);
         found
+    }
+
+    /// The queue in the order of `ix`: (items, item of `start`); `None` if
+    /// the index cannot be read.
+    #[inline(never)]
+    fn queue_from_index(
+        &mut self,
+        io: &Io<'_, '_>,
+        ix: &Index,
+        start: Option<FileRef>,
+    ) -> Option<(u32, Option<u32>)> {
+        let mut rows = [ROW0; 8];
+        let (mut i, mut n, mut found) = (0u32, 0u32, None);
+        while i < ix.count() && (n as usize) < QUEUE {
+            let got = ix.rows(&mut io.store(), i, &mut rows).ok()?;
+            if got == 0 {
+                return None;
+            }
+            for r in &rows[..got] {
+                if r.kind != EntryKind::Audio || r.hidden || n as usize >= QUEUE {
+                    continue;
+                }
+                if start.is_some_and(|s| loc(s) == r.loc) {
+                    found = Some(n);
+                }
+                self.queue[n as usize] = r.loc;
+                n += 1;
+            }
+            i += got as u32;
+        }
+        self.qlen = n;
+        Some((n, found))
     }
 
     // ------------------------------------------------------------ player

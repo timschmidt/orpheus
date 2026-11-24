@@ -14,13 +14,18 @@
 //! Developer commands (`ls PATH`, `play PATH`, `stop`, …) bypass the
 //! player.
 //!
+//! While idle, the task also builds directory indexes in the background
+//! (`build_slot`, AU-12) on the end of the decoder arena.
+//!
 //! Not yet: gapless hand-over (the player's `Prefetch` is not carried out;
 //! the next track opens after the current one has played out), the fades
 //! of 04 §2.2 around pause and seek, periodic resume saves while playing
 //! (a card write between blocks could underrun; the state is saved at
 //! pause, stop, track change, card hand-over and power-off instead).
 
+use core::future::poll_fn;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::task::Poll;
 
 use atj2157_hal::dma::{self, Channel as DmaCh};
 use atj2157_hal::interrupt::Level;
@@ -36,6 +41,8 @@ use yoton_audio::{
 };
 use yoton_bsp::card::Card;
 use yoton_fs::{CacheSlot, DirEntry, File, MountOptions, OpenMode, Volume};
+use yoton_index::Progress;
+use yoton_index::card::{CardIo, Handles, Mode};
 use yoton_player::image::{IMAGE_LEN, decode_queue, encode_queue, queue_file_len};
 use yoton_player::{Command, Event, TrackRef};
 use yoton_proto::hash::crc32_update;
@@ -477,7 +484,7 @@ fn codec_name(ext: Option<&[u8]>) -> &'static str {
 /// for the idle loop arrived (card hand-over, power-off); the file ends.
 async fn serve_one(vol: &mut Volume<'static, Card>, srv: &mut Server, scratch: &mut [u8]) -> bool {
     match media::REQS.try_receive() {
-        Ok(r) => srv.serve(vol, r, scratch).await,
+        Ok(r) => srv.serve(vol, r, scratch, false).await,
         Err(_) => true,
     }
 }
@@ -663,7 +670,7 @@ async fn play_file(
             }
             Some(Err(r)) => {
                 // A card hand-over ends the file (for the idle loop).
-                let go_on = srv.serve(vol, r, spare).await;
+                let go_on = srv.serve(vol, r, spare, false).await;
                 if !go_on {
                     break 'play Ok(End::Pending);
                 }
@@ -1106,6 +1113,80 @@ async fn load_state(vol: &mut Volume<'static, Card>, arena: &mut [u8], srv: &mut
 async fn hand_over(vol: &mut Volume<'static, Card>, srv: &mut Server, scratch: &mut [u8]) {
     srv.play_req(PlayReq::Cmd(Command::Stop));
     save_store(vol, srv, scratch).await;
+    srv.card_leaving(vol).await;
+}
+
+// ------------------------------------------------------------ index build
+
+/// Something for the idle loop is waiting.
+fn work_waiting() -> bool {
+    !CMDS.is_empty() || !media::REQS.is_empty() || !media::PLAY.is_empty()
+}
+
+/// Background index building while the card task is idle (AU-12): steps
+/// of `media::BUILD_BUDGET` entries or rows on the end of the idle arena,
+/// until a request arrives or the build ends, then the build is suspended
+/// (its state stays in the server; playback may take the arena). Each step
+/// spins the card (the RT executor does not yield inside it), so after
+/// each one this task sleeps as long as the step took (at least 2 ms):
+/// thread mode (UI, USB) keeps at least half of the CPU.
+async fn build_slot(vol: &mut Volume<'static, Card>, srv: &mut Server, arena: &mut [u8]) {
+    let mode = Mode::Write { alt: false };
+    media::with_io(vol, mode, |io| srv.clean_orphan(io)).await;
+    let mut h = Handles::new();
+    // In this future, not on the stack (840 bytes).
+    let mut e = DirEntry::new();
+    let Some(b) = srv.resume_build(media::index_scratch(arena)) else { return };
+    let mut b = Some(b);
+    loop {
+        if work_waiting() {
+            break;
+        }
+        let t0 = time::now_us();
+        let p = poll_fn(|cx| {
+            let io = CardIo::new(vol, cx, &mut h, mode);
+            Poll::Ready(b.as_mut().and_then(|b| srv.step_build(&io, b, &mut e)))
+        })
+        .await;
+        match p {
+            Some(Progress::Done(ix)) => {
+                poll_fn(|cx| {
+                    let io = CardIo::new(vol, cx, &mut h, mode);
+                    let _ = io.close_all();
+                    srv.build_done(&io, ix, &mut e);
+                    let _ = io.close_all();
+                    Poll::Ready(())
+                })
+                .await;
+                return;
+            }
+            Some(_) => {}
+            None => {
+                poll_fn(|cx| {
+                    let _ = CardIo::new(vol, cx, &mut h, mode).close_all();
+                    Poll::Ready(())
+                })
+                .await;
+                srv.abandon_build();
+                return;
+            }
+        }
+        let dt = time::now_us() - t0;
+        let _ = select(
+            Timer::after_micros(dt.clamp(2_000, 100_000)),
+            select3(CMDS.ready_to_receive(), media::REQS.ready_to_receive(), media::PLAY.ready_to_receive()),
+        )
+        .await;
+    }
+    poll_fn(|cx| {
+        let io = CardIo::new(vol, cx, &mut h, mode);
+        if let Some(b) = b.take() {
+            srv.suspend_build(&io, b);
+        }
+        let _ = io.close_all();
+        Poll::Ready(())
+    })
+    .await;
 }
 
 /// A player request from the idle loop.
@@ -1290,12 +1371,15 @@ pub async fn audio() {
         } else if let Some(r) = srv.pending.take() {
             Either3::Second(r)
         } else {
+            if srv.wants_build() && !work_waiting() {
+                build_slot(&mut vol, srv, arena).await;
+            }
             select3(CMDS.receive(), media::REQS.receive(), media::PLAY.receive()).await
         };
         let cmd = match r {
             Either3::First(c) => c,
             Either3::Second(r) => {
-                if srv.serve(&mut vol, r, arena).await {
+                if srv.serve(&mut vol, r, arena, true).await {
                     continue;
                 }
                 if let Some(Req::Release) = srv.pending.take() {

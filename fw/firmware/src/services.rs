@@ -57,6 +57,11 @@ pub struct Fw {
     /// Text-viewer positions (RAM only for now).
     text_pos: [(FileRef, u32); 8],
     text_size: u32,
+    /// The filter of the listing asked for, and the rows the screen last
+    /// wanted (asked for again when the listing changes under them: it
+    /// arrived, or became sorted).
+    filter: BrowseFilter,
+    wanted: Option<(u32, u32)>,
 }
 
 /// A tiny fixed queue (no external dependency, no allocation).
@@ -129,24 +134,56 @@ impl Fw {
             depth: 0,
             text_pos: [(FileRef { dir: u32::MAX, index: 0 }, 0); 8],
             text_size: 0,
+            filter: BrowseFilter { sort: services::SortBy::Name, hidden: false, audio_only: false },
+            wanted: None,
         }
     }
 
     /// Copy the card task's window for `tag` (called before the UI gets
     /// `Event::Data`).
     pub fn sync(&mut self, tag: u16) {
-        critical_section::with(|cs| match tag {
+        let again = critical_section::with(|cs| match tag {
             media::tag::BROWSE => {
                 let w = media::BROWSE.borrow(cs).borrow();
                 // Only the folder this side asked for.
-                if w.listing.dir == self.browse.listing.dir {
-                    *self.browse = *w;
+                if w.listing.dir != self.browse.listing.dir {
+                    return None;
                 }
+                let changed = w.listing != self.browse.listing || w.lgen != self.browse.lgen;
+                *self.browse = *w;
+                self.wanted.filter(|_| changed)
             }
-            media::tag::TEXT => *self.text = *media::TEXT.borrow(cs).borrow(),
-            media::tag::QUEUE => *self.qwin = *media::QWINDOW.borrow(cs).borrow(),
-            _ => {}
+            media::tag::TEXT => {
+                *self.text = *media::TEXT.borrow(cs).borrow();
+                None
+            }
+            media::tag::QUEUE => {
+                *self.qwin = *media::QWINDOW.borrow(cs).borrow();
+                None
+            }
+            _ => None,
         });
+        // The listing arrived or was re-sorted: the rows the screen shows
+        // may not be in the new window.
+        if let Some((first, count)) = again {
+            self.want(first, count);
+        }
+    }
+
+    /// The letter table of the current listing, when it is sorted and the
+    /// table fits ([`media::LETTERS`]).
+    fn with_letters<R>(
+        &self,
+        f: impl FnOnce(&yoton_index::LetterTable<{ media::LETTER_RUNS }>) -> R,
+    ) -> Option<R> {
+        let w = &*self.browse;
+        if !w.listing.sorted {
+            return None;
+        }
+        critical_section::with(|cs| {
+            let l = media::LETTERS.borrow(cs).borrow();
+            (l.0 == w.lgen && l.1.is_loaded()).then(|| f(&l.1))
+        })
     }
 
     /// Copy the player snapshot (every UI loop), and the windows that
@@ -346,9 +383,15 @@ pub fn apply_volume(v: u8) {
 impl BrowseService for Fw {
     fn browse(&mut self, dir: DirId, filter: BrowseFilter) -> Listing {
         let entry = self.entry_of(dir);
-        if self.browse.listing.dir == dir && self.browse.listing.complete {
+        if self.browse.listing.dir == dir && self.browse.listing.complete && self.filter == filter {
             return self.browse.listing;
         }
+        if self.browse.listing.dir != dir {
+            // Another folder: nothing focused in it yet.
+            media::set_focus(None);
+        }
+        self.filter = filter;
+        self.wanted = None;
         *self.browse = media::BrowseWin::EMPTY;
         self.browse.listing = Listing { dir, count: 0, sorted: false, complete: false };
         media::request(media::Req::Browse { dir, entry, filter });
@@ -369,6 +412,7 @@ impl BrowseService for Fw {
         })
     }
     fn want(&mut self, first: u32, count: u32) {
+        self.wanted = Some((first, count));
         let w = &*self.browse;
         // Rows past the end of the listing are never coming: clamp, or a
         // short folder would be asked for again on every draw.
@@ -382,11 +426,21 @@ impl BrowseService for Fw {
         let w = &*self.browse;
         w.rows[..w.n as usize].iter().position(|r| r.file == f).map(|i| w.first + i as u32)
     }
+    fn focus_hint(&mut self, f: FileRef) {
+        media::set_focus(Some(f));
+    }
     fn letter(&self, i: u32) -> Option<char> {
+        if let Some(l) = self.with_letters(|t| t.letter(i)) {
+            return l;
+        }
         letter_of(self.browse.row(i)?.name.as_str())
     }
     fn seek_letter(&self, from: u32, forward: bool) -> Option<(u32, char)> {
-        // Within the window only until the directory index exists.
+        // From the index's letter runs when the listing is sorted and they
+        // fit in RAM; else within the loaded window.
+        if let Some(j) = self.with_letters(|t| t.seek_letter(from, forward)) {
+            return j;
+        }
         let w = &*self.browse;
         let cur = self.letter(from)?;
         let mut i = from;

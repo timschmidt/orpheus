@@ -554,6 +554,7 @@ dependencies = [
  "yoton-codecs",
  "yoton-dsp",
  "yoton-fs",
+ "yoton-index",
  "yoton-input",
  "yoton-pager",
  "yoton-player",
@@ -1140,6 +1141,14 @@ dependencies = [
 [[package]]
 name = "yoton-fs"
 version = "0.1.0"
+
+[[package]]
+name = "yoton-index"
+version = "0.1.0"
+dependencies = [
+ "yoton-apps",
+ "yoton-fs",
+]
 
 [[package]]
 name = "yoton-input"

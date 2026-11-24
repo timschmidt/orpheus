@@ -13,7 +13,12 @@
 //! through two small synchronous traits the firmware implements over
 //! `yoton-fs` — [`Storage`] (files inside `/.yoton/index/` only) and
 //! [`DirSource`] (the directory being indexed); [`NameSource`] reads one
-//! entry's name by locator for [`Index::find`].
+//! entry's name by locator for [`Index::find`]. The [`card`] module is that
+//! adapter for any `yoton-fs` volume (index files sharded under
+//! `/.yoton/index/X/`; the async file system is driven to completion with
+//! the caller's task context), host-tested over FAT32 and exFAT images.
+//! [`LetterTable`] copies a listing's letter runs into RAM so a UI can
+//! answer letter jumps without the card.
 //!
 //! # Staleness
 //!
@@ -45,11 +50,14 @@
 #![forbid(unsafe_code)]
 
 mod build;
+pub mod card;
 pub mod key;
+mod letters;
 mod query;
 pub mod record;
 
 pub use build::{Builder, MAX_K, MIN_SCRATCH, Progress, Suspended, Verifier};
+pub use letters::LetterTable;
 pub use query::{Index, Probe};
 pub use record::{HEADER, LETTER_RUN, RECORD, Row, Signature, VERSION};
 pub use yoton_apps::browse::{EntryKind, is_hidden_name, kind_of, letter_of, natural_cmp};

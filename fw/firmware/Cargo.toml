@@ -22,6 +22,7 @@ yoton-codecs = { path = "../../crates/codecs" }
 yoton-dsp = { path = "../../crates/yoton-dsp" }
 yoton-fs = { path = "../../crates/yoton-fs" }
 yoton-player = { path = "../../crates/yoton-player" }
+yoton-index = { path = "../../crates/yoton-index" }
 embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }
 embassy-time = "0.5"
 embassy-sync = "0.8"
