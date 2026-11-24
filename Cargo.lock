@@ -594,6 +594,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "yoton-fs"
+version = "0.1.0"
+dependencies = [
+ "yoton-fs",
+]
+
+[[package]]
 name = "yoton-host"
 version = "0.1.0"
 dependencies = [
