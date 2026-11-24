@@ -171,3 +171,32 @@ impl System for SimSystem {
         self.now_playing.map(|n| MiniPlayer { title: n.title, playing: n.playing, progress: n.progress })
     }
 }
+
+impl crate::Host for SimSystem {
+    type Screens = crate::demo::Demo;
+
+    fn palette(
+        &self,
+        theme: yoton_ui::theme::Theme,
+        accent: yoton_ui::theme::Accent,
+    ) -> yoton_ui::theme::Palette {
+        theme.palette(accent)
+    }
+
+    fn set_lang(&mut self, lang: &str) -> Result<bool> {
+        self.lang = Lang::parse(lang)?;
+        if let Some(np) = self.now_playing.as_mut() {
+            np.title = self.lang.pick(crate::demo::MINI_TITLE);
+        }
+        Ok(true)
+    }
+
+    fn set(&mut self, kv: &str) -> Result<Vec<yoton_ui::event::Event>> {
+        SimSystem::set(self, kv)?;
+        Ok(Vec::new())
+    }
+
+    fn screen_by_name(name: &str) -> Option<yoton_ui::nav::ScreenId> {
+        crate::demo::screen_by_name(name)
+    }
+}

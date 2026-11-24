@@ -71,3 +71,24 @@ pub fn draw_big_value(g: &mut Gfx<'_>, r: Rect, value: &str, unit: &str, caption
         g.text_in(r.x, base + 16, r.w, line.as_str(), FontId::Ui, dim, Align::Center);
     }
 }
+
+/// `Slider` (05 §5.2): a horizontal value between `min` and `max` in `r`
+/// (track centred vertically, 14 px knob). The caller handles keys and
+/// applies the value live.
+pub fn draw_slider(g: &mut Gfx<'_>, r: Rect, value: i32, min: i32, max: i32, bg: Role) {
+    g.fill_role(r, bg);
+    let span = (max - min).max(1);
+    let v = value.clamp(min, max) - min;
+    let knob = 14;
+    let track = Rect::new(r.x + knob / 2, r.y + r.h / 2 - 2, r.w - knob, 4);
+    let c_track = g.pal.mix(bg, Role::TextDim, 80);
+    g.fill_round(track, 2, c_track);
+    let fx = i16::try_from(i32::from(track.w) * v / span).unwrap_or(0);
+    let acc = g.c(Role::Accent);
+    g.fill_round(Rect::new(track.x, track.y, fx.max(4), track.h), 2, acc);
+    let kx = track.x + fx - knob / 2;
+    let ky = r.y + (r.h - knob) / 2;
+    g.fill_disc(Rect::new(kx, ky, knob, knob), acc);
+    let on = g.c(Role::OnAccent);
+    g.fill_disc(Rect::new(kx + 4, ky + 4, knob - 8, knob - 8), on);
+}

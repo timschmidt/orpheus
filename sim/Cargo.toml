@@ -13,6 +13,8 @@ window = ["dep:minifb"]
 
 [dependencies]
 yoton-ui = { path = "../crates/yoton-ui" }
+yoton-apps = { path = "../crates/yoton-apps" }
+yoton-power = { path = "../crates/yoton-power" }
 yoton-host = { path = "../crates/yoton-host" }
 anyhow = "1"
 minifb = { version = "0.29", optional = true, default-features = false, features = ["x11"] }

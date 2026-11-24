@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use minifb::{Key as MKey, KeyRepeat, Window, WindowOptions};
 use yoton_ui::Key;
 
-use crate::Sim;
+use crate::{Host, Sim};
 
 const SCALE: usize = 4;
 
@@ -28,7 +28,7 @@ fn map(k: MKey) -> Option<Key> {
     })
 }
 
-pub fn run(mut sim: Sim, out: &Path) -> Result<()> {
+pub fn run<H: Host>(mut sim: Sim<H>, out: &Path) -> Result<()> {
     let (w, h) = (128 * SCALE, 128 * SCALE);
     let mut win = Window::new("yoton-sim", w, h, WindowOptions::default()).context("open window")?;
     win.set_target_fps(60);

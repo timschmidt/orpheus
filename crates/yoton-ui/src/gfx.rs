@@ -12,7 +12,7 @@ use crate::color::{Color, blend};
 use crate::font::{FALLBACK_RECORD, FontId, Glyph, GlyphCache, GlyphSource, UI, fallback_glyph};
 use crate::geom::Rect;
 use crate::icons::Icon;
-use crate::text::{for_each_visual, is_cjk};
+use crate::text::{for_each_visual, is_cjk, no_line_start};
 use crate::theme::{Palette, Role};
 
 /// Panel width and height in pixels.
@@ -416,6 +416,13 @@ impl<'a> Gfx<'a> {
         self.dirty.add(a);
     }
 
+    /// Draw a 2-bit coverage icon tinted `c`, top-left at (`x`, `y`).
+    pub fn icon2(&mut self, x: i16, y: i16, icon: &crate::icons::Icon2, c: Color) {
+        let g = Glyph { adv: 0, w: icon.w, h: icon.h, x: 0, top: 0, bpp: 2, bits: icon.data };
+        let r = self.blit_glyph(x + self.org_x, y + self.org_y, &g, c);
+        self.dirty.add(r);
+    }
+
     /// Blit an RGB565 image of `w` pixels per row.
     pub fn image(&mut self, x: i16, y: i16, w: i16, data: &[u16]) {
         let wu = usize::try_from(w).unwrap_or(0);
@@ -625,7 +632,8 @@ impl<'a> Gfx<'a> {
                     break;
                 }
                 let cjk = is_cjk(ch);
-                if ch == ' ' || cjk || prev_cjk {
+                // Never start a line with closing punctuation (kinsoku).
+                if (ch == ' ' || cjk || prev_cjk) && !no_line_start(ch) {
                     brk = Some(i);
                 }
                 prev_cjk = cjk;

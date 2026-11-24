@@ -142,15 +142,27 @@ pub enum BtState {
 /// `Other` carries anything not yet given a variant.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ServiceEvent {
-    Battery { percent: u8, charging: bool },
+    Battery {
+        percent: u8,
+        charging: bool,
+    },
     Playback(Source),
     TrackChanged,
     Volume(u8),
     CardInserted,
     CardRemoved,
     Bluetooth(BtState),
-    Usb { host: bool },
-    Other { kind: u16, value: u32 },
+    Usb {
+        host: bool,
+    },
+    /// A setting changed (its store key).
+    SettingChanged(u16),
+    /// The wall-clock minute changed.
+    Minute,
+    Other {
+        kind: u16,
+        value: u32,
+    },
 }
 
 /// A row range, page or image a screen asked for has arrived.

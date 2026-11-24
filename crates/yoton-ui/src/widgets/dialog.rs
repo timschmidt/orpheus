@@ -163,7 +163,13 @@ impl Dialog {
             let mut y = y0 + 9;
             if !self.spec.title.is_empty() {
                 let c = g.c(Role::Text);
-                g.text_in(x0 + PAD, y + 10, inner, self.spec.title, FontId::UiBold, c, Align::Center);
+                // Bold if it fits, else regular weight before any ellipsis.
+                let tf = if g.measure(self.spec.title, FontId::UiBold) <= inner {
+                    FontId::UiBold
+                } else {
+                    FontId::Ui
+                };
+                g.text_in(x0 + PAD, y + 10, inner, self.spec.title, tf, c, Align::Center);
                 y += title_h;
             }
             let c = g.c(if self.spec.title.is_empty() { Role::Text } else { Role::TextDim });

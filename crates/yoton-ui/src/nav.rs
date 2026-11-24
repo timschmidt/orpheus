@@ -87,14 +87,27 @@ pub enum Nav {
 #[derive(Default)]
 pub struct UiRequests {
     pub(crate) toast: Option<StrBuf<48>>,
+    pub(crate) toast_ms: Option<u16>,
     pub(crate) dialog: Option<DialogSpec>,
     pub(crate) redraw: bool,
+    pub(crate) invalidate: bool,
 }
 
 impl UiRequests {
     /// Show a one-line toast over the strip for 2 s.
     pub fn toast(&mut self, text: &str) {
         self.toast = Some(StrBuf::from(text));
+    }
+
+    /// Show a toast for `ms` milliseconds instead of 2 s.
+    pub fn toast_for(&mut self, text: &str, ms: u16) {
+        self.toast = Some(StrBuf::from(text));
+        self.toast_ms = Some(ms);
+    }
+
+    /// Redraw everything, status bar and strip included (theme changed).
+    pub fn invalidate_all(&mut self) {
+        self.invalidate = true;
     }
 
     /// Open a dialog; the answer arrives as `Event::Ui(UiEvent::Dialog)`.
@@ -145,6 +158,15 @@ pub trait ScreenSet<S: ?Sized>: Screen<S> + Sized {
     const HOME: ScreenId;
     /// Pushed on hold-Menu (05 §6.4), if the app has one.
     const QUICK_PANEL: Option<ScreenId> = None;
+    /// Pushed when a locked key is pressed (05 §6.3).
+    const LOCK_SCREEN: Option<ScreenId> = None;
+    /// Pushed when Power is held 1.5 s (05 §3).
+    const POWER_MENU: Option<ScreenId> = None;
+    /// Sees every non-key event before the top screen does (low battery,
+    /// USB host connected, card removed); may navigate or toast.
+    fn global(_cx: &mut Cx<'_, S>, _ev: &Event) -> Nav {
+        Nav::Stay
+    }
     /// Build the (empty) state for `id`; `enter` follows.
     fn create(id: ScreenId) -> Self;
     fn id(&self) -> ScreenId;

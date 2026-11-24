@@ -43,7 +43,10 @@ pub trait Screen<S: ?Sized> {
 }
 pub trait ScreenSet<S: ?Sized>: Screen<S> + Sized {   // the app's `enum ScreenState`
     const HOME: ScreenId;
-    const QUICK_PANEL: Option<ScreenId> = None;
+    const QUICK_PANEL: Option<ScreenId> = None;   // pushed on Menu hold
+    const LOCK_SCREEN: Option<ScreenId> = None;   // pushed on a locked key
+    const POWER_MENU: Option<ScreenId> = None;    // pushed on Power held 1.5 s
+    fn global(cx: &mut Cx<'_, S>, ev: &Event) -> Nav { Nav::Stay } // sees service events first
     fn create(id: ScreenId) -> Self;
     fn id(&self) -> ScreenId;
     fn name(&self) -> &'static str;
@@ -66,6 +69,7 @@ pub trait GlyphSource {
 
 impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
     pub fn new(svc: &mut S, now: Instant) -> Self;
+    pub fn with_root(svc: &mut S, root: ScreenId, arg: Arg, now: Instant) -> Self; // boot, charging
     pub fn key(&mut self, svc: &mut S, k: Key, p: KeyPhase, now: Instant) -> Requests;
     pub fn event(&mut self, svc: &mut S, ev: Event, now: Instant) -> Requests;
     pub fn tick(&mut self, svc: &mut S, now: Instant) -> Requests;   // every TICK_MS while wants_ticks()
@@ -108,7 +112,8 @@ back as `Event::Ui(UiEvent::Dialog { .. })` / `UiEvent::Menu { .. }`.
 
 | Item | Bytes | Notes |
 |---|---:|---|
-| `Shell<T, S>` excluding the top screen | 1 392 | nav stack 548 (8 × 68), open menu sheet 360, dialog 144, toast 64, volume 16, requests 188, bookkeeping |
+| `Shell<T, S>` excluding the top screen | 1 400 | nav stack 548 (8 × 68), open menu sheet 360, dialog 144, toast 64, volume 16, requests 192, bookkeeping |
+| `Shell<AppScreen, _>` with the largest `yoton-apps` screen | ≈ 2 036 | under the 2 KiB of 05 §5.1 |
 | `KeyMapper` | 312 | 10 key states + 16-event queue |
 | `KeyGate` | 6 | inside `Shell` |
 | `GlyphCache` | 2 252 | 64 fallback glyphs (02 §7: 2.2 KiB) |
@@ -126,7 +131,7 @@ and the dialog are never open together and could share one union (−140 B).
 
 | Font | Source | Size |
 |---|---|---:|
-| `fonts/ui12.yfnt` | DejaVu Sans Condensed 12 px, 2 bpp, 769 glyphs: Latin, Latin-1, Extended-A, Greek, Cyrillic (U+0400–04FF), punctuation, arrows, symbols | 17 553 |
+| `fonts/ui12.yfnt` | DejaVu Sans Condensed 12 px, 2 bpp, 777 glyphs: Latin, Latin-1, Extended-A, Greek, Cyrillic (U+0400–04FF), punctuation, arrows, ▲▶▼◀ triangles, symbols | 17 794 |
 | `fonts/ui12b.yfnt` | DejaVu Sans Condensed Bold 12 px, 2 bpp, 521 glyphs (Latin-1, Extended-A, Greek, basic Cyrillic) | 12 466 |
 | `fonts/num28.yfnt` | Fira Sans Condensed, 28 px digits, 4 bpp, tabular; `0-9 : . - + % / ,` and space | 3 551 |
 | `fonts/num16.yfnt` | Fira Sans Condensed Medium, 16 px digits, 4 bpp, tabular | 1 253 |
@@ -190,8 +195,16 @@ it in place at random offsets (U-NOR-3) needs the player and is not checked.
 * `KeyPhase::Long` added (Power 4 s); `Event::Ui(UiEvent)` added for menu and
   dialog results; `Cx` is a struct over a generic service type `S` instead of
   a fixed set of service traits (the traits arrive with `yoton-apps`).
-* `ServiceEvent` has a first set of variants plus `Other { kind, value }`.
-* Strings: there is no `tr!` string table yet. Toolkit code draws no literals
-  except the ellipsis; the demo screens in `sim/` draw sample text directly.
-* Screen-change slide animation, the lock screen, quick panel and power menu
-  screens belong to UI-2/UI-7.
+* `ServiceEvent` has a first set of variants (`SettingChanged`, `Minute`
+  added in UI-2) plus `Other { kind, value }`.
+* Strings: the `tr!` table lives in `yoton-apps` (`strings.rs`). Toolkit
+  code draws no literals except the ellipsis; the demo screens in `sim/` draw
+  sample text directly.
+* Key lock (UI-2): with the keys locked, any non-allowed key gives
+  `Gate::LockNotice` (screen on or off); `Gate::Wake` is only for a screen
+  that went dark without locking.
+* Added in UI-2: `Icon2` + `Gfx::icon2` (2-bit icons), `widgets::misc::
+  draw_slider`, `Item::wide_value` (information rows), `UiRequests::toast_for`
+  and `invalidate_all`, `StrBuf::push_str_or_ellipsis`, and line-start rules
+  in `Gfx::wrap` (no line begins with `。`, `、`, `）`, small kana …).
+* Screen-change slide animation belongs to UI-7.

@@ -1111,6 +1111,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "yoton-apps"
+version = "0.1.0"
+dependencies = [
+ "yoton-power",
+ "yoton-ui",
+]
+
+[[package]]
 name = "yoton-fs"
 version = "0.1.0"
 dependencies = [
@@ -1164,7 +1172,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "minifb",
+ "yoton-apps",
  "yoton-host",
+ "yoton-power",
  "yoton-ui",
 ]
 

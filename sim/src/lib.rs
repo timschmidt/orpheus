@@ -2,7 +2,10 @@
 //!
 //! A headless 128 × 128 RGB565 frame buffer driven by the same `yoton-ui`
 //! code as the firmware, simulated time (so every run is deterministic), key
-//! scripts, PNG export, and (feature `window`) a 4× window.
+//! scripts, PNG export, and (feature `window`) a 4× window. Two hosts:
+//! [`DemoSim`] runs the toolkit's widget demo (UI-1 golden images),
+//! [`AppSim`] runs the real `yoton-apps` screens over scriptable fake
+//! services (UI-2 onwards).
 //!
 //! Script language (whitespace- or comma-separated commands):
 //!
@@ -15,28 +18,29 @@
 //! | `wait:300` | let 300 ms pass |
 //! | `shot:name` | capture the frame buffer as `name` |
 //! | `expect-screen:Name` | fail unless the top screen is `Name` |
-//! | `theme:dark`, `accent:green`, `lang:cyrillic` | appearance and sample text |
-//! | `set:battery=8`, `set:bt=streaming` … | simulated system state |
+//! | `theme:dark`, `accent:green`, `lang:cyrillic` | appearance and language |
+//! | `set:battery=8`, `set:usb=host` … | simulated system state (per host) |
 //! | `goto:Library` | push a screen directly |
 
+pub mod apps;
 pub mod demo;
 pub mod fallback;
+pub mod packs;
 pub mod system;
 #[cfg(feature = "window")]
 pub mod window;
 
 use anyhow::{Context, Result, bail};
+use yoton_ui::event::Event;
 use yoton_ui::font::{GlyphCache, GlyphSource};
 use yoton_ui::gfx::{DirtySet, FB_PIXELS, Fallback, Gfx};
-use yoton_ui::input::KeyMapper;
-use yoton_ui::nav::{Arg, Nav, ScreenSet};
-use yoton_ui::shell::{Requests, Shell};
-use yoton_ui::theme::{Accent, Theme};
+use yoton_ui::input::{KeyGate, KeyMapper};
+use yoton_ui::nav::{Arg, Nav, ScreenId, ScreenSet};
+use yoton_ui::shell::{Requests, Shell, System};
+use yoton_ui::theme::{Accent, Palette, Theme};
 use yoton_ui::{Instant, Key};
 
-use crate::demo::Demo;
 use crate::fallback::{FonFile, HexFont};
-use crate::system::{Lang, SimSystem};
 
 /// One captured frame.
 pub struct Shot {
@@ -57,16 +61,44 @@ pub fn png_bytes(fb: &[u16]) -> Result<Vec<u8>> {
     yoton_host::image::rgb565_png_bytes(&bytes, 128, 128)
 }
 
+/// What differs between simulated systems.
+pub trait Host: System + Default + Sized {
+    type Screens: ScreenSet<Self>;
+
+    /// Palette for this frame (`theme`/`accent` are the script's choice).
+    fn palette(&self, theme: Theme, accent: Accent) -> Palette;
+    /// `theme:`/`accent:` commands (the apps store them as settings).
+    fn appearance(&mut self, _theme: Theme, _accent: Accent) -> Vec<Event> {
+        Vec::new()
+    }
+    /// `lang:` command; `Ok(true)` restarts the shell at Home.
+    fn set_lang(&mut self, lang: &str) -> Result<bool>;
+    /// `set:key=value`; returns service events to deliver.
+    fn set(&mut self, kv: &str) -> Result<Vec<Event>>;
+    fn screen_by_name(name: &str) -> Option<ScreenId>;
+    /// Root screen at start.
+    fn root() -> (ScreenId, Arg) {
+        (Self::Screens::HOME, Arg(0))
+    }
+    /// After each step: apply what screens asked of the services that
+    /// affects the key gate (lock keys, screen off after the lock notice).
+    fn after_step(&mut self, _gate: &mut KeyGate) {}
+    /// Events the host produced on its own (settings changed …).
+    fn take_events(&mut self) -> Vec<Event> {
+        Vec::new()
+    }
+}
+
 /// The simulator: frame buffer, input mapper, shell and fake services.
-pub struct Sim {
+pub struct Sim<H: Host> {
     pub fb: Vec<u16>,
     /// Dirty rectangles since the last `take_dirty`.
     pub dirty: DirtySet,
     cache: Box<GlyphCache>,
     font: Box<dyn GlyphSource>,
     pub mapper: KeyMapper,
-    pub shell: Shell<Demo, SimSystem>,
-    pub sys: SimSystem,
+    pub shell: Shell<H::Screens, H>,
+    pub sys: H,
     pub theme: Theme,
     pub accent: Accent,
     pub now: Instant,
@@ -75,25 +107,32 @@ pub struct Sim {
     /// Frames drawn and pixels covered by dirty rectangles (cost metric).
     pub frames: u32,
     pub dirty_pixels: u64,
+    /// The screen was off before a lock notice lit it.
+    notice_lit: bool,
 }
 
-impl Default for Sim {
+/// The widget demo of UI-1.
+pub type DemoSim = Sim<system::SimSystem>;
+/// The apps of `yoton-apps` over fake services.
+pub type AppSim = Sim<apps::HostServices>;
+
+impl<H: Host> Default for Sim<H> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Sim {
-    /// A simulator with the committed Unifont subset as fallback font (or
-    /// the file named by `YOTON_FALLBACK_FON` when `dev_font` is used).
+impl<H: Host> Sim<H> {
+    /// A simulator with the committed Unifont subset as fallback font.
     #[must_use]
-    pub fn new() -> Sim {
+    pub fn new() -> Self {
         Self::with_font(Box::new(HexFont::subset()))
     }
 
-    /// Use the vendor font from the environment if set (development only).
+    /// Use the font file named by `YOTON_FALLBACK_FON` if set (development
+    /// only, e.g. the vendor font in a NOR dump).
     #[must_use]
-    pub fn new_dev_font() -> Sim {
+    pub fn new_dev_font() -> Self {
         match FonFile::from_env() {
             Some(f) => Self::with_font(Box::new(f)),
             None => Self::new(),
@@ -101,9 +140,10 @@ impl Sim {
     }
 
     #[must_use]
-    pub fn with_font(font: Box<dyn GlyphSource>) -> Sim {
-        let mut sys = SimSystem::default();
-        let shell = Shell::new(&mut sys, Instant(0));
+    pub fn with_font(font: Box<dyn GlyphSource>) -> Self {
+        let mut sys = H::default();
+        let (root, arg) = H::root();
+        let shell = Shell::with_root(&mut sys, root, arg, Instant(0));
         let mut s = Sim {
             fb: vec![0; FB_PIXELS],
             dirty: DirtySet::new(),
@@ -118,6 +158,7 @@ impl Sim {
             requests: Vec::new(),
             frames: 0,
             dirty_pixels: 0,
+            notice_lit: false,
         };
         s.draw();
         s
@@ -125,7 +166,7 @@ impl Sim {
 
     /// Run the shell's draw pass.
     pub fn draw(&mut self) {
-        let pal = self.theme.palette(self.accent);
+        let pal = self.sys.palette(self.theme, self.accent);
         let mut dirty = DirtySet::new();
         {
             let fb = Fallback { cache: &mut self.cache, src: self.font.as_mut() };
@@ -146,20 +187,59 @@ impl Sim {
         self.dirty.take()
     }
 
+    /// What the firmware does with the shell's requests (05 §3, §6.3).
     fn handle_requests(&mut self, r: Requests) {
         if r == Requests::default() {
             return;
         }
+        let mut redraw = false;
+        let gate = &mut self.shell.gate;
         if r.screen_off {
-            self.shell.gate.screen_on = false;
-            self.shell.gate.locked = true;
-            self.sys.status.locked = true;
+            if gate.locked || !gate.screen_on {
+                // Power while off or locked: wake and unlock.
+                gate.locked = false;
+                gate.screen_on = true;
+                self.notice_lit = false;
+                redraw = true;
+            } else {
+                gate.screen_on = false;
+                gate.locked = true;
+            }
         }
         if r.wake {
-            self.shell.gate.screen_on = true;
+            gate.screen_on = true;
+            redraw = true;
+        }
+        if r.lock_notice && !gate.screen_on {
+            gate.screen_on = true;
+            self.notice_lit = true;
+            redraw = true;
+        }
+        if redraw {
             self.shell.invalidate();
         }
         self.requests.push(r);
+    }
+
+    /// Deliver events from the host to the shell.
+    pub fn deliver(&mut self, evs: Vec<Event>) {
+        for ev in evs {
+            let r = self.shell.event(&mut self.sys, ev, self.now);
+            self.handle_requests(r);
+        }
+    }
+
+    fn settle(&mut self) {
+        let was_locked = self.shell.gate.locked;
+        self.sys.after_step(&mut self.shell.gate);
+        if self.notice_lit && !self.shell.gate.screen_on {
+            self.notice_lit = false;
+        }
+        if was_locked != self.shell.gate.locked {
+            self.shell.invalidate();
+        }
+        let evs = self.sys.take_events();
+        self.deliver(evs);
     }
 
     /// Deliver queued key phases.
@@ -167,6 +247,7 @@ impl Sim {
         while let Some((k, p)) = self.mapper.poll(self.now) {
             let r = self.shell.key(&mut self.sys, k, p, self.now);
             self.handle_requests(r);
+            self.settle();
         }
     }
 
@@ -184,6 +265,7 @@ impl Sim {
             if self.shell.wants_ticks(&self.sys) {
                 let r = self.shell.tick(&mut self.sys, self.now);
                 self.handle_requests(r);
+                self.settle();
             }
             self.draw();
         }
@@ -221,17 +303,9 @@ impl Sim {
     pub fn set_theme(&mut self, theme: Theme, accent: Accent) {
         self.theme = theme;
         self.accent = accent;
+        let evs = self.sys.appearance(theme, accent);
+        self.deliver(evs);
         self.shell.invalidate();
-        self.draw();
-    }
-
-    /// Change the sample-text language: back to a fresh Home.
-    pub fn set_lang(&mut self, lang: Lang) {
-        self.sys.lang = lang;
-        if let Some(np) = self.sys.now_playing.as_mut() {
-            np.title = lang.pick(demo::MINI_TITLE);
-        }
-        self.shell = Shell::new(&mut self.sys, self.now);
         self.draw();
     }
 
@@ -293,14 +367,24 @@ impl Sim {
                     };
                     self.set_theme(self.theme, a);
                 }
-                "lang" => self.set_lang(Lang::parse(arg)?),
+                "lang" => {
+                    if self.sys.set_lang(arg)? {
+                        self.shell = Shell::new(&mut self.sys, self.now);
+                    }
+                    self.shell.invalidate();
+                    let evs = self.sys.take_events();
+                    self.deliver(evs);
+                    self.draw();
+                }
                 "set" => {
-                    self.sys.set(arg)?;
+                    let evs = self.sys.set(arg)?;
+                    self.deliver(evs);
+                    self.settle();
                     self.shell.invalidate();
                     self.draw();
                 }
                 "goto" => {
-                    let id = demo::screen_by_name(arg).with_context(|| format!("unknown screen `{arg}`"))?;
+                    let id = H::screen_by_name(arg).with_context(|| format!("unknown screen `{arg}`"))?;
                     self.shell.navigate(&mut self.sys, Nav::Push(id, Arg(0)), self.now);
                     self.draw();
                 }
@@ -325,9 +409,9 @@ impl Sim {
         self.shell.top_name()
     }
 
-    /// Whether the top screen is `Demo::HOME`.
+    /// Whether the top screen is the host's Home.
     #[must_use]
     pub fn at_home(&self) -> bool {
-        self.shell.top_id() == <Demo as ScreenSet<SimSystem>>::HOME
+        self.shell.top_id() == <H::Screens as ScreenSet<H>>::HOME
     }
 }

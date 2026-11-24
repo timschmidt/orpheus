@@ -11,6 +11,16 @@ pub struct Icon {
     pub rows: &'static [u16],
 }
 
+/// A 2-bit coverage mask (4 levels), tinted when drawn: app icons (24 ×
+/// 24), generated at build time from vector drawings.
+#[derive(Clone, Copy, Debug)]
+pub struct Icon2 {
+    pub w: u8,
+    pub h: u8,
+    /// `w * h` pixels of 2 bits, row-major, most significant bits first.
+    pub data: &'static [u8],
+}
+
 #[doc(hidden)]
 #[must_use]
 pub const fn row(s: &str) -> u16 {
