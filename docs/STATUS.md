@@ -934,6 +934,22 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — AU-5 gapless closed for now; PCM spill not adopted (lead)
+
+* Three attempts at a PCM spill (extra decoded audio lent from the decoder
+  arena across the join) were measured on the player and **not kept**:
+  `24f07c5` (never engaged; slower joins), `2ef18a6c` (joins clean, 13–18 ms
+  opens, `u=0`, but 1–6 underruns per track at the hand-back), `d306da44`
+  (no hand-back; joins clean but 6–13 underruns per track from `fill`/`dec`
+  in steady state). Main stays at the `28d4520` behaviour.
+* **Known issue (AU-5)**: gapless joins are clean for MP3 (0 underruns over
+  three runs); for FLAC the **first** join after a queue starts opens in
+  ≈ 71 ms with ≈ 27 ms queued → 3–4 underruns (an audible tick); later FLAC
+  joins are clean. Ideas recorded for later: a smaller spill only at the
+  join with the decode cost measured, or a lighter FLAC open path.
+* Queue editing (Play next / Add to queue / Remove / Move) is merged but not
+  yet exercised on the device (HIL in VER-7).
+
 ### 2026-11-24 — headphone jack into the workstation mic input; gapless prep (lead)
 
 * The owner connected the player's headphone output to the workstation's
