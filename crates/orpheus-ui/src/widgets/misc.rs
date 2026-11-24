@@ -72,6 +72,55 @@ pub fn draw_big_value(g: &mut Gfx<'_>, r: Rect, value: &str, unit: &str, caption
     }
 }
 
+/// `Tabs` (05 §5.2): up to four labels across `r` (16 px high: a 16 px
+/// fallback glyph fits), each as wide as its text plus an equal share of
+/// the rest; the active one in bold over a 2 px accent bar, the others
+/// dim. When the labels do not fit side by side, only the active one is
+/// shown, centred between ◂ ▸ marks, over the accent bar. The screen
+/// switches tabs (Prev/Next).
+pub fn draw_tabs(g: &mut Gfx<'_>, r: Rect, labels: &[&str], active: usize, bg: Role) {
+    g.fill_role(r, bg);
+    let labels = labels.get(..labels.len().min(4)).unwrap_or(&[]);
+    let n = i16::try_from(labels.len().max(1)).unwrap_or(1);
+    let rule = g.pal.mix(bg, Role::TextDim, 60);
+    g.hline(r.x, r.y + r.h - 1, r.w, rule);
+    let text = g.c(Role::Text);
+    let dim = g.c(Role::TextDim);
+    let acc = g.c(Role::Accent);
+    let mut widths = [0i16; 4];
+    let mut total = 0;
+    for (w, l) in widths.iter_mut().zip(labels) {
+        *w = g.measure(l, FontId::UiBold);
+        total += *w;
+    }
+    let spare = r.w - total - 6 * n;
+    if spare < 0 {
+        let label = labels.get(active).copied().unwrap_or("");
+        let lw = g.measure(label, FontId::UiBold).min(r.w - 20);
+        g.text_in(r.x + 10, r.y + 13, r.w - 20, label, FontId::UiBold, text, Align::Center);
+        g.fill(Rect::new(r.x + (r.w - lw) / 2, r.y + r.h - 2, lw, 2), acc);
+        // ◂ ▸ as 3 px triangles.
+        for k in 0..3 {
+            g.vline(r.x + 3 + k, r.y + 7 - k, 1 + 2 * k, dim);
+            g.vline(r.x + r.w - 4 - k, r.y + 7 - k, 1 + 2 * k, dim);
+        }
+        return;
+    }
+    let extra = spare / n + 6;
+    let mut x = r.x;
+    for (i, l) in labels.iter().enumerate() {
+        let w = widths.get(i).copied().unwrap_or(0) + extra;
+        let w = if i + 1 == labels.len() { r.x + r.w - x } else { w };
+        let on = i == active;
+        let (font, c) = if on { (FontId::UiBold, text) } else { (FontId::Ui, dim) };
+        g.text_in(x, r.y + 13, w, l, font, c, Align::Center);
+        if on {
+            g.fill(Rect::new(x + 2, r.y + r.h - 2, w - 4, 2), acc);
+        }
+        x += w;
+    }
+}
+
 /// `Slider` (05 §5.2): a horizontal value between `min` and `max` in `r`
 /// (track centred vertically, 14 px knob). The caller handles keys and
 /// applies the value live.

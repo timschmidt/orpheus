@@ -131,6 +131,27 @@ impl Writer<'_> {
         let tmp = d;
         self.s(&tmp[i..])
     }
+    /// A signed number.
+    pub fn i(&mut self, v: i16) -> &mut Self {
+        if v < 0 {
+            self.s(b"-");
+        }
+        self.u(u64::from(v.unsigned_abs()))
+    }
+    /// `v` in hex, at least two digits (no table: a 16-byte one would be
+    /// a resident constant).
+    pub fn h(&mut self, v: u32) -> &mut Self {
+        let mut started = false;
+        for k in (0..8).rev() {
+            let d = ((v >> (4 * k)) & 15) as u8;
+            if d != 0 || started || k < 2 {
+                started = true;
+                let c = [if d < 10 { b'0' + d } else { b'a' + d - 10 }];
+                self.s(&c);
+            }
+        }
+        self
+    }
 }
 
 // ------------------------------------------------------------- statistics
@@ -143,6 +164,9 @@ pub static RATE: AtomicU32 = AtomicU32::new(0);
 pub static DECODE_US: AtomicU32 = AtomicU32::new(0);
 pub static PLAY_US: AtomicU32 = AtomicU32::new(0);
 pub static PLAYING: AtomicBool = AtomicBool::new(false);
+/// The timer or an alarm rings (UI-5d, set by the UI): the card task
+/// sounds the alert while it is set (`alert_tone`).
+pub static ALERT: AtomicBool = AtomicBool::new(false);
 /// Where the playback loop is (status diagnostics): 1 card read, 2 media
 /// request, 3 waiting for the DAC, 4 decoding, 5 DSP, 0 elsewhere.
 pub static WHERE: AtomicU32 = AtomicU32::new(0);
@@ -1169,10 +1193,17 @@ async fn play_file(
                 media::player_update(|p| p.source = Source::Paused);
                 save_store(vol, srv, spare).await;
             }
-            // The battery log and a listing in pieces while the DAC is
-            // stopped.
+            // The battery log, the step counter's file and trace, and a
+            // listing in pieces while the DAC is stopped; an alert sounds
+            // (the UI paused the music for it).
             if crate::drain::due() {
                 drain_flush_rows(vol, spare).await;
+            }
+            if crate::sensor::card_due() {
+                sensor_flush_rows(vol, spare).await;
+            }
+            if ALERT.load(Ordering::Relaxed) {
+                alert_tone(out).await;
             }
             while srv.has_job() && media::REQS.is_empty() && media::PLAY.is_empty() {
                 srv.step(vol).await;
@@ -1383,6 +1414,12 @@ async fn play_file(
                 if crate::drain::due() && out.headroom() >= ROOMY {
                     let t0 = now32();
                     drain_flush_rows(vol, spare).await;
+                    note(UB_SERVE, t0);
+                }
+                // The step counter's file and trace (SENS-1): the same rule.
+                if crate::sensor::card_due() && out.headroom() >= ROOMY {
+                    let t0 = now32();
+                    sensor_flush_rows(vol, spare).await;
                     note(UB_SERVE, t0);
                 }
                 if driven && !reader_end && ring.s.file_left().is_some_and(|l| l <= READ_AHEAD_LEAD) {
@@ -1633,9 +1670,10 @@ static mut CHAIN: core::mem::MaybeUninit<orpheus_dsp::Chain> = core::mem::MaybeU
 pub fn init_chain() {
     // SAFETY: before any task runs; afterwards only the audio task uses it.
     unsafe { (*(&raw mut CHAIN)).write(orpheus_dsp::Chain::new(orpheus_dsp::OutWidth::Bits16, false)) };
-    // The battery logger's state in SRAM3, before any task runs (here,
-    // not in the resident `main`).
+    // The battery logger's and the step counter's state in SRAM3, before
+    // any task runs (here, not in the resident `main`).
     crate::drain::init();
+    crate::sensor::init();
 }
 
 static SERVER: ConstStaticCell<Server> = ConstStaticCell::new(Server::new());
@@ -1877,6 +1915,128 @@ pub(crate) async fn drain_flush_rows(vol: &mut Volume<'static, Card>, buf: &mut 
     crate::drain::end_write(ok, rows);
 }
 
+// ------------------------------------------------------------ step counter
+
+/// Read `/.orpheus/steps.bin` at mount (SENS-1, `crate::sensor`).
+async fn steps_load(vol: &mut Volume<'static, Card>, buf: &mut [u8]) {
+    let mut h = None;
+    if let Ok(mut f) = vol.open(orpheus_steps::history::FILE, OpenMode::Read).await {
+        let want = orpheus_steps::history::FILE_LEN.min(buf.len());
+        let n = vol.read_exact_or_eof(&mut f, &mut buf[..want]).await.unwrap_or(0);
+        let _ = vol.close(f).await;
+        h = orpheus_steps::History::decode(&buf[..n]);
+    }
+    crate::sensor::loaded(h);
+}
+
+/// Choose the trace's file number if not done yet: one more than the
+/// largest `acc-<n>` in `/.orpheus/test/` (created if missing).
+pub(crate) async fn trace_prepare(vol: &mut Volume<'static, Card>) {
+    if !crate::sensor::trace_needs_file() {
+        return;
+    }
+    let dir = orpheus_power::drain::dir();
+    let mut cur = match vol.open_dir(dir).await {
+        Ok(c) => c,
+        Err(_) => {
+            let _ = vol.create_dir(dir.get(..9).unwrap_or(dir)).await;
+            let _ = vol.create_dir(dir).await;
+            match vol.open_dir(dir).await {
+                Ok(c) => c,
+                Err(_) => return,
+            }
+        }
+    };
+    let mut e = DirEntry::new();
+    let mut max = 0u16;
+    while let Ok(true) = vol.read_dir(&mut cur, &mut e).await {
+        if let Some(n) = orpheus_steps::trace::file_number(e.name()) {
+            max = max.max(n);
+        }
+    }
+    crate::sensor::set_trace_file(max);
+}
+
+/// [`trace_prepare`], then [`sensor_flush_rows`]; `force`: the steps file
+/// even before it is due (power-off, card hand-over).
+pub(crate) async fn sensor_flush(vol: &mut Volume<'static, Card>, buf: &mut [u8], force: bool) {
+    trace_prepare(vol).await;
+    steps_save(vol, buf, force).await;
+    trace_write(vol, buf).await;
+}
+
+/// What the step counter has due, without choosing a file (playing).
+pub(crate) async fn sensor_flush_rows(vol: &mut Volume<'static, Card>, buf: &mut [u8]) {
+    steps_save(vol, buf, false).await;
+    trace_write(vol, buf).await;
+}
+
+async fn steps_save(vol: &mut Volume<'static, Card>, _buf: &mut [u8], force: bool) {
+    let Some(img) = crate::sensor::begin_save(force) else { return };
+    let ok = match vol.open(orpheus_steps::history::FILE, OpenMode::Truncate).await {
+        Ok(mut f) => {
+            let wrote = vol.write(&mut f, &img).await.is_ok();
+            vol.close(f).await.is_ok() && wrote && vol.flush().await.is_ok()
+        }
+        Err(_) => false,
+    };
+    crate::sensor::end_save(ok);
+}
+
+async fn trace_write(vol: &mut Volume<'static, Card>, buf: &mut [u8]) {
+    let mut path = [0u8; 48];
+    let Some((n, pl)) = crate::sensor::begin_trace_write(buf, &mut path) else { return };
+    if let Some(Ok(p)) = path.get(..pl).map(core::str::from_utf8)
+        && let Ok(mut f) = vol.open(p, OpenMode::Create).await
+    {
+        f.set_position(f.size());
+        let _ = vol.write(&mut f, buf.get(..n).unwrap_or(&[])).await;
+        let _ = vol.close(f).await;
+        let _ = vol.flush().await;
+    }
+}
+
+// ------------------------------------------------------------ alert tone
+
+/// 2 kHz sine, one period in 32 steps, −12 dBFS.
+static SINE: [i16; 32] = [
+    0, 1561, 3062, 4445, 5657, 6652, 7391, 7846, 8000, 7846, 7391, 6652, 5657, 4445, 3062, 1561, 0, -1561,
+    -3062, -4445, -5657, -6652, -7391, -7846, -8000, -7846, -7391, -6652, -5657, -4445, -3062, -1561,
+];
+
+/// The alert (UI-5d): four 100 ms beeps of 2 kHz, 100 ms apart, every
+/// 1.2 s, at the current volume, while [`ALERT`] is set and nothing waits
+/// for the card task (it comes back to sound on). At most a minute (the
+/// UI ends the ringing then).
+#[inline(never)]
+async fn alert_tone(out: &mut PcmOut) {
+    let rate = match RATE.load(Ordering::Relaxed) {
+        0 => 44_100,
+        r => r,
+    };
+    if !out.running {
+        dac::set_rate(rate);
+    }
+    let step = ((2000u64 << 32) / u64::from(rate)) as u32;
+    let beep = (rate / 10).max(1);
+    let cycle = rate * 6 / 5;
+    let mut phase = 0u32;
+    let mut n = 0u32;
+    let t0 = time::now_us();
+    while ALERT.load(Ordering::Relaxed) && !work_waiting() && time::now_us() - t0 < 61_000_000 {
+        for _ in 0..256 {
+            let t = n % cycle;
+            let on = t < 8 * beep && (t / beep) % 2 == 0;
+            let v = if on { SINE.get((phase >> 27) as usize).copied().unwrap_or(0) } else { 0 };
+            phase = phase.wrapping_add(step);
+            n = n.wrapping_add(1);
+            let s = u32::from(v as u16);
+            out.push(s | s << 16).await;
+        }
+    }
+    out.finish().await;
+}
+
 /// Write the queue to `/.orpheus/queue.bin` (encoded in `arena`, free
 /// decoder-arena memory: 2,068 bytes for 256 items). True if written.
 async fn save_queue(vol: &mut Volume<'static, Card>, arena: &mut [u8], srv: &Server) -> bool {
@@ -1907,6 +2067,7 @@ async fn load_state(vol: &mut Volume<'static, Card>, arena: &mut [u8], srv: &mut
         n = vol.read_exact_or_eof(&mut f, &mut arena[..IMAGE_LEN]).await.unwrap_or(0);
     }
     srv.init_player(&arena[..n]);
+    steps_load(vol, arena).await;
     srv.load_titles(vol).await;
     crate::library::mounted(vol, srv).await;
 }
@@ -1919,6 +2080,7 @@ async fn hand_over(vol: &mut Volume<'static, Card>, srv: &mut Server, scratch: &
     if crate::drain::due() {
         drain_flush(vol, scratch).await;
     }
+    sensor_flush(vol, scratch, true).await;
     srv.card_leaving(vol).await;
 }
 
@@ -2009,8 +2171,9 @@ async fn player_request(
             // `SHUT_DOWN` lets the power go.
             srv.feed(Event::Shutdown);
             save_store(vol, srv, arena).await;
-            // The battery log's last rows (the UI ended it).
+            // The battery log's last rows (the UI ended it), the steps.
             drain_flush(vol, arena).await;
+            sensor_flush(vol, arena, true).await;
             let _ = vol.flush().await;
             media::SHUT_DOWN.store(true, Ordering::Release);
             return;
@@ -2286,9 +2449,17 @@ pub async fn audio() {
             while srv.has_job() && !work_waiting() {
                 srv.step(&mut vol).await;
             }
-            // The battery log (PWR-5) first: a minute's rows are small.
+            // The battery log (PWR-5) first: a minute's rows are small;
+            // then the step counter's (SENS-1); an alert sounds (UI-5d).
             if crate::drain::due() && !work_waiting() {
                 drain_flush(&mut vol, arena).await;
+            }
+            if crate::sensor::card_due() && !work_waiting() {
+                sensor_flush(&mut vol, arena, false).await;
+            }
+            if ALERT.load(Ordering::Relaxed) && !work_waiting() {
+                let mut out = PcmOut::new();
+                alert_tone(&mut out).await;
             }
             if srv.wants_build() && !work_waiting() {
                 build_slot(&mut vol, srv, arena).await;

@@ -14,8 +14,9 @@ use orpheus_apps::services::{
     LibNow, LibRow, LibraryService, LibraryState, Listing, LyricLine, PicReq, PicSource, PicState,
     PictureService, PlayerCmd, PlayerService, PlayerState, QueueEntry, TextService, TrackInfo,
 };
-use orpheus_apps::services::{BtDevice, BtList, BtPhase, BtRequest};
+use orpheus_apps::services::{BtDevice, BtList, BtPhase, BtRequest, StepsInfo, StepsService, ToolsService};
 use orpheus_apps::settings::{SettingId, SettingsCache, id};
+use orpheus_apps::tools::Tools;
 use orpheus_apps::{App, Lang};
 use orpheus_ui::event::Source;
 use orpheus_ui::event::{BtState, Event, ServiceEvent};
@@ -88,7 +89,23 @@ pub struct Fw {
     pub pic_after_overlay: bool,
     /// The music library's state and generation last seen.
     lib_seen: (LibraryState, u32),
+    /// Stopwatch, timer, alarms (UI-5d).
+    pub tools: Tools,
+    /// An alert paused the music (resumed when it ends).
+    pub alert_paused: bool,
+    /// The RTC alarm as armed (hour, minute); the alarms changed since.
+    pub rtc_alarm: Option<(u8, u8)>,
+    pub alarms_changed: bool,
+    /// The minute the RTC alarm was last looked at (once a minute is
+    /// enough: the next alarm moves only then).
+    last_alarm_minute: u8,
 }
+
+/// Alarms can switch the player on from off: PWR-3c (U-PMU-3) has not
+/// shown that the RTC alarm wakes this board, nor how a start knows it was
+/// one; until then alarms ring only while the player is on, and power-off
+/// does not arm the alarm wake (`pmu::power_off(false)`).
+pub const ALARM_WAKE_FROM_OFF: bool = false;
 
 /// The volume sent to a connected sink (module scale 0–31): full scale,
 /// the player's volume is applied at the DAC (see `apply_dac`).
@@ -194,6 +211,11 @@ impl Fw {
             pic_seq: 0,
             pic_after_overlay: false,
             lib_seen: (LibraryState::Missing, 0),
+            tools: Tools::default(),
+            alert_paused: false,
+            rtc_alarm: None,
+            alarms_changed: true,
+            last_alarm_minute: 0xFF,
         }
     }
 
@@ -524,6 +546,9 @@ impl SettingsService for Fw {
     }
     fn set_setting(&mut self, sid: SettingId, value: i16) {
         if self.settings.set(sid, value) {
+            if (id::ALARM0.0..id::ALARM0.0 + 3 * orpheus_apps::tools::ALARMS as u16).contains(&sid.0) {
+                self.alarms_changed = true;
+            }
             self.pending.push(Event::Service(ServiceEvent::SettingChanged(sid.0)));
             self.setting_to_player(sid);
             self.setting_to_bt(sid);
@@ -998,6 +1023,113 @@ impl BluetoothService for Fw {
     }
 }
 
+impl StepsService for Fw {
+    fn steps_info(&self) -> StepsInfo {
+        crate::sensor::info()
+    }
+    fn steps_day(&self, ago: u8) -> u32 {
+        crate::sensor::day(ago)
+    }
+    fn steps_reset_today(&mut self) {
+        crate::sensor::reset_today();
+    }
+}
+
+impl ToolsService for Fw {
+    fn tools(&self) -> &Tools {
+        &self.tools
+    }
+    fn tools_mut(&mut self) -> &mut Tools {
+        &mut self.tools
+    }
+    fn alarm_wakes_from_off(&self) -> bool {
+        ALARM_WAKE_FROM_OFF
+    }
+}
+
+impl Fw {
+    /// Each UI loop (UI-5c, SENS-1): the Steps app's state and settings to
+    /// the sensor task; a changed count as an event.
+    #[inline(never)]
+    pub fn sync_steps(&mut self, app_open: bool) {
+        crate::sensor::set_ui(
+            app_open,
+            self.settings.get(id::STEP_BACKGROUND) != 0,
+            u8::try_from(self.settings.get(id::STEP_SENSITIVITY)).unwrap_or(1),
+        );
+        if crate::sensor::take_changed() {
+            let v = crate::sensor::day(0);
+            self.pending.push(Event::Service(ServiceEvent::Other { kind: services::other::STEPS, value: v }));
+        }
+    }
+
+    /// Each UI loop (UI-5d): the timer and the alarms. Returns the
+    /// `tools_event` sent, if any (the UI lights the screen for an alert).
+    #[inline(never)]
+    pub fn sync_tools(&mut self, now_ms: u64) -> Option<u32> {
+        let e = orpheus_apps::tools::poll_service(self, now_ms);
+        if let Some(v) = e {
+            self.pending.push(Event::Service(ServiceEvent::Other { kind: services::other::TOOLS, value: v }));
+        }
+        // The alert's sound: the music pauses for it and resumes after.
+        let ringing = self.tools.ringing().is_some();
+        let sounding = crate::audio::ALERT.load(Ordering::Relaxed);
+        if ringing && !sounding {
+            if self.player.source == Source::Playing {
+                self.alert_paused = true;
+                self.command(PlayerCmd::PlayPause);
+            }
+            crate::audio::ALERT.store(true, Ordering::Relaxed);
+            let _ = media::try_request(media::Req::Alert);
+        } else if !ringing && sounding {
+            crate::audio::ALERT.store(false, Ordering::Relaxed);
+            if core::mem::take(&mut self.alert_paused) && self.player.source == Source::Paused {
+                self.command(PlayerCmd::PlayPause);
+            }
+        }
+        self.arm_rtc_alarm();
+        e
+    }
+
+    /// The RTC alarm at the next alarm's time (re-armed when the alarms or
+    /// the minute change; the alarm wake from off needs it, PWR-3c). While
+    /// the player is on the alarms ring from `Tools::poll`, which compares
+    /// the RTC's minute.
+    fn arm_rtc_alarm(&mut self) {
+        let minute = atj2157_hal::rtc_clock::now().minute;
+        if !core::mem::take(&mut self.alarms_changed) && self.last_alarm_minute == minute {
+            return;
+        }
+        self.last_alarm_minute = minute;
+        let next = if self.clock_valid() {
+            orpheus_apps::tools::next_alarm(&orpheus_apps::tools::alarms(self), &self.now())
+        } else {
+            None
+        };
+        let want = next.map(|(_, h, m)| (h, m));
+        if want != self.rtc_alarm {
+            match want {
+                Some((h, m)) => atj2157_hal::rtc_clock::set_alarm(h, m, 0),
+                None => atj2157_hal::rtc_clock::clear_alarm(),
+            }
+            self.rtc_alarm = want;
+        }
+    }
+}
+
+/// `alarm status` (UI-5d, RTC-1's alarm): the RTC alarm registers and the
+/// alarm the UI armed.
+pub fn alarm_status() {
+    let (enabled, pending, h, m, s) = atj2157_hal::rtc_clock::alarm_state();
+    let t = atj2157_hal::rtc_clock::now();
+    crate::audio::reply(|w| {
+        w.s(b"alarm rtc=").u(u64::from(h)).s(b":").u(u64::from(m)).s(b":").u(u64::from(s));
+        w.s(b" enabled=").u(u64::from(enabled)).s(b" pending=").u(u64::from(pending));
+        w.s(b" now=").u(u64::from(t.hour)).s(b":").u(u64::from(t.minute)).s(b":").u(u64::from(t.second));
+        w.s(b" wake_from_off=").u(u64::from(ALARM_WAKE_FROM_OFF));
+    });
+}
+
 impl SystemService for Fw {
     fn lang(&self) -> Lang {
         Lang::ENGLISH
@@ -1023,7 +1155,18 @@ impl SystemService for Fw {
     fn app_available(&self, app: App) -> bool {
         // The transmitter module is fitted on every YM03 (06 §4.1); a
         // module that does not answer shows "Not responding" in the app.
-        matches!(app, App::Settings | App::Files | App::Music | App::Pictures | App::Bluetooth)
+        // Steps and Stopwatch: SENS-1, UI-5c, UI-5d (Steps says so when the
+        // sensor does not answer).
+        matches!(
+            app,
+            App::Settings
+                | App::Files
+                | App::Music
+                | App::Pictures
+                | App::Bluetooth
+                | App::Steps
+                | App::Stopwatch
+        )
     }
     fn dual_boot(&self) -> bool {
         true

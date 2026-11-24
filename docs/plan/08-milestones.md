@@ -150,9 +150,9 @@ per codec: one listening pass with real files of that format.
 | UI-5a | Radio app, presets, auto-scan, regions | 05 §7.3 | H+D | M | |
 | AU-13 | ADC driver, capture path, WAV/ADPCM/FLAC/voice encoders, AGC, VOX, write-behind; U-AUD-4/6 | 03 §13, 04 §5.2 | H+D | L | Listen to recordings from each source |
 | UI-5b | Recorder app | 05 §7.5 | H+D | M | |
-| SENS-1 | Accelerometer driver, step detector, background counting; trace capture tool | 03 §15, 05 §7.7 | H+D | M | Walk 200 counted steps twice; table-rest test |
-| UI-5c | Steps app, history | 05 §7.7 | H | S | |
-| UI-5d | Stopwatch, Timer, Alarm (with RTC alarms and the standby decision) | 05 §7.8 | H+D | M | Alarm wakes the player |
+| SENS-1 | Accelerometer driver, step detector, background counting; trace capture tool. **Built 2026-11-24, not yet run on the player** (`orpheus-steps`, `yoton_bsp::accel`, `firmware::sensor`) | 03 §15, 05 §7.7 | H+D | M | Walk 200 counted steps twice; table-rest test (user check 20) |
+| UI-5c | Steps app, history. **Built 2026-11-24** | 05 §7.7 | H | S | |
+| UI-5d | Stopwatch, Timer, Alarm (with RTC alarms and the standby decision). **Built 2026-11-24; alarms ring while on, the wake from off waits for PWR-3c** | 05 §7.8 | H+D | M | Alarm wakes the player (PWR-3c); stopwatch and alarm while on (user check 21) |
 | PWR-3c | S3 standby investigation and integration (U-PMU-2); else deep-idle fallback for alarms and step counting | 03 §10 | D | M | |
 | AU-14 | Picture decoders, scaler, thumbnails; Pictures app; wallpaper | 04 §7, 05 §7.6 | H+D | L | Look at a set of photos |
 

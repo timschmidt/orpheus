@@ -1,0 +1,13 @@
+[package]
+name = "orpheus-steps"
+description = "Step detector, daily step history and accelerometer trace format for the YM03 pedometer (host-testable)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+orpheus-proto.workspace = true
+
+[lints]
+workspace = true

@@ -2,6 +2,7 @@
 //! screen holds state; covered screens are rebuilt from resume records).
 
 mod bluetooth;
+mod clocks;
 mod edit;
 mod files;
 mod home;
@@ -10,10 +11,15 @@ mod lists;
 mod pictures;
 mod player;
 mod rows;
+mod steps;
 mod system;
 mod text;
 
 pub use bluetooth::{BluetoothScreen, BtConnectScreen, BtView, bt_kind_icon, connect_arg, phase_label};
+pub use clocks::{
+    AlarmDaysScreen, AlertScreen, PICK_ALARM, PICK_TIMER, ToolsScreen, push_days, push_hm, push_hms,
+    push_lap, push_stopwatch,
+};
 pub use edit::{PickerScreen, SliderScreen};
 pub use files::{BrowseMode, FilesScreen, kind_icon, kind_label, push_size};
 pub use home::HomeScreen;
@@ -22,6 +28,7 @@ pub use lists::{ListKind, ListScreen};
 pub use pictures::PictureScreen;
 pub use player::{EqualiserScreen, NowPlayingScreen};
 pub use rows::{MAX_ROWS, RowData, Rows};
+pub use steps::{DAY_SHORT, StepsScreen, push_distance, push_energy, push_grouped, steps_hint};
 pub use system::{BootScreen, ChargingScreen, GoodbyeScreen, LockScreen, Notice, NoticeScreen};
 pub use text::TextScreen;
 
@@ -30,7 +37,7 @@ use orpheus_ui::gfx::Gfx;
 use orpheus_ui::menu::MenuBuilder;
 use orpheus_ui::nav::{Arg, Cx, Dirty, Nav, Resume, Screen, ScreenId, ScreenSet, Wants};
 
-use crate::services::{Services, UsbMode, bt_event, other};
+use crate::services::{Services, UsbMode, bt_event, other, tools_event};
 use crate::settings::id;
 use crate::strings::Str;
 
@@ -84,6 +91,14 @@ pub const BT_PAIRED: ScreenId = ScreenId(29);
 pub const BT_CONNECT: ScreenId = ScreenId(30);
 /// Settings › System › Developer (hidden until unlocked in About; PWR-5).
 pub const DEVELOPER: ScreenId = ScreenId(31);
+/// Steps (05 §7.7). Arg: 0 Today, 1 Week.
+pub const STEPS: ScreenId = ScreenId(32);
+/// Stopwatch · Timer · Alarm (05 §7.8). Arg: the tab (0, 1, 2).
+pub const STOPWATCH: ScreenId = ScreenId(33);
+/// An alarm's repeat days. Arg: the alarm.
+pub const ALARM_DAYS: ScreenId = ScreenId(34);
+/// The timer or an alarm ringing (pushed over any screen).
+pub const ALERT: ScreenId = ScreenId(35);
 
 /// One variant per screen. Only the top screen exists, so the enum's size
 /// (its largest variant, the list screen) is the UI's screen RAM.
@@ -106,6 +121,10 @@ pub enum AppScreen {
     Library(LibraryScreen),
     Bluetooth(BluetoothScreen),
     BtConnect(BtConnectScreen),
+    Steps(StepsScreen),
+    Tools(ToolsScreen),
+    AlarmDays(AlarmDaysScreen),
+    Alert(AlertScreen),
 }
 
 macro_rules! each {
@@ -128,6 +147,10 @@ macro_rules! each {
             AppScreen::Library($s) => $e,
             AppScreen::Bluetooth($s) => $e,
             AppScreen::BtConnect($s) => $e,
+            AppScreen::Steps($s) => $e,
+            AppScreen::Tools($s) => $e,
+            AppScreen::AlarmDays($s) => $e,
+            AppScreen::Alert($s) => $e,
         }
     };
 }
@@ -195,6 +218,10 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             BT_SCAN => AppScreen::Bluetooth(BluetoothScreen::new(BtView::Scan)),
             BT_PAIRED => AppScreen::Bluetooth(BluetoothScreen::new(BtView::Paired)),
             BT_CONNECT => AppScreen::BtConnect(BtConnectScreen::default()),
+            STEPS => AppScreen::Steps(StepsScreen::default()),
+            STOPWATCH => AppScreen::Tools(ToolsScreen::default()),
+            ALARM_DAYS => AppScreen::AlarmDays(AlarmDaysScreen::default()),
+            ALERT => AppScreen::Alert(AlertScreen::default()),
             _ => AppScreen::Home(HomeScreen::default()),
         }
     }
@@ -222,6 +249,10 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             AppScreen::Library(_) => LIBRARY,
             AppScreen::Bluetooth(b) => b.screen_id(),
             AppScreen::BtConnect(_) => BT_CONNECT,
+            AppScreen::Steps(_) => STEPS,
+            AppScreen::Tools(_) => STOPWATCH,
+            AppScreen::AlarmDays(_) => ALARM_DAYS,
+            AppScreen::Alert(_) => ALERT,
         }
     }
 
@@ -248,6 +279,10 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             AppScreen::Library(_) => "MusicLibrary",
             AppScreen::Bluetooth(b) => b.name(),
             AppScreen::BtConnect(_) => "BtConnect",
+            AppScreen::Steps(_) => "Steps",
+            AppScreen::Tools(_) => "Stopwatch",
+            AppScreen::AlarmDays(_) => "AlarmDays",
+            AppScreen::Alert(_) => "Alert",
         }
     }
 
@@ -302,6 +337,9 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
                 }
                 Nav::Stay
             }
+            // The timer or an alarm rings: the alert goes over whatever
+            // is shown (an older alert under it closes itself).
+            ServiceEvent::Other { kind: other::TOOLS, value: tools_event::ALERT } => Nav::Push(ALERT, Arg(0)),
             ServiceEvent::CardRemoved => {
                 cx.ui.toast(lang.get(Str::CardRemoved));
                 Nav::Stay

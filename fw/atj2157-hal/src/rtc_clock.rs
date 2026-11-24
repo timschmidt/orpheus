@@ -98,6 +98,22 @@ pub fn set_alarm(hour: u8, minute: u8, second: u8) {
     rtc_update_handshake();
 }
 
+/// The alarm as the RTC holds it: (interrupt enabled, pending, hour,
+/// minute, second). Pending is set when the time matched (read-only here;
+/// [`clear_alarm`] or [`set_alarm`] clear it).
+#[must_use]
+pub fn alarm_state() -> (bool, bool, u8, u8, u8) {
+    let c = rtc::CTL.read();
+    let a = rtc::DHMSALM.read();
+    (
+        c & rtc::ctl::ALIE != 0,
+        c & rtc::ctl::ALIP != 0,
+        rtc::time::HOUR.get(a) as u8,
+        rtc::time::MIN.get(a) as u8,
+        rtc::time::SEC.get(a) as u8,
+    )
+}
+
 pub fn clear_alarm() {
     rtc::CTL.modify(|v| (v & !rtc::ctl::ALIE) | rtc::ctl::ALIP);
     rtc_update_handshake();

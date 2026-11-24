@@ -563,6 +563,7 @@ dependencies = [
  "orpheus-power",
  "orpheus-proto",
  "orpheus-settings",
+ "orpheus-steps",
  "orpheus-ui",
  "orpheus-usb",
  "static_cell",
@@ -713,6 +714,7 @@ name = "orpheus-apps"
 version = "0.1.0"
 dependencies = [
  "orpheus-power",
+ "orpheus-steps",
  "orpheus-ui",
 ]
 
@@ -873,6 +875,13 @@ version = "0.1.0"
 [[package]]
 name = "orpheus-settings"
 version = "0.1.0"
+
+[[package]]
+name = "orpheus-steps"
+version = "0.1.0"
+dependencies = [
+ "orpheus-proto",
+]
 
 [[package]]
 name = "orpheus-ui"

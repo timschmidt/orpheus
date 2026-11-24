@@ -526,6 +526,20 @@ a panic (fuzzed on host).
 device on a table) replayed in host tests give step counts within ± 5 % of the
 labelled truth and zero steps at rest; day rollover; history persistence.
 
+**As built (UI-5c, 2026-11-24)**: tabs Today · Week (Prev/Next). Today:
+the count in large numerals, "Goal 10 000" (or "Goal reached"), the goal
+bar, distance and kcal. Week: seven bars (oldest left) with a dotted goal
+line and weekday names; Up/Down choose a day, its count and distance show
+below. Menu: Daily goal (1,000–30,000 by 500), Stride length (30–150 cm),
+Weight (30–200 kg), Units (km/mi), Count in background (Off / While on;
+Off counts only while the app is open), Sensitivity, Reset today (asks).
+Settings keys `0x0D20–0x0D25`. History: today and six days in
+`/.orpheus/steps.bin` (versioned, CRC-checked), written 10 min after the
+first unsaved step, at a day change, at power-off and before a card
+hand-over; not kept while the clock is not valid (the strip says so).
+Not built: the Month tab (needs 30 days of history), "Always" (needs
+PWR-3c), the Details row with the coefficient, active minutes.
+
 ### 7.8 Stopwatch
 
 Tabs: **Stopwatch · Timer · Alarm**.
@@ -546,6 +560,28 @@ Tabs: **Stopwatch · Timer · Alarm**.
 
 **Acceptance**: timing accuracy against the host clock over 10 min within
 ± 0.05 % **[HIL]**; lap arithmetic; persistence across restart.
+
+**As built (UI-5d, 2026-11-24)**: one screen with tabs Stopwatch · Timer ·
+Alarm (only the active name when they do not fit). Prev: previous tab.
+Next: lap (running) / reset (stopped, confirmation if laps exist) / next
+tab (idle) on the Stopwatch; reset (started) / next tab on the Timer; next
+tab on Alarm. OK: start/stop, start/pause, alarm on/off. The stopwatch is
+timed from the key's down edge (the input task's 10 ms scan, the 1 MHz
+timer): `MM:SS.cc`, `H:MM:SS` from an hour; 20 laps kept (number, lap,
+split; Up/Down scroll). Timer: five presets as chips (the last five
+durations, settings `0x0D40–0x0D44`, newest first), Up/Down choose one,
+Menu › Set duration (h:m:s picker, up to 9 h). At zero: the alert screen
+over any screen, the screen lit, a 2 kHz beep pattern through the
+headphones (the music pauses and resumes after), the backlight flashing,
+for a minute or until OK. Alarm: four alarms (time, repeat days or once,
+on), Menu › Time… / Repeat…, settings `0x0D30–0x0D3B`; Next on the alert
+snoozes 9 min; a one-time alarm switches itself off. Status bar: bell
+while an alarm is on, a timer runs or an alarm is snoozed; dot while the
+stopwatch runs. Auto-off waits while the stopwatch or the timer runs.
+Not built: the alarm actions resume music / radio preset and the volume
+ramp (beep only), persistence of the stopwatch across a restart, the
+alarm wake from off (03 §11, PWR-3c: the Alarm tab says "Rings only while
+on").
 
 ### 7.9 Authenticator
 

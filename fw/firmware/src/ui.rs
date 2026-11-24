@@ -194,7 +194,9 @@ impl Ui {
         // Bluetooth module: shutdown command 0x24 when it is up, bounded
         // wait, enable line low (owner decision 2026-11-24, BT-2).
         crate::bt::shutdown_for_power_off().await;
-        atj2157_hal::pmu::power_off(false)
+        // An armed RTC alarm wakes the player only once PWR-3c has shown it
+        // works (`services::ALARM_WAKE_FROM_OFF`, off).
+        atj2157_hal::pmu::power_off(crate::services::ALARM_WAKE_FROM_OFF && self.fw.rtc_alarm.is_some())
     }
 
     async fn draw(&mut self, fb: &mut [u16]) {
@@ -342,6 +344,7 @@ pub async fn ui() {
     // Auto-off / low-battery timers (ms since boot).
     let mut last_key_ms = now().0;
     let mut low_since = 0u64;
+    let mut flashing = false;
     loop {
         let t = now();
         let mut deadline = t.0 + 1000;
@@ -350,6 +353,13 @@ pub async fn ui() {
         }
         if ui.shell.wants_ticks(&*ui.fw) {
             deadline = deadline.min(t.0 + u64::from(TICK_MS));
+        }
+        // UI-5d: the timer's end on time; the alert's backlight flashes.
+        if let Some(end) = ui.fw.tools.timer.ends_at() {
+            deadline = deadline.min(end.max(t.0 + 1));
+        }
+        if ui.fw.tools.ringing().is_some() {
+            deadline = deadline.min(t.0 + 250);
         }
         let wait = Duration::from_millis(deadline.saturating_sub(t.0).max(1));
         match select4(KEYS.receive(), BATTERY.receive(), Timer::after(wait), crate::media::READY.receive())
@@ -396,6 +406,14 @@ pub async fn ui() {
         atj2157_hal::wdt::beat(&atj2157_hal::wdt::UI_BEAT);
         ui.fw.sync_player();
         ui.fw.sync_bt();
+        // SENS-1 / UI-5c: the Steps app counts while it is open.
+        let steps_open = ui.shell.top_id() == screens::STEPS;
+        ui.fw.sync_steps(steps_open);
+        // UI-5d: an alert lights the screen (keys stay as they were).
+        if ui.fw.sync_tools(now().0) == Some(orpheus_apps::services::tools_event::ALERT) {
+            ui.shell.gate.screen_on = true;
+            ui.shell.invalidate();
+        }
         let t = now();
         ui.fw.poll_picture(t.0);
         while let Some((k, p)) = ui.mapper.poll(t) {
@@ -413,10 +431,15 @@ pub async fn ui() {
         {
             let t = now().0;
             let st = state::snapshot();
+            // A running stopwatch or timer keeps the player on (it would be
+            // lost); alarms do not (they ring only while it is on, and say
+            // so).
             let idle = matches!(
                 ui.fw.player.source,
                 orpheus_ui::event::Source::Idle | orpheus_ui::event::Source::Paused
-            );
+            ) && !ui.fw.tools.stopwatch.running()
+                && !ui.fw.tools.timer.running()
+                && ui.fw.tools.ringing().is_none();
             let mins = match ui.fw.settings.get(orpheus_apps::settings::SettingId(0x0403)) {
                 1 => 5,
                 2 => 10,
@@ -447,6 +470,19 @@ pub async fn ui() {
             } else {
                 low_since = 0;
             }
+        }
+        // The alert flashes the backlight (bright / dim every 500 ms).
+        let flash = ui.screen_on && ui.fw.tools.ringing().is_some();
+        if flash || flashing {
+            let level: u32 = match (flash, (now().0 / 500) % 2 == 0) {
+                (true, true) => 16,
+                (true, false) => 3,
+                // Over: the normal level, or dark if the screen went off.
+                (false, _) if ui.screen_on => 12,
+                (false, _) => 0,
+            };
+            ui.bl.set(level);
+            flashing = flash;
         }
         ui.draw(fb).await;
         BUSY_US.fetch_add((atj2157_hal::time::now_us() - w0) as u32, core::sync::atomic::Ordering::Relaxed);

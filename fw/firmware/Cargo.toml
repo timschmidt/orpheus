@@ -27,6 +27,7 @@ orpheus-library = { path = "../../crates/orpheus-library" }
 orpheus-bt = { path = "../../crates/orpheus-bt" }
 orpheus-img = { path = "../../crates/orpheus-img" }
 orpheus-meta = { path = "../../crates/orpheus-meta" }
+orpheus-steps = { path = "../../crates/orpheus-steps" }
 embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }
 embassy-time = "0.5"
 embassy-sync = "0.8"

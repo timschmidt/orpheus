@@ -159,6 +159,77 @@ fn media_cases(add: &mut dyn FnMut(String, String)) {
     pictures_cases(add);
     library_cases(add);
     bluetooth_cases(add);
+    steps_cases(add);
+    tools_cases(add);
+}
+
+/// UI-5c: Steps over the fake accelerometer (`sim/src/steps.rs`). Home
+/// grid: Steps is the seventh app (`next*6 ok`). The week: today (a
+/// Tuesday) first.
+fn steps_cases(add: &mut dyn FnMut(String, String)) {
+    let week = "set:week=6482/9120/3400/12010/7700/0/5230";
+    let app = "next*6 ok wait:100 expect-screen:Steps";
+    let journeys: &[(&str, String)] = &[
+        ("today", format!("{week} {app}")),
+        ("goal_reached", format!("set:steps=10420 {app}")),
+        ("week", format!("{week} {app} next")),
+        ("week_day", format!("{week} {app} next down*2")),
+        ("menu", format!("{week} {app} menu")),
+        ("goal", format!("{app} menu ok wait:100 expect-screen:Slider up*4")),
+        ("reset", format!("{week} {app} menu down*6 ok")),
+        ("walking", format!("set:walk=on {app} wait:20000")),
+        ("no_sensor", format!("set:sensor=off {app}")),
+        ("no_clock", format!("set:clockvalid=0 set:steps=120 {app}")),
+        ("background_off", format!("set:0x0d24=0 {week} {app}")),
+        ("miles", format!("set:0x0d23=1 {week} {app}")),
+    ];
+    for t in ["dark", "light"] {
+        for l in ["latin", "cyrillic", "cjk"] {
+            for (name, script) in journeys {
+                add(format!("steps_{name}_{t}_{l}"), format!("@apps theme:{t} lang:{l} {script}"));
+            }
+        }
+    }
+    add("steps_today_amber".into(), format!("@apps theme:amber {week} {app}"));
+}
+
+/// UI-5d: Stopwatch · Timer · Alarm, the alert and the status bar
+/// indicators. Home grid: Stopwatch is the eighth app (`next*7 ok`).
+/// Tabs: Prev goes back a tab (Stopwatch → Alarm → Timer); Next leaves an
+/// idle Stopwatch or Timer for the next tab.
+fn tools_cases(add: &mut dyn FnMut(String, String)) {
+    let app = "next*7 ok wait:100 expect-screen:Stopwatch";
+    let laps = format!("{app} ok wait:12340 next wait:7000 next wait:3210 next wait:1500");
+    let timer = format!("{app} next");
+    let alarm = format!("{app} prev");
+    let ring = "set:0x0d35=1 set:clock=07:29:58 set:clockrun=1 wait:3000 expect-screen:Alert";
+    let journeys: &[(&str, String)] = &[
+        ("sw_idle", app.into()),
+        ("sw_running", laps.clone()),
+        ("sw_stopped", format!("{laps} ok down")),
+        ("sw_reset", format!("{laps} ok next")),
+        ("timer", timer.clone()),
+        ("timer_preset", format!("{timer} down*3")),
+        ("timer_running", format!("{timer} ok wait:2500")),
+        ("timer_paused", format!("{timer} down ok wait:61500 ok")),
+        ("timer_picker", format!("{timer} menu ok wait:100 expect-screen:Picker next*2 up*5")),
+        ("timer_alert", format!("{timer} ok wait:60100 expect-screen:Alert")),
+        ("alarm", format!("set:0x0d35=1 {alarm}")),
+        ("alarm_menu", format!("{alarm} menu")),
+        ("alarm_picker", format!("{alarm} down menu ok wait:100 expect-screen:Picker up*2")),
+        ("alarm_days", format!("{alarm} down*2 menu down ok wait:100 expect-screen:AlarmDays down*5")),
+        ("alarm_alert", ring.into()),
+        ("indicators", format!("set:0x0d32=1 {app} ok back wait:100 expect-screen:Home")),
+    ];
+    for t in ["dark", "light"] {
+        for l in ["latin", "cyrillic", "cjk"] {
+            for (name, script) in journeys {
+                add(format!("tools_{name}_{t}_{l}"), format!("@apps theme:{t} lang:{l} {script}"));
+            }
+        }
+    }
+    add("tools_alarm_wake_dark_latin".into(), format!("@apps set:alarmwake=1 set:0x0d35=1 {alarm}"));
+    add("tools_sw_running_amber".into(), format!("@apps theme:amber {laps}"));
 }
 
 /// UI-6a: the Bluetooth app over the fake module (`sim/src/bt.rs`). Home
