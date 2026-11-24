@@ -122,6 +122,8 @@ impl Sim {
             }
             Action::CancelPrefetch => {
                 self.prefetched = None;
+                // As the firmware does: report the reader's end again.
+                self.reader_end_sent = false;
                 None
             }
             Action::Seek { frame } => {
@@ -420,4 +422,53 @@ fn shuffled_queue_from_an_item_plays_every_item_once() {
             assert_eq!(p.state(), State::Stopped);
         }
     }
+}
+
+#[test]
+fn requeue_keeps_playing_and_follows_the_new_order() {
+    let lens = [5000u64, 6000, 7000, 8000];
+    let (mut p, mut st, mut sim) = setup(&lens);
+    sim.run(&mut p, &mut st, cmd(Command::PlayQueue { id: 1, len: 4, start: 0 }));
+    sim.play(&mut p, &mut st, 4000);
+    assert_eq!(sim.prefetched, Some(1));
+    // Play next: a 999-frame track goes in after the current one.
+    sim.lens = std::vec![5000, 999, 6000, 7000, 8000];
+    sim.run(&mut p, &mut st, cmd(Command::Requeue { id: 2, len: 5, pos: 0 }));
+    assert_eq!(sim.prefetched, None);
+    assert_eq!((p.queue_id(), p.len(), p.current().unwrap().item), (2, 5, 0));
+    sim.play(&mut p, &mut st, 1_000_000);
+    let got: Vec<(u32, u64, u64)> = sim.played.clone();
+    let want: Vec<(u32, u64, u64)> =
+        std::vec![(0, 0, 5000), (1, 0, 999), (2, 0, 6000), (3, 0, 7000), (4, 0, 8000)];
+    assert_eq!(got, want);
+    // Every hand-over still gapless (the new next track was read ahead).
+    assert!(sim.opens[1..].iter().all(|&(_, g)| g), "{:?}", sim.opens);
+}
+
+#[test]
+fn requeue_of_a_shuffled_queue_keeps_the_order() {
+    let lens: Vec<u64> = (1..=6).map(|i| i * 1000).collect();
+    let (mut p, mut st, mut sim) = setup(&lens);
+    sim.run(&mut p, &mut st, cmd(Command::Shuffle(true)));
+    sim.run(&mut p, &mut st, cmd(Command::PlayQueue { id: 1, len: 6, start: 2 }));
+    sim.play(&mut p, &mut st, 3000 + 4000 + 100);
+    let order: Vec<u32> = (0..6).map(|pos| p.item_at(pos)).collect();
+    let c = p.current().unwrap();
+    // The firmware writes the play order into the queue.
+    sim.lens = order.iter().map(|&i| lens[i as usize]).collect();
+    let (item, dec, read) = sim.cur.unwrap();
+    assert_eq!(item, c.item);
+    sim.cur = Some((c.pos, dec, read));
+    sim.played.clear();
+    sim.run(&mut p, &mut st, cmd(Command::Requeue { id: 3, len: 6, pos: c.pos }));
+    assert!(!p.shuffled());
+    assert_eq!(p.current().unwrap().item, c.pos);
+    sim.play(&mut p, &mut st, 1_000_000);
+    let played: Vec<u64> = sim.played.iter().map(|r| sim.lens[r.0 as usize]).collect();
+    let want: Vec<u64> = order[c.pos as usize..].iter().map(|&i| lens[i as usize]).collect();
+    assert_eq!(played, want);
+    // The resume record follows: new identity, unshuffled.
+    p.handle(Event::Shutdown, &mut st, &mut Actions::default());
+    let r = Player::new(Config::default(), &mut st).saved().unwrap();
+    assert_eq!((r.queue_id, r.queue_len, r.shuffle), (3, 6, false));
 }

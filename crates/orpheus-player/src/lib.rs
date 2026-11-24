@@ -80,6 +80,17 @@ pub enum Command {
     SleepAfterMs(u32),
     /// Stop at the end of the current track.
     SleepAfterTrack,
+    /// The firmware edited the queue (Up next: remove, move; Play next, Add
+    /// to queue): it now has `len` items in play order (a shuffled order
+    /// was written into the queue first, so it plays unshuffled), identity
+    /// `id`, and the current track is item `pos`. Playback goes on
+    /// undisturbed; a read-ahead is cancelled (the next track may have
+    /// changed) and asked for again on the next `ReaderAtEnd`.
+    Requeue {
+        id: u32,
+        len: u32,
+        pos: u32,
+    },
 }
 
 /// What happened.
@@ -140,7 +151,9 @@ pub enum Action {
     Prefetch {
         item: u32,
     },
-    /// Forget the prefetched file (the next track changed).
+    /// Forget the prefetched file (the next track changed). If the reader
+    /// is (still) at the end of the current file, the firmware reports
+    /// `ReaderAtEnd` again so the new next track is read ahead.
     CancelPrefetch,
     Seek {
         frame: u64,
@@ -347,6 +360,12 @@ impl Player {
     #[must_use]
     pub fn saved(&self) -> Option<ResumeRecord> {
         self.loaded
+    }
+
+    /// The shuffled order, if the queue plays shuffled.
+    #[must_use]
+    pub fn order(&self) -> Option<Shuffle> {
+        self.shuffle
     }
 
     /// Queue item at play position `pos`.
@@ -781,6 +800,24 @@ impl Player {
             Command::SleepAfterTrack => {
                 self.sleep_after_track = true;
                 self.cancel_prefetch(out);
+            }
+            Command::Requeue { id, len, pos } => {
+                self.cancel_prefetch(out);
+                self.queue_id = id;
+                self.len = len;
+                self.shuffle = None;
+                if let Some(c) = &mut self.cur {
+                    c.pos = pos;
+                    // A track outside the queue (bookmark) stays outside.
+                    if c.item != u32::MAX {
+                        c.item = pos;
+                    }
+                }
+                // The record follows the new queue (a stopped player keeps
+                // none: Stop forgot it).
+                if self.cur.is_some() && self.state != State::Stopped {
+                    self.save(store);
+                }
             }
         }
     }

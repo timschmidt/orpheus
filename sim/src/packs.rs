@@ -370,6 +370,7 @@ pub const RU: &[(Str, &str)] = &[
     (PlayItem, "Играть"),
     (PlayAll, "Играть всё"),
     (NoMusic, "Музыка не найдена"),
+    (QueueFull, "Очередь заполнена"),
 ];
 
 pub const JA: &[(Str, &str)] = &[
@@ -690,4 +691,5 @@ pub const JA: &[(Str, &str)] = &[
     (PlayItem, "再生"),
     (PlayAll, "すべて再生"),
     (NoMusic, "音楽がありません"),
+    (QueueFull, "キューに追加できません"),
 ];

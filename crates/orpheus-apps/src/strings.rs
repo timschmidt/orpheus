@@ -468,6 +468,8 @@ strings! {
     PlayItem = "Play",
     PlayAll = "Play all",
     NoMusic = "No music found",
+    // Queue edits (AU-5).
+    QueueFull = "The queue is full",
 }
 
 /// Number of strings.

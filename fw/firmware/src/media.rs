@@ -20,7 +20,10 @@
 //! the arena); the sorted listing follows as another `Data(BROWSE)`.
 //!
 //! The queue is the audio files of one folder (in the listing's order when
-//! the folder's index is current), kept in RAM and in `/.orpheus/queue.bin`;
+//! the folder's index is current), a library list or a Shuffle-all sample,
+//! kept in RAM and in `/.orpheus/queue.bin`; Up next edits it (remove,
+//! move) and so do Play next / Add to queue (`Server::edit`; written to the
+//! card with the player state);
 //! the player's resume record and bookmarks are a RAM image
 //! ([`StoreImage`]) written to `/.orpheus/player.bin` at safe moments (pause,
 //! stop, track change, card hand-over, power-off). Formats:
@@ -31,8 +34,7 @@
 //! moves its window; their queues (`PlayReq::PlayLib`) and Shuffle all come
 //! from the library too.
 //!
-//! Not yet: tags in the track info, queue edits (remove, move, play next,
-//! add), persistence of text positions.
+//! Not yet: tags in the track info, persistence of text positions.
 
 use core::cell::RefCell;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -58,8 +60,10 @@ pub const TEXT_WIN: usize = 1536;
 /// Listing checkpoints (one per `WINDOW` rows): folders up to 2048 rows
 /// seek directly, larger ones scan from the last checkpoint.
 pub const CHECKPOINTS: usize = 64;
-/// Play-queue length (one folder).
+/// Play-queue length (one folder; Play next / Add to queue stop there).
 pub const QUEUE: usize = 256;
+const _: () =
+    assert!(QUEUE == orpheus_player::queue::EDIT_MAX && QUEUE as u32 == orpheus_apps::services::QUEUE_MAX);
 /// Rows of the Up-next window.
 pub const QWIN: usize = 8;
 /// Bytes kept of a title in the Up-next and bookmark windows.
@@ -183,7 +187,12 @@ pub enum PlayReq {
     /// Power-off: stop playback, save the player state, flush the volume,
     /// then set `SHUT_DOWN` (a player request: checked after every block).
     Shutdown,
+    /// Change the queue (Up next: remove, move; a file's menu: Play next,
+    /// Add to queue). Positions are play positions.
+    Edit(QueueEdit),
 }
+
+pub type QueueEdit = orpheus_player::queue::Edit<Locator>;
 
 /// Set by the card task once the volume is flushed for power-off.
 static WALK_STEPS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
@@ -671,6 +680,9 @@ pub struct Server {
     pub qlen: u32,
     /// Identity of the queue (`orpheus_player::image::queue_id`).
     pub queue_id: u32,
+    /// The queue was edited and `queue.bin` not yet rewritten (with the
+    /// player state, `audio::save_store`).
+    pub queue_dirty: bool,
     /// Changes with the queue or its order.
     qgen: u32,
     /// A request for the idle loop (card hand-over).
@@ -717,6 +729,7 @@ impl Server {
             queue: [Locator { dir: 0, index: 0 }; QUEUE],
             qlen: 0,
             queue_id: 0,
+            queue_dirty: false,
             qgen: 0,
             pending: None,
             pending_play: None,
@@ -1498,9 +1511,11 @@ impl Server {
         let Some(pl) = self.player.as_ref() else { return Flow::default() };
         let (state, cur, len, ab) = (pl.state(), pl.current(), pl.len(), pl.ab());
         match r {
-            PlayReq::PlayDir { .. } | PlayReq::PlayLib { .. } | PlayReq::ShuffleAll | PlayReq::Shutdown => {
-                Flow::default()
-            }
+            PlayReq::PlayDir { .. }
+            | PlayReq::PlayLib { .. }
+            | PlayReq::ShuffleAll
+            | PlayReq::Shutdown
+            | PlayReq::Edit(_) => Flow::default(),
             PlayReq::Cmd(c) => {
                 match c {
                     Command::Repeat(rp) => self.repeat = rp,
@@ -1540,6 +1555,36 @@ impl Server {
             PlayReq::SetB if ab.0.is_some() && ab.1.is_none() => self.feed(cmd(Command::AbPoint)),
             PlayReq::SetB => Flow::default(),
         }
+    }
+
+    /// Change the queue (`PlayReq::Edit`; `serial`: the card's). The queue
+    /// is rewritten in play order (a shuffled one plays on unshuffled in
+    /// the order it had), the player follows without interrupting the
+    /// track (`Command::Requeue`), Up next is asked for again and
+    /// `queue.bin` is rewritten at the next save. With nothing queued, Play
+    /// next and Add to queue start a queue of that one file. An edit that
+    /// does not apply (a full queue: the UI says so; a position that is
+    /// not after the current track) changes nothing.
+    #[inline(never)]
+    pub fn edit(&mut self, e: QueueEdit, serial: u32) -> Flow {
+        use orpheus_player::queue::{Edit, edit};
+        let Some(pl) = self.player.as_ref() else { return Flow::default() };
+        let len = pl.len().min(self.qlen);
+        let Some(cur) = pl.current().filter(|_| len > 0) else {
+            let (Edit::PlayNext(l) | Edit::Add(l)) = e else { return Flow::default() };
+            self.queue[0] = l;
+            self.set_queue_len(serial, 1);
+            self.queue_dirty = true;
+            return self.start_queue(Some(0), false, 0);
+        };
+        let order = pl.order();
+        let Some(n) = edit(&mut self.queue, len as usize, cur.pos, order.as_ref(), e) else {
+            return Flow::default();
+        };
+        self.set_queue_len(serial, n as u32);
+        self.queue_dirty = true;
+        let (id, len) = (self.queue_id, self.qlen);
+        self.feed(cmd(Command::Requeue { id, len, pos: cur.pos }))
     }
 
     /// Play the queue just built: from item `start`, else (shuffled) a

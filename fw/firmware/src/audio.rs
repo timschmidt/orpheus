@@ -803,6 +803,7 @@ async fn play_file(
             media::PLAY.try_receive().ok().map(Ok)
         };
         match got {
+            Some(Ok(PlayReq::Edit(e))) if driven => flow.merge(srv.edit(e, vol.serial())),
             Some(Ok(r))
                 if driven
                     && !matches!(
@@ -1297,6 +1298,10 @@ async fn create(vol: &mut Volume<'static, Card>, path: &str, mode: OpenMode) -> 
 /// stop, track change, before a card hand-over or power-off): a card write
 /// can take longer than the PCM ring holds.
 async fn save_store(vol: &mut Volume<'static, Card>, srv: &mut Server, scratch: &mut [u8]) {
+    // An edited queue first: the resume record names its identity.
+    if srv.queue_dirty && save_queue(vol, scratch, srv).await {
+        srv.queue_dirty = false;
+    }
     let Some(range) = srv.store.dirty_range() else { return };
     let Some(img) = scratch.first_chunk_mut::<IMAGE_LEN>() else { return };
     let Some(pl) = srv.player.as_ref() else { return };
@@ -1448,7 +1453,7 @@ async fn player_request(
         }
         PlayReq::PlayDir { entry, start, shuffle } => {
             let s = srv.build_queue(vol, entry, start).await;
-            save_queue(vol, arena, srv).await;
+            srv.queue_dirty = !save_queue(vol, arena, srv).await;
             srv.start_queue(s, shuffle, time::now_us() as u32)
         }
         PlayReq::ShuffleAll => {
@@ -1457,16 +1462,17 @@ async fn player_request(
             if !crate::library::sample(vol, srv, seed).await {
                 srv.build_all_queue(vol, seed).await;
             }
-            save_queue(vol, arena, srv).await;
+            srv.queue_dirty = !save_queue(vol, arena, srv).await;
             srv.start_queue(None, true, seed)
         }
         // Without a library (gone with the card) the old queue stays.
         PlayReq::PlayLib { .. } if srv.lib.lib.is_none() => Flow::default(),
         PlayReq::PlayLib { list, start, shuffle } => {
             let s = crate::library::queue(vol, srv, list, start).await;
-            save_queue(vol, arena, srv).await;
+            srv.queue_dirty = !save_queue(vol, arena, srv).await;
             srv.start_queue(s, shuffle, time::now_us() as u32)
         }
+        PlayReq::Edit(e) => srv.edit(e, vol.serial()),
         r => srv.play_req(r),
     };
     match fl.open {
