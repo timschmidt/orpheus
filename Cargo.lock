@@ -896,6 +896,7 @@ version = "0.1.0"
 dependencies = [
  "orpheus-fm",
  "orpheus-power",
+ "orpheus-rec",
  "orpheus-steps",
  "orpheus-ui",
 ]
@@ -1098,6 +1099,15 @@ name = "orpheus-proto"
 version = "0.1.0"
 
 [[package]]
+name = "orpheus-rec"
+version = "0.1.0"
+dependencies = [
+ "orpheus-audio",
+ "orpheus-codec-flac",
+ "orpheus-codec-wav",
+]
+
+[[package]]
 name = "orpheus-sdcard"
 version = "0.1.0"
 
@@ -1116,6 +1126,8 @@ dependencies = [
  "minifb",
  "orpheus-apps",
  "orpheus-audio",
+ "orpheus-codec-flac",
+ "orpheus-codec-wav",
  "orpheus-fm",
  "orpheus-fs",
  "orpheus-host",
@@ -1124,6 +1136,7 @@ dependencies = [
  "orpheus-library",
  "orpheus-meta",
  "orpheus-power",
+ "orpheus-rec",
  "orpheus-steps",
  "orpheus-ui",
 ]
