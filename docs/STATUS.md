@@ -42,6 +42,58 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-24 — AU-5 (gapless): join code clustered in `hot.toml`, per-codec open, read-ahead 256 KiB before the end (worker, no hardware)
+
+From the lead's runs of `d7a2cf4`: the preparation runs (15–16 ms, 53–58
+loads), but the joins did not get shorter. The MP3 open went from
+14 ms / 39 loads (`ec43e38`) to 34–42 ms / 118–135 loads; FLAC stayed at
+42–47 ms / 136 loads. The first FLAC join ran without preparation, with
+745 frames queued (`u=1`). The lead allowed `hot.toml` changes for this.
+
+* **`hot.toml` cluster `gapless-join`** (firmware only): the paged code of
+  the join window and of the preparation packed together from the start of
+  the code window, 38 sections, 12,302 B (13 lines). It holds:
+  * the hand-over (`Ring::hand_over`, `handed_over`);
+  * the preparation (`prepare`, `inspect_head`, `orpheus_audio::probe`,
+    `orpheus_codecs::inspect`, `WindowSource`);
+  * the decoder open (`orpheus_codecs::open` and its MP3/FLAC/WAV arms,
+    the decoders' `open`, the MP3 and FLAC head parsers, `Arena`);
+  * the DSP format check, the clock floor (`codec_name`, `sound_active`,
+    `dsp_clock_floor`, `clock::set_level`), `Player::gapless_next`, and
+    the `StreamRing` methods.
+
+  Before, these were scattered over many pages in link order. A join
+  touched lines on many pages and evicted the decoding hot set (the
+  32-line cache), and the preparation's probe/inspect lines evicted the
+  open's. Now the preparation warms the head-parsing lines the open uses
+  again, and a join touches few lines in two adjacent pages. Not included
+  because they are single large sections: `play_file` (10.6 KB, mostly
+  its playing loop, which is hot), the audio task's poll (28.8 KB,
+  `run_player`/`play_item` inlined), and `AnyDecoder::decode` (26 KB,
+  hot). `resident.toml` is not touched.
+* **The read-ahead for the first join.** `ReaderAtEnd` (`Prefetch`) now
+  comes when 256 KiB of the current file are left to read (≈ 2 s of FLAC,
+  11 s of 192k MP3), not 64 KiB. A queue's first track shorter than that
+  (the corpus parts) asks at its first block. Until the DAC starts, the
+  headroom gate counts as roomy, so the read-ahead open and the
+  preparation run before the DAC starts.
+* RAM/stack: no new statics or future state (a constant, the code order
+  and the open split; `__stack_bottom` 0x1322b8 in this build). Frames: audio task
+  4,992 B, `play_file` 2,260 B (unchanged); the new `open_*` frames are
+  under 1.4 KB (`open_vorbis` 1,348 B, not on a playing path). Resident
+  83,500 B (unchanged).
+* Not verified on the player (`loads` and `open_us` per join are the
+  measure). The lead's previous numbers, for comparison:
+  * `ec43e38`: MP3 14.1 ms / 39 loads; FLAC 48.7 ms / 145.
+  * `d7a2cf4`: FLAC 46.7 / 136 and 41.7 / 136; MP3 34.0 / 118 and
+    41.8 / 135.
+
+* **`orpheus_codecs::open` per codec.** It was one 6 KB function with every
+  codec's open inlined, so the cluster carried the Vorbis/Opus/Speex
+  set-up too. Each arm is now its own function (`open_mp3`, `open_flac`,
+  …, `#[inline(never)]`; no change in behaviour). The cluster takes the
+  MP3/FLAC/WAV arms only: 16 → 13 lines.
+
 ### 2026-11-24 — AU-5 (gapless): the preparation runs, from the file's head; join statistics per join (worker, no hardware)
 
 From the lead's runs of `ec43e38`: `underruns=0` through both joins of the

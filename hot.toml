@@ -14,6 +14,45 @@
 # name = "mp3-frame"
 # symbols = ["orpheus_codec_mp3::frame::*", "orpheus_codec_mp3::imdct::*"]
 
+# The gapless join (AU-5): the code that runs between a track's decoder
+# ending and the next one's first block (hand-over, decoder open with its
+# head parsing, the DSP format check, the clock floor), packed together
+# with the preparation that runs shortly before it (probe, tag skip,
+# inspect): the preparation warms the lines the open needs, and the join
+# touches few lines, so it evicts little of the decoding hot set. Measured
+# on the player as `join#N: loads=` (`status`).
+[[cluster]]
+name = "gapless-join"
+bins = ["firmware"]
+symbols = [
+    "firmware::audio::Ring>::hand_over",
+    "firmware::audio::handed_over",
+    "firmware::audio::prepare::*",
+    "firmware::audio::inspect_head",
+    "orpheus_codecs::inspect",
+    "*orpheus_audio::probe::*",
+    "orpheus_codec_mp3::parse_head",
+    "orpheus_codec_mp3::parse_vbr_tag",
+    "orpheus_codec_flac::parse_head",
+    "orpheus_codec_flac::FlacDecoder>::metadata",
+    "orpheus_audio::arena::Arena>::*",
+    "orpheus_codecs::open",
+    "orpheus_codecs::open_mp3",
+    "orpheus_codecs::open_flac",
+    "orpheus_codecs::open_wav",
+    "orpheus_codec_mp3::Mp3Decoder>::open",
+    "orpheus_codec_flac::FlacDecoder>::open",
+    "orpheus_codec_wav::WavDecoder>::open",
+    "orpheus_dsp::chain::Chain<*>::set_format",
+    "firmware::audio::codec_name",
+    "firmware::audio::sound_active",
+    "firmware::audio::dsp_clock_floor",
+    "atj2157_hal::clock::set_level",
+    "orpheus_player::Player>::gapless_next",
+    "orpheus_audio::ring::StreamRing>::*",
+    "orpheus_audio::source::WindowSource>::*",
+]
+
 # The paged toy: three functions spread over the generated code, packed
 # together (checked by `cargo xtask test pagelink`).
 [[cluster]]

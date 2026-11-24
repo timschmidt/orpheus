@@ -254,10 +254,12 @@ const CHORE_WAIT_US: u64 = 300_000;
 /// of it has played (its first seconds stay free of card work).
 const META_AFTER_MS: u64 = 2000;
 /// The player is asked for the next track (`ReaderAtEnd`) when this much of
-/// the current file is still to be read (≈ 0.5 s of FLAC, 2.7 s of MP3 at
-/// 192 kbit/s): its open and preparation then have time to find a moment
-/// the DAC has room. Its bytes still come after the current file's.
-const READ_AHEAD_LEAD: u64 = 64 * 1024;
+/// the current file is still to be read (≈ 2 s of FLAC, 11 s of MP3 at
+/// 192 kbit/s; a shorter file at once, which for a queue's first track is
+/// before the DAC starts): its open and preparation then have time to find
+/// moments the DAC has room, well before the join. Its bytes still come
+/// after the current file's.
+const READ_AHEAD_LEAD: u64 = 256 * 1024;
 
 /// Underruns of the current track by cause (`orpheus_audio::Ledger`,
 /// reset with [`UNDERRUNS`]): every operation that keeps the writer from

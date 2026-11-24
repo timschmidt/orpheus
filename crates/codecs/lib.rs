@@ -108,32 +108,65 @@ pub fn open<'a>(
     arena: &'a mut [u8],
     hint: &ContainerInfo,
 ) -> Result<(AnyDecoder<'a>, StreamInfo), OpenError> {
+    // One function per codec (not inlined here): the firmware packs the
+    // ones a gapless join opens (MP3, FLAC, WAV) together with the join's
+    // other code (`hot.toml`), without the Ogg codecs' set-up.
     match format {
         #[cfg(feature = "wav")]
-        Format::Wav | Format::Aiff | Format::Au => {
-            WavDecoder::open(src, arena, hint).map(|(d, i)| (AnyDecoder::Wav(d), i))
-        }
+        Format::Wav | Format::Aiff | Format::Au => open_wav(src, arena, hint),
         #[cfg(feature = "mp3")]
-        Format::Mpeg => Mp3Decoder::open(src, arena, hint).map(|(d, i)| (AnyDecoder::Mp3(d), i)),
+        Format::Mpeg => open_mp3(src, arena, hint),
         #[cfg(feature = "flac")]
-        Format::Flac => FlacDecoder::open(src, arena, hint).map(|(d, i)| (AnyDecoder::Flac(d), i)),
+        Format::Flac => open_flac(src, arena, hint),
         #[cfg(feature = "vorbis")]
-        Format::Ogg(OggCodec::Vorbis) => {
-            VorbisDecoder::open(src, arena, hint).map(|(d, i)| (AnyDecoder::Vorbis(d), i))
-        }
+        Format::Ogg(OggCodec::Vorbis) => open_vorbis(src, arena, hint),
         #[cfg(feature = "opus")]
-        Format::Ogg(OggCodec::Opus) => {
-            OpusDecoder::open(src, arena, hint).map(|(d, i)| (AnyDecoder::Opus(d), i))
-        }
+        Format::Ogg(OggCodec::Opus) => open_opus(src, arena, hint),
         #[cfg(feature = "speex")]
-        Format::Ogg(OggCodec::Speex) => {
-            SpeexDecoder::open(src, arena, hint).map(|(d, i)| (AnyDecoder::Speex(d), i))
-        }
+        Format::Ogg(OggCodec::Speex) => open_speex(src, arena, hint),
         _ => {
             let _ = (src, arena, hint);
             Err(unsupported())
         }
     }
+}
+
+type Opened<'a> = Result<(AnyDecoder<'a>, StreamInfo), OpenError>;
+
+#[cfg(feature = "wav")]
+#[inline(never)]
+fn open_wav<'a>(src: &mut dyn ByteSource, arena: &'a mut [u8], hint: &ContainerInfo) -> Opened<'a> {
+    WavDecoder::open(src, arena, hint).map(|(d, i)| (AnyDecoder::Wav(d), i))
+}
+
+#[cfg(feature = "mp3")]
+#[inline(never)]
+fn open_mp3<'a>(src: &mut dyn ByteSource, arena: &'a mut [u8], hint: &ContainerInfo) -> Opened<'a> {
+    Mp3Decoder::open(src, arena, hint).map(|(d, i)| (AnyDecoder::Mp3(d), i))
+}
+
+#[cfg(feature = "flac")]
+#[inline(never)]
+fn open_flac<'a>(src: &mut dyn ByteSource, arena: &'a mut [u8], hint: &ContainerInfo) -> Opened<'a> {
+    FlacDecoder::open(src, arena, hint).map(|(d, i)| (AnyDecoder::Flac(d), i))
+}
+
+#[cfg(feature = "vorbis")]
+#[inline(never)]
+fn open_vorbis<'a>(src: &mut dyn ByteSource, arena: &'a mut [u8], hint: &ContainerInfo) -> Opened<'a> {
+    VorbisDecoder::open(src, arena, hint).map(|(d, i)| (AnyDecoder::Vorbis(d), i))
+}
+
+#[cfg(feature = "opus")]
+#[inline(never)]
+fn open_opus<'a>(src: &mut dyn ByteSource, arena: &'a mut [u8], hint: &ContainerInfo) -> Opened<'a> {
+    OpusDecoder::open(src, arena, hint).map(|(d, i)| (AnyDecoder::Opus(d), i))
+}
+
+#[cfg(feature = "speex")]
+#[inline(never)]
+fn open_speex<'a>(src: &mut dyn ByteSource, arena: &'a mut [u8], hint: &ContainerInfo) -> Opened<'a> {
+    SpeexDecoder::open(src, arena, hint).map(|(d, i)| (AnyDecoder::Speex(d), i))
 }
 
 impl AnyDecoder<'_> {
