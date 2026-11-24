@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use yoton_sim::{Shot, Sim, png_bytes};
+use yoton_sim::{AppSim, DemoSim, Shot, png_bytes};
 
 const THEMES: [&str; 2] = ["dark", "light"];
 const LANGS: [&str; 3] = ["latin", "cyrillic", "cjk"];
@@ -66,6 +66,7 @@ fn cases() -> Vec<(String, String)> {
     add("amber_menu".into(), "theme:amber ok down menu".into());
     add("accent_green_light".into(), "theme:light accent:green down ok down".into());
     add("accent_pink_dark".into(), "accent:pink ok down menu down*5 ok".into());
+    app_cases(&mut add);
     v
 }
 
@@ -87,9 +88,61 @@ fn bless() -> bool {
     std::env::var("YOTON_BLESS").is_ok_and(|v| !v.is_empty() && v != "0")
 }
 
+/// Scripts starting with `@apps` run the `yoton-apps` screens; the others
+/// the UI-1 widget demo.
 fn run_case(script: &str) -> Vec<Shot> {
-    let mut sim = Sim::new();
-    sim.run_script(script).unwrap_or_else(|e| panic!("script `{script}`: {e:#}"))
+    let r = match script.strip_prefix("@apps ") {
+        Some(s) => AppSim::new().run_script(s),
+        None => DemoSim::new().run_script(script),
+    };
+    r.unwrap_or_else(|e| panic!("script `{script}`: {e:#}"))
+}
+
+/// UI-2: Home, Settings and the system screens, through the real apps.
+/// Settings is the last app on Home: `prev ok` opens it.
+fn app_cases(add: &mut dyn FnMut(String, String)) {
+    let journeys: &[(&str, &str)] = &[
+        ("home", "expect-screen:Home"),
+        ("home_playing", "set:playing=1 next wait:1100"),
+        ("settings", "prev ok expect-screen:Settings"),
+        ("sound", "prev ok ok expect-screen:SettingsGroup"),
+        ("display", "prev ok down*2 ok down*3"),
+        ("choice", "prev ok down*2 ok down*3 ok expect-screen:Choice"),
+        ("slider", "prev ok down*2 ok ok expect-screen:Slider up*3"),
+        ("time", "prev ok down*4 ok ok expect-screen:Picker next up"),
+        ("date", "prev ok down*4 ok down ok expect-screen:Picker"),
+        ("about", "prev ok down*11 ok ok expect-screen:Info"),
+        ("card_info", "prev ok down*10 ok ok expect-screen:Info"),
+        ("battery", "prev ok down*3 ok down*4 ok expect-screen:Info"),
+        ("reset_dialog", "prev ok down*11 ok down*4 ok"),
+        ("format_dialog", "prev ok down*10 ok down*4 ok"),
+        ("home_apps", "prev ok down*2 ok down*10 ok expect-screen:HomeApps down*2"),
+        ("power_menu", "hold:power expect-screen:PowerMenu"),
+        ("quick", "set:playing=1 set:bt=connected hold:menu expect-screen:QuickPanel down*3 next"),
+        ("lock", "set:playing=1 power down expect-screen:Lock"),
+        ("no_card", "set:card=absent ok expect-screen:Notice"),
+        ("not_yet", "next*2 ok expect-screen:Notice"),
+        ("battery_low", "set:battery=5 expect-screen:Notice"),
+        ("charging", "set:charge=charging set:battery=64 goto:Charging expect-screen:Charging"),
+        ("usb", "set:usb=host expect-screen:UsbConnect"),
+        ("boot", "goto:Boot expect-screen:Boot"),
+        ("goodbye", "hold:power ok expect-screen:Goodbye"),
+    ];
+    for t in ["dark", "light"] {
+        for l in ["latin", "cyrillic", "cjk"] {
+            for (name, script) in journeys {
+                add(format!("app_{name}_{t}_{l}"), format!("@apps theme:{t} lang:{l} {script}"));
+            }
+        }
+    }
+    // Every Settings group once (Dark, English) and in Light Japanese.
+    for g in 0..12 {
+        add(format!("app_group{g:02}_dark_latin"), format!("@apps prev ok down*{g} ok"));
+        add(format!("app_group{g:02}_light_cjk"), format!("@apps theme:light lang:cjk prev ok down*{g} ok"));
+    }
+    add("app_amber_home".into(), "@apps theme:amber".into());
+    add("app_amber_settings".into(), "@apps theme:amber prev ok".into());
+    add("app_accent_red_home".into(), "@apps accent:red".into());
 }
 
 /// Outcome of comparing one frame.

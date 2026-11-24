@@ -2,7 +2,7 @@
 //! (05 §3), navigation stack and resume records (05 §5.1), lock and wake,
 //! overlays, and dirty-rectangle economy.
 
-use yoton_sim::Sim;
+use yoton_sim::DemoSim as Sim;
 use yoton_ui::Key;
 use yoton_ui::gfx::{CONTENT, STATUS_BAR, STRIP};
 
@@ -106,13 +106,16 @@ fn volume_works_everywhere_and_overlay_expires() {
 }
 
 #[test]
-fn power_tap_locks_and_first_key_only_wakes() {
+fn power_tap_locks_and_locked_key_shows_notice() {
     let mut s = sim("power");
     assert!(s.requests.iter().any(|r| r.screen_off));
     assert!(!s.shell.gate.screen_on);
     s.run_script("down").unwrap();
-    assert!(s.requests.iter().any(|r| r.wake));
-    assert!(s.shell.gate.screen_on);
+    assert!(s.requests.iter().any(|r| r.lock_notice), "locked: the key shows the lock notice");
+    assert!(s.shell.gate.screen_on, "lit for the notice");
+    assert!(s.shell.gate.locked);
+    s.run_script("power").unwrap();
+    assert!(!s.shell.gate.locked, "Power unlocks");
     // Volume passes while locked and does not wake.
     let mut v = sim("power vol+");
     assert_eq!(v.sys.volume, 13);

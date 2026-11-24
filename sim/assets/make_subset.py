@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Extract the GNU Unifont glyphs the simulator's sample text needs.
 
-    python3 sim/assets/make_subset.py unifont-17.0.05.hex sim/src > sim/assets/unifont-subset.hex
+    python3 sim/assets/make_subset.py unifont-17.0.05.hex sim/src crates/yoton-apps/src > sim/assets/unifont-subset.hex
 
 Reads every `.rs` file under the given directories, collects the code points
 above U+00FF that occur in them, and prints those lines of the Unifont `.hex`
