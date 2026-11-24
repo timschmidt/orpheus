@@ -2117,6 +2117,7 @@ pub async fn audio() {
     // SAFETY: DMA channel 5 is the DAC's.
     unsafe { DmaCh::steal(DAC_CH) }.enable_irq_with(on_dac_dma, Level::Deadline);
     dac::power_up(44100, dac::VOL_0DB - 40);
+    atj2157_hal::log::line(b"audio: dac up");
     let card = match Card::open().await {
         Ok(c) => c,
         Err(_) => {
@@ -2126,6 +2127,7 @@ pub async fn audio() {
             return;
         }
     };
+    atj2157_hal::log::line(b"audio: card open");
     let mut vol = match mount(card).await {
         Some(v) => v,
         None => {
@@ -2154,7 +2156,9 @@ pub async fn audio() {
     let (arena, lib_state) = full.split_at_mut(ARENA - crate::library::STATE);
     crate::library::init(lib_state);
     let srv = SERVER.take();
+    atj2157_hal::log::line(b"audio: mounted, loading state");
     load_state(&mut vol, arena, srv).await;
+    atj2157_hal::log::line(b"audio: state loaded");
     loop {
         // A request left over from playback, else wait for one.
         let r = if let Some(p) = srv.pending_play.take() {

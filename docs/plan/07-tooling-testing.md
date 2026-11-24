@@ -590,6 +590,14 @@ player is unplugged) is reported as **not run**, never as passed.
 
 ## 7. Safety rules for anything that touches the player
 
+* **Analogue output measurements**: the headphone jack is direct drive (its
+  return is a virtual ground). Never connect it to an input that shares
+  ground with the USB host (a computer's line or microphone input): it
+  shorts the virtual-ground amplifier and makes the player misbehave
+  (observed 2026-11-24: card initialisation fails at every boot). Use an
+  audio isolation transformer, or measure through the Bluetooth A2DP
+  capture (07 §5.5, null-sink method in STATUS 2026-11-24).
+
 These are repeated in `CLAUDE.md`; they are here with their reasons.
 
 1. **NOR sector 0 and the vendor area are off limits.** Only `xtask dev

@@ -835,6 +835,25 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — headphone jack into the workstation mic input; gapless prep (lead)
+
+* The owner connected the player's headphone output to the workstation's
+  microphone input. The audio bring-up test then played its tones clearly
+  (amplifier fix confirmed on the jack; right-only phase correct, volume
+  steps ≈ 5 dB per step visible) but showed large transients, and the
+  **firmware failed at every boot**: log `fw: start (paged)`, `audio: dac
+  up`, then `Card::open` never completed and the watchdog rebooted to ADFU
+  (also with the previous build `ec43e38`). The SD and keys bring-up tests
+  passed with the cable; unplugged, the firmware booted at once. Cause
+  (inferred): direct-drive output, virtual-ground return shorted to the
+  USB host's ground. Safety rule added to 07 §7, fact to 01 §9. Start-up
+  log lines added in the audio task.
+* Gapless `d7a2cf4` on the player: preparation now runs (15–17 ms, 53–60
+  loads), joins 2–4 clean, but FLAC join 1 had 1 underrun (no preparation,
+  745 frames queued) and the MP3 open regressed to 34–42 ms / 118–135 loads
+  (was 14 ms / 39). Sent back with permission to cluster the join path in
+  `hot.toml`.
+
 ### 2026-11-24 — AU-5 gapless: MP3 and FLAC joins clean on the player (lead)
 
 * `ec43e38` (next stream prepared before the join, player told after the
