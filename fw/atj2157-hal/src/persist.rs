@@ -169,3 +169,9 @@ pub fn note_unhandled_irq(n: u32) {
     wr(b + fault::OFF_IPSR as u32, n + 16);
     wr(b + fault::OFF_MAGIC as u32, fault::MAGIC);
 }
+
+/// Pager state at a fatal fault: address being served and loads so far.
+pub fn note_pager(addr: u32, loads: u32) {
+    wr(fault::BASE + fault::OFF_PAGER as u32, addr);
+    wr(fault::BASE + fault::OFF_PAGER as u32 + 4, loads);
+}

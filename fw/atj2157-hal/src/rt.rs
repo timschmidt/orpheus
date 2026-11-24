@@ -140,6 +140,23 @@ core::arch::global_asm!(
     "    add r3, r3, #{emerg_size}",
     "    mov sp, r3",
     "    b {fault}",
+    "",
+    // MemManage: the pager. Same frame/EXC_RETURN/IPSR arguments; returns
+    // when the fault was served.
+    ".section .text.resident.memmanage, \"ax\"",
+    ".global yoton_memmanage",
+    ".type yoton_memmanage, %function",
+    ".thumb_func",
+    "yoton_memmanage:",
+    "    tst lr, #4",
+    "    ite eq",
+    "    mrseq r0, msp",
+    "    mrsne r0, psp",
+    "    mov r1, lr",
+    "    mrs r2, ipsr",
+    "    push {{r4, lr}}",
+    "    bl yoton_pager_fault",
+    "    pop {{r4, pc}}",
     fault = sym fault_entry,
     emerg = sym EMERGENCY_STACK,
     emerg_size = const EMERGENCY_STACK_BYTES,
@@ -184,6 +201,7 @@ pub fn stack_guard_range() -> (u32, u32) {
 unsafe extern "C" {
     fn _start();
     fn yoton_fault_shim();
+    fn yoton_memmanage();
     static __stack_top: u32;
     static __stack_bottom: u32;
 }
@@ -213,7 +231,7 @@ pub static __vectors: [Vector; 16 + N_IRQ] = {
     v[1] = Vector { handler: _start };
     v[2] = FAULT; // NMI
     v[3] = FAULT; // HardFault
-    v[4] = FAULT; // MemManage (the pager hooks in here later)
+    v[4] = Vector { handler: yoton_memmanage }; // MemManage: the pager
     v[5] = FAULT; // BusFault
     v[6] = FAULT; // UsageFault
     v[7] = RESERVED;

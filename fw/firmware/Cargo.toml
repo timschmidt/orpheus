@@ -7,7 +7,23 @@ license.workspace = true
 publish = false
 
 [dependencies]
+atj2157-hal = { path = "../atj2157-hal" }
+yoton-bsp = { path = "../yoton-bsp" }
 yoton-proto.workspace = true
+yoton-ui = { path = "../../crates/yoton-ui" }
+yoton-apps = { path = "../../crates/yoton-apps" }
+yoton-input = { path = "../../crates/yoton-input" }
+yoton-power = { path = "../../crates/yoton-power" }
+yoton-settings = { path = "../../crates/yoton-settings" }
+yoton-usb = { path = "../../crates/yoton-usb" }
+yoton-pager = { path = "../../crates/yoton-pager" }
+embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }
+embassy-time = "0.5"
+embassy-sync = "0.8"
+embassy-futures = "0.1"
+embassy-usb = { version = "0.6", default-features = false }
+static_cell = "2"
+critical-section = "1.2"
 
 [lints]
 workspace = true

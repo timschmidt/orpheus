@@ -39,6 +39,8 @@ cargo xtask dev <subcommand>
   usbtest [--cycles N]          USB-1 acceptance: enumerate, control sizes, re-enumeration
   stage IMAGE|NAME|FILE.yfw      write a YFW1 slot to slot A (0x762000)
   install-stage2                 replace stage 2 at 0x7DF400 (keeps the vendor record copy)
+  keys 'ok wait:300 hold:menu'  inject keys into running yotonrs
+  info                          developer-channel INFO of running yotonrs
   results                       read result block, fault record and log ring
   peek ADDR [N]                 read words
   poke ADDR VALUE               write one word (ADFU/ymon)
@@ -86,6 +88,21 @@ pub fn cmd(args: &mut Args) -> Result<String> {
             }
         }
         "usbtest" => usbtest::cmd(args),
+        "keys" => {
+            let script = args.positional("key script")?;
+            keys(&script)
+        }
+        "info" => {
+            let d = yoton_host::devchan::DevChannel::open(Duration::from_secs(3))?;
+            let i = d.info()?;
+            Ok(format!(
+                "uptime {} ms, battery {} mV, flags {:#x}, build {}",
+                i.uptime_ms,
+                i.battery_mv,
+                i.flags,
+                String::from_utf8_lossy(&i.build_id).trim_end_matches('\0')
+            ))
+        }
         "stage" => stage::cmd_stage(args),
         "install-stage2" => stage::cmd_install_stage2(args),
         "stage2-ramtest" => stage::cmd_stage2_ramtest(args),
@@ -125,6 +142,12 @@ pub fn cmd(args: &mut Args) -> Result<String> {
         }
         "shot" => {
             let out = PathBuf::from(args.positional("OUT.png")?);
+            if device::state() == device::State::Yotonrs {
+                let d = yoton_host::devchan::DevChannel::open(Duration::from_secs(3))?;
+                let fb = d.frame()?;
+                image::write_rgb565_png(&fb, FB_W, FB_H, &out)?;
+                return Ok(format!("-> {} (developer channel)", out.display()));
+            }
             let mut d = to_ymon()?;
             let fb = d.read(FB_BASE, FB_SIZE as usize)?;
             image::write_rgb565_png(&fb, FB_W, FB_H, &out)?;
@@ -264,4 +287,42 @@ pub fn read_persistent(
         fault::FaultRecord::from_bytes(&f),
         mailbox::Mailbox::from_bytes(&m).unwrap_or_default(),
     ))
+}
+
+/// Key names in scripts (yoton_input::Key order).
+const KEY_NAMES: [&str; 10] =
+    ["power", "back", "menu", "ok", "prev", "next", "up", "down", "volup", "voldown"];
+
+/// `ok`, `down*3`, `hold:menu` (800 ms), `long:power` (4.5 s), `wait:300`.
+fn keys(script: &str) -> Result<String> {
+    let d = yoton_host::devchan::DevChannel::open(Duration::from_secs(3))?;
+    let send = |k: u8, down: bool| d.control_out(yoton_proto::devchan::REQ_KEYS, 0, 0, &[k, u8::from(down)]);
+    let idx = |n: &str| KEY_NAMES.iter().position(|x| *x == n).map(|i| i as u8);
+    let mut n = 0;
+    for tok in script.split_whitespace() {
+        if let Some(ms) = tok.strip_prefix("wait:") {
+            std::thread::sleep(Duration::from_millis(num(ms)?.into()));
+            continue;
+        }
+        let (hold_ms, name) = if let Some(k) = tok.strip_prefix("hold:") {
+            (800, k)
+        } else if let Some(k) = tok.strip_prefix("long:") {
+            (4500, k)
+        } else {
+            (60, tok)
+        };
+        let (name, times) = match name.split_once('*') {
+            Some((k, t)) => (k, num(t)?),
+            None => (name, 1),
+        };
+        let k = idx(name).ok_or_else(|| anyhow::anyhow!("unknown key `{name}` (one of {KEY_NAMES:?})"))?;
+        for _ in 0..times {
+            send(k, true)?;
+            std::thread::sleep(Duration::from_millis(hold_ms));
+            send(k, false)?;
+            std::thread::sleep(Duration::from_millis(120));
+            n += 1;
+        }
+    }
+    Ok(format!("{n} key presses sent"))
 }

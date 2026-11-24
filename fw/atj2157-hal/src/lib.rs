@@ -21,6 +21,7 @@ pub mod interrupt;
 pub mod lcm;
 pub mod log;
 pub mod nor;
+pub mod pager;
 pub mod persist;
 pub mod pwm;
 pub mod rt;

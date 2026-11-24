@@ -24,6 +24,7 @@ dependencies = [
  "embassy-time-driver",
  "embassy-time-queue-utils",
  "embassy-usb-driver",
+ "yoton-pager",
  "yoton-proto",
  "yoton-sdcard",
 ]
@@ -31,6 +32,12 @@ dependencies = [
 [[package]]
 name = "atj2157-pac"
 version = "0.1.0"
+
+[[package]]
+name = "az"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b7e4c2464d97fe331d41de9d5db0def0a96f4d823b8b32a2efd503578988973"
 
 [[package]]
 name = "bare-metal"
@@ -438,6 +445,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "embedded-graphics-core"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95743bef3ff70fcba3930246c4e6872882bbea0dcc6da2ca860112e0cd4bd09f"
+dependencies = [
+ "az",
+ "byteorder",
+]
+
+[[package]]
 name = "embedded-hal"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -502,7 +519,23 @@ checksum = "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48"
 name = "firmware"
 version = "0.1.0"
 dependencies = [
+ "atj2157-hal",
+ "critical-section",
+ "embassy-executor",
+ "embassy-futures",
+ "embassy-sync",
+ "embassy-time",
+ "embassy-usb",
+ "static_cell",
+ "yoton-apps",
+ "yoton-bsp",
+ "yoton-input",
+ "yoton-pager",
+ "yoton-power",
  "yoton-proto",
+ "yoton-settings",
+ "yoton-ui",
+ "yoton-usb",
 ]
 
 [[package]]
@@ -962,6 +995,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "yoton-apps"
+version = "0.1.0"
+dependencies = [
+ "yoton-power",
+ "yoton-ui",
+]
+
+[[package]]
 name = "yoton-bsp"
 version = "0.1.0"
 dependencies = [
@@ -997,6 +1038,13 @@ version = "0.1.0"
 [[package]]
 name = "yoton-settings"
 version = "0.1.0"
+
+[[package]]
+name = "yoton-ui"
+version = "0.1.0"
+dependencies = [
+ "embedded-graphics-core",
+]
 
 [[package]]
 name = "yoton-usb"

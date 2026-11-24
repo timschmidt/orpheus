@@ -67,9 +67,13 @@ exclude = [
 symbols = []
 
 # Per-binary additions: [bin.NAME] with roots / resident / paged.
+[bin.firmware]
+# Everything `main` runs before the pager is up: the pager start-up (slot
+# header read, NOR driver, PagerCore init) and the early MPU deny.
+roots = ["firmware::start_pager", "atj2157_hal::pager::arm_deny", "atj2157_hal::log::init"]
+
 [bin.firmware.resident]
-# `_start` calls `main` before anything maps a page: until start-up brings
-# the pager up first (WP-PG-1), `main` must be resident.
+# `_start` calls `main` before anything maps a page.
 symbols = ["main", "firmware::main"]
 
 [bin.bringup-pagetoy]

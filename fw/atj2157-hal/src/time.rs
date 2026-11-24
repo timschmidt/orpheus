@@ -164,3 +164,11 @@ pub fn alarm_count() -> u32 {
 pub fn period_count() -> u32 {
     critical_section::with(|cs| DRIVER.periods.borrow(cs).get())
 }
+
+/// Low 32 bits of the µs counter without a critical section (for the
+/// pager, which runs above every masked level). Wraps every 71 minutes.
+#[inline(always)]
+#[must_use]
+pub fn now_us_raw() -> u32 {
+    u32::MAX - rtc::t_cnt(T_BASE).read()
+}
