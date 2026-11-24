@@ -26,6 +26,7 @@ orpheus-steps = { path = "../crates/orpheus-steps" }
 orpheus-otp = { path = "../crates/orpheus-otp" }
 orpheus-hid = { path = "../crates/orpheus-hid" }
 embassy-futures = "0.1"
+orpheus-rec = { path = "../crates/orpheus-rec" }
 anyhow = "1"
 minifb = { version = "0.29", optional = true, default-features = false, features = ["x11"] }
 
@@ -36,3 +37,7 @@ orpheus-host = { path = "../crates/orpheus-host" }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+orpheus-codec-flac = { path = "../crates/codecs/flac" }
+orpheus-codec-wav = { path = "../crates/codecs/wav" }

@@ -19,6 +19,7 @@ use orpheus_apps::services::{
 };
 use orpheus_apps::services::{BtDevice, BtList, BtPhase, BtRequest, StepsInfo, StepsService, ToolsService};
 use orpheus_apps::services::{PresetOp, Presets, RadioInfo, RadioRequest, RadioService, Region};
+use orpheus_apps::services::{RecInfo, RecRequest, RecorderService, rec_settings};
 use orpheus_apps::settings::{SettingId, SettingsCache, id, lang_code};
 use orpheus_apps::tools::{self, Tools};
 use orpheus_apps::{App, Lang};
@@ -36,6 +37,7 @@ use crate::auth::SimAuth;
 use crate::bt::FakeBt;
 use crate::media::Media;
 use crate::radio::SimRadio;
+use crate::recorder::SimRecorder;
 use crate::steps::FakeSteps;
 use crate::{Host, packs};
 
@@ -64,6 +66,9 @@ pub struct HostServices {
     /// The radio (UI-5a): the firmware's service over the fake tuner.
     pub radio: SimRadio,
     radio_on: bool,
+    /// The recorder (UI-5b): the firmware's session over a fake ADC,
+    /// writing to the simulated card.
+    pub rec: SimRecorder,
     pub langs: Vec<Lang>,
     pub lang: Lang,
     pub dual_boot: bool,
@@ -125,6 +130,7 @@ impl HostServices {
             bt_seen: BtState::Off,
             radio: SimRadio::default(),
             radio_on: false,
+            rec: SimRecorder::default(),
             langs: vec![Lang::ENGLISH, packs::russian(), packs::japanese()],
             lang: Lang::ENGLISH,
             dual_boot: true,
@@ -261,6 +267,15 @@ impl StorageService for HostServices {
 
 impl PlaybackService for HostServices {
     fn playing(&self) -> Option<Playing<'_>> {
+        // Recording: the status bar's red dot (no playback meanwhile).
+        if self.rec.phase.is_recording() {
+            return Some(Playing {
+                source: Source::Recording,
+                title: &self.rec.name,
+                artist: "",
+                progress: 0,
+            });
+        }
         // The radio plays only while the music is stopped (05 §7.3).
         if self.radio.info().phase.is_on() {
             return Some(Playing {
@@ -336,6 +351,65 @@ impl RadioService for HostServices {
         let ok = self.radio.preset_op(op);
         self.radio_events();
         ok
+    }
+}
+
+impl RecorderService for HostServices {
+    fn recorder(&self) -> RecInfo {
+        self.rec.info(&rec_settings(self))
+    }
+
+    fn rec_request(&mut self, r: RecRequest) {
+        let s = rec_settings(self);
+        match r {
+            RecRequest::Arm => self.rec.arm(s, &mut self.media),
+            RecRequest::Disarm => self.rec.disarm(),
+            RecRequest::Start => {
+                // No playback while recording (05 §7.5).
+                if self.media.state().source == Source::Playing {
+                    PlayerService::command(self, PlayerCmd::Stop);
+                }
+                let when = self.clock_valid.then_some(orpheus_rec::name::Stamp {
+                    year: self.clock.year,
+                    month: self.clock.month,
+                    day: self.clock.day,
+                    hour: self.clock.hour,
+                    minute: self.clock.minute,
+                    second: self.clock.second,
+                });
+                let info = self.radio.info();
+                let fm = (info.phase.is_on() && info.khz > 0).then_some(info.khz);
+                let fs_time = orpheus_fs::DateTime {
+                    year: self.clock.year,
+                    month: self.clock.month,
+                    day: self.clock.day,
+                    hour: self.clock.hour,
+                    minute: self.clock.minute,
+                    second: self.clock.second,
+                    centis: 0,
+                };
+                self.media.volume().set_time(fs_time);
+                self.rec.start(s, &mut self.media, when, fm);
+            }
+            RecRequest::Pause => self.rec.pause(true),
+            RecRequest::Resume => self.rec.pause(false),
+            RecRequest::Stop => self.rec.stop(orpheus_rec::session::StopReason::User, &mut self.media),
+            RecRequest::Mark => self.rec.mark(),
+            RecRequest::Gain(d) => self.rec.log.push(format!("gain {d:+}")),
+        }
+        self.rec_events();
+    }
+
+    fn rec_name(&self) -> &str {
+        &self.rec.name
+    }
+
+    fn rec_dir(&mut self) -> Option<DirId> {
+        SimRecorder::dir(&mut self.media)
+    }
+
+    fn rec_has_line_in(&self) -> bool {
+        self.rec.line_in
     }
 }
 
@@ -590,6 +664,20 @@ impl Host for HostServices {
                 }));
             }
             "tuner" => self.radio.chip.absent = v == "absent",
+            // Recorder (UI-5b): the fake input, a card stall (ms from
+            // now), a line input.
+            "recsignal" => {
+                self.rec.signal = match v {
+                    "tone" => orpheus_rec::fake::Signal::Tone { hz: 440, amp: 16_000 },
+                    "loud" => orpheus_rec::fake::Signal::Tone { hz: 440, amp: 32_767 },
+                    "noise" => orpheus_rec::fake::Signal::Noise(9_000),
+                    "silence" => orpheus_rec::fake::Signal::Silence,
+                    "quiet" => orpheus_rec::fake::Signal::Tone { hz: 300, amp: 600 },
+                    _ => orpheus_rec::fake::Signal::Bursts { hz: 220, amp: 14_000, on_ms: 700, off_ms: 500 },
+                };
+            }
+            "recstall" => self.rec.stall_until = self.now_ms + v.parse::<u64>()?,
+            "recline" => self.rec.line_in = on,
             // A slow hardware seek (status reads it takes), for shots of it.
             "seekreads" => self.radio.chip.seek_reads = v.parse()?,
             "drain" => self.set_drain_log(on, self.drain.stay),
@@ -719,6 +807,7 @@ impl Host for HostServices {
             "Radio" => screens::RADIO,
             "RadioPresets" => screens::RADIO_PRESETS,
             "Steps" => screens::STEPS,
+            "Recorder" => screens::RECORDER,
             "Stopwatch" => screens::STOPWATCH,
             "Authenticator" => screens::AUTHENTICATOR,
             _ => return None,
@@ -778,6 +867,16 @@ impl Host for HostServices {
         self.radio.advance(ms);
         self.radio_events();
         self.auth.advance(ms);
+        // Recording from the radio: the radio stopped, the recording ends
+        // (its file saved).
+        if self.rec.phase.is_recording()
+            && rec_settings(self).source == services::RecSource::Fm
+            && !self.radio.info().phase.is_on()
+        {
+            self.rec.stop(orpheus_rec::session::StopReason::User, &mut self.media);
+        }
+        self.rec.advance(ms, &mut self.media);
+        self.rec_events();
         self.now_ms += ms;
         if self.clock_run {
             self.tick_clock(ms);
@@ -972,6 +1071,13 @@ impl HostServices {
 
     /// The radio's events as service events, and the status bar's source
     /// when the radio started or stopped.
+    fn rec_events(&mut self) {
+        for v in std::mem::take(&mut self.rec.events) {
+            self.events
+                .push(Event::Service(ServiceEvent::Other { kind: services::other::RECORDER, value: v }));
+        }
+    }
+
     fn radio_events(&mut self) {
         for v in self.radio.take_events() {
             self.events.push(Event::Service(ServiceEvent::Other { kind: services::other::RADIO, value: v }));

@@ -241,6 +241,15 @@ impl Target for Fw {
             crate::sensor::steps_status();
             return true;
         }
+        // AU-13: the recorder (`start` goes to the card task, which must
+        // have the card).
+        if let Some(rest) = data.strip_prefix(b"rec ") {
+            if rest.starts_with(b"start") && CARD_WITH_USB.load(Ordering::Relaxed) {
+                crate::audio::busy_reply();
+                return true;
+            }
+            return crate::rec::test_command(rest);
+        }
         if data == b"alarm status" {
             crate::services::alarm_status();
             return true;

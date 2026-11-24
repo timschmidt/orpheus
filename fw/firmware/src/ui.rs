@@ -193,6 +193,8 @@ impl Ui {
             atj2157_hal::log::line(b"power-off in a test: rebooting instead");
             atj2157_hal::wdt::reboot(atj2157_hal::wdt::Target::Adfu);
         }
+        // A recording is stopped and saved first (AU-13).
+        crate::rec::stop_for_power_off().await;
         // The battery log's last row goes out with the card task's flush.
         crate::drain::power_off();
         crate::media::SHUT_DOWN.store(false, core::sync::atomic::Ordering::Release);
@@ -440,6 +442,7 @@ pub async fn ui() {
         ui.fw.sync_player();
         ui.fw.sync_bt();
         ui.fw.sync_radio(now().0);
+        ui.fw.sync_rec();
         // SENS-1 / UI-5c: the Steps app counts while it is open.
         let steps_open = ui.shell.top_id() == screens::STEPS;
         ui.fw.sync_steps(steps_open);
@@ -472,6 +475,7 @@ pub async fn ui() {
                 ui.fw.player.source,
                 orpheus_ui::event::Source::Idle | orpheus_ui::event::Source::Paused
             ) && !ui.fw.radio_on()
+                && !crate::rec::active()
                 && !ui.fw.tools.stopwatch.running()
                 && !ui.fw.tools.timer.running()
                 && ui.fw.tools.ringing().is_none();

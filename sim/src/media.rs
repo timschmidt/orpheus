@@ -260,7 +260,8 @@ impl Media {
         })
     }
 
-    /// The mounted volume (the browser build reads its size and free space).
+    /// The mounted volume (the browser build reads its size and free
+    /// space; the recorder writes its files through it).
     pub fn volume(&mut self) -> &mut Volume<'static, OverlayDisk<'static>> {
         self.vol.as_mut().expect("mounted")
     }
@@ -292,6 +293,12 @@ impl Media {
     pub fn set_resume_at(&mut self, path: &str, ms: u32) {
         self.set_resume(path);
         self.resume_at = Some(ms);
+    }
+
+    /// Forget the current listing (files were added): the next browse
+    /// reads the folder again.
+    pub fn refresh(&mut self) {
+        self.rows.clear();
     }
 
     pub fn take_events(&mut self) -> Vec<Event> {

@@ -51,6 +51,8 @@ of every session. Newest entries first in §3.
 | DOC-4 | done (host); workflows not run (no CI here) | CONTRIBUTING, CODE_OF_CONDUCT (Contributor Covenant 2.1), SECURITY, CHANGELOG, issue/PR templates, workflows `gate.yml`, `docs.yml`, `pages.yml` (actions pinned by SHA) |
 | WEB-2 | done (host); not yet on the live site (the lead pushes) | `cargo xtask wasm [--test] [--record] [--demo]` → `target/orpheus/site/try/pkg/`: `sim/web` (`orpheus-web`) = the `orpheus-apps` screens over the simulator's services, a FAT32 card built in the browser (synthesised demo set, the visitor's files, the saved library), the firmware's codecs + DSP chain into an AudioWorklet, key recorder/replayer in the `ui_keys` corpus format. Try-it page (`site/pages/try.md`, `site/try/`): SVG player with clickable keys, integer-scaled pixelated canvas, IndexedDB state and files, Factory reset, developer panel. Self-test `tests/web/try.mjs` passes in Chromium 155 and Firefox 157 (headless); in `pages.yml`. Safari not tested: user check 23 |
 | WEB-1 | done (host); not published | `cargo xtask site [--check]` → `target/orpheus/site/`; Home, Manual, Developers, Hardware, Changelog, FAQ, Try it and Install (placeholders for WEB-2/WEB-3). Deploy only with repository variable `PAGES_ENABLED=true`. User: review the site |
+| AU-13 | **built (host + firmware), not yet run on the player** | `orpheus-rec` (WAV PCM, IMA ADPCM, FLAC 0–2 encoders; low-cut, AGC, meter, voice activation; names; write-behind ring; the recording session), `atj2157_hal::adc` (vendor capture sequence VERBATIM, DMA ch 6), `firmware::rec` (recording mode of the card task, SRAM3 state after the radio's), developer `rec start/stop/status`. Not built: voice (Opus/Speex) encoders, mic monitoring, pre-record. User check 23 |
+| UI-5b | **built (host + firmware), not yet run on the player** | Recorder app (meters, timer, pause/mark/stop question, gain, menu with source/format/quality/AGC/VOX/split/monitor/low-cut), Recordings… (newest first, play, delete with question); simulator back end over the same session and a fake ADC; 122 goldens, 10 behaviour tests |
 
 ## 3. Session log
 
@@ -330,6 +332,103 @@ of every session. Newest entries first in §3.
      on the stack). Time an unlock (log ring timestamps or a stopwatch).
   7. End with `cargo xtask dev cmd "usb dev"` (developer personality) and a
      reboot (rule 4).
+### 2026-11-24 — AU-13 + UI-5b: ADC driver, recording, encoders, the Recorder app (worker, no hardware)
+
+* **`orpheus-rec`** (new host crate, `no_std`, no `unsafe`, no allocation;
+  27 unit + 7 round-trip tests):
+  * encoders behind one interface (`Encoder<B>` over a caller's block
+    buffer): WAV 16-bit PCM; IMA ADPCM in WAV (256/512-byte blocks per
+    channel, the decoder's own reconstruction so encoder and decoder agree
+    bit for bit; `fact` chunk); FLAC levels 0–2 (fixed 1152-frame blocks,
+    fixed predictors 0–4 chosen by residual sum in one pass without
+    buffers, Rice partitions up to order 3/4/6, L/R·L/S·S/R·M/S at levels 1–2,
+    CONSTANT/VERBATIM fallbacks, CRC-8/16, STREAMINFO rewritable, MD5 0);
+  * the chain: 100 Hz low-cut, AGC (attack to −12 dBFS, release 3 dB/s,
+    ≤ +24 dB, holds below −50 dBFS, gain ramp inside a block, limiter),
+    meter (bar falling 24 dB/s, 1.5 s hold, clip at −0.1 dBFS), voice
+    activation (−50/−40/−30 dBFS, 2 s hang, before the AGC);
+  * `ring::WriteBehind`: the file from its first byte (header included), so
+    ring position = file offset; whole-sector writes at sector-aligned
+    offsets, a chunk at a time, the piece before the wrap at once, the
+    oldest byte at most 1 s old, everything when closing; a write in flight
+    is never overwritten;
+  * `session::Session<B, S>`: header first, rewritten every 10 s with what
+    is on the card (a cut file plays), blocks that do not fit dropped whole
+    (newest), counted, a `dropout` cue point; marks as `mark` cue points;
+    `cue `/`LIST adtl` at close; pause; time limit; automatic split; card
+    full at 1 MiB (+64 KiB allowance); three failed writes stop it;
+  * names `/Recordings/REC-YYYYMMDD-HHMMSS.ext`, `FM-101.90-…`, `-2`… on a
+    clash, `REC-0001…` without a clock; a fake ADC (tones, noise, bursts).
+  * Verified against the project's decoders: PCM and FLAC bit-exact at
+    8/16/44.1/48 kHz, mono and stereo, tone/noise/bursts/silence, all
+    levels; ADPCM exactly the encoder's reconstruction; FLAC ≤ 70 % of PCM
+    on speech-like input; a file cut after a header rewrite plays; a 2-s
+    card stall drops whole blocks, one dropout, the file holds the rest.
+* **HAL** `atj2157_hal::adc`: microphone (left converter, differential as
+  the vendor's config), line-in (AUX0), FM (AUX1); the vendor's API 18
+  order VERBATIM (reset, clock, rate, bias, switches, channels with HPF and
+  FIFO slot, bias words, FIFO in 16-bit DMA mode, mic front end); gains
+  (vendor defaults ± an offset in dB, digital 0.526 dB steps); stop without
+  the vendor's `CLKEN1[0]` clear and `CMU+0x80 = 0` (puts the DAC power-up's
+  value back), rate function clears bit 4 too. `dma`: channel 6's
+  half/complete events counted in its own resident handler.
+* **Firmware** `rec.rs`: a mode of the card task (no playback meanwhile;
+  the radio keeps playing through its bypass). Arena: 16 KiB capture ring,
+  encoder block, one encoded block, the session (written in place), the
+  rest a write-behind ring. Capture and writer are two joined futures (the
+  capture goes on while the card is slow). State for the UI and `rec
+  status` in SRAM3 after the radio's (`rec::SHARED_ADDR`, 116 B, asserted
+  below the I/O counter). `/Recordings` is the write prefix only while
+  recording or deleting a recording. Auto-off waits while recording;
+  power-off stops and saves first. Developer: `rec start <mic|line|fm>
+  <wav|adpcm|flac> [secs] [sub-folder]` (44.1 kHz, files in
+  `/.orpheus/test/rec[/sub]`), `rec stop`, `rec status` (state, source,
+  format, rate, ms, level/peak per channel, clip, written, produced, drops,
+  dropped/lost frames, ring fill and peak, marks, file, ADC registers, DMA
+  events).
+* **UI-5b**: see the table; settings 0x0806–0x080A added (STORED 89 → 94),
+  Format lists only what is built.
+* **Tests**: `orpheus-rec` 34; `sim/tests/recorder.rs` 10 (arm/disarm,
+  record-pause-mark-stop with the file decoded, formats and qualities, FM
+  needs the radio and names the station, card stall, VOX, AGC, recordings
+  list play/delete, empty list and no card, card full); `sim/tests/apps.rs`
+  updated (the Recorder opens). Goldens: 122 new (20 journeys × 2 themes ×
+  3 scripts + 2 amber; looked at), 8 changed (`app_not_yet_*` now the
+  Authenticator; `app_group07_*`, the Recording group's new rows).
+* **RAM** (worktree build): `__stack_bottom` `0x1327C0` (`c91d659f`) →
+  `0x132DB0` (**+1,520 B**): resident 83,780 → 85,044 B (+1,264: the new UI
+  strings and panic-location paths in `.rodata.str1.1`, `dma`'s ring
+  handler), `.bss` +256 B (`rec::REQ` 144, `Fw` +88, `WRITER`, the event
+  counter). In the main checkout the eight new `crates/` panic paths are 42 B
+  shorter each (≈ −340 B). SRAM3: 116 B at `0x307F80`. The audio task's
+  future did not grow. Paged: 87 code pages (was 82), 18 rodata (16).
+* Gate: host fmt, clippy, `cargo test --workspace`, `xtask test golden`;
+  fw fmt, clippy; `xtask build`, `check-resident` pass. `size --check` not
+  run (worktree path length).
+* **Not run on the player.** Open: U-AUD-4, U-AUD-11 (`CMU+0x80` while
+  playing/FM), U-AUD-12 (which FIFO bits the 16-bit DMA takes), U-AUD-13
+  (mic mode and gain), U-AUD-6 (the datasheet's PA→ADC mix bits are a
+  candidate loop; not tried). `docs/hw/audio.md` (local, not in the
+  repository) is unchanged; its §3 facts are cited in `adc.rs`.
+* Lead's run (the reply buffer holds the last reply only, so read each
+  with `--wait` before the next command):
+  1. `cargo xtask dev cmd "rec status"` → `rec off …`.
+  2. `cargo xtask dev cmd "rec start mic wav 10" --wait 13` while speaking →
+     `rec saved /.orpheus/test/rec/REC-….wav bytes=≈882k frames=≈441000
+     drops=0 … why=time`.
+  3. `fm on`, `fm tune <local kHz>` (radio audible), then `cargo xtask dev
+     cmd "rec start fm flac 20 fm" --wait 5`, `cargo xtask dev cmd "rec
+     status"` twice during it (level moves, `ring` far below `ring_peak`'s
+     ceiling, `drops=0`, `lost_frames=0`), listen for clicks or a pitch
+     change in the radio (U-AUD-11), after 20 s the `rec saved …/fm/FM-…flac`
+     reply; `fm off`.
+  4. `rec start mic adpcm` (no limit), `rec stop` after ~15 s → `rec saved
+     … why=stop`.
+  5. End with `rec status` → `rec off`; pull `/.orpheus/test/rec/` with the
+     card reader; `ffprobe` each file (length = recorded time ± 0.1 %, FLAC
+     MD5 is 0 = "not computed"), listen. U-AUD-12/13 from the levels. Then
+     user check 23 (the app, `/Recordings`).
+
 
 ### 2026-11-24 — FM-1 fix after the first device run: radio RAM overlapped the step counter's, id read fallback, `fm on` stops music (worker, no hardware)
 

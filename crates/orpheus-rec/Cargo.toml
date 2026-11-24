@@ -1,0 +1,15 @@
+[package]
+name = "orpheus-rec"
+description = "Recording without hardware: WAV/IMA-ADPCM/FLAC encoders, low-cut, AGC, voice activation, meters, file names, the write-behind ring and the recorder session (04 §5.2, 05 §7.5)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+orpheus-audio = { path = "../orpheus-audio" }
+orpheus-codec-flac = { path = "../codecs/flac" }
+orpheus-codec-wav = { path = "../codecs/wav" }

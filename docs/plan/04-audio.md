@@ -304,6 +304,28 @@ ADC ─DMA─► capture ring ─► [low-cut, AGC, VOX] ─► encoder ─► w
 * Monitoring routes the input to the headphones (analogue bypass if the
   hardware has it, otherwise ADC→DAC through the PCM ring with ~20 ms latency).
 
+**As built (AU-13, 2026-11-24).** `orpheus-rec` (host-tested) holds the
+encoders (WAV PCM 16-bit; IMA ADPCM in WAV, 256/512-byte blocks per channel;
+FLAC levels 0–2 with a fixed 1152-frame block, fixed predictors 0–4, Rice
+partitions, verbatim fallback), the chain (first-order 100 Hz low-cut; AGC:
+attack straight to −12 dBFS, release 3 dB/s, +24 dB at most, holds below
+−50 dBFS; meter with 1.5 s hold and clip at −0.1 dBFS; voice activation at
+−50/−40/−30 dBFS with 2 s hang, listening before the AGC), file names, the
+write-behind ring and the recording session. Differences from the plan above:
+the arena is the decoder arena of the card task (64 KiB less the music
+library's state), cut into a 16 KiB capture ring (two halves, DMA channel 6 in
+reload mode), the encoder's block buffer, one encoded block and a
+write-behind ring of about 37 KiB (8 KiB writes, 1 s latency bound): about
+0.2 s of card stall at 48 kHz stereo WAV, 0.4 s mono, longer for ADPCM and
+FLAC. A block that does not fit is dropped **whole and newest first** (the
+oldest is the one the card is writing), counted and marked with a `dropout`
+cue point (WAV; FLAC frame numbers stay contiguous); audio the capture DMA
+overwrote is counted the same way. The header is rewritten every 10 s with
+the counts of what is on the card; recording stops with 1 MiB (+64 KiB
+allowance) left. Not built: Opus/Speex voice, MP3, pre-record, pre-allocation,
+monitoring the microphone in the headphones (the radio is heard through its
+bypass while recording it).
+
 ### 5.3 FM radio audio
 
 The tuner's audio path (analogue into the SoC mixer versus through the ADC)

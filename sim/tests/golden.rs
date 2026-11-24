@@ -160,6 +160,7 @@ fn media_cases(add: &mut dyn FnMut(String, String)) {
     library_cases(add);
     bluetooth_cases(add);
     radio_cases(add);
+    recorder_cases(add);
     steps_cases(add);
     tools_cases(add);
     auth_cases(add);
@@ -222,6 +223,56 @@ fn auth_cases(add: &mut dyn FnMut(String, String)) {
     add("auth_locked_amber".into(), format!("@apps theme:amber {locked}"));
     // Settings › USB with the keyboard rows (group 9).
     add("auth_usb_settings_dark_latin".into(), "@apps prev ok down*8 ok down*5".into());
+}
+
+/// UI-5b: the Recorder over the recording session and the fake ADC
+/// (`sim/src/recorder.rs`), writing to the simulated card. Home grid: the
+/// Recorder is the fifth app. Menu rows while ready: Source, Format,
+/// Quality, Automatic gain, Voice activation, Auto split, Monitor, Low-cut,
+/// Recordings…. The stop question focuses Stop.
+fn recorder_cases(add: &mut dyn FnMut(String, String)) {
+    let app = "next*4 ok wait:200 expect-screen:Recorder";
+    let two = format!(
+        "{app} ok wait:1500 hold:ok ok wait:200 set:clock=12:45:10 ok wait:2500 hold:ok ok wait:3500"
+    );
+    let list = format!("{two} menu down*8 ok wait:200 expect-screen:Recordings");
+    let journeys: &[(&str, String)] = &[
+        ("ready", format!("{app} wait:1500")),
+        ("recording", format!("set:recsignal=tone {app} ok wait:12340")),
+        ("paused", format!("{app} ok wait:5000 ok wait:600")),
+        ("waiting", format!("set:0x0806=3 set:recsignal=quiet {app} ok wait:1500")),
+        ("fm", format!("set:0x0801=1 set:0x0803=2 {app} wait:1500 ok wait:3200")),
+        ("clip", format!("set:0x0804=0 set:recsignal=loud {app} ok wait:1000")),
+        (
+            "dropped",
+            format!("set:0x0803=2 set:recsignal=noise {app} ok wait:500 set:recstall=3000 wait:3000"),
+        ),
+        ("menu", format!("{app} menu")),
+        ("menu_recording", format!("{app} ok wait:1000 menu")),
+        ("source", format!("{app} menu ok")),
+        ("format", format!("{app} menu down ok")),
+        ("quality", format!("{app} menu down*2 ok")),
+        ("vox", format!("{app} menu down*4 ok")),
+        ("stop_ask", format!("{app} ok wait:2000 back")),
+        ("saved", format!("{app} ok wait:2000 back ok wait:300")),
+        ("gain", format!("set:0x0804=0 {app} wait:500 up up up wait:100")),
+        ("list", list.clone()),
+        ("list_menu", format!("{list} menu")),
+        ("list_delete", format!("{list} menu down*2 ok")),
+        ("list_empty", format!("{app} menu down*8 ok wait:200")),
+    ];
+    for t in ["dark", "light"] {
+        for l in ["latin", "cyrillic", "cjk"] {
+            for (name, script) in journeys {
+                add(format!("recorder_{name}_{t}_{l}"), format!("@apps theme:{t} lang:{l} {script}"));
+            }
+        }
+    }
+    add(
+        "recorder_recording_amber".into(),
+        format!("@apps theme:amber set:recsignal=tone {app} ok wait:12340"),
+    );
+    add("recorder_list_amber".into(), format!("@apps theme:amber {list}"));
 }
 
 /// UI-5c: Steps over the fake accelerometer (`sim/src/steps.rs`). Home
@@ -454,7 +505,8 @@ fn app_cases(add: &mut dyn FnMut(String, String)) {
         ("quick", "set:playing=1 set:bt=connected hold:menu expect-screen:QuickPanel down*3 next"),
         ("lock", "set:playing=1 power down expect-screen:Lock"),
         ("no_card", "set:card=absent ok expect-screen:Notice"),
-        ("not_yet", "down ok expect-screen:Notice"),
+        // The Authenticator (the Recorder opens since UI-5b).
+        ("not_yet", "down*2 next ok expect-screen:Notice"),
         ("battery_low", "set:battery=5 expect-screen:Notice"),
         ("charging", "set:charge=charging set:battery=64 goto:Charging expect-screen:Charging"),
         ("usb", "set:usb=host expect-screen:UsbConnect"),

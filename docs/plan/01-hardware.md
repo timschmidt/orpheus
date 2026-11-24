@@ -335,7 +335,7 @@ that. Added:
 | U-AUD-1 | Digital volume scale (is `0xBF` 0 dB, 0.375 dB/step), ramp behaviour, PA gain steps | Digital loopback or ADC capture of a tone at several settings; else **user check** by ear with a reference table | AU-1 |
 | U-AUD-2 | IC-type gate for > 48 kHz and 24/32-bit FIFO format (audio.md §1.4) | Read the IC type; try 96 kHz and the wide format with cadence counters | AU-1 |
 | U-AUD-3 | Power-down anti-pop sequence | **User check** by ear | AU-1 |
-| U-AUD-4 | ADC path: input select, gains, microphone bias, capture DMA | Record silence, speech, FM; inspect files on the host | AU-13 |
+| U-AUD-4 | ADC path: input select, gains, microphone bias, capture DMA. **Built 2026-11-24 (`atj2157_hal::adc`, vendor sequences VERBATIM; DMA ch 6, reload over a two-half ring in the card task's arena), not yet run** | Record silence, speech, FM (`rec start …`, `rec status`); inspect files on the host | AU-13 |
 | U-AUD-5 | Earphone-sense window on this unit; behaviour with 4-pole headsets | Log LRADC1 with/without earphones (**user check** to plug) | INPUT-1 |
 | U-AUD-6 | Any analogue or digital loop from DAC to ADC for self-test | audio.md §4; try the routes | AU-13 |
 | U-DSP-1 | Does the accelerator at `0xC0200000` work; number formats, scaling, speed | Bring-up: FFT of known vectors, biquad impulse responses, compare with software | DSP-1 |
@@ -470,6 +470,9 @@ run on the player.
 | U-AUD-7 | `FIFOCTL.DMAWIDTH` with 16-bit DMA (vendor sets it, the port does not) | Toggle; compare level and channel order | AU-1 |
 | U-AUD-8 | Hardware mixing of DAC FIFO1 (key clicks) | Second DMA stream on FIFO1 during playback | AU-1 |
 | U-AUD-9 | `DAC_FIFO0_CNT` as a playback-position counter | Compare with DMA bytes played | AU-1 |
+| U-AUD-11 | Recording reprograms `CMU+0x80` (the ADC clock, whose `0x33000000` bits analogue output needs) while the FM bypass or the DAC runs: does the output stay clean, at 16 / 44.1 / 48 kHz? `atj2157_hal::adc` keeps those bits and puts the DAC power-up's value back at stop, instead of the vendor's `CMU+0x80 = 0` | `rec start fm wav 20` with the radio playing, at each quality; listen for clicks, pitch changes or silence | AU-13 |
+| U-AUD-12 | Which 16 of the FIFO's 24 bits the capture DMA takes with `FIFO_DMAWIDTH` = 16-bit and mode bit 20 (vendor setting): the top 16 (as playback's widening suggests) or the low ones | `rec start mic wav 10` while speaking: level in `rec status` in the −40…−6 dBFS range and clean speech mean the top 16 | AU-13 |
+| U-AUD-13 | The microphone's input mode (the vendor's `CONFIG.TXT` says differential, `MIC_MIX_CTL[4]` = 0) and its gain on this board (vendor 31 dB analogue + 21 dB digital) | Speak at 30 cm: peaks near −12 dBFS; if far lower or very noisy try single-ended | AU-13 |
 
 ### Answered on the player by bring-up images, 2026-11-23
 

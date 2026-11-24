@@ -12,6 +12,7 @@ mod lists;
 mod pictures;
 mod player;
 mod radio;
+mod recorder;
 mod rows;
 mod steps;
 mod system;
@@ -31,6 +32,7 @@ pub use lists::{ListKind, ListScreen};
 pub use pictures::PictureScreen;
 pub use player::{EqualiserScreen, NowPlayingScreen};
 pub use radio::{PresetsScreen, RadioScreen};
+pub use recorder::RecorderScreen;
 pub use rows::{MAX_ROWS, RowData, Rows};
 pub use steps::{DAY_SHORT, StepsScreen, push_distance, push_energy, push_grouped, steps_hint};
 pub use system::{BootScreen, ChargingScreen, GoodbyeScreen, LockScreen, Notice, NoticeScreen};
@@ -109,6 +111,10 @@ pub const ALARM_DAYS: ScreenId = ScreenId(36);
 pub const ALERT: ScreenId = ScreenId(37);
 /// The Authenticator (05 §7.9, OTP-2).
 pub const AUTHENTICATOR: ScreenId = ScreenId(38);
+/// The Recorder app (05 §7.5).
+pub const RECORDER: ScreenId = ScreenId(40);
+/// Recorder › Recordings…. Arg: the folder's `DirId`.
+pub const RECORDINGS: ScreenId = ScreenId(41);
 
 /// One variant per screen. Only the top screen exists, so the enum's size
 /// (its largest variant, the list screen) is the UI's screen RAM.
@@ -138,6 +144,7 @@ pub enum AppScreen {
     AlarmDays(AlarmDaysScreen),
     Alert(AlertScreen),
     Auth(AuthScreen),
+    Recorder(RecorderScreen),
 }
 
 macro_rules! each {
@@ -167,6 +174,7 @@ macro_rules! each {
             AppScreen::AlarmDays($s) => $e,
             AppScreen::Alert($s) => $e,
             AppScreen::Auth($s) => $e,
+            AppScreen::Recorder($s) => $e,
         }
     };
 }
@@ -241,6 +249,8 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             ALARM_DAYS => AppScreen::AlarmDays(AlarmDaysScreen::default()),
             ALERT => AppScreen::Alert(AlertScreen::default()),
             AUTHENTICATOR => AppScreen::Auth(AuthScreen::default()),
+            RECORDER => AppScreen::Recorder(RecorderScreen::default()),
+            RECORDINGS => AppScreen::Files(FilesScreen::new(BrowseMode::Recordings)),
             _ => AppScreen::Home(HomeScreen::default()),
         }
     }
@@ -260,6 +270,7 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
                 BrowseMode::Files => FILES,
                 BrowseMode::Music => MUSIC_FOLDERS,
                 BrowseMode::Pictures => PICTURES,
+                BrowseMode::Recordings => RECORDINGS,
             },
             AppScreen::Text(_) => TEXT_VIEW,
             AppScreen::NowPlaying(_) => NOW_PLAYING,
@@ -275,6 +286,7 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             AppScreen::AlarmDays(_) => ALARM_DAYS,
             AppScreen::Alert(_) => ALERT,
             AppScreen::Auth(_) => AUTHENTICATOR,
+            AppScreen::Recorder(_) => RECORDER,
         }
     }
 
@@ -293,6 +305,7 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
                 BrowseMode::Files => "Files",
                 BrowseMode::Music => "Folders",
                 BrowseMode::Pictures => "Pictures",
+                BrowseMode::Recordings => "Recordings",
             },
             AppScreen::Text(_) => "TextViewer",
             AppScreen::NowPlaying(_) => "NowPlaying",
@@ -308,6 +321,7 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             AppScreen::AlarmDays(_) => "AlarmDays",
             AppScreen::Alert(_) => "Alert",
             AppScreen::Auth(_) => "Authenticator",
+            AppScreen::Recorder(_) => "Recorder",
         }
     }
 

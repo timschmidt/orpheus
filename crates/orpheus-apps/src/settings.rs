@@ -233,6 +233,20 @@ pub mod id {
     pub const STEP_UNITS: SettingId = SettingId(0x0D23);
     pub const STEP_BACKGROUND: SettingId = SettingId(0x0D24);
     pub const STEP_SENSITIVITY: SettingId = SettingId(0x0D25);
+    /// Recorder (05 §7.5, UI-5b): source (Microphone, FM radio, Line-in),
+    /// format (WAV, WAV ADPCM, FLAC), quality (16 / 44.1 / 48 kHz), gain
+    /// mode (manual, automatic), manual input gain (dB from the source's
+    /// default), voice activation (off, −50, −40, −30 dBFS), auto split
+    /// (off, 15, 30, 60 min), monitor, low-cut.
+    pub const REC_SOURCE: SettingId = SettingId(0x0801);
+    pub const REC_FORMAT: SettingId = SettingId(0x0802);
+    pub const REC_QUALITY: SettingId = SettingId(0x0803);
+    pub const REC_GAIN_MODE: SettingId = SettingId(0x0804);
+    pub const REC_VOX: SettingId = SettingId(0x0806);
+    pub const REC_SPLIT: SettingId = SettingId(0x0807);
+    pub const REC_MONITOR: SettingId = SettingId(0x0808);
+    pub const REC_LOWCUT: SettingId = SettingId(0x0809);
+    pub const REC_GAIN: SettingId = SettingId(0x080A);
     /// Alarm `i` (05 §7.8, UI-5d): `ALARM0 + 3i` minutes after midnight,
     /// `+ 1` repeat days (bit 0 Monday … bit 6 Sunday, 0 once), `+ 2` on.
     pub const ALARM0: SettingId = SettingId(0x0D30);
@@ -338,9 +352,15 @@ const RADIO: &[Setting] = &[
 
 const RECORDING: &[Setting] = &[
     c(0x0801, Str::RecSource, ch![S(Str::Microphone), S(Str::FmRadio), S(Str::LineIn)], 0),
-    c(0x0802, Str::RecFormat, ch![Lit("WAV"), Lit("WAV ADPCM"), Lit("FLAC"), Lit("MP3"), Lit("Opus")], 0),
+    // The formats built (AU-13); MP3 and Opus are not.
+    c(0x0802, Str::RecFormat, ch![Lit("WAV"), Lit("WAV ADPCM"), Lit("FLAC")], 0),
     c(0x0803, Str::Quality, ch![S(Str::QVoice), S(Str::QStandard), S(Str::QHigh)], 1),
     c(0x0804, Str::GainMode, ch![S(Str::Manual), S(Str::Auto)], 1),
+    r(0x080A, Str::InputGain, -12, 12, 1, Unit::Db, 0),
+    c(0x0806, Str::VoiceActivation, ch![S(Str::Off), Lit("−50 dB"), Lit("−40 dB"), Lit("−30 dB")], 0),
+    c(0x0807, Str::AutoSplit, ch![S(Str::Off), Mins(15), Mins(30), Mins(60)], 0),
+    t(0x0808, Str::Monitor, 0),
+    t(0x0809, Str::LowCut, 0),
     i(0x0805, Str::Folder, Info::RecFolder),
 ];
 
@@ -514,7 +534,7 @@ pub fn def(id: SettingId) -> Option<&'static Setting> {
 }
 
 /// Number of stored items.
-pub const STORED: usize = 92;
+pub const STORED: usize = 97;
 
 /// Position among stored items (cache index).
 #[must_use]

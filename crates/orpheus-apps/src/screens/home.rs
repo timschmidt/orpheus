@@ -137,6 +137,9 @@ impl<S: Services + ?Sized> Screen<S> for HomeScreen {
                 if app == App::Authenticator {
                     return Nav::Push(super::AUTHENTICATOR, Arg(0));
                 }
+                if app == App::Recorder && cx.svc.card() == CardState::Ready {
+                    return Nav::Push(super::RECORDER, Arg(0));
+                }
                 let notice = if app.needs_card() {
                     match cx.svc.card() {
                         CardState::Absent => Notice::NoCard,

@@ -29,6 +29,7 @@ mod kbd;
 mod library;
 mod media;
 mod pictures;
+mod rec;
 mod sensor;
 mod services;
 mod state;

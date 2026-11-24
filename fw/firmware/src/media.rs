@@ -147,6 +147,10 @@ pub enum Req {
     Alert,
     /// The Authenticator's import file (`OtpJob`, OTP-2).
     Otp(OtpJob),
+    /// Delete a recording (Recorder › Recordings…; `rec::delete` allows
+    /// only files in `/Recordings`). In this queue so that the listing
+    /// asked for after it already lacks the file.
+    Delete(FileRef),
 }
 
 /// The Authenticator's import file `/.orpheus/otp-import.txt` (OTP-2, 06
@@ -921,6 +925,10 @@ impl Server {
             Req::Alert => true,
             Req::Otp(j) => {
                 crate::audio::otp_file(vol, &j).await;
+                true
+            }
+            Req::Delete(f) => {
+                crate::rec::delete(vol, f).await;
                 true
             }
             Req::Text { file, offset } => {

@@ -396,6 +396,16 @@ through `CMU+0x80`. Everything is **[code]**: the bring-up image records each
 source to a WAV on the card for inspection on the host (U-AUD-4). Mono
 microphone capture is the vendor default; stereo ADC is gated by IC type.
 
+As built (AU-13): `atj2157_hal::adc` — `start(input, rate, analog,
+digital)`, `set_gain`, `stop`, `regs`; the vendor's API 18 sequence VERBATIM
+with the datasheet's register names, except that the stop keeps `CLKEN1[0]`
+and puts `CMU+0x80` back to the DAC power-up's value (the vendor writes 0,
+which would silence analogue output) and the rate function also clears
+`CMU+0x80` bit 4. The DMA runs on channel 6 in reload mode over a two-half
+ring; `atj2157_hal::dma` counts its half/complete events in a handler of its
+own (`enable_ring_irq`, `events`, `wait_events`; resident with the rest of
+the module). No PMU access. Open: U-AUD-4, U-AUD-11–13.
+
 ## 14. DSP accelerator (WP-DSP-1)
 
 Facts: audio.md §7.1. A block at `0xC0200000` offering real FFT/IFFT (128,

@@ -74,6 +74,9 @@ pub struct FmRam {
 /// (`yoton_bsp::card::IO_ADDR`): plain RAM, outside SRAM0 (02 §1).
 pub const FM_ADDR: usize = (crate::sensor::SHARED_END + 7) & !7;
 
+/// End of [`FmRam`] (the recorder's state follows, `rec::SHARED_ADDR`).
+pub const FM_END: usize = FM_ADDR + core::mem::size_of::<FmRam>();
+
 const _: () = assert!(crate::sensor::SHARED_END <= FM_ADDR);
 const _: () = assert!(crate::drain::SHARED_END <= crate::sensor::SHARED_ADDR);
 const _: () = assert!(FM_ADDR + core::mem::size_of::<FmRam>() <= yoton_bsp::card::IO_ADDR);

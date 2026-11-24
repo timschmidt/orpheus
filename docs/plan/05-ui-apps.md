@@ -479,11 +479,27 @@ per role, defined in 06.
   2 GiB) · Pre-record 2 s · Monitor through headphones · Low-cut filter ·
   Recordings… (list in `/Recordings`, newest first, OK plays, Menu deletes/
   renames).
-* Files: `/Recordings/REC_YYYYMMDD_HHMMSS.ext`, FM: `/Recordings/FM/
-  FM_101.90_YYYYMMDD_HHMMSS.ext`. The header is rewritten every 10 s so a power
-  loss costs at most 10 s.
+* Files: `/Recordings/REC-YYYYMMDD-HHMMSS.ext`, FM: `/Recordings/
+  FM-101.90-YYYYMMDD-HHMMSS.ext` (one folder; `-2`… for a second file in the
+  same second; `REC-0001.ext`… while the clock is not set). The header is
+  rewritten every 10 s so a power loss costs at most 10 s.
 * The key click is forced off while the microphone is live. Playback of other
   audio is stopped when recording starts.
+
+**As built (UI-5b, 2026-11-24)**: the app captures for the meters while it
+is shown (it stops 3 s after it is left); OK record / pause / resume, Next
+mark, OK held or Back asks "Stop recording?" (Stop focused: nothing is lost);
+Up/Down the manual input gain (−12…+12 dB from the source's default; a toast
+with the value; with automatic gain on they say so). Menu while ready:
+Source, Format (WAV, WAV ADPCM, FLAC), Quality (16 / 44.1 / 48 kHz; mono from
+the microphone, stereo from FM and line-in), Automatic gain, Voice
+activation, Auto split, Monitor, Low-cut, Recordings…; while recording: Stop,
+Automatic gain, Voice activation, Low-cut. Recordings… is the Files browser
+on `/Recordings`, newest first (by date), audio only: OK plays, Menu → Play
+folder, Properties, Delete… (with its question; the only delete the firmware
+allows outside `/.orpheus`). Choosing FM starts the radio. Line-in is listed
+only where the board has one (not the YM03). Not built: split on mark,
+rename, pre-record, the 2 GiB split, monitoring on the device.
 
 **Acceptance**: state machine incl. pause, mark, split, card-full (stops and
 saves cleanly at 1 MiB free) and card-removed; file validity checked with

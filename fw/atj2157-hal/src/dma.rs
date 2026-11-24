@@ -9,6 +9,7 @@
 //! (TODO(pac): switch to `atj2157_pac::dma`).
 
 use core::future::poll_fn;
+use core::sync::atomic::{AtomicU32, Ordering};
 use core::task::Poll;
 
 use atj2157_pac::{Reg, irq};
@@ -85,6 +86,31 @@ fn on_irq(n: usize) {
     WAKERS[n].wake();
 }
 
+/// The capture ring's channel (the ADC's in 01-hardware §6's plan).
+pub const RING_CH: usize = 6;
+
+/// Half and complete events of [`RING_CH`] since boot (wrapping): in
+/// reload mode over a two-half ring each event is one finished half
+/// ([`Channel::enable_ring_irq`]). Counted in its own handler, so the
+/// other channels' handlers stay as small as they were.
+static RING_EVENTS: AtomicU32 = AtomicU32::new(0);
+
+fn on_ring_irq() {
+    let ip = DMAIP.read();
+    let mine = ip & ((1 << RING_CH) | (1 << (RING_CH + 16)));
+    if mine != 0 {
+        DMAIP.write(mine);
+        RING_EVENTS.fetch_add(mine.count_ones(), Ordering::Release);
+    }
+    WAKERS[RING_CH].wake();
+}
+
+/// Events of channel `n` so far (see [`RING_EVENTS`]; 0 for the others).
+#[must_use]
+pub fn events(n: usize) -> u32 {
+    if n == RING_CH { RING_EVENTS.load(Ordering::Acquire) } else { 0 }
+}
+
 macro_rules! handlers {
     ($($n:literal),*) => {
         const HANDLERS: [fn(); CHANNELS] = [$(|| on_irq($n)),*];
@@ -114,6 +140,33 @@ impl Channel {
     pub fn enable_irq(&self) {
         DMAIE.set_bits(1 << self.n);
         interrupt::install(irq::DMA0 + self.n as u16, Level::Deadline, HANDLERS[self.n]);
+    }
+
+    /// Interrupts on both the half and the complete event, counted
+    /// ([`events`]) and waking [`Self::wait_events`]: a reload-mode ring of
+    /// two halves (audio capture). Channel [`RING_CH`] only: its handler
+    /// alone is linked (indexing [`HANDLERS`] would make all ten resident).
+    pub fn enable_ring_irq(&self) {
+        if self.n != RING_CH {
+            return;
+        }
+        DMAIE.set_bits((1 << RING_CH) | (1 << (RING_CH + 16)));
+        interrupt::install(irq::DMA0 + RING_CH as u16, Level::Deadline, on_ring_irq);
+    }
+
+    /// Interrupts off for this channel (both events).
+    pub fn disable_irq(&self) {
+        DMAIE.clear_bits((1 << self.n) | (1 << (self.n + 16)));
+    }
+
+    /// Wait until the event count differs from `seen`; returns it.
+    pub async fn wait_events(&self, seen: u32) -> u32 {
+        poll_fn(|cx| {
+            WAKERS[self.n].register(cx.waker());
+            let e = events(self.n);
+            if e == seen { Poll::Pending } else { Poll::Ready(e) }
+        })
+        .await
     }
 
     /// Bind an interrupt-level handler instead of the waker (audio refill).
