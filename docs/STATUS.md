@@ -790,6 +790,17 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — AU-5 gapless: MP3 and FLAC joins clean on the player (lead)
+
+* `ec43e38` (next stream prepared before the join, player told after the
+  first block, exact underrun ledger): `playdir` on the corpus album splits,
+  three runs — **0 underruns through both joins of FLAC and MP3**, all `ub:`
+  causes 0. Joins: MP3 30.8 ms / 105 loads and 14.1 ms / 39 loads; FLAC
+  ≈ 48.7 ms / 145 loads with ≈ 28 ms queued at the old decoder's end (thin
+  margin). Open: the preparation step never ran (`prep_us=0`) and the join
+  statistics are published one join late — sent to the worker. Queue
+  editing is not yet tested on the device.
+
 ### 2026-11-24 — AU-5 gapless: MP3 joins clean on the player (lead)
 
 * Merged `879d967` (bounded lookups, path-walk cache, by-cause underruns).
