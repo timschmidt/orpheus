@@ -346,7 +346,7 @@ that. Added:
 | U-BT-1 | Which of GPIO38/39 is TX; BAUD register halves. **SoC side answered [DS]**: function 10 makes GPIO38 UART1_TX and GPIO39 UART1_RX (no swapped set-up exists; the other UART1 pad pairs 4/5, 22/23, 28/29 belong to the panel, backlight/keys and card); BR halves = TX/RX divisors (§9 HAL-0). Board side: `bt listen` (both pads as pulled-up inputs, module powered, falling edges counted) and `bt probe` (identity answered) | `xtask dev cmd "bt listen"`, `"bt probe"` (BT-2 device) | BT-2 |
 | U-BT-4 | UART1 RX by DMA **single transfers with reload** (`0x00260082`, `CTL` `RDIC` = 1 byte) into a 256-byte ring, write position from the channel's remain counter (`+0x1C`): does the counter read correctly while the channel runs, and does reload re-arm a peripheral-paced channel (U-DMA-2 remainder)? The vendor ran burst-8 without reload and drained the tail by CPU | `bt status` after `bt on`: `ring_rem` moves, `rx bytes` grows, frames decode; else `bt rx cpu` (1 ms FIFO poll) | BT-2 — **answered 2026-11-24 [HW]: yes** — `bt probe`: 37 bytes, 5 frames, 0 bad checksums, `ring_rem` moving, 3 commands acknowledged without resend; reload re-arms the peripheral-paced channel |
 | U-BT-5 | DMA channel 9 completion interrupt (line 35 [DS]) for UART TX | `bt status`: `dma_no_irq` stays 0 | BT-2 |
-| U-BT-2 | Analogue tap point; headphone output live while streaming | **User check** (listen) | BT-2 |
+| U-BT-2 | ~~Analogue tap point~~ **Answered 2026-11-24: after the PA** (silent at PA volume 0, full level at 7; measured through a host A2DP sink). Still open: headphone output live while streaming | **User check** (listen) | BT-2 |
 | U-BT-3 … | bluetooth.md §8 questions 7–10 (unknown commands, incoming connections, upgrade image, enable pin) | 06 §4.3 | BT-3 |
 | U-IMG-1 | What the image/video block at `0xC0090000` does (JPEG acceleration?) | Read `MMM_VP.AL`/`MMM_ID.AL` register use; only pursue if it decodes JPEG | later |
 
@@ -487,6 +487,9 @@ Raw numbers are in `docs/STATUS.md` §4; each item names the bring-up image
 | DAC rate | Consumption measured against T0: 44,168 Hz for 44.1 kHz and 48,076 Hz for 48 kHz (≈ +0.15 %); open whether the audio PLL setting or the measurement is off (U-AUD-10, new) | audio |
 | U-FM-1 (part) / U-ACC-1 | Software I2C with released (open-drain) lines and the 10 kΩ pad pull-ups works at 100 kHz; devices at 0x10, 0x11, 0x60 (tuner, RDA5807 id `0x5804`) and 0x27 (accelerometer, id `0x13`) | i2c |
 | NOR | FAST READ by DMA: 175 µs per 1 KiB line at `CMU_SPI0CLK = 0x200`, 693 µs at `0x101`; 4 KiB erase + program + verify works in the free region | nor |
+| PA volume / U-BT-2 (part) | `PA_CTL[14:12]` (PA volume) left at 0 makes the analogue output practically silent; 7 (vendor music value) gives full level. Measured 2026-11-24 with the Bluetooth module streaming to a host A2DP sink: 522 Hz test tone at PA 0 → digital silence, at PA 7 → RMS within 1.06 dB of the reference decode (DAC volume 0 dB). So the module's analogue tap is **after the PA** (post-amplifier, post-volume). Read registers live with `xtask dev mem` (word reads; byte reads of the DAC block return 0) | firmware |
+| Bluetooth sink volume | After connect the sink's AVRCP absolute volume starts at 0 (BlueZ `MediaTransport1.Volume = 0`) until the source sends command 0x26: the stream is silent without it | firmware |
+| Bluetooth module SDP | The module (`ATS2851`, appears as "ZS285AH_TARNS") offers A2DP source+sink, AVRCP CT/TG, HFP HF/AG, **HID (0x1124)** and PnP records to a host; pairing used no PIN prompt (host agent NoInputNoOutput) | firmware |
 
 ## 10. Rules for hardware discovery work
 

@@ -33,6 +33,9 @@ pub const DMA_MODE_S16: u32 = 0x0014_8B00;
 /// Digital volume code for 0 dB (0.375 dB/step; 0 = mute). [DS]/[code]
 pub const VOL_0DB: u8 = 0xBF;
 
+/// Amplifier gain field value the vendor uses for music (`PA_CTL[14:12]`).
+pub const PA_GAIN_MUSIC: u32 = 7;
+
 /// Native sample rates (Hz): the 44.1 kHz and 48 kHz families.
 pub const RATES: [u32; 9] = [8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000];
 
@@ -131,6 +134,11 @@ pub fn power_up(rate: u32, volume: u8) {
     PA_CTL.modify(|x| (x & !0x30000) | 0x10000);
     PA_CTL.set_bits(0x40000);
     PA_CTL.set_bits(0x300);
+    // PA volume 7, as the vendor's enable wrapper sets after the sequence
+    // (audio.md §2.5). Left at 0 the analogue output is effectively muted:
+    // measured over the Bluetooth module's analogue tap, 0 gave silence and
+    // 7 the file's level within 1 dB (01-hardware §9, 2026-11-24).
+    set_pa_gain(PA_GAIN_MUSIC);
     set_volume(volume, volume);
     // FIFO fed by DMA from now on (vendor 0x195C).
     FIFOCTL.clear_bits(0x11);

@@ -386,6 +386,32 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — Bluetooth end to end with a host A2DP sink; amplifier gain fix (lead)
+
+* The workstation's Bluetooth adapter served as a test headset: a BlueZ
+  agent (auto-accept, discoverable for a limited time) and PipeWire's A2DP
+  sink, recorded with `pw-record`. On the player (test mode): `bt on`,
+  `bt scan` found "fedora #2", `bt connect 0` paired and connected (no PIN),
+  `bt on` later auto-reconnected to it, the module streamed SBC; the module
+  appears to the host as `F4:4E:FD:06:7A:20` "ZS285AH_TARNS" with A2DP,
+  AVRCP, HFP, **HID (0x1124)** and PnP records.
+* **Bug found and fixed: the analogue output was practically muted.**
+  `dac::power_up` never set the PA volume field `PA_CTL[14:12]` (vendor: 7).
+  Measured through the module's tap: PA 0 → silence, PA 7 → the 522 Hz test
+  tone at the reference level ±1.06 dB (DAC 0 dB) and −53.6 dBFS at the UI
+  volume (DAC −30 dB) — the tap is after the PA and after the volume
+  (U-BT-2 partly answered). This most likely also means the wired
+  headphones were near-silent before this build; user check 9 (tones) must
+  be made on this build or later.
+* Found for BT-3 (sent to that worker): the firmware never sends absolute
+  volume (0x26), and the sink starts at 0 → silent stream until it does;
+  addresses are shown byte-reversed (`to_text`); connect is refused during
+  an inquiry.
+* Tools: `xtask dev mem ADDR [N]` reads words from the running firmware over
+  the developer channel (`dev peek` switches the player to ymon); PEEK now
+  reads aligned requests as 32-bit words (the DAC block reads 0 by byte);
+  developer command `pa N` sets the PA volume field.
+
 ### 2026-11-24 — plan: final verification stage M11 (lead, owner's request)
 
 * Added milestone **M11 Verification** (08: VER-1…VER-11; 07 §3.5–3.8 sanitizers,

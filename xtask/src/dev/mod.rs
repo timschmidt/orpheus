@@ -46,7 +46,9 @@ cargo xtask dev <subcommand>
   time [--set]                  read (or set from the host, UTC) the player's clock
   cmd 'play /x.mp3' [--wait S]  firmware test command, then print the reply
   results                       read result block, fault record and log ring
-  peek ADDR [N]                 read words
+  peek ADDR [N]                 read words (switches the player to ymon)
+  mem ADDR [N]                  read words from the running firmware
+                                (developer channel; stays in the firmware)
   poke ADDR VALUE               write one word (ADFU/ymon)
   dump ADDR LEN OUT             read memory to a file
   shot OUT.png                  screenshot of the frame buffer
@@ -238,6 +240,20 @@ pub fn cmd(args: &mut Args) -> Result<String> {
         "results" => {
             let mut d = to_ymon()?;
             hil::print_results(&mut d, None)
+        }
+        "mem" => {
+            let addr = num(&args.positional("ADDR")?)?;
+            let n = args.next_positional().map(|s| num(&s)).transpose()?.unwrap_or(1);
+            let d = orpheus_host::devchan::DevChannel::open(Duration::from_secs(3))?;
+            let data = d.peek(addr, n as usize * 4)?;
+            for (i, w) in data.as_chunks::<4>().0.iter().enumerate() {
+                println!(
+                    "{:#010x}: {:#010x}",
+                    addr + 4 * i as u32,
+                    u32::from_le_bytes([w[0], w[1], w[2], w[3]])
+                );
+            }
+            Ok(format!("{n} words"))
         }
         "peek" => {
             let addr = num(&args.positional("ADDR")?)?;

@@ -30,6 +30,17 @@ impl Target for Fw {
         }
     }
     fn read_mem(&mut self, addr: u32, buf: &mut [u8]) -> bool {
+        // Word-aligned requests are read as 32-bit words: several peripheral
+        // blocks (the DAC at 0xC0180000 among them) read as 0 when accessed
+        // by byte.
+        if addr.is_multiple_of(4) && buf.len().is_multiple_of(4) {
+            for (i, w) in buf.chunks_exact_mut(4).enumerate() {
+                // SAFETY: as below, aligned word reads.
+                let v = unsafe { core::ptr::read_volatile((addr as usize + 4 * i) as *const u32) };
+                w.copy_from_slice(&v.to_le_bytes());
+            }
+            return true;
+        }
         for (i, b) in buf.iter_mut().enumerate() {
             // SAFETY: development-build PEEK: the host names the address;
             // reads of RAM/ROM/registers on this SoC do not fault.

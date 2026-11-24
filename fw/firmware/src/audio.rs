@@ -1596,6 +1596,13 @@ pub async fn audio() {
             reply(|w| {
                 w.s(b"fp ok us=").u(us).s(b" acc=").u(acc as u64);
             });
+        } else if let Some(g) = text.strip_prefix("pa ") {
+            // Amplifier gain field PA_CTL[14:12] (the vendor's music value is 7).
+            let g: u32 = g.trim().parse().unwrap_or(0);
+            dac::set_pa_gain(g);
+            reply(|w| {
+                w.s(b"pa ").u(u64::from(dac::regs()[2]));
+            });
         } else if let Some(v) = text.strip_prefix("vol ") {
             let v: u8 = v.trim().parse().unwrap_or(0);
             dac::set_volume(v, v);
