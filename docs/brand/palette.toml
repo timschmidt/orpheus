@@ -1,0 +1,45 @@
+# The Orpheus palette: the one colour source for the website, the
+# documentation and (after the switch-over, see README.md) the firmware's
+# theme tables. Plan: docs/plan/09-docs-website.md §6.
+#
+# `cargo xtask brand` checks every pairing below for WCAG 2.2 AA contrast,
+# twice: as written (the web) and after rounding to RGB565 the way the
+# 128 × 128 screen stores it. It then regenerates docs/brand/generated/.
+# `cargo xtask brand --check` (part of the gate) fails if a pairing is too
+# weak or a generated file is out of date.
+#
+# The values of `dark` and `light` are the firmware's Dark and Light themes
+# with the Blue accent (crates/orpheus-ui/src/theme.rs), so the website and
+# the player look like one thing. `link` and `accent` exist only on the web.
+
+[brand]
+# The logo tile (docs/logo/orpheus-lyre.svg). The checker insists the SVG
+# uses this exact colour.
+lyre = "#206edc"
+# Drawn on the lyre tile.
+on-lyre = "#ffffff"
+
+# Roles. Firmware names in brackets (orpheus_ui::theme::Role).
+[dark]
+bg = "#0e1014"         # page and screen background   [Bg]
+surface = "#242830"    # bars, cards, code blocks      [Surface]
+text = "#eef0f4"       # body text, icons              [Text]
+text-dim = "#969ca8"   # secondary text                [TextDim]
+primary = "#206edc"    # focus, selection, buttons     [Accent, Blue]
+on-primary = "#ffffff" # text on primary               [OnAccent]
+link = "#6ea8ff"       # links (primary is too dark for text on bg)
+accent = "#ffb800"     # highlights, "in progress"     (the Amber theme's text)
+warning = "#ff6058"    # errors, destructive actions   [Warning]
+good = "#48cc78"       # success, charging, "works"    [Good]
+
+[light]
+bg = "#f8f8fa"
+surface = "#e2e5eb"
+text = "#121418"
+text-dim = "#585e68"
+primary = "#005cc8"
+on-primary = "#ffffff"
+link = "#005cc8"
+accent = "#8a5a00"
+warning = "#c42020"
+good = "#108040"

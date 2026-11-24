@@ -5,6 +5,7 @@
 //! one-line verdict last.
 
 mod args;
+mod brand;
 mod build;
 mod cover;
 mod dev;
@@ -60,6 +61,9 @@ usage: cargo xtask <command> [options]
   drain report FILE.csv [FILE…]    battery-logger files (PWR-5): duration, mV drop,
                                    mV/h (end points and fit), time per clock level
                                    and playing, a comparison table
+  brand [--check]                  palette contrast (web and RGB565) and the generated
+                                   brand assets in docs/brand/generated/ (BRAND-1);
+                                   --check fails if they are not current
 ";
 
 fn main() -> ExitCode {
@@ -80,6 +84,7 @@ fn main() -> ExitCode {
         "metrics" => metrics::cmd(&mut args),
         "dev" => dev::cmd(&mut args),
         "drain" => drain::cmd(&mut args),
+        "brand" => brand::cmd(&mut args),
         "help" | "-h" | "--help" => {
             print!("{USAGE}");
             return ExitCode::SUCCESS;

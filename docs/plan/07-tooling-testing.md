@@ -53,6 +53,7 @@ talk to the player.
 | `xtask cover [--crate NAME] [--fuzz\|--fuzz-only] [--html] [--clean] [--report-only] [--add]` | LLVM source-based coverage (line, region, branch) of `crates/`, `sim/`, `xtask/`; `--fuzz` adds the fuzz-corpus replays, `--fuzz-only` runs them alone; reports in `target/orpheus/coverage/` (§3.6) |
 | `xtask metrics [--elf PATH]` | Append this commit's coverage and static firmware rows to `metrics/*.csv` (§4.4) |
 | `xtask gate [--no-dev] [--coverage] [--m11]` | The milestone gate (§6) |
+| `xtask brand [--check]` | Brand assets (09 §6): palette contrast for the web and the RGB565 screen, lyre variants, favicons, app icons, social card, CSS custom properties into `docs/brand/generated/`; `--check` fails if they are not current |
 | `xtask bringup <name>` | Build one bring-up image (small RAM-only binary under `bringup/`) |
 | `xtask dev state` *(dev)* | Which mode the player is in: ADFU ROM, ymon, Orpheus (any personality), Rockbox, stock; battery voltage if readable |
 | `xtask dev adfu` *(dev)* | Bring the player to ADFU + ymon from whatever is running (vendor SCSI reboot command for Rockbox/stock, EP0 request for Orpheus, nothing if already there) |
@@ -606,6 +607,7 @@ high-water play that role, and every fuzz session reports them.
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 xtask test all                 # host unit, golden, codecs, fuzz-smoke
+xtask brand --check            # palette contrast, generated brand assets current
 xtask build --release          # both layouts once the full layout exists
 xtask size --check
 xtask check-resident
