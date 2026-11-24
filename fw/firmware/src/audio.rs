@@ -1634,8 +1634,9 @@ pub fn init_chain() {
     // SAFETY: before any task runs; afterwards only the audio task uses it.
     unsafe { (*(&raw mut CHAIN)).write(orpheus_dsp::Chain::new(orpheus_dsp::OutWidth::Bits16, false)) };
     // The battery logger's state in SRAM3, before any task runs (here,
-    // not in the resident `main`).
+    // not in the resident `main`); the radio's (FM-1) next to it.
     crate::drain::init();
+    crate::fm::init();
 }
 
 static SERVER: ConstStaticCell<Server> = ConstStaticCell::new(Server::new());

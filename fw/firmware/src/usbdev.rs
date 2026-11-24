@@ -217,6 +217,9 @@ impl Target for Fw {
         if let Some(rest) = data.strip_prefix(b"bt ") {
             return crate::bt::test_command(rest);
         }
+        if let Some(rest) = data.strip_prefix(b"fm ") {
+            return crate::fm::test_command(rest);
+        }
         if let Some(rest) = data.strip_prefix(b"drain ") {
             return crate::drain::test_command(rest);
         }

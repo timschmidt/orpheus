@@ -13,6 +13,7 @@
 //! | `watchdog` | main | feeds the watchdog when RT, main and UI progress |
 //! | `rt_beat` | RT | RT executor heartbeat for `watchdog` |
 //! | `bt` | main | Bluetooth transmitter module (off until asked) |
+//! | `fm` | main | FM tuner and its route to the amplifier (off until asked) |
 
 #![no_std]
 #![no_main]
@@ -22,6 +23,7 @@
 mod audio;
 mod bt;
 mod drain;
+mod fm;
 mod library;
 mod media;
 mod pictures;
@@ -53,9 +55,22 @@ async fn input() {
     keys::init();
     let mut deb = keys::Debouncer::new();
     let mut ticker = Ticker::every(Duration::from_millis(10));
+    // Earphone sense (the radio's antenna note): ladder 1's idle level,
+    // classified only while no ladder-1 key is down, after 11 equal
+    // samples as the vendor's key driver does (fm-i2c-imu.md §2.6).
+    let mut ear = (false, 0u8);
     loop {
         ticker.next().await;
-        let (ev, n) = deb.feed(keys::decode(keys::sample()));
+        let s = keys::sample();
+        let level = s.ladder1 & 0x3FF;
+        let sensed = if level >= 592 { Some(false) } else { keys::earphones_present(s).then_some(true) };
+        if let Some(x) = sensed {
+            ear = if x == ear.0 { (x, ear.1.saturating_add(1)) } else { (x, 1) };
+            if ear.1 == 11 {
+                state::EARPHONES.store(x, core::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        let (ev, n) = deb.feed(keys::decode(s));
         for e in &ev[..n] {
             let _ = KEYS.try_send((e.key, e.down));
         }
@@ -331,6 +346,7 @@ extern "C" fn main() -> ! {
         s.spawn(health().unwrap());
         s.spawn(watchdog().unwrap());
         s.spawn(bt::bt().unwrap());
+        s.spawn(fm::fm().unwrap());
     })
 }
 

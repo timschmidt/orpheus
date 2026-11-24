@@ -79,6 +79,9 @@ pub struct Shared {
 /// Below the card's I/O counter (`yoton_bsp::card::IO_ADDR`).
 const _: () = assert!(SHARED_ADDR + core::mem::size_of::<Shared>() <= yoton_bsp::card::IO_ADDR);
 
+/// End of [`Shared`] (the radio's RAM follows, `fm::FM_ADDR`).
+pub const SHARED_END: usize = SHARED_ADDR + core::mem::size_of::<Shared>();
+
 /// Once, from `audio::init_chain` (in `main`) before the tasks start (not inlined: `main` is
 /// resident).
 #[inline(never)]

@@ -22,6 +22,9 @@ static STATE: Mutex<Cell<Snapshot>> = Mutex::new(Cell::new(Snapshot {
 }));
 
 pub static CARD_READY: AtomicBool = AtomicBool::new(false);
+/// Earphones plugged in (key ladder 1's idle level, debounced by the
+/// input task): the radio's antenna.
+pub static EARPHONES: AtomicBool = AtomicBool::new(false);
 
 #[must_use]
 pub fn snapshot() -> Snapshot {

@@ -107,6 +107,10 @@ impl Ui {
             if let Some(a) = self.fw.bt_to_save.take() {
                 let _ = store.set(crate::bt::LAST_KEY, &a.0).await;
             }
+            // The radio presets (UI-5a), in their stored form (a static).
+            if core::mem::take(&mut self.fw.presets_dirty) {
+                let _ = store.set(orpheus_fm::presets::STORE_KEY, self.fw.presets.bytes()).await;
+            }
         }
         while let Some(a) = self.fw.actions.pop() {
             if let Action::Usb(m) = a {
@@ -194,6 +198,8 @@ impl Ui {
         // Bluetooth module: shutdown command 0x24 when it is up, bounded
         // wait, enable line low (owner decision 2026-11-24, BT-2).
         crate::bt::shutdown_for_power_off().await;
+        // The tuner into standby (FM-1), at most 300 ms.
+        crate::fm::stop_for_power_off().await;
         atj2157_hal::pmu::power_off(false)
     }
 
@@ -332,8 +338,16 @@ pub async fn ui() {
             }
         }
     }
+    // The radio presets: straight into their static (332 bytes).
+    if let Some(s) = store.as_mut() {
+        match s.get(orpheus_fm::presets::STORE_KEY, fw.presets.raw_mut()).await {
+            Ok(Some(n)) => fw.presets.loaded(n),
+            _ => *fw.presets = orpheus_fm::Presets::new(),
+        }
+    }
     fw.init_player();
     fw.bt_boot(bt_last);
+    fw.radio_boot();
     let ui = new_ui(fw, store, disp, bl, now());
     ui.shell.invalidate();
     let fb = fb.as_mut_slice();
@@ -396,6 +410,7 @@ pub async fn ui() {
         atj2157_hal::wdt::beat(&atj2157_hal::wdt::UI_BEAT);
         ui.fw.sync_player();
         ui.fw.sync_bt();
+        ui.fw.sync_radio(now().0);
         let t = now();
         ui.fw.poll_picture(t.0);
         while let Some((k, p)) = ui.mapper.poll(t) {
@@ -413,10 +428,11 @@ pub async fn ui() {
         {
             let t = now().0;
             let st = state::snapshot();
+            // The radio playing is not idle either (UI-5a).
             let idle = matches!(
                 ui.fw.player.source,
                 orpheus_ui::event::Source::Idle | orpheus_ui::event::Source::Paused
-            );
+            ) && !ui.fw.radio_on();
             let mins = match ui.fw.settings.get(orpheus_apps::settings::SettingId(0x0403)) {
                 1 => 5,
                 2 => 10,

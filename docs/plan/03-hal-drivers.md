@@ -452,6 +452,20 @@ variants) and `0x27`; tuner tunes and reports plausible RSSI on a local
 station; accelerometer reads 1 g ± 10 % at rest on each axis orientation
 (user check: turn the player); step traces per 05 §7.7.
 
+**As built (FM-1, 2026-11-24, not yet run on the player).** Tuner logic in
+the host crate `orpheus-fm` (register model, vendor tables, seek, scan,
+RDS PS/RT, presets, the radio service state machine; tested against a
+register-level fake). Firmware task `fm` (main executor) drives it over the
+software master at 100 kHz (writes only to `0x10`); TWI1, the async bus
+mutex and CT (RDS clock) are not done: nothing else uses the bus until
+SENS-1. The analogue route is `atj2157_hal::dac::fm_precharge/connect/
+release/disconnect` (the vendor's steps without its amplifier power cycle);
+volume is the vendor's pair table (`orpheus_fm::volume`). Region Wide is
+65–108 MHz (the tables select 65 MHz for `BAND = 11`). The tuner is in
+standby whenever the radio is not playing, and is put there at boot.
+Developer commands: `fm on|off|status|scan`, `fm tune KHZ`,
+`fm seek up|down`, `fm route on|off`.
+
 ## 16. UART (in WP-BT-1)
 
 Facts: system.md §7; bluetooth.md §2. UART1 at `0xC00E0000` for the Bluetooth

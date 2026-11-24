@@ -162,3 +162,52 @@ pub fn set_pa_gain(g: u32) {
 pub fn regs() -> [u32; 4] {
     [DIGCTL.read(), FIFOCTL.read(), PA_CTL.read(), VOL_L.read()]
 }
+
+// FM bypass into the amplifier mixer (audio.md §4, fm-i2c-imu.md §2.6):
+// the tuner's analogue output reaches the headphone amplifier without the
+// ADC, the DAC or the CPU. The vendor's analogue-input enable (`AUD_DEV`
+// API 15, type 1, A2:0x15840092) is three steps with 100 ms waits between
+// them; the caller waits (the radio service's state machine).
+//
+// Differences from the vendor, on purpose: it cycles the amplifier (its
+// pop-free power-down, the switch, its power-up) around the steps and
+// writes DIGCTL[3:2] = 2; here the amplifier stays as `power_up` left it,
+// and DIGCTL is not touched, so the DAC path (which plays with
+// DIGCTL[3:2] = 0 [HW]) is unchanged. If the FM path stays silent, these
+// are the first two things to try (U-FM-3). Bit meanings are [inferred].
+
+/// Bypass step 1: the DAC block's clocks as the vendor's enable sets them
+/// (already on after [`power_up`]) and `PA_ANTIPOP[21]` (FM switch
+/// pre-charge / mute) set. Then wait 100 ms.
+/// VERBATIM(vendor AUD_DEV A2:0x15840092, type 1)
+pub fn fm_precharge() {
+    cmu::CLKEN1.set_bits(cmu::clken1::DAC);
+    cmu::DACCLK.set_bits(0x400);
+    PA_ANTIPOP.set_bits(1 << 21);
+}
+
+/// Bypass step 2: `PA_ANTIPOP[23:22]` = 10b (gain field) and bit 20 (FM →
+/// amplifier mixer) set. Then wait 100 ms.
+/// VERBATIM(vendor AUD_DEV A2:0x15840092, type 1)
+pub fn fm_connect() {
+    PA_ANTIPOP.modify(|v| (v & !0x00C0_0000) | 0x0010_0000 | 0x0080_0000);
+}
+
+/// Bypass step 3: `PA_ANTIPOP[21]` cleared.
+/// VERBATIM(vendor AUD_DEV A2:0x15840092, type 1)
+pub fn fm_release() {
+    PA_ANTIPOP.clear_bits(1 << 21);
+}
+
+/// Bypass off: `PA_ANTIPOP[20]` cleared (the FM half of the vendor's API
+/// 16, A2:0x158402B8; the vendor then also switches the DAC's digital part
+/// off, which the music path here keeps on).
+pub fn fm_disconnect() {
+    PA_ANTIPOP.clear_bits(1 << 20);
+}
+
+/// `PA_ANTIPOP` (developer status).
+#[must_use]
+pub fn antipop() -> u32 {
+    PA_ANTIPOP.read()
+}
