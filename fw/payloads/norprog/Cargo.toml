@@ -1,0 +1,20 @@
+[package]
+name = "payload-norprog"
+description = "ymon RAM payload: NOR erase/program for the full layout (WP T-6, LAY-1)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "payload-norprog"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+atj2157-hal = { path = "../../atj2157-hal" }
+yoton-proto.workspace = true
+
+[lints]
+workspace = true

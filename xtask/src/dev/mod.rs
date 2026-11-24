@@ -53,6 +53,10 @@ cargo xtask dev <subcommand>
   backup-verify                 check the vendor NOR backups
   save-rockbox                  dump the installed Rockbox region of NOR to target/yoton/
   restore rockbox [--verify]    write the saved Rockbox region back (--verify: compare only)
+  restore vendor [--verify | --i-have-a-backup]
+                                compare with / write back the stock NOR backup (whole chip)
+  install-full --i-have-a-backup [IMAGE.yfw]
+                                switch to the full layout (D-2): erases the stock firmware
   reset                         reset through ymon (the installed firmware boots)
 ";
 
@@ -187,6 +191,7 @@ pub fn cmd(args: &mut Args) -> Result<String> {
         }
         "stage" => stage::cmd_stage(args),
         "install-stage2" => stage::cmd_install_stage2(args),
+        "install-full" => stage::cmd_install_full(args),
         "stage2-ramtest" => stage::cmd_stage2_ramtest(args),
         "results" => {
             let mut d = to_ymon()?;
@@ -247,11 +252,12 @@ pub fn cmd(args: &mut Args) -> Result<String> {
         "backup-verify" => backup_verify(),
         "save-rockbox" => save_rockbox(),
         "restore" => {
-            let what = args.positional("rockbox")?;
-            if what != "rockbox" {
-                bail!("only `restore rockbox` exists so far (vendor-boot: WP-LAY-1)");
+            let what = args.positional("rockbox | vendor")?;
+            match what.as_str() {
+                "rockbox" => restore_rockbox(args.flag("verify")),
+                "vendor" => stage::cmd_restore_vendor(args),
+                _ => bail!("restore what? `rockbox` or `vendor`"),
             }
-            restore_rockbox(args.flag("verify"))
         }
         "reset" => {
             let d = to_ymon()?;
@@ -291,6 +297,10 @@ fn guard_poke(addr: u32) -> Result<()> {
     }
     Ok(())
 }
+
+/// The reference repository's NOR dumps (read-only).
+pub(crate) static DUMPS: std::sync::LazyLock<std::path::PathBuf> =
+    std::sync::LazyLock::new(|| yoton_dir().join("dumps"));
 
 pub(crate) fn backup_verify() -> Result<String> {
     let dumps = yoton_dir().join("dumps");

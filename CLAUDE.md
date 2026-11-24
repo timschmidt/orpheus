@@ -19,8 +19,12 @@ in `docs/PLAN.md`; start every session there and in `docs/STATUS.md`.
 
 ## Hard rules (the player is real hardware with a lithium cell and the owner's music)
 
-1. Never write NOR sector 0 or anything below `0x762000` (dual-boot layout).
-   Only `xtask dev install-boot --i-have-a-backup` may touch sector 0.
+1. Never write NOR sector 0 or the vendor data at `0x7E0000` and above. The
+   player runs the full layout since 2026-11-24 (decision D-2): yotonrs owns
+   `0x001000–0x7DFFFF`, written only through `xtask dev stage` /
+   `install-stage2` / `install-full`. Only `xtask dev install-boot
+   --i-have-a-backup` and `restore vendor --i-have-a-backup` may touch
+   sector 0.
 2. Before the first NOR write of a session, `xtask dev backup-verify`. If the
    backups in `/home/tim/Documents/GitHub/yoton/dumps/` are missing, stop.
 3. PMU regulator and charger fields: only values the stock firmware uses

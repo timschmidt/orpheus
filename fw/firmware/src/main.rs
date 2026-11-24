@@ -35,8 +35,8 @@ use static_cell::StaticCell;
 use yoton_bsp::charger::{self, Charger};
 use yoton_bsp::keys;
 use yoton_power::gauge;
-use yoton_proto::layout::dual;
-use yoton_proto::slot::SlotHeader;
+use yoton_proto::layout;
+use yoton_proto::slot::{LAYOUT_FULL, SlotHeader};
 
 /// Key edges from the ladders and from the developer channel.
 pub static KEYS: Channel<CriticalSectionRawMutex, (yoton_input::Key, bool), 16> = Channel::new();
@@ -175,18 +175,43 @@ async fn health() {
     log::line(b"fw: healthy start");
 }
 
-/// Start the pager from the slot header in NOR (`0x762000`). Returns
-/// whether paging is on. Resident (a root in resident.toml).
+/// The slot this firmware runs from: the one stage 2 recorded in the
+/// boot-info word (path 1, slot index in the low byte), otherwise (started
+/// from RAM by a test) the first slot holding a valid header.
+#[inline(never)]
+fn find_slot(h: &mut [u8; 128]) -> Option<(u32, SlotHeader)> {
+    // SAFETY: persistent boot-info word written by stage 2.
+    let bi = unsafe { core::ptr::read_volatile(0x0013_7FFC as *const u32) };
+    let recorded = (bi >> 24 == 0x42 && (bi >> 16) & 0xFF == 1).then_some((bi & 0xFF) as usize);
+    let mut i = 0;
+    while i < layout::SLOTS.len() {
+        let idx = recorded.unwrap_or(i);
+        let base = layout::SLOTS.get(idx).copied()?;
+        if nor::read(base, h).is_ok()
+            && let Ok(hdr) = SlotHeader::from_bytes(h)
+        {
+            return Some((base, hdr));
+        }
+        if recorded.is_some() {
+            return None;
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Start the pager from the slot header in NOR. Returns whether paging is
+/// on. Resident (a root in resident.toml).
 #[inline(never)]
 fn start_pager() -> bool {
     nor::init();
     let mut h = [0u8; 128];
-    if nor::read(dual::SLOT_A, &mut h).is_err() {
-        return false;
-    }
-    match SlotHeader::from_bytes(&h) {
-        Ok(hdr) if hdr.code_pages + hdr.rodata_pages > 0 => {
-            pager::init(dual::SLOT_A + hdr.pages_off, hdr.code_pages, hdr.rodata_pages);
+    match find_slot(&mut h) {
+        Some((base, hdr)) if hdr.code_pages + hdr.rodata_pages > 0 => {
+            if hdr.layout == LAYOUT_FULL {
+                nor::allow_full_layout();
+            }
+            pager::init(base + hdr.pages_off, hdr.code_pages, hdr.rodata_pages);
             true
         }
         _ => false,

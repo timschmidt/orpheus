@@ -7,42 +7,60 @@ of every session. Newest entries first in §3.
 
 | Item | State |
 |---|---|
-| Plan | `docs/PLAN.md`, `docs/plan/` (scope changes of 2026-11-23 applied) |
-| Code | Git repository since 2026-11-23. Host workspace (`crates/*`, `xtask`) and device workspace (`fw/`: `atj2157-hal`, `yoton-bsp`, `firmware`, `bringup/*`) |
-| Player | Attached; Rockbox port installed in NOR and untouched; all yotonrs code so far runs as RAM images through ymon. microSD card inserted by the user at about 19:00: SanDisk, 499,744,768 blocks, MBR, one FAT32-LBA partition (type 0x0C) at LBA 2048. Whether it holds the owner's music is not known: treat it as precious (writes only in `/.yoton/`) |
-| NOR | Stage 1 + C stage 2 + Rockbox. Vendor backups verified (`ad45687e…`). The whole free region `0x762000–0x7DFFFF` as installed is saved in `local/rockbox-nor-0x762000.bin` (sha256 in the `.sha256` next to it); `cargo xtask dev restore rockbox --verify` matches |
-| Host | Fedora 43, Rust 1.98.1 pinned (`rust-toolchain.toml`), `thumbv7em-none-eabihf` installed |
-| Current milestone | M1 (bring-up in RAM) nearly complete; M0 done except T-4a (worker running) |
+| Plan | `docs/PLAN.md`, `docs/plan/`. **D-2 decided 2026-11-24 by the user: full-flash layout** ("wipe the original firmware and take over the full player hardware") |
+| Code | Host workspace (`crates/*`, `sim`, `xtask`) and device workspace (`fw/`: `atj2157-hal`, `yoton-bsp`, `firmware`, `boot/stage2`, `payloads/norprog`, `bringup/*`) |
+| Player | **Runs yotonrs from NOR, full layout.** Stock firmware and the Rockbox port are erased. Card: the owner's music (exFAT/FAT, 238.3 GB), read only except `/.yoton/` |
+| NOR | Sector 0: Rockbox-port stage 1 (unchanged). `0x001000`: full slot A (yotonrs, 544,768 B). `0x7DA000` settings, `0x7DE000` vault, `0x7DF400` Rust stage 2 (876 B, tries full A, full B, dual slot; no stock-firmware path). `0x7E0000–0x7FFFFF` vendor data, untouched. Backups: `yoton/dumps/nor_backup_8m.bin` (stock, verified), `local/nor-before-full.bin` (the chip just before the switch), `local/rockbox-nor-0x762000.bin`, `local/stage2-previous.bin`. Way back: `xtask dev restore vendor --i-have-a-backup` (`--verify` compares) |
+| Host | Fedora 43, Rust 1.98.1 pinned. Root disk nearly full (≈ 14 GB free after deleting worker build output) |
+| Current milestone | M1–M3 device parts done; M4 (Files/Music) and M5 (playback) running on the player; host side of M6–M8 packages largely done |
 
 ## 2. Work packages
 
 | WP | Status | Notes |
 |---|---|---|
-| T-1 | done | Workspaces, toolchain pin, lints, `yoton-proto`, `budgets.toml`, `xtask build/size/test/gate` |
-| T-2 | done | `yoton-host` (nusb BOT, ADFU/ymon, SG_IO reboot, NOR payloads, PNG); `xtask dev state/adfu/ram/results/peek/poke/dump/shot/nordump/backup-verify/save-rockbox/restore rockbox [--verify]/reset`. Rockbox screenshot, NOR dump identical to `yoton.py`, restore dry run verified. Still uses the reference repo's C `ymon.bin`/`nordump.bin`/`norprog.bin` (T-6 replaces them) |
-| HAL-0 | done | `atj2157-pac` complete (worker); corrections in `docs/plan/01-hardware.md` §9 |
-| T-4a | done | `sim/` (headless + optional window feature), key scripts, golden harness with contact sheet `target/yoton/golden.html`; fails on one changed pixel |
-| HAL-1 | done | crt0, vectors + IRQ dispatch, fault record, BASEPRI critical section, priorities, T0/T1 time driver at 1 MHz, main + RT executors, watchdog, GPIO |
-| T-5 | done (first part) | `xtask dev hil smoke` / `drivers`; result block, fault record, log ring, mailbox; gate runs `hil smoke` |
-| LCD-1 | done pending user check 7 | LCM PIO + DMA blit, ST7735S panel, backlight PWM4, GRAM read-back |
-| INPUT-1 | done pending user check 8 (**blocking M4**) | `yoton-input` decoder/debouncer; live key screen |
-| PWR-2 | done pending user check 9 + full-charge termination | `yoton-power` vendor charge algorithm, `yoton-bsp::charger`; charges at code 4 (200 mA) |
-| SD-1 | done | Driver and `yoton-sdcard`; init, CID/CSD, MBR, multi/single read consistency; 9.3 MB/s sequential (64 KiB reads), 3.4 MB/s (4 KiB). Write path exercised only after FS-2 provides a scratch file |
-| AU-0 | done pending user check 10 (**blocking M5**) | DAC power-up, chained and reload DMA, SRAM3 ring, volume |
-| FM-0 | done | Soft I2C master; tuner and accelerometer ids |
-| UI-1 | done pending user check 1 (key legends) | `yoton-ui`: Gfx with dirty rects, themes, DejaVu Sans Condensed 12 px 2 bpp UI font, Fira numerals, Unifont fallback subset (OFL), KeyMapper, Shell/Screen/Nav, ListView, Menu, Dialog, Toast, VolumeOverlay, status bar, strip; 88 golden images; toolkit RAM ≈ 3.96 KiB |
-| UI-2 | in progress (worker) | Home, Settings, system screens, `yoton-apps` service traits |
-| PG-2 | in progress | `yoton-settings` KV store done on the host (power-cut tests); device front end next |
-| USB-1 | in progress | Driver + developer channel written; image enumerates as `1209:0001`; host access waits for `tools/udev/99-yotonrs.rules` to be installed by the user |
-| PWR-1 | in progress | Levels 24–192 MHz and the 1.0 V supply written; self-test image `clocks` not run yet |
-| PG-1 | in progress | NOR driver done; Rust stage 2 built (1000 B); stack guard; pager device side next; T-3 host side with a worker |
-| T-3 | in progress (worker) | pagelink, PagerCore, check-resident |
-| FS-1 | in progress (worker) | `yoton-fs` |
-| T-7, AU-1 (host), AU-2, AU-3, AU-4 | in progress (worker) | audio core and codecs |
-| AU-9 | host part done; device benchmark and HIL CRC not run | `yoton-codec-speex`: libspeex 1.2.1 ported in `f32`; see the session log |
-| AU-8 | host part done; device benchmark and HIL CRC not run | `yoton-ogg` (shared Ogg layer, reconciled with AU-7's) and `yoton-codec-opus`: libopus 1.5.2 ported (integer SILK, `f32` CELT), Ogg Opus per RFC 7845; RFC 8251 vectors range-exact; see the session log |
+| T-1, T-2, T-4a, HAL-0, HAL-1, T-5 | done | see earlier log entries |
+| T-3, PG-1 | done | pagelink, PagerCore, check-resident; demand paging on the player (8 KiB pages, 1 KiB lines) |
+| T-6 | started | Rust NOR payload `fw/payloads/norprog` (erase/program, full-layout guard); ymon and nordump still the reference repo's C payloads |
+| LAY-1 | done (device) | Full layout installed (`xtask dev install-full --i-have-a-backup`), layout-aware `stage`, `restore vendor [--verify]`. Unifont pack in NOR not done (the UI's fonts are built in) |
+| LCD-1, INPUT-1, PWR-2, AU-0 | done pending user checks 7, 8, 9, 10 | |
+| SD-1, FM-0, USB-1, USB-3, PWR-1 | done | |
+| SYS-1 | done (first cut) | Firmware: tasks, settings in NOR, developer channel, watchdog task fed only on RT + main + UI progress (verified: a hung main executor resets in ≈ 3 s), test safety window |
+| PWR-2 governor | first cut | 48 ↔ 96 ↔ 144 MHz from main-executor idle share |
+| RTC-1 | done (device) | set/read over the developer channel (`xtask dev time [--set]`); alarm untested; once lost after a ymon reset (U-RTC open) |
+| USB-4 | done (device) | Card-reader personality: card handed between the card task and USB; write-protected test mode; mid-track switch and hand-back verified. 2.3 MB/s read (open) |
+| FS-1 | done | `yoton-fs` |
+| FS-2 / AU-5 firmware | first cut on the player | Files lists the card (on-disk order, no sort until AU-12), text viewer window, folder play queue, Now Playing; `yoton-player` (queue/resume/bookmarks) not yet wired in |
+| UI-1, UI-2, UI-3, UI-4 | done (host); running on the player | 457 golden images |
+| AU-1…AU-4, AU-7, AU-8, AU-9 | done (host); MP3/FLAC/WAV played on the player | Vorbis/Opus/Speex not yet played on the player (no test files inside `/.yoton/`) |
+| AU-6 | done (host) | `yoton-dsp`; not wired into the firmware; WSOLA speed change not done |
+| AU-14 | done (host) | `yoton-img` |
+| OTP-1, BT-1, USB-6 | done (host) | `yoton-otp`, `yoton-bt`, MMC/CD-ROM in `yoton-usb` |
 
 ## 3. Session log
+
+### 2026-11-24 — implementation session 2 (lead)
+
+* Paged firmware boots from NOR; Home, Files, Music, Settings on the player.
+  Hang hunted down with new STATS counters (pager, UI loop, RT phases, IRQs
+  per line): at 48 MHz the Now Playing UI (~35 %) plus MP3 decode with page
+  refaults (~56 %) starved the USB task; the governor (96 MHz) fixes it
+  (46 % idle while playing from Files). Also fixed: main-stack overflow (Fw
+  held 6 KB by value), card-reader buffer lent from the decoder arena (+16 KB
+  stack), handlers bound through `rt::bind` placed resident, a browse
+  request loop for short folders, watchdog fed by the pager and every
+  executor poll (now: watchdog task on RT + main + UI progress).
+* **Full-flash layout (D-2, user decision)**: new stage 2 (slots tried in
+  order, slot index recorded, stock path removed), firmware finds its slot,
+  HAL NOR guard follows the layout, Rust NOR payload, `install-full`,
+  `restore vendor`. Sequence run: dump whole chip (`local/nor-before-full.bin`,
+  differs from the stock backup only in sector 0 bytes 0–0x1FF and above
+  0x762000), stage 2 tested from RAM, installed, booted; firmware written to
+  0x1000 (10.2 s), 0x63000–0x7DA000 erased (1,907 sectors, 35.6 s); boots;
+  the 544,768-byte image with Opus and Speex (too big for the dual slot)
+  boots from full slot A.
+* Merged worker results: OTP-1, BT-1, USB-6, AU-5 (`yoton-player`), AU-7,
+  AU-6, UI-3/UI-4, AU-14, AU-8/AU-9 with the Ogg layers unified.
+
 
 ### 2026-11-24 — AU-8/AU-7 Ogg reconciliation (worker)
 
@@ -194,10 +212,23 @@ of every session. Newest entries first in §3.
 | 2026-11-24 | Speex code size thumbv7em (before LTO) | 32.9 KB | `xtask test codec-size` |
 | 2026-11-24 | yoton-ogg code size thumbv7em (before LTO), both readers + bisection | 7,673 B | `xtask test codec-size` |
 | 2026-11-24 | Vorbis / Opus / Speex after the Ogg merge | −114.7…−122.3 / −88.4…−138.4 / −99.9…−119.6 dBFS | `xtask test codecs --gen` |
+| 2026-11-24 | MP3 48 kHz album file via `dev cmd play`, Home screen, 48 MHz | real time, 0 underruns, main idle 52 %, ≈ 790 NOR line loads/s | `xtask dev stats` |
+| 2026-11-24 | Same file started from Files (Now Playing), 48 MHz | main idle ≈ 0 %, decode ≈ 56 %, UI draw ≈ 35 % → USB starved | `xtask dev stats` |
+| 2026-11-24 | Same, governor at 96 MHz | 0 underruns, main idle ≈ 46 % | `xtask dev stats` |
+| 2026-11-24 | Pager line loads at rest (Home) | ≈ 240/s | `xtask dev stats` |
+| 2026-11-24 | Main stack: size / used at idle | 32,192 B / ≈ 14 KB (full image) | INFO stack high-water |
+| 2026-11-24 | Watchdog reset after a blocked main executor | ≈ 3 s | `xtask dev cmd hang` |
+| 2026-11-24 | Card reader sequential read (write-protected test mode) | 2.3 MB/s | `dd` 128 MiB |
+| 2026-11-24 | NOR program via Rust payload / erase of 1,907 sectors | 401,408 B in 10.2 s / 35.6 s | `xtask dev install-full` |
+| 2026-11-24 | Firmware image, all codecs (full layout) | resident 54,308 B, 43 code + 16 rodata pages, slot 544,768 B | `xtask build` |
+| 2026-11-24 | Stage 2 (Rust, full-layout aware) | 876 B of 1,024 | `cargo build -p stage2` |
+
 
 ## 5. Open questions for the user
 
-* Install the udev rule for the yotonrs USB id (command in `tools/udev/99-yotonrs.rules`).
 * User checks 7–10 in `docs/USER-CHECKS.md` (picture, keys, charge current,
   tones). 8 and 10 are blocking for M4 and M5.
-* Decisions D-1 … D-8 in `docs/PLAN.md` §5 (defaults assumed).
+* Decisions D-1, D-3 … D-8 in `docs/PLAN.md` §5 (defaults assumed); D-2 decided (full layout).
+* Bluetooth: should the shutdown command 0x24 be part of normal power-off (CLAUDE.md rule 6 keeps it out of automatic paths for now)?
+* Opus: keep the −50 dBFS seek tolerance for SILK on stationary tones?
+* Test files for Vorbis/Opus/Speex on the card: may they be copied into `/.yoton/test/` (needs a write path through the firmware's own FS, or a one-off read-write mount, which also sets the volume dirty flag)?

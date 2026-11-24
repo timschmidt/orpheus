@@ -79,6 +79,7 @@ symbols = []
 # header read, NOR driver, PagerCore init) and the early MPU deny.
 roots = [
     "firmware::start_pager",
+    "firmware::find_slot",
     "atj2157_hal::pager::arm_deny",
     "atj2157_hal::log::init",
     # Audio DMA half/complete handler (`enable_irq_with`, level 1).

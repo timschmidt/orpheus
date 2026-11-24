@@ -35,6 +35,44 @@ pub mod dual {
     pub const ROCKBOX_RESIDENT: u32 = 0x007C_C000;
 }
 
+/// Full layout (02 §2.4; decision D-2): the stock firmware is gone and
+/// yotonrs owns everything except sector 0 (stage 1, written only by
+/// `install-boot`) and the top 128 KiB (vendor data, left alone). The
+/// settings store, vault and stage 2 stay where the dual layout has them,
+/// so a switch keeps the owner's settings.
+pub mod full {
+    /// First byte yotonrs may erase or program (sector 0 excluded).
+    pub const FREE_START: u32 = 0x0000_1000;
+    /// Slot A (2 MiB less sector 0).
+    pub const SLOT_A: u32 = 0x0000_1000;
+    pub const SLOT_A_SIZE: u32 = 0x001F_F000;
+    /// Slot B (the updater writes the inactive slot).
+    pub const SLOT_B: u32 = 0x0020_0000;
+    pub const SLOT_B_SIZE: u32 = 0x0020_0000;
+    /// Resources: font pack, language packs, wallpapers.
+    pub const RESOURCES: u32 = 0x0040_0000;
+    pub const RESOURCES_SIZE: u32 = 0x0024_0000;
+    /// Reserved up to the settings store (the old dual-boot slot lies here).
+    pub const RESERVED: u32 = 0x0064_0000;
+    /// One past the last byte yotonrs may write (the vendor data above is
+    /// kept).
+    pub const FREE_END: u32 = 0x007E_0000;
+}
+
+/// Firmware slots stage 2 tries, in order; stage 2 records the index it
+/// booted in the low byte of the boot-info word.
+pub const SLOTS: [u32; 3] = [full::SLOT_A, full::SLOT_B, dual::SLOT_A];
+
+/// Whether `[addr, addr + len)` lies in the region the full layout lets
+/// yotonrs write.
+#[must_use]
+pub const fn full_writable(addr: u32, len: u32) -> bool {
+    match addr.checked_add(len) {
+        Some(end) => addr >= full::FREE_START && end <= full::FREE_END && len > 0,
+        None => false,
+    }
+}
+
 /// Stage 2 magic at offset 0 of its 1 KiB record (`"YST2"`); entry at +0x11.
 pub const STAGE2_MAGIC: u32 = crate::magic(b"YST2");
 pub const STAGE2_LOAD: u32 = 0x0010_2400;
@@ -61,6 +99,20 @@ mod tests {
         assert_eq!(dual::VAULT + dual::VAULT_SIZE, dual::BOOT_SECTOR);
         assert_eq!(dual::STAGE2 + dual::STAGE2_MAX, dual::BOOT_SECTOR + 0x800);
         const { assert!(VENDOR_END < dual::FREE_START) };
+    }
+
+    #[test]
+    fn full_regions() {
+        assert_eq!(full::SLOT_A + full::SLOT_A_SIZE, full::SLOT_B);
+        assert_eq!(full::SLOT_B + full::SLOT_B_SIZE, full::RESOURCES);
+        assert_eq!(full::RESOURCES + full::RESOURCES_SIZE, full::RESERVED);
+        const { assert!(full::RESERVED <= dual::SETTINGS) };
+        assert_eq!(full::FREE_END, dual::FREE_END);
+        assert!(!full_writable(0, 0x1000));
+        assert!(!full_writable(0xFFF, 2));
+        assert!(full_writable(0x1000, 0x1000));
+        assert!(full_writable(0x7DF000, 0x1000));
+        assert!(!full_writable(0x7DF000, 0x1001));
     }
 
     #[test]

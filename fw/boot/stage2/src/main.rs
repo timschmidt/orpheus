@@ -3,12 +3,15 @@
 //! Decides, in this order:
 //! 1. mailbox `"ADFU"` at `0x137FF4` → boot ROM USB recovery;
 //! 2. Next key held (ladder 1, 60..200) → USB recovery;
-//! 3. OK key held (ladder 2, 350..490) → stock firmware;
-//! 4. three failed starts in a row (counter at `0x137FF8`) → USB recovery;
-//! 5. a `"YFW1"` slot at `0x762000` (magic, version, bounds, resident
+//! 3. three failed starts in a row (counter at `0x137FF8`) → USB recovery;
+//! 4. the first valid `"YFW1"` slot of full slot A `0x001000`, full slot B
+//!    `0x200000`, dual slot `0x762000` (magic, version, bounds, resident
 //!    sum32; the firmware checks the header CRC and page store) → load its
-//!    resident image and enter it;
-//! 6. otherwise the stock firmware, and if that is missing, USB recovery.
+//!    resident image and enter it, slot index in the boot-info low byte;
+//! 5. otherwise USB recovery.
+//!
+//! The stock-firmware path (OK key, and the fallback) is gone with decision
+//! D-2 (full layout): the stock firmware is erased.
 //!
 //! Writes its decision to `0x137FFC` (`BootInfo`). Never touches the rest
 //! of the persistent area. No `.data`, no `.bss`, no panics; everything
@@ -27,9 +30,9 @@ const MB_INFO: *mut u32 = 0x0013_7FFC as *mut u32;
 const ADFU_MAGIC: u32 = 0x5546_4441;
 const COUNT_TAG: u32 = 0x0059_4D42;
 
-const SLOT: u32 = 0x0076_2000;
-const VENDOR_RECORD: u32 = 0x007D_F000;
-const VENDOR_TMP: u32 = 0x0010_2000; // below stage 2, above the ROM's use
+/// `yoton_proto::layout::SLOTS`.
+const SLOTS: [u32; 3] = [0x0000_1000, 0x0020_0000, 0x0076_2000];
+const HDR_TMP: u32 = 0x0010_2000; // below stage 2, above the ROM's use
 const YFW1: u32 = 0x3157_4659;
 /// Largest resident image: up to the top of the area the trampoline keeps.
 const IMAGE_MAX: u32 = 0x0003_7C00;
@@ -106,8 +109,9 @@ fn adfu(path: u32) -> ! {
 }
 
 fn info(path: u32, attempt: u32) {
-    // SAFETY: persistent mailbox word.
-    unsafe { wr(MB_INFO, 0x4200_0000 | path << 16 | attempt << 8) };
+    // SAFETY: persistent mailbox word. `attempt` carries the slot index in
+    // its low byte when shifted by the caller (`attempt << 8 | slot`).
+    unsafe { wr(MB_INFO, 0x4200_0000 | path << 16 | attempt) };
 }
 
 /// Byte-polled NOR READ into `dst` (or only summed when `dst` is null);
@@ -194,39 +198,6 @@ extern "C" fn load_and_jump(src: u32, len: u32, entry: u32) -> ! {
     )
 }
 
-/// Runs from the trampoline: copy the vendor boot record over the stage-1
-/// area and enter it, as the C stage does.
-#[unsafe(link_section = ".tramp.vendor")]
-#[unsafe(naked)]
-extern "C" fn enter_vendor() -> ! {
-    core::arch::naked_asm!(
-        "ldr r0, =0x00102000",
-        "ldr r1, =0x00101000",
-        "movs r2, #256",
-        "2: ldr r3, [r0], #4",
-        "str r3, [r1], #4",
-        "subs r2, r2, #1",
-        "bne 2b",
-        "ldr r0, =0x00100034", // ROM context: the vendor record expects descrambling
-        "movs r1, #1",
-        "str r1, [r0, #0x68]",
-        "ldr r0, =0x00101011",
-        "bx r0",
-        ".ltorg",
-    )
-}
-
-#[inline(never)]
-fn try_vendor() {
-    let mut err = 0u32;
-    nor_read_main(VENDOR_RECORD, VENDOR_TMP as *mut u8, 1024, &mut err);
-    // SAFETY: just loaded.
-    if err == 0 && unsafe { rd((VENDOR_TMP + 2) as *const u8) } == 0xA5 {
-        info(2, 0);
-        enter_vendor();
-    }
-}
-
 /// NOR read callable before the trampoline matters (it is also linked at
 /// its SRAM1 address; the copy happens first thing).
 fn nor_read_main(addr: u32, dst: *mut u8, len: u32, err: &mut u32) -> u32 {
@@ -275,12 +246,8 @@ extern "C" fn stage2_main() -> ! {
         core::hint::spin_loop();
     }
     let k1 = adc(0xC001_0050);
-    let k2 = adc(0xC001_0064);
     if k1 >= 60 && k1 <= 200 {
         adfu(3);
-    }
-    if k2 >= 350 && k2 <= 490 {
-        try_vendor();
     }
     // SAFETY: boot counter word.
     let tries = unsafe {
@@ -293,29 +260,33 @@ extern "C" fn stage2_main() -> ! {
         wr(MB_COUNT, COUNT_TAG << 8 | (t + 1));
         t + 1
     };
-    // Slot header (first 128 bytes) into scratch RAM below stage 2.
-    let hdr = VENDOR_TMP;
-    let mut err = 0u32;
-    nor_read_main(SLOT, hdr as *mut u8, 128, &mut err);
+    // Slot headers (first 128 bytes) into scratch RAM below stage 2.
+    let hdr = HDR_TMP;
     let w = |o: u32| {
         // SAFETY: the header copy.
         unsafe { rd((hdr + o) as *const u32) }
     };
-    if err == 0 && w(0) == YFW1 && w(4) == 1 {
-        let off = w(0x10);
-        let len = w(0x14);
-        let load = w(0x18);
-        let entry = w(0x1C);
-        if load == 0x0010_0000 && len > 0 && len <= IMAGE_MAX && off < 0x0007_8000 && entry & 1 == 1 {
-            let sum = nor_read_main(SLOT + off, core::ptr::null_mut(), len, &mut err);
-            if err == 0 && sum == w(0x20) {
-                info(1, tries);
-                let jump: extern "C" fn(u32, u32, u32) -> ! = load_and_jump;
-                jump(SLOT + off, len, entry);
+    let mut i = 0;
+    while i < SLOTS.len() {
+        let slot = SLOTS[i];
+        let mut err = 0u32;
+        nor_read_main(slot, hdr as *mut u8, 128, &mut err);
+        if err == 0 && w(0) == YFW1 && w(4) == 1 {
+            let off = w(0x10);
+            let len = w(0x14);
+            let load = w(0x18);
+            let entry = w(0x1C);
+            if load == 0x0010_0000 && len > 0 && len <= IMAGE_MAX && off < 0x0007_8000 && entry & 1 == 1 {
+                let sum = nor_read_main(slot + off, core::ptr::null_mut(), len, &mut err);
+                if err == 0 && sum == w(0x20) {
+                    info(1, tries << 8 | i as u32);
+                    let jump: extern "C" fn(u32, u32, u32) -> ! = load_and_jump;
+                    jump(slot + off, len, entry);
+                }
             }
         }
+        i += 1;
     }
-    try_vendor();
     adfu(6)
 }
 

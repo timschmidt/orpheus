@@ -2,7 +2,8 @@
 # (thumbv7em-none-eabihf, see .cargo/config.toml).
 [workspace]
 resolver = "3"
-members = ["firmware", "atj2157-hal", "yoton-bsp", "bringup/*", "boot/stage2"]
+members = [
+    "payloads/norprog","firmware", "atj2157-hal", "yoton-bsp", "bringup/*", "boot/stage2"]
 
 [workspace.package]
 version = "0.1.0"

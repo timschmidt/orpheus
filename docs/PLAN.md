@@ -122,7 +122,7 @@ Defaults are what workers assume until told otherwise.
 | Id | Decision | Default | Why it matters |
 |---|---|---|---|
 | D-1 | Licence of yotonrs | MIT OR Apache-2.0; only permissively licensed sources may be ported; the GPL Rockbox tree is a hardware reference only | A GPL choice would allow porting Rockbox's codecs directly |
-| D-2 | When to give up the stock firmware for the full-flash layout | Not before M10; only on explicit request | Dual-boot limits the firmware to 480 KiB; feature flags decide what fits until then |
+| D-2 | When to give up the stock firmware for the full-flash layout | **Decided 2026-11-24 by the user: now** (stock firmware erased, full layout installed) | Dual-boot limited the firmware to 480 KiB |
 | D-3 | USB identity | pid.codes test id `1209:0001` in development; apply for a product id before release | The Rockbox port borrows Actions' vendor id |
 | D-4 | Use of the 288 MHz / 1.3 V level | No | Above the reset-default core voltage; vendor-used, but probably unnecessary |
 | D-5 | Open the case for a board inspection (Bluetooth chip marking, analogue tap, debug pads) | Not required | Would identify the Bluetooth chip, locate its audio tap and might expose SWD |

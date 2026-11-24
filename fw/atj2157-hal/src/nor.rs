@@ -12,7 +12,27 @@
 
 use atj2157_pac::spi::spi0;
 use atj2157_pac::{Reg, cmu, rmu};
-use yoton_proto::layout::dual_writable;
+use yoton_proto::layout::{dual_writable, full_writable};
+
+/// Set once the firmware runs from a full-layout slot (or a payload works
+/// on one): widens the write guard from the dual-boot free region to the
+/// full layout's (sector 0 and the vendor data at the top stay excluded).
+static FULL: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Allow writes anywhere the full layout permits.
+pub fn allow_full_layout() {
+    FULL.store(true, core::sync::atomic::Ordering::Relaxed);
+}
+
+#[unsafe(link_section = ".text.resident.nor")]
+#[inline(never)]
+fn writable(addr: u32, len: u32) -> bool {
+    if FULL.load(core::sync::atomic::Ordering::Relaxed) {
+        full_writable(addr, len)
+    } else {
+        dual_writable(addr, len)
+    }
+}
 
 const CTL: Reg = spi0::CTL;
 const STA: Reg = spi0::STA;
@@ -216,7 +236,7 @@ fn wait_ready(max_polls: u32) -> Result<(), Error> {
 
 /// Erase the 4 KiB sector at `addr` (aligned) inside the writable region.
 pub fn erase_sector(addr: u32) -> Result<(), Error> {
-    if !addr.is_multiple_of(4096) || !dual_writable(addr, 4096) {
+    if !addr.is_multiple_of(4096) || !writable(addr, 4096) {
         return Err(Error::Refused);
     }
     command(0x06);
@@ -228,7 +248,7 @@ pub fn erase_sector(addr: u32) -> Result<(), Error> {
 /// Program up to 256 bytes within one NOR page.
 pub fn program_page(addr: u32, data: &[u8]) -> Result<(), Error> {
     let len = data.len() as u32;
-    if len == 0 || len > 256 || (addr & 0xFF) + len > 256 || !dual_writable(addr, len) {
+    if len == 0 || len > 256 || (addr & 0xFF) + len > 256 || !writable(addr, len) {
         return Err(Error::Refused);
     }
     command(0x06);
@@ -255,7 +275,7 @@ fn cs_low_continue() {
 
 /// Erase, program and verify a sector-aligned range.
 pub fn write(addr: u32, data: &[u8], scratch: &mut [u8; 256]) -> Result<(), Error> {
-    if !addr.is_multiple_of(4096) || !dual_writable(addr, data.len().div_ceil(4096) as u32 * 4096) {
+    if !addr.is_multiple_of(4096) || !writable(addr, data.len().div_ceil(4096) as u32 * 4096) {
         return Err(Error::Refused);
     }
     for (si, sector) in data.chunks(4096).enumerate() {

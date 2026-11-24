@@ -238,6 +238,13 @@ scrambled resource; the NOR driver reads it with the hardware descrambler on.
 | `0x7DF000–0x7DFFFF` | stage 2 |
 | `0x7E0000–0x7FFFFF` | spare |
 
+As built (2026-11-24): the settings store, the vault and stage 2 stay at
+their dual-layout addresses (`0x7DA000`, `0x7DE000`, `0x7DF400`) so a switch
+keeps the owner's settings; `0x7E0000–0x7FFFFF` (vendor data) is left alone;
+stage 2 tries full slot A, full slot B, then the dual slot, and records the
+slot index in the boot-info word; the stock-firmware path is removed from
+stage 2.
+
 Switching to the full layout is a deliberate, user-approved step
 (`xtask dev install-full --i-have-a-backup`). Returning to stock is
 `xtask dev restore vendor` (whole-chip restore from `dumps/nor_backup_8m.bin`
