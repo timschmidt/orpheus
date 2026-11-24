@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security problem
+    url: https://github.com/timschmidt/orpheus/security/advisories/new
+    about: Report vulnerabilities privately.
+  - name: Manual
+    url: https://github.com/timschmidt/orpheus/tree/main/docs/user
+    about: How to install, use and recover the player.

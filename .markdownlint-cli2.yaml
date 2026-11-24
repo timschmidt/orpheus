@@ -1,0 +1,24 @@
+# Markdown lint (docs workflow). Only the documents written for readers;
+# the plan and the STATUS log are working documents and keep their style.
+globs:
+  - "README.md"
+  - "CONTRIBUTING.md"
+  - "SECURITY.md"
+  - "CHANGELOG.md"
+  - "docs/user/**/*.md"
+  - "docs/dev/**/*.md"
+  - "docs/brand/*.md"
+  - "site/pages/*.md"
+config:
+  default: true
+  # Line length: prose is wrapped by hand; tables and links are long.
+  MD013: false
+  # Inline HTML: the README's centred logo.
+  MD033: false
+  # The README starts with the logo, not a heading.
+  MD041: false
+  # The same heading under different parents ("Not yet").
+  MD024:
+    siblings_only: true
+  # Fenced code without a language: plain output samples.
+  MD040: false

@@ -1,0 +1,48 @@
+# Documentation checks: Markdown lint and links. Internal links on every
+# push and pull request; external links once a week (09 §3 "Tests").
+name: Docs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  markdown:
+    name: Markdown lint
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: DavidAnson/markdownlint-cli2-action@3ce8f712b5d8f31acd8e201be6d97e3d2bb23eb7 # v25.1.0
+        # Files and rules: .markdownlint-cli2.yaml
+
+  links:
+    name: Links (internal; external weekly)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Internal links
+        if: github.event_name != 'schedule'
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          args: >-
+            --offline --include-fragments --no-progress
+            README.md CONTRIBUTING.md SECURITY.md CHANGELOG.md
+            'docs/user/**/*.md' 'docs/dev/**/*.md' 'docs/brand/*.md'
+          fail: true
+      - name: External links
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          args: >-
+            --no-progress --max-retries 3
+            README.md CONTRIBUTING.md SECURITY.md CHANGELOG.md
+            'docs/user/**/*.md' 'docs/dev/**/*.md' 'docs/brand/*.md'
+          fail: true

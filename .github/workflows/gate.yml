@@ -1,0 +1,60 @@
+# The host part of the milestone gate (docs/plan/07-tooling-testing.md §6).
+# The device steps (HIL suites) need the player and run only locally.
+name: Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gate-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  host:
+    name: Host (fmt, clippy, tests, goldens, brand, site)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests (unit, golden images, fuzz-corpus replays)
+        run: cargo test --workspace
+      - name: Brand assets current
+        run: cargo xtask brand --check
+      - name: Site builds, links and screenshots check
+        run: cargo xtask site --check
+
+  firmware:
+    # Optional: the device workspace builds with the pinned toolchain alone,
+    # but a failure here does not block a pull request.
+    name: Firmware build (optional)
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - name: Format (fw)
+        working-directory: fw
+        run: cargo fmt --all --check
+      - name: Clippy (fw)
+        working-directory: fw
+        run: cargo clippy --workspace -- -D warnings
+      - name: Build and pagelink
+        run: cargo xtask build
+      - name: Size budgets
+        run: cargo xtask size --check
+      - name: Resident-set proof
+        run: cargo xtask check-resident

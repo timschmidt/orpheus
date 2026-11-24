@@ -1,0 +1,42 @@
+name: Bug report
+description: Something on the player, in the simulator or in the tools does not work as described.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Security problems go privately through SECURITY.md, not here.
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      options:
+        - On the player
+        - In the simulator
+        - Host tools (cargo xtask)
+        - Documentation or website
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: build
+    attributes:
+      label: Build
+      description: Settings › System › About on the player, `cargo xtask dev info`, or the commit you built.
+  - type: textarea
+    id: results
+    attributes:
+      label: Fault record or log
+      description: For a crash or restart, the output of `cargo xtask dev results` (see docs/dev/how-to/read-fault-record.md).
+      render: text
+  - type: textarea
+    id: files
+    attributes:
+      label: Files
+      description: For a file that does not play or show, its format and, if you may share it, the file.
