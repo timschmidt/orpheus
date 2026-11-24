@@ -1,6 +1,6 @@
 [package]
 name = "yoton-ogg"
-description = "Ogg page and packet reader over the stream ring (RFC 3533), no copying, no allocation"
+description = "Ogg page and packet layer (RFC 3533) over a ByteSource: CRC, zero-copy range packets or packets reassembled into a caller buffer, granule bisection seek; no allocation"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

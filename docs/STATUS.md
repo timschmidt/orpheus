@@ -39,8 +39,98 @@ of every session. Newest entries first in §3.
 | T-3 | in progress (worker) | pagelink, PagerCore, check-resident |
 | FS-1 | in progress (worker) | `yoton-fs` |
 | T-7, AU-1 (host), AU-2, AU-3, AU-4 | in progress (worker) | audio core and codecs |
+| AU-9 | host part done; device benchmark and HIL CRC not run | `yoton-codec-speex`: libspeex 1.2.1 ported in `f32`; see the session log |
+| AU-8 | host part done; device benchmark and HIL CRC not run | `yoton-ogg` (shared Ogg layer, reconciled with AU-7's) and `yoton-codec-opus`: libopus 1.5.2 ported (integer SILK, `f32` CELT), Ogg Opus per RFC 7845; RFC 8251 vectors range-exact; see the session log |
 
 ## 3. Session log
+
+### 2026-11-24 — AU-8/AU-7 Ogg reconciliation (worker)
+
+* AU-7 (Vorbis, on main) and AU-8 (Opus, Speex) each wrote a `yoton-ogg`.
+  Merged into one crate with a shared core and two packet readers:
+  * core (`lib.rs`, `seek.rs`): `PageHeader::parse`, `crc_update` /
+    `page_crc`, page sync, the generic answer `Next<P>` (`Packet`,
+    `NeedData`, `End`, `Corrupt`), and `Bisect` (granule bisection over a
+    `SeekSource`, now holding the stream serial; `Bisect::step` replaces
+    `PacketReader::seek_step`).
+  * `ranges::Reader` (AU-7's, ported onto the core): zero-copy packets as
+    byte ranges of the ring, pages larger than the ring, oversized packets
+    skipped as they stream past, `peek_packets` for inspection. Used by
+    Vorbis.
+  * `assembled::PacketReader` (AU-8's, unchanged apart from the module):
+    packets copied into a caller buffer, serial selection, chained-stream
+    hand-over, gap detection, resume at a page's granule. Used by Opus and
+    Speex.
+* Vorbis seeking now uses the shared `Bisect` instead of its own loop
+  (granule-0 pages are mapped to "start at the first audio packet", as
+  before); AU-7's `find_page`/`page_at`, used only by that loop, are gone.
+* The `ogg` fuzz target drives both readers over the same input.
+* Conformance after the merge (`xtask test codecs --gen`, 226 files, 0
+  failed): Vorbis −114.7 … −122.3 dBFS, 23/23 seeks exact on every file,
+  album join −121.2 dBFS (unchanged); Opus corpus −88.4 … −138.4 dBFS,
+  RFC 8251 vectors all 12 (24 decodes) range-exact, ≤ −128.9 dBFS
+  (unchanged; SILK seek tolerance −50 dBFS kept as AU-8 set it, user
+  decision still open); Speex −99.9 … −119.6 dBFS, max 4 LSB (within the
+  AU-9 figures).
+* Code size (thumbv7em, opt-level s, before LTO): `yoton-ogg` 7.7 KB for
+  both readers and the bisection (AU-8's alone was 4.8 KB). `AnyDecoder`
+  on thumbv7em: 984 B (Vorbis variant; Opus 784 B, Speex 608 B).
+
+### 2026-11-24 — AU-9 Speex (worker)
+
+* `crates/codecs/speex` (`yoton-codec-speex`): libspeex 1.2.1 decoder
+  (BSD-3, `LICENSE-XIPH-SPEEX`) in `f32` (float build; no `f64`), NB/WB/UWB,
+  every sub-mode, vocoder/null modes, DTX, enhancer on (libspeex default,
+  as ffmpeg leaves it), intensity stereo, any frames per packet, native
+  8/16/32 kHz output. Uses `yoton-ogg` unchanged.
+* Conformance (31-file corpus, references from ffmpeg `-c:a libspeex`):
+  −97 … −120 dBFS RMS, max 5 LSB, lengths exact. Length convention: ffmpeg
+  trims nothing for Speex (granules start at −look-ahead, every frame is
+  output), so neither does the decoder (`StreamInfo.frames` is `None`).
+  Seek: skims packets to the pre-roll start (for streams ≤ 1 MiB, else Ogg
+  bisection), then decodes 64 frames (1.28 s) of pre-roll; all corpus seeks
+  exact or within −80 dBFS. Beyond 1 MiB, noise-excited frames after a seek
+  carry different (statistically equal) noise.
+* Arena (used = plan; mono and stereo equal): NB 4,872 B, WB 7,768 B,
+  UWB 11,048 B of the 12 KiB budget (packet buffer 2 KiB). Code
+  (thumbv7em, before LTO): 32.9 KB. Deepest stack ≈ 1.5 KiB.
+* Not done: device benchmark, HIL CRC test, `hot.toml` cluster, chained
+  streams.
+
+### 2026-11-24 — AU-8 Opus (worker)
+
+* `crates/codecs/ogg` (`yoton-ogg`): page parsing, CRC (checked before use
+  for pages ≤ `MAX_PEEK`, streamed for larger ones), packet reassembly into
+  a caller buffer, serial selection, chained-stream hand-over, granule
+  bisection seek. Written here because AU-7 had not created one yet: the
+  lead reconciles with AU-7.
+* `crates/codecs/opus`: port of the libopus 1.5.2 decoder (BSD-3, licence in
+  `LICENSE-XIPH`). SILK integer (bit-exact; every libopus build decodes SILK
+  in fixed point), CELT in `f32` because the conformance references
+  (ffmpeg's libopus, the RFC 8251 `.dec` files) are float builds and the
+  M4F has a single-precision FPU; no `f64`, no recursion (`quant_partition`
+  runs on an explicit stack), `sqrt` correctly rounded, `exp2`/`cos`
+  within 1–2 ulp. `opuscule` was evaluated and not adopted: MPL-2.0 (not
+  permissive under D-1) and a by-value decoder state outside the arena.
+* Conformance: all 12 RFC 8251 vectors, stereo (`.dec`) and
+  phase-inversion-disabled (`m.dec`, RFC 8251 §10): final range equal on
+  every packet, RMS difference ≤ −128.9 dBFS, max 1 LSB (SILK-only vectors
+  bit-exact). Corpus (`opus/`, 42 files, libopus via ffmpeg and opusenc,
+  SILK/hybrid/CELT, 2.5–120 ms frames, CBR/VBR, header gain ±6 dB, picture
+  in OpusTags): −88 … −138 dBFS, lengths exact (pre-skip and end trimming),
+  surround refused. Seek: CELT/hybrid exact after the 400 ms pre-roll; SILK
+  on stationary synthetic tones keeps −57 … −78 dBFS for seconds (its
+  integer LPC/LTP state converges slowly), accepted by a separate Opus seek
+  tolerance of −50 dBFS in `checks.rs` (a deviation from 07 §3.3 for the
+  lead to confirm).
+* Arena high-water (stereo / mono): 58.1 KiB (59,488 B) / 42.1 KiB of the
+  64 KiB budget (packet buffer 4 KiB; larger packets are concealed).
+  Code (thumbv7em, opt-level s, before LTO): opus 117.6 KB, ogg 4.8 KB.
+  Largest stack frames: decode chain ≈ 3 KB (no frame above 1.2 KB).
+  Host speed (conformance build, overflow checks on): 26–273 ns per sample
+  frame, i.e. 80–800× real time.
+* Not done: device benchmark (04 §4.3 row), HIL CRC test, `hot.toml`
+  cluster, multistream/surround, FEC, Opus in other containers.
 
 ### 2026-11-23 — implementation session 1 (lead + four host-track workers)
 
@@ -96,6 +186,14 @@ of every session. Newest entries first in §3.
 | 2026-11-23 | DAC consumption at 44.1 / 48 kHz | 44,168–44,229 / 48,076 Hz | `hil drivers/audio` |
 | 2026-11-23 | SD sequential read, 64 KiB / 4 KiB requests | 9,294 / 3,432 KiB/s | `hil drivers/sd` |
 | 2026-11-23 | Battery raw at rest / charging | 801 / 828 (≈ 3.74 V) | `hil drivers/charge` |
+| 2026-11-24 | Opus vs libopus float, RFC 8251 vectors (24 decodes) | range-exact; RMS ≤ −128.9 dBFS, max 1 LSB | `cargo test -p yoton-codec-opus --release` (`OPUS_VECTORS`) |
+| 2026-11-24 | Opus arena high-water stereo / mono | 59,488 B / 42.1 KiB (budget 64 KiB) | `xtask test codecs --filter opus/` |
+| 2026-11-24 | Opus code size thumbv7em (before LTO) | 117.6 KB (+ yoton-ogg 4.8 KB) | `xtask test codec-size` |
+| 2026-11-24 | Speex vs libspeex (ffmpeg), 31 files | −97 … −120 dBFS RMS, max 5 LSB | `xtask test codecs --filter speex/` |
+| 2026-11-24 | Speex arena NB / WB / UWB | 4,872 / 7,768 / 11,048 B (budget 12 KiB) | same |
+| 2026-11-24 | Speex code size thumbv7em (before LTO) | 32.9 KB | `xtask test codec-size` |
+| 2026-11-24 | yoton-ogg code size thumbv7em (before LTO), both readers + bisection | 7,673 B | `xtask test codec-size` |
+| 2026-11-24 | Vorbis / Opus / Speex after the Ogg merge | −114.7…−122.3 / −88.4…−138.4 / −99.9…−119.6 dBFS | `xtask test codecs --gen` |
 
 ## 5. Open questions for the user
 

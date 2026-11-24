@@ -1,7 +1,9 @@
 use std::vec::Vec;
 
-use super::*;
 use yoton_audio::SliceSource;
+
+use crate::ranges::{Next, Packet, PageErr, Reader, peek_packets};
+use crate::*;
 
 /// Write one page of `serial` holding `segs` (lacing values) of `body`.
 fn page(serial: u32, seq: u32, flags: u8, granule: u64, lacing: &[u8], body: &[u8]) -> Vec<u8> {
@@ -14,10 +16,7 @@ fn page(serial: u32, seq: u32, flags: u8, granule: u64, lacing: &[u8], body: &[u
     p.push(lacing.len() as u8);
     p.extend_from_slice(lacing);
     p.extend_from_slice(body);
-    let mut c = 0u32;
-    for &b in &p {
-        c = crc_update(c, b);
-    }
+    let c = crc_update(0, &p);
     p[22..26].copy_from_slice(&c.to_le_bytes());
     p
 }
@@ -85,7 +84,7 @@ fn read_all(data: &[u8], ring: usize, chunk: usize) -> Vec<(Vec<u8>, u64, bool)>
                 out.push((bytes, p.granule, p.eos));
                 r.commit(&mut src, &p);
             }
-            Next::Need(n) => {
+            Next::NeedData(n) => {
                 assert!(n > src.available() && !src.at_end());
                 src.trickle(chunk);
             }
@@ -140,4 +139,20 @@ fn foreign_pages_and_damage() {
     let lens: Vec<usize> = got.iter().map(|g| g.0.len()).collect();
     let want: Vec<usize> = ps.iter().map(Vec::len).filter(|&l| l != 5384).collect();
     assert_eq!(lens, want, "only the damaged packet is lost");
+}
+
+#[test]
+fn peek_packets_reads_headers_without_consuming() {
+    let ps = packets();
+    let data = stream(&ps, 17, 5);
+    let v = View::new(&data, &[]);
+    let mut out = [Packet::default(); 4];
+    peek_packets(&v, true, &mut out).unwrap();
+    for (p, want) in out.iter().zip(&ps) {
+        let got: Vec<u8> = (0..p.len).map(|i| p.byte(&v, i)).collect();
+        assert_eq!(&got, want);
+    }
+    // Cut short: more bytes are asked for.
+    let v = View::new(&data[..100], &[]);
+    assert!(matches!(peek_packets(&v, false, &mut out), Err(PageErr::Need(n)) if n > 100));
 }
