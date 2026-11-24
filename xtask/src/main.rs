@@ -42,10 +42,12 @@ usage: cargo xtask <command> [options]
                                    size report; --check enforces budgets.toml
   test [host|golden|pagelink|codecs|fuzz-smoke|codec-size|all]
                                    host test suites (pagelink: the paged toy end to end)
+  test fuzz-seeds                  rewrite the committed seed inputs of every fuzz
+                                   target (tests/fuzz-corpus/<target>/seed-*)
   test asan [--fuzz-only] [--lean] host tests and every fuzz target's corpus under
                                    AddressSanitizer + LeakSanitizer (nightly)
   test miri [--crate NAME]         Miri on the crates listed in xtask/src/sanitize.rs
-  cover [--crate NAME] [--fuzz] [--html] [--clean] [--report-only] [--add]
+  cover [--crate NAME] [--fuzz|--fuzz-only] [--html] [--clean] [--report-only] [--add]
                                    LLVM source-based coverage (line, region, branch)
                                    of crates/, sim/, xtask/: target/orpheus/coverage/
   metrics [--elf PATH]             append this commit's coverage and firmware

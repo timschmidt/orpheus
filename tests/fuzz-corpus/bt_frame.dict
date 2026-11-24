@@ -1,0 +1,7 @@
+# Module frames (bluetooth.md 3.4): sync, ready, acknowledge header, identity
+"\xAA"
+"\xAA\x00\x01\x23\xDC"
+"\xAA\x00\x02\x00"
+"\xAA\x00\x01\x04\xFB"
+"ATS2851\x00"
+"\x00\x2C"

@@ -455,7 +455,9 @@ impl Player {
     fn next_pos(&self, auto: bool) -> Option<u32> {
         let p = self.cur?.pos;
         if auto && self.repeat == Repeat::One {
-            return Some(p);
+            // Only a position the queue has (a bookmark played with an
+            // empty queue has none: VER-4 finding F-PLY-2).
+            return (p < self.len).then_some(p);
         }
         if p + 1 < self.len {
             Some(p + 1)
@@ -637,6 +639,9 @@ impl Player {
                 if len == 0 {
                     self.cur = None;
                     self.state = State::Stopped;
+                    // Shuffle stays on, over the empty queue (the old order
+                    // was left behind: VER-4 finding F-PLY-1).
+                    self.shuffle = self.shuffle.map(|_| Shuffle::new(0, self.seed));
                     out.push(Action::Stop);
                     return;
                 }

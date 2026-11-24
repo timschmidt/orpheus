@@ -1,0 +1,1 @@
+otpauth://hotp/?secret=QA&algorithm=SHA256&algorithm=SHA256&counter=3

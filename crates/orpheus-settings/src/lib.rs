@@ -167,7 +167,15 @@ impl<F: Nor, const N: usize> Store<F, N> {
             let key = u16::from_le_bytes([rh[0], rh[1]]);
             let len = u16::from_le_bytes([rh[2], rh[3]]);
             if key == 0xFFFF && len == 0xFFFF && word(&rh, 4) == 0xFFFF_FFFF {
-                break; // erased: end of log
+                // Erased: end of log. If anything was programmed after it
+                // (foreign data, bit rot), appending here would program
+                // over it and corrupt the new record: the next append
+                // compacts into a freshly erased sector instead (VER-4
+                // finding F-SET-1).
+                if !self.erased_from(base + off, base + SECTOR).await? {
+                    off = SECTOR;
+                }
+                break;
             }
             let dlen = if len == DELETED { 0 } else { u32::from(len) };
             let total = REC_HDR + pad4(dlen);
@@ -183,6 +191,21 @@ impl<F: Nor, const N: usize> Store<F, N> {
         }
         self.head = off;
         Ok(())
+    }
+
+    /// Whether `[from, to)` reads as erased.
+    async fn erased_from(&mut self, mut from: u32, to: u32) -> Result<bool, Error<F::Error>> {
+        let mut buf = [0u8; 64];
+        while from < to {
+            let n = (to - from).min(buf.len() as u32);
+            let b = &mut buf[..n as usize];
+            self.nor.read(from, b).await?;
+            if b.iter().any(|&x| x != 0xFF) {
+                return Ok(false);
+            }
+            from += n;
+        }
+        Ok(true)
     }
 
     async fn check(&mut self, at: u32, len: u16, crc: u32) -> Result<bool, Error<F::Error>> {
@@ -506,5 +529,24 @@ mod tests {
             block_on(s.set(9, b"after")).unwrap();
             assert_eq!(get(&mut s, 9).as_deref(), Some(&b"after"[..]));
         }
+    }
+
+    /// Bytes programmed after the end of the log (foreign data, bit rot)
+    /// are not programmed over: the next value goes to a fresh sector and
+    /// reads back intact, before and after a remount (VER-4 F-SET-1).
+    #[test]
+    fn garbage_after_the_log_end() {
+        let mut s = block_on(S::mount(SimNor::new(4))).unwrap();
+        block_on(s.set(1, b"kept")).unwrap();
+        let mut nor = s.into_inner();
+        // After the first record (16 + 12 + 4 bytes): an erased header,
+        // then stray bytes.
+        nor.mem[100] = 0x75;
+        let mut s = block_on(S::mount(nor)).unwrap();
+        block_on(s.set(2, &[0x1E; 90])).unwrap();
+        assert_eq!(get(&mut s, 2), Some(vec![0x1E; 90]));
+        let mut s = block_on(S::mount(s.into_inner())).unwrap();
+        assert_eq!(get(&mut s, 2), Some(vec![0x1E; 90]));
+        assert_eq!(get(&mut s, 1).as_deref(), Some(&b"kept"[..]));
     }
 }

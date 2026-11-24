@@ -309,6 +309,52 @@ exceed the whole PCM ring (≈ 70 ms). The first FLAC join started with only
 * Not verified on the player (I have no hardware). Open: the join numbers
   from the next run; Vorbis (codebook set-up in the open window); whether
   0 underruns needs the pre-inspect step.
+### 2026-11-24 — VER-4 part 1: fuzz targets, committed corpora, findings (worker, no hardware)
+
+* **16 new cargo-fuzz targets**, one project per crate (`crates/<crate>/fuzz/`,
+  `sim/fuzz/`), bodies in the project's `src/lib.rs`, each crate's stable
+  `tests/fuzz_corpus.rs` replaying `tests/regress/<t>/` and
+  `tests/fuzz-corpus/<t>/` on every `cargo test`: `otp_uri`, `otp_vault`,
+  `bt_frame`, `bt_tx`, `usb_scsi`, `usb_devchan`, `proto_records`,
+  `settings_mount`, `index_open`, `library_open`, `player_queue`,
+  `player_resume`, `sd_registers`, `input_samples`, `power_samples`, and
+  **`ui_keys`** (the apps over the simulator: keys, timing, system events,
+  settings with any value; oracles include golden-consistent redraws).
+  Invariants per target: `docs/verification/baseline-2026-11.md` §8.1.
+* **Corpora committed** for all 30 targets: 13.5 k files, 15 MB, every file
+  ≤ 64 KiB, 8 dictionaries; seeds from the crates' encoders and fixtures and
+  the synthetic conformance corpus (`cargo xtask test fuzz-seeds`). Every
+  new target fuzzed 10 min after its last fix, every old target 5 min (ASan),
+  corpora `cargo fuzz cmin`-ed; codec/picture corpora re-merged with
+  `-max_len=4096` to stay under 20 MB.
+* **Findings** (§8.4): fixed F-BT-1 (a sink's "no absolute volume" report
+  set the player's volume to the maximum), F-SET-1 (settings written over
+  non-erased bytes after the log end), F-USB-1, F-IDX-1 (letter jumps past
+  the listing from damaged index/library files), F-LIB-1 (u32 offset
+  overflow in library queries), F-LIB-2, F-PLY-1, F-PLY-2 (repeat one asked
+  to open item 0 of an empty queue), F-UI-2 (content, menus, dialogs drawn
+  over the volume overlay/toast), F-UI-3 (remaining time a second off), and
+  the VER-5 LeakSanitizer leak of the simulator (`Volume::into_parts`).
+  **Open**: F-UI-1 (volume overlay corners compound; needs a UI decision and
+  re-blessed goldens), F-SET-2 (`remove` on a full store returns `Full`),
+  F-UI-4 (one more Now Playing redraw difference, reproducer in
+  `tests/regress-open/ui_keys/`).
+* **Tooling**: `xtask test fuzz-seeds`; `xtask test fuzz-smoke` runs every
+  target of every project from the committed corpora and dictionaries;
+  `xtask cover --fuzz-only`; `fuzz_dirs` scans `sim/`.
+* **Coverage** (§8.3): fuzz only ≈ 0 → regions 78.04 % of the files the
+  fuzz binaries contain (48,171 / 61,729); host + fuzz 72.16 % → **83.27 %**
+  regions (74,194 / 89,102), lines 83.37 %, branches 80.81 %.
+* Not done (part 2): plateau runs (≥ 24 h per target), targets for
+  `orpheus-apps` `settings::decode`/`FileRef::from_bytes`, `orpheus-audio`
+  ring behaviour, the pager traces, the host tools. The UI target runs at
+  1–10 executions/s (a simulator per input, library builds ≈ 0.35 s).
+* `docs/verification/findings.md` was not created (this worker's tools
+  refused new Markdown files): the findings table is §8.4 of the baseline.
+* Gate: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets
+  -- -D warnings`, `cargo test --workspace`, `cd fw && cargo clippy
+  --workspace -- -D warnings` pass; device steps not run (host-only
+  package).
 
 ### 2026-11-24 — UI-6a: the Bluetooth app (worker, no hardware)
 
@@ -494,6 +540,7 @@ exceed the whole PCM ring (≈ 70 ms). The first FLAC join started with only
   for the toast; after each edit `cargo xtask dev cmd status` and a
   power-off/on: Music → Resume continues in the edited queue.
 | VER-1 (host), VER-5 (host) | **tooling done; baseline measured** | `xtask cover` (line/region/branch, per crate, `--fuzz`, `--html`, `--add`, `--report-only`), `coverage-exclusions.toml` (empty; D-9), `xtask gate --coverage` (report only) / `--m11` (100 % + ASan + Miri), `xtask metrics` → `metrics/*.csv`, `xtask test asan [--lean]`, `xtask test miri`. Baseline: `docs/verification/baseline-2026-11.md` (regions 72.16 %). Not done: corpora (VER-4), conformance corpus inside `cover`, device coverage (VER-6) |
+| VER-4 | **part 1 done** | 30 cargo-fuzz targets (16 new, incl. the simulator UI key-sequence target `ui_keys`), committed corpora (`tests/fuzz-corpus/`, 15 MB) replayed on every `cargo test`, 10 fixes + 3 open findings (baseline §8.4), `xtask test fuzz-seeds`, `xtask cover --fuzz-only`. Host + fuzz coverage 83.27 % regions. Not done: plateau runs (part 2) |
 
 ## 3. Session log
 
@@ -1504,6 +1551,8 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 
 | 2026-11-24 | Host coverage baseline (host tests + 1 fuzz regression input), regions / lines / branches | 72.16 % (60,678 / 84,088) / 71.78 % / 65.09 % | `xtask cover --fuzz` (+ `--add` re-runs), nightly-2026-11-05 |
 | 2026-11-24 | Instrumented coverage build of the host workspace, no debug info | ≈ 0.4 GB build + ≈ 1.1 GB test images in `target/cover/…/tmp` | `du` |
+| 2026-11-24 | Coverage after VER-4 part 1, regions / lines / branches | host + fuzz 83.27 % (74,194 / 89,102) / 83.37 % / 80.81 %; fuzz only 78.04 % (48,171 / 61,729 regions of the files fuzz binaries contain) | `xtask cover --fuzz-only`, `xtask cover` (+ fuzz replays), nightly-2026-11-05 |
+| 2026-11-24 | Committed fuzz corpora | 30 targets, 13.5 k files, 15 MB | `du --apparent-size tests/fuzz-corpus` |
 | 2026-11-24 | ASan host tests | 63 binaries, 586 tests, 0 memory errors; LSan: 4 binaries (1 fixed) | `xtask test asan --lean` |
 | 2026-11-24 | Miri | 14 crates, 232 tests, no UB; full run ≈ 35 min | `xtask test miri` |
 

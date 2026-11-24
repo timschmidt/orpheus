@@ -1,0 +1,28 @@
+# cargo-fuzz targets of orpheus-sdcard (nightly only; 07 §3.4, VER-4):
+#   cd crates/orpheus-sdcard/fuzz && cargo +nightly fuzz run <target> ../../../tests/fuzz-corpus/<target>
+# The bodies live in `src/lib.rs`; the crate's `tests/fuzz_corpus.rs`
+# replays the committed corpus and regression inputs through them on stable.
+[package]
+name = "orpheus-sdcard-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+orpheus-sdcard = { path = ".." }
+
+# Its own workspace: not part of the host workspace (nightly only).
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "sd_registers"
+path = "fuzz_targets/sd_registers.rs"
+test = false
+doc = false
+bench = false

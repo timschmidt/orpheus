@@ -553,6 +553,15 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
         if let Some(d) = self.dialog.as_mut() {
             d.draw(g);
         }
+        // So may a partial one, or a menu or dialog redrawn under a shown
+        // overlay (a focus moving under the volume overlay): draw the
+        // overlay on top again (VER-4 finding F-UI-2).
+        if g.drew_into(VolumeOverlay::rect()) {
+            self.volume_drawn = false;
+        }
+        if g.drew_into(Toast::rect().inset(-2, -1)) {
+            self.toast_drawn = false;
+        }
         if let Some(t) = &self.toast
             && !self.toast_drawn
         {

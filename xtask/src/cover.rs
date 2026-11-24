@@ -1,4 +1,4 @@
-//! `xtask cover [--crate NAME] [--fuzz] [--html] [--clean] [--report-only] [--add]`
+//! `xtask cover [--crate NAME] [--fuzz|--fuzz-only] [--html] [--clean] [--report-only] [--add]`
 //! (07 §3.6, VER-1):
 //! LLVM source-based coverage of the host workspace.
 //!
@@ -7,7 +7,10 @@
 //!   nightly toolchain (`util::nightly`; branch coverage is nightly-only) in
 //!   `target/cover/` and run with `LLVM_PROFILE_FILE` pointing at
 //!   `target/orpheus/coverage/profraw/`.
-//! * `--fuzz`: every cargo-fuzz target (`crates/**/fuzz/`) is built with the
+//! * `--fuzz-only`: the fuzz corpus replays alone (source `fuzz`; VER-4's
+//!   fuzz coverage per crate); a following `--add` run of the host tests
+//!   gives the combined numbers.
+//! * `--fuzz`: every cargo-fuzz target (`crates/**/fuzz/`, `sim/fuzz/`) is built with the
 //!   same flags (plain `cargo build`, libFuzzer in "run these files" mode, no
 //!   sanitizer) in `target/cover/fuzz/` and run over its corpus files:
 //!   `tests/fuzz-corpus/<target>/`, `<fuzz dir>/corpus/<target>/`,
@@ -76,6 +79,9 @@ pub fn pct(c: u64, t: u64) -> f64 {
 pub struct Opts {
     pub krate: Option<String>,
     pub fuzz: bool,
+    /// Only the fuzz corpus replays, no host tests (VER-4: fuzz coverage on
+    /// its own; `--add` a host run afterwards for the combined numbers).
+    pub fuzz_only: bool,
     pub html: bool,
     pub clean: bool,
     /// Recompute the reports from the last run's profile and binaries.
@@ -93,9 +99,12 @@ pub struct Report {
 }
 
 pub fn cmd(args: &mut Args) -> Result<String> {
+    // `flag` consumes the argument: read `--fuzz-only` once.
+    let fuzz_only = args.flag("fuzz-only");
     let o = Opts {
         krate: args.value("crate"),
-        fuzz: args.flag("fuzz"),
+        fuzz: args.flag("fuzz") || fuzz_only,
+        fuzz_only,
         html: args.flag("html"),
         clean: args.flag("clean"),
         report_only: args.flag("report-only"),
@@ -129,6 +138,7 @@ pub fn gate_step(strict: bool) -> Result<String> {
     let r = run_cover(&Opts {
         krate: None,
         fuzz: strict,
+        fuzz_only: false,
         html: false,
         clean: false,
         report_only: false,
@@ -210,7 +220,11 @@ pub fn run_cover(o: &Opts) -> Result<Report> {
         let src = std::fs::read_to_string(&source_file).unwrap_or_else(|_| "host".into());
         Ok((list.lines().map(PathBuf::from).collect(), src.trim().to_string()))
     };
-    let this_source = if o.fuzz { "host+fuzz" } else { "host" };
+    let this_source = match (o.fuzz_only, o.fuzz) {
+        (true, _) => "fuzz",
+        (false, true) => "host+fuzz",
+        (false, false) => "host",
+    };
     let (mut objects, failures, source) = if o.report_only {
         let (objs, src) = previous()?;
         (objs, Vec::new(), src)
@@ -218,7 +232,13 @@ pub fn run_cover(o: &Opts) -> Result<Report> {
         let (mut objs, src) = previous()?;
         let r = measure(o, &tc, &target_dir, &merged, true)?;
         objs.extend(r.0);
-        let src = if src.contains("fuzz") || o.fuzz { "host+fuzz" } else { "host" };
+        let host = src.contains("host") || !o.fuzz_only;
+        let fuzz = src.contains("fuzz") || o.fuzz;
+        let src = match (host, fuzz) {
+            (true, true) => "host+fuzz",
+            (true, false) => "host",
+            _ => "fuzz",
+        };
         (objs, r.1, src.to_string())
     } else {
         let r = measure(o, &tc, &target_dir, &merged, false)?;
@@ -311,6 +331,7 @@ fn measure(
     std::fs::create_dir_all(&profraw)?;
     let mut failures = Vec::new();
 
+    let mut objects = Vec::new();
     // 1. Host tests.
     let sel: Vec<String> = match &o.krate {
         Some(k) => vec!["-p".into(), k.clone()],
@@ -331,15 +352,17 @@ fn measure(
         instrument_env(&mut c, &profraw, "");
         c
     };
-    log("cover: building the instrumented host tests");
-    let built = test_cmd(&["--no-run", "--message-format=json-render-diagnostics"]).output()?;
-    if !built.status.success() {
-        bail!("building the instrumented tests failed:\n{}", String::from_utf8_lossy(&built.stderr));
-    }
-    let mut objects = executables(&built.stdout);
-    log(&format!("cover: running {} test binaries", objects.len()));
-    if let Err(e) = run(&mut test_cmd(&["--no-fail-fast"])) {
-        failures.push(format!("host tests: {e:#}"));
+    if !o.fuzz_only {
+        log("cover: building the instrumented host tests");
+        let built = test_cmd(&["--no-run", "--message-format=json-render-diagnostics"]).output()?;
+        if !built.status.success() {
+            bail!("building the instrumented tests failed:\n{}", String::from_utf8_lossy(&built.stderr));
+        }
+        objects = executables(&built.stdout);
+        log(&format!("cover: running {} test binaries", objects.len()));
+        if let Err(e) = run(&mut test_cmd(&["--no-fail-fast"])) {
+            failures.push(format!("host tests: {e:#}"));
+        }
     }
 
     // 2. Fuzz corpora.
@@ -386,11 +409,11 @@ pub struct FuzzDir {
     pub targets: Vec<String>,
 }
 
-/// Every cargo-fuzz project under `crates/` (`fuzz/Cargo.toml` with
-/// `cargo-fuzz = true`) and its targets (`fuzz_targets/*.rs`).
+/// Every cargo-fuzz project under `crates/` and `sim/` (`fuzz/Cargo.toml`
+/// with `cargo-fuzz = true`) and its targets (`fuzz_targets/*.rs`).
 pub fn fuzz_dirs() -> Vec<FuzzDir> {
     let mut v = Vec::new();
-    let mut stack = vec![root().join("crates")];
+    let mut stack = vec![root().join("crates"), root().join("sim")];
     while let Some(d) = stack.pop() {
         let Ok(rd) = std::fs::read_dir(&d) else { continue };
         for e in rd.filter_map(Result::ok) {

@@ -41,6 +41,14 @@ impl<const N: usize> LetterTable<N> {
                 return Err(Error::Corrupt);
             }
             for &(first, l) in &buf[..got] {
+                // Runs start inside the listing, in row order (a damaged
+                // file could make a letter jump leave the listing; VER-4
+                // finding F-IDX-1).
+                let prev = done.checked_sub(1).map(|p| u32::from(self.runs[p as usize].0));
+                if first >= ix.count() || prev.is_some_and(|p| first <= p) {
+                    *self = Self::EMPTY;
+                    return Err(Error::Corrupt);
+                }
                 let (Ok(first), Ok(l)) = (u16::try_from(first), u16::try_from(l.map_or(0, u32::from))) else {
                     *self = Self::EMPTY;
                     return Ok(false);
@@ -67,12 +75,14 @@ impl<const N: usize> LetterTable<N> {
     }
 
     /// Append the run starting at row `first` (runs in row order, the
-    /// first at 0). `false` (and the table emptied) if it does not fit.
+    /// first at 0). `false` (and the table emptied) if it does not fit, or
+    /// if `first` is outside the listing or not after the previous run.
     pub fn push(&mut self, first: u32, letter: Option<char>) -> bool {
         let n = usize::from(self.n);
         let l = letter.map_or(0, u32::from);
+        let ordered = first < self.rows && n.checked_sub(1).is_none_or(|p| first > u32::from(self.runs[p].0));
         match (u16::try_from(first), u16::try_from(l)) {
-            (Ok(f), Ok(l)) if n < N && self.rows > 0 => {
+            (Ok(f), Ok(l)) if n < N && ordered => {
                 self.runs[n] = (f, l);
                 self.n += 1;
                 true

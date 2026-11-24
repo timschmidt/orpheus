@@ -80,6 +80,11 @@ impl<'c> Cache<'c> {
         Cache { slots, clock: 0, mirror: Mirror::default(), reads: 0, writes: 0 }
     }
 
+    /// The slots back (their contents are not flushed).
+    pub fn into_slots(self) -> &'c mut [CacheSlot] {
+        self.slots
+    }
+
     fn find(&self, lba: u32) -> Option<usize> {
         self.slots.iter().position(|s| s.state & VALID != 0 && s.lba == lba)
     }

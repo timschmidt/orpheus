@@ -609,6 +609,12 @@ impl<'c, D: BlockDevice> Volume<'c, D> {
         self.dev
     }
 
+    /// Give the device and the cache slots back without flushing (a host
+    /// that mounts many volumes reuses the slots).
+    pub fn into_parts(self) -> (D, &'c mut [CacheSlot]) {
+        (self.dev, self.cache.into_slots())
+    }
+
     /// Flush everything and give the device back.
     pub async fn unmount(mut self) -> (D, Result<(), D::Error>) {
         let r = self.flush().await;
