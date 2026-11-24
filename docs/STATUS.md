@@ -1440,6 +1440,22 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — M7: radio, steps, tools merged; device smoke test (lead)
+
+* Merged FM-1/UI-5a (radio) and SENS-1/UI-5c/UI-5d (steps, stopwatch,
+  timer, alarm). Collisions resolved: screen ids (radio 32–33, steps/tools
+  34–37), service event kinds (radio 3, steps 4, tools 5), radio frequency
+  setting moved to 0x0D50 (0x0D20 is the step goal), user checks 20–22.
+* On the player: boot and `playdir` fine (0 underruns, ≈ 3,180 line
+  loads/s, stack free 11,208 B). **Accelerometer works**: chip id 0x13,
+  |a| = 1,020 mg at rest, 0 I2C errors, counting at 25 Hz (`present=0` in
+  `steps status` although the chip answers — to fix). **Radio does not
+  work yet**: tuner register 02 = 0x4000 (ENABLE clear), chip id reads
+  0000, RSSI 0, scan finds nothing; `fm on` while music plays leaves the
+  radio off. Sent back to the FM worker.
+* CI on GitHub: Docs and Site pass; Gate fixed for the runner's older
+  exfatprogs (mkfs without `-q -P`, dump.exfat cross-check only from 1.4).
+
 ### 2026-11-24 — PWR-5 and four AU-5 fixes on the player (lead)
 
 * Merged PWR-5 (Performance setting, battery logger, `xtask drain report`,
