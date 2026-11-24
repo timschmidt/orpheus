@@ -10,6 +10,8 @@ use yoton_audio::{
     StreamInfo, Unsupported,
 };
 
+#[cfg(feature = "mp3")]
+pub use yoton_codec_mp3::Mp3Decoder;
 #[cfg(feature = "wav")]
 pub use yoton_codec_wav::WavDecoder;
 
@@ -17,6 +19,8 @@ pub use yoton_codec_wav::WavDecoder;
 pub enum AnyDecoder<'a> {
     #[cfg(feature = "wav")]
     Wav(WavDecoder<'a>),
+    #[cfg(feature = "mp3")]
+    Mp3(Mp3Decoder<'a>),
 }
 
 #[cfg(not(any(feature = "wav", feature = "mp3", feature = "flac")))]
@@ -27,6 +31,8 @@ macro_rules! each {
         match $self {
             #[cfg(feature = "wav")]
             AnyDecoder::Wav($d) => $e,
+            #[cfg(feature = "mp3")]
+            AnyDecoder::Mp3($d) => $e,
         }
     };
 }
@@ -40,6 +46,8 @@ pub fn inspect(format: Format, src: &dyn ByteSource, hint: &ContainerInfo) -> Re
     match format {
         #[cfg(feature = "wav")]
         Format::Wav | Format::Aiff | Format::Au => WavDecoder::inspect(src, hint),
+        #[cfg(feature = "mp3")]
+        Format::Mpeg => Mp3Decoder::inspect(src, hint),
         _ => {
             let _ = (src, hint);
             Err(unsupported())
@@ -59,6 +67,8 @@ pub fn open<'a>(
         Format::Wav | Format::Aiff | Format::Au => {
             WavDecoder::open(src, arena, hint).map(|(d, i)| (AnyDecoder::Wav(d), i))
         }
+        #[cfg(feature = "mp3")]
+        Format::Mpeg => Mp3Decoder::open(src, arena, hint).map(|(d, i)| (AnyDecoder::Mp3(d), i)),
         _ => {
             let _ = (src, arena, hint);
             Err(unsupported())

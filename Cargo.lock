@@ -640,6 +640,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "yoton-codec-flac"
+version = "0.1.0"
+dependencies = [
+ "md-5",
+ "yoton-audio",
+]
+
+[[package]]
+name = "yoton-codec-mp3"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "yoton-audio",
+]
+
+[[package]]
 name = "yoton-codec-wav"
 version = "0.1.0"
 dependencies = [
@@ -651,6 +667,7 @@ name = "yoton-codecs"
 version = "0.1.0"
 dependencies = [
  "yoton-audio",
+ "yoton-codec-mp3",
  "yoton-codec-wav",
 ]
 

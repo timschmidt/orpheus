@@ -487,7 +487,9 @@ fn mp3(g: &mut Gen) -> Result<()> {
     g.add("mp3/apic_128k.mp3", S16, Some(&music))?;
     // Layer II.
     let src = g.source(Sig::Music, 44100, 2, 3.0, 16)?;
-    g.ff(&src, "mp3/layer2_192k.mp2", &["-c:a", "mp2", "-b:a", "192k"], S16, false)?;
+    let out = g.path("mp3/layer2_192k.mp2")?;
+    ffmpeg(&[s(&["-i"]), vec![p(&src)], s(&["-c:a", "mp2", "-b:a", "192k"]), vec![p(&out)]].concat())?;
+    g.refuse("mp3/layer2_192k.mp2")?;
     Ok(())
 }
 
