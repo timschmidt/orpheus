@@ -739,6 +739,15 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — AU-5 gapless: MP3 joins clean on the player (lead)
+
+* Merged `879d967` (bounded lookups, path-walk cache, by-cause underruns).
+  `playdir /.orpheus/test/gapless-mp3`: **0 underruns over all three parts**
+  (join head 1,617 frames, re-open 13.9 ms / 38 loads, lookups 0 µs).
+  FLAC: first join clean (13.9 ms / 38 loads), second join paging-bound
+  (104 ms / 372 loads → 4 underruns); the `ub:` per-cause counters do not
+  add up to `underruns` yet. Both sent back to the AU-5 worker.
+
 ### 2026-11-24 — PWR-5 (D-4) part 1 on the player; gapless fix measured (lead)
 
 * **Max level (288 MHz, VDD 0x18, SYSCLK bit 8, NOR ÷6)** works: clock
