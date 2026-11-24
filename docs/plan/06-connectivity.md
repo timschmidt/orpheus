@@ -262,7 +262,11 @@ Crate `orpheus-bt` (protocol, host-testable) + `yoton-bsp::bt` (UART, pins).
   the module is told "audio started/stopped" (command 0x05). Volume while
   streaming: keep the DAC at a fixed reference level and send absolute volume
   to the sink (command 0x26), falling back to local volume for sinks without
-  absolute volume. Find the reference level by test (highest level without
+  absolute volume. **As built (2026-11-24):** the module's
+  acknowledgement and volume events cannot tell whether a sink scales (it
+  echoes the sent value; a sink without absolute volume answers 0x25 with
+  128), so the DAC always carries the player's volume and the sink is sent
+  full scale. Find the reference level by test (highest level without
   clipping at the module's input). *As built (UI-6a): the player's volume
   goes to the sink as 0x26 at every connection and on every change (a
   BlueZ sink starts at 0), sink changes (event 0x26) become the player's

@@ -464,6 +464,32 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — UI-6a merged and tested on the player; Bluetooth volume policy changed (lead)
+
+* Merged UI-6a (Bluetooth app). On the player: Home → Bluetooth → on →
+  "Starting…" → automatic reconnect → "Connected · fedora #2" (screenshots
+  checked).
+* **Test harness fixed**: `pw-record --target bluez_input…` can silently
+  record the wrong thing (the BlueZ input is a playback *stream* in
+  PipeWire). Reliable capture: a null sink (`pactl load-module
+  module-null-sink sink_name=orpheus_bt_cap`), `pactl move-sink-input` of
+  the `bluez_input` stream into it, `parecord -d orpheus_bt_cap.monitor`.
+  This also keeps test tones off the workstation's speakers. BlueZ as sink
+  starts the transport at volume 0 and accepts no absolute volume from this
+  module (`EOPNOTSUPP`); the harness raises it locally to 127.
+* **Volume policy changed** (06 §4.2 as built): the module acknowledges 0x26
+  whether or not the sink scales, answers 0x25 with 128 for a sink without
+  absolute volume, and echoes the sent value back as a sink-volume event —
+  so whether a sink scales cannot be told. With UI-6a's fixed-reference
+  scheme the volume keys had **no effect** on such a sink (measured: −26.5
+  dBFS at every volume). Now the DAC always plays at the player's volume,
+  the sink is sent full scale (127), and sink volume events no longer move
+  the player's volume (following the echo would jump to full scale).
+  Measured: DAC 0x6F → −53.6 dBFS, 0x57 → −62.6 dBFS, 0 → silence. Revisit
+  with a real headset (user check 17).
+* Developer command `bt vol N` (module-scale volume the task sends).
+* Key names for `xtask dev keys` are `volup`/`voldown` (not `vol+`).
+
 ### 2026-11-24 — plan: M12 documentation/website/branding; presenter remote with tilt pointer (lead, owner's request)
 
 * New plan document `docs/plan/09-docs-website.md` and milestone **M12**

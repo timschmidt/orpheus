@@ -90,6 +90,9 @@ pub struct Fw {
     lib_seen: (LibraryState, u32),
 }
 
+/// The volume sent to a connected sink (module scale 0–31): full scale,
+/// the player's volume is applied at the DAC (see `apply_dac`).
+const BT_SINK_LOCAL: u8 = 31;
 /// "Reconnect automatically" (Settings › Bluetooth).
 const BT_RECONNECT: SettingId = id::BT_RECONNECT;
 /// DAC level (UI steps 0–30) while a Bluetooth sink with absolute
@@ -377,7 +380,7 @@ impl Fw {
     /// After the settings are loaded: the Bluetooth task gets them. The
     /// module stays off in a host test whatever the setting says.
     pub fn bt_boot(&mut self, last: Option<orpheus_bt::Addr>) {
-        crate::bt::VOLUME.store(orpheus_bt::proto::local_from_ui(self.volume), Ordering::Relaxed);
+        crate::bt::VOLUME.store(BT_SINK_LOCAL, Ordering::Relaxed);
         let on = self.settings.get(id::BLUETOOTH) != 0 && atj2157_hal::persist::test_request().is_none();
         let reconnect = self.settings.get(BT_RECONNECT) != 0;
         crate::bt::request(crate::bt::Req::Boot { on, reconnect, last });
@@ -407,15 +410,11 @@ impl Fw {
                 self.pending.push(other(v));
             }
         }
-        if n.sink_gen != o.sink_gen {
-            // Changed on the sink: the player's volume follows.
-            let limit = u8::try_from(self.settings.get(id::VOLUME_LIMIT)).unwrap_or(30);
-            self.set_volume(orpheus_bt::proto::ui_from_local(n.sink_local).min(limit));
-        }
-        if n.sink_abs != self.bt_abs {
-            self.bt_abs = n.sink_abs;
-            self.apply_dac();
-        }
+        // Sink volume reports do not move the player's volume: the module
+        // echoes the value it was sent as a "sink volume" (measured
+        // 2026-11-24), so following them would jump to full scale. A
+        // headset's own buttons set its own level.
+        self.bt_abs = false;
         self.bt = n;
     }
 
@@ -424,7 +423,6 @@ impl Fw {
     /// connected sink, and again at every connection).
     pub fn set_volume(&mut self, v: u8) {
         self.volume = v;
-        crate::bt::VOLUME.store(orpheus_bt::proto::local_from_ui(v), Ordering::Relaxed);
         self.apply_dac();
     }
 
@@ -434,8 +432,17 @@ impl Fw {
     /// otherwise (not connected, the sink said it has no absolute volume,
     /// or 0x26 was never acknowledged) the DAC plays at the player's
     /// volume.
+    ///
+    /// As built (2026-11-24): the DAC always plays at the player's volume
+    /// and the sink is sent full scale ([`BT_SINK_LOCAL`]). Neither the
+    /// module's acknowledgement of 0x26 nor its volume reports show
+    /// whether the sink scales (a BlueZ sink without absolute volume is
+    /// acknowledged, answers 0x25 with 128, and the module echoes the sent
+    /// value back), so the fixed-reference scheme would leave the volume
+    /// keys without effect on such sinks. Revisit with real headsets.
     fn apply_dac(&self) {
-        apply_volume(if self.bt_abs { BT_DAC_REF } else { self.volume });
+        let _ = (self.bt_abs, BT_DAC_REF);
+        apply_volume(self.volume);
     }
 
     /// Bluetooth settings go to the Bluetooth task when they change.

@@ -249,6 +249,15 @@ pub fn test_command(rest: &[u8]) -> bool {
         b"tx dma" => Req::SetTx(true),
         b"tx cpu" => Req::SetTx(false),
         _ => {
+            // `bt vol N`: the player volume (0–31) the task sends as 0x26.
+            if let Some(n) = rest.strip_prefix(b"vol ") {
+                if n.is_empty() || n.len() > 2 || !n.iter().all(u8::is_ascii_digit) {
+                    return false;
+                }
+                let v = n.iter().fold(0u8, |a, d| a * 10 + (d - b'0')).min(31);
+                VOLUME.store(v, Ordering::Relaxed);
+                return true;
+            }
             let Some(arg) = rest.strip_prefix(b"connect ") else { return false };
             let (paired, digits) = match arg.split_first() {
                 Some((b'p', d)) => (true, d),
@@ -391,6 +400,13 @@ impl Session {
                 };
                 crate::media::play(r);
             }
+            // Out of AVRCP's 0–127 range: the module's "no absolute
+            // volume" answer (128 seen with a BlueZ sink, 2026-11-24).
+            Output::SinkVolume { raw, .. } if raw > 127 => {
+                self.sink_volume = None;
+                self.sink_abs = false;
+                self.sink_no_abs = true;
+            }
             Output::SinkVolume { raw, local } => {
                 // A change made on the sink: the player's volume follows.
                 // What the UI will store back is already the
@@ -403,14 +419,20 @@ impl Session {
                 self.vol_sent = local_from_ui(ui_from_local(local));
             }
             Output::AbsVolume(v) => {
-                // The sink's answer to 0x25: `None` = no absolute volume,
-                // the DAC goes back to the player's volume.
+                // The sink's answer to 0x25: `None` or a value above 127 =
+                // no absolute volume, the DAC goes back to the player's
+                // volume. Measured: a BlueZ sink without absolute volume
+                // answers 128 (2026-11-24).
+                let v = v.filter(|&x| x <= 127);
                 self.sink_volume = v;
                 self.sink_abs = v.is_some();
                 self.sink_no_abs = v.is_none();
             }
-            // 0x26 acknowledged while connected: the sink scales.
-            Output::VolumeAcked => self.sink_abs = !self.sink_no_abs,
+            // 0x26 acknowledged: that is the module's acknowledgement, not
+            // the sink's, so it proves nothing about the sink scaling (a
+            // sink without absolute volume is acknowledged too, measured
+            // 2026-11-24). Only a volume reported by the sink counts.
+            Output::VolumeAcked => {}
             _ => {}
         }
     }
