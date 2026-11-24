@@ -28,6 +28,8 @@ the result and date. "Blocking" entries hold up the package named.
 | 12 | AU-6 | no | With headphones, play any MP3 from Files, then open Settings → Sound and change Equaliser (e.g. Rock), Bass, Crossfeed | The sound changes smoothly (no clicks or pops at the change), no dropouts | |
 | 13 | AU-5 | no (gate for M5) | Unplug USB. In Files open an album folder and start its 2nd track. Listen 1 min; hold Next about 2 s (seek forward), tap Prev after 5 s (track restarts), tap Prev again (previous track). Menu → Bookmark here. Then hold Power ~4 s (power-off), start the player again, open Music | Seeking is audible within a second; after the restart Music shows **Resume ‹title›**; choosing it continues the same track within about a second of where it was switched off, and Next continues in the folder's order; Music → Bookmarks lists the bookmark with its time and title and plays from there. Report any track change that skips or repeats a track, or a resume that starts elsewhere | |
 
+| 14 | BT-2 | no | Put a Bluetooth headset or speaker in pairing mode next to the player, then run `cargo xtask dev cmd "bt on" --wait 20`, `cargo xtask dev cmd "bt scan" --wait 35`, `cargo xtask dev cmd "bt connect 0" --wait 30`, play a track from Files, press the headset's play/pause, then `cargo xtask dev cmd "bt off" --wait 3` | The scan lists the headset by name; connect succeeds; the music plays on the headset; its play/pause key pauses the player. Report the reply lines if not | |
+
 ## Template for workers
 
 | # | For | Blocking? | What to do | Expect | Result (user) |

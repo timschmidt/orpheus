@@ -218,6 +218,17 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — implementation session 3 (lead)
+
+* Resumed the two interrupted workers from WIP snapshots. Merged BT-2
+  (device). On the player: `bt status` (off at boot), `bt listen` (module TX
+  pad toggles 13×, RX pad quiet: wiring as documented), `bt probe` (identity
+  "ATS2851", 37 bytes / 5 frames, 0 bad checksums, 3 commands acknowledged,
+  DMA RX ring works → U-BT-4 answered), `bt on`/`bt off`, `bt scan`
+  (inquiry runs; nothing found in 35 s — needs a headset in pairing mode,
+  user check 14), `bt shutdown` (0x24 sent and acknowledged, module off).
+* Budgets updated for the full layout; A–B repeat and shuffle verified.
+
 ### 2026-11-24 — implementation session 2, part 8 (lead)
 
 * On the player: bookmarks (Now Playing menu → Bookmark here; Music →
