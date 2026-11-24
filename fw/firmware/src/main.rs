@@ -95,9 +95,19 @@ async fn watchdog() {
     loop {
         Timer::after_millis(1000).await;
         h.check();
-        gov.step();
+        if GOV_ON.load(core::sync::atomic::Ordering::Relaxed) {
+            gov.step();
+        }
     }
 }
+
+/// Lowest clock level the governor may choose (0 = Base, 1 = Mid). The
+/// audio task sets Mid while the DSP chain is active: at Base, MP3 + DSP +
+/// UI overload the CPU (paging included) and starve thread mode.
+pub static CLOCK_FLOOR_MID: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Governor on/off (test command `gov on|off`).
+pub static GOV_ON: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
 
 /// Clock governor (PWR-2, first cut): from the main executor's idle share
 /// over the last second, one level up when idle < 25 %, one level down
@@ -135,9 +145,10 @@ impl Governor {
             self.calm = self.calm.saturating_add(1);
             if self.calm >= 3 {
                 self.calm = 0;
+                let floor_mid = CLOCK_FLOOR_MID.load(core::sync::atomic::Ordering::Relaxed);
                 let down = match cur {
                     Level::High | Level::Turbo => Some(Level::Mid),
-                    Level::Mid => Some(Level::Base),
+                    Level::Mid if !floor_mid => Some(Level::Base),
                     _ => None,
                 };
                 if let Some(l) = down {
@@ -226,12 +237,22 @@ extern "C" fn main() -> ! {
     // Watchdog first: a hang anywhere in start-up must end in a reset (and
     // after three, in USB recovery), never in a player that needs a hand.
     wdt::start(pac::rtc::wd::PERIOD_5S6);
+    // Keep the previous boot's last interrupt sample (rt::SAMPLE_*) for
+    // post-mortems of watchdog resets: 0x137FDC = exception, 0x137FE0 = PC.
+    // SAFETY: persistent-area words, before any interrupt runs.
+    unsafe {
+        let e = core::ptr::read_volatile(hal::rt::SAMPLE_EXC as *const u32);
+        let p = core::ptr::read_volatile(hal::rt::SAMPLE_PC as *const u32);
+        core::ptr::write_volatile(0x0013_7FDC as *mut u32, e);
+        core::ptr::write_volatile(0x0013_7FE0 as *mut u32, p);
+    }
     pager::arm_deny();
     log::init();
     let paged = start_pager();
     hal::init();
     clock::set_level(Level::Base);
     log::line(if paged { b"fw: start (paged)" } else { b"fw: start (no pages)" });
+    audio::init_chain();
     let rt = executor::start_rt();
     rt.spawn(audio::audio().unwrap());
     rt.spawn(rt_beat().unwrap());

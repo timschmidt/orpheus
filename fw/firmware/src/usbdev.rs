@@ -165,6 +165,10 @@ impl Target for Fw {
             });
             return true;
         }
+        if data == b"gov on" || data == b"gov off" {
+            crate::GOV_ON.store(data == b"gov on", Ordering::Relaxed);
+            return true;
+        }
         if data == b"dsp on" || data == b"dsp off" {
             crate::audio::DSP_ON.store(data == b"dsp on", Ordering::Relaxed);
             return true;

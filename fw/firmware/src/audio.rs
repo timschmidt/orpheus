@@ -97,12 +97,27 @@ pub static PLAYING: AtomicBool = AtomicBool::new(false);
 /// Where the playback loop is (status diagnostics): 1 card read, 2 media
 /// request, 3 waiting for the DAC, 4 decoding, 5 DSP, 0 elsewhere.
 pub static WHERE: AtomicU32 = AtomicU32::new(0);
-/// DSP chain on/off (test command `dsp on|off`). Off by default: with any
-/// stage active (bass, crossfeed or EQ alone) the player stops inside
-/// `Chain::process` until the watchdog fires, also with all of yoton-dsp
-/// resident, while the same sequence runs in milliseconds on the host
-/// (2026-11-24, open; see STATUS).
-pub static DSP_ON: AtomicBool = AtomicBool::new(false);
+/// While the DSP chain does work during playback, the clock stays at Mid or
+/// above (see `CLOCK_FLOOR_MID`); raised here at once, from the RT task.
+fn dsp_clock_floor(active: bool) {
+    crate::CLOCK_FLOOR_MID.store(active, Ordering::Relaxed);
+    if active
+        && matches!(
+            atj2157_hal::clock::current(),
+            atj2157_hal::clock::Level::Low | atj2157_hal::clock::Level::Base
+        )
+    {
+        atj2157_hal::clock::set_level(atj2157_hal::clock::Level::Mid);
+    }
+}
+
+fn sound_active() -> bool {
+    DSP_ON.load(Ordering::Relaxed)
+        && critical_section::with(|cs| *media::SOUND.borrow(cs).borrow() != media::Sound::default())
+}
+
+/// DSP chain on/off (test command `dsp on|off`).
+pub static DSP_ON: AtomicBool = AtomicBool::new(true);
 
 /// Breadcrumb that survives a watchdog reset: the last mailbox argument
 /// word (unused by the tests).
@@ -446,6 +461,7 @@ async fn play_file(
         })
         .map_err(|_| &b"rate not supported"[..])?;
     let mut sound_gen = media::SOUND_GEN.load(Ordering::Acquire);
+    dsp_clock_floor(sound_active());
     mark(7);
     media::apply_sound(chain);
     mark(8);
@@ -496,34 +512,50 @@ async fn play_file(
         decode_us += dt;
         T_DECODE.fetch_add(dt as u32, Ordering::Relaxed);
         match step {
-            Ok(Step::Pcm(mut block)) => {
+            Ok(Step::Pcm(block)) => {
                 let g = media::SOUND_GEN.load(Ordering::Acquire);
                 if g != sound_gen {
                     sound_gen = g;
+                    dsp_clock_floor(sound_active());
                     mark(7);
                     media::apply_sound(chain);
                 }
-                mark(5);
-                let n = if dsp { chain.process(&mut block) } else { block.len() };
-                mark(0);
-                // Copy out first: the block borrows the decoder.
+                // The DSP works on a copy: the decoder's output buffer may
+                // be decoder state (processing it in place corrupted the MP3
+                // decoder on the player, 2026-11-24).
+                let ch = if stereo { 2 } else { 1 };
+                let piece = SCRATCH_FRAMES * ch;
                 match block {
                     PcmBlock::I16(s) => {
-                        let ch = if stereo { 2 } else { 1 };
-                        for fr in s[..n.min(s.len())].chunks_exact(ch) {
-                            let l = fr[0] as u16;
-                            let r = if stereo { fr[1] as u16 } else { l };
-                            out.push(u32::from(l) | u32::from(r) << 16).await;
-                            frames += 1;
+                        for part in s.chunks(piece) {
+                            // SAFETY: this task is the scratch buffer's only user.
+                            let sc = unsafe { &mut (&mut *(&raw mut SCRATCH16))[..part.len()] };
+                            sc.copy_from_slice(part);
+                            mark(5);
+                            let n = if dsp { chain.process(&mut PcmBlock::I16(&mut *sc)) } else { sc.len() };
+                            mark(0);
+                            for fr in sc[..n.min(sc.len())].chunks_exact(ch) {
+                                let l = fr[0] as u16;
+                                let r = if stereo { fr[1] as u16 } else { l };
+                                out.push(u32::from(l) | u32::from(r) << 16).await;
+                                frames += 1;
+                            }
                         }
                     }
                     PcmBlock::I32(s) => {
-                        let ch = if stereo { 2 } else { 1 };
-                        for fr in s[..n.min(s.len())].chunks_exact(ch) {
-                            let l = (fr[0] >> 16) as u16;
-                            let r = if stereo { (fr[1] >> 16) as u16 } else { l };
-                            out.push(u32::from(l) | u32::from(r) << 16).await;
-                            frames += 1;
+                        for part in s.chunks(piece) {
+                            // SAFETY: as above.
+                            let sc = unsafe { &mut (&mut *(&raw mut SCRATCH32))[..part.len()] };
+                            sc.copy_from_slice(part);
+                            mark(5);
+                            let n = if dsp { chain.process(&mut PcmBlock::I32(&mut *sc)) } else { sc.len() };
+                            mark(0);
+                            for fr in sc[..n.min(sc.len())].chunks_exact(ch) {
+                                let l = (fr[0] >> 16) as u16;
+                                let r = if stereo { (fr[1] >> 16) as u16 } else { l };
+                                out.push(u32::from(l) | u32::from(r) << 16).await;
+                                frames += 1;
+                            }
                         }
                     }
                 }
@@ -563,6 +595,7 @@ async fn play_file(
     PLAY_US.store((time::now_us() - t0) as u32, Ordering::Relaxed);
     PLAYING.store(false, Ordering::Relaxed);
     PAUSED.store(false, Ordering::Relaxed);
+    dsp_clock_floor(false);
     Ok(())
 }
 
@@ -610,9 +643,24 @@ async fn release(vol: Volume<'static, Card>) -> Option<Volume<'static, Card>> {
     v
 }
 
+/// Frames the DSP processes per piece, and the pieces' buffers.
+const SCRATCH_FRAMES: usize = 256;
+static mut SCRATCH16: [i16; SCRATCH_FRAMES * 2] = [0; SCRATCH_FRAMES * 2];
+static mut SCRATCH32: [i32; SCRATCH_FRAMES * 2] = [0; SCRATCH_FRAMES * 2];
+
 /// DSP chain between decoder and DAC (AU-6), ~4 KiB; written once at the
 /// start of the audio task, used only by it.
 static mut CHAIN: core::mem::MaybeUninit<yoton_dsp::Chain> = core::mem::MaybeUninit::uninit();
+
+/// Build the DSP chain. Called from `main` before the executors start: a
+/// `Chain` is 4 KiB and built by value, which inside the audio task's
+/// poll function would add to the stack frame the RT interrupt pushes on
+/// top of whatever thread mode is using.
+#[inline(never)]
+pub fn init_chain() {
+    // SAFETY: before any task runs; afterwards only the audio task uses it.
+    unsafe { (*(&raw mut CHAIN)).write(yoton_dsp::Chain::new(yoton_dsp::OutWidth::Bits16, false)) };
+}
 
 static SERVER: ConstStaticCell<Server> = ConstStaticCell::new(Server::new());
 
@@ -744,8 +792,6 @@ pub async fn audio() {
     // while this task waits for the card (`usb_buffer`).
     let arena: &mut [u8] = unsafe { &mut (*(&raw mut ARENA_BUF)).0 };
     let srv = SERVER.take();
-    // SAFETY: before any use; only this task touches the chain.
-    unsafe { (*(&raw mut CHAIN)).write(yoton_dsp::Chain::new(yoton_dsp::OutWidth::Bits16, false)) };
     loop {
         // A player request left over from playback, else wait for one.
         let r = match srv.pending.take() {
@@ -807,6 +853,57 @@ pub async fn audio() {
                 }),
                 Either::Second(()) => {}
             }
+        } else if text == "dspt" {
+            // Test: the real chain on synthetic blocks, no decoder.
+            // SAFETY: initialised in main; this task is its only user.
+            let chain = unsafe { (*(&raw mut CHAIN)).assume_init_mut() };
+            mark(50);
+            let r = chain.set_format(yoton_dsp::Format {
+                rate: 44_100,
+                channels: 2,
+                kind: yoton_audio::SampleKind::I16,
+                bits: 16,
+            });
+            mark(51);
+            media::apply_sound(chain);
+            mark(52);
+            // SAFETY: i16 has no invalid bit patterns; the arena is idle.
+            let (pre, buf, _) = unsafe { arena[..2304 * 2].align_to_mut::<i16>() };
+            let ok = pre.is_empty() && r.is_ok();
+            let t0 = time::now_us();
+            let mut blocks = 0u64;
+            let mut total = 0usize;
+            for k in 0..20u32 {
+                for (i, v) in buf.iter_mut().enumerate() {
+                    *v = ((((i as u32 + k * 7) % 200) as i32 - 100) * 150) as i16;
+                }
+                mark(60 + k);
+                total += chain.process(&mut PcmBlock::I16(buf));
+                blocks += 1;
+            }
+            let us = time::now_us() - t0;
+            reply(|w| {
+                w.s(if ok { b"dspt ok" } else { b"dspt setup failed" })
+                    .s(b" blocks=")
+                    .u(blocks)
+                    .s(b" samples=")
+                    .u(total as u64)
+                    .s(b" us=")
+                    .u(us);
+            });
+        } else if text == "fp" {
+            // Test: f32 work through paged helpers inside the RT executor.
+            let t0 = time::now_us();
+            let mut acc = 0f32;
+            for i in 0..2000u32 {
+                mark(40);
+                acc += yoton_dsp::math::exp2(core::hint::black_box(i as f32 * 0.001));
+                acc += yoton_dsp::math::log2(core::hint::black_box(1.0 + i as f32));
+            }
+            let us = time::now_us() - t0;
+            reply(|w| {
+                w.s(b"fp ok us=").u(us).s(b" acc=").u(acc as u64);
+            });
         } else if let Some(v) = text.strip_prefix("vol ") {
             let v: u8 = v.trim().parse().unwrap_or(0);
             dac::set_volume(v, v);

@@ -227,7 +227,7 @@ pub union Vector {
 
 const RESERVED: Vector = Vector { reserved: 0 };
 const FAULT: Vector = Vector { handler: yoton_fault_shim };
-const DISPATCH: Vector = Vector { handler: irq_dispatch };
+const DISPATCH: Vector = Vector { handler: irq_entry };
 
 /// The vector table (aligned to 512 bytes by the linker script; 80 entries).
 #[unsafe(link_section = ".vectors")]
@@ -268,8 +268,39 @@ pub fn bind(n: u16, handler: fn()) {
     }
 }
 
-/// Common entry for all NVIC vectors.
-unsafe extern "C" fn irq_dispatch() {
+/// Vector entry: hands the stacked frame to [`irq_dispatch`] (tail call,
+/// `lr` keeps `EXC_RETURN`).
+#[unsafe(naked)]
+#[unsafe(link_section = ".text.irq_entry")]
+unsafe extern "C" fn irq_entry() {
+    core::arch::naked_asm!(
+        "tst lr, #4",
+        "ite eq",
+        "mrseq r0, msp",
+        "mrsne r0, psp",
+        "b {d}",
+        d = sym irq_dispatch,
+    )
+}
+
+/// Persistent words sampled on every interrupt taken from handler mode: the
+/// interrupted PC and exception number. After a watchdog reset they show
+/// where a handler-mode loop (the RT executor) was spinning.
+pub const SAMPLE_PC: u32 = 0x0013_7FE8;
+pub const SAMPLE_EXC: u32 = 0x0013_7FE4;
+
+/// Common entry for all NVIC vectors; `frame` is the stacked exception
+/// frame (PC at word 6, xPSR at word 7 for basic and extended frames).
+unsafe extern "C" fn irq_dispatch(frame: *const u32) {
+    // SAFETY: the hardware-stacked frame of this exception.
+    let (pc, xpsr) = unsafe { (frame.add(6).read_volatile(), frame.add(7).read_volatile()) };
+    if xpsr & 0x1FF != 0 {
+        // SAFETY: two persistent-area words owned by this sampler.
+        unsafe {
+            (SAMPLE_PC as *mut u32).write_volatile(pc);
+            (SAMPLE_EXC as *mut u32).write_volatile(xpsr & 0x1FF);
+        }
+    }
     let ipsr: u32;
     // SAFETY: reading IPSR has no side effects.
     unsafe { core::arch::asm!("mrs {}, ipsr", out(reg) ipsr, options(nomem, nostack, preserves_flags)) };

@@ -32,11 +32,27 @@ of every session. Newest entries first in §3.
 | FS-2 / AU-5 firmware | first cut on the player | Files lists the card (on-disk order, no sort until AU-12), text viewer window, folder play queue, Now Playing; `yoton-player` (queue/resume/bookmarks) not yet wired in |
 | UI-1, UI-2, UI-3, UI-4 | done (host); running on the player | 457 golden images |
 | AU-1…AU-4, AU-7, AU-8, AU-9 | done (host); MP3/FLAC/WAV played on the player | Vorbis/Opus/Speex not yet played on the player (no test files inside `/.yoton/`) |
-| AU-6 | done (host); wired into the firmware, **bypassed** | `yoton-dsp` chain between decoder and DAC; Sound settings published by the UI. Any active stage hangs `Chain::process` on the player (not paging; see the session log, part 3). WSOLA not done |
+| AU-6 | done (host); **working on the player** | `yoton-dsp` chain between decoder and DAC, fed by the Sound settings; works on a scratch copy of the decoder output; while any stage is active during playback the clock floor is 96 MHz (EQ + bass + crossfeed: 0 underruns, ≈ 90 % idle). WSOLA not done; Levels meter not wired |
 | AU-14 | done (host) | `yoton-img` |
 | OTP-1, BT-1, USB-6 | done (host) | `yoton-otp`, `yoton-bt`, MMC/CD-ROM in `yoton-usb` |
 
 ## 3. Session log
+
+### 2026-11-24 — implementation session 2, part 4 (lead)
+
+* DSP hang solved. Findings on the way: the audio task's poll function had
+  a 13.6 KB stack frame (a 4 KB `Chain` built by value inside it, plus
+  futures built on the stack); `Chain` is now built in `main` (frame 4.5 KB,
+  start-up stack use 23 → 14 KB). A PC sampler in the IRQ dispatcher
+  (persistent words `0x137FE4/E8`, copied to `0x137FDC/E0` at boot) showed
+  the RT executor in the PCM push loop: at 48 MHz, MP3 + DSP + the paged
+  push loop and DSP ramp helpers overload the CPU and starve thread mode
+  until the watchdog fires (the chain alone runs at ≈ 20 % on the player,
+  `dspt` command; FP inside the RT executor is fine, `fp` command). Fix: a
+  96 MHz clock floor while the chain is active during playback (set by the
+  audio task, respected by the governor). The DSP also works on a scratch
+  copy of the decoder output. Test commands `dsp`, `gov`, `clock`, `dspt`,
+  `fp`, `sound`.
 
 ### 2026-11-24 — implementation session 2, part 3 (lead)
 
@@ -259,7 +275,9 @@ of every session. Newest entries first in §3.
 | 2026-11-24 | Firmware image, all codecs (full layout) | resident 54,308 B, 43 code + 16 rodata pages, slot 544,768 B | `xtask build` |
 | 2026-11-24 | Stage 2 (Rust, full-layout aware) | 876 B of 1,024 | `cargo build -p stage2` |
 | 2026-11-24 | MP3 44.1 kHz, 48 MHz, audio hot path resident | ≈ 80 % main idle, 0 underruns, ≈ 1,250 line loads/s | `xtask dev stats` |
-| 2026-11-24 | Main stack after start-up (32.6 KB stack) | 9.5 KB free (≈ 23 KB used) | INFO stack high-water |
+| 2026-11-24 | Main stack after start-up (32.6 KB stack) | 9.5 KB free (≈ 23 KB used); after moving `Chain::new` to `main`: 18.6 KB free (≈ 14 KB used) | INFO stack high-water |
+| 2026-11-24 | DSP chain alone (bass, 44.1 kHz stereo) on the player, 48 MHz | 20 blocks × 1152 frames in 97 ms (≈ 19 % of real time) | `dev cmd dspt` |
+| 2026-11-24 | MP3 + EQ + bass + crossfeed at 96 MHz | 0 underruns, ≈ 90 % idle | `xtask dev stats` |
 
 
 ## 5. Open questions for the user
