@@ -85,7 +85,13 @@ fn be16(b: &[u8], o: usize) -> u16 {
 impl Scsi {
     #[must_use]
     pub const fn new() -> Self {
-        Self { sense: Sense::NONE, unit_attention: false, buf: [0; 96], events: Events { eject: false, prevent_removal: false, reboot_adfu: false }, commands: 0 }
+        Self {
+            sense: Sense::NONE,
+            unit_attention: false,
+            buf: [0; 96],
+            events: Events { eject: false, prevent_removal: false, reboot_adfu: false },
+            commands: 0,
+        }
     }
 
     /// Report "medium may have changed" on the next media access.
@@ -266,7 +272,8 @@ impl Scsi {
         let wp = if u.read_only { 0x80 } else { 0 };
         // Header plus, for pages 0x08 (caching) or 0x3F (all), a caching page
         // reporting write cache disabled.
-        let (hdr, alloc) = if ten { (8usize, usize::from(be16(cdb, 7))) } else { (4usize, usize::from(cdb[4])) };
+        let (hdr, alloc) =
+            if ten { (8usize, usize::from(be16(cdb, 7))) } else { (4usize, usize::from(cdb[4])) };
         self.buf[..hdr + 20].fill(0);
         let mut n = hdr;
         if page == 0x08 || page == 0x3F {

@@ -25,6 +25,7 @@ pub mod pager;
 pub mod persist;
 pub mod pwm;
 pub mod rt;
+pub mod rtc_clock;
 pub mod sd;
 pub mod time;
 pub mod usb;

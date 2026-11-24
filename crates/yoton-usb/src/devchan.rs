@@ -14,6 +14,7 @@ use embassy_usb::Handler;
 use embassy_usb::control::{InResponse, OutResponse, Recipient, Request, RequestType};
 use yoton_proto::devchan::{
     self as dc, Info, REQ_FRAME, REQ_INFO, REQ_KEYS, REQ_LOG, REQ_PEEK, REQ_REBOOT, REQ_STATS, REQ_TEST,
+    REQ_TIME,
 };
 
 /// What the firmware provides to the channel.
@@ -34,6 +35,15 @@ pub trait Target {
     fn request_reboot(&mut self, target: u16);
     /// Whether development-only requests (PEEK) are allowed.
     fn development(&self) -> bool;
+    /// TIME OUT: set the clock (UTC: year u16 LE, month, day, hour, minute,
+    /// second). Returns false if rejected.
+    fn set_time(&mut self, _t: [u8; 7]) -> bool {
+        false
+    }
+    /// TIME IN: the clock in the same layout, if set.
+    fn time(&mut self) -> Option<[u8; 7]> {
+        None
+    }
     /// TEST OUT: a command for the firmware's test hooks (text).
     fn test_command(&mut self, _data: &[u8]) -> bool {
         false
@@ -74,6 +84,10 @@ impl<T: Target> Handler for DevChannel<T> {
                 self.target.request_reboot(req.value);
                 OutResponse::Accepted
             }
+            REQ_TIME => match <[u8; 7]>::try_from(data) {
+                Ok(t) if self.target.set_time(t) => OutResponse::Accepted,
+                _ => OutResponse::Rejected,
+            },
             REQ_TEST => {
                 if self.target.test_command(data) {
                     OutResponse::Accepted
@@ -124,6 +138,14 @@ impl<T: Target> Handler for DevChannel<T> {
                 }
                 InResponse::Accepted(&buf[..4 * n])
             }
+            REQ_TIME => match self.target.time() {
+                Some(t) => {
+                    let n = want.min(7);
+                    buf[..n].copy_from_slice(&t[..n]);
+                    InResponse::Accepted(&buf[..n])
+                }
+                None => InResponse::Rejected,
+            },
             REQ_TEST => {
                 let n = self.target.test_reply(&mut buf[..want]);
                 InResponse::Accepted(&buf[..n])

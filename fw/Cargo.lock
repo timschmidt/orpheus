@@ -1129,5 +1129,6 @@ name = "yoton-usb"
 version = "0.1.0"
 dependencies = [
  "embassy-usb",
+ "embassy-usb-driver",
  "yoton-proto",
 ]

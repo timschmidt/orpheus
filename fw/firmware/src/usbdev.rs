@@ -66,6 +66,24 @@ impl Target for Fw {
     fn development(&self) -> bool {
         true
     }
+    fn set_time(&mut self, t: [u8; 7]) -> bool {
+        atj2157_hal::rtc_clock::set(atj2157_hal::rtc_clock::DateTime {
+            year: u16::from_le_bytes([t[0], t[1]]),
+            month: t[2],
+            day: t[3],
+            hour: t[4],
+            minute: t[5],
+            second: t[6],
+        })
+    }
+    fn time(&mut self) -> Option<[u8; 7]> {
+        if !atj2157_hal::rtc_clock::running() {
+            return None;
+        }
+        let n = atj2157_hal::rtc_clock::now();
+        let y = n.year.to_le_bytes();
+        Some([y[0], y[1], n.month, n.day, n.hour, n.minute, n.second])
+    }
     fn test_command(&mut self, data: &[u8]) -> bool {
         if data == b"stop" {
             crate::audio::request_stop();

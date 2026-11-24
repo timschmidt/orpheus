@@ -41,6 +41,7 @@ cargo xtask dev <subcommand>
   install-stage2                 replace stage 2 at 0x7DF400 (keeps the vendor record copy)
   keys 'ok wait:300 hold:menu'  inject keys into running yotonrs
   info                          developer-channel INFO of running yotonrs
+  time [--set]                  read (or set from the host, UTC) the player's clock
   cmd 'play /x.mp3' [--wait S]  firmware test command, then print the reply
   results                       read result block, fault record and log ring
   peek ADDR [N]                 read words
@@ -102,6 +103,28 @@ pub fn cmd(args: &mut Args) -> Result<String> {
             let r = d.control_in(yoton_proto::devchan::REQ_TEST, 0, 0, 1024)?;
             println!("{}", String::from_utf8_lossy(&r));
             Ok("reply printed".into())
+        }
+        "time" => {
+            let d = yoton_host::devchan::DevChannel::open(Duration::from_secs(3))?;
+            if args.flag("set") {
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
+                let (y, mo, da, h, mi, se) = civil(now);
+                let yb = (y as u16).to_le_bytes();
+                d.control_out(yoton_proto::devchan::REQ_TIME, 0, 0, &[yb[0], yb[1], mo, da, h, mi, se])?;
+            }
+            let t = d.control_in(yoton_proto::devchan::REQ_TIME, 0, 0, 7)?;
+            if t.len() < 7 {
+                bail!("clock not set");
+            }
+            Ok(format!(
+                "{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+                u16::from_le_bytes([t[0], t[1]]),
+                t[2],
+                t[3],
+                t[4],
+                t[5],
+                t[6]
+            ))
         }
         "info" => {
             let d = yoton_host::devchan::DevChannel::open(Duration::from_secs(3))?;
@@ -336,4 +359,22 @@ fn keys(script: &str) -> Result<String> {
         }
     }
     Ok(format!("{n} key presses sent"))
+}
+
+/// Unix seconds to (year, month, day, hour, minute, second), UTC.
+fn civil(secs: u64) -> (i64, u8, u8, u8, u8, u8) {
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    // Howard Hinnant's days-from-civil inverse.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m as u8, d as u8, (rem / 3600) as u8, (rem / 60 % 60) as u8, (rem % 60) as u8)
 }

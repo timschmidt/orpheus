@@ -189,7 +189,9 @@ impl<'b, I: EndpointIn, O: EndpointOut, B: BlockDevice> Bot<'b, I, O, B> {
                             self.stats.phase_errors += 1;
                             break;
                         }
-                        if status == 0 && self.dev.write(lba + u64::from(blk), &self.buf[..n * bs]).await.is_err() {
+                        if status == 0
+                            && self.dev.write(lba + u64::from(blk), &self.buf[..n * bs]).await.is_err()
+                        {
                             self.scsi.set_sense(Sense::WRITE_ERROR);
                             status = 1;
                             self.stats.errors += 1;

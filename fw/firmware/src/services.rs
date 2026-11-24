@@ -112,21 +112,31 @@ impl PowerService for Fw {
 
 impl ClockService for Fw {
     fn now(&self) -> DateTime {
-        // RTC-1 is not done: a running clock from the uptime.
-        let s = (embassy_time::Instant::now().as_secs()) as u32;
+        let n = atj2157_hal::rtc_clock::now();
+        // 2000-01-01 was a Saturday (weekday 5 with Monday = 0).
+        let days = atj2157_hal::rtc_clock::epoch2000(n) / 86_400;
         DateTime {
-            year: 2026,
-            month: 1,
-            day: 1,
-            hour: ((s / 3600) % 24) as u8,
-            minute: ((s / 60) % 60) as u8,
-            second: (s % 60) as u8,
-            weekday: 3,
+            year: n.year,
+            month: n.month,
+            day: n.day,
+            hour: n.hour,
+            minute: n.minute,
+            second: n.second,
+            weekday: ((days + 5) % 7) as u8,
         }
     }
-    fn set_now(&mut self, _t: DateTime) {}
+    fn set_now(&mut self, t: DateTime) {
+        let _ = atj2157_hal::rtc_clock::set(atj2157_hal::rtc_clock::DateTime {
+            year: t.year,
+            month: t.month,
+            day: t.day,
+            hour: t.hour,
+            minute: t.minute,
+            second: t.second,
+        });
+    }
     fn clock_valid(&self) -> bool {
-        false
+        atj2157_hal::rtc_clock::running() && atj2157_hal::rtc_clock::now().year >= 2026
     }
 }
 
