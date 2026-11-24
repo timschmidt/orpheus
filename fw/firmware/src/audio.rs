@@ -1,7 +1,7 @@
 //! Playback path (docs/plan/04-audio.md §2, WP AU-1 device part).
 //!
 //! ```text
-//! card ─► stream ring (32 KiB) ─► decoder (arena 72 KiB) ─► PCM ring (12 KiB, SRAM3) ─► DMA ch5 ─► DAC
+//! card ─► stream ring (16 KiB) ─► decoder (arena 72 KiB) ─► PCM ring (12 KiB, SRAM3) ─► DMA ch5 ─► DAC
 //! ```
 //!
 //! One task on the RT executor reads, decodes and fills the PCM ring; the
@@ -97,10 +97,11 @@ pub static PLAYING: AtomicBool = AtomicBool::new(false);
 /// Where the playback loop is (status diagnostics): 1 card read, 2 media
 /// request, 3 waiting for the DAC, 4 decoding, 5 DSP, 0 elsewhere.
 pub static WHERE: AtomicU32 = AtomicU32::new(0);
-/// DSP chain on/off (test command `dsp on|off`). Off by default: with the
-/// chain active, MP3 decoding plus DSP plus the UI thrash the four-slot code
-/// cache at 48 MHz until the watchdog fires (2026-11-24); on again once the
-/// hot path is resident or profile-packed (T-8).
+/// DSP chain on/off (test command `dsp on|off`). Off by default: with any
+/// stage active (bass, crossfeed or EQ alone) the player stops inside
+/// `Chain::process` until the watchdog fires, also with all of yoton-dsp
+/// resident, while the same sequence runs in milliseconds on the host
+/// (2026-11-24, open; see STATUS).
 pub static DSP_ON: AtomicBool = AtomicBool::new(false);
 
 /// Breadcrumb that survives a watchdog reset: the last mailbox argument
@@ -123,7 +124,7 @@ pub static PAUSED: AtomicBool = AtomicBool::new(false);
 
 // ------------------------------------------------------------ stream ring
 
-const RING: usize = 32 * 1024;
+const RING: usize = 16 * 1024;
 #[repr(C, align(4))]
 struct RingBuf([u8; RING]);
 static RING_BUF: ConstStaticCell<RingBuf> = ConstStaticCell::new(RingBuf([0; RING]));
@@ -263,7 +264,11 @@ impl PcmOut {
                 let played = PLAYED.load(Ordering::Acquire);
                 if played > self.written {
                     UNDERRUNS.fetch_add(played - self.written, Ordering::Relaxed);
-                    self.written = played;
+                    // Re-sync one half ahead of the DMA: the next push then
+                    // waits for a DMA interrupt, so a decoder that cannot
+                    // keep up still yields (otherwise the RT executor never
+                    // returns, thread mode starves and the watchdog fires).
+                    self.written = played + 1;
                 }
             }
         }
@@ -301,7 +306,8 @@ impl PcmOut {
 
 // ------------------------------------------------------------------ player
 
-const ARENA: usize = 72 * 1024;
+/// Largest measured need: Opus stereo 59,488 B, Vorbis q10 55,140 B.
+const ARENA: usize = 64 * 1024;
 #[repr(C, align(8))]
 struct ArenaBuf([u8; ARENA]);
 static mut ARENA_BUF: ArenaBuf = ArenaBuf([0; ARENA]);

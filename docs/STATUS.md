@@ -32,11 +32,33 @@ of every session. Newest entries first in §3.
 | FS-2 / AU-5 firmware | first cut on the player | Files lists the card (on-disk order, no sort until AU-12), text viewer window, folder play queue, Now Playing; `yoton-player` (queue/resume/bookmarks) not yet wired in |
 | UI-1, UI-2, UI-3, UI-4 | done (host); running on the player | 457 golden images |
 | AU-1…AU-4, AU-7, AU-8, AU-9 | done (host); MP3/FLAC/WAV played on the player | Vorbis/Opus/Speex not yet played on the player (no test files inside `/.yoton/`) |
-| AU-6 | done (host); wired into the firmware, **off by default** | `yoton-dsp` chain between decoder and DAC; Sound settings published by the UI. With the chain active, MP3 + DSP + UI thrash the 4-slot code cache at 48 MHz until the watchdog fires; a hot cluster for MP3 alone fixes plain playback, a second cluster for the DSP made it worse (direct-mapped slots). Needs T-8 profiling or a resident hot path. WSOLA not done |
+| AU-6 | done (host); wired into the firmware, **bypassed** | `yoton-dsp` chain between decoder and DAC; Sound settings published by the UI. Any active stage hangs `Chain::process` on the player (not paging; see the session log, part 3). WSOLA not done |
 | AU-14 | done (host) | `yoton-img` |
 | OTP-1, BT-1, USB-6 | done (host) | `yoton-otp`, `yoton-bt`, MMC/CD-ROM in `yoton-usb` |
 
 ## 3. Session log
+
+### 2026-11-24 — implementation session 2, part 3 (lead)
+
+* Audio hot path resident (`resident.toml`: `yoton_codec_mp3::*` and the
+  DSP stages' `process` functions), stream ring 32 → 16 KiB, decoder arena
+  72 → 64 KiB (largest measured need: Opus 59,488 B). MP3 at 48 MHz now
+  ≈ 80 % idle (was ≈ 53 % with the MP3 cluster, ≈ 0 % before), 0 underruns,
+  all codecs linked; `mp3-decode` hot cluster dropped (resident instead).
+* After an underrun the PCM push now waits for the next DMA half, so a
+  decoder that cannot keep up still yields (the RT executor no longer
+  starves thread mode).
+* **Open: DSP chain hangs on the player.** With any single stage active
+  (bass, crossfeed or EQ) playback stops inside `Chain::process` (breadcrumb
+  5) until the watchdog fires; also with all of yoton-dsp resident, so not
+  paging. The same sequence (`set_format` 44.1 kHz i16 stereo, flat, then
+  the stage) runs in milliseconds on the host. Next: run the chain in thread
+  mode on the player (needs RAM: start-up uses 23–28 KB of the 32 KB stack,
+  which should be found and cut first), check FP in handler mode, compare
+  the thumbv7em code of `Chain::run` with the host's. The chain is built in
+  and fed by the Sound settings but bypassed (`DSP_ON` false; test command
+  `dsp on`).
+* `clock 48|96|144` test command.
 
 ### 2026-11-24 — implementation session 2, part 2 (lead)
 
@@ -236,6 +258,8 @@ of every session. Newest entries first in §3.
 | 2026-11-24 | NOR program via Rust payload / erase of 1,907 sectors | 401,408 B in 10.2 s / 35.6 s | `xtask dev install-full` |
 | 2026-11-24 | Firmware image, all codecs (full layout) | resident 54,308 B, 43 code + 16 rodata pages, slot 544,768 B | `xtask build` |
 | 2026-11-24 | Stage 2 (Rust, full-layout aware) | 876 B of 1,024 | `cargo build -p stage2` |
+| 2026-11-24 | MP3 44.1 kHz, 48 MHz, audio hot path resident | ≈ 80 % main idle, 0 underruns, ≈ 1,250 line loads/s | `xtask dev stats` |
+| 2026-11-24 | Main stack after start-up (32.6 KB stack) | 9.5 KB free (≈ 23 KB used) | INFO stack high-water |
 
 
 ## 5. Open questions for the user

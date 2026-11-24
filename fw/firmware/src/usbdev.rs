@@ -155,6 +155,16 @@ impl Target for Fw {
             });
             return true;
         }
+        if let Some(l) = data.strip_prefix(b"clock ") {
+            // Test: pin the clock level (the governor may move it again).
+            use atj2157_hal::clock::{Level, set_level};
+            set_level(match l {
+                b"96" => Level::Mid,
+                b"144" => Level::High,
+                _ => Level::Base,
+            });
+            return true;
+        }
         if data == b"dsp on" || data == b"dsp off" {
             crate::audio::DSP_ON.store(data == b"dsp on", Ordering::Relaxed);
             return true;
