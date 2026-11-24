@@ -140,6 +140,7 @@ pub fn suite(name: &str) -> Option<&'static [Case]> {
         Case { image: "audio", test: "audio", expect: Expect::Pass, wait_s: 60 },
         Case { image: "i2c", test: "i2c", expect: Expect::Pass, wait_s: 30 },
         Case { image: "nor", test: "nor", expect: Expect::Pass, wait_s: 30 },
+        Case { image: "clocks", test: "clocks", expect: Expect::Pass, wait_s: 60 },
     ];
     match name {
         "smoke" => Some(SMOKE),

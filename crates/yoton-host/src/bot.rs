@@ -65,7 +65,7 @@ impl Bot {
             match info.open().wait() {
                 Ok(d) => break d,
                 Err(_) if t0.elapsed() < Duration::from_secs(3) => {
-                    std::thread::sleep(Duration::from_millis(100))
+                    std::thread::sleep(Duration::from_millis(100));
                 }
                 Err(e) => return Err(e).context("open USB device"),
             }
