@@ -377,6 +377,13 @@ access, watch for reports after each candidate, and look in the vendor
 firmware for the senders of 0x32 and the meaning of its two bytes before
 probing more values.
 
+**Step 2, second pass (2026-11-24)**: with raw HID access, none of `27`,
+`2D` (with or without a parameter) or `05 16/17` produced a HID report;
+**`0x32` restarts the module with any value** and drops the HID link. The
+live probing of the documented candidates is exhausted; the next step is the
+offline analysis of the vendor host firmware (engine message 0x332c → 0x32,
+and any report-carrying path), before a wider command-id scan.
+
 #### 4.3.2 Tilt pointer engine (WP SENS-2) — conditional (D-10)
 
 Built **only if** §4.3.1 finds a Bluetooth transport for mouse data; if not,
