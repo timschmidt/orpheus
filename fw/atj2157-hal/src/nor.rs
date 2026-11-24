@@ -239,10 +239,15 @@ pub fn erase_sector(addr: u32) -> Result<(), Error> {
     if !addr.is_multiple_of(4096) || !writable(addr, 4096) {
         return Err(Error::Refused);
     }
-    command(0x06);
-    let _ = send(&[0x20, (addr >> 16) as u8, (addr >> 8) as u8, addr as u8]);
-    cs_high();
-    wait_ready(2_000_000)
+    // While the chip erases it cannot be read, so nothing may page-fault
+    // meanwhile: interrupts are masked (BASEPRI) and everything this runs is
+    // resident (02 §3.2 rule 5; suspend/resume is U-NOR-2).
+    critical_section::with(|_| {
+        command(0x06);
+        let _ = send(&[0x20, (addr >> 16) as u8, (addr >> 8) as u8, addr as u8]);
+        cs_high();
+        wait_ready(2_000_000)
+    })
 }
 
 /// Program up to 256 bytes within one NOR page.
@@ -251,20 +256,28 @@ pub fn program_page(addr: u32, data: &[u8]) -> Result<(), Error> {
     if len == 0 || len > 256 || (addr & 0xFF) + len > 256 || !writable(addr, len) {
         return Err(Error::Refused);
     }
-    command(0x06);
-    let mut ok = send(&[0x02, (addr >> 16) as u8, (addr >> 8) as u8, addr as u8]);
-    cs_low_continue();
-    for &b in data {
-        TX.write(u32::from(b));
-        ok &= wait(0x10, 0x10);
-    }
-    ok &= wait(0x40, 0);
-    mode(0);
-    cs_high();
-    if !ok {
-        return Err(Error::Timeout);
-    }
-    wait_ready(200_000)
+    // Copy first: `data` may live in paged rodata, which cannot be read
+    // once the chip is busy.
+    let mut buf = [0u8; 256];
+    buf[..data.len()].copy_from_slice(data);
+    let data = &buf[..data.len()];
+    // As in `erase_sector`: no page fault while the chip programs.
+    critical_section::with(|_| {
+        command(0x06);
+        let mut ok = send(&[0x02, (addr >> 16) as u8, (addr >> 8) as u8, addr as u8]);
+        cs_low_continue();
+        for &b in data {
+            TX.write(u32::from(b));
+            ok &= wait(0x10, 0x10);
+        }
+        ok &= wait(0x40, 0);
+        mode(0);
+        cs_high();
+        if !ok {
+            return Err(Error::Timeout);
+        }
+        wait_ready(200_000)
+    })
 }
 
 /// Continue a transmit phase with CS still low.

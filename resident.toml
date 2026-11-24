@@ -89,6 +89,11 @@ roots = [
     "atj2157_hal::log::init",
     # Audio DMA half/complete handler (`enable_irq_with`, level 1).
     "firmware::audio::on_dac_dma",
+    # NOR program/erase run with interrupts masked while the chip is busy
+    # and cannot be read: everything they reach (code and constants) must
+    # be resident, or the pager reads a busy chip (2026-11-24: a settings
+    # write executed garbage from a page loaded mid-program).
+    "atj2157_hal::nor::*",
 ]
 
 [bin.firmware.resident]

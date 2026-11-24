@@ -158,6 +158,22 @@ of every session. Newest entries first in §3.
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — implementation session 2, part 8 (lead)
+
+* On the player: bookmarks (Now Playing menu → Bookmark here; Music →
+  Bookmarks lists it; choosing it plays from the position), resume, shuffle
+  toggle. "Shuffle all" is not implemented (opens an idle Now Playing).
+* **Fixed a crash in NOR writes** (02 §3.2 rule 5): toggling Shuffle wrote
+  the settings store; `nor::status`/`wait_ready` and the command-byte
+  constant were paged, so the pager loaded them while the chip was busy
+  programming and the CPU executed garbage (UsageFault UNDEFINSTR in
+  `nor::status`). Now `atj2157_hal::nor::*` is a residency root (code and
+  constants), and program/erase run with interrupts masked (BASEPRI) so no
+  fault can reach the busy chip (suspend/resume is U-NOR-2). Five toggles
+  during playback: no crash, 0 underruns. Sector erases (settings log
+  roll-over) hold interrupts off for tens of ms; the 70 ms PCM ring covers
+  it.
+
 ### 2026-11-24 — implementation session 2, part 7 (lead)
 
 * Merged AU-12 firmware (worker): Files lists through `/.yoton/index/`. On
