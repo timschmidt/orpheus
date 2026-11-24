@@ -23,3 +23,7 @@
 /crates/codecs/conformance/fuzz/artifacts/
 /crates/codecs/conformance/fuzz/corpus/
 /crates/codecs/conformance/fuzz/coverage/
+/crates/yoton-img/fuzz/Cargo.lock
+/crates/yoton-img/fuzz/artifacts/
+/crates/yoton-img/fuzz/corpus/
+/crates/yoton-img/fuzz/coverage/
