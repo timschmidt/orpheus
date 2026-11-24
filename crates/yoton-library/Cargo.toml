@@ -1,0 +1,19 @@
+[package]
+name = "yoton-library"
+description = "Music library index on the card: tag scan, sorted tables, bounded-RAM queries (04 §6.4, 05 §7.1)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+yoton-apps = { path = "../yoton-apps" }
+yoton-audio = { path = "../yoton-audio" }
+yoton-fs = { path = "../yoton-fs" }
+yoton-index = { path = "../yoton-index" }
+yoton-meta = { path = "../yoton-meta" }
+yoton-player = { path = "../yoton-player" }
+
+[lints]
+workspace = true

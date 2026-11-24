@@ -195,7 +195,8 @@ pub(crate) fn as_str(b: &[u8]) -> &str {
 }
 
 /// CRC-32 (IEEE, reflected), table-free nibble form: 64 bytes of table.
-pub(crate) fn crc32_update(mut crc: u32, data: &[u8]) -> u32 {
+/// Start with 0; `crc32_update(crc32_update(0, a), b)` is the CRC of `a ++ b`.
+pub fn crc32_update(mut crc: u32, data: &[u8]) -> u32 {
     const T: [u32; 16] = [
         0x0000_0000,
         0x1DB7_1064,

@@ -29,11 +29,13 @@ mod ape;
 mod flac;
 mod id3;
 mod io;
+pub mod length;
 pub mod lrc;
 mod riff;
 pub mod sylt;
 pub mod text;
 mod vorbis;
+pub mod window;
 
 pub use text::{CodePage, Encoding, Text};
 use yoton_audio::{ByteSource, Format, Gapless, SeekSource, SourceError};

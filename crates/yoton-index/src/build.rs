@@ -186,6 +186,12 @@ fn cmp_at(sort: yoton_apps::services::SortBy, items: &[u8], a: usize, b: usize) 
 
 /// Heap sort of the `u16` offsets in `slots` by the items they point at.
 fn heapsort(slots: &mut [u8], items: &[u8], sort: yoton_apps::services::SortBy) {
+    heapsort_by(slots, |a, b| cmp_at(sort, items, a, b) == Ordering::Less);
+}
+
+/// Heap sort of the `u16` values in `slots` by `less` (applied to the
+/// values).
+pub(crate) fn heapsort_by(slots: &mut [u8], mut less: impl FnMut(usize, usize) -> bool) {
     let n = slots.len() / 2;
     let get = |s: &[u8], i: usize| usize::from(rd16(s, 2 * i));
     let swap = |s: &mut [u8], i: usize, j: usize| {
@@ -193,16 +199,16 @@ fn heapsort(slots: &mut [u8], items: &[u8], sort: yoton_apps::services::SortBy) 
         wr16(s, 2 * i, b);
         wr16(s, 2 * j, a);
     };
-    let sift = |s: &mut [u8], mut root: usize, end: usize| {
+    let mut sift = |s: &mut [u8], mut root: usize, end: usize| {
         loop {
             let mut child = 2 * root + 1;
             if child >= end {
                 break;
             }
-            if child + 1 < end && cmp_at(sort, items, get(s, child), get(s, child + 1)) == Ordering::Less {
+            if child + 1 < end && less(get(s, child), get(s, child + 1)) {
                 child += 1;
             }
-            if cmp_at(sort, items, get(s, root), get(s, child)) == Ordering::Less {
+            if less(get(s, root), get(s, child)) {
                 swap(s, root, child);
                 root = child;
             } else {
@@ -223,7 +229,7 @@ fn heapsort(slots: &mut [u8], items: &[u8], sort: yoton_apps::services::SortBy) 
 /// `file` at `*pos`. Full-buffer writes end on a multiple of `buf.len()`
 /// in the file (whole sectors for the 512-byte output buffer), also after
 /// a partial flush.
-fn push<S: Storage>(
+pub(crate) fn push<S: Storage>(
     store: &mut S,
     file: FileName,
     buf: &mut [u8],
@@ -244,7 +250,7 @@ fn push<S: Storage>(
     Ok(())
 }
 
-fn flush<S: Storage>(
+pub(crate) fn flush<S: Storage>(
     store: &mut S,
     file: FileName,
     buf: &[u8],
