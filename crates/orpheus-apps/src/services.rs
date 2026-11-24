@@ -104,6 +104,21 @@ pub struct DateTime {
     pub weekday: u8,
 }
 
+/// Seconds since 1970-01-01 of a UTC date and time (proleptic Gregorian;
+/// the player's clock keeps UTC, 06 §5.3).
+#[must_use]
+pub fn unix_of(t: &DateTime) -> u64 {
+    let m = i64::from(t.month);
+    let y = i64::from(t.year) - i64::from(m <= 2);
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + i64::from(t.day) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    let s = days * 86_400 + i64::from(t.hour) * 3600 + i64::from(t.minute) * 60 + i64::from(t.second);
+    u64::try_from(s).unwrap_or(0)
+}
+
 pub trait ClockService {
     fn now(&self) -> DateTime;
     /// Set the RTC (local time; the UTC offset setting converts).
@@ -606,6 +621,195 @@ pub trait ToolsService {
     fn alarm_wakes_from_off(&self) -> bool;
 }
 
+// ---------------------------------------------------------------- Authenticator
+
+pub use orpheus_otp::Code;
+pub use orpheus_otp::service::{ImportReport, State as VaultState, Work as VaultWork};
+
+/// One account as the app shows it (never the secret).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct AuthEntry {
+    pub issuer: StrBuf<32>,
+    pub account: StrBuf<64>,
+    /// TOTP period in seconds; 0 for HOTP.
+    pub period: u32,
+    pub digits: u8,
+}
+
+impl AuthEntry {
+    /// The entry's labels and parameters (the secret stays behind).
+    #[must_use]
+    pub fn of(e: &orpheus_otp::Entry) -> AuthEntry {
+        AuthEntry {
+            issuer: StrBuf::from(e.issuer.as_str()),
+            account: StrBuf::from(e.account.as_str()),
+            period: match e.kind {
+                orpheus_otp::Kind::Totp { period } => period,
+                orpheus_otp::Kind::Hotp { .. } => 0,
+            },
+            digits: e.digits,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_hotp(&self) -> bool {
+        self.period == 0
+    }
+
+    /// The row's name: the issuer, or the account without one.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        if self.issuer.is_empty() { self.account.as_str() } else { self.issuer.as_str() }
+    }
+}
+
+/// PIN digits as typed (ASCII), wiped when dropped.
+#[derive(Clone, PartialEq, Eq, Default)]
+pub struct Pin {
+    d: [u8; orpheus_otp::service::MAX_PIN],
+    n: u8,
+}
+
+impl core::fmt::Debug for Pin {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Pin")
+    }
+}
+
+impl Drop for Pin {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.d.zeroize();
+    }
+}
+
+impl Pin {
+    /// Add a digit (0..=9); `false` when full.
+    pub fn push(&mut self, digit: u8) -> bool {
+        match self.d.get_mut(usize::from(self.n)) {
+            Some(slot) if digit < 10 => {
+                *slot = b'0' + digit;
+                self.n += 1;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn pop(&mut self) {
+        if self.n > 0 {
+            self.n -= 1;
+            if let Some(d) = self.d.get_mut(usize::from(self.n)) {
+                *d = 0;
+            }
+        }
+    }
+
+    pub fn clear(&mut self) {
+        use zeroize::Zeroize;
+        self.d.zeroize();
+        self.n = 0;
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        usize::from(self.n)
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.n == 0
+    }
+
+    /// Long enough to submit.
+    #[must_use]
+    pub fn complete(&self) -> bool {
+        self.len() >= orpheus_otp::service::MIN_PIN
+    }
+
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.d[..usize::from(self.n)]
+    }
+}
+
+/// What the app asks of the authenticator service. Results arrive as
+/// `ServiceEvent::Other { kind: other::AUTH, value }` ([`auth_event`]) with
+/// details in [`AuthService::auth_outcome`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuthRequest {
+    /// A key was pressed in the app (restarts the 60-s relock timer).
+    Touch,
+    Unlock(Pin),
+    Create(Pin),
+    ChangePin(Pin),
+    Lock,
+    /// Import `/.orpheus/otp-import.txt` from the card.
+    Import,
+    NextCode(u8),
+    Delete(u8),
+    /// Exchange entries `i` and `i + 1`.
+    SwapNext(u8),
+    /// Type the current code of an entry on the USB keyboard.
+    Type(u8),
+    /// The user's answer to a provisioning request.
+    Provision(bool),
+    Wipe,
+}
+
+/// `ServiceEvent::Other { kind: other::AUTH, value }` values.
+pub mod auth_event {
+    /// The vault's state changed (unlocked, created, locked, wiped…).
+    pub const STATE: u32 = 1;
+    pub const WRONG_PIN: u32 = 2;
+    /// The entries changed (import, delete, move, provisioning, next code).
+    pub const ENTRIES: u32 = 3;
+    /// A request finished: see `AuthService::auth_outcome`.
+    pub const OUTCOME: u32 = 4;
+    /// A provisioning request waits for the user (`provision_pending`).
+    pub const PROVISION: u32 = 5;
+}
+
+/// The result of the last request that has one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum AuthOutcome {
+    #[default]
+    None,
+    Imported {
+        report: ImportReport,
+        /// The file was wiped and deleted.
+        deleted: bool,
+    },
+    NoImportFile,
+    ImportTooLarge,
+    /// Typing started; `Typed` follows.
+    Typing,
+    Typed,
+    TypeFailed,
+    NoComputer,
+    /// HOTP without a code yet, or TOTP without a clock.
+    NoCode,
+    Added,
+    AlreadyThere,
+    PinChanged,
+    /// The vault could not be written or read.
+    Failed,
+}
+
+pub trait AuthService {
+    fn vault(&self) -> VaultState;
+    /// Seconds since 1970 UTC while the clock is valid (TOTP needs it).
+    fn unix_time(&self) -> Option<u64>;
+    /// Entry `i` of the unlocked vault (decrypted on demand).
+    fn auth_entry(&mut self, i: usize) -> Option<AuthEntry>;
+    /// The code of entry `i`: TOTP now, HOTP the one last made.
+    fn auth_code(&mut self, i: usize) -> Option<Code>;
+    fn auth_request(&mut self, r: AuthRequest);
+    fn auth_outcome(&self) -> AuthOutcome;
+    /// A provisioning request waiting for confirmation.
+    fn provision_pending(&self) -> Option<AuthEntry>;
+}
+
 /// Everything the apps need. Implemented automatically for any type with
 /// all the parts; the toolkit's `System` (status bar, volume, mini-player)
 /// can be implemented with [`status`], [`mini_player`] and
@@ -628,6 +832,7 @@ pub trait Services:
     + SystemService
     + StepsService
     + ToolsService
+    + AuthService
 {
 }
 
@@ -649,6 +854,7 @@ impl<T> Services for T where
         + SystemService
         + StepsService
         + ToolsService
+        + AuthService
 {
 }
 
@@ -750,6 +956,8 @@ pub mod other {
     pub const STEPS: u16 = 4;
     /// Stopwatch, timer, alarms: `value` is one of [`super::tools_event`].
     pub const TOOLS: u16 = 5;
+    /// Authenticator: `value` is one of [`super::auth_event`].
+    pub const AUTH: u16 = 6;
 }
 
 /// Browser order (Files menu › Sort).
@@ -1340,6 +1548,23 @@ pub trait PictureService {
 #[cfg(test)]
 mod bt_tests {
     use super::*;
+
+    #[test]
+    fn unix_time_of_dates() {
+        let d = |year, month, day, hour, minute, second| DateTime {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            weekday: 0,
+        };
+        assert_eq!(unix_of(&d(1970, 1, 1, 0, 0, 0)), 0);
+        assert_eq!(unix_of(&d(2000, 1, 1, 0, 0, 0)), 946_684_800);
+        assert_eq!(unix_of(&d(2024, 2, 29, 23, 59, 59)), 1_709_251_199);
+        assert_eq!(unix_of(&d(2026, 11, 24, 12, 41, 0)), 1_795_524_060);
+    }
 
     #[test]
     fn bitrate_shown() {

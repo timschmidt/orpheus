@@ -20,9 +20,13 @@ pub mod drift;
 pub mod entry;
 pub mod kdf;
 pub mod otp;
+pub mod service;
 pub mod uri;
 pub mod vault;
 
 pub use entry::{Entry, Kind, Text};
 pub use otp::{Algorithm, Code};
-pub use vault::{Entropy, SecretKind, Status, Storage, UnlockJob, Unlocked, Vault, VaultError};
+pub use vault::{
+    Entropy, Key, Payload, Pool, RekeyJob, SecretKind, Status, Storage, UnlockJob, Unlocked, Vault,
+    VaultError,
+};

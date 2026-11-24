@@ -204,6 +204,10 @@ pub mod id {
     pub const BT_RECONNECT: SettingId = SettingId(0x0603);
     pub const OUTPUT: SettingId = SettingId(0x0604);
     pub const USB_WHEN_CONNECTED: SettingId = SettingId(0x0901);
+    /// The computer's keyboard layout (`orpheus_hid::Layout` order).
+    pub const KBD_LAYOUT: SettingId = SettingId(0x0904);
+    pub const KEYPAD_DIGITS: SettingId = SettingId(0x0905);
+    pub const ENTER_AFTER_CODE: SettingId = SettingId(0x0906);
     pub const LANGUAGE: SettingId = SettingId(0x0A01);
     pub const FILES_SORT: SettingId = SettingId(0x0D01);
     pub const SHOW_HIDDEN: SettingId = SettingId(0x0D02);
@@ -349,6 +353,11 @@ const USB: &[Setting] = &[
     ),
     t(0x0902, Str::ReadOnlyCard, 0),
     t(0x0903, Str::DevChannel, 1),
+    // USB-5 / OTP-2: the computer's layout for typed codes, digits from
+    // the keypad (layouts whose top row needs Shift), Enter after a code.
+    c(0x0904, Str::KbdLayout, ch![S(Str::KbdUs), S(Str::KbdUk), S(Str::KbdDe), S(Str::KbdFr)], 0),
+    t(0x0905, Str::KeypadDigits, 0),
+    t(0x0906, Str::EnterAfterCode, 1),
 ];
 
 const LANGUAGE: &[Setting] =
@@ -505,7 +514,7 @@ pub fn def(id: SettingId) -> Option<&'static Setting> {
 }
 
 /// Number of stored items.
-pub const STORED: usize = 89;
+pub const STORED: usize = 92;
 
 /// Position among stored items (cache index).
 #[must_use]

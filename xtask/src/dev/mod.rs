@@ -44,6 +44,8 @@ cargo xtask dev <subcommand>
   put LOCAL /.orpheus/PATH         upload a file to the card (through the firmware's FS)
   stats [--irq]                 executor idle time, pager and UI counters (--irq: per line)
   time [--set]                  read (or set from the host, UTC) the player's clock
+  otp-add 'otpauth://…'         PROVISION one authenticator account (the
+                                Authenticator must be unlocked; confirm on the player)
   cmd 'play /x.mp3' [--wait S]  firmware test command, then print the reply
   results                       read result block, fault record and log ring
   peek ADDR [N]                 read words (switches the player to ymon)
@@ -197,6 +199,16 @@ pub fn cmd(args: &mut Args) -> Result<String> {
             d.control_out(orpheus_proto::devchan::REQ_TEST, 0, 0, b"fclose")?;
             wait_for(&d, &format!("closed {sent}"))?;
             Ok(format!("{sent} bytes -> {remote} in {:.1} s", t0.elapsed().as_secs_f32()))
+        }
+        "otp-add" => {
+            let uri = args.next_positional().context("otp-add needs an otpauth:// URI")?;
+            if !uri.starts_with("otpauth://") || uri.len() > 1024 {
+                bail!("expected one otpauth:// URI of at most 1024 bytes");
+            }
+            let d = orpheus_host::devchan::DevChannel::open(Duration::from_secs(3))?;
+            d.control_out(orpheus_proto::devchan::REQ_PROVISION, 0, 0, uri.as_bytes())
+                .context("refused: is the Authenticator unlocked on the player?")?;
+            Ok("sent; confirm it on the player".into())
         }
         "time" => {
             let d = orpheus_host::devchan::DevChannel::open(Duration::from_secs(3))?;

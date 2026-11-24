@@ -246,7 +246,7 @@ impl FilesScreen {
             EntryKind::Playlist => notice(Notice::NotYet(App::Music)),
             EntryKind::Image => Nav::Push(PICTURE_VIEW, Arg(PictureScreen::arg(i, false))),
             EntryKind::DiskImage => notice(Notice::NotYet(App::UsbDrive)),
-            EntryKind::OtpImport => notice(Notice::NotYet(App::Authenticator)),
+            EntryKind::OtpImport => Nav::Push(super::AUTHENTICATOR, Arg(0)),
             EntryKind::Firmware => notice(Notice::NotYetSettings),
             EntryKind::Other => notice(Notice::Unsupported),
         }

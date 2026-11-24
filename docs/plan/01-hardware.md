@@ -325,7 +325,7 @@ that. Added:
 
 | Id | Question | Test | WP |
 |---|---|---|---|
-| U-USB-11 | Interrupt-type endpoint/FIFO configuration (FIFO type field) and timing | HID keyboard enumerates and types on the host | USB-5 |
+| U-USB-11 | Interrupt-type endpoint/FIFO configuration (FIFO type field) and timing | HID keyboard enumerates and types on the host. USB-5 (2026-11-24) built the test: `kbd on`, `kbd type …`, `kbd status` (FIFO type 3, max packet 8, bInterval 4, one 8-byte DMA per report, 12 ms apart); **not yet run on the player** | USB-5 |
 | U-USB-12 | Isochronous FIFOs with the Actions DMA; feedback endpoint | UAC1 speaker plays a tone (stretch) | USB-7 |
 
 ### Audio, radio, sensor, Bluetooth

@@ -608,8 +608,8 @@ threat model in 06-connectivity §"Authenticator".
   OK on a row: big-code screen (28 px numerals, grouped 3 + 3) with countdown;
   OK again: **type the code** through the USB keyboard
   personality followed by Enter if enabled.
-* Menu: Add… (import from `otpauth.txt` on the card — the file is overwritten
-  and deleted after import; or manual entry: issuer, account, Base32 secret
+* Menu: Add… (import from `/.orpheus/otp-import.txt` on the card — the file
+  is overwritten and deleted after import; or manual entry: issuer, account, Base32 secret
   with the Base32 keyboard, digits 6/8, period 30/60, SHA-1/256/512) · Rename
   · Delete… · Move · Next code (HOTP) · Time check (shows RTC time, UTC offset,
   last synchronisation and estimated drift; warns if the clock was never set)

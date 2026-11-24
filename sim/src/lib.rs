@@ -21,8 +21,10 @@
 //! | `theme:dark`, `accent:green`, `lang:cyrillic` | appearance and language |
 //! | `set:battery=8`, `set:usb=host` … | simulated system state (per host) |
 //! | `goto:Library` | push a screen directly |
+//! | `expect-typed:287082↵` | fail unless the fake computer on the USB keyboard received this (`↵` = Enter) |
 
 pub mod apps;
+pub mod auth;
 pub mod bt;
 pub mod card;
 pub mod demo;
@@ -98,6 +100,10 @@ pub trait Host: System + Default + Sized {
     }
     /// Simulated time passes (playback position, pending loads).
     fn advance(&mut self, _ms: u64) {}
+    /// What the fake computer on the USB keyboard has received.
+    fn typed(&self) -> &str {
+        ""
+    }
 }
 
 /// The simulator: frame buffer, input mapper, shell and fake services.
@@ -365,6 +371,14 @@ impl<H: Host> Sim<H> {
                     let n = self.shell.top_name();
                     if n != arg {
                         bail!("expected screen {arg}, top is {n}");
+                    }
+                }
+                "expect-typed" => {
+                    // `↵` stands for Enter (scripts split on whitespace).
+                    let want = arg.replace('↵', "\n");
+                    let got = self.sys.typed();
+                    if got != want {
+                        bail!("expected typed {want:?}, the computer got {got:?}");
                     }
                 }
                 "theme" => {

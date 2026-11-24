@@ -12,6 +12,8 @@ orpheus-ui = { path = "../orpheus-ui" }
 orpheus-power = { path = "../orpheus-power" }
 orpheus-fm = { path = "../orpheus-fm" }
 orpheus-steps = { path = "../orpheus-steps" }
+orpheus-otp = { path = "../orpheus-otp" }
+zeroize = { version = "1.8", default-features = false }
 
 [lints]
 workspace = true

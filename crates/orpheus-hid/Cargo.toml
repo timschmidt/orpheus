@@ -1,0 +1,15 @@
+[package]
+name = "orpheus-hid"
+description = "HID keyboard reports, descriptors, keyboard layouts and a paced typist shared by the USB (USB-5) and Bluetooth (BT-4) transports (host-testable)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+embassy-futures = "0.1"
+
+[lints]
+workspace = true

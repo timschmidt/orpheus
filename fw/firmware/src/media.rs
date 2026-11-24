@@ -112,6 +112,8 @@ pub const LETTER_RUNS: usize = 80;
 
 pub mod tag {
     pub use orpheus_apps::services::data::{BROWSE, LIBRARY, PICTURE, QUEUE, TEXT};
+    /// The Authenticator's import file was read or deleted (`OtpJob`).
+    pub const OTP: u16 = 0x100;
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -143,6 +145,44 @@ pub enum Req {
     Sensor,
     /// An alert started (`audio::ALERT`): wakes the idle loop to sound it.
     Alert,
+    /// The Authenticator's import file (`OtpJob`, OTP-2).
+    Otp(OtpJob),
+}
+
+/// The Authenticator's import file `/.orpheus/otp-import.txt` (OTP-2, 06
+/// §5.4): read it into bytes the UI lent (part of the frame buffer; the UI
+/// draws nothing while they are out), or overwrite it with zeros and
+/// delete it. Same slot protocol as pictures ([`OTP_SLOT`]).
+#[derive(Clone, Copy, Debug)]
+pub struct OtpJob {
+    pub seq: u32,
+    /// `buf..buf + cap`: the lent bytes (unused when deleting).
+    pub buf: usize,
+    pub cap: u32,
+    pub delete: bool,
+}
+
+/// The import file (only `/.orpheus/` is written, CLAUDE.md rule 5).
+pub const OTP_FILE: &str = "/.orpheus/otp-import.txt";
+/// 0 none, `seq` queued, `seq | PIC_RUNNING` being carried out.
+pub static OTP_SLOT: AtomicU32 = AtomicU32::new(0);
+/// The last job's number and result: bytes read (or 0 for a delete), or
+/// one of the `OTP_*` codes below.
+pub static OTP_RESULT: Mutex<core::cell::Cell<(u32, i32)>> = Mutex::new(core::cell::Cell::new((0, 0)));
+pub const OTP_NONE: i32 = -1;
+pub const OTP_TOO_LARGE: i32 = -2;
+pub const OTP_IO: i32 = -3;
+
+/// The card task: start job `j` unless the UI took it back.
+pub fn otp_start(j: &OtpJob) -> bool {
+    OTP_SLOT.compare_exchange(j.seq, j.seq | PIC_RUNNING, Ordering::AcqRel, Ordering::Acquire).is_ok()
+}
+
+/// The card task: job `j` ended with `r` (the lent bytes go back).
+pub fn otp_done(j: &OtpJob, r: i32) {
+    critical_section::with(|cs| OTP_RESULT.borrow(cs).set((j.seq, r)));
+    OTP_SLOT.store(0, Ordering::Release);
+    ready(tag::OTP);
 }
 
 /// A picture for a box of the frame buffer (`PictureService`). The UI
@@ -879,6 +919,10 @@ impl Server {
                 true
             }
             Req::Alert => true,
+            Req::Otp(j) => {
+                crate::audio::otp_file(vol, &j).await;
+                true
+            }
             Req::Text { file, offset } => {
                 self.text(vol, file, offset, scratch).await;
                 true

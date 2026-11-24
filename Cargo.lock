@@ -895,9 +895,11 @@ name = "orpheus-apps"
 version = "0.1.0"
 dependencies = [
  "orpheus-fm",
+ "orpheus-otp",
  "orpheus-power",
  "orpheus-steps",
  "orpheus-ui",
+ "zeroize",
 ]
 
 [[package]]
@@ -1004,6 +1006,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "orpheus-hid"
+version = "0.1.0"
+dependencies = [
+ "embassy-futures",
+]
+
+[[package]]
 name = "orpheus-host"
 version = "0.1.0"
 dependencies = [
@@ -1065,10 +1074,12 @@ dependencies = [
 name = "orpheus-otp"
 version = "0.1.0"
 dependencies = [
+ "chacha20",
  "chacha20poly1305",
  "embassy-futures",
  "hmac",
  "pbkdf2",
+ "poly1305",
  "sha1",
  "sha2 0.11.1",
  "zeroize",
@@ -1113,16 +1124,19 @@ name = "orpheus-sim"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "embassy-futures",
  "minifb",
  "orpheus-apps",
  "orpheus-audio",
  "orpheus-fm",
  "orpheus-fs",
+ "orpheus-hid",
  "orpheus-host",
  "orpheus-img",
  "orpheus-index",
  "orpheus-library",
  "orpheus-meta",
+ "orpheus-otp",
  "orpheus-power",
  "orpheus-steps",
  "orpheus-ui",

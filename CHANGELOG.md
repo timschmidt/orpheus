@@ -42,7 +42,15 @@ replaced).
   power-off (auto-off and low-battery switch-off are built and await
   checks unplugged).
 - **USB**: card reader for a computer; developer channel in every USB
-  personality (logs, screenshots, key injection, test commands).
+  personality (logs, screenshots, key injection, test commands); a USB
+  keyboard personality (boot keyboard; US, UK, German and French layouts)
+  — built, not yet tried on the player.
+- **Authenticator** (built, not yet tried on the player): time- and
+  counter-based one-time codes behind a PIN, with a countdown, typed into
+  the computer over the USB keyboard; accounts imported from
+  `/.orpheus/otp-import.txt` on the card or sent from the developer
+  channel. The PIN only stops casual use (the vault can be copied with a
+  USB cable).
 - **Tools**: `cargo xtask` for building, size budgets, tests, golden
   images (620), codec conformance, 30 fuzz targets with committed corpora,
   coverage, sanitizers, metrics, device commands, battery-drain reports;
