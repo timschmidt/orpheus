@@ -12,6 +12,7 @@ libjpeg-turbo's `cjpeg`, ffmpeg. Everything is deterministic.
 """
 
 import io
+import shutil
 import os
 import struct
 import subprocess
@@ -20,6 +21,9 @@ import zlib
 
 import numpy as np
 from PIL import Image
+
+# ImageMagick 7 is `magick`; ImageMagick 6 (Ubuntu 24.04) is `convert`.
+MAGICK = "magick" if shutil.which("magick") else "convert"
 
 OUT = sys.argv[1]
 os.makedirs(OUT, exist_ok=True)
@@ -304,7 +308,7 @@ for name, ct, depth, w, h in [
 # by the encoder).
 src = os.path.join(OUT, "m_src.ppm")
 Image.fromarray(photo(200, 150, 21)).save(src)
-subprocess.run(["magick", src, "-quality", "95", os.path.join(OUT, "p_magick.png")], check=True)
+subprocess.run([MAGICK, src, "-quality", "95", os.path.join(OUT, "p_magick.png")], check=True)
 ref_from_pil(os.path.join(OUT, "p_magick.png"), "p_magick")
 add("p_magick.png", "p_magick", "exact")
 
@@ -320,7 +324,7 @@ def bmp_pil(name, im):
 
 def bmp_magick(name, args, out_prefix="", kind="exact"):
     path = os.path.join(OUT, name + ".bmp")
-    subprocess.run(["magick", src, *args, out_prefix + path], check=True)
+    subprocess.run([MAGICK, src, *args, out_prefix + path], check=True)
     ref_from_pil(path, name)
     add(name + ".bmp", name, kind)
 
@@ -440,7 +444,7 @@ bmp_rle("b_rle4_own", 57, 19, True, False)
 bmp_rle("b_rle8_own", 61, 17, False, False)
 bmp_rle("b_rle4_delta", 57, 19, True, True)
 bmp_rle("b_rle8_delta", 61, 17, False, True)
-subprocess.run(["magick", os.path.join(OUT, "p_rgba8.png"), "BMP:" + os.path.join(OUT, "b_v5a.bmp")], check=True)
+subprocess.run([MAGICK, os.path.join(OUT, "p_rgba8.png"), "BMP:" + os.path.join(OUT, "b_v5a.bmp")], check=True)
 ref_from_pil(os.path.join(OUT, "b_v5a.bmp"), "b_v5a")
 add("b_v5a.bmp", "b_v5a", "exact")
 
@@ -458,10 +462,10 @@ G = Image.fromarray(photo(150, 100, 41))
 gif_pil("g_256", G.quantize(256))
 gif_pil("g_2", G.convert("1").convert("P"))
 gif_pil("g_16_trans", G.quantize(16), transparency=3)
-subprocess.run(["magick", src, "-colors", "64", "-interlace", "GIF", os.path.join(OUT, "g_interlaced.gif")], check=True)
+subprocess.run([MAGICK, src, "-colors", "64", "-interlace", "GIF", os.path.join(OUT, "g_interlaced.gif")], check=True)
 ref_from_pil(os.path.join(OUT, "g_interlaced.gif"), "g_interlaced")
 add("g_interlaced.gif", "g_interlaced", "exact")
-subprocess.run(["magick", src, "-resize", "37x23!", "-colors", "8", os.path.join(OUT, "g_small.gif")], check=True)
+subprocess.run([MAGICK, src, "-resize", "37x23!", "-colors", "8", os.path.join(OUT, "g_small.gif")], check=True)
 ref_from_pil(os.path.join(OUT, "g_small.gif"), "g_small")
 add("g_small.gif", "g_small", "exact")
 
