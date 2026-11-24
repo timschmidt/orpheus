@@ -288,6 +288,9 @@ pub async fn ui() {
     let fb = fb.as_mut_slice();
     ui.draw(fb).await;
     let mut last_cable = state::snapshot().cable;
+    // Auto-off / low-battery timers (ms since boot).
+    let mut last_key_ms = now().0;
+    let mut low_since = 0u64;
     loop {
         let t = now();
         let mut deadline = t.0 + 1000;
@@ -310,6 +313,7 @@ pub async fn ui() {
             }
             Either4::First((k, down)) => {
                 let t = now();
+                last_key_ms = t.0;
                 // A key: a picture still coming is not waited for (the
                 // volume overlay can wait).
                 if down && !matches!(k, HwKey::VolUp | HwKey::VolDown) {
@@ -353,6 +357,39 @@ pub async fn ui() {
             ui.handle(r);
         }
         ui.after().await;
+        // PWR-3a: auto-off and low battery (both through `power_off`, which
+        // reboots instead under a host test).
+        {
+            let t = now().0;
+            let st = state::snapshot();
+            let idle = matches!(
+                ui.fw.player.source,
+                yoton_ui::event::Source::Idle | yoton_ui::event::Source::Paused
+            );
+            let mins = match ui.fw.settings.get(yoton_apps::settings::SettingId(0x0403)) {
+                1 => 5,
+                2 => 10,
+                3 => 15,
+                4 => 30,
+                5 => 60,
+                _ => 0,
+            };
+            if mins > 0 && idle && !st.cable && t.saturating_sub(last_key_ms) >= mins * 60_000 {
+                atj2157_hal::log::line(b"pwr: auto-off");
+                ui.power_off().await;
+            }
+            // 0 % on the gauge (3.30 V) for 10 s without a cable.
+            if !st.cable && st.millivolts != 0 && st.millivolts < 3300 {
+                if low_since == 0 {
+                    low_since = t.max(1);
+                } else if t.saturating_sub(low_since) >= 10_000 {
+                    atj2157_hal::log::line(b"pwr: battery empty");
+                    ui.power_off().await;
+                }
+            } else {
+                low_since = 0;
+            }
+        }
         ui.draw(fb).await;
         BUSY_US.fetch_add((atj2157_hal::time::now_us() - w0) as u32, core::sync::atomic::Ordering::Relaxed);
     }

@@ -26,7 +26,7 @@ of every session. Newest entries first in §3.
 | SD-1, FM-0, USB-1, USB-3, PWR-1 | done | |
 | SYS-1 | done (first cut) | Firmware: tasks, settings in NOR, developer channel, watchdog task fed only on RT + main + UI progress (verified: a hung main executor resets in ≈ 3 s), test safety window |
 | PWR-2 governor | first cut | 48 ↔ 96 ↔ 144 MHz from main-executor idle share |
-| PWR-3a | started (device) | Power-off: card flushed, screen off, vendor PMU sequence (wake on long press or USB plug-in); in test mode a reboot instead (verified: long press → "power-off in a test: rebooting instead"). Real power-off = user check 11. Auto-off, low-battery handling, alarm wake not done |
+| PWR-3a | mostly done (device) | Power-off: card flushed, Bluetooth 0x24, screen off, vendor PMU sequence (wake on long press or USB plug-in); in test mode a reboot instead (verified). Auto-off (setting, no key, nothing playing, no cable) and low-battery off (< 3.30 V for 10 s, no cable) through the same path — not testable with the cable in: user checks 11 and 15. Alarm wake not done |
 | RTC-1 | done (device) | set/read over the developer channel (`xtask dev time [--set]`); alarm untested; once lost after a ymon reset (U-RTC open) |
 | USB-4 | done (device) | Card-reader personality: card handed between the card task and USB; write-protected test mode; mid-track switch and hand-back verified. 2.3 MB/s read (open) |
 | FS-1 | done | `yoton-fs` |

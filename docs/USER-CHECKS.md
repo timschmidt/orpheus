@@ -31,6 +31,8 @@ the result and date. "Blocking" entries hold up the package named.
 
 | 14 | BT-2 | no | Put a Bluetooth headset or speaker in pairing mode next to the player, then run `cargo xtask dev cmd "bt on" --wait 20`, `cargo xtask dev cmd "bt scan" --wait 35`, `cargo xtask dev cmd "bt connect 0" --wait 30`, play a track from Files, press the headset's play/pause, then `cargo xtask dev cmd "bt off" --wait 3` | The scan lists the headset by name; connect succeeds; the music plays on the headset; its play/pause key pauses the player. Report the reply lines if not | |
 
+| 15 | PWR-3a | no | Settings → Power → Auto-off: 5 min. Unplug USB, leave the player on Home without pressing a key and without music playing | After about 5 minutes the screen goes dark and the player stays off; holding Power ~1 s starts it again. (Low-battery shutdown, below 3.30 V for 10 s on battery, is the same path; report if the player ever switches itself off with charge left) | |
+
 ## Template for workers
 
 | # | For | Blocking? | What to do | Expect | Result (user) |
