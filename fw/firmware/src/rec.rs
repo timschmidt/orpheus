@@ -26,7 +26,9 @@
 //!   developer command under `/.orpheus/test/rec/` (CLAUDE.md rule 5).
 //! * Developer commands ([`test_command`], from the USB task): `rec start
 //!   <mic|line|fm> <wav|adpcm|flac> [secs] [sub-folder]`, `rec stop`,
-//!   `rec status`.
+//!   `rec status`, `rec raw` (the capture ring's words and the FIFO while
+//!   capturing), `rec width [16|32]` and `rec mic [diff|se]` (capture
+//!   options for U-AUD-12/13, from the next start; not stored).
 //!
 //! Not built: monitoring the microphone in the headphones (the setting is
 //! there; the radio is heard through its bypass anyway), pre-record,
@@ -35,7 +37,7 @@
 use core::cell::RefCell;
 use core::sync::atomic::{AtomicU8, AtomicU32, Ordering::Relaxed};
 
-use atj2157_hal::adc::{self, Input};
+use atj2157_hal::adc::{self, Input, Width};
 use atj2157_hal::dma::{self, Channel as DmaCh};
 use critical_section::Mutex;
 use embassy_futures::join::join;
@@ -347,10 +349,24 @@ pub async fn stop_for_power_off() {
 
 // ------------------------------------------------------------- capture
 
-const fn input_of(s: Source) -> Input {
+/// Capture options (developer `rec width`, `rec mic`; not stored): bit 0
+/// 32-bit capture ([`Width::Bits32`]), bit 1 single-ended microphone.
+/// 0 is the vendor's: 16-bit, differential (`RECORD_MIC_INPUT_MODE = 1`
+/// in its `CONFIG.TXT`).
+static OPTS: AtomicU8 = AtomicU8::new(0);
+const OPT_W32: u8 = 1;
+const OPT_MIC_SE: u8 = 2;
+/// The running capture's ring (CPU address; bit 0 set for 32-bit words),
+/// 0 when none runs: for `rec raw`.
+static CAP_RING: AtomicU32 = AtomicU32::new(0);
+
+fn width() -> Width {
+    if OPTS.load(Relaxed) & OPT_W32 != 0 { Width::Bits32 } else { Width::Bits16 }
+}
+
+fn input_of(s: Source) -> Input {
     match s {
-        // RECORD_MIC_INPUT_MODE = 1 in the vendor's CONFIG.TXT.
-        Source::Mic => Input::Mic { differential: true },
+        Source::Mic => Input::Mic { differential: OPTS.load(Relaxed) & OPT_MIC_SE == 0 },
         Source::Line => Input::Line,
         Source::Fm => Input::Fm,
     }
@@ -363,6 +379,8 @@ struct Capture {
     base: u32,
     taken: u32,
     channels: usize,
+    /// 32-bit FIFO words in the ring (narrowed in place per half).
+    w32: bool,
 }
 
 impl Capture {
@@ -371,15 +389,23 @@ impl Capture {
         let input = input_of(s.source);
         let (analog, _) = input.default_gain();
         let digital = adc::digital_for(input, if s.chain.agc { 0 } else { s.gain_db });
-        adc::start(input, s.params.rate, analog, digital);
+        let w = width();
+        adc::start(input, s.params.rate, analog, digital, w);
         Timer::after_millis(adc::SETTLE_MS).await;
         // SAFETY: channel 6 is the ADC's (01-hardware §6); only this
         // module uses it, one `Capture` at a time.
         let ch = unsafe { DmaCh::steal(DMA_CH) };
         ch.enable_ring_irq();
         let base = dma::events(DMA_CH);
-        ch.start(adc::DMA_MODE, adc::FIFO_ADDR, ring as u32, CAP_BYTES as u32);
-        Capture { ch, ring: ring.cast(), base, taken: 0, channels: usize::from(input.channels()) }
+        ch.start(adc::dma_mode(w), adc::FIFO_ADDR, ring as u32, CAP_BYTES as u32);
+        let w32 = w == Width::Bits32;
+        CAP_RING.store(ring as u32 | u32::from(w32), Relaxed);
+        Capture { ch, ring: ring.cast(), base, taken: 0, channels: usize::from(input.channels()), w32 }
+    }
+
+    /// Frames in one half of the ring.
+    fn frames_per_half(&self) -> usize {
+        CAP_BYTES / 2 / if self.w32 { 4 } else { 2 } / self.channels
     }
 
     /// The next finished half and the frames lost before it (the DMA
@@ -393,7 +419,7 @@ impl Capture {
         let mut lost = 0;
         if e.wrapping_sub(self.taken) >= 2 {
             let skip = e.wrapping_sub(self.taken) - 1;
-            lost = u64::from(skip) * (half / self.channels) as u64;
+            lost = u64::from(skip) * self.frames_per_half() as u64;
             self.taken = e - 1;
         }
         let at = (self.taken % 2) as usize * half;
@@ -402,10 +428,12 @@ impl Capture {
         // (a lap is detected at the next call and counted, the data then
         // is what it is).
         let s = unsafe { core::slice::from_raw_parts_mut(self.ring.add(at), half) };
+        let s = if self.w32 { orpheus_rec::pcm::unpack_24in32(s) } else { s };
         (s, lost)
     }
 
     fn stop(self) {
+        CAP_RING.store(0, Relaxed);
         self.ch.abort();
         self.ch.disable_irq();
         adc::stop();
@@ -685,7 +713,7 @@ async fn record(
     let mut why = StopReason::User;
     let capture = async {
         let mut cap = Capture::start(&s, b.cap).await;
-        let frames_per_half = (CAP_BYTES / 4 / usize::from(s.params.channels)) as u64;
+        let frames_per_half = cap.frames_per_half() as u64;
         loop {
             match select(cap.next(), REQ.receive()).await {
                 Either::First((half, lost)) => {
@@ -975,15 +1003,108 @@ pub fn test_command(rest: &[u8]) -> bool {
             status_reply();
             true
         }
+        Some("raw") => {
+            raw_reply();
+            true
+        }
+        Some(c @ ("width" | "mic")) => {
+            let (bit, on) = match (c, words.next()) {
+                ("width", Some("32")) => (OPT_W32, Some(true)),
+                ("width", Some("16")) => (OPT_W32, Some(false)),
+                ("mic", Some("se")) => (OPT_MIC_SE, Some(true)),
+                ("mic", Some("diff")) => (OPT_MIC_SE, Some(false)),
+                (_, None) => (0, None),
+                _ => {
+                    reply(|w| {
+                        w.s(t!(b"usage: rec width [16|32] | rec mic [diff|se]"));
+                    });
+                    return true;
+                }
+            };
+            match on {
+                Some(true) => OPTS.fetch_or(bit, Relaxed),
+                Some(false) => OPTS.fetch_and(!bit, Relaxed),
+                None => 0,
+            };
+            reply(|w| {
+                opts_text(w.s(t!(b"rec options (from the next start):")));
+            });
+            true
+        }
         _ => {
             reply(|w| {
-                w.s(t!(
-                    b"rec start <mic|line|fm> <wav|adpcm|flac> [secs] [sub-folder] | rec stop | rec status"
-                ));
+                w.s(t!(b"rec start <mic|line|fm> <wav|adpcm|flac> [secs] [sub-folder] | rec stop | rec status | rec raw | rec width [16|32] | rec mic [diff|se]"));
             });
             true
         }
     }
+}
+
+/// ` width=16|32 mic=diff|se`.
+fn opts_text(w: &mut crate::audio::Writer<'_>) {
+    let o = OPTS.load(Relaxed);
+    w.s(t!(b" width="))
+        .s(if o & OPT_W32 != 0 { t!(b"32") } else { t!(b"16") })
+        .s(t!(b" mic="))
+        .s(if o & OPT_MIC_SE != 0 { t!(b"se") } else { t!(b"diff") });
+}
+
+/// `rec raw` (U-AUD-12): while capturing, 16 words of the capture ring as
+/// the DMA wrote them, the FIFO status and two words read from the FIFO
+/// itself.
+///
+/// The words are the first 16 of the half the DMA is filling, read once
+/// it is at least 64 bytes and at most 1 KiB short of that half's end, so
+/// the reader has not touched them (it narrows 32-bit words in place when
+/// the half is done). The two FIFO reads take two words from the
+/// recording (a pair, so stereo keeps its L/R order).
+fn raw_reply() {
+    let r = CAP_RING.load(Relaxed);
+    if r == 0 {
+        reply(|w| {
+            w.s(t!(b"rec raw: no capture running (rec start first)"));
+        });
+        return;
+    }
+    let base = (r & !3) as usize;
+    let half = CAP_BYTES / 2;
+    let mut left = 0;
+    let mut pos = 0;
+    let mut ok = false;
+    for _ in 0..200_000 {
+        left = dma::remaining_of(DMA_CH) as usize;
+        pos = CAP_BYTES.saturating_sub(left);
+        let into = pos % half;
+        if (64..half - 1024).contains(&into) {
+            ok = true;
+            break;
+        }
+    }
+    let at = (pos / half).min(1) * half;
+    let mut words = [0u32; 16];
+    for (i, v) in words.iter_mut().enumerate() {
+        // SAFETY: `base` is the running capture's ring (the card task's
+        // arena, a static), 4-aligned, `CAP_BYTES` long; `at + 64 ≤
+        // CAP_BYTES`. A read only; the DMA writes elsewhere in it.
+        *v = unsafe { core::ptr::read_volatile((base + at + 4 * i) as *const u32) };
+    }
+    let (sta, fifo) = adc::fifo_peek();
+    reply(|w| {
+        opts_text(w.s(t!(b"rec raw")));
+        w.s(t!(b" ring=")).h(base as u32);
+        w.s(t!(b" at=")).u(at as u64);
+        w.s(t!(b" dma_left=")).u(left as u64);
+        w.s(t!(b" settled=")).u(u64::from(ok));
+        w.s(t!(b" fifosta=")).h(sta);
+        w.s(t!(b" fifo=")).h(fifo[0]).s(b",").h(fifo[1]);
+        w.s(t!(b" words="));
+        for (i, v) in words.iter().enumerate() {
+            if i > 0 {
+                w.s(b" ");
+            }
+            w.h(*v);
+        }
+    });
 }
 
 /// `rec status`: state, level, written, drops, ring headroom.
@@ -1060,5 +1181,6 @@ pub fn status_reply() {
             w.h(*r);
         }
         w.s(t!(b" dma_events=")).u(u64::from(dma::events(DMA_CH)));
+        opts_text(w);
     });
 }

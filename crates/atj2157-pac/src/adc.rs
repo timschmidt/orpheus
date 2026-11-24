@@ -223,7 +223,8 @@ pub mod aux_ctl {
 
 /// ADC_MIC_MIX_CTL: microphone input and PA-output → ADC mix. \[DS\] §8.2.6.16.
 /// Reset 0. Vendor `(v & !0x13F) | 0x100 | MICL/MICR | MIC_IN_MODE` \[code\]
-/// (audio.md "ADC_ANA").
+/// (audio.md "ADC_ANA"; the front-end function B1:0x0D82058C, see
+/// [`VENDOR_MIC_LEFT`]).
 pub const MIC_MIX_CTL: Reg = Reg::at(BASE + MIC_MIX_CTL_OFFSET);
 pub mod mic_mix_ctl {
     use super::{Field, bit};
@@ -244,8 +245,10 @@ pub mod mic_mix_ctl {
     pub const MIC_IRMS: u32 = bit(5);
     /// 1 single-ended, 0 differential. \[DS\]; audio.md agrees.
     pub const MIC_IN_MODE: u32 = bit(4);
-    /// Left mic: codes as `aux_ctl::IN_*` (pull-down 5 kΩ). \[DS\].
-    /// **Disagreement:** audio.md §3.1 calls b1:0 left and b3:2 right.
+    /// Left mic: codes as `aux_ctl::IN_*` (pull-down 5 kΩ). \[DS\]. The
+    /// vendor's mono microphone (left converter, input code 4) sets this
+    /// field, not b1:0 \[code\] (B1:0x0D82058C re-read 2026-11-24: its first
+    /// argument, "left", ORs `0xC`). audio.md §3.1 has the two swapped.
     pub const MICL_EN: Field = Field::bits(3, 2);
     pub const MICR_EN: Field = Field::bits(1, 0);
 }
@@ -346,8 +349,22 @@ pub const VENDOR_CTL_LEFT: u32 = ctl::ADCL_EN | ctl::VRDAL_EN | ctl::PREOPL_EN;
 pub const VENDOR_CTL_RIGHT: u32 = ctl::ADCR_EN | ctl::VRDAR_EN | ctl::PREOPR_EN;
 /// `CTL` presets: FDBUF R on, 6 kΩ (`0x7040`); FDBUF L on, 6 kΩ (`0x70080`);
 /// FM `0x770C0`; line-in `0x66000` (both IRS 30 kΩ, buffers off). \[code\]
+/// The microphone front end sets the FDBUF of its side too (B1:0x0D8205D4:
+/// left `0x70080`, right `0x7040`).
 pub const VENDOR_CTL_FDBUF_R: u32 = ctl::FDBUFR_EN | (7 << 12);
 pub const VENDOR_CTL_FDBUF_L: u32 = ctl::FDBUFL_EN | (7 << 16);
+/// The microphone front end's `CTL` mask (`0xFFF8803F`): it clears both
+/// FDBUFs, their resistors and `PREAM_PG` before setting them. VERBATIM
+/// vendor B1:0x0D8205C0 \[code\].
+pub const VENDOR_CTL_MIC_KEEP: u32 = 0xFFF8_803F;
+/// `MIC_MIX_CTL` for the vendor's mono microphone (left): bits it clears
+/// (`0x13F`), then `MICGRSEL` and `MICL_EN` = on (`0x10C`); `MIC_IN_MODE`
+/// (`0x10`) on top when single-ended. VERBATIM vendor B1:0x0D82058C–0x5BC,
+/// called with (left = 1, right = 0) for one channel, (1, 1) for two,
+/// (0, 1) for "right only" (B1:0x0D8207F2–0x866) \[code\].
+pub const VENDOR_MIC_CLEAR: u32 = 0x13F;
+pub const VENDOR_MIC_LEFT: u32 = mic_mix_ctl::MICGRSEL | (3 << 2);
+pub const VENDOR_MIC_RIGHT: u32 = mic_mix_ctl::MICGRSEL | 3;
 pub const VENDOR_CTL_FM: u32 = 0x770C0;
 pub const VENDOR_CTL_LINEIN: u32 = 0x66000;
 /// ADC bias words OR-ed in at capture start. VERBATIM vendor B1:0x0D8207CA
@@ -427,6 +444,14 @@ mod tests {
         assert_eq!(VENDOR_CTL_FDBUF_R, 0x7040);
         assert_eq!(VENDOR_CTL_FDBUF_L, 0x70080);
         assert_eq!(VENDOR_CTL_FM, VENDOR_CTL_FDBUF_R | VENDOR_CTL_FDBUF_L);
+        // The mic front end's mask clears exactly the FDBUFs, their
+        // resistors and the preamp gain.
+        let fd = VENDOR_CTL_FDBUF_R | VENDOR_CTL_FDBUF_L | ctl::FDBUFL_IRS.mask() | ctl::FDBUFR_IRS.mask();
+        assert_eq!(!VENDOR_CTL_MIC_KEEP, fd | ctl::PREAM_PG.mask());
+        assert_eq!(VENDOR_MIC_LEFT, 0x10C);
+        assert_eq!(VENDOR_MIC_LEFT & mic_mix_ctl::MICL_EN.mask(), mic_mix_ctl::MICL_EN.mask());
+        assert_eq!(VENDOR_MIC_RIGHT, 0x103);
+        assert_eq!(VENDOR_MIC_CLEAR, 0x100 | mic_mix_ctl::MIC_IN_MODE | 0xF | mic_mix_ctl::MIC_IRMS);
         assert_eq!(VENDOR_CTL_LINEIN, ctl::FDBUFL_IRS.val(6) | ctl::FDBUFR_IRS.val(6));
         let a = aux_ctl::AUX0L_EN.val(3) | aux_ctl::AUX0R_EN.val(3) | aux_ctl::AUX0_IN_MODE | 2;
         assert_eq!(a, VENDOR_AUX_LINEIN);

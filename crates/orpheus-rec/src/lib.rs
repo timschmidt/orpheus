@@ -22,6 +22,8 @@
 //!   rewrites) for the firmware and the simulator alike.
 //! * [`name`]: `/Recordings/REC-YYYYMMDD-HHMMSS.ext`, or a counter when the
 //!   clock is not set.
+//! * [`pcm`]: the capture word layouts (24-bit samples in 32-bit FIFO
+//!   words to 16-bit, in place).
 //! * [`fake`]: a fake ADC (tones, noise, speech-like bursts) for tests and
 //!   the simulator.
 //!
@@ -42,6 +44,7 @@ pub mod fake;
 pub mod flac;
 pub mod meter;
 pub mod name;
+pub mod pcm;
 pub mod ring;
 pub mod session;
 pub mod vox;

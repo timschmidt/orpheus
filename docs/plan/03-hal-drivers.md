@@ -406,6 +406,14 @@ ring; `atj2157_hal::dma` counts its half/complete events in a handler of its
 own (`enable_ring_irq`, `events`, `wait_events`; resident with the rest of
 the module). No PMU access. Open: U-AUD-4, U-AUD-11–13.
 
+After the first device run (microphone silent): the microphone front end
+now follows the vendor's left side (`MIC_MIX_CTL[3:2]`, FD buffer L in
+`CTL`; 01-hardware §8, U-AUD-13), and `start` takes a `Width`: 16-bit
+(the vendor's, mode `0x0014008B`) or 32-bit words (`FIFO_DMAWIDTH` = 0,
+mode `0x0004008B`) narrowed by the caller (`orpheus_rec::pcm`, U-AUD-12).
+`fifo_peek` reads `FIFOSTA` and two FIFO words for `rec raw`;
+`dma::remaining_of` reads a channel's REMAIN without its token.
+
 ## 14. DSP accelerator (WP-DSP-1)
 
 Facts: audio.md §7.1. A block at `0xC0200000` offering real FFT/IFFT (128,
