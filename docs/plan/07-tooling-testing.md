@@ -54,6 +54,7 @@ talk to the player.
 | `xtask metrics [--elf PATH]` | Append this commit's coverage and static firmware rows to `metrics/*.csv` (§4.4) |
 | `xtask gate [--no-dev] [--coverage] [--m11]` | The milestone gate (§6) |
 | `xtask brand [--check]` | Brand assets (09 §6): palette contrast for the web and the RGB565 screen, lyre variants, favicons, app icons, social card, CSS custom properties into `docs/brand/generated/`; `--check` fails if they are not current |
+| `xtask site [--check]`, `xtask site shots [--check]` | The website (09 §3) into `target/orpheus/site/` from `site/` and the Markdown in `docs/user`, `docs/dev`; `--check` fails on a broken internal link or fragment, a screenshot without a golden or out of date in `docs/shots/`, a manual page over 600 words, Home over 500 KB. `site shots` rewrites `docs/shots/` (also run by `test golden --bless`) |
 | `xtask bringup <name>` | Build one bring-up image (small RAM-only binary under `bringup/`) |
 | `xtask dev state` *(dev)* | Which mode the player is in: ADFU ROM, ymon, Orpheus (any personality), Rockbox, stock; battery voltage if readable |
 | `xtask dev adfu` *(dev)* | Bring the player to ADFU + ymon from whatever is running (vendor SCSI reboot command for Rockbox/stock, EP0 request for Orpheus, nothing if already there) |
@@ -608,6 +609,7 @@ cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 xtask test all                 # host unit, golden, codecs, fuzz-smoke
 xtask brand --check            # palette contrast, generated brand assets current
+xtask site --check             # site builds; internal links, screenshots, page limits
 xtask build --release          # both layouts once the full layout exists
 xtask size --check
 xtask check-resident

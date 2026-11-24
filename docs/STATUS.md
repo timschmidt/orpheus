@@ -40,8 +40,81 @@ of every session. Newest entries first in §3.
 | OTP-1, BT-1, USB-6 | done (host) | `orpheus-otp`, `orpheus-bt`, MMC/CD-ROM in `orpheus-usb` |
 | BT-2 (device) | **built, not yet run on the player** | UART1 driver (`atj2157_hal::uart`, `yoton_bsp::bt`), `orpheus_bt::driver`, firmware `bt` task, `BluetoothService`, shutdown 0x24 on power-off. Module off at boot; `bt probe/on/off/status/scan/connect/listen/shutdown/rx/tx` test commands. Not done: volume policy, metadata at track change, pairing UI, U-BT-2 |
 | UI-6a | **on the player 2026-11-24** (connect, reconnect, audio, volume — policy changed, see session entry) | Bluetooth app (status, Pair new device, Paired devices, connect progress/failure, forget, reconnect switch), `BluetoothService` lists/requests, volume policy of 06 §4.2 (0x26 on connect and change, DAC reference −3 dB while the sink takes absolute volume), address text in written order. User check 17 |
+| BRAND-1 | done (host) | `docs/brand/palette.toml` (dark/light = firmware Dark/Light with Blue; `link`, `accent` web-only; WCAG AA checked for the web and after RGB565), `cargo xtask brand [--check]` → `docs/brand/generated/` (mono/small lyre, wordmark in the firmware's bold font, favicons + ICO, apple-touch, manifest icons, 1200×630 social card, `palette.css`). Firmware theme tables unchanged; generating them, the boot logo and firmware icons are follow-ups. User: approve palette and logo variants |
+| DOC-2 | done (host) | README rewrite, `docs/user/` (manual index, install/update/restore, keys, Music, Now Playing, Files, Pictures, Bluetooth, Settings, Performance, troubleshooting, FAQ; each ≤ 600 words, checked by `site --check`), screenshots `docs/shots/` from goldens (`xtask site shots`). User: read the manual once |
+| DOC-3 | done (host), except the clean-container CI run | `docs/dev/getting-started.md`, `architecture.md` (SVG diagrams in `docs/dev/img/`), `how-to/` (8 guides). `#![warn(missing_docs)]` on `orpheus-codecs`, the wav/mp3/flac/vorbis/speex codecs, `orpheus-fs`, `orpheus-settings` |
+| DOC-4 | done (host); workflows not run (no CI here) | CONTRIBUTING, CODE_OF_CONDUCT (Contributor Covenant 2.1), SECURITY, CHANGELOG, issue/PR templates, workflows `gate.yml`, `docs.yml`, `pages.yml` (actions pinned by SHA) |
+| WEB-1 | done (host); not published | `cargo xtask site [--check]` → `target/orpheus/site/`; Home, Manual, Developers, Hardware, Changelog, FAQ, Try it and Install (placeholders for WEB-2/WEB-3). Deploy only with repository variable `PAGES_ENABLED=true`. User: review the site |
 
 ## 3. Session log
+
+### 2026-11-24 — M12: BRAND-1, DOC-2, DOC-3, DOC-4, WEB-1 (worker, no hardware)
+
+* **Brand** (`docs/brand/`): one palette with roles; the dark and light
+  schemes are exactly the firmware's Dark/Light themes with the Blue accent
+  (RGB565-equal; a unit test and `xtask brand` report drift). Added web-only
+  `link` (#6ea8ff dark, the lyre blue is 3.9:1 on the dark background) and
+  `accent` (amber). All pairings ≥ 4.5:1 (text) or ≥ 3:1 (non-text), web
+  and RGB565. `xtask brand` renders with `resvg` 0.48 (no default features:
+  no system fonts; all text in the generated SVGs is the firmware's own
+  bitmap font as rectangles, so output is deterministic). `brand --check` is
+  a gate step. Generated: 12 files, 44 KB.
+* **Docs**: README (logo, three goldens ×2, status, Try it/Install with
+  "coming" browser paths, Build in four commands); `docs/user/` 12 pages,
+  checked against this log (e.g. Lyrics/Levels views, rename/delete,
+  playlists, speed, rotation, other languages and CJK fonts on the player
+  marked **in progress**); `docs/dev/` getting started, architecture with
+  five SVG diagrams (looked at in Chromium, light and dark), eight how-tos;
+  CONTRIBUTING, Contributor Covenant 2.1 (contact: the repository's private
+  advisory form), SECURITY (reporting; the authenticator's at-rest limits of
+  06 §5.2), CHANGELOG (Unreleased from this log).
+* **Site** (`xtask site`, `pulldown-cmark` 0.13): templates in `site/`,
+  Markdown links rewritten to pages (other repository files → GitHub),
+  GitHub-style heading ids, screenshots ×2 nearest-neighbour from
+  `sim/golden` (`docs/shots/` for the README/GitHub, 20 files, 120 KB),
+  light/dark/auto theme (system preference without JavaScript), skip link,
+  responsive tables, no external requests except links. `site --check`:
+  internal links and fragments of the built site, repository links exist
+  and are not under `docs/hw`/`docs/vendor`/`local`, every referenced
+  screenshot has a golden and `docs/shots/` is current, manual pages
+  ≤ 600 words, Home ≤ 500 KB (measured: 68 KB with everything it loads).
+  71 files, 612 KB. `test golden --bless` also refreshes `docs/shots/`.
+  Looked at in headless Chromium: Home (light, 1280 px), Keys (dark,
+  390 px), Architecture (light and dark).
+* **CI** (`.github/workflows/`, not run here; YAML parsed): `gate.yml` host
+  gate (fmt, clippy, tests incl. goldens, brand and site checks) and an
+  optional firmware job (`continue-on-error`); `docs.yml` markdownlint
+  (`.markdownlint-cli2.yaml`, reader-facing docs only) and lychee (internal
+  on push/PR, external weekly); `pages.yml` builds on every push/PR (PR
+  artefact preview) and deploys only when the repository variable
+  `PAGES_ENABLED` is `true`. Actions pinned to commit SHAs (checkout v7.0.1,
+  upload-artifact v7.0.2, upload-pages-artifact v5.0.0, deploy-pages
+  v5.0.1, markdownlint-cli2-action v25.1.0, lychee-action v2.9.0).
+  actionlint and markdownlint were not run locally.
+* **Found while writing (not fixed here, firmware unchanged)**: the
+  firmware's `dual_boot()` returns `true` in the full layout, so the power
+  menu and Settings › System offer "Start original firmware" although the
+  stock firmware is erased (documented as a known issue); the language
+  setting offers Russian/Japanese but the firmware loads no language packs
+  and has no fallback font; `xtask dev` help still says `stage` writes to
+  `0x762000`; `backup-verify` accepts only the reference player's backup
+  hash and the device tools need `ORPHEUS_DIR` (companion repository) for
+  ymon/nordump payloads, so the command-line install is reference-player
+  only (stated in the manual); `install-boot` (07 §2) does not exist yet.
+* **Follow-ups**: firmware theme tables, boot logo and 16/24/32 px icons
+  generated from `docs/brand/`; a web-font subset of the bitmap font for
+  headings; rustdoc on the site and `missing_docs` for the other crates
+  (counts with `-W missing-docs`, 2026-11-24: atj2157-pac 831, orpheus-apps
+  384, orpheus-ui 238, orpheus-proto 197, sim 157, opus 122, orpheus-dsp
+  116, orpheus-library 109, orpheus-bt 106, orpheus-audio 98,
+  orpheus-player 92, orpheus-usb 80, orpheus-img 77, orpheus-power,
+  orpheus-host, orpheus-meta, orpheus-otp and conformance 61 each,
+  orpheus-sdcard 43, orpheus-index 30, orpheus-pager 28, ogg 27,
+  orpheus-input 26); the clean-container getting-started CI job, HTML
+  validation and Lighthouse CI (09 §8); translations of the manual; the
+  battery-life table on Home after user check 19; WEB-2 and WEB-3.
+* Gate (host): see the commit messages. Not run: device steps (no
+  hardware in this package), CI workflows.
 
 ### 2026-11-24 — PWR-5 rework and AU-5 fixes: playdir reboot, browsing while playing, remount, playdir during playback, bit rate (worker, no hardware)
 

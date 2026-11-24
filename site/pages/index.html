@@ -1,0 +1,80 @@
+<!-- title: Orpheus: new firmware for the Yoton YM03 -->
+<!-- description: Orpheus is a pure-Rust firmware for the Yoton YM03 MP3 player: gapless MP3, FLAC, Vorbis and Opus, a music library, pictures and Bluetooth audio on a 128 × 128 screen. -->
+<section class="hero">
+  <img class="hero-logo" src="brand/orpheus-lyre.svg" alt="" width="112" height="112">
+  <div>
+    <h1>Orpheus</h1>
+    <p class="pitch">A new firmware for the Yoton YM03 MP3 player, written from scratch in Rust. Gapless music, a library, pictures and Bluetooth audio on a 128 × 128 screen with 320 KiB of RAM.</p>
+    <p class="actions">
+      <a class="button" href="try.html">Try it in your browser <span class="badge progress">coming</span></a>
+      <a class="button secondary" href="install.html">Install on your YM03</a>
+    </p>
+  </div>
+</section>
+
+<section aria-labelledby="screens-h">
+  <h2 id="screens-h" class="visually-hidden">Screens</h2>
+  <div class="strip" role="region" aria-label="Screens from the player, scrollable" tabindex="0">
+    <ul class="strip-track">
+      <li><img class="shot" src="shots/media_np_dark_latin.png" alt="Now Playing" width="256" height="256"></li>
+      <li><img class="shot" src="shots/media_music_dark_latin.png" alt="Music: Shuffle all, library" width="256" height="256"></li>
+      <li><img class="shot" src="shots/media_files_root_dark_latin.png" alt="Files: folders on the card" width="256" height="256"></li>
+      <li><img class="shot" src="shots/media_np_bigart_dark_latin.png" alt="Now Playing with a large cover" width="256" height="256"></li>
+      <li><img class="shot" src="shots/bt_connected_dark_latin.png" alt="Bluetooth: connected to headphones" width="256" height="256"></li>
+      <li><img class="shot" src="shots/media_eq_dark_latin.png" alt="Equaliser" width="256" height="256"></li>
+      <li><img class="shot" src="shots/pictures_png_dark_latin.png" alt="A picture on the screen" width="256" height="256"></li>
+      <li><img class="shot" src="shots/app_settings_light_latin.png" alt="Settings in the light theme" width="256" height="256"></li>
+    </ul>
+  </div>
+  <p class="caption">Real screens, rendered by the same code that runs on the player (the golden-image tests).</p>
+</section>
+
+<section aria-labelledby="features-h">
+  <h2 id="features-h">What it does</h2>
+  <ul class="grid">
+    <li><h3>Playback <span class="badge works">works</span></h3><p>MP3, FLAC, WAV, Ogg Vorbis, Opus and Speex; gapless joins; resume after power-off; queue, shuffle, A–B repeat, bookmarks.</p></li>
+    <li><h3>Library <span class="badge works">works</span></h3><p>Artists, albums, genres and recently added, built in the background; folders sorted instantly from an on-card index.</p></li>
+    <li><h3>Sound <span class="badge works">works</span></h3><p>Equaliser with presets and custom curves, bass, crossfeed, balance, ReplayGain.</p></li>
+    <li><h3>Pictures <span class="badge works">works</span></h3><p>JPEG, PNG, BMP, GIF and QOI, fit or fill, rotation, slideshow; album covers on Now Playing.</p></li>
+    <li><h3>Bluetooth audio <span class="badge works">works</span></h3><p>Pair and connect headphones or speakers; reconnects by itself.</p></li>
+    <li><h3>USB card reader <span class="badge works">works</span></h3><p>The player's card appears on the computer; a developer channel in every USB mode.</p></li>
+    <li><h3>USB disk and CD <span class="badge progress">in progress</span></h3><p>Boot a computer from an ISO or disk image on the card.</p></li>
+    <li><h3>Presenter remote <span class="badge progress">investigating</span></h3><p>Click through slides over Bluetooth, if the module can carry the key reports.</p></li>
+    <li><h3>FM radio <span class="badge planned">planned</span></h3><p>Tuner with presets, using the hardware's analogue path.</p></li>
+    <li><h3>Recorder <span class="badge planned">planned</span></h3><p>Microphone and radio recording.</p></li>
+    <li><h3>Authenticator <span class="badge planned">planned</span></h3><p>One-time codes typed over USB, with <a href="https://github.com/timschmidt/orpheus/blob/main/SECURITY.md">honest limits</a>.</p></li>
+    <li><h3>Steps and stopwatch <span class="badge planned">planned</span></h3><p>Pedometer from the accelerometer; stopwatch and timer.</p></li>
+  </ul>
+</section>
+
+<section aria-labelledby="status-h">
+  <h2 id="status-h">Status by milestone</h2>
+  <div class="table">
+    <table>
+      <thead><tr><th scope="col">Milestone</th><th scope="col">State</th></tr></thead>
+      <tbody>
+        <tr><td>M0–M3: foundations, bring-up, boot and paging, storage and USB</td><td><span class="badge works">done</span></td></tr>
+        <tr><td>M4: UI foundation</td><td><span class="badge works">done</span></td></tr>
+        <tr><td>M5: daily driver (playback, Files, Now Playing, card reader)</td><td><span class="badge works">on the player</span></td></tr>
+        <tr><td>M6: library and sound</td><td><span class="badge progress">mostly done</span> playlists, AAC and other codecs open</td></tr>
+        <tr><td>M7: radio, recorder, sensors, pictures</td><td><span class="badge progress">pictures done</span></td></tr>
+        <tr><td>M8: Bluetooth</td><td><span class="badge progress">audio works</span> remote under investigation</td></tr>
+        <tr><td>M9: USB extras and authenticator</td><td><span class="badge progress">host side built</span></td></tr>
+        <tr><td>M10: polish and release</td><td><span class="badge planned">planned</span></td></tr>
+        <tr><td>M11: verification (100 % coverage, fuzzing, sanitizers)</td><td><span class="badge progress">in progress</span></td></tr>
+        <tr><td>M12: documentation, website, branding</td><td><span class="badge progress">in progress</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>Battery life against the original firmware is being measured (Normal and Maximum performance); the table will appear here. Details: <a href="changelog.html">changelog</a> and the <a href="https://github.com/timschmidt/orpheus/blob/main/docs/STATUS.md">work log</a>.</p>
+</section>
+
+<section aria-labelledby="more-h">
+  <h2 id="more-h">More</h2>
+  <ul class="links">
+    <li><a href="manual/index.html">Manual</a>: install, keys, every app, recovery</li>
+    <li><a href="dev/index.html">Developers</a>: getting started, architecture, how-to guides</li>
+    <li><a href="hardware.html">Hardware</a>: what is inside a YM03 and what Orpheus uses</li>
+    <li><a href="https://github.com/timschmidt/orpheus">Source on GitHub</a>, MIT OR Apache-2.0</li>
+  </ul>
+</section>

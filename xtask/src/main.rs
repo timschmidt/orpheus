@@ -20,6 +20,7 @@ mod rules;
 mod sanitize;
 mod savedlink;
 mod selftest;
+mod site;
 mod size;
 mod test;
 mod thumb;
@@ -64,6 +65,11 @@ usage: cargo xtask <command> [options]
   brand [--check]                  palette contrast (web and RGB565) and the generated
                                    brand assets in docs/brand/generated/ (BRAND-1);
                                    --check fails if they are not current
+  site [--check]                   the website into target/orpheus/site/ from site/ and
+                                   the Markdown in docs/user, docs/dev (WEB-1); --check:
+                                   internal links, screenshots, page limits
+  site shots [--check]             docs/shots/: the golden images the documentation
+                                   references, scaled x2 (DOC-2)
 ";
 
 fn main() -> ExitCode {
@@ -85,6 +91,7 @@ fn main() -> ExitCode {
         "dev" => dev::cmd(&mut args),
         "drain" => drain::cmd(&mut args),
         "brand" => brand::cmd(&mut args),
+        "site" => site::cmd(&mut args),
         "help" | "-h" | "--help" => {
             print!("{USAGE}");
             return ExitCode::SUCCESS;

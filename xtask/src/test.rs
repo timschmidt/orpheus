@@ -88,7 +88,12 @@ fn golden(bless: bool) -> Result<String> {
         c.env("ORPHEUS_BLESS", "1");
     }
     run(&mut c)?;
-    Ok(if bless { "golden images re-blessed".into() } else { "golden tests passed".into() })
+    if bless {
+        // The documentation's screenshots are copies of goldens (DOC-2).
+        let s = crate::site::write_shots()?;
+        return Ok(format!("golden images re-blessed; {s}"));
+    }
+    Ok("golden tests passed".into())
 }
 
 // ---------------------------------------------------------------------------

@@ -56,6 +56,7 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     );
     step("test all", crate::test::cmd(&mut Args::from_vec(vec!["all".into()])));
     step("brand --check", crate::brand::cmd(&mut Args::from_vec(vec!["--check".into()])));
+    step("site --check", crate::site::cmd(&mut Args::from_vec(vec!["--check".into()])));
     step("build --release", crate::build::cmd_build(&mut Args::from_vec(vec![])));
     step("size --check", crate::size::cmd(&mut Args::from_vec(vec!["--check".into()])));
     step("check-resident", crate::resident::cmd(&mut Args::from_vec(vec![])));
