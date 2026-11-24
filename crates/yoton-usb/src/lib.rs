@@ -9,3 +9,4 @@
 extern crate std;
 
 pub mod devchan;
+pub mod msc;

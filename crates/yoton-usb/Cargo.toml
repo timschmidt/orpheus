@@ -9,6 +9,10 @@ rust-version.workspace = true
 [dependencies]
 yoton-proto.workspace = true
 embassy-usb = { version = "0.6", default-features = false }
+embassy-usb-driver = "0.2"
+
+[dev-dependencies]
+embassy-futures = "0.1"
 
 [lints]
 workspace = true
