@@ -118,12 +118,12 @@ pub fn cmd(args: &mut Args) -> Result<String> {
                 }
                 return Ok(out);
             }
-            let r = d.control_in(yoton_proto::devchan::REQ_STATS, 0, 0, 80)?;
+            let r = d.control_in(yoton_proto::devchan::REQ_STATS, 0, 0, 128)?;
             let w: Vec<u32> =
                 r.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
             let g = |i: usize| w.get(i).copied().unwrap_or(0);
             Ok(format!(
-                "uptime {} ms, idle {} us, pager loads {} (code faults {}, ro faults {}, evictions {}), usb resets {} setups {}, ui loops {} busy {} us rows {}, settings writes {} (last key {:#06x}, {} us), ui draw {} us flush {} us, rt decode {} us fill {} us serve {} us",
+                "uptime {} ms, idle {} us, pager loads {} (code faults {}, ro faults {}, evictions {}), usb resets {} setups {}, ui loops {} busy {} us rows {}, settings writes {} (last key {:#06x}, {} us), ui draw {} us flush {} us, rt decode {} us fill {} us serve {} us, clock level {} ({} switches)",
                 g(8),
                 g(3),
                 g(4),
@@ -142,7 +142,12 @@ pub fn cmd(args: &mut Args) -> Result<String> {
                 g(15),
                 g(16),
                 g(17),
-                g(18)
+                g(18),
+                ["Low 24", "Base 48", "Mid 96", "High 144", "Turbo 192"]
+                    .get(g(19) as usize)
+                    .copied()
+                    .unwrap_or("?"),
+                g(20)
             ))
         }
         "time" => {

@@ -91,9 +91,62 @@ async fn power() {
 #[embassy_executor::task]
 async fn watchdog() {
     let mut h = wdt::Health::new();
+    let mut gov = Governor::new();
     loop {
         Timer::after_millis(1000).await;
         h.check();
+        gov.step();
+    }
+}
+
+/// Clock governor (PWR-2, first cut): from the main executor's idle share
+/// over the last second, one level up when idle < 25 %, one level down
+/// after three seconds above 70 %. Range Base (48 MHz) .. High (144 MHz).
+struct Governor {
+    last_idle: u32,
+    last_t: u64,
+    calm: u8,
+}
+
+impl Governor {
+    fn new() -> Self {
+        Self { last_idle: executor::idle_us(), last_t: hal::time::now_us(), calm: 0 }
+    }
+
+    fn step(&mut self) {
+        let idle = executor::idle_us();
+        let t = hal::time::now_us();
+        let dt = (t - self.last_t).max(1);
+        let pct = u64::from(idle.wrapping_sub(self.last_idle)) * 100 / dt;
+        self.last_idle = idle;
+        self.last_t = t;
+        let cur = clock::current();
+        if pct < 25 {
+            self.calm = 0;
+            let up = match cur {
+                Level::Low | Level::Base => Some(Level::Mid),
+                Level::Mid => Some(Level::High),
+                _ => None,
+            };
+            if let Some(l) = up {
+                clock::set_level(l);
+            }
+        } else if pct > 70 {
+            self.calm = self.calm.saturating_add(1);
+            if self.calm >= 3 {
+                self.calm = 0;
+                let down = match cur {
+                    Level::High | Level::Turbo => Some(Level::Mid),
+                    Level::Mid => Some(Level::Base),
+                    _ => None,
+                };
+                if let Some(l) = down {
+                    clock::set_level(l);
+                }
+            }
+        } else {
+            self.calm = 0;
+        }
     }
 }
 

@@ -531,6 +531,25 @@ async fn ls(vol: &mut Volume<'static, Card>, path: &str) {
     });
 }
 
+/// Hand the card to the USB task and wait for it to come back; `None` if
+/// the remount failed.
+async fn release(vol: Volume<'static, Card>) -> Option<Volume<'static, Card>> {
+    crate::state::CARD_READY.store(false, Ordering::Relaxed);
+    media::player_update(|p| *p = media::PlayerSnap::IDLE);
+    let (card, _) = vol.unmount().await;
+    CARD_OUT.send(card).await;
+    let card = CARD_BACK.receive().await;
+    let v = mount(card).await;
+    if v.is_some() {
+        crate::state::CARD_READY.store(true, Ordering::Relaxed);
+    } else {
+        reply(|w| {
+            w.s(b"card: remount failed");
+        });
+    }
+    v
+}
+
 static SERVER: ConstStaticCell<Server> = ConstStaticCell::new(Server::new());
 
 /// Play the queue: `r` is the request that started it (new folder, skip,
@@ -580,6 +599,11 @@ async fn run_queue(
         let _ = play_file(vol, ring, arena, f, ext, srv).await;
         r = match srv.pending.take() {
             Some(Req::Stop) => break,
+            Some(Req::Release) => {
+                // Leave it for the idle loop, which hands the card over.
+                srv.pending = Some(Req::Release);
+                break;
+            }
             Some(p) => p,
             None => Req::Skip(1),
         };
@@ -663,28 +687,22 @@ pub async fn audio() {
                     continue;
                 }
                 let Some(r) = srv.pending.take() else { continue };
+                if let Req::Release = r {
+                    match release(vol).await {
+                        Some(v) => vol = v,
+                        None => return,
+                    }
+                    continue;
+                }
                 run_queue(&mut vol, &mut ring, arena, srv, r).await;
                 continue;
             }
         };
         let text = core::str::from_utf8(&cmd.text[..cmd.len]).unwrap_or("");
         if text == "release" {
-            // Hand the card to the USB task, wait for it to come back.
-            crate::state::CARD_READY.store(false, Ordering::Relaxed);
-            let (card, _) = vol.unmount().await;
-            CARD_OUT.send(card).await;
-            let card = CARD_BACK.receive().await;
-            match mount(card).await {
-                Some(v) => {
-                    vol = v;
-                    crate::state::CARD_READY.store(true, Ordering::Relaxed);
-                }
-                None => {
-                    reply(|w| {
-                        w.s(b"card: remount failed");
-                    });
-                    return;
-                }
+            match release(vol).await {
+                Some(v) => vol = v,
+                None => return,
             }
         } else if let Some(p) = text.strip_prefix("ls ") {
             ls(&mut vol, p.trim()).await;

@@ -61,7 +61,7 @@ impl Target for Fw {
         out[2] = usb::DMA_ERRORS.load(Ordering::Relaxed);
         out[3] = executor::idle_us();
         let p = atj2157_hal::pager::stats();
-        let n = out.len().min(19);
+        let n = out.len().min(21);
         let v = [
             p.loads,
             p.code_faults,
@@ -78,6 +78,8 @@ impl Target for Fw {
             crate::audio::T_DECODE.load(Ordering::Relaxed),
             crate::audio::T_FILL.load(Ordering::Relaxed),
             crate::audio::T_SERVE.load(Ordering::Relaxed),
+            atj2157_hal::clock::current() as u32,
+            atj2157_hal::clock::switches(),
         ];
         out[4..n].copy_from_slice(&v[..n - 4]);
         n
@@ -123,11 +125,20 @@ impl Target for Fw {
             MODE.signal(Personality::Dev);
             return true;
         }
+        if data == b"hang" {
+            // Watchdog test: block the main executor; the watchdog task
+            // stops feeding and the watchdog resets the player (~6 s).
+            atj2157_hal::log::line(b"test: hang");
+            loop {
+                core::hint::spin_loop();
+            }
+        }
         if data == b"status" {
             crate::audio::status_reply();
             return true;
         }
         if data == b"stop" {
+            crate::media::request(crate::media::Req::Stop);
             crate::audio::request_stop();
             return true;
         }
@@ -293,9 +304,7 @@ async fn run_dev() -> Personality {
 
 async fn run_msc() -> Personality {
     // Get the card from the audio task.
-    let mut c = crate::audio::Cmd { len: 7, text: [0; crate::audio::CMD_LEN] };
-    c.text[..7].copy_from_slice(b"release");
-    crate::audio::CMDS.send(c).await;
+    crate::media::REQS.send(crate::media::Req::Release).await;
     CARD_WITH_USB.store(true, Ordering::Relaxed);
     let mut card = crate::audio::CARD_OUT.receive().await;
     atj2157_hal::log::line(b"usb: card reader on");

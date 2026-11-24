@@ -63,6 +63,8 @@ pub enum Req {
     Skip(i32),
     Jump(u32),
     Stop,
+    /// Hand the card to the USB task (stops playback first).
+    Release,
 }
 
 pub static REQS: Channel<CriticalSectionRawMutex, Req, 4> = Channel::new();
