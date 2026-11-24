@@ -475,6 +475,11 @@ const DAC_CH: usize = 5;
 static PLAYED: AtomicU32 = AtomicU32::new(0);
 static PCM_WAKER: AtomicWaker = AtomicWaker::new();
 
+/// PCM spilled beyond the DMA ring at a gapless join
+/// (`orpheus_audio::Spill`): the state, and the lent buffer's address.
+static SPILL: orpheus_audio::Spill = orpheus_audio::Spill::new();
+static SPILL_BUF: AtomicU32 = AtomicU32::new(0);
+
 fn on_dac_dma() {
     let what = dma::clear(DAC_CH);
     let mut n = 0;
@@ -484,7 +489,21 @@ fn on_dac_dma() {
     if what & 1 != 0 {
         n += 1;
     }
-    PLAYED.fetch_add(n, Ordering::Release);
+    let played = PLAYED.fetch_add(n, Ordering::AcqRel).wrapping_add(n);
+    // Spilling: the half that just finished gets the next spilled half.
+    if let Some(m) = SPILL.irq(played) {
+        let src = SPILL_BUF.load(Ordering::Acquire) as *const u32;
+        let dst = (PCM_ADDR as *mut u32).wrapping_add((m.half % 2) as usize * HALF);
+        // SAFETY: while spilling, `SPILL_BUF` is a lent buffer of `cap`
+        // frames (`PcmOut::spill_into`) the writer only appends to beyond
+        // `m`; `m.from + m.first <= cap` and `m.n <= HALF`; the destination
+        // is the ring half the DMA does not read now (half `played + 1`).
+        unsafe {
+            core::ptr::copy_nonoverlapping(src.add(m.from as usize), dst, m.first as usize);
+            core::ptr::copy_nonoverlapping(src, dst.add(m.first as usize), (m.n - m.first) as usize);
+        }
+        SPILL.moved(m);
+    }
     PCM_WAKER.wake();
 }
 
@@ -493,11 +512,116 @@ struct PcmOut {
     fill: usize,
     running: bool,
     crc: u32,
+    /// A buffer lent for spilling (address, frames): used from the next
+    /// moment the ring is full (`push`).
+    spill_req: Option<(usize, u32)>,
+    /// Writing into the spill buffer, not the ring.
+    spilling: bool,
 }
 
 impl PcmOut {
     fn new() -> Self {
-        Self { written: 0, fill: 0, running: false, crc: 0xFFFF_FFFF }
+        Self { written: 0, fill: 0, running: false, crc: 0xFFFF_FFFF, spill_req: None, spilling: false }
+    }
+
+    /// Lend `buf` (frames) for spilling: once the ring is full, the writer
+    /// decodes ahead into it and the DAC interrupt moves it on half by
+    /// half (`orpheus_audio::Spill`). The caller must not touch `buf`
+    /// until [`PcmOut::leave_spill`] or [`PcmOut::stop`].
+    fn spill_into(&mut self, buf: &mut [u32]) {
+        if !self.spilling && buf.len() >= 2 * HALF {
+            self.spill_req = Some((buf.as_mut_ptr() as usize, buf.len().min(u32::MAX as usize) as u32));
+        }
+    }
+
+    /// Spilling, or about to (the lent buffer is in use).
+    fn spill_busy(&self) -> bool {
+        self.spilling || self.spill_req.is_some()
+    }
+
+    /// Halves the DAC played stale while spilling: underruns.
+    fn spill_lost(&self) {
+        let lost = SPILL.take_lost();
+        if lost > 0 {
+            UNDERRUNS.fetch_add(lost, Ordering::Relaxed);
+            critical_section::with(|cs| LEDGER.borrow(cs).borrow_mut().missed(lost, UB_DECODER));
+        }
+    }
+
+    /// Stop spilling: let the spilled frames play down to less than a half
+    /// (the DAC interrupt moves them), then write into the ring again from
+    /// there. The DAC keeps playing throughout.
+    async fn leave_spill(&mut self) {
+        self.spill_req = None;
+        if !self.spilling {
+            return;
+        }
+        poll_fn(|cx| {
+            PCM_WAKER.register(cx.waker());
+            if SPILL.queued() < HALF as u32 || STOP.load(Ordering::Relaxed) {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
+        let r = SPILL.leave(PLAYED.load(Ordering::Acquire));
+        self.spilling = false;
+        self.spill_lost();
+        // Half `r.written` is free once the DMA plays the half before it.
+        poll_fn(|cx| {
+            PCM_WAKER.register(cx.waker());
+            let played = PLAYED.load(Ordering::Acquire);
+            if (r.written.wrapping_sub(played) as i32) < 2 || STOP.load(Ordering::Relaxed) {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
+        let src = SPILL_BUF.load(Ordering::Acquire) as *const u32;
+        let dst = (PCM_ADDR as *mut u32).wrapping_add((r.written % 2) as usize * HALF);
+        let first = (r.first as usize).min(HALF);
+        let n = (r.n as usize).min(HALF);
+        // SAFETY: the lent buffer (no longer read by the interrupt: spilling
+        // is off) holds `r.n < HALF` frames from `r.from`; the ring half is
+        // not the one the DMA plays.
+        unsafe {
+            core::ptr::copy_nonoverlapping(src.add(r.from as usize), dst, first);
+            core::ptr::copy_nonoverlapping(src, dst.add(first), n - first);
+        }
+        self.written = r.written;
+        self.fill = n;
+        WRITTEN.store(self.written, Ordering::Relaxed);
+    }
+
+    /// `push` while spilling.
+    async fn push_spill(&mut self, frame: u32) {
+        loop {
+            if let Some(i) = SPILL.slot() {
+                let buf = SPILL_BUF.load(Ordering::Relaxed) as *mut u32;
+                // SAFETY: slot `i` (< cap) of the lent buffer is free: the
+                // interrupt has moved it on.
+                unsafe { core::ptr::write_volatile(buf.add(i as usize), frame) };
+                SPILL.pushed();
+                return;
+            }
+            // Full: wait for the interrupt to move a half on.
+            mark(3);
+            poll_fn(|cx| {
+                PCM_WAKER.register(cx.waker());
+                if SPILL.slot().is_some() || STOP.load(Ordering::Relaxed) {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await;
+            self.spill_lost();
+            if STOP.load(Ordering::Relaxed) {
+                return;
+            }
+        }
     }
 
     fn slot(&self) -> *mut u32 {
@@ -506,11 +630,15 @@ impl PcmOut {
     }
 
     async fn push(&mut self, frame: u32) {
-        // SAFETY: inside the PCM ring in SRAM3; the DMA reads the other half.
-        unsafe { core::ptr::write_volatile(self.slot(), frame) };
         if CRC_ON.load(Ordering::Relaxed) {
             self.crc = crc32_update(self.crc, &frame.to_le_bytes());
         }
+        if self.spilling {
+            self.push_spill(frame).await;
+            return;
+        }
+        // SAFETY: inside the PCM ring in SRAM3; the DMA reads the other half.
+        unsafe { core::ptr::write_volatile(self.slot(), frame) };
         self.fill += 1;
         if self.fill == HALF {
             self.fill = 0;
@@ -520,6 +648,18 @@ impl PcmOut {
             }
             // Wait while both halves hold unplayed data.
             WRITTEN.store(self.written, Ordering::Relaxed);
+            let full = (self.written.wrapping_sub(PLAYED.load(Ordering::Acquire)) as i32) >= 2;
+            if self.running
+                && full
+                && let Some((buf, cap)) = self.spill_req.take()
+            {
+                // The ring is full: from now on decode ahead into the lent
+                // buffer instead of waiting.
+                SPILL_BUF.store(buf as u32, Ordering::Release);
+                SPILL.enter(self.written, cap, HALF as u32);
+                self.spilling = true;
+                return;
+            }
             if self.running {
                 mark(3);
                 core::future::poll_fn(|cx| {
@@ -569,7 +709,11 @@ impl PcmOut {
         // SAFETY: channel 5 belongs to this module; a register read.
         let rem = unsafe { DmaCh::steal(DAC_CH) }.remaining().min(BYTES);
         let at = ((BYTES - rem) / 4) as usize % HALF;
-        let halves = self.written.wrapping_sub(PLAYED.load(Ordering::Acquire)) as i32;
+        let played = PLAYED.load(Ordering::Acquire);
+        if self.spilling {
+            return SPILL.ahead(played) - at as i32;
+        }
+        let halves = self.written.wrapping_sub(played) as i32;
         halves * HALF as i32 + self.fill as i32 - at as i32
     }
 
@@ -583,6 +727,7 @@ impl PcmOut {
 
     /// Pad the current half with silence, let everything play out, stop.
     async fn finish(&mut self) {
+        self.leave_spill().await;
         if !self.running && self.written == 0 && self.fill == 0 {
             return;
         }
@@ -598,6 +743,13 @@ impl PcmOut {
     }
 
     fn stop(&mut self) {
+        self.spill_req = None;
+        if self.spilling {
+            // Dropped: the DAC stops anyway.
+            SPILL.leave(PLAYED.load(Ordering::Acquire));
+            self.spilling = false;
+            let _ = SPILL.take_lost();
+        }
         // SAFETY: channel 5 belongs to this module.
         unsafe { DmaCh::steal(DAC_CH) }.abort();
         self.running = false;
@@ -853,6 +1005,9 @@ fn inspect_head(src: &mut orpheus_audio::WindowSource<'_>, ext: Option<&[u8]>) -
     HeadStep::Fail
 }
 
+/// Spill buffer limit (frames): ≈ 186 ms at 44.1 kHz.
+const SPILL_MAX: usize = 8192;
+
 /// Probe and inspect the file read ahead from its own head (read into
 /// `buf`, free arena memory; a copy of its handle, so the ring's reading is
 /// untouched), while the current file plays: at the hand-over only the
@@ -1054,6 +1209,8 @@ async fn play_file(
     // A gapless join being measured: 1 until the first block, 2 until two
     // halves are out.
     let mut join: u8 = if st.gapless { 1 } else { 0 };
+    // The arena was lent for spilling near this file's end (once).
+    let mut spilled = false;
     let mut early = st.early;
     PLAYING.store(true, Ordering::Relaxed);
     STOP.store(false, Ordering::Relaxed);
@@ -1246,6 +1403,11 @@ async fn play_file(
                     }
                     flow.merge(fl);
                 }
+                if out.spilling && u64::from(frames) * 2 >= rate {
+                    // The join is long over: back to the ring, and the arena
+                    // beyond the decoder is free for the chores again.
+                    out.leave_spill().await;
+                }
                 if join == 2 && frames >= 2 * HALF as u32 {
                     // Underruns are seen at half boundaries: by now the
                     // join's are counted. The UI hears of the new track now
@@ -1282,9 +1444,33 @@ async fn play_file(
                 let meta_now = meta != 0 && join == 0 && u64::from(frames) * 1000 >= META_AFTER_MS * rate;
                 // Requests wait while the current file's last bytes play
                 // (≤ 0.7 s: the hand-over comes first).
-                let serve_now = serve_due && !(ring.eof() && ring.next.is_some());
+                let serve_now = serve_due && !(ring.eof() && ring.next.is_some()) && !out.spill_busy();
                 // The file read ahead, probed and inspected before the end.
-                let prep_now = ring.next.as_ref().is_some_and(|n| n.prep.is_none());
+                let prep_now = ring.next.as_ref().is_some_and(|n| n.prep.is_none()) && !out.spill_busy();
+                // The current file read to its end and the next one
+                // prepared: lend the arena beyond both decoders to the DAC
+                // (`PcmOut::spill_into`), so it has ~150 ms more queued while
+                // the next decoder opens.
+                if driven && ring.eof() && !out.spill_busy() && !spilled {
+                    let next_arena = match ring.next.as_ref().and_then(|n| n.prep) {
+                        Some(Ok(p)) => Some(p.plan.arena),
+                        _ => None,
+                    };
+                    if let Some(b) = next_arena {
+                        spilled = true;
+                        let from = b.saturating_sub(plan.arena).next_multiple_of(4);
+                        if let Some(region) = spare.get_mut(from..) {
+                            // SAFETY: plain memory, 4-byte aligned (the arena is
+                            // 8-aligned, offsets rounded up); any bit pattern is
+                            // a valid `u32`.
+                            let (_, frames, _) = unsafe { region.align_to_mut::<u32>() };
+                            let n = frames.len().min(SPILL_MAX);
+                            if let Some(f) = frames.get_mut(..n) {
+                                out.spill_into(f);
+                            }
+                        }
+                    }
+                }
                 if pf_due.is_some() || serve_now || meta_now || prep_now {
                     let now = time::now_us();
                     if chore_since == 0 {
@@ -1385,6 +1571,12 @@ async fn play_file(
             }
         }
     };
+    if natural && out.spilling && !spilled {
+        // A spill this file did not start (a short track after a join): its
+        // buffer was measured against this file's decoder, not the next
+        // one's, so it ends before the hand-over.
+        out.leave_spill().await;
+    }
     if let (Some(item), Some(track)) = (early, st.track) {
         // Ended before its first block (a request for the idle loop, a
         // stop): the player still hears of the change.
