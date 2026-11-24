@@ -271,7 +271,8 @@ extern "C" fn fault_entry(frame: *const u32, exc_return: u32, ipsr: u32) -> ! {
 /// Bytes of the stack never touched since start-up (paint still intact).
 #[must_use]
 pub fn stack_unused() -> usize {
-    let bottom = (&raw const __stack_bottom) as usize;
+    // Start above the MPU guard (reading it faults).
+    let bottom = stack_guard_range().1 as usize;
     let top = (&raw const __stack_top) as usize;
     let mut p = bottom;
     while p < top {

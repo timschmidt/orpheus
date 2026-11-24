@@ -45,6 +45,13 @@ pub enum Target {
 
 /// Reboot through a short watchdog expiry. Never returns.
 pub fn reboot(target: Target) -> ! {
+    // A deliberate reboot is not a failed start (fault reboots go through
+    // `reboot_after_fault` and keep the count).
+    write_word(mailbox::ADDR_BOOT_COUNT, 0);
+    reboot_keep_count(target)
+}
+
+fn reboot_keep_count(target: Target) -> ! {
     if target == Target::Adfu {
         write_word(mailbox::ADDR_ADFU, mailbox::ADFU_MAGIC);
     }

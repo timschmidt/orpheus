@@ -67,8 +67,16 @@ pub fn state() -> State {
 pub fn to_ymon(log: &mut dyn FnMut(&str), timeout: Duration) -> Result<Adfu> {
     let t0 = Instant::now();
     let mut asked = false;
+    let mut last = State::Absent;
     loop {
-        match state() {
+        let st = state();
+        if st != last {
+            // A different firmware came up (e.g. the stock firmware's reboot
+            // went to Rockbox): ask again.
+            asked = false;
+            last = st;
+        }
+        match st {
             State::Ymon | State::AdfuRom => {
                 let mut a = Adfu::open(Duration::from_secs(2))?;
                 a.ensure_ymon()?;

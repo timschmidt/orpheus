@@ -5,8 +5,9 @@
 //! 2. Next key held (ladder 1, 60..200) → USB recovery;
 //! 3. OK key held (ladder 2, 350..490) → stock firmware;
 //! 4. three failed starts in a row (counter at `0x137FF8`) → USB recovery;
-//! 5. a valid `"YFW1"` slot at `0x762000` → load its resident image and
-//!    enter it;
+//! 5. a `"YFW1"` slot at `0x762000` (magic, version, bounds, resident
+//!    sum32; the firmware checks the header CRC and page store) → load its
+//!    resident image and enter it;
 //! 6. otherwise the stock firmware, and if that is missing, USB recovery.
 //!
 //! Writes its decision to `0x137FFC` (`BootInfo`). Never touches the rest
@@ -68,8 +69,30 @@ fn feed() {
 }
 
 /// Boot ROM USB recovery (ROM entry points [HW], as the C stage).
+#[inline(never)]
 fn adfu(path: u32) -> ! {
     info(path, 0);
+    // SAFETY: core registers; hand the ROM the interrupt state of a cold
+    // boot (ROM vectors, no NVIC line enabled or pending) whoever ran
+    // before us (a RAM monitor during tests).
+    unsafe {
+        core::arch::asm!(
+            "cpsid i",
+            "ldr r0, =0xe000e180",
+            "mvn r1, #0",
+            "str r1, [r0]",
+            "str r1, [r0, #4]",
+            "str r1, [r0, #0x100]",
+            "str r1, [r0, #0x104]",
+            "ldr r0, =0xe000ed08",
+            "movs r1, #0",
+            "str r1, [r0]",
+            "dsb",
+            "isb",
+            "cpsie i",
+            out("r0") _, out("r1") _,
+        );
+    }
     // SAFETY: ROM functions at fixed addresses (Thumb); they do not return
     // except the cleanups.
     unsafe {
@@ -193,6 +216,7 @@ extern "C" fn enter_vendor() -> ! {
     )
 }
 
+#[inline(never)]
 fn try_vendor() {
     let mut err = 0u32;
     nor_read_main(VENDOR_RECORD, VENDOR_TMP as *mut u8, 1024, &mut err);
@@ -221,19 +245,6 @@ fn adc(reg: u32) -> u32 {
         }
     }
     if hi - lo < 40 { hi } else { 0x3FF }
-}
-
-fn crc32(mut p: u32, n: u32) -> u32 {
-    let mut c = 0xFFFF_FFFFu32;
-    for _ in 0..n {
-        // SAFETY: reads of the header copy in RAM.
-        c ^= u32::from(unsafe { rd(p as *const u8) });
-        for _ in 0..8 {
-            c = (c >> 1) ^ (0xEDB8_8320 & (c & 1).wrapping_neg());
-        }
-        p += 1;
-    }
-    !c
 }
 
 extern "C" fn stage2_main() -> ! {
@@ -290,7 +301,7 @@ extern "C" fn stage2_main() -> ! {
         // SAFETY: the header copy.
         unsafe { rd((hdr + o) as *const u32) }
     };
-    if err == 0 && w(0) == YFW1 && w(4) == 1 && w(0x7C) == crc_header(hdr) {
+    if err == 0 && w(0) == YFW1 && w(4) == 1 {
         let off = w(0x10);
         let len = w(0x14);
         let load = w(0x18);
@@ -306,19 +317,6 @@ extern "C" fn stage2_main() -> ! {
     }
     try_vendor();
     adfu(6)
-}
-
-fn crc_header(hdr: u32) -> u32 {
-    // CRC over 0x00..0x7C with the `verified` word read as 0xFFFF_FFFF.
-    // SAFETY: header copy in RAM; restored after.
-    unsafe {
-        let v = (hdr + 0x3C) as *mut u32;
-        let saved = rd(v);
-        wr(v, 0xFFFF_FFFF);
-        let c = crc32(hdr, 0x7C);
-        wr(v, saved);
-        c
-    }
 }
 
 #[panic_handler]

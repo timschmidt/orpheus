@@ -106,9 +106,13 @@ pub fn cmd_stage2_ramtest(args: &mut Args) -> Result<String> {
         bail!("stage 2 image invalid");
     }
     let mut d = to_ymon()?;
+    let mut mb = yoton_proto::mailbox::Mailbox::default();
     if adfu {
-        d.write_u32(yoton_proto::mailbox::ADDR_ADFU, yoton_proto::mailbox::ADFU_MAGIC)?;
+        mb.adfu = yoton_proto::mailbox::ADFU_MAGIC;
     }
+    d.write(yoton_proto::mailbox::BASE, &mb.to_bytes())?;
+    d.write(yoton_proto::result::BASE, &[0u8; yoton_proto::result::SIZE])?;
+    d.write(yoton_proto::fault::BASE, &[0u8; yoton_proto::fault::SIZE])?;
     d.write_verify(base, &img, 0x200)?;
     d.jump(base + 0x10)?;
     d.close();
