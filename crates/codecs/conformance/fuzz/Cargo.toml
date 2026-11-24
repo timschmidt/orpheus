@@ -1,0 +1,75 @@
+# cargo-fuzz targets (nightly only; 07 §3.4). Run through
+# `cargo xtask test fuzz-smoke`, or directly:
+#   cd crates/codecs/conformance/fuzz && cargo +nightly fuzz run --fuzz-dir . <target>
+# The target bodies live in `yoton_codec_conformance::fuzz` so the stable
+# smoke run exercises the same code.
+[package]
+name = "yoton-codec-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+yoton-codec-conformance = { path = ".." }
+
+# Its own workspace: nightly and libFuzzer stay out of the host workspace.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+overflow-checks = true
+debug-assertions = true
+
+[[bin]]
+name = "decode_any"
+path = "fuzz_targets/decode_any.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wav"
+path = "fuzz_targets/wav.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mp3"
+path = "fuzz_targets/mp3.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "flac"
+path = "fuzz_targets/flac.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "meta"
+path = "fuzz_targets/meta.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lyrics"
+path = "fuzz_targets/lyrics.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "probe"
+path = "fuzz_targets/probe.rs"
+test = false
+doc = false
+bench = false

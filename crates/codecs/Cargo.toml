@@ -1,0 +1,28 @@
+[package]
+name = "yoton-codecs"
+description = "Static dispatch over the built codecs (04 §2.1): one enum, one match per frame"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# This directory also holds one crate per codec (`crates/codecs/*`, members of
+# the workspace); the facade's source is `lib.rs` here so that no non-crate
+# subdirectory exists for the workspace glob to trip over.
+[lib]
+path = "lib.rs"
+
+[features]
+default = ["wav", "mp3", "flac"]
+wav = ["dep:yoton-codec-wav"]
+mp3 = ["dep:yoton-codec-mp3"]
+flac = ["dep:yoton-codec-flac"]
+
+[dependencies]
+yoton-audio = { path = "../yoton-audio" }
+yoton-codec-wav = { path = "wav", optional = true }
+yoton-codec-mp3 = { path = "mp3", optional = true }
+yoton-codec-flac = { path = "flac", optional = true }
+
+[lints]
+workspace = true

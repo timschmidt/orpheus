@@ -1,0 +1,16 @@
+[package]
+name = "yoton-codec-flac"
+description = "FLAC decoder in the codec arena, written from RFC 9639"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+yoton-audio = { path = "../../yoton-audio" }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+md-5 = "0.10"

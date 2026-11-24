@@ -1,0 +1,19 @@
+[package]
+name = "yoton-codec-mp3"
+description = "MP3 (MPEG-1/2/2.5 Layer III) decoder in the codec arena: minimp3's algorithm via mbop3, with a ring-aware stream layer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+# Evaluate floating point in exactly minimp3's order (bit-identical to C
+# minimp3 on targets without fused multiply-add); slower.
+exact = []
+
+[dependencies]
+yoton-audio = { path = "../../yoton-audio" }
+bytemuck = { version = "1.25", default-features = false, features = ["derive", "min_const_generics"] }
+
+[lints]
+workspace = true
