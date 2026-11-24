@@ -183,15 +183,18 @@ pub fn cmd_restore_vendor(args: &mut Args) -> Result<String> {
     if !args.flag("i-have-a-backup") {
         bail!("restore vendor rewrites the whole chip including sector 0; pass --i-have-a-backup");
     }
-    if diff.iter().any(|&a| a >= full::FREE_END) {
-        bail!("the vendor data above 0x7E0000 differs from the backup; not touching it");
-    }
+    // The vendor data above 0x7E0000 is never written by yotonrs; where it
+    // differs from the backup, the stock firmware updated it after the
+    // backup was taken (checked on 2026-11-24), so the newer data stays.
     let payload = norprog_payload()?;
-    for &a in diff.iter().filter(|&&a| a != 0) {
+    for &a in diff.iter().filter(|&&a| a != 0 && a < full::FREE_END) {
         let r = a as usize..(a + SECTOR) as usize;
         nor::write_full(&mut d, &payload, a, &backup[r], &mut |_| {})?;
     }
-    log(&format!("{} sectors restored above sector 0", diff.iter().filter(|&&a| a != 0).count()));
+    log(&format!(
+        "{} sectors restored above sector 0",
+        diff.iter().filter(|&&a| a != 0 && a < full::FREE_END).count()
+    ));
     if diff.first() == Some(&0) {
         // Sector 0 last: until then stage 1 + stage 2 keep USB recovery.
         nor::write_sector0(&mut d, &backup[..SECTOR as usize], &mut |s| log(s))?;
