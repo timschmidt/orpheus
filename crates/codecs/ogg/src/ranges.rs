@@ -7,7 +7,7 @@
 //! (lacing table included) and consumes its body packet by packet, so only
 //! a packet, not a page, has to fit in the ring. A page's CRC is checked
 //! when the whole page is buffered when first seen (always, for pages up to
-//! [`MAX_PEEK`] bytes); larger pages are taken unchecked. A packet too
+//! [`CHECKED_PAGE`] bytes); larger pages are taken unchecked. A packet too
 //! large for the ring is skipped as it streams past (`Corrupt`).
 //!
 //! One logical stream is followed (the first one seen); pages of other
@@ -15,7 +15,7 @@
 
 use orpheus_audio::{ByteSource, MAX_PEEK, View};
 
-use crate::{HEADER_MIN, NO_GRANULE, PageHeader, Parse, page_crc};
+use crate::{CHECKED_PAGE, HEADER_MIN, NO_GRANULE, PageHeader, Parse, page_crc};
 
 /// Pages one packet may span.
 pub const MAX_RANGES: usize = 32;
@@ -43,7 +43,7 @@ pub enum PageErr {
 
 /// The page header at `at`; the CRC is checked when the whole page is in
 /// the view. With `whole`, a page not entirely buffered is `Need` unless it
-/// is larger than [`MAX_PEEK`] or the stream ends (`at_end`).
+/// is larger than [`CHECKED_PAGE`] or the stream ends (`at_end`).
 fn header(v: &View<'_>, at: usize, whole: bool, at_end: bool) -> Result<Page, PageErr> {
     let w = v.skip(at);
     let hdr = match PageHeader::parse(&w) {
@@ -58,7 +58,7 @@ fn header(v: &View<'_>, at: usize, whole: bool, at_end: bool) -> Result<Page, Pa
         if page_crc(&w, len) != hdr.crc {
             return Err(PageErr::Bad);
         }
-    } else if whole && len <= MAX_PEEK && !at_end {
+    } else if whole && len <= CHECKED_PAGE && !at_end {
         return Err(PageErr::Need(at + len));
     }
     Ok(p)
