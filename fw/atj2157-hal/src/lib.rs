@@ -29,6 +29,7 @@ pub mod rt;
 pub mod rtc_clock;
 pub mod sd;
 pub mod time;
+pub mod uart;
 pub mod usb;
 pub mod wdt;
 

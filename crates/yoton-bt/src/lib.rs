@@ -8,8 +8,11 @@
 //! * [`link`]: one-command-at-a-time layer with acknowledge timeout and
 //!   resend.
 //! * [`transmitter`]: the transmitter-role state machine.
-//! * [`restricted`]: upgrade, shutdown, baud and settings commands, which
-//!   nothing in this crate sends on its own (CLAUDE.md rule 6).
+//! * [`restricted`]: upgrade, shutdown, baud and settings commands
+//!   (CLAUDE.md rule 6); the only one sent is the shutdown (0x24), by
+//!   [`Transmitter::shutdown`] on the player's power-off path.
+//! * [`driver`]: glue for the firmware task: a UART/enable-line [`driver::Port`],
+//!   the TX queue, the bounded power-off shutdown, diagnostics.
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -17,6 +20,7 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod driver;
 pub mod frame;
 pub mod link;
 pub mod proto;

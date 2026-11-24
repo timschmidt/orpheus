@@ -66,7 +66,7 @@ pub static CMDS: Channel<CriticalSectionRawMutex, Cmd, 2> = Channel::new();
 pub static REPLY: critical_section::Mutex<core::cell::RefCell<([u8; 1024], usize)>> =
     critical_section::Mutex::new(core::cell::RefCell::new(([0; 1024], 0)));
 
-fn reply(f: impl FnOnce(&mut Writer<'_>)) {
+pub(crate) fn reply(f: impl FnOnce(&mut Writer<'_>)) {
     critical_section::with(|cs| {
         let mut r = REPLY.borrow(cs).borrow_mut();
         let (buf, n) = &mut *r;

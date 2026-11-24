@@ -12,8 +12,11 @@
 //! (up to 5 s, or until `total` records arrived) — or `2B FF` when the
 //! player has no saved record; then Idle, and a bounded auto-reconnect to
 //! the last device. The vendor's settings read/write (0x2C/0x7F) is
-//! skipped (CLAUDE.md rule 6; the module keeps its own settings), and
-//! power-off drops the enable line without the shutdown command 0x24.
+//! skipped (CLAUDE.md rule 6; the module keeps its own settings).
+//! Switching Bluetooth off drops the enable line ([`Transmitter::power_off`]);
+//! the player's power-off first sends the shutdown command 0x24 through
+//! [`Transmitter::shutdown`] (owner decision 2026-11-24, WP BT-2) and drops
+//! the line on the module's completion event or after a bounded wait.
 //!
 //! A command that is not acknowledged after its resends declares the link
 //! down: the enable line goes low, and after a pause the module is started
@@ -211,6 +214,8 @@ pub struct Transmitter {
     reconnect_at: Option<u64>,
     restarts: u8,
     restart_at: Option<u64>,
+    /// The shutdown command (0x24) is out: no restarts, no other commands.
+    shutting_down: bool,
 }
 
 impl Transmitter {
@@ -245,6 +250,7 @@ impl Transmitter {
             reconnect_at: None,
             restarts: 0,
             restart_at: None,
+            shutting_down: false,
         }
     }
 
@@ -330,7 +336,7 @@ impl Transmitter {
     }
 
     fn pump(&mut self, now: u64, tx: &mut impl Transport) {
-        if self.link.is_busy() || self.q_len == 0 || self.state == State::Off {
+        if self.link.is_busy() || self.q_len == 0 || self.state == State::Off || self.shutting_down {
             return;
         }
         let q = self.queue[self.q_head];
@@ -352,6 +358,7 @@ impl Transmitter {
 
     fn start(&mut self, now: u64) {
         self.clear_session();
+        self.shutting_down = false;
         self.paired_len = 0;
         self.paired_total = 0;
         self.restart_at = None;
@@ -449,7 +456,7 @@ impl Transmitter {
         match Event::parse(f) {
             Event::Ready => {
                 // Ready at power-up, or a module restart at any time.
-                if self.state != State::Off {
+                if self.state != State::Off && !self.shutting_down {
                     let was = matches!(self.state, State::Connected | State::Streaming);
                     self.ready(was);
                 }
@@ -508,6 +515,8 @@ impl Transmitter {
             Event::AbsVolume(v) => self.emit(Output::AbsVolume(v)),
             Event::ShutdownComplete => {
                 self.clear_session();
+                self.shutting_down = false;
+                self.restart_at = None;
                 self.emit(Output::Enable(false));
                 self.set_state(State::Off);
             }
@@ -599,6 +608,11 @@ impl Transmitter {
             self.start(now);
         }
         match self.link.poll(now, tx) {
+            Poll::Timeout { .. } if self.shutting_down => {
+                // No acknowledge of the shutdown command: power off anyway.
+                self.power_off();
+                return;
+            }
             Poll::Timeout { .. } => {
                 self.link_down(now);
                 return;
@@ -644,15 +658,76 @@ impl Transmitter {
         self.pump(now, tx);
     }
 
-    /// Bluetooth off: enable line low (no shutdown command, see the
-    /// module docs).
+    /// Bluetooth off: enable line low, no shutdown command (the player's
+    /// power-off uses [`Self::shutdown`] first).
     pub fn power_off(&mut self) {
         self.clear_session();
+        self.shutting_down = false;
         self.restart_at = None;
         if self.state != State::Off {
             self.emit(Output::Enable(false));
             self.set_state(State::Off);
         }
+    }
+
+    /// The module finished its start-up and takes commands (Idle and the
+    /// states after it).
+    #[must_use]
+    pub fn module_up(&self) -> bool {
+        matches!(
+            self.state,
+            State::Idle | State::Inquiry | State::Connecting | State::Connected | State::Streaming
+        )
+    }
+
+    /// Commands queued or awaiting their acknowledge.
+    #[must_use]
+    pub fn busy(&self) -> bool {
+        self.link.is_busy() || self.q_len > 0
+    }
+
+    /// The shutdown command is out; waiting for the module.
+    #[must_use]
+    pub fn shutting_down(&self) -> bool {
+        self.shutting_down
+    }
+
+    #[must_use]
+    pub fn config(&self) -> &Config {
+        &self.cfg
+    }
+
+    /// Change the configuration (takes effect at the next start-up).
+    pub fn set_config(&mut self, cfg: Config) {
+        self.cfg = cfg;
+    }
+
+    /// **Player power-off only** (owner decision 2026-11-24, WP BT-2; the
+    /// one caller of a restricted command in this crate): drop everything
+    /// queued and send the shutdown command 0x24 once, without resend.
+    /// The module answers with its acknowledge and event 0x24, which gives
+    /// `Enable(false)` and `State(Off)`; without an acknowledge within
+    /// [`crate::link::ACK_TIMEOUT_MS`] the same happens at the next
+    /// [`Self::tick`]. Refused unless the module is up
+    /// ([`Self::module_up`]): during its start-up the enable line is
+    /// simply dropped ([`Self::power_off`]). The caller bounds the wait
+    /// for the completion event and calls `power_off` when it runs out.
+    pub fn shutdown(&mut self, now: u64, tx: &mut impl Transport) -> Result<(), Refused> {
+        if !self.module_up() || self.shutting_down {
+            return Err(Refused);
+        }
+        self.clear_session();
+        self.restart_at = None;
+        self.reconnect_left = 0;
+        self.shutting_down = true;
+        crate::restricted::send_restricted(
+            &mut self.link,
+            &crate::restricted::RestrictedCommand::Shutdown,
+            0,
+            now,
+            tx,
+        )
+        .map_err(|_| Refused)
     }
 
     pub fn start_inquiry(&mut self, now: u64, tx: &mut impl Transport) -> Result<(), Refused> {
@@ -1147,6 +1222,71 @@ mod tests {
     /// Fuzz the whole state machine with random module traffic, garbage
     /// and API calls: no panic, and (checked in `Tx::send`) no restricted
     /// command and no malformed frame ever leaves it.
+    /// Frames as sent, restricted ones allowed (the shutdown test).
+    #[derive(Default)]
+    struct AnyTx(Vec<Vec<u8>>);
+    impl Transport for AnyTx {
+        fn send(&mut self, f: &[u8]) {
+            assert_eq!(checksum(&f[1..]), 0, "{f:02X?}");
+            self.0.push(f.to_vec());
+        }
+    }
+
+    #[test]
+    fn shutdown_only_when_up_then_completion() {
+        let mut t = Transmitter::new(Config::default());
+        let mut tx = AnyTx::default();
+        // Off or starting: refused, nothing sent.
+        assert_eq!(t.shutdown(0, &mut tx), Err(Refused));
+        t.power_on(0, &mut tx);
+        assert_eq!(t.shutdown(1, &mut tx), Err(Refused));
+        assert!(tx.0.is_empty());
+        // Up (paired list empty → Idle after the wait).
+        let (mut t, _) = started(Config::default(), &[], None);
+        assert!(t.module_up());
+        outputs(&mut t);
+        let mut tx = AnyTx::default();
+        t.shutdown(20_000, &mut tx).unwrap();
+        assert_eq!(tx.0, [std::vec![0xAA, 0x00, 0x01, 0x24, 0xDB]]);
+        assert!(t.shutting_down());
+        assert_eq!(t.shutdown(20_001, &mut tx), Err(Refused));
+        // Requests while shutting down do not reach the module.
+        t.set_audio_active(true, 20_002, &mut tx);
+        assert_eq!(tx.0.len(), 1);
+        // The vendor's tail of the dump: ack 24, event 29 01, event 24.
+        t.on_bytes(&ack(0x24), 20_010, &mut tx);
+        t.on_bytes(&ev(0x29, &[0x01]), 20_020, &mut tx);
+        assert_eq!(t.state(), State::Idle);
+        t.on_bytes(&ev(0x24, &[]), 20_030, &mut tx);
+        assert_eq!(t.state(), State::Off);
+        assert!(!t.shutting_down());
+        assert_eq!(outputs(&mut t), [Output::Enable(false), Output::State(State::Off)]);
+        // No restart is scheduled.
+        t.tick(60_000, &mut tx);
+        assert_eq!(t.state(), State::Off);
+        assert_eq!(tx.0.len(), 1);
+    }
+
+    #[test]
+    fn shutdown_without_ack_powers_off_no_restart() {
+        let (mut t, _) = started(Config::default(), &[], None);
+        outputs(&mut t);
+        let mut tx = AnyTx::default();
+        t.shutdown(20_000, &mut tx).unwrap();
+        // A ready event (module restart) is ignored while shutting down.
+        t.on_bytes(&ev(0x23, &[]), 20_100, &mut tx);
+        t.tick(20_499, &mut tx);
+        assert_eq!(t.state(), State::Idle);
+        // No resend: one frame, then power-off after the ack timeout.
+        t.tick(20_500, &mut tx);
+        assert_eq!(tx.0.len(), 1);
+        assert_eq!(t.state(), State::Off);
+        assert_eq!(outputs(&mut t), [Output::Enable(false), Output::State(State::Off)]);
+        t.tick(90_000, &mut tx);
+        assert_eq!(t.state(), State::Off);
+        assert!(t.next_output().is_none());
+    }
+
     #[test]
     fn fuzz_state_machine() {
         let mut x: u64 = 0xDEAD_BEEF_CAFE_F00D;
