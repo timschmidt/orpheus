@@ -374,16 +374,25 @@ fn bookmarks_ab_and_sleep() {
     sim.run(&mut p, &mut st, cmd(Command::AbPoint));
     sim.play(&mut p, &mut st, 44_100);
     sim.run(&mut p, &mut st, cmd(Command::AbPoint));
+    assert_eq!(p.ab(), (Some(44_100), Some(2 * 44_100)));
     sim.play(&mut p, &mut st, 10_000);
     assert!(sim.cur.unwrap().1 < 2 * 44_100 && sim.cur.unwrap().1 >= 44_100);
     sim.run(&mut p, &mut st, cmd(Command::AbClear));
+    assert_eq!(p.ab(), (None, None));
     // Sleep timer pauses.
     sim.run(&mut p, &mut st, cmd(Command::SleepAfterMs(500)));
+    assert_eq!(p.sleep_timer(), (Some(500), false));
     sim.play(&mut p, &mut st, 44_100);
     assert_eq!(p.state(), State::Paused);
+    assert_eq!(p.sleep_timer(), (None, false));
+    // A time cancels "after this track", 0 cancels everything.
+    sim.run(&mut p, &mut st, cmd(Command::SleepAfterTrack));
+    sim.run(&mut p, &mut st, cmd(Command::SleepAfterMs(0)));
+    assert_eq!(p.sleep_timer(), (None, false));
     // Sleep after track: stops at the end of the current one.
     sim.run(&mut p, &mut st, cmd(Command::Play));
     sim.run(&mut p, &mut st, cmd(Command::SleepAfterTrack));
+    assert_eq!(p.sleep_timer(), (None, true));
     sim.play(&mut p, &mut st, 20 * 44_100);
     assert_eq!(p.state(), State::Stopped);
     assert_eq!(sim.played.last().unwrap().0, 0);
@@ -392,5 +401,23 @@ fn bookmarks_ab_and_sleep() {
 #[test]
 fn player_size() {
     std::eprintln!("Player {} B", core::mem::size_of::<Player>());
-    assert!(core::mem::size_of::<Player>() <= 640);
+    assert!(core::mem::size_of::<Player>() <= 768);
+}
+
+#[test]
+fn shuffled_queue_from_an_item_plays_every_item_once() {
+    for len in [1u32, 2, 7, 33, 256] {
+        for start in [0, len / 2, len - 1] {
+            let lens = std::vec![1000u64; len as usize];
+            let (mut p, mut st, mut sim) = setup(&lens);
+            sim.run(&mut p, &mut st, cmd(Command::Shuffle(true)));
+            sim.run(&mut p, &mut st, cmd(Command::PlayQueue { id: 1, len, start }));
+            sim.play(&mut p, &mut st, 1000 * u64::from(len) + 5000);
+            let mut items: Vec<u32> = sim.played.iter().map(|r| r.0).collect();
+            assert_eq!(items[0], start, "len {len} start {start}");
+            items.sort_unstable();
+            assert_eq!(items, (0..len).collect::<Vec<_>>(), "len {len} start {start}");
+            assert_eq!(p.state(), State::Stopped);
+        }
+    }
 }

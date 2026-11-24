@@ -23,7 +23,7 @@
 //! between two CRC-checked slots so a power loss mid-write keeps the
 //! previous record.
 //!
-//! `no_std`, no `alloc`, no `unsafe`, no floating point. `Player` is 624
+//! `no_std`, no `alloc`, no `unsafe`, no floating point. `Player` is 752
 //! bytes.
 
 #![no_std]
@@ -32,6 +32,7 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod image;
 pub mod queue;
 pub mod shuffle;
 pub mod store;
@@ -45,6 +46,7 @@ pub use store::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     /// Play a new queue of `len` items (identity `id`) from item `start`.
+    /// Shuffled, `start` becomes the first of the new order.
     PlayQueue {
         id: u32,
         len: u32,
@@ -73,7 +75,8 @@ pub enum Command {
     AddBookmark,
     GotoBookmark(u8),
     DeleteBookmark(u8),
-    /// Pause after this much playing time; 0 cancels.
+    /// Pause after this much playing time; 0 cancels (also a pending
+    /// [`Command::SleepAfterTrack`]).
     SleepAfterMs(u32),
     /// Stop at the end of the current track.
     SleepAfterTrack,
@@ -310,6 +313,34 @@ impl Player {
     #[must_use]
     pub fn bookmarks(&self) -> &[Bookmark] {
         self.bookmarks.as_slice()
+    }
+
+    /// Queue length and identity (from the last `PlayQueue` or resume).
+    #[must_use]
+    pub fn len(&self) -> u32 {
+        self.len
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    #[must_use]
+    pub fn queue_id(&self) -> u32 {
+        self.queue_id
+    }
+
+    /// A–B repeat points (frames of the current track).
+    #[must_use]
+    pub fn ab(&self) -> (Option<u64>, Option<u64>) {
+        self.ab
+    }
+
+    /// Sleep timer: playing time left, and "stop after this track".
+    #[must_use]
+    pub fn sleep_timer(&self) -> (Option<u32>, bool) {
+        (self.sleep_ms, self.sleep_after_track)
     }
 
     /// The record loaded at start-up, if any.
@@ -579,8 +610,11 @@ impl Player {
                     out.push(Action::Stop);
                     return;
                 }
-                self.shuffle = self.shuffle.map(|_| Shuffle::new(len, self.seed));
                 let start = start.min(len - 1);
+                if self.shuffle.is_some() {
+                    self.seed = seed_starting_with(len, self.seed, start);
+                }
+                self.shuffle = self.shuffle.map(|_| Shuffle::new(len, self.seed));
                 self.failures = 0;
                 let pos = self.pos_of(start);
                 self.open(pos, 0, false, false, out);
@@ -710,7 +744,7 @@ impl Player {
                 if let Some(c) = self.cur
                     && let Some(t) = c.track
                 {
-                    self.bookmarks.push(Bookmark { track: t, frame: c.frame });
+                    self.bookmarks.push(Bookmark { track: t, frame: c.frame, rate: c.rate });
                     self.save_bookmarks(store);
                 }
             }
@@ -739,13 +773,34 @@ impl Player {
                     self.save_bookmarks(store);
                 }
             }
-            Command::SleepAfterMs(ms) => self.sleep_ms = (ms > 0).then_some(ms),
+            Command::SleepAfterMs(ms) => {
+                // Replaces any timer, "after this track" included.
+                self.sleep_ms = (ms > 0).then_some(ms);
+                self.sleep_after_track = false;
+            }
             Command::SleepAfterTrack => {
                 self.sleep_after_track = true;
                 self.cancel_prefetch(out);
             }
         }
     }
+}
+
+/// A seed near `seed` whose order of `len` items starts with `first`, so a
+/// shuffled queue started at an item still plays every item once. Expected
+/// `len` tries (a 256-item folder: at most 2,064, a few ms); after the bound
+/// (20,000 tries, ≈ 0.2 s at 48 MHz, only for queues over 2,500 items)
+/// `seed` itself: the queue then starts at `first` wherever it falls in the
+/// order.
+fn seed_starting_with(len: u32, seed: u32, first: u32) -> u32 {
+    let mut s = seed;
+    for _ in 0..len.saturating_mul(8).saturating_add(16).min(20_000) {
+        if Shuffle::new(len, s).item(0) == first {
+            return s;
+        }
+        s = s.wrapping_add(0x9E37_79B9);
+    }
+    seed
 }
 
 #[cfg(test)]

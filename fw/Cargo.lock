@@ -556,6 +556,7 @@ dependencies = [
  "yoton-fs",
  "yoton-input",
  "yoton-pager",
+ "yoton-player",
  "yoton-power",
  "yoton-proto",
  "yoton-settings",
@@ -1154,6 +1155,14 @@ dependencies = [
 [[package]]
 name = "yoton-pager"
 version = "0.1.0"
+
+[[package]]
+name = "yoton-player"
+version = "0.1.0"
+dependencies = [
+ "yoton-fs",
+ "yoton-proto",
+]
 
 [[package]]
 name = "yoton-power"

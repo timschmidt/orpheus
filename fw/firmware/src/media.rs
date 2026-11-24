@@ -1,15 +1,23 @@
 //! Card-backed services for the UI (WP FS-2 / AU-5 firmware part): folder
-//! listings, the text viewer window and a folder play queue.
+//! listings, the text viewer window, the play queue and the playback
+//! service (`yoton-player`).
 //!
 //! The task that owns the mounted volume (`audio`) serves [`Req`]s, also
-//! between ring refills while a track plays. Results go into the shared
-//! windows below; the UI copies a window into `Fw` when the matching
-//! [`READY`] tag arrives and turns it into `Event::Data`.
+//! between ring refills while a track plays, and [`PlayReq`]s (checked
+//! after every decoded block). Results go into the shared windows below;
+//! the UI copies a window into `Fw` when the matching [`READY`] tag arrives
+//! (or, for the player snapshot, on every loop) and turns it into
+//! `Event::Data`.
 //!
-//! Not yet: sorting (folders are listed in on-disk order with
-//! `sorted: false` until the directory index of AU-12 exists), tags and art
-//! in the track info, shuffle, the queue list, persistence of text
-//! positions.
+//! The queue is the audio files of one folder (on-disk order until the
+//! directory index of AU-12 sorts), kept in RAM and in `/.yoton/queue.bin`;
+//! the player's resume record and bookmarks are a RAM image
+//! ([`StoreImage`]) written to `/.yoton/player.bin` at safe moments (pause,
+//! stop, track change, card hand-over, power-off). Formats:
+//! `yoton_player::image`.
+//!
+//! Not yet: sorting, tags and art in the track info, queue edits (remove,
+//! move, play next, add), Shuffle all, persistence of text positions.
 
 use core::cell::RefCell;
 
@@ -18,6 +26,8 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use yoton_apps::browse::{EntryKind, is_hidden_name, kind_of};
 use yoton_apps::services::{BrowseFilter, DateTime, DirId, FileRef, Listing};
+use yoton_player::image::StoreImage;
+use yoton_player::{Action, Actions, Bookmark, Command, Config, Event, Player, Repeat, State, TrackRef};
 use yoton_ui::event::Source;
 
 /// Rows per listing window.
@@ -31,6 +41,15 @@ pub const TEXT_WIN: usize = 1536;
 pub const CHECKPOINTS: usize = 64;
 /// Play-queue length (one folder).
 pub const QUEUE: usize = 256;
+/// Rows of the Up-next window.
+pub const QWIN: usize = 8;
+/// Bytes kept of a title in the Up-next and bookmark windows.
+pub const SHORT: usize = 23;
+/// Bookmarks the player keeps.
+pub const BOOKMARKS: usize = yoton_player::store::MAX_BOOKMARKS;
+/// Files of the playback state (only `/.yoton/` is writable).
+pub const QUEUE_FILE: &str = "/.yoton/queue.bin";
+pub const PLAYER_FILE: &str = "/.yoton/player.bin";
 
 pub mod tag {
     pub use yoton_apps::services::data::{BROWSE, QUEUE, TEXT};
@@ -40,32 +59,39 @@ pub mod tag {
 pub enum Req {
     /// List `dir`; `entry` is the folder's own directory entry (None for the
     /// root).
-    Browse {
-        dir: DirId,
-        entry: Option<FileRef>,
-        filter: BrowseFilter,
-    },
+    Browse { dir: DirId, entry: Option<FileRef>, filter: BrowseFilter },
     /// Move the listing window to start at or before `first`.
-    Want {
-        first: u32,
-    },
+    Want { first: u32 },
     /// Text window of `file` from `offset`.
-    Text {
-        file: FileRef,
-        offset: u32,
-    },
-    /// Queue the audio files of a folder and play from `start`.
+    Text { file: FileRef, offset: u32 },
+    /// Titles of queue positions `first..first + QWIN` (Up next).
+    QueueWin { first: u32 },
+    /// Hand the card to the USB task (stops playback first).
+    Release,
+}
+
+/// Requests for the player (from `Fw::command` and the developer channel).
+#[derive(Clone, Copy, Debug)]
+pub enum PlayReq {
+    /// Queue the audio files of a folder and play from `start` (shuffled:
+    /// `start`, or a random item, comes first).
     PlayDir {
         entry: Option<FileRef>,
         start: Option<FileRef>,
+        shuffle: bool,
     },
-    /// Relative skip in the queue (Next/Prev) or absolute jump.
-    Skip(i32),
-    Jump(u32),
+    Cmd(Command),
+    /// Play queue position `n` (play order).
+    JumpPos(u32),
+    /// Continue where playback stopped, or at the saved resume point.
+    Resume,
+    /// Stop and clear the resume point.
     Stop,
-    /// Hand the card to the USB task (stops playback first).
-    Release,
-    /// Power-off: stop playback, flush the volume, then set `SHUT_DOWN`.
+    /// A–B: set A here (clearing B), then B.
+    SetA,
+    SetB,
+    /// Power-off: stop playback, save the player state, flush the volume,
+    /// then set `SHUT_DOWN` (a player request: checked after every block).
     Shutdown,
 }
 
@@ -73,6 +99,7 @@ pub enum Req {
 pub static SHUT_DOWN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 pub static REQS: Channel<CriticalSectionRawMutex, Req, 4> = Channel::new();
+pub static PLAY: Channel<CriticalSectionRawMutex, PlayReq, 4> = Channel::new();
 /// Data-ready tags for the UI.
 pub static READY: Channel<CriticalSectionRawMutex, u16, 4> = Channel::new();
 
@@ -82,35 +109,55 @@ pub fn request(r: Req) {
     let _ = REQS.try_send(r);
 }
 
+/// Send a player request.
+pub fn play(r: PlayReq) {
+    let _ = PLAY.try_send(r);
+}
+
 fn ready(t: u16) {
     let _ = READY.try_send(t);
 }
 
 // ------------------------------------------------------------------ names
 
+/// A name cut to at most `N` bytes (at a character boundary).
 #[derive(Clone, Copy)]
-pub struct Name {
-    buf: [u8; NAME],
+pub struct Name<const N: usize = NAME> {
+    buf: [u8; N],
     len: u8,
 }
 
-impl Name {
-    pub const EMPTY: Name = Name { buf: [0; NAME], len: 0 };
+/// A title in the Up-next and bookmark windows.
+pub type Short = Name<SHORT>;
+
+impl<const N: usize> Name<N> {
+    pub const EMPTY: Self = Self { buf: [0; N], len: 0 };
 
     #[must_use]
-    pub fn new(s: &str) -> Name {
-        let mut n = s.len().min(NAME);
+    pub fn new(s: &str) -> Self {
+        let mut n = s.len().min(N).min(255);
         while !s.is_char_boundary(n) {
             n -= 1;
         }
-        let mut buf = [0; NAME];
+        let mut buf = [0; N];
         buf[..n].copy_from_slice(&s.as_bytes()[..n]);
-        Name { buf, len: n as u8 }
+        Self { buf, len: n as u8 }
+    }
+
+    /// A file name without its extension (titles until tags are read).
+    #[must_use]
+    pub fn title(file: &str) -> Self {
+        Self::new(file.rsplit_once('.').map_or(file, |(t, _)| t))
     }
 
     #[must_use]
     pub fn as_str(&self) -> &str {
         core::str::from_utf8(&self.buf[..usize::from(self.len)]).unwrap_or("")
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
     }
 }
 
@@ -183,6 +230,7 @@ pub struct PlayerSnap {
     pub duration_ms: u32,
     pub queue_pos: u32,
     pub queue_len: u32,
+    /// The current track; while idle, the track a resume continues.
     pub title: Name,
     pub file: FileRef,
     pub size: u64,
@@ -190,6 +238,18 @@ pub struct PlayerSnap {
     pub rate: u32,
     pub channels: u8,
     pub bits: u8,
+    pub a_ms: Option<u32>,
+    pub b_ms: Option<u32>,
+    /// Sleep timer: minutes left (0: at the end of the track).
+    pub sleep_min: Option<u16>,
+    /// Counts sleep timers that ran out (the UI then resets the setting).
+    pub sleep_fired: u16,
+    /// `title` can be resumed (offered while idle).
+    pub resume: bool,
+    /// Changes when the queue or its order changes (Up-next window).
+    pub qgen: u32,
+    /// Changes when the bookmarks change ([`BMS`]).
+    pub bm_gen: u32,
 }
 
 impl PlayerSnap {
@@ -206,21 +266,147 @@ impl PlayerSnap {
         rate: 0,
         channels: 0,
         bits: 0,
+        a_ms: None,
+        b_ms: None,
+        sleep_min: None,
+        sleep_fired: 0,
+        resume: false,
+        qgen: 0,
+        bm_gen: 0,
     };
+}
+
+/// Titles of queue positions `first..first + n` (play order).
+#[derive(Clone, Copy)]
+pub struct QueueWin {
+    pub qgen: u32,
+    pub first: u32,
+    pub n: u32,
+    pub titles: [Short; QWIN],
+}
+
+impl QueueWin {
+    pub const EMPTY: QueueWin = QueueWin { qgen: u32::MAX, first: 0, n: 0, titles: [Short::EMPTY; QWIN] };
+
+    #[must_use]
+    pub fn title(&self, qgen: u32, pos: u32) -> Option<&str> {
+        if self.qgen != qgen || pos < self.first || pos >= self.first + self.n {
+            return None;
+        }
+        Some(self.titles.get((pos - self.first) as usize)?.as_str())
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct BmRow {
+    pub title: Short,
+    pub ms: u32,
+}
+
+/// The bookmarks, oldest first (as the player keeps them).
+#[derive(Clone, Copy)]
+pub struct BmWin {
+    pub n: u32,
+    pub rows: [BmRow; BOOKMARKS],
+}
+
+impl BmWin {
+    pub const EMPTY: BmWin = BmWin { n: 0, rows: [BmRow { title: Short::EMPTY, ms: 0 }; BOOKMARKS] };
 }
 
 pub static BROWSE: Mutex<RefCell<BrowseWin>> = Mutex::new(RefCell::new(BrowseWin::EMPTY));
 pub static TEXT: Mutex<RefCell<TextWin>> = Mutex::new(RefCell::new(TextWin::EMPTY));
 pub static PLAYER: Mutex<RefCell<PlayerSnap>> = Mutex::new(RefCell::new(PlayerSnap::IDLE));
+pub static QWINDOW: Mutex<RefCell<QueueWin>> = Mutex::new(RefCell::new(QueueWin::EMPTY));
+pub static BMS: Mutex<RefCell<BmWin>> = Mutex::new(RefCell::new(BmWin::EMPTY));
 
 pub fn player_update(f: impl FnOnce(&mut PlayerSnap)) {
     critical_section::with(|cs| f(&mut PLAYER.borrow(cs).borrow_mut()));
 }
 
+// ------------------------------------------------------------ player glue
+
+/// What to open.
+#[derive(Clone, Copy, Debug)]
+pub enum Target {
+    /// A queue item.
+    Item(u32),
+    /// A track outside the queue (bookmark, resume into another queue).
+    Track(TrackRef),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct OpenReq {
+    pub target: Target,
+    pub frame: u64,
+    pub paused: bool,
+}
+
+/// The player's actions for one event, as the playback loop carries them
+/// out. `Prefetch` is not carried out (no gapless read-ahead yet: the
+/// next track opens after the current one has played out).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Flow {
+    pub open: Option<OpenReq>,
+    pub seek: Option<u64>,
+    /// `Some(true)`: pause, `Some(false)`: resume.
+    pub pause: Option<bool>,
+    pub stop: bool,
+}
+
+impl Flow {
+    fn of(out: &Actions) -> Flow {
+        let mut f = Flow::default();
+        for a in out.iter() {
+            match a {
+                Action::Open { item, start_frame, paused, .. } => {
+                    f.open = Some(OpenReq { target: Target::Item(item), frame: start_frame, paused });
+                }
+                Action::OpenTrack { track, start_frame, paused } => {
+                    f.open = Some(OpenReq { target: Target::Track(track), frame: start_frame, paused });
+                }
+                Action::Seek { frame } => f.seek = Some(frame),
+                Action::Pause => f.pause = Some(true),
+                Action::Resume => f.pause = Some(false),
+                Action::Stop => f.stop = true,
+                Action::Prefetch { .. } | Action::CancelPrefetch => {}
+            }
+        }
+        f
+    }
+
+    /// `o` happened after `self`.
+    pub fn merge(&mut self, o: Flow) {
+        if o.open.is_some() || o.stop {
+            *self = o;
+            return;
+        }
+        if o.seek.is_some() {
+            self.seek = o.seek;
+        }
+        if o.pause.is_some() {
+            self.pause = o.pause;
+        }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.open.is_none() && self.seek.is_none() && self.pause.is_none() && !self.stop
+    }
+}
+
+fn bm_ms(b: Bookmark) -> u32 {
+    (b.frame * 1000).checked_div(u64::from(b.rate)).unwrap_or(0) as u32
+}
+
+fn cmd(c: Command) -> Event {
+    Event::Command(c)
+}
+
 // ------------------------------------------------------------- the server
 
 use yoton_bsp::card::Card;
-use yoton_fs::{DirCursor, DirEntry, File, Locator, Volume};
+use yoton_fs::{DirCursor, DirEntry, Locator, Volume};
 
 pub type Vol = Volume<'static, Card>;
 
@@ -251,12 +437,24 @@ pub struct Server {
     filter: BrowseFilter,
     count: u32,
     checkpoints: [u32; CHECKPOINTS],
-    text: [u8; TEXT_WIN],
     pub queue: [Locator; QUEUE],
     pub qlen: u32,
-    pub qpos: u32,
-    /// Set while a track plays: what to do when it stops early.
+    /// Identity of the queue (`yoton_player::image::queue_id`).
+    pub queue_id: u32,
+    /// Changes with the queue or its order.
+    qgen: u32,
+    /// A request for the idle loop (card hand-over).
     pub pending: Option<Req>,
+    /// A player request for the idle loop (a new queue, power-off).
+    pub pending_play: Option<PlayReq>,
+    pub player: Option<Player>,
+    pub store: StoreImage,
+    /// The Repeat setting (re-applied after a resume, which restores the
+    /// saved one).
+    repeat: Repeat,
+    can_resume: bool,
+    sleep_fired: u16,
+    bm_gen: u32,
 }
 
 impl Server {
@@ -271,11 +469,18 @@ impl Server {
             },
             count: 0,
             checkpoints: [0; CHECKPOINTS],
-            text: [0; TEXT_WIN],
             queue: [Locator { dir: 0, index: 0 }; QUEUE],
             qlen: 0,
-            qpos: 0,
+            queue_id: 0,
+            qgen: 0,
             pending: None,
+            pending_play: None,
+            player: None,
+            store: StoreImage::new(),
+            repeat: Repeat::Off,
+            can_resume: false,
+            sleep_fired: 0,
+            bm_gen: 0,
         }
     }
 
@@ -316,8 +521,9 @@ impl Server {
     }
 
     /// Serve one request. Returns false for requests that belong to the
-    /// player loop (they are kept in `pending`).
-    pub async fn serve(&mut self, vol: &mut Vol, r: Req) -> bool {
+    /// idle loop (they are kept in `pending`). `scratch` (≥ `TEXT_WIN`
+    /// bytes): free decoder-arena memory for file reads.
+    pub async fn serve(&mut self, vol: &mut Vol, r: Req, scratch: &mut [u8]) -> bool {
         match r {
             Req::Browse { dir, entry, filter } => {
                 self.browse(vol, dir, entry, filter).await;
@@ -328,10 +534,14 @@ impl Server {
                 true
             }
             Req::Text { file, offset } => {
-                self.text(vol, file, offset).await;
+                self.text(vol, file, offset, scratch).await;
                 true
             }
-            _ => {
+            Req::QueueWin { first } => {
+                self.queue_win(vol, first).await;
+                true
+            }
+            Req::Release => {
                 self.pending = Some(r);
                 false
             }
@@ -418,21 +628,23 @@ impl Server {
         ready(tag::BROWSE);
     }
 
-    async fn text(&mut self, vol: &mut Vol, file: FileRef, offset: u32) {
+    async fn text(&mut self, vol: &mut Vol, file: FileRef, offset: u32, buf: &mut [u8]) {
+        let n = TEXT_WIN.min(buf.len());
+        let buf = &mut buf[..n];
         let mut e = DirEntry::new();
         let mut got = 0usize;
         if vol.open_locator(loc(file), &mut e).await.is_ok()
             && let Ok(mut f) = vol.open_entry(&e)
         {
             f.set_position(u64::from(offset));
-            while got < TEXT_WIN {
-                match vol.read(&mut f, &mut self.text[got..]).await {
+            while got < buf.len() {
+                match vol.read(&mut f, &mut buf[got..]).await {
                     Ok(0) | Err(_) => break,
                     Ok(k) => got += k,
                 }
             }
         }
-        let text = &self.text;
+        let text = &*buf;
         critical_section::with(|cs| {
             let mut w = TEXT.borrow(cs).borrow_mut();
             w.file = file;
@@ -443,11 +655,48 @@ impl Server {
         ready(tag::TEXT);
     }
 
+    /// Titles of the queue around `first` for Up next.
+    async fn queue_win(&mut self, vol: &mut Vol, first: u32) {
+        let mut e = DirEntry::new();
+        let qgen = self.qgen;
+        let mut n = 0u32;
+        while (n as usize) < QWIN {
+            let pos = first.saturating_add(n);
+            let Some(pl) = self.player.as_ref() else { break };
+            if pos >= pl.len().min(self.qlen) {
+                break;
+            }
+            let Some(&l) = self.queue.get(pl.item_at(pos) as usize) else { break };
+            let title = if vol.open_locator(l, &mut e).await.is_ok() {
+                Short::title(e.name())
+            } else {
+                Short::new("?")
+            };
+            critical_section::with(|cs| QWINDOW.borrow(cs).borrow_mut().titles[n as usize] = title);
+            n += 1;
+        }
+        critical_section::with(|cs| {
+            let mut w = QWINDOW.borrow(cs).borrow_mut();
+            w.qgen = qgen;
+            w.first = first;
+            w.n = n;
+        });
+        ready(tag::QUEUE);
+    }
+
     /// Fill the queue with the audio files of a folder (on-disk order).
-    pub async fn build_queue(&mut self, vol: &mut Vol, entry: Option<FileRef>, start: Option<FileRef>) {
+    /// Returns the item of `start`, if found.
+    pub async fn build_queue(
+        &mut self,
+        vol: &mut Vol,
+        entry: Option<FileRef>,
+        start: Option<FileRef>,
+    ) -> Option<u32> {
         self.qlen = 0;
-        self.qpos = 0;
-        let Some(mut cur) = Self::cursor(vol, entry).await else { return };
+        self.queue_id = 0;
+        self.qgen = self.qgen.wrapping_add(1);
+        let mut found = None;
+        let mut cur = Self::cursor(vol, entry).await?;
         let mut e = DirEntry::new();
         while (self.qlen as usize) < QUEUE {
             match vol.read_dir(&mut cur, &mut e).await {
@@ -459,19 +708,204 @@ impl Server {
             }
             let l = e.locator();
             if start.is_some_and(|s| loc(s) == l) {
-                self.qpos = self.qlen;
+                found = Some(self.qlen);
             }
             self.queue[self.qlen as usize] = l;
             self.qlen += 1;
         }
-        ready(tag::QUEUE);
+        self.queue_id = yoton_player::image::queue_id(vol.serial(), &self.queue[..self.qlen as usize]);
+        found
     }
 
-    /// Open queue item `qpos`: its file, name and size.
-    pub async fn open_current(&mut self, vol: &mut Vol, e: &mut DirEntry) -> Option<File> {
-        let l = *self.queue.get(self.qpos as usize)?;
-        vol.open_locator(l, e).await.ok()?;
-        vol.open_entry(e).ok()
+    // ------------------------------------------------------------ player
+
+    /// Create the player from `player.bin` (`file`, possibly empty; once,
+    /// after mount). Not inlined: the player is built by value here, not in
+    /// the card task's frame.
+    #[inline(never)]
+    pub fn init_player(&mut self, file: &[u8]) {
+        self.player = Some(Player::new(Config::default(), &mut self.store.load(file)));
+    }
+
+    /// Feed one event to the player; its actions come back as a [`Flow`].
+    pub fn feed(&mut self, ev: Event) -> Flow {
+        let Some(pl) = self.player.as_mut() else { return Flow::default() };
+        let before = pl.sleep_timer();
+        let mut out = Actions::default();
+        pl.handle(ev, &mut self.store, &mut out);
+        let after = pl.sleep_timer();
+        if !matches!(ev, Event::Command(_))
+            && ((before.0.is_some() && after.0.is_none()) || (before.1 && !after.1))
+        {
+            self.sleep_fired = self.sleep_fired.wrapping_add(1);
+        }
+        match (ev, pl.state()) {
+            (Event::Opened { .. }, _) => self.can_resume = true,
+            // The queue played to its end: nothing to resume.
+            (_, State::Draining) => self.can_resume = false,
+            _ => {}
+        }
+        if !matches!(ev, Event::Position { .. }) {
+            self.publish();
+        }
+        Flow::of(&out)
+    }
+
+    /// Publish the player's state to the snapshot (not the position: the
+    /// playback loop does that per block).
+    pub fn publish(&self) {
+        let Some(pl) = self.player.as_ref() else { return };
+        let cur = pl.current();
+        let rate = u64::from(cur.map_or(0, |c| c.rate));
+        let ms = move |f: u64| (f * 1000).checked_div(rate).unwrap_or(0) as u32;
+        let (a, b) = pl.ab();
+        let (left, after_track) = pl.sleep_timer();
+        let (pos, len) = (cur.map_or(0, |c| c.pos), pl.len());
+        let (fired, resume, qgen, bm_gen) = (self.sleep_fired, self.can_resume, self.qgen, self.bm_gen);
+        player_update(|p| {
+            p.queue_pos = pos;
+            p.queue_len = len;
+            p.a_ms = a.map(ms);
+            p.b_ms = b.map(ms);
+            p.sleep_min = left.map(|l| l.div_ceil(60_000) as u16).or(after_track.then_some(0));
+            p.sleep_fired = fired;
+            p.resume = resume;
+            p.qgen = qgen;
+            p.bm_gen = bm_gen;
+        });
+    }
+
+    /// A player request (all but `PlayDir`, which needs the card first).
+    pub fn play_req(&mut self, r: PlayReq) -> Flow {
+        let Some(pl) = self.player.as_ref() else { return Flow::default() };
+        let (state, cur, len, ab) = (pl.state(), pl.current(), pl.len(), pl.ab());
+        match r {
+            PlayReq::PlayDir { .. } | PlayReq::Shutdown => Flow::default(),
+            PlayReq::Cmd(c) => {
+                match c {
+                    Command::Repeat(rp) => self.repeat = rp,
+                    Command::Shuffle(_) => self.qgen = self.qgen.wrapping_add(1),
+                    _ => {}
+                }
+                let f = self.feed(cmd(c));
+                if c == Command::AddBookmark && cur.is_some_and(|c| c.track.is_some()) {
+                    self.bookmark_added();
+                }
+                f
+            }
+            PlayReq::JumpPos(p) if p < len => {
+                let item = pl.item_at(p);
+                self.feed(cmd(Command::JumpTo(item)))
+            }
+            PlayReq::JumpPos(_) => Flow::default(),
+            PlayReq::Resume => match state {
+                State::Paused => self.feed(cmd(Command::Play)),
+                State::Stopped | State::Draining if cur.is_some() && self.can_resume => {
+                    self.feed(cmd(Command::Play))
+                }
+                State::Stopped | State::Draining => self.resume_saved(),
+                State::Opening | State::Playing => Flow::default(),
+            },
+            PlayReq::Stop => {
+                let f = self.feed(cmd(Command::Stop));
+                self.store.forget_resume();
+                self.can_resume = false;
+                self.publish();
+                f
+            }
+            PlayReq::SetA => {
+                self.feed(cmd(Command::AbClear));
+                self.feed(cmd(Command::AbPoint))
+            }
+            PlayReq::SetB if ab.0.is_some() && ab.1.is_none() => self.feed(cmd(Command::AbPoint)),
+            PlayReq::SetB => Flow::default(),
+        }
+    }
+
+    /// Play the queue just built: from item `start`, else (shuffled) a
+    /// random item `rnd % len`, else the first.
+    pub fn start_queue(&mut self, start: Option<u32>, shuffle: bool, rnd: u32) -> Flow {
+        let (id, len) = (self.queue_id, self.qlen);
+        if shuffle {
+            // Off first: switching on picks a new order.
+            self.feed(cmd(Command::Shuffle(false)));
+        }
+        self.feed(cmd(Command::Shuffle(shuffle)));
+        let start = start.unwrap_or(if shuffle && len > 0 { rnd % len } else { 0 });
+        self.feed(cmd(Command::PlayQueue { id, len, start }))
+    }
+
+    /// Continue at the record loaded at start-up.
+    fn resume_saved(&mut self) -> Flow {
+        let (qid, qlen, rp) = (self.queue_id, self.qlen, self.repeat);
+        if !self.can_resume {
+            return Flow::default();
+        }
+        let Some(pl) = self.player.as_mut() else { return Flow::default() };
+        let mut out = Actions::default();
+        if !pl.resume(qid, qlen, true, &mut out) {
+            return Flow::default();
+        }
+        // The setting wins over the saved repeat mode.
+        pl.handle(cmd(Command::Repeat(rp)), &mut self.store, &mut Actions::default());
+        self.qgen = self.qgen.wrapping_add(1);
+        self.publish();
+        Flow::of(&out)
+    }
+
+    /// The player added a bookmark at the current track: mirror it in the
+    /// bookmark window (oldest dropped when full, as the player does).
+    fn bookmark_added(&mut self) {
+        let Some(b) = self.player.as_ref().and_then(|p| p.bookmarks().last().copied()) else { return };
+        let title = critical_section::with(|cs| Short::new(PLAYER.borrow(cs).borrow().title.as_str()));
+        let row = BmRow { title, ms: bm_ms(b) };
+        critical_section::with(|cs| {
+            let mut w = BMS.borrow(cs).borrow_mut();
+            if w.n as usize == BOOKMARKS {
+                w.rows.copy_within(1.., 0);
+                w.n -= 1;
+            }
+            let n = w.n as usize;
+            w.rows[n] = row;
+            w.n += 1;
+        });
+        self.bm_gen = self.bm_gen.wrapping_add(1);
+        self.publish();
+    }
+
+    /// After start-up: titles of the saved bookmarks and of the resume
+    /// point (one directory lookup each).
+    pub async fn load_titles(&mut self, vol: &mut Vol) {
+        let mut e = DirEntry::new();
+        let n = self.player.as_ref().map_or(0, |p| p.bookmarks().len());
+        for i in 0..n {
+            let Some(b) = self.player.as_ref().and_then(|p| p.bookmarks().get(i).copied()) else { break };
+            let found =
+                vol.open_locator(b.track.locator(), &mut e).await.is_ok() && b.track.matches(e.name());
+            let title = if found { Short::title(e.name()) } else { Short::new("?") };
+            critical_section::with(|cs| BMS.borrow(cs).borrow_mut().rows[i] = BmRow { title, ms: bm_ms(b) });
+        }
+        critical_section::with(|cs| BMS.borrow(cs).borrow_mut().n = n as u32);
+        self.bm_gen = self.bm_gen.wrapping_add(1);
+        // The resume point: its track, else (the queue ended) its queue item.
+        if let Some(r) = self.player.as_ref().and_then(Player::saved) {
+            let at = match r.track {
+                Some(t) => Some((t.locator(), Some(t))),
+                None if r.queue_id == self.queue_id && r.item < self.qlen => {
+                    Some((self.queue[r.item as usize], None))
+                }
+                None => None,
+            };
+            if let Some((l, t)) = at
+                && vol.open_locator(l, &mut e).await.is_ok()
+                && t.is_none_or(|t| t.matches(e.name()))
+            {
+                let title = Name::title(e.name());
+                self.can_resume = true;
+                player_update(|p| p.title = title);
+            }
+        }
+        self.publish();
     }
 }
 

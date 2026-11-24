@@ -6,26 +6,42 @@
 //!
 //! One task on the RT executor reads, decodes and fills the PCM ring; the
 //! DAC DMA runs in reload mode over the ring and its half/complete
-//! interrupts say which half is free. Commands arrive from the developer
-//! channel (`ls PATH`, `play PATH`, `stop`) until the Music app exists.
+//! interrupts say which half is free. The same task owns the mounted card
+//! and the playback service (`yoton_player::Player`, WP AU-5): the UI's
+//! player requests become player events, the decode loop feeds it what
+//! happens (opened, position, reader at end, decoder ended or failed,
+//! ticks) and carries out its actions (open, seek, pause, resume, stop).
+//! Developer commands (`ls PATH`, `play PATH`, `stop`, …) bypass the
+//! player.
+//!
+//! Not yet: gapless hand-over (the player's `Prefetch` is not carried out;
+//! the next track opens after the current one has played out), the fades
+//! of 04 §2.2 around pause and seek, periodic resume saves while playing
+//! (a card write between blocks could underrun; the state is saved at
+//! pause, stop, track change, card hand-over and power-off instead).
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use atj2157_hal::dma::{self, Channel as DmaCh};
 use atj2157_hal::interrupt::Level;
 use atj2157_hal::{dac, time};
-use embassy_futures::select::{Either, select};
+use embassy_futures::select::{Either, Either3, select, select3};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::waitqueue::AtomicWaker;
+use embassy_time::Timer;
 use static_cell::ConstStaticCell;
-use yoton_audio::{ByteSource, ContainerInfo, OpenError, PcmBlock, Probe, Step, probe};
+use yoton_audio::{
+    ByteSource, ContainerInfo, OpenError, PcmBlock, Probe, SeekSource, SeekStep, SourceError, Step, probe,
+};
 use yoton_bsp::card::Card;
 use yoton_fs::{CacheSlot, DirEntry, File, MountOptions, OpenMode, Volume};
+use yoton_player::image::{IMAGE_LEN, decode_queue, encode_queue, queue_file_len};
+use yoton_player::{Command, Event, TrackRef};
 use yoton_proto::hash::crc32_update;
 use yoton_ui::event::Source;
 
-use crate::media::{self, Req, Server};
+use crate::media::{self, Flow, OpenReq, PlayReq, Req, Server, Target};
 
 // ---------------------------------------------------------------- commands
 
@@ -145,10 +161,9 @@ static WRITTEN: AtomicU32 = AtomicU32::new(0);
 pub static T_DECODE: AtomicU32 = AtomicU32::new(0);
 pub static T_FILL: AtomicU32 = AtomicU32::new(0);
 pub static T_SERVE: AtomicU32 = AtomicU32::new(0);
+/// Developer `stop`: ends the current file at once (also inside a PCM
+/// wait).
 static STOP: AtomicBool = AtomicBool::new(false);
-/// Pause request from the UI (the DAC DMA stops; play resumes from the
-/// next decoded frame).
-pub static PAUSED: AtomicBool = AtomicBool::new(false);
 
 // ------------------------------------------------------------ stream ring
 
@@ -166,6 +181,9 @@ struct Ring {
     wr: u64,
     len: Option<u64>,
     eof: bool,
+    /// A decoder seek moved the read position: the next `fill` reads the
+    /// file from `wr`.
+    reseek: bool,
 }
 
 impl ByteSource for Ring {
@@ -194,16 +212,37 @@ impl ByteSource for Ring {
     }
 }
 
+/// A seek flushes the ring; the playback loop refills it from the new
+/// position (`Ring::fill`).
+impl SeekSource for Ring {
+    fn seek(&mut self, pos: u64) -> Result<(), SourceError> {
+        let len = self.len.ok_or(SourceError::NotSeekable)?;
+        if pos > len {
+            return Err(SourceError::OutOfRange);
+        }
+        self.rd = pos;
+        self.wr = pos;
+        self.eof = pos >= len;
+        self.reseek = true;
+        Ok(())
+    }
+}
+
 impl Ring {
     fn reset(&mut self, len: u64) {
         self.rd = 0;
         self.wr = 0;
         self.len = Some(len);
         self.eof = false;
+        self.reseek = false;
     }
 
     /// Read from the file into free space (sector-sized pieces where it can).
     async fn fill(&mut self, vol: &mut Volume<'static, Card>, f: &mut File) -> bool {
+        if self.reseek {
+            self.reseek = false;
+            f.set_position(self.wr);
+        }
         let mut any = false;
         while !self.eof && RING - self.available() >= 512 {
             let start = (self.wr % RING as u64) as usize;
@@ -341,6 +380,9 @@ impl PcmOut {
 
 /// Largest measured need: Opus stereo 59,488 B, Vorbis q10 55,140 B.
 const ARENA: usize = 64 * 1024;
+/// Arena bytes kept free of the decoder for file I/O while it plays (the
+/// text window, the player state image).
+const SPARE: usize = 2048;
 #[repr(C, align(8))]
 struct ArenaBuf([u8; ARENA]);
 static mut ARENA_BUF: ArenaBuf = ArenaBuf([0; ARENA]);
@@ -375,15 +417,40 @@ fn ext_of(path: &str) -> Option<&[u8]> {
     path.rsplit_once('.').map(|(_, e)| e.as_bytes())
 }
 
+/// Where a file starts, and whether the player drives it (`track`: the
+/// file's identity; `None` for the developer `play PATH`).
+#[derive(Clone, Copy)]
+struct Start {
+    frame: u64,
+    paused: bool,
+    track: Option<TrackRef>,
+}
+
+/// How a file's playback ended.
+enum End {
+    /// Open this next (the player's answer to the end, a skip, a failure).
+    Open(OpenReq),
+    /// Stopped, or the queue ended.
+    Idle,
+    /// A request for the idle loop is waiting (`Server::pending` or
+    /// `pending_play`: card hand-over, power-off, a new queue).
+    Pending,
+}
+
+/// The playback loop's next step after the player answered.
+fn after(f: Flow) -> End {
+    f.open.map_or(End::Idle, End::Open)
+}
+
 async fn play_path(
     vol: &mut Volume<'static, Card>,
     ring: &mut Ring,
     arena: &mut [u8],
     path: &str,
     srv: &mut Server,
-) -> Result<(), &'static [u8]> {
+) -> Result<End, &'static [u8]> {
     let f = vol.open(path, OpenMode::Read).await.map_err(|_| &b"open failed"[..])?;
-    play_file(vol, ring, arena, f, ext_of(path), srv).await
+    play_file(vol, ring, arena, f, ext_of(path), srv, Start { frame: 0, paused: false, track: None }).await
 }
 
 fn codec_name(ext: Option<&[u8]>) -> &'static str {
@@ -406,16 +473,47 @@ fn codec_name(ext: Option<&[u8]>) -> &'static str {
     }
 }
 
-/// Serve at most one media request from inside playback. Requests for the
-/// player loop (skip, stop, new queue) end the current track.
-async fn serve_one(vol: &mut Volume<'static, Card>, srv: &mut Server) {
-    if let Ok(r) = media::REQS.try_receive()
-        && !srv.serve(vol, r).await
-    {
-        STOP.store(true, Ordering::Relaxed);
+/// Serve at most one media request from inside playback. False: a request
+/// for the idle loop arrived (card hand-over, power-off); the file ends.
+async fn serve_one(vol: &mut Volume<'static, Card>, srv: &mut Server, scratch: &mut [u8]) -> bool {
+    match media::REQS.try_receive() {
+        Ok(r) => srv.serve(vol, r, scratch).await,
+        Err(_) => true,
     }
 }
 
+/// Seek the decoder to `frame`, refilling the ring from the new position.
+/// Returns the frame it landed on.
+async fn seek_to(
+    dec: &mut yoton_codecs::AnyDecoder<'_>,
+    ring: &mut Ring,
+    vol: &mut Volume<'static, Card>,
+    f: &mut File,
+    frame: u64,
+) -> Option<u64> {
+    mark(9);
+    // Bisection takes tens of steps; the bound only stops a broken stream.
+    for _ in 0..4096 {
+        match dec.seek(ring, frame) {
+            Ok(SeekStep::Done(at)) => return Some(at),
+            Ok(SeekStep::NeedData(_)) => {
+                if (ring.eof && !ring.reseek) || (!ring.fill(vol, f).await && !ring.eof) {
+                    return None;
+                }
+            }
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+/// A decoder failure: the player moves on (driven), or the developer
+/// command gets `why`.
+fn failed(srv: &mut Server, driven: bool, why: &'static [u8]) -> Result<End, &'static [u8]> {
+    if driven { Ok(after(srv.feed(Event::DecoderFailed))) } else { Err(why) }
+}
+
+#[allow(clippy::too_many_lines)]
 async fn play_file(
     vol: &mut Volume<'static, Card>,
     ring: &mut Ring,
@@ -423,7 +521,8 @@ async fn play_file(
     mut f: File,
     ext: Option<&[u8]>,
     srv: &mut Server,
-) -> Result<(), &'static [u8]> {
+    st: Start,
+) -> Result<End, &'static [u8]> {
     mark(10);
     ring.reset(f.size());
     ring.fill(vol, &mut f).await;
@@ -459,11 +558,14 @@ async fn play_file(
             Err(_) => return Err(b"unsupported stream"),
         }
     };
-    if plan.arena > arena.len() {
+    if plan.arena + SPARE > arena.len() {
         return Err(b"arena too small");
     }
-    let (mut dec, info) = yoton_codecs::open(format, ring, &mut arena[..plan.arena], &hint)
-        .map_err(|_| &b"open decoder failed"[..])?;
+    // The decoder's part of the arena, and the rest for file reads and
+    // writes while it plays (text window, player state).
+    let (dec_mem, spare) = arena.split_at_mut(plan.arena);
+    let (mut dec, info) =
+        yoton_codecs::open(format, ring, dec_mem, &hint).map_err(|_| &b"open decoder failed"[..])?;
     if info.channels == 0 || info.channels > 2 {
         return Err(b"channels not supported");
     }
@@ -485,6 +587,18 @@ async fn play_file(
     let heavy = matches!(codec_name(ext), "Vorbis" | "Opus");
     CODEC_FLOOR.store(if heavy { 2 } else { 0 }, Ordering::Relaxed);
     dsp_clock_floor(sound_active());
+    // Start inside the track (resume, bookmark): before any output.
+    let mut pos = 0u64;
+    if st.frame > 0 {
+        match seek_to(&mut dec, ring, vol, &mut f, st.frame).await {
+            Some(at) => pos = at,
+            None => {
+                CODEC_FLOOR.store(0, Ordering::Relaxed);
+                dsp_clock_floor(false);
+                return Err(b"seek failed");
+            }
+        }
+    }
     mark(7);
     media::apply_sound(chain);
     mark(8);
@@ -492,50 +606,117 @@ async fn play_file(
     dac::set_rate(out_rate);
     RATE.store(out_rate, Ordering::Relaxed);
     let stereo = info.channels == 2;
+    let ch = if stereo { 2 } else { 1 };
     let mut out = PcmOut::new();
     let rate = u64::from(info.rate);
+    let ms_of = move |frame: u64| (frame * 1000 / rate.max(1)) as u32;
+    let size = f.size();
     media::player_update(|p| {
-        p.source = Source::Playing;
-        p.position_ms = 0;
-        p.duration_ms = info.frames.map_or(0, |n| (n * 1000 / rate) as u32);
+        p.source = if st.paused { Source::Paused } else { Source::Playing };
+        p.position_ms = ms_of(pos);
+        p.duration_ms = info.frames.map_or(0, ms_of);
         p.codec = codec_name(ext);
         p.rate = info.rate;
         p.channels = info.channels;
         p.bits = info.bits;
-        p.size = f.size();
+        p.size = size;
     });
+    let driven = st.track.is_some();
+    if let Some(track) = st.track {
+        srv.feed(Event::Opened { track, rate: info.rate, frames: info.frames });
+        // A track change: save while the DAC is not running yet.
+        save_store(vol, srv, spare).await;
+    }
     PLAYING.store(true, Ordering::Relaxed);
     STOP.store(false, Ordering::Relaxed);
     let t0 = time::now_us();
     let mut decode_us = 0u64;
     let mut frames = 0u32;
-    loop {
-        if STOP.load(Ordering::Relaxed) {
-            break;
+    let mut flow = Flow::default();
+    let mut paused = st.paused;
+    // The pause has been carried out (DAC stopped, state saved).
+    let mut held = false;
+    let mut reader_end = false;
+    let mut last_tick = t0;
+    // The decoder reached the end of the stream.
+    let mut natural = false;
+    let end = 'play: loop {
+        // Player requests: one per block; while paused, wait for one.
+        let got = if paused {
+            match select3(media::PLAY.receive(), media::REQS.receive(), Timer::after_millis(200)).await {
+                Either3::First(r) => Some(Ok(r)),
+                Either3::Second(r) => Some(Err(r)),
+                Either3::Third(()) => None,
+            }
+        } else {
+            media::PLAY.try_receive().ok().map(Ok)
+        };
+        match got {
+            Some(Ok(r)) if driven && !matches!(r, PlayReq::PlayDir { .. } | PlayReq::Shutdown) => {
+                flow.merge(srv.play_req(r));
+            }
+            Some(Ok(r)) => {
+                // A new queue, power-off, or any player request during
+                // `play PATH`: for the idle loop.
+                srv.pending_play = Some(r);
+                break 'play Ok(End::Pending);
+            }
+            Some(Err(r)) => {
+                // A card hand-over ends the file (for the idle loop).
+                let go_on = srv.serve(vol, r, spare).await;
+                if !go_on {
+                    break 'play Ok(End::Pending);
+                }
+            }
+            None => {}
+        }
+        if STOP.swap(false, Ordering::Relaxed) {
+            if driven {
+                srv.play_req(PlayReq::Stop);
+            }
+            break 'play Ok(End::Idle);
+        }
+        if !flow.is_empty() {
+            let fl = core::mem::take(&mut flow);
+            if let Some(o) = fl.open {
+                break 'play Ok(End::Open(o));
+            }
+            if fl.stop {
+                break 'play Ok(End::Idle);
+            }
+            if let Some(target) = fl.seek {
+                match seek_to(&mut dec, ring, vol, &mut f, target).await {
+                    Some(at) => {
+                        pos = at;
+                        reader_end = false;
+                        media::player_update(|p| p.position_ms = ms_of(pos));
+                    }
+                    // The decoder's state is unknown after a failed seek.
+                    None => break 'play failed(srv, driven, b"seek failed"),
+                }
+            }
+            if let Some(p) = fl.pause {
+                paused = p;
+            }
+        }
+        if paused {
+            if !held {
+                held = true;
+                out.stop();
+                media::player_update(|p| p.source = Source::Paused);
+                save_store(vol, srv, spare).await;
+            }
+            continue;
+        }
+        if held {
+            held = false;
+            last_tick = time::now_us();
+            media::player_update(|p| p.source = Source::Playing);
         }
         if UNDERRUNS.load(Ordering::Relaxed) >= MAX_UNDERRUNS {
             // The decoder cannot keep up (Opus on paged code): stop the
             // track rather than starve the rest of the system.
-            out.stop();
-            PLAYING.store(false, Ordering::Relaxed);
-            CODEC_FLOOR.store(0, Ordering::Relaxed);
-            dsp_clock_floor(false);
-            return Err(b"decoder too slow for this player");
-        }
-        if PAUSED.load(Ordering::Relaxed) {
-            out.stop();
-            media::player_update(|p| p.source = Source::Paused);
-            while PAUSED.load(Ordering::Relaxed) && !STOP.load(Ordering::Relaxed) {
-                if let Ok(r) = media::REQS.try_receive() {
-                    if !srv.serve(vol, r).await {
-                        STOP.store(true, Ordering::Relaxed);
-                    }
-                } else {
-                    embassy_time::Timer::after_millis(20).await;
-                }
-            }
-            media::player_update(|p| p.source = Source::Playing);
-            continue;
+            break 'play failed(srv, driven, b"decoder too slow for this player");
         }
         let d0 = time::now_us();
         mark(4);
@@ -555,13 +736,11 @@ async fn play_file(
                 // The DSP works on a copy: the decoder's output buffer may
                 // be decoder state (processing it in place corrupted the MP3
                 // decoder on the player, 2026-11-24).
-                let ch = if stereo { 2 } else { 1 };
                 let piece = SCRATCH_FRAMES * ch;
-                match block {
+                let samples = match block {
                     PcmBlock::I16(s) => {
                         for part in s.chunks(piece) {
-                            // SAFETY: this task is the scratch buffer's only user.
-                            let sc = unsafe { &mut (&mut *(&raw mut SCRATCH16))[..part.len()] };
+                            let sc = scratch16(part.len());
                             sc.copy_from_slice(part);
                             mark(5);
                             let n = if dsp { chain.process(&mut PcmBlock::I16(&mut *sc)) } else { sc.len() };
@@ -573,11 +752,11 @@ async fn play_file(
                                 frames += 1;
                             }
                         }
+                        s.len()
                     }
                     PcmBlock::I32(s) => {
                         for part in s.chunks(piece) {
-                            // SAFETY: as above.
-                            let sc = unsafe { &mut (&mut *(&raw mut SCRATCH32))[..part.len()] };
+                            let sc = scratch32(part.len());
                             sc.copy_from_slice(part);
                             mark(5);
                             let n = if dsp { chain.process(&mut PcmBlock::I32(&mut *sc)) } else { sc.len() };
@@ -589,53 +768,97 @@ async fn play_file(
                                 frames += 1;
                             }
                         }
+                        s.len()
+                    }
+                };
+                // Source frames: the player's time line (the DSP may
+                // decimate).
+                pos += (samples / ch) as u64;
+                FRAMES.store(frames, Ordering::Relaxed);
+                media::player_update(|p| p.position_ms = ms_of(pos));
+                if driven {
+                    flow.merge(srv.feed(Event::Position { frame: pos }));
+                    let now = time::now_us();
+                    if now - last_tick >= 1_000_000 {
+                        let ms = ((now - last_tick) / 1000) as u32;
+                        last_tick = now;
+                        flow.merge(srv.feed(Event::Tick { ms }));
                     }
                 }
-                FRAMES.store(frames, Ordering::Relaxed);
-                media::player_update(|p| p.position_ms = (u64::from(frames) * 1000 / rate) as u32);
                 if ring.available() < RING / 2 {
                     let a = time::now_us();
                     mark(1);
                     ring.fill(vol, &mut f).await;
                     let b = time::now_us();
                     mark(2);
-                    serve_one(vol, srv).await;
+                    let go_on = serve_one(vol, srv, spare).await;
                     mark(0);
                     T_FILL.fetch_add((b - a) as u32, Ordering::Relaxed);
                     T_SERVE.fetch_add((time::now_us() - b) as u32, Ordering::Relaxed);
+                    if !go_on {
+                        break 'play Ok(End::Pending);
+                    }
+                }
+                if driven && ring.eof && !reader_end {
+                    reader_end = true;
+                    // The player answers with `Prefetch` (not carried out).
+                    flow.merge(srv.feed(Event::ReaderAtEnd));
                 }
             }
             Ok(Step::NeedData(_)) => {
                 if ring.eof {
-                    break;
+                    natural = true;
+                    break 'play Ok(End::Idle);
                 }
                 if !ring.fill(vol, &mut f).await {
                     // The ring is full and the decoder still wants more:
                     // it can never be satisfied; end the track instead of
                     // spinning.
                     CORRUPT.fetch_add(1, Ordering::Relaxed);
-                    break;
+                    break 'play failed(srv, driven, b"stream needs a larger ring");
                 }
-                serve_one(vol, srv).await;
+                if !serve_one(vol, srv, spare).await {
+                    break 'play Ok(End::Pending);
+                }
             }
-            Ok(Step::EndOfStream) => break,
+            Ok(Step::EndOfStream) => {
+                natural = true;
+                break 'play Ok(End::Idle);
+            }
             Err(_) => {
                 CORRUPT.fetch_add(1, Ordering::Relaxed);
                 if CORRUPT.load(Ordering::Relaxed) > 10 {
-                    break;
+                    break 'play failed(srv, driven, b"too many corrupt frames");
                 }
             }
         }
-    }
-    out.finish().await;
+    };
+    // At the natural end play out what is queued, then ask the player what
+    // comes next.
+    let end = if natural {
+        out.finish().await;
+        if driven {
+            let fl = srv.feed(Event::DecoderEnded);
+            if fl.open.is_none() && !fl.stop {
+                srv.feed(Event::Drained);
+            }
+            Ok(after(fl))
+        } else {
+            end
+        }
+    } else {
+        if out.running {
+            out.stop();
+        }
+        end
+    };
     CRC.store(!out.crc, Ordering::Relaxed);
     DECODE_US.store(decode_us as u32, Ordering::Relaxed);
     PLAY_US.store((time::now_us() - t0) as u32, Ordering::Relaxed);
     PLAYING.store(false, Ordering::Relaxed);
-    PAUSED.store(false, Ordering::Relaxed);
     CODEC_FLOOR.store(0, Ordering::Relaxed);
     dsp_clock_floor(false);
-    Ok(())
+    end
 }
 
 async fn ls(vol: &mut Volume<'static, Card>, path: &str) {
@@ -667,7 +890,7 @@ async fn ls(vol: &mut Volume<'static, Card>, path: &str) {
 /// the remount failed.
 async fn release(vol: Volume<'static, Card>) -> Option<Volume<'static, Card>> {
     crate::state::CARD_READY.store(false, Ordering::Relaxed);
-    media::player_update(|p| *p = media::PlayerSnap::IDLE);
+    media::player_update(|p| p.source = Source::Idle);
     let (card, _) = vol.unmount().await;
     CARD_OUT.send(card).await;
     let card = CARD_BACK.receive().await;
@@ -682,10 +905,26 @@ async fn release(vol: Volume<'static, Card>) -> Option<Volume<'static, Card>> {
     v
 }
 
-/// Frames the DSP processes per piece, and the pieces' buffers.
+/// Frames the DSP processes per piece, and the piece buffer: one buffer
+/// seen as `i16` or `i32` samples (a block is one or the other).
 const SCRATCH_FRAMES: usize = 256;
-static mut SCRATCH16: [i16; SCRATCH_FRAMES * 2] = [0; SCRATCH_FRAMES * 2];
-static mut SCRATCH32: [i32; SCRATCH_FRAMES * 2] = [0; SCRATCH_FRAMES * 2];
+#[repr(C, align(4))]
+struct Scratch([i32; SCRATCH_FRAMES * 2]);
+static mut SCRATCH: Scratch = Scratch([0; SCRATCH_FRAMES * 2]);
+
+/// The first `n` (≤ 512) `i16` samples of the scratch buffer.
+fn scratch16(n: usize) -> &'static mut [i16] {
+    // SAFETY: the audio task is the buffer's only user and holds at most
+    // one view at a time (each is dropped before the next piece); 1024
+    // `i16` fit in 512 aligned `i32`.
+    unsafe { core::slice::from_raw_parts_mut((&raw mut SCRATCH.0).cast::<i16>(), n.min(SCRATCH_FRAMES * 4)) }
+}
+
+/// The first `n` (≤ 512) `i32` samples of the scratch buffer.
+fn scratch32(n: usize) -> &'static mut [i32] {
+    // SAFETY: as in `scratch16`.
+    unsafe { &mut (&mut (*(&raw mut SCRATCH)).0)[..n.min(SCRATCH_FRAMES * 2)] }
+}
 
 /// DSP chain between decoder and DAC (AU-6), ~4 KiB; written once at the
 /// start of the audio task, used only by it.
@@ -703,65 +942,197 @@ pub fn init_chain() {
 
 static SERVER: ConstStaticCell<Server> = ConstStaticCell::new(Server::new());
 
-/// Play the queue: `r` is the request that started it (new folder, skip,
-/// jump). Returns when the queue ends or a stop is requested.
-async fn run_queue(
+// ------------------------------------------------------------ the player
+
+/// Play what the player asked for, then whatever it asks for next, until
+/// it stops (or a request for the idle loop arrives).
+async fn run_player(
     vol: &mut Volume<'static, Card>,
     ring: &mut Ring,
     arena: &mut [u8],
     srv: &mut Server,
-    mut r: Req,
+    first: OpenReq,
 ) {
-    loop {
-        match r {
-            Req::PlayDir { entry, start } => srv.build_queue(vol, entry, start).await,
-            Req::Skip(d) => {
-                let p = i64::from(srv.qpos) + i64::from(d);
-                if p < 0 || p >= i64::from(srv.qlen) {
-                    break;
-                }
-                srv.qpos = p as u32;
-            }
-            Req::Jump(i) if i < srv.qlen => srv.qpos = i,
-            _ => break,
-        }
-        let mut e = DirEntry::new();
-        let Some(f) = srv.open_current(vol, &mut e).await else { break };
-        let name = e.name();
-        let ext = name.rsplit_once('.').map(|(_, x)| x.as_bytes());
-        let mut ext_buf = [0u8; 8];
-        let ext = ext.map(|x| {
-            let n = x.len().min(8);
-            ext_buf[..n].copy_from_slice(&x[..n]);
-            &ext_buf[..n]
-        });
-        let title = media::Name::new(name.rsplit_once('.').map_or(name, |(t, _)| t));
-        let (qpos, qlen, file) = (srv.qpos, srv.qlen, e.locator());
-        media::player_update(|p| {
-            p.title = title;
-            p.queue_pos = qpos;
-            p.queue_len = qlen;
-            p.file = yoton_apps::services::FileRef { dir: file.dir, index: file.index };
-        });
+    let mut next = Some(first);
+    while let Some(o) = next.take() {
         for c in [&FRAMES, &UNDERRUNS, &CORRUPT] {
             c.store(0, Ordering::Relaxed);
         }
         STOP.store(false, Ordering::Relaxed);
-        let _ = play_file(vol, ring, arena, f, ext, srv).await;
-        r = match srv.pending.take() {
-            Some(Req::Stop) => break,
-            Some(p @ (Req::Release | Req::Shutdown)) => {
-                // Leave it for the idle loop (card hand-over, flush).
-                srv.pending = Some(p);
-                break;
-            }
-            Some(p) => p,
-            None => Req::Skip(1),
+        next = match play_item(vol, ring, arena, srv, o).await {
+            End::Open(o) => Some(o),
+            End::Idle | End::Pending => None,
         };
     }
     STOP.store(false, Ordering::Relaxed);
-    PAUSED.store(false, Ordering::Relaxed);
     media::player_update(|p| p.source = Source::Idle);
+    save_store(vol, srv, arena).await;
+}
+
+/// Open and play one file for the player; a file that cannot be opened or
+/// decoded is reported as `OpenFailed`.
+async fn play_item(
+    vol: &mut Volume<'static, Card>,
+    ring: &mut Ring,
+    arena: &mut [u8],
+    srv: &mut Server,
+    o: OpenReq,
+) -> End {
+    let Some((f, track, ext, n)) = open_target(vol, srv, o.target).await else {
+        return after(srv.feed(Event::OpenFailed));
+    };
+    let ext = (n > 0).then_some(&ext[..n]);
+    match play_file(
+        vol,
+        ring,
+        arena,
+        f,
+        ext,
+        srv,
+        Start { frame: o.frame, paused: o.paused, track: Some(track) },
+    )
+    .await
+    {
+        Ok(end) => end,
+        Err(_) => after(srv.feed(Event::OpenFailed)),
+    }
+}
+
+/// Open the file of `t` (a track must still carry its name: the entry may
+/// have been replaced) and publish its title. Returns the file, its
+/// identity and its extension.
+async fn open_target(
+    vol: &mut Volume<'static, Card>,
+    srv: &Server,
+    t: Target,
+) -> Option<(File, TrackRef, [u8; 8], usize)> {
+    let l = match t {
+        Target::Item(i) => *srv.queue[..srv.qlen as usize].get(i as usize)?,
+        Target::Track(t) => t.locator(),
+    };
+    let mut e = DirEntry::new();
+    vol.open_locator(l, &mut e).await.ok()?;
+    if let Target::Track(t) = t
+        && (t.serial != vol.serial() || !t.matches(e.name()))
+    {
+        return None;
+    }
+    let f = vol.open_entry(&e).ok()?;
+    let name = e.name();
+    let track = TrackRef::new(vol.serial(), l, name);
+    let mut ext = [0u8; 8];
+    let mut n = 0;
+    if let Some((_, x)) = name.rsplit_once('.') {
+        n = x.len().min(ext.len());
+        ext[..n].copy_from_slice(&x.as_bytes()[..n]);
+    }
+    let title = media::Name::title(name);
+    media::player_update(|p| {
+        p.title = title;
+        p.file = yoton_apps::services::FileRef { dir: l.dir, index: l.index };
+    });
+    Some((f, track, ext, n))
+}
+
+/// Open a file for writing under `/.yoton/`, creating the folder if needed.
+async fn create(vol: &mut Volume<'static, Card>, path: &str, mode: OpenMode) -> Option<File> {
+    match vol.open(path, mode).await {
+        Ok(f) => Some(f),
+        Err(_) => {
+            let _ = vol.create_dir("/.yoton").await;
+            vol.open(path, mode).await.ok()
+        }
+    }
+}
+
+/// Write the changed part of the player store to `/.yoton/player.bin`
+/// (in place: each value has its own CRC, the resume slots alternate) and
+/// flush the volume. Called only while no audio is being output (pause,
+/// stop, track change, before a card hand-over or power-off): a card write
+/// can take longer than the PCM ring holds.
+async fn save_store(vol: &mut Volume<'static, Card>, srv: &mut Server, scratch: &mut [u8]) {
+    let Some(range) = srv.store.dirty_range() else { return };
+    let Some(img) = scratch.first_chunk_mut::<IMAGE_LEN>() else { return };
+    let Some(pl) = srv.player.as_ref() else { return };
+    srv.store.image(pl.bookmarks(), img);
+    mark(11);
+    let Some(mut f) = create(vol, media::PLAYER_FILE, OpenMode::Create).await else { return };
+    let range = if f.size() < IMAGE_LEN as u64 { 0..IMAGE_LEN } else { range };
+    f.set_position(range.start as u64);
+    let wrote = vol.write(&mut f, &img[range]).await.is_ok();
+    let ok = vol.close(f).await.is_ok() && wrote && vol.flush().await.is_ok();
+    if ok {
+        srv.store.clear_dirty();
+    }
+    mark(0);
+}
+
+/// Write the queue to `/.yoton/queue.bin` (from the idle decoder arena).
+async fn save_queue(vol: &mut Volume<'static, Card>, arena: &mut [u8], srv: &Server) {
+    let Some(n) = encode_queue(vol.serial(), &srv.queue[..srv.qlen as usize], arena) else { return };
+    let Some(mut f) = create(vol, media::QUEUE_FILE, OpenMode::Truncate).await else { return };
+    let _ = vol.write(&mut f, &arena[..n]).await;
+    let _ = vol.close(f).await;
+    let _ = vol.flush().await;
+}
+
+/// After mounting: the queue and the player store from the card (read
+/// through the idle decoder arena), the player, the titles it shows.
+async fn load_state(vol: &mut Volume<'static, Card>, arena: &mut [u8], srv: &mut Server) {
+    if let Ok(mut f) = vol.open(media::QUEUE_FILE, OpenMode::Read).await {
+        let want = queue_file_len(media::QUEUE).min(arena.len());
+        let n = vol.read_exact_or_eof(&mut f, &mut arena[..want]).await.unwrap_or(0);
+        if let Some(h) = decode_queue(&arena[..n], &mut srv.queue)
+            && h.serial == vol.serial()
+        {
+            srv.qlen = h.len;
+            srv.queue_id = h.id;
+        }
+    }
+    let mut n = 0;
+    if let Ok(mut f) = vol.open(media::PLAYER_FILE, OpenMode::Read).await {
+        n = vol.read_exact_or_eof(&mut f, &mut arena[..IMAGE_LEN]).await.unwrap_or(0);
+    }
+    srv.init_player(&arena[..n]);
+    srv.load_titles(vol).await;
+}
+
+/// Before the card goes to the USB task: the player stops (the card is
+/// gone; Resume continues later) and its state is saved.
+async fn hand_over(vol: &mut Volume<'static, Card>, srv: &mut Server, scratch: &mut [u8]) {
+    srv.play_req(PlayReq::Cmd(Command::Stop));
+    save_store(vol, srv, scratch).await;
+}
+
+/// A player request from the idle loop.
+async fn player_request(
+    vol: &mut Volume<'static, Card>,
+    ring: &mut Ring,
+    arena: &mut [u8],
+    srv: &mut Server,
+    r: PlayReq,
+) {
+    let fl = match r {
+        PlayReq::Shutdown => {
+            // The resume record with the position, then the volume: before
+            // `SHUT_DOWN` lets the power go.
+            srv.feed(Event::Shutdown);
+            save_store(vol, srv, arena).await;
+            let _ = vol.flush().await;
+            media::SHUT_DOWN.store(true, Ordering::Release);
+            return;
+        }
+        PlayReq::PlayDir { entry, start, shuffle } => {
+            let s = srv.build_queue(vol, entry, start).await;
+            save_queue(vol, arena, srv).await;
+            srv.start_queue(s, shuffle, time::now_us() as u32)
+        }
+        r => srv.play_req(r),
+    };
+    match fl.open {
+        Some(o) => run_player(vol, ring, arena, srv, o).await,
+        None => save_store(vol, srv, arena).await,
+    }
 }
 
 // ------------------------------------------------------------ upload
@@ -902,42 +1273,44 @@ pub async fn audio() {
     reply(|w| {
         w.s(b"card: mounted");
     });
-    let mut ring = Ring { buf: &mut RING_BUF.take().0, rd: 0, wr: 0, len: None, eof: true };
+    let mut ring = Ring { buf: &mut RING_BUF.take().0, rd: 0, wr: 0, len: None, eof: true, reseek: false };
     // SAFETY: this task is the arena's owner; the USB task borrows it only
     // while this task waits for the card (`usb_buffer`).
     let arena: &mut [u8] = unsafe { &mut (*(&raw mut ARENA_BUF)).0 };
     let srv = SERVER.take();
+    load_state(&mut vol, arena, srv).await;
     loop {
-        // A player request left over from playback, else wait for one.
-        let r = match srv.pending.take() {
-            Some(r) => Either::Second(r),
-            None => select(CMDS.receive(), media::REQS.receive()).await,
+        // A request left over from playback, else wait for one.
+        let r = if let Some(p) = srv.pending_play.take() {
+            Either3::Third(p)
+        } else if let Some(r) = srv.pending.take() {
+            Either3::Second(r)
+        } else {
+            select3(CMDS.receive(), media::REQS.receive(), media::PLAY.receive()).await
         };
         let cmd = match r {
-            Either::First(c) => c,
-            Either::Second(r) => {
-                if srv.serve(&mut vol, r).await {
+            Either3::First(c) => c,
+            Either3::Second(r) => {
+                if srv.serve(&mut vol, r, arena).await {
                     continue;
                 }
-                let Some(r) = srv.pending.take() else { continue };
-                if let Req::Shutdown = r {
-                    let _ = vol.flush().await;
-                    media::SHUT_DOWN.store(true, Ordering::Release);
-                    continue;
-                }
-                if let Req::Release = r {
+                if let Some(Req::Release) = srv.pending.take() {
+                    hand_over(&mut vol, srv, arena).await;
                     match release(vol).await {
                         Some(v) => vol = v,
                         None => return,
                     }
-                    continue;
                 }
-                run_queue(&mut vol, &mut ring, arena, srv, r).await;
+                continue;
+            }
+            Either3::Third(p) => {
+                player_request(&mut vol, &mut ring, arena, srv, p).await;
                 continue;
             }
         };
         let text = core::str::from_utf8(&cmd.text[..cmd.len]).unwrap_or("");
         if text == "release" {
+            hand_over(&mut vol, srv, arena).await;
             match release(vol).await {
                 Some(v) => vol = v,
                 None => return,
@@ -952,7 +1325,7 @@ pub async fn audio() {
                 select(play_path(&mut vol, &mut ring, arena, p.trim(), srv), core::future::pending::<()>())
                     .await;
             match r {
-                Either::First(Ok(())) => reply(|w| {
+                Either::First(Ok(_)) => reply(|w| {
                     w.s(b"played frames=")
                         .u(u64::from(FRAMES.load(Ordering::Relaxed)))
                         .s(b" rate=")
