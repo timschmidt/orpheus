@@ -744,12 +744,12 @@ impl PlayerService for Fw {
                 PlayReq::Cmd(Command::GotoBookmark(u8::try_from(i).unwrap_or(u8::MAX)))
             }
             PlayerCmd::Resume => PlayReq::Resume,
+            PlayerCmd::ShuffleAll => PlayReq::ShuffleAll,
             // Queue edits, favourites and Shuffle all need an editable
             // queue file and the library index (later packages).
             PlayerCmd::Remove(_)
             | PlayerCmd::MoveUp(_)
             | PlayerCmd::MoveDown(_)
-            | PlayerCmd::ShuffleAll
             | PlayerCmd::PlayNext(_)
             | PlayerCmd::AddToQueue(_)
             | PlayerCmd::Favourite => return,

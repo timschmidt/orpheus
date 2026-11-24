@@ -316,8 +316,15 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 * The "garbled" scrolling text in screenshots was a screenshot artifact: the
   frame buffer is read in 1 KiB pieces while the UI keeps redrawing the
   marquee row. The UI now holds drawing while a screenshot is read (≤ 300 ms);
-  four shots of a scrolling row are clean. Still open: "Shuffle all" opens an
-  idle Now Playing.
+  four shots of a scrolling row are clean.
+* Shuffle all: walks the card's visible folders (no recursion, depth ≤ 8)
+  with reservoir sampling into the 256-item queue, then plays shuffled. On
+  the player: 5,794 entries / 5,740 audio files in ≈ 27 s, UI responsive,
+  then playing. The walk is capped at half the CPU (sleep as long as each 8
+  entries took); a fixed 1 ms per 16 entries starved the UI into the
+  watchdog after 2,061 entries (found with walk counters in spare
+  persistent words). 27 s is slow: the library index (AU-12 rest) replaces
+  it.
 * **Second NOR-write crash fixed**: LLVM had inlined `nor::program_page`
   (its busy-polling loop) into the paged `NorRegion::program`, so the
   resident-root rule protected only the unused out-of-line copy; toggling

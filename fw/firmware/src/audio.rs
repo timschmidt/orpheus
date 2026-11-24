@@ -683,7 +683,10 @@ async fn play_file(
             media::PLAY.try_receive().ok().map(Ok)
         };
         match got {
-            Some(Ok(r)) if driven && !matches!(r, PlayReq::PlayDir { .. } | PlayReq::Shutdown) => {
+            Some(Ok(r))
+                if driven
+                    && !matches!(r, PlayReq::PlayDir { .. } | PlayReq::ShuffleAll | PlayReq::Shutdown) =>
+            {
                 flow.merge(srv.play_req(r));
             }
             Some(Ok(r)) => {
@@ -1238,6 +1241,12 @@ async fn player_request(
             save_queue(vol, arena, srv).await;
             srv.start_queue(s, shuffle, time::now_us() as u32)
         }
+        PlayReq::ShuffleAll => {
+            let seed = time::now_us() as u32;
+            srv.build_all_queue(vol, seed).await;
+            save_queue(vol, arena, srv).await;
+            srv.start_queue(None, true, seed)
+        }
         r => srv.play_req(r),
     };
     match fl.open {
@@ -1340,7 +1349,13 @@ pub fn status_reply() {
             .s(b" written=")
             .u(u64::from(WRITTEN.load(Ordering::Relaxed)))
             .s(b" played=")
-            .u(u64::from(PLAYED.load(Ordering::Relaxed)));
+            .u(u64::from(PLAYED.load(Ordering::Relaxed)))
+            .s(b" walk=")
+            .u(u64::from(media::Server::walk_progress().0))
+            .s(b"/")
+            .u(u64::from(media::Server::walk_progress().1 & 0xFF_FFFF))
+            .s(b" d")
+            .u(u64::from(media::Server::walk_progress().1 >> 24));
     });
 }
 

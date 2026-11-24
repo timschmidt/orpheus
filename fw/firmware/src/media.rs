@@ -150,6 +150,9 @@ pub enum PlayReq {
         start: Option<FileRef>,
         shuffle: bool,
     },
+    /// Music → Shuffle all: a shuffled queue sampled from every visible
+    /// audio file on the card (until the library index exists).
+    ShuffleAll,
     Cmd(Command),
     /// Play queue position `n` (play order).
     JumpPos(u32),
@@ -166,6 +169,9 @@ pub enum PlayReq {
 }
 
 /// Set by the card task once the volume is flushed for power-off.
+static WALK_STEPS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static WALK_SEEN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
 pub static SHUT_DOWN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 pub static REQS: Channel<CriticalSectionRawMutex, Req, 4> = Channel::new();
@@ -1163,6 +1169,94 @@ impl Server {
         found
     }
 
+    /// Shuffle-all walk progress for the status reply: entries read, and
+    /// audio files seen | depth << 24.
+    pub fn walk_progress() -> (u32, u32) {
+        (
+            WALK_STEPS.load(core::sync::atomic::Ordering::Relaxed),
+            WALK_SEEN.load(core::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
+    /// Shuffle all: walk the card's visible folders (hidden ones such as
+    /// `/.yoton` skipped, depth ≤ 8, no recursion) and keep a uniform sample
+    /// of up to `QUEUE` audio files (reservoir sampling).
+    pub async fn build_all_queue(&mut self, vol: &mut Vol, seed: u32) {
+        self.qgen = self.qgen.wrapping_add(1);
+        self.qlen = 0;
+        self.queue_id = 0;
+        let mut stack: [Option<DirCursor>; 8] = [None; 8];
+        stack[0] = Some(vol.root());
+        let mut depth = 1usize;
+        let mut e = DirEntry::new();
+        let mut seen = 0u32;
+        let mut rng = seed | 1;
+        let mut steps = 0u32;
+        let mut chunk_start = embassy_time::Instant::now();
+        while depth > 0 {
+            // The card task runs at RT priority: a long walk must give the
+            // CPU back regularly (it starved thread mode into the watchdog).
+            steps += 1;
+            WALK_STEPS.store(steps, core::sync::atomic::Ordering::Relaxed);
+            WALK_SEEN.store(seen | (depth as u32) << 24, core::sync::atomic::Ordering::Relaxed);
+            // Also in two spare persistent words (survive a watchdog reset).
+            // SAFETY: mailbox argument words 5/6, unused by the test harness.
+            unsafe {
+                core::ptr::write_volatile(0x0013_7FD4 as *mut u32, steps);
+                core::ptr::write_volatile(0x0013_7FD8 as *mut u32, seen | (depth as u32) << 24);
+            }
+            // At most half the CPU: after every 8 entries, sleep as long as
+            // they took (≥ 2 ms). A 1 ms pause per 16 entries still starved
+            // the UI into the watchdog (2,061 entries read by then).
+            if steps.is_multiple_of(8) {
+                let took = embassy_time::Instant::now().saturating_duration_since(chunk_start);
+                embassy_time::Timer::after(took.max(embassy_time::Duration::from_millis(2))).await;
+                chunk_start = embassy_time::Instant::now();
+            }
+            let Some(cur) = stack[depth - 1].as_mut() else { break };
+            match vol.read_dir(cur, &mut e).await {
+                Ok(true) => {}
+                _ => {
+                    depth -= 1;
+                    continue;
+                }
+            }
+            let name = e.name();
+            if name == "." || name == ".." {
+                continue;
+            }
+            if e.is_dir() {
+                if !is_hidden_name(name)
+                    && e.attributes() & 0x06 == 0
+                    && depth < stack.len()
+                    && let Ok(c) = vol.dir_cursor(&e)
+                {
+                    stack[depth] = Some(c);
+                    depth += 1;
+                }
+                continue;
+            }
+            if !Self::queueable(name, false, e.attributes()) {
+                continue;
+            }
+            seen += 1;
+            let l = e.locator();
+            if (self.qlen as usize) < QUEUE {
+                self.queue[self.qlen as usize] = l;
+                self.qlen += 1;
+            } else {
+                rng ^= rng << 13;
+                rng ^= rng >> 17;
+                rng ^= rng << 5;
+                let j = (rng % seen) as usize;
+                if j < QUEUE {
+                    self.queue[j] = l;
+                }
+            }
+        }
+        self.queue_id = yoton_player::image::queue_id(vol.serial(), &self.queue[..self.qlen as usize]);
+    }
+
     /// The queue item a file is, if it may be queued: visible audio files.
     fn queueable(name: &str, is_dir: bool, attr: u8) -> bool {
         !is_dir && kind_of(name, false) == EntryKind::Audio && !is_hidden_name(name) && attr & 0x06 == 0
@@ -1292,7 +1386,7 @@ impl Server {
         let Some(pl) = self.player.as_ref() else { return Flow::default() };
         let (state, cur, len, ab) = (pl.state(), pl.current(), pl.len(), pl.ab());
         match r {
-            PlayReq::PlayDir { .. } | PlayReq::Shutdown => Flow::default(),
+            PlayReq::PlayDir { .. } | PlayReq::ShuffleAll | PlayReq::Shutdown => Flow::default(),
             PlayReq::Cmd(c) => {
                 match c {
                     Command::Repeat(rp) => self.repeat = rp,
