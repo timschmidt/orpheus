@@ -448,6 +448,13 @@ pub fn status_reply() {
     });
 }
 
+/// Reply for card commands while the card is with the USB card reader.
+pub fn busy_reply() {
+    reply(|w| {
+        w.s(b"card: in use by USB");
+    });
+}
+
 /// Stop the current track (from another task).
 pub fn request_stop() {
     STOP.store(true, Ordering::Relaxed);

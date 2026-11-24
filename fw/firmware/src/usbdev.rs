@@ -84,11 +84,14 @@ impl Target for Fw {
         Some([y[0], y[1], n.month, n.day, n.hour, n.minute, n.second])
     }
     fn test_command(&mut self, data: &[u8]) -> bool {
-        if data == b"usb msc" {
-            return MODE.try_send(Personality::FileTransfer).is_ok();
+        if data == b"usb msc" || data == b"usb msc ro" {
+            MSC_READ_ONLY.store(data.len() > 7, core::sync::atomic::Ordering::Relaxed);
+            MODE.signal(Personality::FileTransfer);
+            return true;
         }
         if data == b"usb dev" {
-            return MODE.try_send(Personality::Dev).is_ok();
+            MODE.signal(Personality::Dev);
+            return true;
         }
         if data == b"status" {
             crate::audio::status_reply();
@@ -96,6 +99,10 @@ impl Target for Fw {
         }
         if data == b"stop" {
             crate::audio::request_stop();
+            return true;
+        }
+        if CARD_WITH_USB.load(Ordering::Relaxed) {
+            crate::audio::busy_reply();
             return true;
         }
         let mut c = crate::audio::Cmd {
@@ -145,11 +152,18 @@ static mut DEVCHAN: DevChannel<Fw> = DevChannel { target: Fw, requests: 0 };
 static mut MSC_CLASS: MscClass = MscClass;
 
 /// Personality requests (from the UI's USB dialog or the TEST channel).
-pub static MODE: embassy_sync::channel::Channel<
+/// Latest request wins; sending never fails.
+pub static MODE: embassy_sync::signal::Signal<
     embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
     Personality,
-    2,
-> = embassy_sync::channel::Channel::new();
+> = embassy_sync::signal::Signal::new();
+
+/// The card is with the USB task (card reader); card commands answer busy.
+pub static CARD_WITH_USB: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Present the card write-protected (automated tests: a desktop automount
+/// must never write to the owner's card, CLAUDE.md rule 5).
+pub static MSC_READ_ONLY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Personality {
@@ -243,7 +257,7 @@ async fn run_dev() -> Personality {
     let _alt = iface.alt_setting(0xFF, 0, 0, None);
     drop(func);
     let mut dev = b.build();
-    let r = embassy_futures::select::select3(dev.run(), supervisor(), MODE.receive()).await;
+    let r = embassy_futures::select::select3(dev.run(), supervisor(), MODE.wait()).await;
     usb::set_attached(false);
     match r {
         embassy_futures::select::Either3::Third(p) => p,
@@ -256,7 +270,9 @@ async fn run_msc() -> Personality {
     let mut c = crate::audio::Cmd { len: 7, text: [0; crate::audio::CMD_LEN] };
     c.text[..7].copy_from_slice(b"release");
     crate::audio::CMDS.send(c).await;
+    CARD_WITH_USB.store(true, Ordering::Relaxed);
     let mut card = crate::audio::CARD_OUT.receive().await;
+    atj2157_hal::log::line(b"usb: card reader on");
     let blocks = u64::from(yoton_bsp::card::BlockDevice::sector_count(&card));
     let next = {
         let mut b = builder("YM03 card reader");
@@ -274,7 +290,7 @@ async fn run_msc() -> Personality {
             removable: true,
             block_size: 512,
             blocks,
-            read_only: false,
+            read_only: MSC_READ_ONLY.load(core::sync::atomic::Ordering::Relaxed),
             present: true,
             vendor: *b"yotonrs ",
             product: *b"YM03 microSD    ",
@@ -293,7 +309,7 @@ async fn run_msc() -> Personality {
                 }
             }
         };
-        let r = embassy_futures::select::select3(dev.run(), pump, MODE.receive()).await;
+        let r = embassy_futures::select::select3(dev.run(), pump, MODE.wait()).await;
         usb::set_attached(false);
         match r {
             embassy_futures::select::Either3::Second(p) | embassy_futures::select::Either3::Third(p) => p,
@@ -301,6 +317,8 @@ async fn run_msc() -> Personality {
         }
     };
     crate::audio::CARD_BACK.send(card).await;
+    CARD_WITH_USB.store(false, Ordering::Relaxed);
+    atj2157_hal::log::line(b"usb: card returned");
     next
 }
 

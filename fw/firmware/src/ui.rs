@@ -104,7 +104,8 @@ impl Ui {
                     yoton_apps::services::UsbMode::FileTransfer => crate::usbdev::Personality::FileTransfer,
                     _ => crate::usbdev::Personality::Dev,
                 };
-                let _ = crate::usbdev::MODE.try_send(p);
+                crate::usbdev::MSC_READ_ONLY.store(false, core::sync::atomic::Ordering::Relaxed);
+                crate::usbdev::MODE.signal(p);
             }
             if let Action::Power(p) = a {
                 match p {
