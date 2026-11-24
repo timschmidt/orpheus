@@ -375,6 +375,7 @@ fn generate(dir: &Path) -> Result<usize> {
     mp3(&mut g)?;
     flac(&mut g)?;
     opus(&mut g)?;
+    speex(&mut g)?;
     std::fs::write(dir.join("manifest.tsv"), &g.manifest)?;
     Ok(g.files)
 }
@@ -786,6 +787,61 @@ fn set_opus_gain(f: &mut [u8], gain: i16) -> Result<()> {
     Ok(())
 }
 
+/// Ogg Speex from ffmpeg's `libspeex` encoder: narrowband (8 kHz),
+/// wideband (16 kHz) and ultra-wideband (32 kHz), CBR qualities that select
+/// every sub-mode, VBR, ABR, VAD/DTX, several frames per packet, mono and
+/// intensity stereo. References come from libspeex (`-c:a libspeex`),
+/// which outputs every decoded frame untrimmed; the sources are whole
+/// numbers of frames long (3 s), so the decoded length equals the source
+/// length.
+fn speex(g: &mut Gen) -> Result<()> {
+    use Ref::S16;
+    let add = |g: &mut Gen, src: &Path, rel: &str, args: &[&str]| -> Result<()> {
+        let out = g.path(rel)?;
+        ffmpeg(&[s(&["-i"]), vec![p(src)], s(&["-c:a", "libspeex"]), s(args), vec![p(&out)]].concat())?;
+        g.add_dec(rel, S16, Some(src), Some("libspeex"))
+    };
+    let nb = g.source(Sig::Mix, 8000, 1, 3.0, 16)?;
+    let wb = g.source(Sig::Mix, 16000, 1, 3.0, 16)?;
+    let uwb = g.source(Sig::Mix, 32000, 1, 3.0, 16)?;
+    let nb2 = g.source(Sig::Music, 8000, 2, 3.0, 16)?;
+    let wb2 = g.source(Sig::Music, 16000, 2, 3.0, 16)?;
+    let uwb2 = g.source(Sig::Music, 32000, 2, 3.0, 16)?;
+    // CBR: quality 0–10 maps to narrowband sub-modes 1, 8, 2, 3, 4, 5, 6, 7.
+    for q in ["0", "1", "2", "4", "6", "8", "9", "10"] {
+        add(g, &nb, &format!("speex/nb_q{q}.spx"), &["-cbr_quality", q])?;
+    }
+    for q in ["0", "3", "6", "8", "10"] {
+        add(g, &wb, &format!("speex/wb_q{q}.spx"), &["-cbr_quality", q])?;
+    }
+    for q in ["2", "8", "10"] {
+        add(g, &uwb, &format!("speex/uwb_q{q}.spx"), &["-cbr_quality", q])?;
+    }
+    let other: &[(&str, &Path, &[&str])] = &[
+        ("speex/nb_vbr_q4.spx", &nb, &["-q:a", "4"]),
+        ("speex/nb_abr_11k.spx", &nb, &["-abr", "1", "-b:a", "11k"]),
+        ("speex/nb_vad_dtx.spx", &nb, &["-q:a", "3", "-vad", "1", "-dtx", "1"]),
+        ("speex/nb_fpp4_c10.spx", &nb, &["-frames_per_packet", "4", "-compression_level", "10"]),
+        ("speex/wb_vbr_q6.spx", &wb, &["-q:a", "6"]),
+        ("speex/wb_abr_20k.spx", &wb, &["-abr", "1", "-b:a", "20k"]),
+        ("speex/wb_fpp3_c1.spx", &wb, &["-frames_per_packet", "3", "-compression_level", "1"]),
+        ("speex/wb_dtx.spx", &wb, &["-q:a", "2", "-vad", "1", "-dtx", "1"]),
+        ("speex/uwb_vbr_q7.spx", &uwb, &["-q:a", "7"]),
+        ("speex/uwb_fpp8.spx", &uwb, &["-frames_per_packet", "8"]),
+        ("speex/nb_stereo_q8.spx", &nb2, &["-cbr_quality", "8"]),
+        ("speex/wb_stereo_vbr.spx", &wb2, &["-q:a", "5"]),
+        ("speex/uwb_stereo_abr_fpp2.spx", &uwb2, &["-abr", "1", "-b:a", "32k", "-frames_per_packet", "2"]),
+    ];
+    for &(rel, src, args) in other {
+        add(g, src, rel, args)?;
+    }
+    let silence = g.source(Sig::Silence, 8000, 1, 2.0, 16)?;
+    add(g, &silence, "speex/nb_silence.spx", &[])?;
+    let impulse = g.source(Sig::Impulse, 16000, 1, 2.0, 16)?;
+    add(g, &impulse, "speex/wb_impulse.spx", &[])?;
+    Ok(())
+}
+
 /// A stereo music-like test signal quantised to `valid` bits, stored
 /// left-justified in `container`-bit samples of a WAVE_FORMAT_EXTENSIBLE
 /// file (no tool here writes such files).
@@ -906,6 +962,7 @@ fn seed_fuzz_corpus(target: &str, corpus_dir: &Path, out: &Path) -> Result<()> {
         "mp3" => &["mp3/"],
         "flac" => &["flac/"],
         "opus" => &["opus/"],
+        "speex" => &["speex/"],
         "meta" => &["mp3/", "flac/", "wav/"],
         _ => &[""],
     };
@@ -966,13 +1023,14 @@ fn fuzz_smoke(secs: u64) -> Result<String> {
 // Code size on the device target
 
 /// Codec crates measured by `codec-size`.
-const SIZE_CRATES: [&str; 7] = [
+const SIZE_CRATES: [&str; 8] = [
     "yoton-audio",
     "yoton-ogg",
     "yoton-codec-wav",
     "yoton-codec-mp3",
     "yoton-codec-flac",
     "yoton-codec-opus",
+    "yoton-codec-speex",
     "yoton-meta",
 ];
 

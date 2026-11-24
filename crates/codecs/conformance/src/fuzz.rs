@@ -109,6 +109,9 @@ pub fn opus(data: &[u8]) {
     decode_with(data, Some(Format::Ogg(yoton_audio::OggCodec::Opus)));
 }
 
+pub fn speex(data: &[u8]) {
+    decode_with(data, Some(Format::Ogg(yoton_audio::OggCodec::Speex)));
+}
 
 /// Probe only.
 pub fn probe(data: &[u8]) {
@@ -180,6 +183,7 @@ pub const TARGETS: &[Target] = &[
     ("mp3", mp3),
     ("flac", flac),
     ("opus", opus),
+    ("speex", speex),
     ("probe", probe),
     ("meta", meta),
     ("lyrics", lyrics),

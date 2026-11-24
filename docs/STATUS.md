@@ -39,9 +39,31 @@ of every session. Newest entries first in §3.
 | T-3 | in progress (worker) | pagelink, PagerCore, check-resident |
 | FS-1 | in progress (worker) | `yoton-fs` |
 | T-7, AU-1 (host), AU-2, AU-3, AU-4 | in progress (worker) | audio core and codecs |
+| AU-9 | host part done; device benchmark and HIL CRC not run | `yoton-codec-speex`: libspeex 1.2.1 ported in `f32`; see the session log |
 | AU-8 | host part done; device benchmark and HIL CRC not run | `yoton-ogg` (shared Ogg layer, also for AU-7) and `yoton-codec-opus`: libopus 1.5.2 ported (integer SILK, `f32` CELT), Ogg Opus per RFC 7845; RFC 8251 vectors range-exact; see the session log |
 
 ## 3. Session log
+
+### 2026-11-24 — AU-9 Speex (worker)
+
+* `crates/codecs/speex` (`yoton-codec-speex`): libspeex 1.2.1 decoder
+  (BSD-3, `LICENSE-XIPH-SPEEX`) in `f32` (float build; no `f64`), NB/WB/UWB,
+  every sub-mode, vocoder/null modes, DTX, enhancer on (libspeex default,
+  as ffmpeg leaves it), intensity stereo, any frames per packet, native
+  8/16/32 kHz output. Uses `yoton-ogg` unchanged.
+* Conformance (31-file corpus, references from ffmpeg `-c:a libspeex`):
+  −97 … −120 dBFS RMS, max 5 LSB, lengths exact. Length convention: ffmpeg
+  trims nothing for Speex (granules start at −look-ahead, every frame is
+  output), so neither does the decoder (`StreamInfo.frames` is `None`).
+  Seek: skims packets to the pre-roll start (for streams ≤ 1 MiB, else Ogg
+  bisection), then decodes 64 frames (1.28 s) of pre-roll; all corpus seeks
+  exact or within −80 dBFS. Beyond 1 MiB, noise-excited frames after a seek
+  carry different (statistically equal) noise.
+* Arena (used = plan; mono and stereo equal): NB 4,872 B, WB 7,768 B,
+  UWB 11,048 B of the 12 KiB budget (packet buffer 2 KiB). Code
+  (thumbv7em, before LTO): 32.9 KB. Deepest stack ≈ 1.5 KiB.
+* Not done: device benchmark, HIL CRC test, `hot.toml` cluster, chained
+  streams.
 
 ### 2026-11-24 — AU-8 Opus (worker)
 
@@ -135,6 +157,9 @@ of every session. Newest entries first in §3.
 | 2026-11-24 | Opus vs libopus float, RFC 8251 vectors (24 decodes) | range-exact; RMS ≤ −128.9 dBFS, max 1 LSB | `cargo test -p yoton-codec-opus --release` (`OPUS_VECTORS`) |
 | 2026-11-24 | Opus arena high-water stereo / mono | 59,488 B / 42.1 KiB (budget 64 KiB) | `xtask test codecs --filter opus/` |
 | 2026-11-24 | Opus code size thumbv7em (before LTO) | 117.6 KB (+ yoton-ogg 4.8 KB) | `xtask test codec-size` |
+| 2026-11-24 | Speex vs libspeex (ffmpeg), 31 files | −97 … −120 dBFS RMS, max 5 LSB | `xtask test codecs --filter speex/` |
+| 2026-11-24 | Speex arena NB / WB / UWB | 4,872 / 7,768 / 11,048 B (budget 12 KiB) | same |
+| 2026-11-24 | Speex code size thumbv7em (before LTO) | 32.9 KB | `xtask test codec-size` |
 
 ## 5. Open questions for the user
 

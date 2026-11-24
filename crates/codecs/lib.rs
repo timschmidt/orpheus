@@ -1,6 +1,6 @@
 //! Decoder selection (04 §2.1): an enum over the codecs this build
 //! contains, chosen from the probed [`Format`], with one `match` per call.
-//! Cargo features select the codecs (`wav`, `mp3`, `flac`, `opus`).
+//! Cargo features select the codecs (`wav`, `mp3`, `flac`, `opus`, `speex`).
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -16,6 +16,8 @@ pub use yoton_codec_flac::FlacDecoder;
 pub use yoton_codec_mp3::Mp3Decoder;
 #[cfg(feature = "opus")]
 pub use yoton_codec_opus::OpusDecoder;
+#[cfg(feature = "speex")]
+pub use yoton_codec_speex::SpeexDecoder;
 #[cfg(feature = "wav")]
 pub use yoton_codec_wav::WavDecoder;
 
@@ -34,9 +36,11 @@ pub enum AnyDecoder<'a> {
     Flac(FlacDecoder<'a>),
     #[cfg(feature = "opus")]
     Opus(OpusDecoder<'a>),
+    #[cfg(feature = "speex")]
+    Speex(SpeexDecoder<'a>),
 }
 
-#[cfg(not(any(feature = "wav", feature = "mp3", feature = "flac", feature = "opus")))]
+#[cfg(not(any(feature = "wav", feature = "mp3", feature = "flac", feature = "opus", feature = "speex")))]
 compile_error!("enable at least one codec feature");
 
 macro_rules! each {
@@ -50,6 +54,8 @@ macro_rules! each {
             AnyDecoder::Flac($d) => $e,
             #[cfg(feature = "opus")]
             AnyDecoder::Opus($d) => $e,
+            #[cfg(feature = "speex")]
+            AnyDecoder::Speex($d) => $e,
         }
     };
 }
@@ -69,6 +75,8 @@ pub fn inspect(format: Format, src: &dyn ByteSource, hint: &ContainerInfo) -> Re
         Format::Flac => FlacDecoder::inspect(src, hint),
         #[cfg(feature = "opus")]
         Format::Ogg(OggCodec::Opus) => OpusDecoder::inspect(src, hint),
+        #[cfg(feature = "speex")]
+        Format::Ogg(OggCodec::Speex) => SpeexDecoder::inspect(src, hint),
         _ => {
             let _ = (src, hint);
             Err(unsupported())
@@ -95,6 +103,10 @@ pub fn open<'a>(
         #[cfg(feature = "opus")]
         Format::Ogg(OggCodec::Opus) => {
             OpusDecoder::open(src, arena, hint).map(|(d, i)| (AnyDecoder::Opus(d), i))
+        }
+        #[cfg(feature = "speex")]
+        Format::Ogg(OggCodec::Speex) => {
+            SpeexDecoder::open(src, arena, hint).map(|(d, i)| (AnyDecoder::Speex(d), i))
         }
         _ => {
             let _ = (src, arena, hint);

@@ -61,6 +61,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "speex"
+path = "fuzz_targets/speex.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "meta"
 path = "fuzz_targets/meta.rs"
 test = false
