@@ -589,6 +589,13 @@ impl Transmitter {
                 }
             }
             Event::Key(k) => self.emit(Output::Key(k)),
+            // Above AVRCP's 0–127: the module's "no absolute volume" (128
+            // from a BlueZ sink). Reported, but the player's volume stays
+            // (it used to become up to 62, or 31 for 128, so the next
+            // connection pushed the maximum; VER-4 finding F-BT-1).
+            Event::SinkVolume(v) if v > 127 => {
+                self.emit(Output::SinkVolume { raw: v, local: volume_from_sink(v) });
+            }
             Event::SinkVolume(v) => {
                 if now < self.volume_sync_until && self.differs(v) {
                     self.push_volume();

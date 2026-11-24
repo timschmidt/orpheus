@@ -308,7 +308,9 @@ impl NowPlayingScreen {
         g.text(6, 100, a.as_str(), FontId::Ui, text);
         let mut b = StrBuf::<12>::new();
         b.push('-');
-        push_time(&mut b, p.duration_ms.saturating_sub(p.position_ms));
+        // From the whole elapsed seconds, so both times change together at
+        // the once-a-second redraw (VER-4 finding F-UI-3).
+        push_time(&mut b, p.duration_ms.saturating_sub(p.position_ms / 1000 * 1000));
         g.text_in(w - 56, 100, 50, b.as_str(), FontId::Ui, text, Align::Right);
         let ic = if p.source == Source::Playing { &ui_icons::PLAY } else { &ui_icons::PAUSE };
         g.icon((w - 10) / 2, 91, ic, text);

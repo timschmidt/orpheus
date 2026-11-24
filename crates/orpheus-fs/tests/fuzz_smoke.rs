@@ -1,9 +1,14 @@
 //! Stable-toolchain smoke run of the fuzz harness (`fuzz/`): mutated images
 //! must never panic or hang. Also writes the seed images the cargo-fuzz
 //! target loads (`target/tmp/orpheus-fs/fuzz-seeds/*.img`) and replays the
-//! regression inputs in `fuzz/regress/`.
+//! regression inputs in `fuzz/regress/`, the committed corpus of the
+//! `mount_walk` target (`tests/fuzz-corpus/mount_walk/`) and its regression
+//! inputs (`tests/regress/mount_walk/`); with `ORPHEUS_WRITE_SEEDS=1` it
+//! rewrites the target's seed inputs (VER-4).
 
 mod common;
+#[path = "../../../tests/replay.rs"]
+mod replay;
 
 use common::*;
 use orpheus_fs::host::{RamDisk, block_on, fuzz_one};
@@ -85,6 +90,15 @@ fn fuzz_smoke() {
             fuzz_one(&refs, &data);
         }
     }
+    // The cargo-fuzz target's corpus and regression inputs (VER-4). The
+    // seeds: each base as it is, with writes, and every 23rd directed case.
+    replay::replay("mount_walk", |d| fuzz_one(&refs, d));
+    let mut seeds: Vec<(String, Vec<u8>)> = Vec::new();
+    for b in 0..4u8 {
+        seeds.push((format!("base-{b}"), vec![b]));
+        seeds.push((format!("base-{b}-writes"), vec![b | 0x80]));
+    }
+    let mut case = 0usize;
     // Directed: hostile cluster numbers and sizes in real directory entries.
     let edge32: [u32; 7] = [0, 1, 2, 3, 0x0FFF_FFF7, 0x0FFF_FFFF, 0xFFFF_FFFF];
     let mut directed = [0usize; 4];
@@ -127,10 +141,15 @@ fn fuzz_smoke() {
                         }
                     }
                     fuzz_one(&refs, &data);
+                    if case % 23 == 0 {
+                        seeds.push((format!("directed-{bi}-{case}"), data.clone()));
+                    }
+                    case += 1;
                 }
             }
         }
     }
+    replay::write_seeds("mount_walk", &seeds);
     assert!(directed.iter().all(|&n| n >= 3), "directed cases per image: {directed:?}");
     // Random mutations, biased to the first sectors and directory areas.
     let mut rng = Rng(0x5EED);

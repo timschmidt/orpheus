@@ -1,0 +1,30 @@
+# cargo-fuzz targets of sim (nightly only; 07 §3.4, VER-4):
+#   cd sim/fuzz && cargo +nightly fuzz run <target> ../../tests/fuzz-corpus/<target>
+# The bodies live in `src/lib.rs`; the crate's `tests/fuzz_corpus.rs`
+# replays the committed corpus and regression inputs through them on stable.
+[package]
+name = "orpheus-sim-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+orpheus-sim = { path = ".." }
+orpheus-ui = { path = "../../crates/orpheus-ui" }
+orpheus-apps = { path = "../../crates/orpheus-apps" }
+
+# Its own workspace: not part of the host workspace (nightly only).
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "ui_keys"
+path = "fuzz_targets/ui_keys.rs"
+test = false
+doc = false
+bench = false

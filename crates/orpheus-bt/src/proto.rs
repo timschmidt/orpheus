@@ -310,12 +310,15 @@ pub const fn volume_to_sink(local: u8) -> u8 {
     if local >= 31 { 127 } else { (local as u16 * 128 / 31) as u8 }
 }
 
-/// Sink volume (0–127) to the player's 0–31 scale; 0 only for 0.
+/// Sink volume (0–127) to the player's 0–31 scale; 0 only for 0. Values
+/// above AVRCP's 127 (the module's "no absolute volume" is 128) count as
+/// 127, so the result is always in range (VER-4 finding F-BT-1).
 #[must_use]
 pub const fn volume_from_sink(v: u8) -> u8 {
     if v == 0 {
         return 0;
     }
+    let v = if v > 127 { 127 } else { v };
     let l = ((v as u16 + 1) * 31) >> 7;
     if l == 0 { 1 } else { l as u8 }
 }
@@ -435,6 +438,8 @@ mod tests {
         assert_eq!(volume_from_sink(0), 0);
         assert_eq!(volume_from_sink(1), 1);
         assert_eq!(volume_from_sink(127), 31);
+        assert_eq!(volume_from_sink(128), 31);
+        assert_eq!(volume_from_sink(255), 31);
         for l in 0..=31 {
             assert_eq!(volume_from_sink(volume_to_sink(l)), l, "{l}");
         }

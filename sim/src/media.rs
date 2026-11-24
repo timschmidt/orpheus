@@ -7,6 +7,7 @@
 //! with simulated time.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
 
 use orpheus_apps::browse::{DirId, EntryKind, FileRef, is_hidden_name, kind_of, letter_of, natural_cmp};
 use orpheus_apps::services::{
@@ -118,8 +119,14 @@ pub fn make_art(seed: u32, size: usize) -> Vec<u16> {
     out
 }
 
+/// Cache slots of dropped [`Media`] (a volume borrows its cache for
+/// `'static`): reused by the next one, so a simulator per test or per fuzz
+/// input does not leak a cache each (VER-5 LeakSanitizer finding).
+static CACHES: Mutex<Vec<&'static mut [CacheSlot]>> = Mutex::new(Vec::new());
+
 pub struct Media {
-    vol: Volume<'static, OverlayDisk<'static>>,
+    /// `None` only while dropping.
+    vol: Option<Volume<'static, OverlayDisk<'static>>>,
     dir_paths: HashMap<u32, String>,
     file_paths: HashMap<FileRef, String>,
     listing: Listing,
@@ -156,6 +163,17 @@ pub struct Media {
     events: Vec<Event>,
 }
 
+impl Drop for Media {
+    fn drop(&mut self) {
+        if let Some(v) = self.vol.take() {
+            let (_, cache) = v.into_parts();
+            if let Ok(mut p) = CACHES.lock() {
+                p.push(cache);
+            }
+        }
+    }
+}
+
 impl Default for Media {
     fn default() -> Self {
         Self::new()
@@ -165,14 +183,18 @@ impl Default for Media {
 impl Media {
     #[must_use]
     pub fn new() -> Media {
-        let cache: &'static mut [CacheSlot] = Box::leak(vec![CacheSlot::EMPTY; 16].into_boxed_slice());
+        let cache: &'static mut [CacheSlot] = CACHES
+            .lock()
+            .ok()
+            .and_then(|mut p| p.pop())
+            .unwrap_or_else(|| Box::leak(vec![CacheSlot::EMPTY; 16].into_boxed_slice()));
         let disk = OverlayDisk::new(card::image());
         let vol =
             block_on(Volume::mount(disk, cache, MountOptions::default())).expect("mount the card image");
         let mut dir_paths = HashMap::new();
         dir_paths.insert(0, String::new());
         Media {
-            vol,
+            vol: Some(vol),
             dir_paths,
             file_paths: HashMap::new(),
             listing: Listing::default(),
@@ -224,10 +246,12 @@ impl Media {
     fn read_dir(&mut self, dir: DirId) -> Vec<HostEntry> {
         let base = self.path_of_dir(dir);
         let path = if base.is_empty() { "/".to_string() } else { base.clone() };
-        let Ok(mut cur) = block_on(self.vol.open_dir(&path)) else { return Vec::new() };
+        let Ok(mut cur) = block_on(self.vol.as_mut().expect("mounted").open_dir(&path)) else {
+            return Vec::new();
+        };
         let mut e = DirEntry::new();
         let mut out = Vec::new();
-        while let Ok(true) = block_on(self.vol.read_dir(&mut cur, &mut e)) {
+        while let Ok(true) = block_on(self.vol.as_mut().expect("mounted").read_dir(&mut cur, &mut e)) {
             let name = e.name().to_string();
             let is_dir = e.is_dir();
             let loc = e.locator();
@@ -363,7 +387,7 @@ impl Media {
 
     pub fn delete(&mut self, f: FileRef) -> bool {
         let Some(path) = self.file_paths.get(&f).cloned() else { return false };
-        let ok = block_on(self.vol.remove(&path)).is_ok();
+        let ok = block_on(self.vol.as_mut().expect("mounted").remove(&path)).is_ok();
         if ok {
             self.log.push(format!("deleted {path}"));
             let (dir, filter) = (self.listing.dir, self.filter);
@@ -374,9 +398,12 @@ impl Media {
     }
 
     fn read_file(&mut self, path: &str) -> Vec<u8> {
-        let Ok(mut f) = block_on(self.vol.open(path, OpenMode::Read)) else { return Vec::new() };
+        let Ok(mut f) = block_on(self.vol.as_mut().expect("mounted").open(path, OpenMode::Read)) else {
+            return Vec::new();
+        };
         let mut buf = vec![0u8; usize::try_from(f.size()).unwrap_or(0)];
-        let n = block_on(self.vol.read_exact_or_eof(&mut f, &mut buf)).unwrap_or(0);
+        let n =
+            block_on(self.vol.as_mut().expect("mounted").read_exact_or_eof(&mut f, &mut buf)).unwrap_or(0);
         buf.truncate(n);
         buf
     }
@@ -585,8 +612,11 @@ impl Media {
                 self.set_queue(files, at);
             }
             PlayerCmd::ShuffleAll if self.lib.is_some() => {
-                let locs =
-                    self.lib.as_ref().map(|l| l.sample(&mut self.vol, 0xC0FFEE, 256)).unwrap_or_default();
+                let locs = self
+                    .lib
+                    .as_ref()
+                    .map(|l| l.sample(self.vol.as_mut().expect("mounted"), 0xC0FFEE, 256))
+                    .unwrap_or_default();
                 let mut files = self.paths_of(&locs);
                 Self::shuffle(&mut files, 0xC0FFEE);
                 self.set_queue(files, 0);
@@ -612,7 +642,7 @@ impl Media {
             }
             PlayerCmd::PlayLib { list, start, shuffle } => {
                 let Some(lib) = self.lib.as_ref() else { return };
-                let (locs, at) = lib.queue(&mut self.vol, list, start, 256);
+                let (locs, at) = lib.queue(self.vol.as_mut().expect("mounted"), list, start, 256);
                 let mut files = self.paths_of(&locs);
                 let mut at = at.min(files.len().saturating_sub(1));
                 if shuffle {
@@ -875,7 +905,7 @@ impl Media {
     pub fn set_library(&mut self, st: LibraryState) {
         self.library = st;
         if st == LibraryState::Ready && self.lib.is_none() {
-            self.lib = SimLib::build(&mut self.vol);
+            self.lib = SimLib::build(self.vol.as_mut().expect("mounted"));
             if self.lib.is_none() {
                 self.library = LibraryState::Missing;
             }
@@ -883,7 +913,7 @@ impl Media {
     }
 
     pub fn lib_open(&mut self, list: LibList) -> LibListing {
-        let l = self.lib.as_mut().map(|lib| lib.open(&mut self.vol, list));
+        let l = self.lib.as_mut().map(|lib| lib.open(self.vol.as_mut().expect("mounted"), list));
         l.unwrap_or(LibListing { list, count: 0, complete: true })
     }
 

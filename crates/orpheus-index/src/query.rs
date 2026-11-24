@@ -321,7 +321,7 @@ impl Index {
                 for e in b.chunks_exact(LETTER_RUN) {
                     let l = rd32(e, 4);
                     if l != 0 && l != cur {
-                        return Ok(char::from_u32(l).map(|c| (rd32(e, 0), c)));
+                        return self.jump_target(e, l);
                     }
                 }
                 j += m as u32;
@@ -338,13 +338,25 @@ impl Index {
                 for e in b.chunks_exact(LETTER_RUN).rev() {
                     let l = rd32(e, 4);
                     if l != 0 && l != cur {
-                        return Ok(char::from_u32(l).map(|c| (rd32(e, 0), c)));
+                        return self.jump_target(e, l);
                     }
                 }
                 j = start;
             }
         }
         Ok(None)
+    }
+
+    /// The row and letter of a letter run found by a jump. A run that
+    /// starts outside the listing (a damaged file: `open` does not check
+    /// the CRCs) is an error, never a row the UI would move to (VER-4
+    /// finding F-IDX-1).
+    fn jump_target<E>(&self, run: &[u8], l: u32) -> Result<Option<(u32, char)>, Error<E>> {
+        let first = rd32(run, 0);
+        if first >= self.h.rows {
+            return Err(Error::Corrupt);
+        }
+        Ok(char::from_u32(l).map(|c| (first, c)))
     }
 
     /// Check the CRCs of the rows and letter runs (reads the whole file

@@ -206,6 +206,12 @@ struct Layout {
 
 const CHUNK: usize = 64;
 
+/// Byte offset of row `i` of `size`-byte rows (64 bits: rows and counts
+/// come from the file).
+fn at(i: u32, size: usize) -> u64 {
+    u64::from(i) * size as u64
+}
+
 impl Library {
     pub(crate) fn from_parts(file: FileName, slot: u8, h: &Header) -> Library {
         let mut secs = [(0, 0); SECTIONS];
@@ -302,7 +308,8 @@ impl Library {
     /// Bytes on the card.
     #[must_use]
     pub fn file_len(&self) -> u64 {
-        self.secs.iter().map(|&(o, l)| u64::from(o) + u64::from(l)).max().unwrap_or(0)
+        // As `Header::file_len`: the header alone is a file too (VER-4 F-LIB-2).
+        self.secs.iter().map(|&(o, l)| u64::from(o) + u64::from(l)).max().unwrap_or(0).max(HEADER as u64)
     }
     /// The range of string references of a kind.
     #[must_use]
@@ -315,14 +322,18 @@ impl Library {
         &self,
         store: &mut S,
         s: Sec,
-        off: u32,
+        off: u64,
         buf: &mut [u8],
     ) -> Result<(), Error<S::Error>> {
+        // Offsets are computed in 64 bits from rows and counts in the file:
+        // a damaged file makes them anything (VER-4 finding F-LIB-1). Inside
+        // the section, `o + off` fits: `open` checked that every section
+        // ends inside the file.
         let (o, l) = self.secs[s as usize];
-        if u64::from(off) + buf.len() as u64 > u64::from(l) {
+        if off + buf.len() as u64 > u64::from(l) {
             return Err(Error::Corrupt);
         }
-        if store.read_at(self.file, o + off, buf)? != buf.len() {
+        if store.read_at(self.file, o + off as u32, buf)? != buf.len() {
             return Err(Error::Corrupt);
         }
         Ok(())
@@ -330,13 +341,13 @@ impl Library {
 
     fn u32_at<S: Storage>(&self, store: &mut S, s: Sec, i: u32) -> Result<u32, Error<S::Error>> {
         let mut b = [0u8; 4];
-        self.read(store, s, i * 4, &mut b)?;
+        self.read(store, s, at(i, 4), &mut b)?;
         Ok(rd32(&b, 0))
     }
 
     fn group<S: Storage>(&self, store: &mut S, s: Sec, i: u32) -> Result<[u8; GRP_ROW], Error<S::Error>> {
         let mut b = [0u8; GRP_ROW];
-        self.read(store, s, i * GRP_ROW as u32, &mut b)?;
+        self.read(store, s, at(i, GRP_ROW), &mut b)?;
         Ok(b)
     }
 
@@ -414,7 +425,7 @@ impl Library {
         match l.perm {
             None => {
                 for (k, d) in ids[..n].iter_mut().enumerate() {
-                    *d = l.first + first + k as u32;
+                    *d = l.first.checked_add(first + k as u32).ok_or(Error::Corrupt)?;
                 }
             }
             Some(p) => {
@@ -422,7 +433,7 @@ impl Library {
                 let mut done = 0;
                 while done < n {
                     let m = (n - done).min(CHUNK);
-                    self.read(store, p, (l.first + first + done as u32) * 4, &mut b[..4 * m])?;
+                    self.read(store, p, at(l.first, 4) + at(first + done as u32, 4), &mut b[..4 * m])?;
                     for (k, d) in ids[done..done + m].iter_mut().enumerate() {
                         *d = rd32(&b, 4 * k);
                     }
@@ -492,12 +503,12 @@ impl Library {
             if n == 0 {
                 break;
             }
-            let contiguous = ids[..n].windows(2).all(|w| w[1] == w[0] + 1);
+            let contiguous = ids[..n].windows(2).all(|w| w[0].checked_add(1) == Some(w[1]));
             if contiguous {
-                self.read(store, l.table, ids[0] * size as u32, &mut b[..n * size])?;
+                self.read(store, l.table, at(ids[0], size), &mut b[..n * size])?;
             } else {
                 for (k, &id) in ids[..n].iter().enumerate() {
-                    self.read(store, l.table, id * size as u32, &mut b[k * size..(k + 1) * size])?;
+                    self.read(store, l.table, at(id, size), &mut b[k * size..(k + 1) * size])?;
                 }
             }
             for k in 0..n {
@@ -531,7 +542,7 @@ impl Library {
             ItemKind::Track => (Sec::Trk, TRK_ROW),
         };
         let mut b = [0u8; TRK_ROW];
-        self.read(store, table, id * size as u32, &mut b[..size])?;
+        self.read(store, table, at(id, size), &mut b[..size])?;
         Ok(Self::item_of(kind, id, &b[..size]))
     }
 
@@ -546,7 +557,7 @@ impl Library {
             return Ok("");
         }
         let (o, l) = self.secs[Sec::Str as usize];
-        let n = ((l - r.0) as usize).min(128);
+        let n = (l.checked_sub(r.0).ok_or(Error::Corrupt)? as usize).min(128);
         if store.read_at(self.file, o + r.0, &mut buf[..n])? != n || n == 0 {
             return Err(Error::Corrupt);
         }
@@ -561,7 +572,7 @@ impl Library {
     /// Everything about track row `id`.
     pub fn track<S: Storage>(&self, store: &mut S, id: u32) -> Result<Track, Error<S::Error>> {
         let mut b = [0u8; TRK_ROW];
-        self.read(store, Sec::Trk, id * TRK_ROW as u32, &mut b)?;
+        self.read(store, Sec::Trk, at(id, TRK_ROW), &mut b)?;
         Ok(self.track_of(id, &b))
     }
 
@@ -599,7 +610,7 @@ impl Library {
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
             let id = self.u32_at(store, Sec::ByLoc, mid)?;
-            self.read(store, Sec::Trk, id * TRK_ROW as u32, &mut b)?;
+            self.read(store, Sec::Trk, at(id, TRK_ROW), &mut b)?;
             match (rd32(&b, 0), rd32(&b, 4)).cmp(&key) {
                 core::cmp::Ordering::Less => lo = mid + 1,
                 core::cmp::Ordering::Greater => hi = mid,
@@ -626,7 +637,7 @@ impl Library {
         let mut i = 0u32;
         while i < l.count {
             let m = ((l.count - i) as usize).min(CHUNK);
-            self.read(store, p, (l.first + i) * 4, &mut b[..4 * m])?;
+            self.read(store, p, at(l.first, 4) + at(i, 4), &mut b[..4 * m])?;
             if let Some(k) = (0..m).position(|k| rd32(&b, 4 * k) == id) {
                 return Ok(Some(i + k as u32));
             }
@@ -657,12 +668,12 @@ impl Library {
         let mut b = [0u8; 8 * TRK_ROW];
         while i < end {
             let n = self.ids(store, &l, i, &mut ids[..((end - i) as usize).min(8)])?;
-            let contiguous = ids[..n].windows(2).all(|w| w[1] == w[0] + 1);
+            let contiguous = ids[..n].windows(2).all(|w| w[0].checked_add(1) == Some(w[1]));
             if contiguous {
-                self.read(store, Sec::Trk, ids[0] * TRK_ROW as u32, &mut b[..n * TRK_ROW])?;
+                self.read(store, Sec::Trk, at(ids[0], TRK_ROW), &mut b[..n * TRK_ROW])?;
             } else {
                 for (k, &id) in ids[..n].iter().enumerate() {
-                    self.read(store, Sec::Trk, id * TRK_ROW as u32, &mut b[k * TRK_ROW..k * TRK_ROW + 12])?;
+                    self.read(store, Sec::Trk, at(id, TRK_ROW), &mut b[k * TRK_ROW..k * TRK_ROW + 12])?;
                 }
             }
             for k in 0..n {
@@ -702,7 +713,7 @@ impl Library {
         let mut i = 0u32;
         while i < total && picked < want {
             let m = ((total - i) as usize).min(8);
-            self.read(store, Sec::Trk, i * TRK_ROW as u32, &mut b[..m * TRK_ROW])?;
+            self.read(store, Sec::Trk, at(i, TRK_ROW), &mut b[..m * TRK_ROW])?;
             for k in 0..m {
                 let left = u64::from(total - i);
                 // Pick with probability (want - picked) / left.
@@ -723,7 +734,7 @@ impl Library {
 
     fn letter_run<S: Storage>(&self, store: &mut S, s: Sec, j: u32) -> Result<(u32, u32), Error<S::Error>> {
         let mut b = [0u8; LETTER_RUN];
-        self.read(store, s, j * LETTER_RUN as u32, &mut b)?;
+        self.read(store, s, at(j, LETTER_RUN), &mut b)?;
         Ok((rd32(&b, 0), rd32(&b, 4)))
     }
 
@@ -771,7 +782,8 @@ impl Library {
         forward: bool,
     ) -> Result<Option<(u32, char)>, Error<S::Error>> {
         let Some(s) = list.letters() else { return Ok(None) };
-        if from >= self.len(store, list)? {
+        let len = self.len(store, list)?;
+        if from >= len {
             return Ok(None);
         }
         let Some(r) = self.run_of(store, s, from)? else { return Ok(None) };
@@ -780,18 +792,28 @@ impl Library {
             return Ok(None);
         }
         let total = self.rows_in(s, LETTER_RUN);
-        let hit = |(row, l): (u32, u32)| {
-            (l != 0 && l != cur).then(|| char::from_u32(l).map(|c| (row, c))).flatten()
+        // A run that starts outside the list (a damaged file) is an error,
+        // never a row the UI would move to (VER-4 finding F-IDX-1).
+        let hit = |(row, l): (u32, u32)| -> Result<Option<(u32, char)>, Error<S::Error>> {
+            match char::from_u32(l) {
+                Some(c) if l != 0 && l != cur => {
+                    if row >= len {
+                        return Err(Error::Corrupt);
+                    }
+                    Ok(Some((row, c)))
+                }
+                _ => Ok(None),
+            }
         };
         if forward {
             for j in r + 1..total {
-                if let Some(x) = hit(self.letter_run(store, s, j)?) {
+                if let Some(x) = hit(self.letter_run(store, s, j)?)? {
                     return Ok(Some(x));
                 }
             }
         } else {
             for j in (0..r).rev() {
-                if let Some(x) = hit(self.letter_run(store, s, j)?) {
+                if let Some(x) = hit(self.letter_run(store, s, j)?)? {
                     return Ok(Some(x));
                 }
             }

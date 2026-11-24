@@ -386,8 +386,10 @@ impl Scsi {
         b[7] = 0x00; // densities
         b[8..12].copy_from_slice(&START_PSN.to_be_bytes());
         b[12..16].copy_from_slice(&end.to_be_bytes());
-        // Layer-0 end sector 0 (single layer), no BCA.
-        Plan::DataInPadded { head: &self.buf[..21], len: 2052.min(alloc) }
+        // Layer-0 end sector 0 (single layer), no BCA. The head is cut to
+        // the allocation length too, as the plan promises (VER-4 F-USB-1).
+        let len = 2052.min(alloc);
+        Plan::DataInPadded { head: &self.buf[..21.min(len)], len }
     }
 }
 

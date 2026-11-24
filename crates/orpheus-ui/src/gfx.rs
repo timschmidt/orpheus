@@ -169,6 +169,13 @@ impl<'a> Gfx<'a> {
         Gfx { px, dirty, fallback, pal, org_x: 0, org_y: 0, area: SCREEN, clip: SCREEN }
     }
 
+    /// Whether anything drawn through this `Gfx` so far touched `r`
+    /// (screen coordinates).
+    #[must_use]
+    pub fn drew_into(&self, r: Rect) -> bool {
+        self.dirty.rects().iter().any(|d| !d.intersect(&r).is_empty())
+    }
+
     /// Colour of a role.
     #[must_use]
     pub fn c(&self, r: Role) -> Color {

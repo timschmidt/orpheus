@@ -1,0 +1,39 @@
+# cargo-fuzz targets of orpheus-usb (nightly only; 07 §3.4, VER-4):
+#   cd crates/orpheus-usb/fuzz && cargo +nightly fuzz run <target> ../../../tests/fuzz-corpus/<target>
+# The bodies live in `src/lib.rs`; the crate's `tests/fuzz_corpus.rs`
+# replays the committed corpus and regression inputs through them on stable.
+[package]
+name = "orpheus-usb-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+orpheus-usb = { path = ".." }
+orpheus-proto = { path = "../../orpheus-proto" }
+embassy-futures = "0.1"
+embassy-usb = { version = "0.6", default-features = false }
+embassy-usb-driver = "0.2"
+
+# Its own workspace: not part of the host workspace (nightly only).
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "usb_scsi"
+path = "fuzz_targets/usb_scsi.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "usb_devchan"
+path = "fuzz_targets/usb_devchan.rs"
+test = false
+doc = false
+bench = false

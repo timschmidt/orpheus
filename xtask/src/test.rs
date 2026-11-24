@@ -8,10 +8,20 @@
 //!   `orpheus-codec-conformance` binary with overflow checks on. Then the
 //!   RFC 8251 Opus vectors (fetched into `tests/vectors/` when missing) run
 //!   as the opus crate's tests. `ORPHEUS_CORPUS` overrides the corpus path.
-//! * `fuzz-smoke [--secs N]`: the stable mutation smoke run over every fuzz
-//!   target, then each `cargo fuzz` target for N seconds (default 60) when a
-//!   nightly toolchain and cargo-fuzz are installed (07 §3.4); inputs kept
-//!   under `tests/regress/<target>/` are replayed first.
+//! * `fuzz-smoke [--secs N]`: the stable mutation smoke run over the codec
+//!   fuzz targets, then every `cargo fuzz` target of every fuzz project
+//!   (`crates/**/fuzz/`, `sim/fuzz/`) for N seconds (default 60) when a
+//!   nightly toolchain and cargo-fuzz are installed (07 §3.4), starting from
+//!   the committed corpus (`tests/fuzz-corpus/<target>/`, with its
+//!   dictionary `tests/fuzz-corpus/<target>.dict` if there is one) and the
+//!   regression inputs (`tests/regress/<target>/`); new inputs go to
+//!   `target/fuzz-corpus/<target>/` (merge them with `cargo fuzz cmin`).
+//! * `fuzz-seeds`: rewrite the committed seed inputs (`seed-*`) of every
+//!   fuzz target (VER-4): the codec targets from the conformance corpus
+//!   (generated when missing; at most 24 files per target, each cut to
+//!   16 KiB), the others from their crates' `fuzz_corpus` tests
+//!   (`ORPHEUS_WRITE_SEEDS=1`), which encode them with the crates' own
+//!   encoders and fixtures.
 //! * `codec-size`: build each codec crate for `thumbv7em-none-eabihf`
 //!   (release) and report its code and data size.
 //! * `asan [--fuzz-only] [--lean]`, `miri [--crate NAME]`: sanitizers (07 §3.5,
@@ -42,6 +52,7 @@ pub fn cmd(args: &mut Args) -> Result<String> {
         "pagelink" => crate::selftest::run(),
         "codecs" => codecs(gen_corpus, filter.as_deref(), quick),
         "fuzz-smoke" => fuzz_smoke(secs),
+        "fuzz-seeds" => fuzz_seeds(),
         "codec-size" => codec_size(),
         "asan" => crate::sanitize::asan(fuzz_only, lean),
         "miri" => crate::sanitize::miri(krate.as_deref()),
@@ -54,7 +65,7 @@ pub fn cmd(args: &mut Args) -> Result<String> {
             Ok(format!("host, golden and pagelink tests passed; {c}; {f}"))
         }
         other => bail!(
-            "unknown test suite `{other}` (host, golden, pagelink, codecs, fuzz-smoke, codec-size, asan, miri, all)"
+            "unknown test suite `{other}` (host, golden, pagelink, codecs, fuzz-smoke, fuzz-seeds, codec-size, asan, miri, all)"
         ),
     }
 }
@@ -1104,7 +1115,7 @@ fn fuzz_smoke(secs: u64) -> Result<String> {
     if !dir.join("manifest.tsv").exists() {
         generate(&dir)?;
     }
-    // 1. Stable smoke: every target body over mutated corpus files.
+    // 1. Stable smoke: every codec target body over mutated corpus files.
     run(conformance().arg("fuzz-smoke").arg(&dir).args(["--iters", "4000"]))?;
     // 2. libFuzzer, if a recent enough nightly and cargo-fuzz are installed.
     let Some(tc) = fuzz_toolchain() else {
@@ -1112,27 +1123,142 @@ fn fuzz_smoke(secs: u64) -> Result<String> {
             "fuzz smoke (stable) passed; cargo-fuzz not run (no nightly >= 1.98 with cargo-fuzz)".into()
         );
     };
-    let targets = fuzz_targets()?;
-    for t in &targets {
-        let regress = root().join("tests").join("regress").join(t);
-        let corpus = root().join("target").join("fuzz-corpus").join(t);
-        std::fs::create_dir_all(&corpus)?;
-        seed_fuzz_corpus(t, &dir, &corpus)?;
-        let mut c = Command::new("cargo");
-        c.current_dir(fuzz_dir())
-            .arg(format!("+{tc}"))
-            .args(["fuzz", "run", "--fuzz-dir", "."])
-            .arg(t)
-            .arg(&corpus);
-        if regress.is_dir() {
-            c.arg(&regress);
+    let codec = fuzz_targets()?;
+    let mut n = 0;
+    for fd in crate::cover::fuzz_dirs() {
+        for t in &fd.targets {
+            let scratch = root().join("target").join("fuzz-corpus").join(t);
+            std::fs::create_dir_all(&scratch)?;
+            let committed = root().join("tests").join("fuzz-corpus").join(t);
+            if codec.contains(t) && !committed.is_dir() {
+                seed_fuzz_corpus(t, &dir, &scratch)?;
+            }
+            let mut c = Command::new("cargo");
+            c.current_dir(&fd.dir)
+                .arg(format!("+{tc}"))
+                .args(["fuzz", "run", "--fuzz-dir", "."])
+                .arg(t)
+                .arg(&scratch)
+                .args(crate::cover::corpus_dirs(&fd, t));
+            c.arg("--")
+                .arg(format!("-max_total_time={secs}"))
+                .arg("-rss_limit_mb=2048")
+                .arg("-max_len=262144");
+            let dict = root().join("tests").join("fuzz-corpus").join(format!("{t}.dict"));
+            if dict.exists() {
+                c.arg(format!("-dict={}", dict.display()));
+            }
+            if let Some(s) = crate::cover::fs_seeds(&root().join("target")) {
+                c.env("ORPHEUS_FS_SEEDS", s);
+            }
+            run(&mut c).with_context(|| {
+                format!("fuzz target {t} (crash inputs are in {}/artifacts)", fd.dir.display())
+            })?;
+            n += 1;
         }
-        c.arg("--").arg(format!("-max_total_time={secs}")).arg("-rss_limit_mb=2048").arg("-max_len=262144");
-        run(&mut c).with_context(|| {
-            format!("fuzz target {t} (crash inputs are in {}/artifacts)", fuzz_dir().display())
-        })?;
     }
-    Ok(format!("fuzz smoke passed (stable smoke + {} cargo-fuzz targets x {secs} s)", targets.len()))
+    Ok(format!("fuzz smoke passed (stable smoke + {n} cargo-fuzz targets x {secs} s)"))
+}
+
+/// Codec seeds of one target: at most 24 conformance files spread over the
+/// manifest, each cut to 16 KiB, with the control bytes the target body
+/// reads first (`orpheus_codec_conformance::fuzz`).
+fn codec_seeds(target: &str, corpus: &Path, out: &Path) -> Result<usize> {
+    let (wanted, prefix): (&[&str], &[u8]) = match target {
+        "wav" => (&["wav/", "aiff/", "au/"], &[0, 0, 0]),
+        "mp3" => (&["mp3/"], &[0, 0, 0]),
+        "flac" => (&["flac/"], &[0, 0, 0]),
+        "vorbis" => (&["vorbis/"], &[0, 0, 0]),
+        "opus" => (&["opus/"], &[0, 0, 0]),
+        "speex" => (&["speex/"], &[0, 0, 0]),
+        "decode_any" => (&[""], &[0, 0, 0]),
+        "ogg" => (&["vorbis/", "opus/", "speex/"], &[0]),
+        "meta" => (&["mp3/", "flac/", "wav/", "aiff/"], &[0]),
+        "probe" => (&[""], &[]),
+        _ => return Ok(0),
+    };
+    let manifest = std::fs::read_to_string(corpus.join("manifest.tsv"))?;
+    let files: Vec<&str> = manifest
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .filter_map(|l| l.split('\t').next())
+        .filter(|rel| wanted.iter().any(|w| rel.starts_with(w)))
+        .collect();
+    let step = files.len().div_ceil(24).max(1);
+    let mut n = 0;
+    for (i, rel) in files.iter().enumerate().filter(|(i, _)| i % step == 0) {
+        let mut data = prefix.to_vec();
+        // Vary the refill pattern and the seek of the decode targets.
+        if prefix.len() == 3 {
+            data[0] = (i % 5) as u8;
+            data[1] = if i % 3 == 0 { 0x2B } else { 0 };
+        }
+        let mut f = std::fs::read(corpus.join(rel))?;
+        f.truncate(16 * 1024);
+        data.extend_from_slice(&f);
+        let name = rel.replace('/', "_");
+        std::fs::write(out.join(format!("seed-{name}")), data)?;
+        n += 1;
+    }
+    Ok(n)
+}
+
+/// LRC and SYLT-like seeds of the `lyrics` target (no corpus files carry
+/// lyrics).
+const LYRICS_SEEDS: [(&str, &str); 3] = [
+    (
+        "lrc",
+        "[ar:Artist]\n[ti:Title]\n[offset:+250]\n[00:01.00]First line\n[00:05.50][01:05.50]Repeated\n[00:09.999]\u{442}\u{435}\u{43a}\u{441}\u{442}\n",
+    ),
+    (
+        "lrc-enhanced",
+        "[00:12.00]<00:12.00>Word <00:12.50>by <00:13.00>word\r\n[1:02.3]short\r\n[xx:yy]bad tag\n",
+    ),
+    ("lrc-bom", "\u{feff}[length: 03:15]\n[00:00.00]\n[99:59.99]end\n"),
+];
+
+fn fuzz_seeds() -> Result<String> {
+    let corpus = corpus_dir();
+    if !corpus.join("manifest.tsv").exists() {
+        generate(&corpus)?;
+    }
+    let base = root().join("tests").join("fuzz-corpus");
+    let mut codec = 0;
+    for t in fuzz_targets()? {
+        let out = base.join(&t);
+        std::fs::create_dir_all(&out)?;
+        codec += codec_seeds(&t, &corpus, &out)?;
+        if t == "lyrics" {
+            for (name, text) in LYRICS_SEEDS {
+                std::fs::write(out.join(format!("seed-{name}")), text)?;
+                codec += 1;
+            }
+        }
+    }
+    // The other targets' seeds come from their crates' tests.
+    let tests: [(&str, &str); 14] = [
+        ("orpheus-otp", "fuzz_corpus"),
+        ("orpheus-bt", "fuzz_corpus"),
+        ("orpheus-usb", "fuzz_corpus"),
+        ("orpheus-proto", "fuzz_corpus"),
+        ("orpheus-settings", "fuzz_corpus"),
+        ("orpheus-index", "fuzz_corpus"),
+        ("orpheus-library", "fuzz_corpus"),
+        ("orpheus-player", "fuzz_corpus"),
+        ("orpheus-sdcard", "fuzz_corpus"),
+        ("orpheus-input", "fuzz_corpus"),
+        ("orpheus-power", "fuzz_corpus"),
+        ("orpheus-img", "fuzz_corpus"),
+        ("orpheus-fs", "fuzz_smoke"),
+        ("orpheus-sim", "fuzz_corpus"),
+    ];
+    for (pkg, test) in tests {
+        run(cargo()
+            .current_dir(root())
+            .args(["test", "-p", pkg, "--test", test])
+            .env("ORPHEUS_WRITE_SEEDS", "1"))?;
+    }
+    Ok(format!("fuzz seeds written: {codec} codec seeds, {} crates' seed tests", tests.len()))
 }
 
 // ---------------------------------------------------------------------------

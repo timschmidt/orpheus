@@ -47,9 +47,10 @@ talk to the player.
 | `xtask check-resident` | Static proof that nothing reachable from an interrupt or fault handler lives in a paged section (§4.3) |
 | `xtask sim [--script file] [--shot dir]` | Run the desktop simulator, optionally scripted and headless |
 | `xtask test [host\|golden\|codecs\|fuzz-smoke\|all]` | Host test suites (§3) |
+| `xtask test fuzz-seeds` | Rewrite the committed seed inputs of every fuzz target (§3.4) |
 | `xtask test asan [--fuzz-only] [--lean]` | Host tests and every fuzz target's corpus under AddressSanitizer + LeakSanitizer (§3.5) |
 | `xtask test miri [--crate NAME]` | Miri over the crate list in `xtask/src/sanitize.rs` (§3.5) |
-| `xtask cover [--crate NAME] [--fuzz] [--html] [--clean] [--report-only] [--add]` | LLVM source-based coverage (line, region, branch) of `crates/`, `sim/`, `xtask/`; `--fuzz` adds the fuzz-corpus replays; reports in `target/orpheus/coverage/` (§3.6) |
+| `xtask cover [--crate NAME] [--fuzz\|--fuzz-only] [--html] [--clean] [--report-only] [--add]` | LLVM source-based coverage (line, region, branch) of `crates/`, `sim/`, `xtask/`; `--fuzz` adds the fuzz-corpus replays, `--fuzz-only` runs them alone; reports in `target/orpheus/coverage/` (§3.6) |
 | `xtask metrics [--elf PATH]` | Append this commit's coverage and static firmware rows to `metrics/*.csv` (§4.4) |
 | `xtask gate [--no-dev] [--coverage] [--m11]` | The milestone gate (§6) |
 | `xtask bringup <name>` | Build one bring-up image (small RAM-only binary under `bringup/`) |
@@ -158,6 +159,37 @@ corpora of all targets are kept in the repository (`tests/fuzz-corpus/<target>/`
 pruned only by `cargo fuzz cmin`, never by deleting crash inputs). In M11
 (VER-4) every target runs until its coverage plateaus.
 
+How it is done (VER-4):
+
+* One cargo-fuzz project per crate (`crates/<crate>/fuzz/`, `sim/fuzz/`),
+  each its own workspace (nightly only). The target bodies live in the
+  project's `src/lib.rs`; `fuzz_targets/<target>.rs` only calls them, and
+  the crate's stable `tests/fuzz_corpus.rs` includes the same file
+  (`#[path]`) and replays `tests/regress/<target>/` and
+  `tests/fuzz-corpus/<target>/` on every `cargo test` (shared helper
+  `tests/replay.rs`; `orpheus-fs`: `tests/fuzz_smoke.rs`; the codec targets:
+  `crates/codecs/conformance/tests/fuzz_corpus.rs`). Target names are unique
+  across projects (they name the corpus directories).
+* Each body asserts invariants, not only "no panic": round trips where an
+  encoder exists (records, frames, queue files, URIs, base32), models
+  (settings and vault contents across remounts and power cuts), bounds
+  (rows and letter jumps inside listings, device access inside the medium,
+  CSW fields, list and name lengths), safety rules (no restricted Bluetooth
+  command, charge code never above the 200 mA code) and, for the UI,
+  golden-consistent redraws (a full redraw equals the incremental frame).
+* Seeds: `cargo xtask test fuzz-seeds` writes `seed-*` files from the
+  crates' own encoders and test fixtures (`ORPHEUS_WRITE_SEEDS=1` in the
+  `fuzz_corpus` tests) and, for the codec targets, from the generated
+  conformance corpus (≤ 24 files per target, cut to 16 KiB). Dictionaries:
+  `tests/fuzz-corpus/<target>.dict`. Files ≤ 64 KiB, all corpora together
+  < 20 MB (a corpus over its share is re-merged with a smaller `-max_len`).
+* `xtask test fuzz-smoke [--secs N]` runs every target of every project
+  from the committed corpus and dictionary; new inputs go to
+  `target/fuzz-corpus/<target>/` and are merged into the committed corpus
+  with `cargo fuzz cmin`. A finding is minimised (`-minimize_crash=1`) into
+  `tests/regress/<target>/` and listed in the findings table
+  (`docs/verification/baseline-2026-11.md` §8.4).
+
 ### 3.5 Sanitizers (M11, VER-5)
 
 * Host tests and fuzz targets also run under **AddressSanitizer** (nightly,
@@ -239,7 +271,10 @@ How it is done (VER-1, `xtask/src/cover.rs`):
   them, and uses the same toolchain's `llvm-profdata`/`llvm-cov`
   (`rustup component add llvm-tools --toolchain nightly-2026-11-05`).
   `--crate NAME` limits the run and the report to one package.
-* `--fuzz`: every cargo-fuzz project (`crates/**/fuzz/`) is built with the
+* `--fuzz-only` (VER-4): only the fuzz corpus replays below, no host tests
+  (source `fuzz`: the fuzz coverage per crate); a following `--add` run of
+  the host tests merges into it (source `host+fuzz`).
+* `--fuzz`: every cargo-fuzz project (`crates/**/fuzz/`, `sim/fuzz/`) is built with the
   same flags plus `--cfg fuzzing` (plain `cargo build`; libFuzzer only runs
   the given files) in `target/cover/fuzz/`, and each target runs every file
   of `tests/fuzz-corpus/<t>/`, `<fuzz dir>/corpus/<t>/`,
