@@ -96,6 +96,12 @@ fn exfat_with_mkfs_mbr() {
         .status()
         .unwrap()
         .success();
+    if !ok && !exfatprogs_has_partition_option() {
+        // `-P` (write a partition table) arrived after exfatprogs 1.2 (the
+        // version on Ubuntu 24.04 CI runners): nothing to test there.
+        eprintln!("skipped: mkfs.exfat has no -P option");
+        return;
+    }
     assert!(ok);
     let mut c = cache();
     let mut vol = mount(&img, &mut c);
@@ -282,4 +288,16 @@ fn tiny_cache() {
             Err(Error::BufferTooSmall)
         ));
     }
+}
+
+/// `mkfs.exfat --help` mentions the partition-table option (`-P`).
+fn exfatprogs_has_partition_option() -> bool {
+    std::process::Command::new("mkfs.exfat")
+        .arg("--help")
+        .output()
+        .map(|o| {
+            let t = String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr);
+            t.contains("-P")
+        })
+        .unwrap_or(false)
 }
