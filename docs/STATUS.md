@@ -2872,6 +2872,20 @@ Finding: 30-minute `mixed` soak, seed 1, 10.4 min, read in `radio-keys 8
   off: the disk is full); fw fmt, clippy, `xtask build`, `check-resident`,
   `size --check`: pass. Not run: `xtask dev …` (no player), brand/site.
 
+### 2026-11-25 — first full soak pass on the player (lead)
+
+* `dev soak mixed --minutes 30 --seed 2` (before the headroom fix):
+  **PASS**, 36.4 min, 18 actions (playdir, menus, radio seek and keys,
+  library and Pictures browsing, long listens, idle, pause, DSP,
+  Now Playing views), 190 samples: stack free ≥ 5,840 B, line loads/s mean
+  2,469 / max 3,303, evictions/s max 3,088, 0 underruns, card errors 0,
+  uptime drift −22 ppm, CPU idle mean 29 %. Headroom low-water −960 frames
+  inside a disruption window (counted as underruns from `604ffc41` on).
+* Seed 1 before that: past the old reset; stopped on the ring finding
+  (`mixed-ring-seed1-7.soak`), fixed by the merged `6db03fb0` (headroom
+  read race; underruns inside a half now counted; `pcm: head` log line).
+* Merged `6db03fb0`; resident 79,364 B; staged; replaying the ring finding.
+
 ### 2026-11-25 — plan: M16 USB sound card (owner's request)
 
 * New milestone M16 (08; spec 06 §2.7; PLAN item 15): the player as a USB
