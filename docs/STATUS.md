@@ -1934,6 +1934,17 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — the recorder records from the microphone (lead)
+
+* Merged the AU-13 mic fix (`596ee066`: the left mic input and feedback
+  buffer per the vendor code; `audio.md` §3.1 had left/right swapped). On
+  the player: `rec start mic wav 20` → **level −27…−30 dB, peaks −22 dB** in
+  a quiet room (was −60 = silence); `ADC_CTL` 0x4070DAA, `MIC_MIX_CTL`
+  0x10C. **U-AUD-12 answered**: a direct FIFO read gives the 24-bit sample
+  in bits 31:8 (`fc608000`), and the 16-bit DMA words carry the matching
+  top 16 bits (two samples per word, first in the low half). Listening to
+  the files is user check 25.
+
 ### 2026-11-24 — USB keyboard works; recorder captures silence (lead)
 
 * Merged AU-13/UI-5b (recorder) and USB-5/OTP-2 (USB keyboard,
