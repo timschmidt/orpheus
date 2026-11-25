@@ -10,7 +10,7 @@ of every session. Newest entries first in §3.
 | Plan | `docs/PLAN.md`, `docs/plan/`. **D-2 decided 2026-11-24 by the user: full-flash layout** ("wipe the original firmware and take over the full player hardware") |
 | Code | Host workspace (`crates/*`, `sim`, `xtask`) and device workspace (`fw/`: `atj2157-hal`, `yoton-bsp`, `firmware`, `boot/stage2`, `payloads/norprog`, `bringup/*`) |
 | Player | **Runs Orpheus from NOR, full layout.** Stock firmware and the Rockbox port are erased. Card: the owner's music (exFAT/FAT, 238.3 GB), read only except `/.orpheus/` |
-| NOR | Sector 0: Rockbox-port stage 1 (unchanged). `0x001000`: full slot A (Orpheus, 544,768 B). `0x7DA000` settings, `0x7DE000` vault, `0x7DF400` Rust stage 2 (876 B, tries full A, full B, dual slot; no stock-firmware path). `0x7E0000–0x7FFFFF` vendor data, untouched. Backups: `yoton/dumps/nor_backup_8m.bin` (stock, verified), `local/nor-before-full.bin` (the chip just before the switch), `local/rockbox-nor-0x762000.bin`, `local/stage2-previous.bin`. Way back: `xtask dev restore vendor --i-have-a-backup` (`--verify` compares) |
+| NOR | Sector 0: Rockbox-port stage 1 (unchanged). `0x001000`: full slot A (Orpheus, 544,768 B). `0x7DA000` settings, `0x7DE000` vault, `0x7DF400` Rust stage 2 (876 B, tries full A, full B, dual slot; no stock-firmware path; **the T-6 fallback stage 2, 964 B, is built but not installed: `install-stage2` step for the lead**). `0x7E0000–0x7FFFFF` vendor data, untouched. Backups: `yoton/dumps/nor_backup_8m.bin` (stock, verified), `local/nor-before-full.bin` (the chip just before the switch), `local/rockbox-nor-0x762000.bin`, `local/stage2-previous.bin`. Way back: `xtask dev restore vendor --i-have-a-backup` (`--verify` compares) |
 | Host | Fedora 43, Rust 1.98.1 pinned. Root disk nearly full (≈ 14 GB free after deleting worker build output) |
 | Current milestone | M1–M3 device parts done; M4 (Files/Music) and M5 (playback) running on the player; host side of M6–M8 packages largely done |
 
@@ -20,7 +20,7 @@ of every session. Newest entries first in §3.
 |---|---|---|
 | T-1, T-2, T-4a, HAL-0, HAL-1, T-5 | done | see earlier log entries |
 | T-3, PG-1 | done | pagelink, PagerCore, check-resident; demand paging on the player (8 KiB pages, 1 KiB lines) |
-| T-6 | started | Rust NOR payload `fw/payloads/norprog` (erase/program, full-layout guard); ymon and nordump still the reference repo's C payloads |
+| T-6 | started | Rust NOR payload `fw/payloads/norprog` (erase/program, full-layout guard); ymon and nordump still the reference repo's C payloads. **Stage 2 slot fallback built and host-tested, not yet installed** (`orpheus_proto::boot::decide`; 964 B; lead's `install-stage2` + crash test: session entry 2026-11-24 "T-6 (stage2)") |
 | LAY-1 | done (device) | Full layout installed (`xtask dev install-full --i-have-a-backup`), layout-aware `stage`, `restore vendor [--verify]`. Unifont pack in NOR not done (the UI's fonts are built in) |
 | LCD-1, INPUT-1, PWR-2, AU-0 | done pending user checks 7, 8, 9, 10 | |
 | SD-1, FM-0, USB-1, USB-3, PWR-1 | done | |
@@ -52,7 +52,7 @@ of every session. Newest entries first in §3.
 | DOC-3 | done (host), except the clean-container CI run | `docs/dev/getting-started.md`, `architecture.md` (SVG diagrams in `docs/dev/img/`), `how-to/` (8 guides). `#![warn(missing_docs)]` on `orpheus-codecs`, the wav/mp3/flac/vorbis/speex codecs, `orpheus-fs`, `orpheus-settings` |
 | DOC-4 | done (host); workflows not run (no CI here) | CONTRIBUTING, CODE_OF_CONDUCT (Contributor Covenant 2.1), SECURITY, CHANGELOG, issue/PR templates, workflows `gate.yml`, `docs.yml`, `pages.yml` (actions pinned by SHA) |
 | WEB-2 | done (host); not yet on the live site (the lead pushes) | `cargo xtask wasm [--test] [--record] [--demo]` → `target/orpheus/site/try/pkg/`: `sim/web` (`orpheus-web`) = the `orpheus-apps` screens over the simulator's services, a FAT32 card built in the browser (synthesised demo set, the visitor's files, the saved library), the firmware's codecs + DSP chain into an AudioWorklet, key recorder/replayer in the `ui_keys` corpus format. Try-it page (`site/pages/try.md`, `site/try/`): SVG player with clickable keys, integer-scaled pixelated canvas, IndexedDB state and files, Factory reset, developer panel. Self-test `tests/web/try.mjs` passes in Chromium 155 and Firefox 157 (headless); in `pages.yml`. Safari not tested: user check 23 |
-| UPD-1 | **built (host + firmware), not yet run on the player** | `orpheus-update` (`.ofw` format, slot choice, power-loss-safe installer, recovery switch; power cut before every NOR operation tested), Settings › System › Update firmware (33 goldens), card and developer-channel (`UPDATE` 0x0D) paths, `xtask dev update/slots/switch-slot`, `.ofw` from `xtask build`. No RAM installer (full layout writes the inactive slot). Stage 2 unchanged: after three failed starts it goes to USB recovery, not to the other slot (switch from the host). User check 27 |
+| UPD-1 | **built (host + firmware), not yet run on the player** | `orpheus-update` (`.ofw` format, slot choice, power-loss-safe installer, recovery switch; power cut before every NOR operation tested), Settings › System › Update firmware (33 goldens), card and developer-channel (`UPDATE` 0x0D) paths, `xtask dev update/slots/switch-slot`, `.ofw` from `xtask build`. No RAM installer (full layout writes the inactive slot). Stage 2 fallback to the other slot (also a superseded one) after three failed starts: built in T-6, not yet installed. User check 27 |
 | WEB-3 | **built (host); not yet run against the player** | `orpheus-host` over one async `Transport` (nusb / WebUSB / mock player), flows (backup ×2, first install, restore, recovery) with sector-0 permit and resumable writes, `orpheus-install-web` (wasm), Install page with demo mode, WebUSB + MS OS 2.0 descriptors on the developer interface; `tests/web/install.mjs` Node suite + `--page` pass, `--device` HIL not run. No release published (manifest, payload licences: lead) |
 | WEB-1 | done (host); not published | `cargo xtask site [--check]` → `target/orpheus/site/`; Home, Manual, Developers, Hardware, Changelog, FAQ, Try it and Install (placeholders for WEB-2/WEB-3). Deploy only with repository variable `PAGES_ENABLED=true`. User: review the site |
 | AU-13 | **built; first player run 2026-11-24: capture runs, microphone silent → front-end fix + `rec raw`/`rec width`/`rec mic` (not yet re-run)** | `orpheus-rec` (WAV PCM, IMA ADPCM, FLAC 0–2 encoders; low-cut, AGC, meter, voice activation; names; write-behind ring; the recording session), `atj2157_hal::adc` (vendor capture sequence VERBATIM, DMA ch 6), `firmware::rec` (recording mode of the card task, SRAM3 state after the radio's), developer `rec start/stop/status`. Not built: voice (Opus/Speex) encoders, mic monitoring, pre-record. User check 23 |
@@ -60,6 +60,128 @@ of every session. Newest entries first in §3.
 | UI-8 | **done (host); not yet on the player** | List roll-around in every list (`ListView` + `ListView::step_plain`), Settings › Display › List roll-around (`0x030C`, on by default), held keys stop at the end; Up next/Details keep their view change. User check 26; the on-device journey belongs to VER-7 |
 
 ## 3. Session log
+
+### 2026-11-24 — T-6 (stage2): automatic fallback to the next slot (worker, no hardware)
+
+Owner's decision 2026-11-24: stage 2 falls back to the other slot by
+itself when a valid image keeps crashing; installed with `install-stage2`.
+Design: 02 §2.5 "Automatic fallback (as built, T-6)".
+
+* **Decision** (`crates/orpheus-proto/src/boot.rs`, `decide`): pure,
+  `#[inline(always)]`, used by stage 2 and the tests. Counter word
+  `"BMY" << 8 | tripped << 4 | tries`; candidates = valid slots A, B,
+  dual, then — only once something tripped — superseded slots in the same
+  order; a slot that failed three starts in a row is skipped; nothing left
+  → USB recovery with the counter cleared. Boot-info word path 1 carries
+  `tripped << 4 | tries` and the slot index (low byte unchanged, so the
+  installed firmware still reads its slot); path 4 (mailbox ADFU) keeps
+  the last start's low 16 bits for `xtask dev slots`; path 5 = every
+  candidate tripped, 6 = no image, 7 = stage-2 panic.
+* **Superseded slots as the last resort** — beyond "next valid slot" in
+  the brief, because after an update A → B the old A is only superseded
+  (UPD-1), so without this the fallback could never undo a bad update; a
+  B → A update leaves B valid and is covered either way. They are
+  candidates only after a trip, so a normal start is exactly as before.
+  The firmware reads a recorded superseded slot's header with the magic
+  put back (`SlotHeader::from_bytes_or_superseded`; `find_slot`,
+  `running_build`). **For the lead**: firmware older than this commit
+  started from a superseded slot finds no header (no paging) and would
+  itself crash → USB recovery, as today; drop the second pass if the owner
+  prefers (3 lines in `decide`).
+* **Stage 2** (`fw/boot/stage2`): calls `decide` with its header/sum check
+  as the closure; depends on `orpheus-proto` now (addresses, `SLOTS`).
+  Never writes NOR; key and mailbox ADFU unchanged and first. Nested
+  loops in `decide` let the optimiser drop the bounds-check panic path.
+  **Size: 876 B → 964 B of 1,024** (`__stage2_end − 0x102400`, release,
+  `opt-level = "z"`; first cut 1,004 B).
+* **Bug fixed** (`atj2157_hal::wdt::reboot_after_fault`): it called
+  `reboot`, which clears the counter, though its comment said fault reboots
+  keep it — so a firmware that faulted at start-up never tripped the
+  counter, only hangs did. Now `reboot_keep_count`.
+* **Firmware**: `persist::boot_info`, `arm_crash_test`,
+  `take_crash_test` (HAL, resident); `main` runs the crash test right
+  after the pager starts, before any task (no NOR write can be cut short);
+  test commands `boot status` (`slot B, start 1, after A failed`, plus an
+  armed crash test) and `boot crash-test` (the running slot fails its next
+  three starts; at most three per arming; another slot's start disarms;
+  `mailbox::crash_step`, host-tested). About shows *Firmware slot* and,
+  after a fallback, *Failed to start* (`SystemService::boot_slot`, default
+  `None`; strings `FwSlot`, `SlotFailed` appended; ru/ja in the packs).
+* **Host tools**: `xtask dev slots` prints stage 2's record (`started
+  firmware from slot B, start 1 of 3, fallback: A failed 3 starts`, or
+  for path 4 "the start before: …"); `xtask dev results` prints it too
+  (`describe_boot`, tested). `orpheus_update::slots::stage2_decide` models
+  the whole decision over a NOR read function.
+* **Tests**: `orpheus_proto::boot` 10 (A valid / B empty, A tripped → B,
+  B tripped → superseded A, both tripped → ADFU and A again after it,
+  invalid and superseded slots skipped, dual slot, counter after a good
+  boot, garbage words, call order = header contract); `mailbox` crash-test
+  steps and boot-info fields; `slot` superseded header; `orpheus-update`
+  `fallback_after_an_update_that_keeps_crashing` (real images, a real
+  A → B update, crash loop: B ×3 → old A ×3 → ADFU; a damaged superseded
+  image never starts; then an update from the fallback writes B);
+  `xtask` `boot_descriptions`. Goldens: 6 new `app_about_fallback_*`
+  (looked at; ja strings changed to glyphs the CJK font has).
+* **Numbers**: stage 2 964 B of 1,024 (was 876 B); firmware resident
+  78,868 B of the 81,920 B budget, 104 code + 18 rodata pages, slot
+  1,085,440 B (`xtask build`); `check-resident` ok, 3 indirect branches
+  as before (a first cut with a function pointer in `find_slot` added a
+  fourth; replaced by direct calls).
+* **Gate**: host `fmt --check`, `clippy --workspace --all-targets -D
+  warnings`, `cargo test --workspace` (all pass; golden images included);
+  fw `fmt --check`, `clippy --workspace -D warnings`; `cargo xtask build`,
+  `cargo build --release -p stage2` (the linker's 1 KiB assert holds),
+  `cargo xtask check-resident`, `cargo xtask site --check` (manual,
+  dev guide and Install page say the player falls back first): pass. Not
+  run: `test all` as a whole (fuzz smoke), `brand --check`, `size
+  --check`, HIL (no hardware).
+* **Lead's device steps** (in this order; one process at a time; nothing
+  needs the case opened; it ends with the player running slot A
+  normally):
+  1. `cargo xtask build` (builds the firmware, the `.ofw` and stage 2).
+  2. Put this firmware into **both** slots first, so the fallback target
+     knows the new boot-info encoding: `cargo xtask dev backup-verify`;
+     `cargo xtask dev stage target/orpheus/firmware.yfw` (slot A);
+     `cargo xtask dev reset`; `cargo xtask dev update
+     target/orpheus/orpheus-*.ofw` (same build into B, A superseded);
+     `cargo xtask dev switch-slot`; `cargo xtask dev reset` (A again, both
+     valid); `cargo xtask dev slots` → A valid, B valid.
+  3. `cargo xtask dev install-stage2` (backup-verify inside; keeps the
+     vendor record copy; the old stage 2 goes to
+     `local/stage2-previous.bin`). `cargo xtask dev reset`.
+  4. `cargo xtask dev cmd 'boot status'` → `slot A, start 1`. (Stage 2
+     runs on every boot, so this also proves the new stage 2 starts A.)
+  5. `cargo xtask dev cmd 'boot crash-test'` → `crash test armed: slot A
+     fails its next 3 starts; reboot to begin`. `cargo xtask dev reset`
+     (via USB recovery: the deliberate reboot clears the counter, ymon's
+     reset starts stage 2). Expect three quick restarts of A (screen
+     flashes, no Home), then B starts. Wait ≥ 30 s.
+  6. `cargo xtask dev cmd 'boot status'` → `slot B, start 1, after A
+     failed`; Settings › System › About shows *Firmware slot B* and
+     *Failed to start A*; `cargo xtask dev slots` → "the start before:
+     slot B, start 1 of 3, fallback: A failed 3 starts" (this one goes
+     through USB recovery).
+  7. Restore: `cargo xtask dev reset` → A starts (crash test spent and
+     cleared, counter 0). `cargo xtask dev cmd 'boot status'` → `slot A,
+     start 1`, no "after". Done; the player runs A normally.
+  8. Optional, the real update case (superseded fallback): `cargo xtask
+     dev update target/orpheus/orpheus-*.ofw` (from A: writes B,
+     supersedes A, restarts in B); `cargo xtask dev cmd 'boot crash-test'`
+     (arms B); `cargo xtask dev reset` → B ×3 → the superseded A starts;
+     after 30 s `cargo xtask dev cmd 'boot status'` → `slot A, start 1,
+     after B failed`, `cargo xtask dev info` answers (paging on from the
+     superseded header). Restore: `cargo xtask dev reset` → B (healthy);
+     `cargo xtask dev switch-slot`; `cargo xtask dev reset` → A, both
+     valid, as after step 7.
+  If after step 5 nothing answers for two minutes (USB recovery is the
+  worst case: every candidate tripped), `cargo xtask dev reset` starts A
+  normally (request spent); otherwise stop and ask (rule 7). Undo of the
+  stage-2 install: write `local/stage2-previous.bin` back the same way
+  (`install-stage2` of the previous commit).
+* **Open**: firmware older than T-6 in a slot stage 2 falls back to as a
+  superseded slot (no header → no paging); the counter forgets tripped
+  slots on a healthy start, so a slot that crashes every start costs three
+  failed starts per reboot (RAM only, no NOR writes — by design).
 
 ### 2026-11-24 — UPD-1 (firmware update) and WEB-3 (browser installer) (worker, no hardware)
 
@@ -3260,6 +3382,7 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 | 2026-11-24 | NOR program via Rust payload / erase of 1,907 sectors | 401,408 B in 10.2 s / 35.6 s | `xtask dev install-full` |
 | 2026-11-24 | Firmware image, all codecs (full layout) | resident 54,308 B, 43 code + 16 rodata pages, slot 544,768 B | `xtask build` |
 | 2026-11-24 | Stage 2 (Rust, full-layout aware) | 876 B of 1,024 | `cargo build -p stage2` |
+| 2026-11-24 | Stage 2 with slot fallback (T-6) | 964 B of 1,024 (first cut 1,004 B) | `cargo build --release -p stage2`, `__stage2_end` |
 | 2026-11-24 | MP3 44.1 kHz, 48 MHz, audio hot path resident | ≈ 80 % main idle, 0 underruns, ≈ 1,250 line loads/s | `xtask dev stats` |
 | 2026-11-24 | Main stack after start-up (32.6 KB stack) | 9.5 KB free (≈ 23 KB used); after moving `Chain::new` to `main`: 18.6 KB free (≈ 14 KB used) | INFO stack high-water |
 | 2026-11-24 | DSP chain alone (bass, 44.1 kHz stereo) on the player, 48 MHz | 20 blocks × 1152 frames in 97 ms (≈ 19 % of real time) | `dev cmd dspt` |

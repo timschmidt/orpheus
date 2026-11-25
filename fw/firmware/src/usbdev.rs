@@ -173,6 +173,32 @@ impl Target for Fw {
                 core::hint::spin_loop();
             }
         }
+        // T-6: stage 2's record of this start, and the fallback test.
+        if data == b"boot status" {
+            boot_status_reply();
+            return true;
+        }
+        if data == b"boot crash-test" {
+            // The running slot fails its next BOOT_COUNT_LIMIT starts (from
+            // the next reboot on; nothing written to NOR). Stage 2 then
+            // starts the next slot, whose start disarms the test.
+            let slot = atj2157_hal::persist::boot_info().and_then(orpheus_proto::mailbox::BootInfo::slot);
+            if let Some(s) = slot {
+                atj2157_hal::persist::arm_crash_test(s, orpheus_proto::mailbox::BOOT_COUNT_LIMIT);
+            }
+            crate::audio::reply(|w| {
+                match slot {
+                    Some(s) => w
+                        .s(b"crash test armed: slot ")
+                        .s(orpheus_proto::boot::slot_name(s).as_bytes())
+                        .s(b" fails its next ")
+                        .u(u64::from(orpheus_proto::mailbox::BOOT_COUNT_LIMIT))
+                        .s(b" starts; reboot to begin"),
+                    None => w.s(b"crash test refused: not started from a slot by stage 2"),
+                };
+            });
+            return true;
+        }
         if let Some(rest) = data.strip_prefix(b"sound ") {
             // Test: "sound g0 g1 g2 g3 g4 bass crossfeed" (dB, preset level).
             let mut v = [0i8; 7];
@@ -306,6 +332,41 @@ impl Target for Fw {
             n
         })
     }
+}
+
+/// `boot status`: `slot B, start 1, after A failed` (or `slot A, start 1`;
+/// `not started by stage 2`), and whether a crash test is armed.
+fn boot_status_reply() {
+    use orpheus_proto::boot::slot_name;
+    let info = atj2157_hal::persist::boot_info();
+    let m = atj2157_hal::persist::mailbox();
+    crate::audio::reply(|w| {
+        match info.and_then(|i| i.slot().map(|s| (i, s))) {
+            Some((i, s)) => {
+                w.s(b"slot ").s(slot_name(s).as_bytes()).s(b", start ").u(u64::from(i.tries()));
+                if i.fell_back() {
+                    w.s(b", after");
+                    for t in 0..3u8 {
+                        if i.tripped() & 1 << t != 0 {
+                            w.s(b" ").s(slot_name(t).as_bytes());
+                        }
+                    }
+                    w.s(b" failed");
+                }
+            }
+            None => {
+                w.s(b"not started by stage 2");
+            }
+        }
+        if orpheus_proto::mailbox::Request::from_word(m.request) == orpheus_proto::mailbox::Request::CrashTest
+        {
+            w.s(b"; crash test armed for slot ")
+                .s(slot_name(m.args[0] as u8).as_bytes())
+                .s(b", ")
+                .u(u64::from(m.args[1]))
+                .s(b" left");
+        }
+    });
 }
 
 pub async fn supervisor() {

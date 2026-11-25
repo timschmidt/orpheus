@@ -31,9 +31,11 @@ the log ring. Budgets live in [`budgets.toml`](../../budgets.toml) and
 
 ![Boot chain](img/boot-chain.svg)
 
-The mask ROM's USB recovery mode (ADFU) is always reachable: by a mailbox
-word, by holding Next, after three failed starts, and when the boot record
-is invalid. That is what makes aggressive development safe. The slot
+A slot that fails three starts in a row is skipped: stage 2 starts the
+next one, after an update also the old, superseded image
+(`orpheus_proto::boot`). The mask ROM's USB recovery mode (ADFU) is always
+reachable: by a mailbox word, by holding Next, when every slot failed, and
+when the boot record is invalid. That is what makes aggressive development safe. The slot
 format (`"YFW1"`: header, resident image, 8 KiB pages) is in
 [02 §2.3](../plan/02-architecture.md).
 

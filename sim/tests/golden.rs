@@ -577,6 +577,8 @@ fn app_cases(add: &mut dyn FnMut(String, String)) {
         ("time", "prev ok down*4 ok ok expect-screen:Picker next up"),
         ("date", "prev ok down*4 ok down ok expect-screen:Picker"),
         ("about", "prev ok down*11 ok ok expect-screen:Info"),
+        // T-6: started from slot B after slot A failed three starts.
+        ("about_fallback", "set:slot=B set:slotfailed=A prev ok down*11 ok ok expect-screen:Info"),
         ("card_info", "prev ok down*10 ok ok expect-screen:Info"),
         ("battery", "prev ok down*3 ok down*4 ok expect-screen:Info"),
         ("reset_dialog", "prev ok down*11 ok down*4 ok"),

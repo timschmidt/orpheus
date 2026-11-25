@@ -23,11 +23,12 @@ previous version or the new, complete one.
 
 ## If the new version does not start
 
-After three failed starts the player goes to **recovery mode** by itself
-(its chip's USB recovery, which nothing can overwrite). On the Install
-page, *Choose the player* again, then *Recovery › Start the other
-firmware*: the previous version starts again. With the tools:
-`cargo xtask dev switch-slot`, then `cargo xtask dev reset`.
+After three failed starts the player starts the previous version by
+itself (Settings › System › About then shows *Failed to start*). If that
+fails too, it goes to **recovery mode** (its chip's USB recovery, which
+nothing can overwrite). On the Install page, *Choose the player* again,
+then *Recovery › Start the other firmware*. With the tools: `cargo xtask
+dev switch-slot`, then `cargo xtask dev reset`.
 
 ## First install
 

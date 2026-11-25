@@ -576,6 +576,34 @@ pub trait SystemService {
     fn usb_audio_built(&self) -> bool;
     /// Keys are locked (status bar).
     fn keys_locked(&self) -> bool;
+    /// The firmware slot boot stage 2 started (About; `None` when not
+    /// started from a slot, e.g. a RAM test image).
+    fn boot_slot(&self) -> Option<BootSlot> {
+        None
+    }
+}
+
+/// Which firmware slot runs, and which ones stage 2 gave up on first
+/// (T-6: a slot that fails three starts in a row is skipped).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct BootSlot {
+    /// Index: 0 = slot A, 1 = slot B, 2 = the old dual-boot slot.
+    pub running: u8,
+    /// Slots that failed to start before this one (bit `i` = index `i`).
+    pub failed: u8,
+}
+
+impl BootSlot {
+    /// Short name of slot index `i`.
+    #[must_use]
+    pub const fn name(i: u8) -> &'static str {
+        match i {
+            0 => "A",
+            1 => "B",
+            2 => "dual",
+            _ => "?",
+        }
+    }
 }
 
 // ---------------------------------------------------------------- Steps

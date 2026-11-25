@@ -162,7 +162,7 @@ mask ROM ──► stage 1 (NOR 0, 512 B, loaded to 0x101000)
                │  boot mailbox "ADFU"  ──────────► ROM USB recovery (ADFU)
                │  Next key held        ──────────► ROM USB recovery
                │  OK key held          ──────────► vendor firmware (dual-boot layout)
-               │  boot counter ≥ limit ──────────► other slot (full layout) → vendor → ADFU
+               │  boot counter ≥ limit ──────────► next slot (full layout) → ADFU (as built: T-6)
                │  valid firmware slot  ──────────► copy resident image to 0x100000, jump
                ▼
              resident image: crt0 → SRAM2/3 on → clocks → pager → Embassy → tasks
@@ -317,15 +317,62 @@ refuses updates from the player (one slot; use `xtask dev stage`).
   FILE.ofw` and the browser installer's Update use it; afterwards `INFO`
   reports the running slot's build id, so the host checks that the new
   build started.
-* **Recovery** when a new image keeps failing to start: stage 2 as built
-  goes to USB recovery after three failed starts — it does **not** try the
-  other slot by itself. From there `cargo xtask dev switch-slot` or the
+* **Recovery** when a new image keeps failing to start: stage 2 falls
+  back by itself (below, T-6). When nothing is left to fall back to it
+  goes to USB recovery; from there `cargo xtask dev switch-slot` or the
   Install page's Recovery makes stage 2 start the other slot: restore the
   superseded header (its CRC proves it is the old one) or supersede the
   current one (`slots::switch`, at most two small writes, each leaving a
-  bootable image). Falling back without a host needs stage 2 to skip the
-  slot it started last once the counter trips: a change to stage 2 (an
-  `install-stage2` step for the lead), not made in UPD-1.
+  bootable image).
+
+**Automatic fallback (as built, T-6, owner's decision 2026-11-24).** One
+pure function, `orpheus_proto::boot::decide`, run by stage 2 itself and
+by the host tests (`orpheus_proto::boot::tests`; over real slot images
+and a real update in `orpheus_update::install::tests` through
+`slots::stage2_decide`):
+
+* **State in RAM only** (stage 2 never writes NOR). Counter word
+  `0x137FF8` = `"BMY" << 8 | tripped << 4 | tries`: `tries` (bits 0–3)
+  counts starts of the slot being tried; `tripped` (bits 4–6, bit `4 + i`
+  for `SLOTS[i]`) marks slots that failed three starts in a row. A word
+  without the tag (cold boot) is "nothing tried"; the old stage 2's word
+  is the same with `tripped = 0`.
+* **Candidates in order**: the valid `"YFW1"` slots A, B, dual; once a
+  slot has tripped, also the *superseded* slots (magic word 0, left by an
+  update; same version, bounds and resident-sum checks) in the same
+  order. Tripped slots are skipped. After an update A → B the old image
+  is superseded, not valid, so this second pass is what brings it back
+  when B keeps crashing.
+* **Each start**: the first candidate gets `tries + 1`; if `tries` had
+  reached 3, that candidate (the one the last starts tried) is marked
+  tripped and the next candidate starts with `tries = 1`. Nothing left →
+  USB recovery, counter 0 (the next reset tries A again).
+* **Healthy start**: the firmware writes 0 after 30 s and before every
+  deliberate reboot, which forgets `tripped` too: the next start tries A
+  again (three more failed starts before B, if A still crashes). A power
+  cycle (RAM lost) does the same. A fault reboot (`reboot_after_fault`)
+  keeps the counter — before T-6 it went through `wdt::reboot` and
+  cleared it, so only hangs counted.
+* **Boot-info word** `0x137FFC`: path 1 = `0x42 << 24 | 1 << 16 |
+  (tripped << 4 | tries) << 8 | slot`; 5 = every candidate tripped
+  (`tripped << 12`), 6 = no image, 7 = stage 2 panicked, 3 = Next key;
+  4 (mailbox ADFU) keeps the previous word's low 16 bits, so `xtask dev
+  slots` (which runs in USB recovery) still reports the last firmware
+  start. The low byte stays the slot index, which `find_slot` and the
+  updater's `slots::choose` read.
+* **Firmware**: a slot stage 2 recorded may be superseded; `find_slot`
+  and `running_build` read its header with the magic word put back
+  (`SlotHeader::from_bytes_or_superseded`, the CRC proves it). The
+  updater then writes the other slot (running A → B, over the crashing
+  image). Settings › System › About shows *Firmware slot* and, after a
+  fallback, *Failed to start: A*; `xtask dev cmd 'boot status'` and
+  `xtask dev slots` print it.
+* **Test without NOR writes**: `xtask dev cmd 'boot crash-test'` arms a
+  mailbox request (`"CRSH"`, slot, 3): the firmware started from that
+  slot reboots as a fault would before any task runs, three times; the
+  fourth start is the fallback, whose start clears the request. At most
+  three crashes per arming, so a test can never leave the player crashing.
+* **Size**: stage 2 is 964 B of 1,024 (876 B before).
 
 ## 3. Demand paging
 

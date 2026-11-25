@@ -20,7 +20,7 @@ use super::{
 };
 use crate::App;
 use crate::services::{
-    FsKind, LibList, LibraryState, PlayerCmd, PowerRequest, Services, StorageRequest, UsbMode,
+    BootSlot, FsKind, LibList, LibraryState, PlayerCmd, PowerRequest, Services, StorageRequest, UsbMode,
 };
 use crate::settings::{self, Action, GROUPS, Info, Kind, SettingId, format_value, id};
 use crate::strings::{Lang, Str};
@@ -553,6 +553,27 @@ impl ListScreen {
                 add(Str::Build, &|v| {
                     v.push_str_or_ellipsis(svc.build_id());
                 });
+                // T-6: the slot stage 2 started, and the ones it skipped
+                // because they kept failing to start.
+                if let Some(b) = svc.boot_slot() {
+                    add(Str::FwSlot, &|v| {
+                        v.push_str(BootSlot::name(b.running));
+                    });
+                    if b.failed != 0 {
+                        add(Str::SlotFailed, &|v| {
+                            let mut first = true;
+                            for i in 0..3u8 {
+                                if b.failed & 1 << i != 0 {
+                                    if !first {
+                                        v.push_str(", ");
+                                    }
+                                    v.push_str(BootSlot::name(i));
+                                    first = false;
+                                }
+                            }
+                        });
+                    }
+                }
                 add(Str::Serial, &|v| {
                     v.push_str_or_ellipsis(svc.serial());
                 });

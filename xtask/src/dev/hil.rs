@@ -36,7 +36,8 @@ fn describe_fault(f: &FaultRecord) -> String {
 pub fn print_results(d: &mut Adfu, elf: Option<&Path>) -> Result<String> {
     let (r, f, mb) = read_persistent(d)?;
     if let Some(i) = BootInfo::from_word(mb.boot_info) {
-        log(&format!("boot info: path {} attempt {} keys {:#x}", i.path, i.attempt, i.keys));
+        log(&format!("boot info: path {} attempt {:#x} keys {:#x}", i.path, i.attempt, i.keys));
+        log(&format!("  {}", super::stage::describe_boot(&mb)));
     }
     if let Some(f) = &f {
         log(&format!("FAULT RECORD: {}", describe_fault(f)));

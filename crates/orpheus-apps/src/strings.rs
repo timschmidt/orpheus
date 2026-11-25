@@ -753,6 +753,9 @@ strings! {
     UpdBusy = "Another update is running.",
     UpdNoChanges = "No change list.",
     HintUpdInstall = "OK install",
+    // T-6: About, the slot stage 2 started.
+    FwSlot = "Firmware slot",
+    SlotFailed = "Failed to start",
 }
 
 /// Number of strings.

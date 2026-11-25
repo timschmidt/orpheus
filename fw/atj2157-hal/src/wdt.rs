@@ -64,11 +64,18 @@ fn reboot_keep_count(target: Target) -> ! {
 }
 
 /// After a fault record was written: back to ADFU when a host test asked for
-/// it (mailbox flag), otherwise a normal reboot.
+/// it (mailbox flag), otherwise a normal reboot. Keeps the boot counter: a
+/// start that faults before it was confirmed healthy counts as failed, so
+/// stage 2 falls back to the next slot after three (until T-6 this went
+/// through `reboot` and cleared the counter, so only hangs counted).
 pub fn reboot_after_fault() -> ! {
     let flags = read_word(mailbox::BASE + mailbox::OFF_FLAGS as u32);
     let test = read_word(mailbox::ADDR_TEST_MODE) == mailbox::TEST_MODE_MAGIC;
-    if test && flags & mailbox::FLAG_RETURN_ADFU != 0 { reboot(Target::Adfu) } else { reboot(Target::Normal) }
+    reboot_keep_count(if test && flags & mailbox::FLAG_RETURN_ADFU != 0 {
+        Target::Adfu
+    } else {
+        Target::Normal
+    })
 }
 
 /// Progress counters for the firmware's `watchdog` task (02 §8): the RT

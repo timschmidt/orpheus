@@ -303,7 +303,8 @@ pub fn running_build() -> Option<[u8; 16]> {
     let base = *SLOTS.get(usize::from(booted()?))?;
     let mut h = [0u8; HEADER_SIZE];
     Nor.read(base, &mut h).ok()?;
-    SlotHeader::from_bytes(&h).ok().map(|s| s.build_id)
+    // Stage 2 may have started a superseded slot as a fallback (T-6).
+    SlotHeader::from_bytes_or_superseded(&h).ok().map(|s| s.build_id)
 }
 
 fn target() -> Result<slots::Target, Error> {

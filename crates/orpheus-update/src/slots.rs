@@ -10,9 +10,11 @@ use crate::Error;
 use crate::ofw::{IMAGE_MAX, LOAD_ADDR, RESIDENT_MAX, RESIDENT_OFF_MAX};
 
 /// Value the superseded slot's magic word is programmed to (only bits are
-/// cleared, no erase): anything but `"YFW1"` makes stage 2 skip the slot;
-/// the rest of the header stays, so [`switch`] can restore it.
-pub const SUPERSEDED: u32 = 0;
+/// cleared, no erase): anything but `"YFW1"` makes stage 2 skip the slot
+/// in normal starts; the rest of the header stays, so [`switch`] can
+/// restore it, and stage 2 starts it as a fallback once another slot kept
+/// failing (`orpheus_proto::boot`, T-6).
+pub const SUPERSEDED: u32 = slot::SUPERSEDED;
 
 /// The slot an update writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,12 +69,18 @@ fn is_slot_base_or_inside(base: u32) -> bool {
 /// resident sum), over a NOR read function. The firmware additionally
 /// needs the header CRC; [`boots`] checks both.
 pub fn stage2_accepts(base: u32, read: &mut dyn FnMut(u32, &mut [u8]) -> bool) -> bool {
+    stage2_accepts_magic(base, slot::MAGIC, read)
+}
+
+/// [`stage2_accepts`] for a header with magic word `magic` ([`slot::MAGIC`]
+/// or [`SUPERSEDED`]): stage 2's `startable` check.
+pub fn stage2_accepts_magic(base: u32, magic: u32, read: &mut dyn FnMut(u32, &mut [u8]) -> bool) -> bool {
     let mut h = [0u8; HEADER_SIZE];
     if !read(base, &mut h) {
         return false;
     }
     let w = |o| rd32(&h, o).unwrap_or(0);
-    if w(0) != slot::MAGIC || w(4) != slot::VERSION {
+    if w(0) != magic || w(4) != slot::VERSION {
         return false;
     }
     let (off, len, load, entry) = (w(0x10), w(0x14), w(0x18), w(0x1C));
@@ -93,9 +101,19 @@ pub fn stage2_accepts(base: u32, read: &mut dyn FnMut(u32, &mut [u8]) -> bool) -
     sum == w(0x20)
 }
 
-/// The slot stage 2 starts (index in [`SLOTS`]), `None` = USB recovery.
+/// The slot stage 2 starts (index in [`SLOTS`]) with a clear boot
+/// counter, `None` = USB recovery.
 pub fn stage2_pick(read: &mut dyn FnMut(u32, &mut [u8]) -> bool) -> Option<usize> {
     SLOTS.iter().position(|&b| stage2_accepts(b, read))
+}
+
+/// Stage 2's whole decision for counter word `count` over a NOR read
+/// function (`orpheus_proto::boot::decide` with stage 2's checks).
+pub fn stage2_decide(
+    count: u32,
+    read: &mut dyn FnMut(u32, &mut [u8]) -> bool,
+) -> orpheus_proto::boot::Decision {
+    orpheus_proto::boot::decide(count, |i, magic| stage2_accepts_magic(SLOTS[i], magic, read))
 }
 
 /// Whether stage 2 starts slot `index` *and* the firmware accepts its

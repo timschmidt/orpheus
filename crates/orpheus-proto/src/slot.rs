@@ -29,6 +29,11 @@ use crate::hash::crc32_update;
 use crate::{magic, rd32, wr32};
 
 pub const MAGIC: u32 = magic(b"YFW1");
+/// Magic word of a slot an update superseded (bits cleared, no erase; the
+/// rest of the header and the image intact). Stage 2 starts such a slot
+/// only as a fallback once another slot tripped the boot counter
+/// ([`crate::boot`]).
+pub const SUPERSEDED: u32 = 0;
 pub const VERSION: u32 = 1;
 pub const HEADER_SIZE: usize = 0x80;
 pub const HEADER_CRC_SPAN: usize = 0x7C;
@@ -100,6 +105,20 @@ impl SlotHeader {
         b
     }
 
+    /// As [`Self::from_bytes`], but a superseded header (magic word
+    /// [`SUPERSEDED`]) is read as if its magic word were intact, so the
+    /// CRC proves it is the old header. The firmware uses this for the slot
+    /// stage 2 recorded (it may have started a superseded slot as a
+    /// fallback).
+    pub fn from_bytes_or_superseded(b: &[u8]) -> Result<Self, HeaderError> {
+        let mut c = [0u8; HEADER_SIZE];
+        c.copy_from_slice(b.get(..HEADER_SIZE).ok_or(HeaderError::Short)?);
+        if rd32(&c, 0) == Some(SUPERSEDED) {
+            wr32(&mut c, 0, MAGIC);
+        }
+        Self::from_bytes(&c)
+    }
+
     pub fn from_bytes(b: &[u8]) -> Result<Self, HeaderError> {
         let b: &[u8; HEADER_SIZE] =
             b.get(..HEADER_SIZE).and_then(|s| s.try_into().ok()).ok_or(HeaderError::Short)?;
@@ -156,5 +175,23 @@ mod tests {
         assert_eq!(SlotHeader::from_bytes(&b).map(|x| x.verified), Ok(0));
         b[0x14] ^= 1;
         assert_eq!(SlotHeader::from_bytes(&b), Err(HeaderError::Crc));
+    }
+
+    #[test]
+    fn superseded_header() {
+        let h = SlotHeader { layout: LAYOUT_FULL, resident_len: 0x100, ..Default::default() };
+        let mut b = h.to_bytes();
+        assert_eq!(SlotHeader::from_bytes_or_superseded(&b), Ok(h));
+        wr32(&mut b, 0, SUPERSEDED);
+        assert_eq!(SlotHeader::from_bytes(&b), Err(HeaderError::Magic));
+        assert_eq!(SlotHeader::from_bytes_or_superseded(&b), Ok(h));
+        // Erased, or any other magic word, stays invalid.
+        wr32(&mut b, 0, 0xFFFF_FFFF);
+        assert_eq!(SlotHeader::from_bytes_or_superseded(&b), Err(HeaderError::Magic));
+        assert_eq!(SlotHeader::from_bytes_or_superseded(&b[..4]), Err(HeaderError::Short));
+        // A superseded header that was changed fails its CRC.
+        wr32(&mut b, 0, SUPERSEDED);
+        b[0x14] ^= 1;
+        assert_eq!(SlotHeader::from_bytes_or_superseded(&b), Err(HeaderError::Crc));
     }
 }

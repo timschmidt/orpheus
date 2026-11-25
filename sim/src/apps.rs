@@ -17,11 +17,11 @@ use orpheus_apps::services::{
     LibNow, LibRow, LibraryService, LibraryState, Listing, LyricLine, PicReq, PicState, PictureService,
     PlayerCmd, PlayerService, PlayerState, QueueEntry, TextService, TrackInfo,
 };
+use orpheus_apps::services::{BootSlot, UpdateFile, UpdateInfo, UpdateRequest, UpdateService};
 use orpheus_apps::services::{BtDevice, BtList, BtPhase, BtRequest, StepsInfo, StepsService, ToolsService};
 use orpheus_apps::services::{DriveInfo, DriveRequest, UsbDriveService};
 use orpheus_apps::services::{PresetOp, Presets, RadioInfo, RadioRequest, RadioService, Region};
 use orpheus_apps::services::{RecInfo, RecRequest, RecorderService, rec_settings};
-use orpheus_apps::services::{UpdateFile, UpdateInfo, UpdateRequest, UpdateService};
 use orpheus_apps::settings::{SettingId, SettingsCache, id, lang_code};
 use orpheus_apps::tools::{self, Tools};
 use orpheus_apps::{App, Lang};
@@ -75,6 +75,8 @@ pub struct HostServices {
     pub langs: Vec<Lang>,
     pub lang: Lang,
     pub dual_boot: bool,
+    /// About's firmware slot (`set:slot=B`, `set:slotfailed=A`; T-6).
+    pub boot_slot: Option<BootSlot>,
     pub locked: bool,
     lock_request: bool,
     pub root: (ScreenId, Arg),
@@ -141,6 +143,7 @@ impl HostServices {
             langs: vec![Lang::ENGLISH, packs::russian(), packs::japanese()],
             lang: Lang::ENGLISH,
             dual_boot: true,
+            boot_slot: None,
             locked: false,
             lock_request: false,
             root: (screens::HOME, Arg(0)),
@@ -578,6 +581,20 @@ impl SystemService for HostServices {
     fn keys_locked(&self) -> bool {
         self.locked
     }
+
+    fn boot_slot(&self) -> Option<BootSlot> {
+        self.boot_slot
+    }
+}
+
+/// `A`, `B` or `dual` as a slot index.
+fn slot_index(name: &str) -> Result<u8> {
+    Ok(match name {
+        "A" | "a" => 0,
+        "B" | "b" => 1,
+        "dual" => 2,
+        _ => bail!("unknown slot `{name}` (A, B, dual)"),
+    })
 }
 
 impl System for HostServices {
@@ -704,6 +721,21 @@ impl Host for HostServices {
                 self.bt_events();
             }
             "developer" => self.developer = on,
+            // T-6: the slot stage 2 started (`slot=A|B|dual|none`) and the
+            // ones that failed first (`slotfailed=A`, `slotfailed=A,B`).
+            "slot" => {
+                self.boot_slot = match v {
+                    "none" => None,
+                    _ => Some(BootSlot { running: slot_index(v)?, failed: 0 }),
+                };
+            }
+            "slotfailed" => {
+                let Some(b) = self.boot_slot.as_mut() else { bail!("set:slotfailed needs set:slot first") };
+                b.failed = 0;
+                for n in v.split(',').filter(|n| !n.is_empty()) {
+                    b.failed |= 1 << slot_index(n)?;
+                }
+            }
             "drivehost" => self.drive.host_present = on,
             "drivewrite" => self.drive.write_blocks = v.parse()?,
             "driveimages" => self.drive.hide_images = !on,
