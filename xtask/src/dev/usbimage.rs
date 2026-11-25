@@ -116,8 +116,27 @@ fn wait_gone(timeout: Duration) -> Result<()> {
     Ok(())
 }
 
+/// Open a freshly appeared device node: udev applies the project rule's
+/// permissions a moment after the node exists, so "permission denied" is
+/// retried for up to 5 s before it is reported.
+fn open_when_ready(dev: &Path, write: bool) -> std::io::Result<std::fs::File> {
+    let t0 = std::time::Instant::now();
+    loop {
+        let r = std::fs::OpenOptions::new().read(!write).write(write).open(dev);
+        match r {
+            Err(e)
+                if e.kind() == std::io::ErrorKind::PermissionDenied
+                    && t0.elapsed() < Duration::from_secs(5) =>
+            {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            r => return r,
+        }
+    }
+}
+
 fn read_device(dev: &Path) -> Result<Vec<u8>> {
-    let mut f = std::fs::File::open(dev).with_context(|| {
+    let mut f = open_when_ready(dev, false).with_context(|| {
         format!("open {} (udev rule installed? tools/udev/99-orpheus.rules)", dev.display())
     })?;
     let mut out = Vec::new();
@@ -140,7 +159,13 @@ fn expected(file: &[u8], cd: bool) -> Vec<u8> {
 /// enumerates again, so it gets no reply; the channel is opened afresh.
 fn switch(text: &str) -> Result<()> {
     let d = DevChannel::open(Duration::from_secs(10))?;
-    d.control_out(REQ_TEST, 0, 0, text.as_bytes())?;
+    // A personality switch re-enumerates the player, sometimes before the
+    // status stage of this very request completes ("Fault"/"Pipe"): the
+    // switch is verified by what follows (the block device appearing or
+    // going), so a transfer error here is only a note.
+    if let Err(e) = d.control_out(REQ_TEST, 0, 0, text.as_bytes()) {
+        log(&format!("   ({text}: {e}; checking the result instead)"));
+    }
     drop(d);
     // Let the soft detach happen before anyone opens the channel again.
     std::thread::sleep(Duration::from_millis(1500));
@@ -217,10 +242,8 @@ fn rw_case(remote: &str, c: &Case) -> Result<String> {
     };
     let patch = pattern(n, 0xC0FFEE);
     let wrote = (|| -> Result<u64> {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .open(&dev)
-            .with_context(|| format!("open {} for writing", dev.display()))?;
+        let mut f =
+            open_when_ready(&dev, true).with_context(|| format!("open {} for writing", dev.display()))?;
         f.seek(SeekFrom::Start(0))?;
         f.write_all(&patch)?;
         f.sync_all()?;

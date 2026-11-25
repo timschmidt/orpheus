@@ -2197,6 +2197,17 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — USB-6: disk and CD images served to a computer (lead)
+
+* Merged USB-6 device + USB Drive app (`d6342f09`); fixed a service-kind
+  collision from an earlier merge (RECORDER 8, AUTH 6, USB_DRIVE 7).
+* `xtask dev usbimage-test` on the player: `usb6-test.img` as a read-only
+  disk → `/dev/sdc`, 262,144 B read in 0.36 s, **sha256 equal**;
+  `usb6-test.iso` as CD-ROM → `/dev/sr0`, 309,248 B in 0.17 s, **sha256
+  equal**; 0 bytes written. Test-tool fixes: device nodes are opened with a
+  retry while udev applies permissions, and a transfer error on a
+  personality switch is only a note (the player re-enumerates mid-request).
+
 ### 2026-11-24 — UI-8 list roll-around on the player (lead)
 
 * Merged UI-8 (`9d9cdfa6`). On the player: Settings root, Up on the first
