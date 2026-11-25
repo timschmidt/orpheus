@@ -435,6 +435,21 @@ pub fn run(cache: &Path, ui_dirs: &[PathBuf], budget: usize) -> Result<Outcome, 
                 m.insert(k, p);
             }
         }
+        // Forced words stay right: pruning may drop a stem a forced word
+        // relied on when it was skipped (2026-11-25: "passes" after "pass"
+        // was pruned). Re-add any forced word that needs its own entry.
+        loop {
+            let mut added = false;
+            for w in &forced {
+                if let Some(p) = needed(w, &dict[w], &m) {
+                    m.insert(w.as_bytes().to_vec(), p);
+                    added = true;
+                }
+            }
+            if !added {
+                break;
+            }
+        }
         let bin = encode(&m, PER_BLOCK);
         (m, bin)
     };

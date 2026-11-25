@@ -1,34 +1,34 @@
-corpus: 57 books, 6813460 tokens, 75523 types; 97.7 % of the tokens are CMUdict words (38010 types)
-forced vocabulary: 973 words in the dictionary (748 interface words, 331 normaliser words; 30 of these pronunciations hand-written, not CMUdict's) at weight 2296
-lexicon: 4487 entries (4148 full, 339 stress-only) of 19663 needed, 32766 bytes (budget 32768)
+corpus: 57 books, 7390241 tokens, 77781 types; 97.6 % of the tokens are CMUdict words (38557 types)
+forced vocabulary: 1017 words in the dictionary (798 interface words, 331 normaliser words; 30 of these pronunciations hand-written, not CMUdict's) at weight 2454
+lexicon: 4499 entries (4164 full, 335 stress-only) of 19975 needed, 32766 bytes (budget 32768)
 
 rules alone (NRL + stress heuristic) against CMUdict, by frequency rank:
-  top   1000  words   1000: phonemes  66.9 %, +stress  65.1 %; tokens: phonemes  88.6 %, +stress  87.7 %
-  top   5000  words   5000: phonemes  53.5 %, +stress  50.5 %; tokens: phonemes  83.0 %, +stress  81.9 %
-  top  20000  words  20000: phonemes  43.4 %, +stress  39.7 %; tokens: phonemes  80.2 %, +stress  78.9 %
-  top  38010  words  38010: phonemes  39.3 %, +stress  35.6 %; tokens: phonemes  79.8 %, +stress  78.5 %
+  top   1000  words   1000: phonemes  66.7 %, +stress  64.9 %; tokens: phonemes  88.5 %, +stress  87.7 %
+  top   5000  words   5000: phonemes  53.6 %, +stress  50.6 %; tokens: phonemes  83.0 %, +stress  81.8 %
+  top  20000  words  20000: phonemes  43.4 %, +stress  39.7 %; tokens: phonemes  80.1 %, +stress  78.8 %
+  top  38557  words  38557: phonemes  39.1 %, +stress  35.4 %; tokens: phonemes  79.7 %, +stress  78.4 %
 
 rules + lexicon (as shipped):
   top   1000  words   1000: phonemes  99.7 %, +stress  99.7 %; tokens: phonemes  99.9 %, +stress  99.9 %
   top   5000  words   5000: phonemes  99.8 %, +stress  99.8 %; tokens: phonemes  99.9 %, +stress  99.9 %
-  top  20000  words  20000: phonemes  74.6 %, +stress  72.6 %; tokens: phonemes  98.6 %, +stress  98.5 %
-  top  38010  words  38010: phonemes  58.2 %, +stress  55.4 %; tokens: phonemes  98.2 %, +stress  98.1 %
-  forced      words    973: phonemes 100.0 %, +stress 100.0 %; tokens: phonemes 100.0 %, +stress 100.0 %
+  top  20000  words  20000: phonemes  74.7 %, +stress  72.7 %; tokens: phonemes  98.7 %, +stress  98.6 %
+  top  38557  words  38557: phonemes  57.9 %, +stress  55.1 %; tokens: phonemes  98.2 %, +stress  98.1 %
+  forced      words   1017: phonemes 100.0 %, +stress 100.0 %; tokens: phonemes 100.0 %, +stress 100.0 %
 
 accuracy/size curve (first N needed entries in weight order, all CMUdict words of the corpus):
   entries    bytes   tokens right (phonemes+stress)
-        0       16    78.5 %  (phonemes  79.8 %)
-      250     2016    84.4 %  (phonemes  85.2 %)
-      500     3718    86.8 %  (phonemes  87.5 %)
-      750     5420    89.9 %  (phonemes  90.5 %)
-     1000     7107    91.6 %  (phonemes  92.2 %)
-     2000    13816    95.1 %  (phonemes  95.4 %)
-     3000    20586    96.7 %  (phonemes  96.9 %)
-     4000    27383    97.6 %  (phonemes  97.8 %)
-     4774    32766    98.1 %  (phonemes  98.2 %)  <- shipped
-     5000    34349    98.2 %  (phonemes  98.3 %)
-     6000    41505    98.6 %  (phonemes  98.7 %)
-     7000    48591    98.8 %  (phonemes  98.9 %)
-     8000    55574    99.1 %  (phonemes  99.1 %)
-    16000   111216    99.6 %  (phonemes  99.6 %)
-    19663   137026    99.6 %  (phonemes  99.6 %)
+        0     3183    81.8 %  (phonemes  83.0 %)
+      250     3407    84.8 %  (phonemes  85.6 %)
+      500     3708    86.5 %  (phonemes  87.2 %)
+      750     5377    89.8 %  (phonemes  90.4 %)
+     1000     7079    91.5 %  (phonemes  92.1 %)
+     2000    13754    95.0 %  (phonemes  95.4 %)
+     3000    20547    96.7 %  (phonemes  96.9 %)
+     4000    27373    97.6 %  (phonemes  97.7 %)
+     4789    32766    98.1 %  (phonemes  98.2 %)  <- shipped
+     5000    34273    98.2 %  (phonemes  98.3 %)
+     6000    41360    98.6 %  (phonemes  98.7 %)
+     7000    48504    98.8 %  (phonemes  98.9 %)
+     8000    55529    99.1 %  (phonemes  99.1 %)
+    16000   111060    99.6 %  (phonemes  99.6 %)
+    19975   139093    99.6 %  (phonemes  99.6 %)
