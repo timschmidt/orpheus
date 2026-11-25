@@ -65,6 +65,7 @@ of every session. Newest entries first in §3.
 | SYN-1 | **done (host)**; not in the firmware (SYN-3) | `orpheus-synth`: band-limited oscillators (polyBLEP/BLAMP, sine, wavetables, white/pink noise), 2–4 operator FM (8 algorithms, feedback), ADSR (linear/exponential), pitch envelope, SVF LP/BP/HP, LFOs (Hz or tempo sync), 16 voices + 4 fade-out tails with stealing, mono legato glide, sample-accurate events, 6 drum voices, delay/chorus/reverb sends, soft limiter; 69,040 B engine; golden hashes equal at opt-level 1 and release; player estimate: 16 saw-lead voices ≈ 79 % of 144 MHz (session entry 2026-11-25 "SYN-1") |
 | TTS-1 | **done (host)**; not in the firmware, simulator or apps (TTS-2, A11Y-1, BOOK-3) | `orpheus-tts`: incremental converter (1,408 B, any feed sizes), English normaliser, NRL letter-to-sound rules + stress heuristic + stems, CMUdict exception lexicon (4,487 entries in 32,766 B; `cargo xtask tts-lexicon`), duration model for 0.25×–10×; rules alone 79.8 % of tokens, with the lexicon 98.1 % (session entry 2026-11-25 "TTS-1") |
 | TTS-2 | **done (host)**; not in the firmware, simulator or apps (A11Y-1, BOOK-3, firmware integration) | `orpheus-tts`: cascade/parallel formant synthesiser after Klatt 1980 (KLGLOTT88-like source with polyBLEP, F1–F6 cascade, nasal pole/zero, parallel frication/bursts), phoneme targets and loci from the phonetics literature, intonation (declination, accents, 5 contours, asides), voices Neutral/Low/Bright, exact TTS-1 durations at 0.25×–10×, resampler to 8–48 kHz, `Synth` (1,936 B) and `Speaker` (3,352 B with the converter), events and stop; WER (whisper base.en) 13.9 / 30.5 / 93 % at 1/2/4× (espeak-ng 5.9 / 63 / 89 %); player estimate ≈ 22 % of Base at 48 kHz (over the 20 % budget), code ≈ 70 KB without the lexicon (over 64 KiB) (session entry 2026-11-25 "TTS-2") |
+| GAME-6 Bricks (M14) | **built (host + simulator + firmware), not yet run on the player** | Brick breaker of our own: integer physics with one-pixel sub-steps (no tunnelling at any speed, no floating point), paddle angles, 1–3-hit and unbreakable bricks, 8 hand-made + generated levels, five power-ups, lives, scores, saves; 7 settings packed into 1 word; 47 goldens; fuzz `bricks_keys`. In the firmware (`orpheus-apps/bricks`): stack margin 4,116 B unchanged. Lead: session entry 2026-11-25 "GAME-6" |
 
 ## 3. Session log
 
@@ -192,6 +193,120 @@ rows, 33..110).
   Authenticator's unlock, set-up, PIN change and a code (the per-kind
   finishes; same vault bytes on the host); stack free in `status` after
   those (≥ `stack_free_min_bytes`).
+### 2026-11-25 — GAME-6: Bricks, the brick breaker (host, simulator, firmware build; worker, no hardware)
+
+Design, rules, keys, settings and numbers: 05 §7.13 "As built (GAME-6
+Bricks)".
+
+* **Engine** `orpheus_games::bricks` (feature `bricks`; `Bricks` 256 B, so
+  the session and the hub do not grow): integer physics (1/256 px, a sine
+  table in 1/4096) — the thumbv7em build of it has **no floating-point
+  instruction** (0 `v…` in the 18 Bricks functions, 0 `vfma` in the image).
+  Swept collision as sub-steps of at most a pixel per axis, x then y; a
+  move that would overlap a wall, brick or the paddle turns the ball
+  instead. Paddle angle by contact (12°–60° from the vertical), the paddle
+  stops at a ball beside it; speed-ups by level and over a rally; a stall
+  nudge against endless loops between unbreakable bricks. Eight hand-made
+  levels of our own and generated ones (five symmetric patterns, density
+  and hardness by level, unbreakable from level 4, pockets opened by a
+  reachability search). Power-ups: wider, slower, split (3 balls), catch,
+  life. Lives, score (10 per hit a brick took, 100 per level), save
+  `bricks.sav` 255 B, score table (variant from six settings).
+* **App and simulator**: `Game::Bricks` (Games list fifth), screen
+  `Bricks` (`screens/bricks.rs`, partial redraw: changed brick rows and the
+  rectangles each ball, capsule and the paddle left and took, each
+  repainted in order clipped to it; status line on change; banners on a
+  phase change). A new game waits with the ball on the paddle ("OK to
+  launch"); a game continued from the list in mid-rally opens paused.
+  Settings `0x0EA1–0x0EA7` packed into `0x0EB0` (`STORED` 124 → 125 with
+  Salvo); Steering applies at once, the rest from the next game. Simulator
+  hooks `set:bricksball|brickscap|brickslevel|bricksclear|brickslives|
+  bricksspeed|brickspaddle`, `goto:Bricks`. New strings appended (16).
+* **Tests**: `crates/orpheus-games/tests/bricks.rs` (17): 120 random games
+  (random settings, keys, steps; half with an autopilot under the ball:
+  levels cleared, power-ups caught, games lost) with, after every input
+  and step, `Bricks::check` (no ball in a wall, brick or the paddle, held
+  balls on the paddle, counts, phase), bricks only losing hits within a
+  level, the score recomputed from the cells that emptied and the levels
+  cleared, saves read back equal, the run repeated equal; **no
+  tunnelling** at 5 px/step: a full row of bricks never passed (3,024
+  shots: 7 angles × 2 sides × 54 places × 4 sub-pixel offsets), the
+  paddle never passed (144 drops), and over 400 random max-speed balls in
+  generated level-10 fields no step that turns nothing has a brick on its
+  straight path (the brick less the pixel the staircase may stray);
+  mutation check: with one sub-step per step both brick tests fail; walls
+  and unbreakable bricks at max speed; paddle angles; serve and keys;
+  lives and game over; levels cleared and the generated set; hits and
+  points; speed-up and cap; every power-up; save round trip;
+  **deterministic replay pinned** (checksum 0x8a1fd172 over 120 saves of a
+  12,000-step autopilot game, each save without its own CRC — see open
+  item 1). Engine unit tests: every level of each set reachable and
+  symmetric; pockets opened. Fuzz target `bricks_keys` (body in
+  `fuzz/src/lib.rs`, autopilot bit) with 8 seeds in
+  `tests/fuzz-corpus/bricks_keys/`, replayed by `tests/fuzz_corpus.rs`;
+  `cargo fuzz` 150 s: 369 runs, no finding. `orpheus-apps`:
+  `bricks_packed_settings`, `settings_table`. Simulator
+  (`sim/tests/games.rs`): differential tests of all seven settings
+  (`bricks_settings::*`; Bricks added as a context every other game
+  setting must not change), `bricks_saved_and_continued` (pause → file
+  equal to the game, quit, restart → the same game, a lost game recorded,
+  the save removed), `bricks_partial_redraw_equals_full` (4 seeds × 120
+  random keys, capsules, extra balls, max speed). VER-13 manifest: 8 new
+  entries.
+* **Goldens**: 45 new `games_bricks_*` (serve, moved, play, life lost, two
+  of capsules, wider, split, catch, worn bricks, levels 5 and 8, a
+  generated level, cleared, next level, over, paused, pause menu,
+  settings and their end, help and its end; Dark and Light; worn bricks
+  and capsule signs in Amber) and 2 `games_list_bricks_*`; the four Games
+  list goldens changed (a scrollbar: six games). Looked at all; fixed from
+  looking: settings labels cut off ("Ball spe…", "Paddle…" → Ball, Paddle,
+  Steering).
+* **Suite**: the `games` journey's list shot gets a mask over the
+  scrollbar (the simulator lists six games, the firmware five);
+  `expected/games/list.png` re-made through the test (`ORPHEUS_BLESS=1`,
+  not `xtask dev`).
+* **Measured**: host (release) 80 ns per logic step; game loop per 33-ms
+  frame (simulator, all services) in play 3.6 µs and 30.6 dirty rows.
+  Player estimate (× 40–60): ≈ 5 µs a step, ≈ 0.2 ms a frame before the
+  flush; the generated level's reachability search runs once per level.
+* **Firmware** (`cargo xtask build`, `size --check`, `check-resident`,
+  `stack --check`, all pass): **Bricks is in** (`orpheus-apps` feature
+  `bricks` in `fw/firmware/Cargo.toml`). Without it (the shared changes:
+  strings, settings tables): resident 80,779 → 80,795 B, `.bss` and stack
+  unchanged. With it: resident 80,923 B (+128), `.bss` 124,872 B (+8, the
+  settings word), slot 1,175,552 → 1,191,936 B (two code pages), stack
+  16,108 B nested worst case of 20,224 usable, **margin 4,116 B
+  unchanged** (the thread context stays 6,796 B; Bricks' deepest frames:
+  `load_level` 992 B incl. the level generator, not on the deepest path).
+* **Gate**: host `cargo fmt --all --check`, `cargo clippy --workspace
+  --all-targets -D warnings`, and per crate `orpheus-games` (none, bricks,
+  salvo, both) and `orpheus-apps` (none, games, bricks, salvo, both) with
+  `--all-targets -D warnings`; `cargo test --workspace` (1,424 passed, 11
+  ignored); fw `cargo fmt --all --check`, `cargo clippy --workspace -D
+  warnings`, `cargo xtask build`, `size --check`, `check-resident`,
+  `stack --check`: pass. **Not run**: `xtask test all` beyond these (fuzz
+  smoke, codecs), `brand --check`, `site --check`, `xtask wasm` (the
+  browser build has Bricks through the simulator), every `xtask dev` step.
+* **Open**: (1) Salvo's `deterministic_and_pinned` (and the first draft
+  of this one) checksums `crc32` of whole save files: a CRC-32 over data
+  followed by its own CRC is always the residue 0x2144df1c, so XOR-ing
+  those pins nothing (the Salvo test passes for any game); it should hash
+  `buf[..n - 4]` and be re-pinned (left to the Salvo worker: not changed
+  here). (2) `tests/settings/effects.toml` is not valid TOML at the Salvo
+  entries 0x0E62/0x0E63 (unescaped quotes in `oracle`, line 274);
+  `settings_table` only greps it; the VER-13 gate that parses it will
+  fail there. (3) Expect merge conflicts with the Salvo-in-firmware work
+  in `fw/firmware/Cargo.toml` (one feature) and `journeys.toml` (one mask
+  rectangle).
+* **Lead, on the player** (user check): Home › Games › Bricks (fifth row;
+  fourth if Salvo stays out): launch, move the paddle (Prev/Next, hold to
+  speed up), break bricks, catch a capsule of each kind (bar = wider, S,
+  three dots, C, +), lose a life, clear level 1 (level 2 follows after
+  the banner), Back → pause → Quit → "Continue" → the same game paused;
+  Continue after a reboot. Watch the frame rate with three balls (the
+  estimate is ≈ 0.2 ms of drawing a frame plus the flush of ≈ 30 rows) and
+  music playing (underruns while switching to and from Bricks, as for the
+  other games).
 
 ### 2026-11-25 — UI-PERF: idle Home thrashed the code cache; games during music on the player (lead)
 

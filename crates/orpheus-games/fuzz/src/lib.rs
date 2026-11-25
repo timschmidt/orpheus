@@ -10,11 +10,16 @@
 //! repeat (one byte each), a 64-bit seed, then per byte either an input
 //! (bit 7 clear) or `(b & 0x7F) + 1` logic steps (bit 7 set).
 //! `salvo_keys`: ten configuration bytes ([`salvo_config`]), a 64-bit
-//! seed, then inputs and steps as for Blocks.
+//! seed, then inputs and steps as for Blocks. `bricks_keys`: three
+//! configuration bytes ([`bricks_config`]; bit 7 of the third turns on the
+//! autopilot, which moves the paddle under the ball before every step), a
+//! 64-bit seed, then inputs and steps as for Blocks.
 
 #![allow(clippy::missing_panics_doc)]
 
 use orpheus_games::blocks::{self, Blocks, CLEAR_POINTS, COMBO_POINTS, H, HIDDEN, ROWS, W, level_for};
+#[cfg(feature = "bricks")]
+use orpheus_games::bricks;
 #[cfg(feature = "salvo")]
 use orpheus_games::salvo;
 use orpheus_games::solitaire;
@@ -625,4 +630,177 @@ pub fn salvo_run(data: &[u8]) -> salvo::Salvo {
 pub fn salvo_keys(data: &[u8]) {
     let a = salvo_run(data);
     assert_eq!(a, salvo_run(data), "deterministic");
+}
+
+#[cfg(feature = "bricks")]
+/// The Bricks configuration of an input's first three bytes: start level;
+/// ball speed, paddle size and paddle speed (two bits each); lives (1, 3,
+/// 5), power-ups (bit 2 clear: on), level set (bits 3–4).
+#[must_use]
+pub fn bricks_config(d: &[u8]) -> bricks::Config {
+    let b = |i: usize| d.get(i).copied().unwrap_or(0);
+    bricks::Config {
+        start_level: 1 + b(0) % 10,
+        speed: b(1) % 3,
+        paddle: (b(1) >> 2) % 3,
+        sens: (b(1) >> 4) % 3,
+        lives: [1, 3, 5][usize::from(b(2) % 3)],
+        powerups: b(2) & 4 == 0,
+        set: bricks::LevelSet::from_u8((b(2) >> 3) % 3).unwrap_or_default(),
+    }
+    .sanitised()
+}
+
+#[cfg(feature = "bricks")]
+/// The keys an autopilot presses before a step: the paddle's centre under
+/// the lowest falling ball (offset by `bias` px), OK when a ball waits.
+pub fn bricks_autopilot(g: &bricks::Bricks, dir: &mut i8, bias: i32, k: usize) -> Vec<Input> {
+    use bricks::{BALL, ONE};
+    use orpheus_games::Button;
+    let mut out = Vec::new();
+    let ball = g.balls().iter().filter(|b| b.live()).max_by_key(|b| (i32::from(!b.up()), b.y));
+    let (px, pw) = g.paddle();
+    let centre = px + i32::from(pw) * ONE / 2;
+    let want = match ball {
+        Some(b) if !b.stuck() => {
+            let target = b.x + BALL * ONE / 2 + bias * ONE;
+            if centre < target - 2 * ONE {
+                1
+            } else if centre > target + 2 * ONE {
+                -1
+            } else {
+                0
+            }
+        }
+        // Waiting on the paddle: wander, then launch.
+        _ => {
+            if k % 40 == 0 {
+                out.push(Input::Press(Button::Ok));
+                out.push(Input::Release(Button::Ok));
+            }
+            if (k / 25) % 2 == 0 { 1 } else { -1 }
+        }
+    };
+    if want != *dir {
+        match *dir {
+            1 => out.push(Input::Release(Button::Right)),
+            -1 => out.push(Input::Release(Button::Left)),
+            _ => {}
+        }
+        match want {
+            1 => out.push(Input::Press(Button::Right)),
+            -1 => out.push(Input::Press(Button::Left)),
+            _ => {}
+        }
+        *dir = want;
+    }
+    out
+}
+
+#[cfg(feature = "bricks")]
+/// What a reference keeps of a Bricks game between steps: the bricks of
+/// the level as they were, and the score they and the cleared levels add
+/// up to.
+pub struct BricksRef {
+    level: u16,
+    cells: [u8; bricks::CELLS],
+    cleared: u16,
+    left: u8,
+    score: u32,
+}
+
+#[cfg(feature = "bricks")]
+impl BricksRef {
+    #[must_use]
+    pub fn new(g: &bricks::Bricks) -> BricksRef {
+        BricksRef {
+            level: g.level(),
+            cells: *g.cells(),
+            cleared: g.cleared(),
+            left: g.bricks_left(),
+            score: 0,
+        }
+    }
+
+    /// After an input or a step: the invariants (`check`: no ball inside a
+    /// wall, a brick or the paddle), bricks only ever lose hits or go
+    /// within a level, and the score is the reference's.
+    pub fn follow(&mut self, g: &bricks::Bricks, at: usize) {
+        use bricks::{BRICK_POINTS, CLEAR_POINTS, EMPTY, SOLID, breakable, hits_left, strength};
+        if let Err(e) = g.check() {
+            panic!("byte {at}: invariant: {e}");
+        }
+        if g.level() == self.level {
+            for (i, (&old, &new)) in self.cells.iter().zip(g.cells()).enumerate() {
+                if old == new {
+                    continue;
+                }
+                assert!(breakable(old), "byte {at}: cell {i} {old:#x} -> {new:#x}: only bricks change");
+                if new == EMPTY {
+                    self.score += BRICK_POINTS * u32::from(strength(old));
+                } else {
+                    assert_eq!(strength(new), strength(old), "byte {at}: cell {i}");
+                    assert!(hits_left(new) < hits_left(old), "byte {at}: cell {i} gained hits");
+                }
+                assert!(new != SOLID);
+            }
+            assert!(g.bricks_left() <= self.left, "byte {at}: bricks left grew");
+        }
+        assert!(g.cleared() >= self.cleared);
+        self.score += CLEAR_POINTS * u32::from(g.cleared() - self.cleared);
+        assert_eq!(g.score(), self.score, "byte {at}: score against the bricks broken");
+        *self = BricksRef { score: self.score, ..BricksRef::new(g) };
+    }
+}
+
+#[cfg(feature = "bricks")]
+/// Run a Bricks input: three config bytes, a 64-bit seed, then per byte
+/// an input (bit 7 clear: [`Input::from_byte`]) or `(b & 0x7F) + 1` logic
+/// steps (bit 7 set), with the autopilot's keys before each step when it
+/// is on. After every input and step the reference follows
+/// ([`BricksRef::follow`]); every 50 bytes a save reads back as the same
+/// game. Returns the final game.
+pub fn bricks_run(data: &[u8]) -> bricks::Bricks {
+    use bricks::Bricks;
+    let cfg = bricks_config(data);
+    let auto = data.get(2).is_some_and(|b| b & 0x80 != 0);
+    let mut g = Bricks::new(cfg, seed(data.get(3..11).unwrap_or(&[])));
+    let mut r = BricksRef::new(&g);
+    r.follow(&g, 0);
+    let mut buf = [0u8; SAVE_MAX];
+    let mut dir = 0i8;
+    let mut n = 0usize;
+    for (k, &b) in data.iter().skip(11).enumerate().take(3000) {
+        if b & 0x80 != 0 {
+            for _ in 0..=(b & 0x7F) {
+                if auto {
+                    let bias = i32::from(b & 0x0F) - 7;
+                    for i in bricks_autopilot(&g, &mut dir, bias, n) {
+                        g.input(i);
+                        r.follow(&g, k);
+                    }
+                }
+                n += 1;
+                g.step();
+                r.follow(&g, k);
+            }
+        } else if let Some(i) = Input::from_byte(b) {
+            g.input(i);
+            r.follow(&g, k);
+        }
+        if k % 50 == 0 {
+            let s = Session::Bricks(g.clone());
+            let len = s.encode(&mut buf).expect("fits SAVE_MAX");
+            let back = Session::decode(&buf[..len], Some(orpheus_games::id::BRICKS)).expect("reads back");
+            assert_eq!(back, s, "byte {k}: the save is the game");
+        }
+    }
+    g
+}
+
+/// The fuzz target: the same input twice gives the same game.
+#[cfg(feature = "bricks")]
+pub fn bricks_keys(data: &[u8]) {
+    let a = bricks_run(data);
+    assert_eq!(a, bricks_run(data), "deterministic");
 }

@@ -28,6 +28,11 @@
 //! once when the game pauses. A computer's search runs one simulated shot
 //! a frame.
 //!
+//! Bricks (feature `bricks`) is full screen (`super::bricks`): a status
+//! line over the 128 × 116 field, drawn in part (the bricks rows that
+//! changed and the places the balls, capsules and paddle left and took).
+//! Prev/Next or Down/Up move the paddle, OK or Menu launch, Back pauses.
+//!
 //! A save file a firmware's card task reads later (`GamesService`'s
 //! `Open` answered late, the hub's `opening`): the screen shows "Loading…"
 //! until the hub has the game.
@@ -44,8 +49,12 @@ use orpheus_ui::nav::{Arg, Cx, Dirty, Nav, Resume, Screen, ScreenId, StripUse, W
 use orpheus_ui::text::StrBuf;
 use orpheus_ui::theme::Role;
 
+#[cfg(feature = "bricks")]
+use super::GAME_BRICKS;
 #[cfg(feature = "salvo")]
 use super::GAME_SALVO;
+#[cfg(feature = "bricks")]
+use super::bricks::{BricksDrawn, BricksView};
 use super::games::{push_points, push_time};
 #[cfg(feature = "salvo")]
 use super::salvo::SalvoView;
@@ -91,6 +100,9 @@ pub struct GameScreen {
     /// The OK press was the screen's (resume, new game): its release is
     /// not a game input.
     eat_release: bool,
+    /// Bricks: what was drawn where.
+    #[cfg(feature = "bricks")]
+    bricks_drawn: Option<BricksDrawn>,
 }
 
 impl GameScreen {
@@ -107,6 +119,8 @@ impl GameScreen {
             sol_drawn: None,
             refused: 0,
             eat_release: false,
+            #[cfg(feature = "bricks")]
+            bricks_drawn: None,
         }
     }
 
@@ -118,6 +132,8 @@ impl GameScreen {
             Game::Solitaire => GAME_SOLITAIRE,
             #[cfg(feature = "salvo")]
             Game::Salvo => GAME_SALVO,
+            #[cfg(feature = "bricks")]
+            Game::Bricks => GAME_BRICKS,
         }
     }
 
@@ -129,6 +145,8 @@ impl GameScreen {
             Game::Solitaire => "Solitaire",
             #[cfg(feature = "salvo")]
             Game::Salvo => "Salvo",
+            #[cfg(feature = "bricks")]
+            Game::Bricks => "Bricks",
         }
     }
 
@@ -140,6 +158,8 @@ impl GameScreen {
             Game::Tiles => false,
             #[cfg(feature = "salvo")]
             Game::Salvo => true,
+            #[cfg(feature = "bricks")]
+            Game::Bricks => true,
         }
     }
 
@@ -160,6 +180,8 @@ impl GameScreen {
                 s.release_all();
                 s.settle_now();
             }
+            #[cfg(feature = "bricks")]
+            Session::Bricks(b) => b.release_all(),
             _ => {}
         }
     }
@@ -170,12 +192,20 @@ impl GameScreen {
         self.clock.reset();
     }
 
-    fn fresh_view(&self) -> View {
+    /// The view a game opens in (new, or continued from the list).
+    fn fresh_view(&self, _s: &Session) -> View {
         match self.game {
             Game::Blocks => View::Paused,
             Game::Tiles | Game::Solitaire => View::Playing,
             #[cfg(feature = "salvo")]
             Game::Salvo => View::Playing,
+            // A served ball waits on the paddle for OK anyway; a game
+            // continued in mid-rally waits for OK before the ball moves.
+            #[cfg(feature = "bricks")]
+            Game::Bricks => match _s {
+                Session::Bricks(b) if b.phase() != orpheus_games::bricks::Phase::Serve => View::Paused,
+                _ => View::Playing,
+            },
         }
     }
 
@@ -187,6 +217,8 @@ impl GameScreen {
         }
         let (das, arr) = games::blocks_handling(cx.svc);
         let sol = games::solitaire_config(cx.svc);
+        #[cfg(feature = "bricks")]
+        let sens = games::bricks_config(cx.svc).sens;
         match &mut cx.svc.games_mut().session {
             Session::Blocks(b) => {
                 b.set_handling(das, arr);
@@ -196,13 +228,23 @@ impl GameScreen {
                 s.set_assists(sol.auto_move, sol.auto_complete);
                 s.drop_held();
             }
+            #[cfg(feature = "bricks")]
+            Session::Bricks(b) => {
+                b.set_handling(sens);
+                b.release_all();
+            }
             _ => {}
         }
-        self.view = if cx.svc.games().session.in_progress() { self.fresh_view() } else { View::Ended };
+        let s = &cx.svc.games().session;
+        self.view = if s.in_progress() { self.fresh_view(s) } else { View::Ended };
         self.clock.reset();
         self.anim = None;
         self.drawn = None;
         self.sol_drawn = None;
+        #[cfg(feature = "bricks")]
+        {
+            self.bricks_drawn = None;
+        }
     }
 
     fn key<S: Services + ?Sized>(&mut self, cx: &mut Cx<'_, S>, i: Input) {
@@ -222,7 +264,7 @@ impl GameScreen {
                     self.new_best = false;
                     self.anim = None;
                     self.sol_drawn = None;
-                    self.view = self.fresh_view();
+                    self.view = self.fresh_view(&cx.svc.games().session);
                     self.eat_release = true;
                 }
             }
@@ -249,6 +291,11 @@ impl GameScreen {
                     Session::Salvo(s) => {
                         s.input(i);
                         s.ended()
+                    }
+                    #[cfg(feature = "bricks")]
+                    Session::Bricks(b) => {
+                        b.input(i);
+                        b.ended()
                     }
                     Session::None => false,
                 };
@@ -316,6 +363,15 @@ impl GameScreen {
                         break;
                     }
                     if thinking {
+                        break;
+                    }
+                }
+            }
+            #[cfg(feature = "bricks")]
+            Session::Bricks(b) => {
+                for _ in 0..n {
+                    if b.step().ended {
+                        ended = true;
                         break;
                     }
                 }
@@ -465,6 +521,11 @@ impl<S: Services + ?Sized> Screen<S> for GameScreen {
                 v.draw(g, self.lang);
                 self.drawn = Some((key, 0, 0));
             }
+            #[cfg(feature = "bricks")]
+            Session::Bricks(b) => {
+                let v = BricksView { b, view: self.view, new_best: self.new_best };
+                self.bricks_drawn = Some(v.draw(g, self.lang, dirty, self.bricks_drawn.as_ref()));
+            }
             Session::None => g.clear(Role::Bg),
         }
     }
@@ -494,6 +555,14 @@ impl<S: Services + ?Sized> Screen<S> for GameScreen {
             },
             #[cfg(feature = "salvo")]
             Game::Salvo => Wants {
+                ticks: matches!(self.view, View::Playing | View::Loading),
+                full_screen: true,
+                menu_key: true,
+                title,
+                ..Wants::default()
+            },
+            #[cfg(feature = "bricks")]
+            Game::Bricks => Wants {
                 ticks: matches!(self.view, View::Playing | View::Loading),
                 full_screen: true,
                 menu_key: true,

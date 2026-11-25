@@ -34,6 +34,10 @@ games = ["dep:orpheus-games", "dep:orpheus-fs", "orpheus-ui/menu-key"]
 # build and the UI fuzzer; off in the firmware until there is static RAM
 # and stack for it (docs/STATUS.md, GAME-4/5).
 salvo = ["games", "orpheus-games/salvo"]
+# Bricks, the brick-breaking game (GAME-6): on in the simulator, the
+# browser build and the UI fuzzer; in the firmware only while its stack,
+# size and resident checks pass with it (docs/STATUS.md, GAME-6).
+bricks = ["games", "orpheus-games/bricks"]
 
 [lints]
 workspace = true

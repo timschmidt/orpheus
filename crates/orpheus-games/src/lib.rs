@@ -20,6 +20,8 @@
 //! * [`blocks`]: Blocks (GAME-1), the falling-tetromino game.
 //! * [`solitaire`]: Solitaire (GAME-2), Klondike.
 //! * `salvo` (feature `salvo`): Salvo (GAME-4/5), the artillery duel.
+//! * `bricks` (feature `bricks`): Bricks (GAME-6), paddle, ball and bricks
+//!   (integer physics).
 //! * [`Session`] and [`Hub`]: the one game in RAM, the scores, and which
 //!   games have a save file; what the app's `GamesService` keeps.
 //!
@@ -30,6 +32,8 @@
 #![forbid(unsafe_code)]
 
 pub mod blocks;
+#[cfg(feature = "bricks")]
+pub mod bricks;
 pub mod rng;
 #[cfg(feature = "salvo")]
 pub mod salvo;
@@ -42,6 +46,8 @@ pub use rng::Rng;
 pub use scores::{Outcome, Record, Scores};
 
 use blocks::Blocks;
+#[cfg(feature = "bricks")]
+use bricks::Bricks;
 #[cfg(feature = "salvo")]
 use salvo::Salvo;
 use solitaire::Solitaire;
@@ -58,6 +64,8 @@ pub mod id {
     pub const SOLITAIRE: u8 = 3;
     /// The artillery game (GAME-4/5).
     pub const SALVO: u8 = 4;
+    /// The brick-breaking game (GAME-6).
+    pub const BRICKS: u8 = 5;
     /// Bit per game in [`super::Hub::saved`]: ids are below 8.
     pub const MAX: u8 = 7;
 }
@@ -193,6 +201,8 @@ pub enum Session {
     Solitaire(Solitaire),
     #[cfg(feature = "salvo")]
     Salvo(Salvo),
+    #[cfg(feature = "bricks")]
+    Bricks(Bricks),
 }
 
 /// Largest encoded save file ([`Session::encode`]).
@@ -209,6 +219,8 @@ impl Session {
             Session::Solitaire(_) => Some(id::SOLITAIRE),
             #[cfg(feature = "salvo")]
             Session::Salvo(_) => Some(id::SALVO),
+            #[cfg(feature = "bricks")]
+            Session::Bricks(_) => Some(id::BRICKS),
         }
     }
 
@@ -222,6 +234,8 @@ impl Session {
             Session::Solitaire(s) => !s.ended(),
             #[cfg(feature = "salvo")]
             Session::Salvo(s) => !s.ended(),
+            #[cfg(feature = "bricks")]
+            Session::Bricks(b) => !b.ended(),
         }
     }
 
@@ -235,6 +249,8 @@ impl Session {
             Session::Solitaire(s) => save::seal(buf, id::SOLITAIRE, solitaire::VERSION, |w| s.encode(w)),
             #[cfg(feature = "salvo")]
             Session::Salvo(s) => save::seal(buf, id::SALVO, salvo::VERSION, |w| s.encode(w)),
+            #[cfg(feature = "bricks")]
+            Session::Bricks(b) => save::seal(buf, id::BRICKS, bricks::VERSION, |w| b.encode(w)),
         }
     }
 
@@ -284,6 +300,8 @@ impl Session {
             (id::BLOCKS, blocks::VERSION) => *self = Session::Blocks(Blocks::decode(r)?),
             (id::TILES, tiles::VERSION) => *self = Session::Tiles(Tiles::decode(r)?),
             (id::SOLITAIRE, solitaire::VERSION) => *self = Session::Solitaire(Solitaire::decode(r)?),
+            #[cfg(feature = "bricks")]
+            (id::BRICKS, bricks::VERSION) => *self = Session::Bricks(Bricks::decode(r)?),
             _ => return None,
         }
         Some(())
@@ -418,6 +436,10 @@ mod tests {
         assert!(size_of::<Tiles>() <= 248, "Tiles {}", size_of::<Tiles>());
         assert!(size_of::<Solitaire>() <= 344, "Solitaire {}", size_of::<Solitaire>());
         assert!(size_of::<Scores>() <= 488, "Scores {}", size_of::<Scores>());
+        // Bricks (GAME-6) fits under the largest of the first three, so
+        // the session does not grow with it.
+        #[cfg(feature = "bricks")]
+        assert!(size_of::<Bricks>() <= 344, "Bricks {}", size_of::<Bricks>());
         #[cfg(feature = "salvo")]
         {
             assert!(size_of::<Salvo>() <= 680, "Salvo {}", size_of::<Salvo>());

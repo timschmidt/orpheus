@@ -312,4 +312,5 @@ prev*2 ok wait:300 expect-screen:Games shot:list back
 [journey.shot.list]
 rects = [
     { x = 60, y = 33, w = 68, h = 77, why = "the games' values (four rows; Salvo in the firmware since STACK 2026-11-25): Continue or the best result" },
+    { x = 122, y = 12, w = 6, h = 104, why = "scrollbar: the simulator and the firmware list five games (Salvo, Bricks); kept masked while the counts may differ" },
 ]

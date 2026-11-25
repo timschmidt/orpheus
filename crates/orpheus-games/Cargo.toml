@@ -1,6 +1,6 @@
 [package]
 name = "orpheus-games"
-description = "Game logic of the Games app (05 §7.13, M14): fixed-step framework, seedable RNG, save format, scores, Blocks and 4096 (host-testable)"
+description = "Game logic of the Games app (05 §7.13, M14): fixed-step framework, seedable RNG, save format, scores, Blocks, 4096, Solitaire, Salvo, Bricks (host-testable)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,6 +12,10 @@ publish = false
 # the firmware's static RAM and stack budget yet (docs/STATUS.md, GAME-4/5);
 # on in the simulator, the browser build and the fuzz targets.
 salvo = []
+# Bricks, the brick-breaking game (GAME-6): its state fits the session
+# as it is (no RAM growth); on in the simulator, the browser build and the
+# fuzz targets, and in the firmware when its stack and size checks pass.
+bricks = []
 
 [lints]
 workspace = true

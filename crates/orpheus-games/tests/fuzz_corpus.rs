@@ -1,7 +1,8 @@
 //! The fuzz targets' committed corpus and regression inputs, replayed on
 //! stable through the bodies the cargo-fuzz targets run (VER-4); and the
 //! seed journeys (`ORPHEUS_WRITE_SEEDS=1 cargo test -p orpheus-games --test
-//! fuzz_corpus seeds` rewrites `tests/fuzz-corpus/{tiles,blocks,solitaire}_keys/seed-*`).
+//! fuzz_corpus seeds` rewrites `tests/fuzz-corpus/{tiles,blocks,solitaire,salvo,bricks}_keys/seed-*`;
+//! Salvo and Bricks need `--features salvo,bricks`).
 
 #[path = "../fuzz/src/lib.rs"]
 #[allow(dead_code)]
@@ -25,6 +26,12 @@ fn solitaire_keys_corpus() {
 #[test]
 fn salvo_keys_corpus() {
     assert!(replay::replay("salvo_keys", bodies::salvo_keys) > 0, "no corpus");
+}
+
+#[cfg(feature = "bricks")]
+#[test]
+fn bricks_keys_corpus() {
+    assert!(replay::replay("bricks_keys", bodies::bricks_keys) > 0, "no corpus");
 }
 
 #[test]
@@ -240,10 +247,68 @@ fn salvo_seeds() -> Vec<(String, Vec<u8>)> {
     out
 }
 
+/// Bricks journeys: the autopilot under the ball in each level set, speed
+/// and paddle size, with power-ups on and off; and two played with keys
+/// only (the paddle swept, OK pressed).
+#[cfg(feature = "bricks")]
+fn bricks_seeds() -> Vec<(String, Vec<u8>)> {
+    let mut out = Vec::new();
+    // start level | speed, paddle, paddle speed | lives, power-ups off,
+    // level set, autopilot (bit 7)
+    let cfgs: [(&str, [u8; 3]); 8] = [
+        ("auto-mixed-normal", [0, 1 | 1 << 2 | 1 << 4, 1 | 2 << 3 | 0x80]),
+        ("auto-handmade-fast-small", [3, 2 | 2 << 4, 2 | 0x80]),
+        ("auto-generated-slow-large", [8, 2 << 2, 1 | 1 << 3 | 0x80]),
+        ("auto-no-powerups-level9", [8, 1 | 1 << 2, 1 | 4 | 2 << 3 | 0x80]),
+        ("auto-one-life-fast", [5, 2 | 1 << 2 | 2 << 4, 0x80]),
+        ("auto-generated-level10", [9, 1, 2 | 1 << 3 | 0x80]),
+        ("keys-sweep", [0, 1 | 1 << 2, 1 | 2 << 3]),
+        ("keys-down-up", [2, 2 | 2 << 4, 2 | 1 << 3]),
+    ];
+    for (k, (name, cfg)) in cfgs.iter().enumerate() {
+        let mut d = cfg.to_vec();
+        d.extend((0x0B21_C000u64 + k as u64).to_le_bytes());
+        if cfg[2] & 0x80 != 0 {
+            for r in 0..400u32 {
+                d.extend(steps(20 + r % 50));
+                if r % 13 == 0 {
+                    tap(&mut d, Button::Ok);
+                }
+            }
+        } else {
+            let (l, r) = if name.contains("down") {
+                (Button::Down, Button::Up)
+            } else {
+                (Button::Left, Button::Right)
+            };
+            for i in 0..300u32 {
+                let b = if i % 2 == 0 { l } else { r };
+                d.push(press(b));
+                d.extend(steps(10 + (i * 7) % 40));
+                d.push(release(b));
+                if i % 5 == 0 {
+                    tap(&mut d, Button::Ok);
+                }
+                d.extend(steps(i % 30 + 1));
+            }
+        }
+        out.push((name.to_string(), d));
+    }
+    out
+}
+
 /// The seeds run through the bodies (and are written with
 /// `ORPHEUS_WRITE_SEEDS=1`).
 #[test]
 fn seeds() {
+    #[cfg(feature = "bricks")]
+    {
+        let v = bricks_seeds();
+        for (_, d) in &v {
+            bodies::bricks_keys(d);
+        }
+        replay::write_seeds("bricks_keys", &v);
+    }
     #[cfg(feature = "salvo")]
     {
         let v = salvo_seeds();

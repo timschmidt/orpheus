@@ -951,7 +951,7 @@ mod tests {
     fn packed_settings() {
         let mut c = SettingsCache::new();
         let packed: Vec<&Setting> = all().filter(|s| s.pack.is_some()).collect();
-        assert_eq!(packed.len(), 22);
+        assert_eq!(packed.len(), 22 + if cfg!(feature = "bricks") { 7 } else { 0 });
         let mut used = std::collections::BTreeMap::<u16, u16>::new();
         for s in &packed {
             let (w, shift, bits) = s.pack.unwrap();
@@ -1000,6 +1000,41 @@ mod tests {
         assert!(c.set(seed, 99));
         assert_eq!(c.get(seed), 99);
         assert_eq!(c.get(SettingId(0x0E6C)), 2, "the next field is intact");
+    }
+
+    /// Bricks' seven settings live in one stored word (GAME-6): fields
+    /// apart, the defaults in the word, each read and written on its own.
+    #[cfg(feature = "bricks")]
+    #[test]
+    fn bricks_packed_settings() {
+        let mut c = SettingsCache::new();
+        let packed: Vec<&Setting> =
+            all().filter(|s| s.pack.is_some_and(|(w, _, _)| w == SettingId(0x0EB0))).collect();
+        assert_eq!(packed.len(), 7);
+        let mut used = 0u16;
+        for s in &packed {
+            let (_, shift, bits) = s.pack.unwrap();
+            let mask = (((1u32 << bits) - 1) << shift) as u16;
+            assert_eq!(used & mask, 0, "{:#06x} overlaps", s.id.0);
+            used |= mask;
+            assert_eq!(c.get(s.id), s.default);
+            let max = match s.kind {
+                Kind::Toggle => 1,
+                Kind::Choice(ch) => ch.len() as i32 - 1,
+                Kind::Range { max, .. } => i32::from(max),
+                _ => 0,
+            };
+            assert!(max < 1 << bits, "{:#06x} does not fit {bits} bits", s.id.0);
+        }
+        assert_eq!(c.get(SettingId(0x0EB0)), 1 | 1 << 4 | 1 << 6 | 1 << 8 | 1 << 10 | 2 << 11 | 1 << 13);
+        let level = SettingId(0x0EA1);
+        assert!(c.set(level, 10));
+        assert_eq!((c.get(level), c.get(SettingId(0x0EA2))), (10, 1));
+        assert!(c.set(level, 11), "out of range: the default");
+        assert_eq!(c.get(level), 1);
+        let w: Vec<_> = c.take_dirty().collect();
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].0, 0x0EB0);
     }
 
     #[test]
