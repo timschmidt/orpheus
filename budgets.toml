@@ -56,6 +56,9 @@ image_bytes = 1024
 # Module with its embedded data (demo card), wasm-bindgen glue and the
 # page's own scripts and styles, gzip as GitHub Pages serves them.
 total_gzip_bytes = 4000000      # 4 MB
+# The browser installer (WEB-3; `cargo xtask wasm` enforces it): the
+# orpheus-install-web module, its glue and site/install/*, gzip.
+install_gzip_bytes = 300000     # 300 KB
 # Checked by the page's self-test (`xtask wasm --test`, tests/web/try.mjs):
 # first frame after navigation, mean and worst simulation + draw time per
 # animation frame, audio underruns while playing.

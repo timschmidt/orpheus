@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 orpheus-proto.workspace = true
 orpheus-host = { path = "../crates/orpheus-host" }
+orpheus-update = { path = "../crates/orpheus-update", features = ["std"] }
 orpheus-pager = { path = "../crates/orpheus-pager", features = ["sim"] }
 orpheus-power = { path = "../crates/orpheus-power" }
 anyhow = "1"

@@ -6,7 +6,7 @@ use anyhow::{Result, bail};
 use orpheus_proto::devchan::{ADFU_PID, ADFU_VID, DEV_PID, DEV_VID, ROCKBOX_PID, STOCK_PID};
 
 use crate::adfu::{Adfu, Mode};
-use crate::{bot, sg};
+use crate::{native as bot, sg};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {

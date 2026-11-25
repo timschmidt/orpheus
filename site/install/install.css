@@ -1,0 +1,38 @@
+/* The Install page (WEB-3). Colours from the site's palette. */
+.inst,
+.inst-note {
+  margin: 1rem 0;
+}
+.inst section {
+  border-top: 1px solid var(--line, #8884);
+  margin-top: 1rem;
+  padding-top: 0.5rem;
+}
+.inst-note {
+  border-left: 4px solid var(--accent, #2b6de0);
+  padding: 0.25rem 0.75rem;
+}
+.inst button {
+  font: inherit;
+  padding: 0.35rem 0.8rem;
+  margin: 0.15rem 0.25rem 0.15rem 0;
+  border-radius: 6px;
+  border: 1px solid var(--line, #8886);
+  background: var(--surface, transparent);
+  color: inherit;
+  cursor: pointer;
+}
+.inst button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.inst-status[data-kind='error'] {
+  color: var(--warning, #c33);
+  font-weight: 600;
+}
+.inst-status[data-kind='ok'] {
+  color: var(--good, #2a8a4a);
+}
+.inst progress {
+  width: min(100%, 24rem);
+}

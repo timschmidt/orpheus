@@ -1,0 +1,27 @@
+[package]
+name = "orpheus-install-web"
+description = "The browser installer (WEB-3, 09 §5): orpheus-host's ADFU, ymon, NOR-payload and developer-channel code over WebUSB, for wasm32 through wasm-bindgen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+orpheus-host = { path = "../orpheus-host", default-features = false, features = ["mock"] }
+orpheus-proto.workspace = true
+orpheus-update = { path = "../orpheus-update", features = ["std"] }
+anyhow = "1"
+
+# The versions the lockfile has (nusb's WebUSB back end uses them too); the
+# `wasm-bindgen` CLI must match (`xtask/src/wasm.rs`).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.130"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+
+[lints]
+workspace = true

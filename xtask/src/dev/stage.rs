@@ -2,7 +2,7 @@
 //! region (dual-boot layout, 02 §2.4). Nothing below 0x762000 is written.
 
 use anyhow::{Context, Result, bail};
-use orpheus_host::nor;
+use orpheus_host::native::nor;
 use orpheus_proto::hash::{crc32, sum32};
 use orpheus_proto::layout::{NOR_SIZE, SECTOR, STAGE2_MAGIC, dual, full};
 use orpheus_proto::slot::{LAYOUT_DUAL, LAYOUT_FULL, SlotHeader};
@@ -197,9 +197,90 @@ pub fn cmd_restore_vendor(args: &mut Args) -> Result<String> {
     ));
     if diff.first() == Some(&0) {
         // Sector 0 last: until then stage 1 + stage 2 keep USB recovery.
-        nor::write_sector0(&mut d, &backup[..SECTOR as usize], &mut |s| log(s))?;
+        nor::write_sector0(&mut d, &backup[..SECTOR as usize], &backup, &mut |s| log(s))?;
     }
     Ok("stock firmware restored; the player boots it on the next reset".into())
+}
+
+/// `update FILE.ofw`: install into the inactive slot through the running
+/// firmware's developer channel (UPD-1), reboot, and check that the new
+/// build answers. No ADFU, no NOR payloads; the firmware's guards apply.
+pub fn cmd_update(args: &mut Args) -> Result<String> {
+    use orpheus_host::devchan::{DevChannel, check_file};
+    use std::time::Duration;
+    let path = args.positional("FILE.ofw")?;
+    let reboot = !args.flag("no-reboot");
+    let file = std::fs::read(&path).with_context(|| format!("read {path}"))?;
+    let (h, _) = check_file(&file)?;
+    log(&format!(
+        "{}: version {}, {} bytes, SHA-256 checked",
+        path,
+        h.version_str().unwrap_or("?"),
+        h.image_len
+    ));
+    let mut d = DevChannel::open(Duration::from_secs(3))?;
+    let t0 = std::time::Instant::now();
+    let mut last = 0u64;
+    let slot = d.update(&file, &mut |what, done, total| {
+        if done >= last + 0x4_0000 || done == total {
+            last = done;
+            log(&format!("  {what} {done} / {total}"));
+        }
+    })?;
+    let name = ["A", "B"].get(usize::from(slot)).copied().unwrap_or("?");
+    log(&format!("written and verified into slot {name} in {:.1} s", t0.elapsed().as_secs_f32()));
+    if !reboot {
+        return Ok(format!(
+            "slot {name} holds {}; it starts at the next reboot",
+            h.version_str().unwrap_or("?")
+        ));
+    }
+    d.reboot(orpheus_proto::devchan::REBOOT_NORMAL);
+    std::thread::sleep(Duration::from_secs(2));
+    let d = DevChannel::open(Duration::from_secs(30))?;
+    let info = d.info()?;
+    if info.build_id != h.build_id {
+        bail!(
+            "the player came back with another build ({}): the new one did not start; it may fall back (boot counter)",
+            hex(&info.build_id)
+        );
+    }
+    Ok(format!("running {} from slot {name}", h.version_str().unwrap_or("?")))
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+fn payloads_from_disk() -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    let ymon = std::fs::read(orpheus_host::adfu::payload_path("ymon.bin")).context("ymon.bin")?;
+    let nordump = std::fs::read(orpheus_host::adfu::payload_path("nordump.bin")).context("nordump.bin")?;
+    Ok((ymon, nordump, norprog_payload()?))
+}
+
+/// `slots`: what full slots A and B hold (ADFU, reads only).
+pub fn cmd_slots() -> Result<String> {
+    let (ymon, nordump, norprog) = payloads_from_disk()?;
+    let p = nor_payloads(&ymon, &nordump, &norprog);
+    let mut d = to_ymon()?;
+    let s = orpheus_host::transport::block_on(orpheus_host::flows::slots(&mut d.link, &p))?;
+    Ok(format!("slot A: {:?}; slot B: {:?}; switch possible: {}", s.a, s.b, s.can_switch))
+}
+
+fn nor_payloads<'a>(ymon: &'a [u8], nordump: &'a [u8], norprog: &'a [u8]) -> orpheus_host::nor::Payloads<'a> {
+    orpheus_host::nor::Payloads { ymon, nordump, norprog, norprog0: None }
+}
+
+/// `switch-slot`: make stage 2 start the other full-layout slot (at most
+/// two writes to the slots' header sectors; `orpheus_update::slots::switch`).
+pub fn cmd_switch_slot() -> Result<String> {
+    backup_verify()?;
+    let (ymon, nordump, norprog) = payloads_from_disk()?;
+    let p = nor_payloads(&ymon, &nordump, &norprog);
+    let mut d = to_ymon()?;
+    orpheus_host::transport::block_on(orpheus_host::flows::switch_slot(&mut d.link, &p))?;
+    let s = orpheus_host::transport::block_on(orpheus_host::flows::slots(&mut d.link, &p))?;
+    Ok(format!("switched; slot A: {:?}; slot B: {:?} (`xtask dev reset` starts it)", s.a, s.b))
 }
 
 pub fn cmd_install_stage2(_args: &mut Args) -> Result<String> {

@@ -688,6 +688,12 @@ pub fn run(o: &Options) -> Result<Layout> {
     std::fs::write(&a.resident, &x.resident)?;
     std::fs::write(&a.pages, &store)?;
     std::fs::write(&a.yfw, &slot)?;
+    // The update file (UPD-1) of a full-layout firmware build.
+    if name == "firmware"
+        && let Some(p) = crate::ofw::write_for(&a.yfw)?
+    {
+        crate::util::log(&format!("update file {}", p.display()));
+    }
 
     // layout.json.
     let reasons: BTreeMap<&str, &Place> =

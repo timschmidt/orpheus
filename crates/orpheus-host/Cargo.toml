@@ -1,17 +1,28 @@
 [package]
 name = "orpheus-host"
-description = "Host-side transport to the player: ADFU boot ROM, ymon monitor, NOR payloads, developer channel, screenshots"
+description = "Host-side transport to the player: ADFU boot ROM, ymon, NOR payloads, developer channel and the installer flows, for the desktop (nusb) and the browser (WebUSB) over one transport trait"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+default = ["native"]
+# The desktop: nusb, PNG, SCSI pass-through.
+native = ["dep:nusb", "dep:png", "dep:libc"]
+# The simulated player (tests, the browser installer's demo mode).
+mock = ["orpheus-update/std"]
+
 [dependencies]
 orpheus-proto.workspace = true
-nusb = "0.2"
-png = "0.18"
+orpheus-update = { path = "../orpheus-update" }
 anyhow = "1"
-libc = "0.2"
+nusb = { version = "0.2", optional = true }
+png = { version = "0.18", optional = true }
+libc = { version = "0.2", optional = true }
+
+[dev-dependencies]
+orpheus-update = { path = "../orpheus-update", features = ["std"] }
 
 [lints]
 workspace = true

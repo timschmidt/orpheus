@@ -491,20 +491,31 @@ fn copy_dir(out: &Path, from: &str, to: &str) -> Result<usize> {
 
 fn build(out: &Path) -> Result<Built> {
     let r = root();
-    // The browser build (`xtask wasm`, WEB-2) survives a site rebuild.
-    let pkg = out.join("try/pkg");
-    let kept = out.with_file_name("site-try-pkg");
-    if pkg.is_dir() {
-        let _ = std::fs::remove_dir_all(&kept);
-        std::fs::rename(&pkg, &kept)?;
+    // The browser builds (`xtask wasm`: WEB-2's try/pkg, WEB-3's
+    // install/pkg) and a release's files (install/release) survive a site
+    // rebuild.
+    let keep = ["try/pkg", "install/pkg", "install/release"];
+    let kept: Vec<(PathBuf, PathBuf)> = keep
+        .iter()
+        .map(|k| (out.join(k), out.with_file_name(format!("site-keep-{}", k.replace('/', "-")))))
+        .collect();
+    for (from, to) in &kept {
+        if from.is_dir() {
+            let _ = std::fs::remove_dir_all(to);
+            std::fs::rename(from, to)?;
+        }
     }
     if out.exists() {
         std::fs::remove_dir_all(out)?;
     }
     std::fs::create_dir_all(out)?;
-    if kept.is_dir() {
-        std::fs::create_dir_all(out.join("try"))?;
-        std::fs::rename(&kept, &pkg)?;
+    for (back, saved) in &kept {
+        if saved.is_dir() {
+            if let Some(parent) = back.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::rename(saved, back)?;
+        }
     }
     let template = std::fs::read_to_string(r.join("site/template.html")).context("site/template.html")?;
     let wordmark = std::fs::read_to_string(r.join(crate::brand::GENERATED).join("wordmark.svg"))
@@ -586,6 +597,8 @@ fn build(out: &Path) -> Result<Built> {
     files += copy_dir(out, "docs/dev/img", "dev/img")?;
     // The Try-it page's script, worklet and styles (the module: `xtask wasm`).
     files += copy_dir(out, "site/try", "try")?;
+    // The Install page's scripts and styles (the module: `xtask wasm`).
+    files += copy_dir(out, "site/install", "install")?;
     for (name, data) in shots_generate()? {
         write(out, &format!("shots/{name}.png"), &data)?;
         files += 1;
@@ -651,6 +664,8 @@ fn check_links(site: &Path) -> Vec<String> {
             }
             let dest = dest.replace("&amp;", "&");
             let (path, frag) = dest.split_once('#').map_or((dest.as_str(), ""), |(p, f)| (p, f));
+            // A query (`install.html?demo`) names the same file.
+            let path = path.split_once('?').map_or(path, |(p, _)| p);
             let target = if path.is_empty() {
                 f.clone()
             } else {

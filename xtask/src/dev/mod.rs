@@ -23,7 +23,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use orpheus_host::adfu::{Adfu, yoton_dir};
-use orpheus_host::{device, image, nor};
+use orpheus_host::native::nor;
+use orpheus_host::{device, image};
 use orpheus_proto::layout::dual;
 use orpheus_proto::mem::{FB_BASE, FB_H, FB_SIZE, FB_W};
 use orpheus_proto::{fault, mailbox, result};
@@ -47,6 +48,11 @@ cargo xtask dev <subcommand>
                                 USB-6: put images into /.orpheus/images/, present each,
                                 read the whole block device, compare hashes, detach
   stage IMAGE|NAME|FILE.yfw      write a YFW1 slot to slot A (0x762000)
+  update FILE.ofw [--no-reboot]  firmware update through the running Orpheus
+                                (developer channel, inactive slot, no ADFU; UPD-1)
+  slots                          ADFU: what full slots A and B hold
+  switch-slot                    ADFU: start the other slot next (recovery after an
+                                update that keeps failing to start)
   install-stage2                 replace stage 2 at 0x7DF400 (keeps the vendor record copy)
   keys 'ok wait:300 hold:menu'  inject keys into running orpheus
   info                          developer-channel INFO of running orpheus
@@ -265,12 +271,19 @@ pub fn cmd(args: &mut Args) -> Result<String> {
                 i.uptime_ms,
                 i.battery_mv,
                 i.flags,
-                String::from_utf8_lossy(&i.build_id).trim_end_matches('\0'),
+                if i.build_id.iter().all(|&c| c == 0 || c.is_ascii_graphic()) {
+                    String::from_utf8_lossy(&i.build_id).trim_end_matches('\0').to_string()
+                } else {
+                    i.build_id.iter().map(|x| format!("{x:02x}")).collect()
+                },
                 i.reserved & 0xFFFF,
                 i.reserved >> 16
             ))
         }
         "stage" => stage::cmd_stage(args),
+        "update" => stage::cmd_update(args),
+        "slots" => stage::cmd_slots(),
+        "switch-slot" => stage::cmd_switch_slot(),
         "install-stage2" => stage::cmd_install_stage2(args),
         "install-full" => stage::cmd_install_full(args),
         "stage2-ramtest" => stage::cmd_stage2_ramtest(args),

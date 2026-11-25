@@ -79,6 +79,46 @@ fn tool(bin: &str, krate: &str, version: &str, reports: &str) -> Result<PathBuf>
     Ok(local)
 }
 
+/// Build `orpheus-install-web` into `site/install/pkg` and check its size
+/// against `budgets.toml [web] install_gzip_bytes`.
+fn install_module(bindgen: &Path, opt: &Path) -> Result<String> {
+    run(cargo().args([
+        "build",
+        "-p",
+        "orpheus-install-web",
+        "--lib",
+        "--target",
+        TARGET,
+        "--profile",
+        "web",
+    ]))?;
+    let wasm = root().join("target").join(TARGET).join("web").join("orpheus_install_web.wasm");
+    let pkg = out_dir().join("site").join("install").join("pkg");
+    if pkg.exists() {
+        std::fs::remove_dir_all(&pkg)?;
+    }
+    std::fs::create_dir_all(&pkg)?;
+    run(Command::new(bindgen)
+        .args(["--target", "web", "--no-typescript", "--out-name", "orpheus_install_web", "--out-dir"])
+        .arg(&pkg)
+        .arg(&wasm))?;
+    let bg = pkg.join("orpheus_install_web_bg.wasm");
+    run(Command::new(opt).arg("-Oz").args(FEATURES).arg(&bg).arg("-o").arg(&bg))?;
+    let mut total = 0;
+    for f in files(&pkg).into_iter().chain(files(&root().join("site/install"))) {
+        let data = std::fs::read(&f)?;
+        let gz = gzip_len(&data)?;
+        total += gz;
+        let name = f.file_name().and_then(|n| n.to_str()).unwrap_or("?").to_string();
+        log(&format!("  {name:<28} {:>9} B  gzip {gz:>9} B", data.len()));
+    }
+    let limit = budget("install_gzip_bytes")?;
+    if total > limit {
+        bail!("installer over budget: {total} B gzip > {limit} B");
+    }
+    Ok(format!("installer {} KB gzip (budget {} KB)", total.div_ceil(1000), limit / 1000))
+}
+
 fn gzip_len(data: &[u8]) -> Result<u64> {
     let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
     e.write_all(data)?;
@@ -226,7 +266,11 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     if total_gz > limit {
         bail!("over budget: {verdict}");
     }
+    // The browser installer (WEB-3): orpheus-host over WebUSB.
+    notes.push(install_module(&bindgen, &opt)?);
     if test {
+        run(Command::new("node").arg(root().join("tests/web/install.mjs")))?;
+        notes.push("installer mock-device suite passed".into());
         // Node 20 has WebSocket behind a flag; 22 and later by default.
         let major = Command::new("node")
             .arg("--version")
