@@ -2872,6 +2872,24 @@ Finding: 30-minute `mixed` soak, seed 1, 10.4 min, read in `radio-keys 8
   off: the disk is full); fw fmt, clippy, `xtask build`, `check-resident`,
   `size --check`: pass. Not run: `xtask dev …` (no player), brand/site.
 
+### 2026-11-25 — honest underrun count exposed paced refills; fixed (lead)
+
+* With `6db03fb0` (headroom read race fixed, underruns inside a half
+  counted), the seed-1 ring finding replayed as **27 real underruns** while
+  browsing Pictures during playback; the new `pcm: head` lines said why:
+  `ub=fill:25–29ms` — the card rests (`66f1b467`) slowed the playback
+  ring's refill until refill + decode (8–9 ms) no longer fitted a 32 ms
+  DAC half. Fix: `yoton_bsp::card::Urgent` around the refill; the rest
+  decision moved to `orpheus_power::pace::should_rest`
+  (`regress_playback_refill_is_never_paced`).
+* Replay on the player: **no underruns, no negative headroom, no reset**.
+* **Open (performance, M13/PWR-7/VER-10)**: during that Pictures step with
+  music playing the CPU is ~0 % idle at ~3,000 line loads/s and thread mode
+  is starved for seconds — a developer-channel request (screenshot chunk)
+  went 2 s unanswered (USB data-timeout; the player stays up). The cover
+  search reads ~30 entries per 250 ms with ~900 line loads: paging, not the
+  card, dominates. Needs a paging profile of "Pictures while playing".
+
 ### 2026-11-25 — plan: M17 synth engine, MIDI and Sequencer (owner's request)
 
 * New milestone M17 (08; spec 04 §9 and 05 §7.16; PLAN item 16):
