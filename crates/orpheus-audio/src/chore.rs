@@ -52,9 +52,12 @@
 //!
 //! No panic paths, no floating point (used in the firmware's audio task).
 
-/// The least kept free of chores for the decoder call after one (µs): MP3
-/// and FLAC calls take ≈ 2–8 ms on the player, paging included.
-pub const MARGIN_US: u32 = 10_000;
+/// The least kept free of chores for what follows one (µs): the decoder
+/// call (4–9 ms on the player), ~5 ms more because the chore evicted the
+/// decoder's code from the page cache, and a ring refill (3–8 ms). 10 ms
+/// let a chore that kept to its budget empty the DAC ring on the player
+/// (2026-11-25, `regress_margin_covers_the_reload_after_a_chore`).
+pub const MARGIN_US: u32 = 22_000;
 /// A chore that has waited this long (µs) for a roomy DAC runs at any
 /// headroom that covers its need.
 pub const WAIT_US: u32 = 300_000;
@@ -308,29 +311,30 @@ mod tests {
 
     #[test]
     fn budget_is_headroom_less_margin() {
-        // One half at 48 kHz: 32 ms; less 10 ms.
-        assert_eq!(budget_us(HALF, RATE, 0), 22_000);
-        assert_eq!(budget_us(ROOMY, RATE, 8_000), 38_000);
+        // One half at 48 kHz: 32 ms; less the margin.
+        assert_eq!(budget_us(HALF, RATE, 0), 32_000 - MARGIN_US);
+        assert_eq!(budget_us(ROOMY, RATE, 8_000), 48_000 - MARGIN_US);
         assert_eq!(budget_us(441, 44_100, 0), 0);
         assert_eq!(budget_us(-93, RATE, 0), 0);
         assert_eq!(budget_us(i32::MAX, RATE, 0), u32::MAX);
         assert_eq!(frames_us(-480, RATE), -10_000);
         // Slow decoder calls: the margin grows with them.
-        assert_eq!(margin_us(16_000), 20_000);
-        assert_eq!(budget_us(ROOMY, RATE, 16_000), 28_000);
+        assert_eq!(margin_us(16_000), MARGIN_US.max(20_000));
+        assert_eq!(margin_us(24_000), 30_000);
+        assert_eq!(budget_us(ROOMY, RATE, 24_000), 18_000);
     }
 
     #[test]
     fn rule_cases() {
         // Roomy and it fits.
-        assert_eq!(decide(&ask(ROOMY, 25_000, 0)), Verdict::Run { budget_us: 38_000 });
+        assert_eq!(decide(&ask(ROOMY, 25_000, 0)), Verdict::Run { budget_us: 48_000 - MARGIN_US });
         // Roomy but it does not fit: waits (until the starvation bound).
         assert_eq!(decide(&ask(ROOMY, 40_000, 0)), Verdict::Wait);
-        assert_eq!(decide(&ask(ROOMY, 40_000, STARVE_US)), Verdict::Starved { budget_us: 38_000 });
+        assert_eq!(decide(&ask(ROOMY, 40_000, STARVE_US)), Verdict::Starved { budget_us: 48_000 - MARGIN_US });
         // Not roomy, not waited: waits even if it fits.
         assert_eq!(decide(&ask(HALF, 5_000, WAIT_US - 1)), Verdict::Wait);
         // Waited: runs if it fits (the forced path), not otherwise.
-        assert_eq!(decide(&ask(HALF, 5_000, WAIT_US)), Verdict::Run { budget_us: 22_000 });
+        assert_eq!(decide(&ask(HALF, 5_000, WAIT_US)), Verdict::Run { budget_us: 32_000 - MARGIN_US });
         assert_eq!(decide(&ask(HALF, 25_000, WAIT_US)), Verdict::Wait);
         // The soak's forced chores: 25–55 ms at -93 / -265 / -649 frames.
         for head in [-93, -265, -649, 0, 480] {
@@ -396,7 +400,7 @@ mod tests {
         c.observe(0, s.unit, 8_000);
         let need = c.need(0, 8_000);
         assert_eq!(need, 36_000);
-        let a = Ask { head: 2_208, rate: RATE, roomy: ROOMY, need_us: need, waited_us: 0, dec_us: 4_000 };
+        let a = Ask { head: 2_784, rate: RATE, roomy: ROOMY, need_us: need, waited_us: 0, dec_us: 4_000 };
         assert_eq!(budget_us(a.head, RATE, a.dec_us), 36_000);
         assert_eq!(decide(&Ask { head: a.head - 48, ..a }), Verdict::Wait);
         // One ask only (the piece ended after its first operation): all of
@@ -444,6 +448,9 @@ mod tests {
         dec: (u32, u32),
         fill: (u32, u32),
         fill_every: u32,
+        /// Added to the first decoder call after a chore: the chore's code
+        /// evicted the decoder's from the page cache.
+        reload: u32,
     }
 
     /// A chore kind of the model: its card operations' lengths (µs), its
@@ -600,7 +607,7 @@ mod tests {
         let mut after_chore = false;
         while dac.t < c.until_us {
             // MP3: 1,152 frames a block (24 ms at 48 kHz).
-            let d = rng.range(c.load.dec.0, c.load.dec.1);
+            let d = rng.range(c.load.dec.0, c.load.dec.1) + if after_chore { c.load.reload } else { 0 };
             dec_peak = DecPeak(dec_peak).after(d).0;
             if dac.busy(d) {
                 if after_chore {
@@ -719,10 +726,42 @@ mod tests {
         ui: &[0, 2, 1],
         think: (5_000, 60_000),
         bg: Some((3, 5_000_000)),
-        load: Load { dec: (14_000, 19_000), fill: (3_000, 8_000), fill_every: 2 },
+        load: Load { dec: (14_000, 19_000), fill: (3_000, 8_000), fill_every: 2, reload: 0 },
         until_us: 120_000_000,
     };
     const SEEDS: [u32; 5] = [1, 2, 3, 0x5eed, 0xdead_beef];
+
+    /// The player as measured in the soak (seed 1, `browse pictures`,
+    /// 2026-11-25): decoder calls 4–9 ms (`pcm: … dec=6ms`), and the call
+    /// after a chore ~5 ms slower (the chore's code evicted the decoder's):
+    /// `chore: job:count 29/29 ms` within its budget, then `pcm: head -33`.
+    const PLAYER: Case<'static> = Case {
+        kinds: &PLAYER_KINDS,
+        load: Load { dec: (4_000, 9_000), fill: (3_000, 8_000), fill_every: 2, reload: 5_000 },
+        ..SOAK
+    };
+    /// As [`KINDS`], with the player's listing pieces: single card
+    /// operations of up to 21 ms (`chore: job:count 31/28 ms u20`).
+    const PLAYER_KINDS: [Kind; 4] = [
+        Kind { ops: (25_000, 25_000), total: 25_000, split: false },
+        Kind { ops: (28_000, 28_000), total: 28_000, split: false },
+        Kind { ops: (5_000, 21_000), total: 55_000, split: true },
+        Kind { ops: (9_000, 9_000), total: 9_000, split: false },
+    ];
+
+    /// Regression (2026-11-25): with a 10 ms margin a chore that kept to
+    /// its budget still emptied the DAC ring on the player, because the
+    /// decoder call after it reloads its code. The margin covers a slow
+    /// call plus the reload.
+    #[test]
+    fn regress_margin_covers_the_reload_after_a_chore() {
+        for seed in SEEDS {
+            let f = model(&decide, PLAYER, seed);
+            assert_eq!(f.chore_underruns + f.loop_underruns, 0, "seed {seed}: {f:?}");
+            assert_eq!(f.starved, 0, "seed {seed}: {f:?}");
+            assert!(f.answered > 300, "seed {seed}: {f:?}");
+        }
+    }
 
     /// Soak, 2026-11-25 (`mixed` seed 1, `browse pictures` during a
     /// 256-track shuffled MP3 queue,
@@ -773,9 +812,9 @@ mod tests {
     fn every_chore_that_fits_is_answered_in_bounded_time() {
         let fill = (3_000, 8_000);
         let loads = [
-            (Load { dec: (2_000, 5_000), fill: (2_000, 5_000), fill_every: 4 }, 600_000),
-            (Load { dec: (6_000, 10_000), fill, fill_every: 2 }, 800_000),
-            (Load { dec: (10_000, 15_000), fill, fill_every: 2 }, 1_500_000),
+            (Load { dec: (2_000, 5_000), fill: (2_000, 5_000), fill_every: 4, reload: 0 }, 600_000),
+            (Load { dec: (6_000, 10_000), fill, fill_every: 2, reload: 0 }, 800_000),
+            (Load { dec: (10_000, 15_000), fill, fill_every: 2, reload: 0 }, 1_500_000),
             (SOAK.load, 2_500_000),
         ];
         for (load, bound) in loads {
@@ -788,7 +827,7 @@ mod tests {
             }
         }
         for seed in SEEDS {
-            let load = Load { dec: (15_000, 19_500), fill, fill_every: 2 };
+            let load = Load { dec: (15_000, 19_500), fill, fill_every: 2, reload: 0 };
             let f = model(&decide, Case { load, ..SOAK }, seed);
             assert_eq!(f.chore_underruns + f.loop_underruns, 0, "seed {seed}: {f:?}");
             assert!(f.worst_latency < u64::from(STARVE_US) + 3_000_000, "seed {seed}: {f:?}");
@@ -806,7 +845,7 @@ mod tests {
             ui: &[0, 1],
             think: (500_000, 900_000),
             bg: None,
-            load: Load { dec: (3_000, 6_000), fill: (2_000, 5_000), fill_every: 2 },
+            load: Load { dec: (3_000, 6_000), fill: (2_000, 5_000), fill_every: 2, reload: 0 },
             until_us: 20_000_000,
         };
         let f = model(&decide, c, 3);

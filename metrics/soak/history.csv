@@ -5,3 +5,4 @@ date,commit,scenario,seed,minutes,actions,samples,pass,findings,loads_per_s_mean
 20261125-090135,a4c367d82731,mixed,1,16.9,6,21,0,reset+clock,1736,3554,2973,6392,0,0,931,0,,1613,50.7
 20261125-115812,f88e016b8de5,mixed,1,21.4,6,21,0,underrun+ring,1076,2973,2676,9360,1,0,-93,0,,5,71.8
 20261125-125926,0d2e672b7dd7,mixed,1,11.3,7,22,0,underrun+ring,1058,3098,2798,7744,11,0,-1625,0,,-17,71.2
+20261125-135728,d4862d22cc61-dirty,mixed,1,11.9,6,21,0,underrun+ring,930,2990,3408,9360,2,0,-161,0,,24,74.4
