@@ -283,6 +283,60 @@ pub static SHOT_HOLD_UNTIL_MS: core::sync::atomic::AtomicU32 = core::sync::atomi
 pub static SET_WRITES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 pub static SET_LAST: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
+/// The top screen for the developer channel's `ui top` (VER-7, 07 §5.7):
+/// id | depth << 8 | dialog << 12 | overlay << 13 | keys locked << 14 |
+/// screen on << 15 | name length << 16, and the name's bytes (a
+/// `&'static str`). Written by the UI task after every loop, read by the USB
+/// task; both run on the main executor, so the pair is never torn.
+static TOP: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static TOP_NAME: core::sync::atomic::AtomicPtr<u8> =
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
+fn publish_top(ui: &Ui) {
+    let s = &ui.shell;
+    let name = s.top_name();
+    let w = u32::from(s.top_id().0)
+        | (s.depth().min(15) as u32) << 8
+        | u32::from(s.dialog_open()) << 12
+        | u32::from(s.overlay_shown()) << 13
+        | u32::from(s.gate.locked) << 14
+        | u32::from(s.gate.screen_on) << 15
+        | (name.len().min(0xFFFF) as u32) << 16;
+    TOP_NAME.store(name.as_ptr().cast_mut(), core::sync::atomic::Ordering::Relaxed);
+    TOP.store(w, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Developer `ui top` (VER-7): `top ID NAME depth=D dialog=0|1 overlay=0|1
+/// locked=0|1 screen=0|1`, answered at once.
+pub fn top_reply() {
+    let w = TOP.load(core::sync::atomic::Ordering::Relaxed);
+    let p = TOP_NAME.load(core::sync::atomic::Ordering::Relaxed);
+    let name: &[u8] = if p.is_null() {
+        b"-"
+    } else {
+        // SAFETY: `p` and the length in `TOP` were stored together from one
+        // `&'static str` by `publish_top` on this executor.
+        unsafe { core::slice::from_raw_parts(p, (w >> 16) as usize) }
+    };
+    let bit = |n: u32| u64::from((w >> n) & 1);
+    crate::audio::reply(|r| {
+        r.s(b"top ")
+            .u(u64::from(w & 0xFF))
+            .s(b" ")
+            .s(name)
+            .s(b" depth=")
+            .u(u64::from((w >> 8) & 0xF))
+            .s(b" dialog=")
+            .u(bit(12))
+            .s(b" overlay=")
+            .u(bit(13))
+            .s(b" locked=")
+            .u(bit(14))
+            .s(b" screen=")
+            .u(bit(15));
+    });
+}
+
 static mut FW_CELL: core::mem::MaybeUninit<Fw> = core::mem::MaybeUninit::uninit();
 static mut STORE_CELL: Option<Store<NorRegion, 4>> = None;
 static mut UI_CELL: core::mem::MaybeUninit<Ui> = core::mem::MaybeUninit::uninit();
@@ -369,6 +423,7 @@ pub async fn ui() {
     ui.shell.invalidate();
     let fb = fb.as_mut_slice();
     ui.draw(fb).await;
+    publish_top(ui);
     let mut last_cable = state::snapshot().cable;
     // Auto-off / low-battery timers (ms since boot).
     let mut last_key_ms = now().0;
@@ -524,6 +579,7 @@ pub async fn ui() {
             flashing = flash;
         }
         ui.draw(fb).await;
+        publish_top(ui);
         BUSY_US.fetch_add((atj2157_hal::time::now_us() - w0) as u32, core::sync::atomic::Ordering::Relaxed);
     }
 }

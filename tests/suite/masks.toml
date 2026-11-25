@@ -1,0 +1,72 @@
+# Masks for the on-device suite's screenshots (VER-7, 07 §5.7).
+#
+# Per screen (the name `ui top` and the simulator report; "*" applies to
+# every shot): rectangles of live or player-specific content that are not
+# compared, and the tolerance outside them. A journey's shot can add its
+# own (`[journey.shot.NAME]` in journeys.toml) or drop these
+# (`defaults = false`, e.g. a menu sheet over a masked list).
+#
+#   rects    [{ x, y, w, h, why }]  in panel pixels (128 × 128)
+#   pixels   differing pixels allowed outside the masks (default 0)
+#   channel  per-channel difference (RGB888) still equal (default 0)
+#
+# Layout (05 §4): status bar y 0–13, list title y 14–32, list rows 19 px
+# from y 33, strip y 110–127; menu sheets start at y 40 (rows from y 48).
+# A row's label is shortened to fit its value, so value masks start at
+# x 48: labels are compared up to there.
+
+[screen."*"]
+rects = [
+    { x = 0, y = 0, w = 128, h = 14, why = "status bar: clock, battery, Bluetooth/playback/alarm indicators" },
+]
+
+# Card content (the owner's folders and files).
+[screen.Files]
+rects = [{ x = 0, y = 14, w = 128, h = 96, why = "card listing" }]
+
+[screen.Pictures]
+rects = [{ x = 0, y = 14, w = 128, h = 96, why = "card listing" }]
+
+[screen.Folders]
+rects = [{ x = 0, y = 14, w = 128, h = 96, why = "card listing" }]
+
+[screen.Music]
+rects = [{ x = 0, y = 52, w = 128, h = 58, why = "library state (building/ready)" }]
+
+# Values that are the owner's settings or the player's own data.
+[screen.SettingsGroup]
+rects = [{ x = 48, y = 33, w = 80, h = 77, why = "setting values and switches (the owner's settings)" }]
+
+[screen.Choice]
+rects = [{ x = 100, y = 33, w = 28, h = 77, why = "the selected value (the owner's setting)" }]
+
+[screen.Info]
+rects = [{ x = 48, y = 33, w = 80, h = 77, why = "version, build, serial, battery and card figures" }]
+
+[screen.QuickPanel]
+rects = [{ x = 48, y = 33, w = 80, h = 77, why = "setting values and switches" }]
+
+[screen.NowPlaying]
+rects = [
+    { x = 0, y = 14, w = 128, h = 90, why = "art, title, artist, album, format, queue position, progress" },
+    { x = 0, y = 104, w = 60, h = 24, why = "elapsed time" },
+    { x = 70, y = 104, w = 58, h = 24, why = "remaining time" },
+]
+
+[screen.Radio]
+rects = [{ x = 0, y = 14, w = 128, h = 96, why = "frequency, signal, stereo, preset, RDS, tuner state" }]
+
+[screen.Recorder]
+rects = [
+    { x = 92, y = 14, w = 36, h = 18, why = "source (MIC/LINE/FM: a setting)" },
+    { x = 0, y = 58, w = 128, h = 52, why = "level meter, format and quality (settings), time left on the card" },
+]
+
+[screen.Steps]
+rects = [{ x = 0, y = 30, w = 128, h = 80, why = "step counts, goal, distance, week bars" }]
+
+[screen.Bluetooth]
+rects = [
+    { x = 88, y = 33, w = 40, h = 19, why = "module switch" },
+    { x = 0, y = 52, w = 128, h = 19, why = "module state" },
+]

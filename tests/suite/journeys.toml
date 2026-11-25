@@ -1,0 +1,242 @@
+# On-device functional suite (VER-7, 07 §5.7): `cargo xtask dev suite`.
+#
+# Each journey is a script in the simulator's language (sim/src/lib.rs).
+# The runner starts it at Home (long Back, Home's focus moved to the first
+# app by matching the screenshot) and ends it with a long Back, which must
+# reach Home. Every `shot:` is compared with the frame the simulator draws
+# for the same journey (tests/suite/expected/<journey>/<shot>.png, rewritten
+# by `--update-expected`) under the masks of masks.toml.
+#
+# Lines:
+#   keys …               on both (taps, hold:, press:/release:, wait:,
+#                        shot:, expect-screen:); never Power (CLAUDE.md rule 4)
+#   sim: …               simulator only: set:/goto: to put the fake
+#                        services where the player is
+#   dev: …               player only (a longer wait for the card)
+#   cmd: TEXT [~ REGEX]  player only: firmware test command; the reply must
+#                        match REGEX within 5 s
+#
+# Nothing here writes to the card outside /.orpheus/ (rule 5), switches
+# the Bluetooth module (rule 6), records, or changes a setting: journeys
+# open, look and go back. The order below is the run order.
+#
+# The player must be in Dark, Blue, English (the simulator's defaults),
+# with all Home apps shown and nothing playing (the suite sends `stop`).
+
+appearance = ""
+
+[[journey]]
+name = "home"
+about = "Home grid: app names in the strip, Home menu, quick panel"
+script = """
+expect-screen:Home shot:home
+next*4 shot:home_recorder
+next*6 shot:home_settings
+menu shot:home_menu back
+hold:menu expect-screen:QuickPanel shot:quick back
+expect-screen:Home
+"""
+
+[[journey]]
+name = "settings"
+about = "Settings root and the first rows of all 12 groups (values masked)"
+script = """
+prev ok expect-screen:Settings shot:settings
+ok expect-screen:SettingsGroup shot:sound back down
+ok expect-screen:SettingsGroup shot:playback back down
+ok expect-screen:SettingsGroup shot:display back down
+ok expect-screen:SettingsGroup shot:power back down
+ok expect-screen:SettingsGroup shot:datetime back down
+ok expect-screen:SettingsGroup shot:bluetooth back down
+ok expect-screen:SettingsGroup shot:radio back down
+ok expect-screen:SettingsGroup shot:recording back down
+ok expect-screen:SettingsGroup shot:usb back down
+ok expect-screen:SettingsGroup shot:language back down
+ok expect-screen:SettingsGroup shot:storage back down
+ok expect-screen:SettingsGroup shot:system back
+expect-screen:Settings
+"""
+
+[[journey]]
+name = "system"
+about = "Information screens: About, Battery, Card (figures masked)"
+script = """
+prev ok down*11 ok ok expect-screen:Info shot:about back back
+up*8 ok down*4 ok expect-screen:Info shot:battery back back
+down*7 ok ok expect-screen:Info shot:card back back
+expect-screen:Settings
+"""
+
+[[journey]]
+name = "usb"
+about = "Settings › USB and the When-connected choice (the dialog itself needs a cable event)"
+script = """
+prev ok down*8 ok expect-screen:SettingsGroup shot:usb_group
+ok expect-screen:Choice shot:usb_when back
+expect-screen:SettingsGroup
+"""
+
+[[journey]]
+name = "files"
+about = "Files at the card root (listing masked) and its menu"
+card = true
+script = """
+next ok expect-screen:Files wait:300 shot:files
+menu shot:files_menu back
+"""
+
+# The sheet is compared; the listing above it is not. Its rows are a
+# folder's (the first entry at the card root must be a folder).
+[journey.shot.files_menu]
+defaults = false
+rects = [
+    { x = 0, y = 0, w = 128, h = 14, why = "status bar" },
+    { x = 0, y = 14, w = 128, h = 26, why = "card listing behind the sheet" },
+]
+
+[[journey]]
+name = "music"
+about = "Music root and Folders (library state and listing masked)"
+card = true
+script = """
+ok expect-screen:Music wait:300 shot:music
+down*8 ok expect-screen:Folders wait:300 shot:folders back
+expect-screen:Music
+"""
+
+[[journey]]
+name = "nowplaying"
+about = "Now Playing over the fixture tones, playback status without underruns, its menu"
+setup = true
+script = """
+cmd: playdir /.orpheus/test/suite/music ~ ^playdir ok
+sim: set:queue=takk
+dev: wait:1500
+ok expect-screen:Music
+ok expect-screen:NowPlaying wait:300 shot:np
+cmd: status ~ ^playing .*underruns=0\\b
+menu shot:np_menu back
+cmd: stop
+sim: set:playing=0
+"""
+
+[journey.shot.np_menu]
+defaults = false
+rects = [
+    { x = 0, y = 0, w = 128, h = 14, why = "status bar" },
+    { x = 0, y = 14, w = 128, h = 26, why = "Now Playing behind the sheet" },
+    { x = 88, y = 48, w = 40, h = 19, why = "Shuffle switch (a setting)" },
+]
+
+[[journey]]
+name = "pictures"
+about = "Pictures at the card root (listing masked) and its menu"
+card = true
+script = """
+next*5 ok expect-screen:Pictures wait:300 shot:pictures
+menu shot:pictures_menu back
+"""
+
+[journey.shot.pictures_menu]
+defaults = false
+rects = [
+    { x = 0, y = 0, w = 128, h = 14, why = "status bar" },
+    { x = 0, y = 14, w = 128, h = 26, why = "card listing behind the sheet" },
+    { x = 88, y = 105, w = 40, h = 19, why = "Show hidden switch (a setting)" },
+]
+
+[[journey]]
+name = "bluetooth"
+about = "Bluetooth app as it is (no switch: CLAUDE.md rule 6)"
+script = """
+next*3 ok expect-screen:Bluetooth shot:bt
+down*2 shot:bt_rows
+"""
+
+[[journey]]
+name = "radio"
+about = "Radio: open, tuner status, menu, radio off with a long OK"
+script = """
+next*2 ok wait:1100 expect-screen:Radio shot:radio
+cmd: fm status ~ phase=
+menu shot:radio_menu back
+hold:ok wait:2200 shot:radio_off
+cmd: fm status ~ phase=
+"""
+
+[journey.shot.radio_menu]
+defaults = false
+rects = [
+    { x = 0, y = 0, w = 128, h = 14, why = "status bar" },
+    { x = 0, y = 14, w = 128, h = 26, why = "radio behind the sheet" },
+    { x = 0, y = 48, w = 128, h = 19, why = "Save or Remove preset (on a preset or not)" },
+    { x = 88, y = 105, w = 40, h = 19, why = "Force mono switch (a setting)" },
+]
+
+[[journey]]
+name = "steps"
+about = "Steps: Today, Week, menu (figures masked)"
+script = """
+next*6 ok expect-screen:Steps shot:steps
+next shot:steps_week prev
+menu shot:steps_menu back
+"""
+
+[journey.shot.steps_menu]
+defaults = false
+rects = [
+    { x = 0, y = 0, w = 128, h = 14, why = "status bar" },
+    { x = 0, y = 14, w = 128, h = 26, why = "the count behind the sheet" },
+    { x = 48, y = 48, w = 80, h = 80, why = "goal, stride, weight, units (settings)" },
+]
+
+[[journey]]
+name = "tools"
+about = "Stopwatch start/stop/reset, Timer and Alarm tabs (presets and alarms masked)"
+script = """
+next*7 ok expect-screen:Stopwatch shot:stopwatch
+ok wait:1500 shot:stopwatch_running ok next
+expect-screen:Stopwatch shot:stopwatch_reset
+next shot:timer
+next shot:alarm
+"""
+
+[journey.shot.stopwatch_running]
+rects = [{ x = 0, y = 30, w = 128, h = 80, why = "running time and laps" }]
+
+[journey.shot.timer]
+rects = [{ x = 0, y = 30, w = 128, h = 80, why = "the timer's last duration" }]
+
+[journey.shot.alarm]
+rects = [{ x = 0, y = 30, w = 128, h = 80, why = "the owner's alarms" }]
+
+[[journey]]
+name = "recorder"
+about = "Recorder ready (no recording: it would write /Recordings) and its menu"
+script = """
+next*4 ok wait:500 expect-screen:Recorder shot:recorder
+menu shot:recorder_menu back
+"""
+
+[journey.shot.recorder_menu]
+defaults = false
+rects = [
+    { x = 0, y = 0, w = 128, h = 14, why = "status bar" },
+    { x = 0, y = 14, w = 128, h = 26, why = "the recorder behind the sheet" },
+    { x = 88, y = 105, w = 40, h = 19, why = "Automatic gain switch (a setting)" },
+]
+
+[[journey]]
+name = "authenticator"
+about = "Authenticator locked: the PIN pad only (no PIN entered, no secrets)"
+script = """
+sim: set:vault=locked
+next*8 ok wait:200 expect-screen:Authenticator shot:auth_locked
+"""
+
+[[journey]]
+name = "notice"
+about = "USB Drive app: the not-yet notice"
+script = """
+next*9 ok expect-screen:Notice shot:notice back
+"""

@@ -6,9 +6,14 @@
 //! * no command powers the player off;
 //! * one process at a time: a lock file in `target/orpheus/`.
 
+mod fuzz;
 mod hil;
+mod mask;
+mod player;
 mod ram;
+mod script;
 mod stage;
+mod suite;
 mod usbtest;
 
 use std::fs::File;
@@ -42,6 +47,15 @@ cargo xtask dev <subcommand>
   keys 'ok wait:300 hold:menu'  inject keys into running orpheus
   info                          developer-channel INFO of running orpheus
   put LOCAL /.orpheus/PATH         upload a file to the card (through the firmware's FS)
+  suite [NAME…] [--list] [--update-expected] [--setup] [--sim] [--no-reboot]
+                                on-device functional suite (VER-7): tests/suite/journeys.toml,
+                                shots vs the simulator under tests/suite/masks.toml;
+                                --setup uploads the fixtures to /.orpheus/test/suite/;
+                                --sim runs it against the simulator; ends in a reboot
+  fuzz-ui --seed N --minutes M [--check-every K] [--play] [--settings] [--no-minimise]
+          [--max-replays R] | --replay FILE
+                                random key sequences (ui_keys grammar, no Power) with the
+                                07 §5.7 oracles; failures minimised into tests/regress/ui-device/
   stats [--irq]                 executor idle time, pager and UI counters (--irq: per line)
   time [--set]                  read (or set from the host, UTC) the player's clock
   otp-add 'otpauth://…'         PROVISION one authenticator account (the
@@ -167,39 +181,12 @@ pub fn cmd(args: &mut Args) -> Result<String> {
             }
             let data = std::fs::read(&local)?;
             let d = orpheus_host::devchan::DevChannel::open(Duration::from_secs(3))?;
-            let reply = |d: &orpheus_host::devchan::DevChannel| -> Result<String> {
-                Ok(String::from_utf8_lossy(&d.control_in(orpheus_proto::devchan::REQ_TEST, 0, 0, 256)?)
-                    .into_owned())
-            };
-            let wait_for = |d: &orpheus_host::devchan::DevChannel, want: &str| -> Result<()> {
-                let t0 = std::time::Instant::now();
-                loop {
-                    let r = reply(d)?;
-                    if r == want {
-                        return Ok(());
-                    }
-                    if r.contains("failed") {
-                        bail!("player: {r}");
-                    }
-                    if t0.elapsed() > Duration::from_secs(10) {
-                        bail!("timed out waiting for `{want}` (last reply `{r}`)");
-                    }
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-            };
-            d.control_out(orpheus_proto::devchan::REQ_TEST, 0, 0, format!("fcreate {remote}").as_bytes())?;
-            wait_for(&d, "put 0")?;
             let t0 = std::time::Instant::now();
-            let mut sent = 0usize;
-            for chunk in data.chunks(1024) {
-                d.control_out(orpheus_proto::devchan::REQ_PUT, 0, 0, chunk)?;
-                sent += chunk.len();
-                wait_for(&d, &format!("put {sent}"))?;
-            }
-            d.control_out(orpheus_proto::devchan::REQ_TEST, 0, 0, b"fclose")?;
-            wait_for(&d, &format!("closed {sent}"))?;
-            Ok(format!("{sent} bytes -> {remote} in {:.1} s", t0.elapsed().as_secs_f32()))
+            upload(&d, &remote, &data)?;
+            Ok(format!("{} bytes -> {remote} in {:.1} s", data.len(), t0.elapsed().as_secs_f32()))
         }
+        "suite" => suite::cmd(args),
+        "fuzz-ui" => fuzz::cmd(args),
         "otp-add" => {
             let uri = args.next_positional().context("otp-add needs an otpauth:// URI")?;
             if !uri.starts_with("otpauth://") || uri.len() > 1024 {
@@ -449,6 +436,41 @@ pub fn read_persistent(
         fault::FaultRecord::from_bytes(&f),
         mailbox::Mailbox::from_bytes(&m).unwrap_or_default(),
     ))
+}
+
+/// Upload `data` to `remote` (under `/.orpheus/`) through the firmware's
+/// file system: `fcreate`, 1 KiB PUT chunks, `fclose`.
+pub(crate) fn upload(d: &orpheus_host::devchan::DevChannel, remote: &str, data: &[u8]) -> Result<()> {
+    use orpheus_proto::devchan::{REQ_PUT, REQ_TEST};
+    if !remote.starts_with("/.orpheus/") {
+        bail!("uploads go under /.orpheus/ only (CLAUDE.md rule 5)");
+    }
+    let wait_for = |want: &str| -> Result<()> {
+        let t0 = std::time::Instant::now();
+        loop {
+            let r = String::from_utf8_lossy(&d.control_in(REQ_TEST, 0, 0, 256)?).into_owned();
+            if r == want {
+                return Ok(());
+            }
+            if r.contains("failed") {
+                bail!("player: {r}");
+            }
+            if t0.elapsed() > Duration::from_secs(10) {
+                bail!("timed out waiting for `{want}` (last reply `{r}`)");
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    d.control_out(REQ_TEST, 0, 0, format!("fcreate {remote}").as_bytes())?;
+    wait_for("put 0")?;
+    let mut sent = 0usize;
+    for chunk in data.chunks(1024) {
+        d.control_out(REQ_PUT, 0, 0, chunk)?;
+        sent += chunk.len();
+        wait_for(&format!("put {sent}"))?;
+    }
+    d.control_out(REQ_TEST, 0, 0, b"fclose")?;
+    wait_for(&format!("closed {sent}"))
 }
 
 /// Key names in scripts (orpheus_input::Key order).

@@ -33,6 +33,13 @@ rodata_pages = 48
 # a STATUS.md entry.
 resident_panic_sites = 0
 
+[hil]
+# On-device sessions (VER-7 suite, VER-8 fuzz-ui, 07 §5.7): the stack's
+# free bytes (INFO, painted at boot) must stay at or above this. The stack
+# is the rest of SRAM0 (≈ 27 KiB); measured peak ≈ 21.5 KiB (≈ 5.5 KiB
+# free, 2026-11-24): 2 KiB is the margin a fuzz session may not eat into.
+stack_free_min_bytes = 2048
+
 [bringup]
 # RAM-loaded images end below ymon (0x118000).
 image_bytes = 98304             # 96 KiB

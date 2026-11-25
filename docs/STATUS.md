@@ -53,8 +53,65 @@ of every session. Newest entries first in §3.
 | WEB-1 | done (host); not published | `cargo xtask site [--check]` → `target/orpheus/site/`; Home, Manual, Developers, Hardware, Changelog, FAQ, Try it and Install (placeholders for WEB-2/WEB-3). Deploy only with repository variable `PAGES_ENABLED=true`. User: review the site |
 | AU-13 | **built; first player run 2026-11-24: capture runs, microphone silent → front-end fix + `rec raw`/`rec width`/`rec mic` (not yet re-run)** | `orpheus-rec` (WAV PCM, IMA ADPCM, FLAC 0–2 encoders; low-cut, AGC, meter, voice activation; names; write-behind ring; the recording session), `atj2157_hal::adc` (vendor capture sequence VERBATIM, DMA ch 6), `firmware::rec` (recording mode of the card task, SRAM3 state after the radio's), developer `rec start/stop/status`. Not built: voice (Opus/Speex) encoders, mic monitoring, pre-record. User check 23 |
 | UI-5b | **built (host + firmware), not yet run on the player** | Recorder app (meters, timer, pause/mark/stop question, gain, menu with source/format/quality/AGC/VOX/split/monitor/low-cut), Recordings… (newest first, play, delete with question); simulator back end over the same session and a fake ADC; 122 goldens, 10 behaviour tests |
+| VER-7 | **tooling built (host + `ui top`), not yet run on the player** | `cargo xtask dev suite`: 15 journeys (`tests/suite/journeys.toml`) in the simulator's script language, run in the simulator (expected frames `tests/suite/expected/`, 48 shots) and on the player (keys, `ui top`, screenshots under `tests/suite/masks.toml`, `cmd:` reply checks), report in `target/orpheus/suite/<ts>/`, `--setup` fixtures in `/.orpheus/test/suite/`, `--sim` dry run, ends in a reboot. 07 §5.7 "As built". Not done: every interaction of every screen (VER-7 proper), audio CRC and card-image oracles |
+| VER-8 | **groundwork built, not yet run on the player** | `cargo xtask dev fuzz-ui --seed N --minutes M`: `ui_keys` grammar without Power, a `ui top` guard before every key (dialogs, Bluetooth, USB, Recorder, vault, settings), oracles every K keys (fault record, uptime, stack ≥ `[hil] stack_free_min_bytes`, underruns), card root listing before/after, replay + ddmin into `tests/regress/ui-device/`, `--replay`. Not done: model-guided sequences, injected events, simulator divergence |
 
 ## 3. Session log
+
+### 2026-11-24 — VER-7 tooling and VER-8 groundwork: on-device suite and UI fuzzer (worker, no hardware)
+
+Host tooling only; nothing was run on the player. Details and how to run:
+07 §5.7 "As built".
+
+* **Firmware**: test command `ui top` → `top ID NAME depth=D dialog=0|1
+  overlay=0|1 locked=0|1 screen=0|1`, answered at once from two statics the
+  UI task writes after every loop (`fw/firmware/src/ui.rs`; +8 B `.bss`).
+* **`cargo xtask dev suite [NAME…] [--list] [--update-expected] [--setup]
+  [--sim] [--no-reboot]`** (`xtask/src/dev/{script,player,mask,suite}.rs`):
+  15 journeys in `tests/suite/journeys.toml` (Home, Settings groups,
+  information screens, USB settings, Files, Music, Now Playing over
+  fixtures, Pictures, Bluetooth, Radio, Steps, Tools, Recorder,
+  Authenticator locked, USB Drive notice), the simulator's script language
+  plus `sim:`/`dev:`/`cmd: TEXT ~ REGEX` lines; expected frames from the
+  simulator in `tests/suite/expected/` (48); per-screen masks in
+  `tests/suite/masks.toml`; Home focus normalised from the screenshot;
+  report `target/orpheus/suite/<ts>/` (PNGs, diffs, `summary.txt/json`,
+  `index.html`); ends in a reboot.
+* **`cargo xtask dev fuzz-ui --seed N --minutes M`** (`fuzz.rs`): `ui_keys`
+  grammar without Power, guard on `ui top` before every key, oracles every
+  K keys (fault record, uptime, stack ≥ `budgets.toml [hil]
+  stack_free_min_bytes` = 2048 (new), underruns), card root listing
+  before/after, replay + ddmin into `tests/regress/ui-device/`,
+  `--replay FILE`.
+* **Host tests** (24 in `xtask` `dev::`): script parsing and the Power /
+  simulator-only refusals, `ui top` parsing, key indices against
+  `orpheus-input`, masks (inside/outside, tolerances, combination, PNG round
+  trip), every journey in the simulator ending at Home, expected frames
+  current (`ORPHEUS_BLESS=1` rewrites), the whole suite runner against the
+  simulator as the player (all 48 shots exact) and its report, Home focus
+  normalisation and the wrong-appearance error, a failing shot in the
+  report, the grammar pinned to `sim/fuzz`, no Power in 5,000 generated
+  keys, the guard, ddmin, a planted crash found and minimised to Menu,
+  Down, OK on a fake player, 3 × 400-key simulator sessions without a
+  power/storage/USB/factory-reset request, regressions replay in the
+  simulator.
+* **Gate**: host fmt, clippy (`--all-targets -D warnings`), `cargo test
+  --workspace` (928 passed); fw fmt, clippy; `xtask build`, `xtask
+  check-resident` (48 sections from 16 roots, none paged), `xtask size
+  --check` pass. Not run: `xtask dev hil smoke` and the new suite (no
+  hardware for workers); brand/site checks (no change there).
+* **For the lead**: stage a build with `ui top`, then `cargo xtask dev
+  suite --setup` and look at `index.html`; expect to tune masks where the
+  player's own state shows (settings values, card, vault state, Now
+  Playing view). The suite assumes Dark/Blue/English, all Home apps,
+  Bluetooth off. Run `fuzz-ui` on a test card first: the guard keeps the
+  UI away from destructive actions, but it does change the player's
+  volume, alarms, timers and (with `--settings`) settings.
+* **Open**: the UsbConnect dialog needs a cable event (not injectable
+  yet); the card-write oracle compares only the root listing; VER-7 proper
+  (every interaction of every screen, audio CRC, card image diff) and
+  VER-8 proper (model-guided sequences, injected events, simulator
+  divergence) remain.
 
 ### 2026-11-24 — AU-13 fix after the first device run: the microphone recorded silence (worker, no hardware)
 
@@ -2707,6 +2764,8 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 | 2026-11-24 | Instrumented coverage build of the host workspace, no debug info | ≈ 0.4 GB build + ≈ 1.1 GB test images in `target/cover/…/tmp` | `du` |
 | 2026-11-24 | Coverage after VER-4 part 1, regions / lines / branches | host + fuzz 83.27 % (74,194 / 89,102) / 83.37 % / 80.81 %; fuzz only 78.04 % (48,171 / 61,729 regions of the files fuzz binaries contain) | `xtask cover --fuzz-only`, `xtask cover` (+ fuzz replays), nightly-2026-11-05 |
 | 2026-11-24 | Committed fuzz corpora | 30 targets, 13.5 k files, 15 MB | `du --apparent-size tests/fuzz-corpus` |
+| 2026-11-24 | Firmware with `ui top` (VER-7), worker worktree build | resident 77,500 B (`size --check`: 77,495), bss 123,664 B (+8: `TOP`, `TOP_NAME`), 99 code + 18 rodata pages, slot 1,040,384 B | `xtask build`, `xtask size --check` |
+| 2026-11-24 | On-device suite estimate (VER-7) | 15 journeys, 48 shots, ≈ 106 s + reboot; expected frames 256 KiB | `cargo test -p xtask list_estimates`, `du` |
 | 2026-11-24 | Firmware with SENS-1, UI-5c, UI-5d, worker worktree build | resident 83,316 → 83,484 B; `__stack_bottom` 0x132238 → 0x132498 (+608 B); 75 → 79 code pages (+16 rodata), slot 835,584 → 868,352 B; cluster `steps-sample` 3,648 B (4 lines) at 0x222000; sensor task poll frame 68 B, audio task poll 4,992 B (unchanged) | `xtask build`, `llvm-nm`, `llvm-objdump` `sub sp` |
 | 2026-11-24 | Step detector on synthetic traces (25 Hz, 8 seeds × walk/slow/brisk/pocket 120 s, run 90 s) | all within ± 5 %; 0 steps: table 10 min, handling, bus 10 min, shaking 3.8–8 Hz | `cargo test -p orpheus-steps` |
 | 2026-11-24 | ASan host tests | 63 binaries, 586 tests, 0 memory errors; LSan: 4 binaries (1 fixed) | `xtask test asan --lean` |
