@@ -113,6 +113,7 @@ extern "C" fn orpheus_pager_fault(frame: *const u32, exc_return: u32, ipsr: u32)
     // SAFETY: only this handler mutates the core after `init`.
     let core = unsafe { &mut *CORE.0.get() };
     let action = core.fault(addr, pc);
+    #[cfg(feature = "prof")]
     if crate::prof::faults_on() {
         // WP-T-8: off by default; one load and one branch here when off.
         if !matches!(action, Action::Fatal(_)) {

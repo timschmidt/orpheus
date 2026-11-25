@@ -110,8 +110,19 @@ pub fn cmd_build(args: &mut Args) -> Result<String> {
             forwarded.push(v);
         }
     }
-    crate::pagelink::cmd(&mut Args::from_vec(forwarded))
+    let out = crate::pagelink::cmd(&mut Args::from_vec(forwarded))?;
+    // The ymon payloads share the HAL and have small fixed regions: build
+    // them too, so a HAL change that no longer fits fails here and not at
+    // the next `dev stage` (2026-11-25: the profiler's vector overflowed
+    // the NOR programmer's .bss by 232 B and staging failed).
+    for p in PAYLOADS {
+        build_fw(p, p, true, None)?;
+    }
+    Ok(format!("{out}; payloads {} ok", PAYLOADS.len()))
 }
+
+/// The ymon RAM payloads (`fw/payloads/`).
+pub const PAYLOADS: [&str; 1] = ["payload-norprog"];
 
 pub fn cmd_bringup(args: &mut Args) -> Result<String> {
     let release = !args.flag("debug");

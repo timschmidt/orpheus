@@ -6,6 +6,12 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+# WP-T-8: the PC sampler's vector and the pager fault log. Only the
+# firmware enables it: small images (the ymon payloads) have no room for
+# the profiler's code and state.
+prof = []
+
 [dependencies]
 atj2157-pac = { path = "../../crates/atj2157-pac" }
 orpheus-proto.workspace = true

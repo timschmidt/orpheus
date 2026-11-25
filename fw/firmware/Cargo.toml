@@ -7,7 +7,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-atj2157-hal = { path = "../atj2157-hal" }
+atj2157-hal = { path = "../atj2157-hal", features = ["prof"] }
 yoton-bsp = { path = "../yoton-bsp" }
 orpheus-proto.workspace = true
 orpheus-ui = { path = "../../crates/orpheus-ui" }

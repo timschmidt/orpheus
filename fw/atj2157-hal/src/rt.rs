@@ -253,7 +253,10 @@ pub static __vectors: [Vector; 16 + N_IRQ] = {
     v[15] = FAULT; // SysTick: unused (follows the core clock)
     // T2: the profiler's PC sampler, its own entry (it needs the stacked
     // frame and runs at level 0; `prof`).
-    v[16 + irq::TIMER2 as usize] = Vector { handler: crate::prof::entry };
+    #[cfg(feature = "prof")]
+    {
+        v[16 + irq::TIMER2 as usize] = Vector { handler: crate::prof::entry };
+    }
     v
 };
 

@@ -25,6 +25,7 @@ pub mod nor;
 pub mod pager;
 pub mod persist;
 pub mod pmu;
+#[cfg(feature = "prof")]
 pub mod prof;
 pub mod pwm;
 pub mod rt;
