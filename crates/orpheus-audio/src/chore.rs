@@ -171,7 +171,10 @@ pub struct Piece {
     need: u32,
     last: u32,
     gap: u32,
-    asks: u32,
+    asks: u16,
+    /// The caller's card-operation count at the start (low 16 bits;
+    /// [`Piece::with_io`], [`Piece::worked`]).
+    io: u16,
 }
 
 /// What a piece took ([`Piece::end`]).
@@ -191,11 +194,28 @@ pub struct Spent {
 
 impl Piece {
     /// No budget (the idle loop, a paused track: nothing plays).
-    pub const UNLIMITED: Piece = Piece { start: 0, budget: u32::MAX, need: 0, last: 0, gap: 0, asks: 0 };
+    pub const UNLIMITED: Piece =
+        Piece { start: 0, budget: u32::MAX, need: 0, last: 0, gap: 0, asks: 0, io: 0 };
 
     #[must_use]
     pub const fn new(now: u32, budget_us: u32, need_us: u32) -> Self {
-        Piece { start: now, budget: budget_us, need: need_us, last: now, gap: 0, asks: 0 }
+        Piece { start: now, budget: budget_us, need: need_us, last: now, gap: 0, asks: 0, io: 0 }
+    }
+
+    /// The piece starts at card-operation count `io` (a free-running
+    /// counter; the firmware's `yoton_bsp::card::io_count`).
+    #[must_use]
+    pub const fn with_io(mut self, io: u32) -> Self {
+        self.io = io as u16;
+        self
+    }
+
+    /// Whether the counter moved since the start ([`Piece::with_io`]): the
+    /// piece did card work. A piece that did none is a cheap variant of its
+    /// kind and must not lower the kind's need ([`Costs::observe_piece`]).
+    #[must_use]
+    pub fn worked(&self, io: u32) -> bool {
+        io as u16 != self.io
     }
 
     /// Before a card operation: may it start? The first one always does
@@ -231,7 +251,7 @@ impl Piece {
         Spent {
             took,
             unit,
-            asks: self.asks,
+            asks: u32::from(self.asks),
             over: self.budget != u32::MAX && took > self.budget,
             budget: self.budget,
         }
@@ -279,6 +299,19 @@ impl<const N: usize> Costs<N> {
         match self.need.get(kind).copied() {
             Some(0) | None => seed,
             Some(n) => u32::from(n) * COST_UNIT_US,
+        }
+    }
+
+    /// A piece of `kind` that may have done no card work (`worked`): one
+    /// that did is [`Costs::observe`]d; one that did not only raises the
+    /// need, never lowers it. A request kind with a variant that touches no
+    /// card (`want` while a folder plays: the window is made in later
+    /// pieces; `drain` once its file is chosen) otherwise taught the kind a
+    /// need of ~0, and its card-reading variant (`want` in a music-library
+    /// list) was then admitted at any budget.
+    pub fn observe_piece(&mut self, kind: usize, unit: u32, seed: u32, worked: bool) {
+        if worked || unit >= self.need(kind, seed) {
+            self.observe(kind, unit, seed);
         }
     }
 
@@ -330,7 +363,10 @@ mod tests {
         assert_eq!(decide(&ask(ROOMY, 25_000, 0)), Verdict::Run { budget_us: 48_000 - MARGIN_US });
         // Roomy but it does not fit: waits (until the starvation bound).
         assert_eq!(decide(&ask(ROOMY, 40_000, 0)), Verdict::Wait);
-        assert_eq!(decide(&ask(ROOMY, 40_000, STARVE_US)), Verdict::Starved { budget_us: 48_000 - MARGIN_US });
+        assert_eq!(
+            decide(&ask(ROOMY, 40_000, STARVE_US)),
+            Verdict::Starved { budget_us: 48_000 - MARGIN_US }
+        );
         // Not roomy, not waited: waits even if it fits.
         assert_eq!(decide(&ask(HALF, 5_000, WAIT_US - 1)), Verdict::Wait);
         // Waited: runs if it fits (the forced path), not otherwise.
@@ -468,6 +504,8 @@ mod tests {
         kind: usize,
         at: u64,
         done: u32,
+        /// The kind's cheap variant: no card operation ([`Case::cheap`]).
+        cheap: bool,
     }
 
     /// What a run of the model found.
@@ -575,6 +613,13 @@ mod tests {
         bg: Option<(usize, u32)>,
         load: Load,
         until_us: u64,
+        /// Requests `ui[i]` for which `cheap[i % len]` is true are their
+        /// kind's cheap variant: `cheap_us` of work and no card operation
+        /// (`want` while a folder plays). Empty: none.
+        cheap: &'a [bool],
+        cheap_us: u32,
+        /// Every piece measured, card work or not (before 2026-11-25).
+        measure_all: bool,
     }
 
     /// The playback loop of `audio::play_block` against the DAC: a decoder
@@ -601,6 +646,8 @@ mod tests {
         let mut since: Option<u64> = None;
         let mut blocks = 0u32;
         let mut dec_peak = 0u32;
+        // Card operations so far (the firmware's `card::io_count`).
+        let mut ops = 0u32;
         // A chore ran since the last push: an underrun in the decoder call
         // before the next push is the chore's (as the firmware's ledger
         // charges it).
@@ -626,11 +673,12 @@ mod tests {
                 && dac.t >= next_bg
                 && back.is_none()
             {
-                back = Some(Waiting { kind, at: dac.t, done: 0 });
+                back = Some(Waiting { kind, at: dac.t, done: 0, cheap: false });
                 next_bg = dac.t + u64::from(every);
             }
             if req.is_none() && dac.t >= next_ui && !c.ui.is_empty() {
-                req = Some(Waiting { kind: c.ui[ui_n % c.ui.len()], at: dac.t, done: 0 });
+                let cheap = !c.cheap.is_empty() && c.cheap[ui_n % c.cheap.len()];
+                req = Some(Waiting { kind: c.ui[ui_n % c.ui.len()], at: dac.t, done: 0, cheap });
                 ui_n += 1;
             }
             let (is_bg, w) = match (back.as_mut(), req.as_mut()) {
@@ -665,18 +713,29 @@ mod tests {
             since = None;
             let k = c.kinds[w.kind];
             let head_us = frames_us(head, RATE);
-            let mut p = Piece::new(dac.t as u32, budget, a.need_us);
+            let p0 = Piece::new(dac.t as u32, budget, a.need_us).with_io(ops);
+            let mut p = p0;
             let mut dry = false;
+            if w.cheap {
+                // No card operation: the request is answered from RAM.
+                dry |= dac.busy(c.cheap_us);
+                w.done = k.total;
+            }
             while w.done < k.total {
                 if k.split && !p.left(dac.t as u32) {
                     break;
                 }
                 let op = if k.split { rng.range(k.ops.0, k.ops.1) } else { k.total };
                 dry |= dac.busy(op);
+                ops = ops.wrapping_add(1);
                 w.done += op;
             }
             let spent = p.end(dac.t as u32);
-            costs.observe(w.kind, spent.unit, seed(w.kind));
+            if c.measure_all {
+                costs.observe(w.kind, spent.unit, seed(w.kind));
+            } else {
+                costs.observe_piece(w.kind, spent.unit, seed(w.kind), p.worked(ops));
+            }
             if dry {
                 f.chore_underruns += 1;
             }
@@ -728,6 +787,9 @@ mod tests {
         bg: Some((3, 5_000_000)),
         load: Load { dec: (14_000, 19_000), fill: (3_000, 8_000), fill_every: 2, reload: 0 },
         until_us: 120_000_000,
+        cheap: &[],
+        cheap_us: 0,
+        measure_all: false,
     };
     const SEEDS: [u32; 5] = [1, 2, 3, 0x5eed, 0xdead_beef];
 
@@ -847,6 +909,7 @@ mod tests {
             bg: None,
             load: Load { dec: (3_000, 6_000), fill: (2_000, 5_000), fill_every: 2, reload: 0 },
             until_us: 20_000_000,
+            ..SOAK
         };
         let f = model(&decide, c, 3);
         // The 80-ms chores starve, the listings between them do not.
@@ -856,5 +919,52 @@ mod tests {
         // underruns, once per piece; nothing else does.
         assert_eq!(f.chore_underruns, f.starved, "{f:?}");
         assert_eq!(f.loop_underruns, 0, "{f:?}");
+    }
+
+    /// Regression (AU-PERF, 2026-11-25): a request kind with a variant that
+    /// reads no card (`want` while a folder plays only starts a listing
+    /// job; in a music-library list it reads the library's window) learnt
+    /// its need from the cheap one: five answers from RAM took the need of
+    /// a 25-ms window down to ~6 ms, and the next card-reading one was
+    /// admitted at a budget of a few ms (under the soak's load: after the
+    /// 300-ms wait, at low headroom) and ran the DAC dry. A piece that did
+    /// no card work now raises the need but never lowers it.
+    #[test]
+    fn regress_a_piece_without_card_work_does_not_lower_the_need() {
+        let kinds = [Kind { ops: (25_000, 25_000), total: 25_000, split: false }];
+        let c = Case {
+            kinds: &kinds,
+            ui: &[0],
+            think: (5_000, 60_000),
+            bg: None,
+            cheap: &[true, true, true, true, true, false],
+            cheap_us: 300,
+            ..SOAK
+        };
+        let mut old = 0;
+        for seed in SEEDS {
+            let f = model(&decide, c, seed);
+            assert_eq!(f.chore_underruns + f.loop_underruns, 0, "seed {seed}: {f:?}");
+            assert_eq!(f.exceeded, 0, "seed {seed}: {f:?}");
+            assert!(f.answered > 300, "seed {seed}: {f:?}");
+            // Measured as before: the ring runs dry on every seed.
+            let f = model(&decide, Case { measure_all: true, ..c }, seed);
+            assert!(f.chore_underruns + f.loop_underruns >= 1, "seed {seed}: {f:?}");
+            old += f.chore_underruns + f.loop_underruns;
+        }
+        assert!(old >= 5, "{old}");
+        // The rule itself: no card work, shorter than the need: unchanged;
+        // longer: raised; card work: measured as before.
+        let mut k = Costs::<1>::new();
+        k.observe(0, 30_000, 8_000);
+        k.observe_piece(0, 300, 8_000, false);
+        assert_eq!(k.need(0, 8_000), 30_000);
+        k.observe_piece(0, 40_000, 8_000, false);
+        assert_eq!(k.need(0, 8_000), 40_000);
+        k.observe_piece(0, 8_000, 8_000, true);
+        assert_eq!(k.need(0, 8_000), 32_000);
+        let p = Piece::new(0, 10_000, 0).with_io(0x1_FFFF);
+        assert!(!p.worked(0x1_FFFF) && p.worked(0x2_0000));
+        assert_eq!(core::mem::size_of::<Option<Piece>>(), 28);
     }
 }

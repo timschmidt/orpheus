@@ -1424,6 +1424,10 @@ impl Rig for UsbPlayer {
     }
 }
 
+/// An action's counters are read at its end when the last read is older
+/// than this (`Ctx::boundary`).
+const BOUNDARY_MS: u64 = 2000;
+
 /// A bug planted in the simulator (host tests of the oracles and the
 /// minimiser): after the commands of `after` were sent in this order, each
 /// later `status` reports one more underrun (cause `dec`).
@@ -2266,7 +2270,24 @@ impl Ctx {
         if disrupted {
             self.oracles.disrupt(rig.wall_ms().max(t0), a.seconds());
         }
+        // The counters are read at the action's end: the next read covers
+        // the next action only, so a finding names the action it happened in.
+        self.boundary(rig, BOUNDARY_MS)?;
         *self.done.entry(self.kind).or_default() += 1;
+        Ok(())
+    }
+
+    /// Read the oracles now unless the last read is younger than `min_ms`
+    /// (or a finding or a stop is already in): the counters are cumulative
+    /// over the time since the last read, so a read at each boundary keeps
+    /// what one read covers inside one action (soak seed 1, 2026-11-25: two
+    /// underruns read in `radio-keys` over the 28 s since the last sample in
+    /// `browse pictures` could have been either action's).
+    fn boundary(&mut self, rig: &mut dyn Rig, min_ms: u64) -> Result<()> {
+        let last = self.next_sample.saturating_sub(self.b.sample_every_s * 1000);
+        if self.findings.is_empty() && self.stopped.is_none() && rig.wall_ms() >= last + min_ms {
+            self.sample(rig)?;
+        }
         Ok(())
     }
 
@@ -2284,7 +2305,12 @@ impl Ctx {
         for _ in 0..times {
             player::tap(rig, key)?;
         }
+        // Opening Radio starts the radio, which stops the music (a source
+        // change; the firmware stops the DAC at once, no underrun counted):
+        // read what came before, then allow for the change from here.
+        self.boundary(rig, 0)?;
         player::tap(rig, Key::Ok)?;
+        self.oracles.disrupt(rig.wall_ms(), 0);
         rig.sleep(1100);
         Ok(player::expect_screen(rig, "Radio", 3000).is_ok())
     }
@@ -3972,6 +3998,48 @@ mod tests {
         let after = ctx.status(&mut rig).expect("status");
         assert_eq!((after.q_len, &after.title), (before.q_len, &before.title), "the queue was replaced");
         assert_eq!(rig.p.sim.sys.settings.get(roll), 0);
+    }
+
+    /// Soak seed 1, 2026-11-25 (`tests/regress/soak/mixed-underrun-seed1-4.soak`):
+    /// two underruns were read in `radio-keys` over the 28 s since the last
+    /// sample in `browse pictures`, so the run could not tell which action
+    /// had them (the radio's start stops the music cleanly; the navigation
+    /// before it and the end of `browse pictures` both played music). Every
+    /// action is now read at its end, and the radio's entry just before it
+    /// stops the music, after which its disruption window opens.
+    #[test]
+    fn regress_underruns_are_read_in_the_action_they_happen_in() {
+        let b = budget();
+        let (mut rig, homes) = sim_rig();
+        let caps = prologue(&mut rig).unwrap();
+        let mut ctx = new_ctx(&mut rig, &b, caps, &homes, false).unwrap();
+        ctx.run(&mut rig, &Action::PlayDir(folders()[0].clone())).unwrap();
+        // Past the play's disruption window.
+        ctx.action_no = 1;
+        ctx.run(&mut rig, &Action::Listen(b.seek_window_s + 15)).unwrap();
+        assert!(ctx.findings.is_empty(), "{:?}", ctx.findings);
+        // Underruns from now on (each status read adds one), in an action
+        // too short for a sample of its own.
+        rig.planted = Some(Planted { after: vec![], ..Planted::default() });
+        ctx.action_no = 2;
+        ctx.run(&mut rig, &Action::Listen(3)).unwrap();
+        let f = ctx.findings.first().expect("read at the action's end");
+        assert_eq!((f.kind, f.action), (Kind::Underrun, 2), "{f:?}");
+        assert!(f.detail.contains("since the sample in action #1"), "{}", f.detail);
+
+        // The radio's entry: read just before the music stops, the window
+        // opened right after.
+        let (mut rig, homes) = sim_rig();
+        let caps = prologue(&mut rig).unwrap();
+        let mut ctx = new_ctx(&mut rig, &b, caps, &homes, false).unwrap();
+        ctx.run(&mut rig, &Action::PlayDir(folders()[0].clone())).unwrap();
+        ctx.run(&mut rig, &Action::Listen(b.seek_window_s + 15)).unwrap();
+        let (n, t) = (ctx.oracles.stats.samples, rig.wall_ms());
+        assert!(t > ctx.oracles.disrupt_until, "outside any window");
+        assert!(ctx.goto_radio(&mut rig).unwrap());
+        assert_eq!(ctx.oracles.stats.samples, n + 1, "read before the radio starts");
+        assert!(ctx.oracles.disrupt_until >= t + b.seek_window_s * 1000, "window from the entry");
+        assert!(ctx.findings.is_empty(), "{:?}", ctx.findings);
     }
 
     /// The tool against the simulator: every scenario runs for a few

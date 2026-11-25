@@ -12,12 +12,24 @@
 //!
 //! No panic paths (used in the firmware's audio task).
 
-/// Underruns by cause; `N` causes, indices chosen by the user.
+/// The operation [`Ledger::note_as`] was given no detail for.
+pub const NO_DETAIL: u8 = u8::MAX;
+
+/// Underruns by cause; `N` causes (at most 255), indices chosen by the
+/// user. Each noted operation may carry a *detail* byte, also the user's
+/// (the firmware: which chore or request it was), that the candidate keeps
+/// so a log line can name the exact path ([`Ledger::candidate`]); the
+/// counts are by cause only. 24 bytes for `N = 8` (counts saturate at
+/// 65,535 per track), all zeros when new (a firmware static of it is in
+/// `.bss`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ledger<const N: usize> {
-    by: [u32; N],
-    /// The longest operation since the last half boundary: cause, µs.
-    worst: Option<(u8, u32)>,
+    by: [u16; N],
+    /// The longest operation since the last half boundary: µs, cause + 1
+    /// (0: none), detail.
+    worst_us: u32,
+    worst_cause: u8,
+    worst_detail: u8,
 }
 
 impl<const N: usize> Default for Ledger<N> {
@@ -29,13 +41,21 @@ impl<const N: usize> Default for Ledger<N> {
 impl<const N: usize> Ledger<N> {
     #[must_use]
     pub const fn new() -> Self {
-        Self { by: [0; N], worst: None }
+        Self { by: [0; N], worst_us: 0, worst_cause: 0, worst_detail: 0 }
     }
 
     /// An operation of `cause` ran `us` µs without feeding the DAC.
     pub fn note(&mut self, cause: usize, us: u32) {
-        if cause < N && self.worst.is_none_or(|(_, w)| us > w) {
-            self.worst = Some((cause as u8, us));
+        self.note_as(cause, NO_DETAIL, us);
+    }
+
+    /// As [`Ledger::note`], naming the operation more precisely (`detail`,
+    /// the caller's code; kept with the candidate, not counted).
+    pub fn note_as(&mut self, cause: usize, detail: u8, us: u32) {
+        if cause < N && cause < usize::from(u8::MAX) && (self.worst_cause == 0 || us > self.worst_us) {
+            self.worst_us = us;
+            self.worst_cause = cause as u8 + 1;
+            self.worst_detail = detail;
         }
     }
 
@@ -43,23 +63,35 @@ impl<const N: usize> Ledger<N> {
     /// charged to the longest operation noted since the last boundary, else
     /// to `fallback`.
     pub fn missed(&mut self, halves: u32, fallback: usize) {
-        let cause = self.worst.take().map_or(fallback, |(c, _)| usize::from(c));
+        let cause = self.candidate().map_or(fallback, |(c, _, _)| c);
+        self.kept_up();
         let i = if cause < N { cause } else { N.saturating_sub(1) };
         if let Some(b) = self.by.get_mut(i) {
-            *b = b.saturating_add(halves);
+            *b = b.saturating_add(u16::try_from(halves).unwrap_or(u16::MAX));
         }
     }
 
-    /// A half boundary with nothing missed: the noted operations did no harm.
+    /// A half boundary with nothing missed: the noted operations did no
+    /// harm. Also when the DAC starts: what ran while it was stopped had no
+    /// deadline and cannot be the cause of a later underrun.
     pub fn kept_up(&mut self) {
-        self.worst = None;
+        self.worst_cause = 0;
+        self.worst_detail = 0;
+        self.worst_us = 0;
     }
 
     /// The longest operation noted since the last half boundary (cause,
     /// µs): what kept the writer away when it finds itself behind.
     #[must_use]
     pub fn worst(&self) -> Option<(usize, u32)> {
-        self.worst.map(|(c, us)| (usize::from(c), us))
+        self.candidate().map(|(c, _, us)| (c, us))
+    }
+
+    /// [`Ledger::worst`] with its detail ([`NO_DETAIL`]: none given).
+    #[must_use]
+    pub fn candidate(&self) -> Option<(usize, u8, u32)> {
+        let c = usize::from(self.worst_cause).checked_sub(1)?;
+        Some((c, self.worst_detail, self.worst_us))
     }
 
     /// Start counting again (a new track).
@@ -69,12 +101,12 @@ impl<const N: usize> Ledger<N> {
 
     #[must_use]
     pub fn by(&self) -> [u32; N] {
-        self.by
+        self.by.map(u32::from)
     }
 
     #[must_use]
     pub fn total(&self) -> u32 {
-        self.by.iter().fold(0u32, |a, &b| a.saturating_add(b))
+        self.by.iter().fold(0u32, |a, &b| a.saturating_add(u32::from(b)))
     }
 }
 
@@ -165,5 +197,33 @@ mod tests {
         assert_eq!(l.total(), 7);
         l.reset();
         assert_eq!(l.total(), 0);
+    }
+
+    /// The detail goes with the candidate it was noted with; a DAC start
+    /// (`kept_up`) forgets what ran while the DAC was stopped (soak seed 1,
+    /// 2026-11-25: `ub=serve:55ms` named only the cause, not the path).
+    #[test]
+    fn regress_the_candidate_keeps_its_detail() {
+        let mut l = Ledger::<4>::new();
+        assert_eq!(l.candidate(), None);
+        l.note_as(LIB, 7, 30_000);
+        l.note_as(FILL, 9, 20_000);
+        assert_eq!(l.candidate(), Some((LIB, 7, 30_000)));
+        l.note_as(FILL, 9, 55_000);
+        assert_eq!(l.candidate(), Some((FILL, 9, 55_000)));
+        assert_eq!(l.worst(), Some((FILL, 55_000)));
+        l.missed(2, DEC);
+        assert_eq!(l.candidate(), None);
+        assert_eq!(l.by(), [0, 2, 0, 0]);
+        l.note(JOIN, 3);
+        assert_eq!(l.candidate(), Some((JOIN, NO_DETAIL, 3)));
+        l.kept_up();
+        l.missed(1, DEC);
+        assert_eq!(l.by(), [0, 2, 0, 1]);
+        // Counts saturate.
+        l.missed(u32::MAX, DEC);
+        assert_eq!(l.by()[DEC], 65_535);
+        assert_eq!(core::mem::size_of::<Ledger<8>>(), 24);
+        assert_eq!(Ledger::<8>::new(), Ledger { by: [0; 8], worst_us: 0, worst_cause: 0, worst_detail: 0 });
     }
 }

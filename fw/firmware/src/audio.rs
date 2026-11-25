@@ -357,19 +357,23 @@ pub(crate) fn piece_left() -> bool {
 /// A chore piece of `kind` starts with `budget` (µs).
 #[inline(never)]
 fn piece_begin(kind: usize, budget: u32) {
-    let p = Piece::new(now32(), budget, need_of(kind));
+    let p = Piece::new(now32(), budget, need_of(kind)).with_io(yoton_bsp::card::io_count());
     critical_section::with(|cs| PIECE.borrow(cs).set(Some(p)));
 }
 
 /// The piece of `kind` is over: its time measured into the kind's need
-/// (`Costs::observe`), an overrun (or a starved run) logged.
+/// (`Costs::observe_piece`: a piece that did no card operation, such as
+/// `want` while a folder plays, does not lower it), an overrun (or a
+/// starved run) logged.
 #[inline(never)]
 fn piece_end(kind: usize, starved: bool) {
     let now = now32();
+    let io = yoton_bsp::card::io_count();
     let seed = seed_of(kind);
     let s = critical_section::with(|cs| {
-        let s = PIECE.borrow(cs).take().map(|p| p.end(now))?;
-        COSTS.borrow(cs).borrow_mut().observe(kind, s.unit, seed);
+        let p = PIECE.borrow(cs).take()?;
+        let s = p.end(now);
+        COSTS.borrow(cs).borrow_mut().observe_piece(kind, s.unit, seed, p.worked(io));
         Some(s)
     });
     if let Some(s) = s.filter(|s| s.over || starved) {
@@ -398,15 +402,24 @@ fn kind_name(kind: usize) -> (&'static str, &'static str) {
     }
 }
 
+/// An overrun this far past its budget (µs) is always logged: it ate more
+/// than a fifth of the decoder margin (`chore::MARGIN_US`) and may have
+/// emptied the DAC ring. Smaller ones (`job:rows 16/16 ms`, routine) keep
+/// to one line a second and could hide a large one behind them (soak seed
+/// 1, 2026-11-25: `ub=serve:55ms` with no `chore:` line for it).
+const LOUD_OVER_US: u32 = chore::MARGIN_US / 5;
+
 /// A chore piece took longer than its budget, or ran starved (its need fit
 /// no headroom for `chore::STARVE_US`): `chore: serve:picture 31/22 ms
 /// u31 +0` (took / budget, the longest unsplittable stretch, lines not
-/// logged since the last). At most one line a second.
+/// logged since the last). At most one line a second, except a starved
+/// piece or one over by [`LOUD_OVER_US`] or more.
 #[inline(never)]
 fn chore_log(kind: usize, s: Spent, starved: bool) {
     let now = ((time::now_us() / 1000) as u32).max(1);
     let last = CHORE_LOG_MS.load(Ordering::Relaxed);
-    if last != 0 && now.wrapping_sub(last) < 1000 {
+    let loud = starved || s.took >= s.budget.saturating_add(LOUD_OVER_US);
+    if !loud && last != 0 && now.wrapping_sub(last) < 1000 {
         CHORE_QUIET.fetch_add(1, Ordering::Relaxed);
         return;
     }
@@ -456,8 +469,72 @@ const UB_DECODER: usize = 7;
 
 /// An operation of `cause` that started at `t0` (µs) has ended.
 fn note(cause: usize, t0: u32) {
+    note_as(cause, orpheus_audio::ledger::NO_DETAIL, t0);
+}
+
+/// [`note`] naming the exact path for the `pcm: head` line's `ub=`
+/// (`ub_label`): a chore kind (`K_*`, `0..KINDS`: `serve:picture`,
+/// `job:rows`, `drain`, …) or a player request taken in `head`
+/// (`D_REQ + REQ_LABELS` index: `req:skip`, …). The counts stay by cause.
+#[inline(never)]
+fn note_as(cause: usize, detail: u8, t0: u32) {
     let us = now32().wrapping_sub(t0);
-    critical_section::with(|cs| LEDGER.borrow(cs).borrow_mut().note(cause, us));
+    critical_section::with(|cs| LEDGER.borrow(cs).borrow_mut().note_as(cause, detail, us));
+}
+
+/// Details from here on name a player request handled in `head`
+/// ([`REQ_LABELS`]); below it, a chore kind.
+const D_REQ: u8 = 0x40;
+const _: () = assert!(KINDS <= D_REQ as usize);
+/// The player requests `head` takes while a track plays, as the `pcm:`
+/// line names them (`req:<label>`), NUL-separated in a paged static (plain
+/// literals would land in the resident mergeable-string section and cost
+/// stack: `__stack_bottom`).
+static REQ_LABELS: [u8; 47] = *b"pause\0skip\0seek\0stop\0shuffle\0ab\0mark\0edit\0other";
+static REQ_PREFIX: [u8; 4] = *b"req:";
+
+/// Label `i` of [`REQ_LABELS`].
+fn req_label(i: usize) -> Option<&'static str> {
+    let b = REQ_LABELS.split(|&c| c == 0).nth(i)?;
+    core::str::from_utf8(b).ok()
+}
+
+/// The detail of player request `r` ([`REQ_LABELS`]).
+fn req_detail(r: &PlayReq) -> u8 {
+    let i = match r {
+        PlayReq::Cmd(Command::Toggle | Command::Play | Command::Pause) | PlayReq::Resume => 0,
+        PlayReq::Cmd(Command::Next | Command::Prev | Command::JumpTo(_)) | PlayReq::JumpPos(_) => 1,
+        PlayReq::Cmd(Command::SeekMs(_) | Command::SeekByMs(_)) => 2,
+        PlayReq::Stop | PlayReq::Cmd(Command::Stop) => 3,
+        PlayReq::Cmd(Command::Shuffle(_) | Command::Repeat(_)) => 4,
+        PlayReq::SetA | PlayReq::SetB | PlayReq::Cmd(Command::AbPoint | Command::AbClear) => 5,
+        PlayReq::Cmd(Command::AddBookmark | Command::GotoBookmark(_) | Command::DeleteBookmark(_)) => 6,
+        PlayReq::Edit(_) => 7,
+        _ => 8,
+    };
+    D_REQ + i
+}
+
+/// The `pcm: head` line's name of the ledger's candidate: its detail
+/// (`note_as`), else its cause.
+fn ub_label(cause: usize, detail: u8) -> (&'static str, &'static str) {
+    if usize::from(detail) < KINDS {
+        return kind_name(usize::from(detail));
+    }
+    if let Some(l) = detail.checked_sub(D_REQ).and_then(|i| req_label(usize::from(i))) {
+        return (core::str::from_utf8(&REQ_PREFIX).unwrap_or(""), l);
+    }
+    let c = match cause {
+        UB_JOIN => "join",
+        UB_FILL => "fill",
+        UB_SERVE => "serve",
+        UB_PREFETCH => "pf",
+        UB_PREPARE => "prep",
+        UB_LIB => "lib",
+        UB_ART => "art",
+        _ => "dec",
+    };
+    (c, "")
 }
 
 /// Developer `stop`: ends the current file at once (also inside a PCM
@@ -698,11 +775,14 @@ static HEAD_QUIET: AtomicU32 = AtomicU32::new(0);
 
 /// The DAC fetched frames the writer had not written (VER-12, 2026-11-25:
 /// the soak saw -13 frames with no underrun counted). At most one line a
-/// second: the headroom, where the look was, the writer's half and fill,
-/// the DMA's half and frame, halves newly counted, the last decoder call,
-/// the loop's breadcrumb ([`mark`]), the longest operation since the last
-/// half boundary (the ledger's candidate cause) and the looks with negative
-/// headroom not logged since the last line.
+/// second: the headroom, the longest operation since the last half
+/// boundary (the ledger's candidate: its exact path, `ub_label`, and
+/// length; first, so the 96-byte line never cuts it off), where the look
+/// was, the writer's half and fill, the DMA's half and frame, halves newly
+/// counted, the last decoder call, the loop's breadcrumb ([`mark`]) and the
+/// looks with negative headroom not logged since the last line:
+/// `pcm: head -817 ub=serve:picture:55ms blk w=… f=… p=… at=… n=2 dec=6ms
+/// mk=0 +0`.
 #[inline(never)]
 fn head_log(l: Look, r: Reading, b: &Book, by: By) {
     let now = ((time::now_us() / 1000) as u32).max(1);
@@ -712,50 +792,38 @@ fn head_log(l: Look, r: Reading, b: &Book, by: By) {
         return;
     }
     HEAD_LOG_MS.store(now, Ordering::Relaxed);
-    let worst = critical_section::with(|cs| LEDGER.borrow(cs).borrow().worst());
+    let worst = critical_section::with(|cs| LEDGER.borrow(cs).borrow().candidate());
     let mut s = atj2157_hal::log::LineBuf::new();
-    s.push_str(if l.head < 0 { "pcm: head -" } else { "pcm: head " })
-        .push_u32(l.head.unsigned_abs())
-        .push_str(match by {
-            By::Block => " blk w=",
-            By::Half => " half w=",
-            By::Loop => " loop w=",
-        })
-        .push_u32(b.written)
-        .push_str(" f=")
-        .push_u32(b.fill)
-        .push_str(" p=")
-        .push_u32(r.played)
-        .push_str(" at=")
-        .push_u32(r.at)
-        .push_str(" n=")
-        .push_u32(l.stale)
-        .push_str(" dec=")
-        .push_u32(LAST_DEC_US.load(Ordering::Relaxed) / 1000)
-        .push_str("ms mk=")
-        .push_u32(WHERE.load(Ordering::Relaxed));
+    s.push_str(if l.head < 0 { "pcm: head -" } else { "pcm: head " }).push_u32(l.head.unsigned_abs());
     match worst {
-        Some((c, us)) => {
-            s.push_str(" ub=")
-                .push_str(match c {
-                    UB_JOIN => "join",
-                    UB_FILL => "fill",
-                    UB_SERVE => "serve",
-                    UB_PREFETCH => "pf",
-                    UB_PREPARE => "prep",
-                    UB_LIB => "lib",
-                    UB_ART => "art",
-                    _ => "dec",
-                })
-                .push_str(":")
-                .push_u32(us / 1000)
-                .push_str("ms");
+        Some((c, d, us)) => {
+            let (a, b) = ub_label(c, d);
+            s.push_str(" ub=").push_str(a).push_str(b).push_str(":").push_u32(us / 1000).push_str("ms");
         }
         None => {
             s.push_str(" ub=-");
         }
     }
-    s.push_str(" +").push_u32(HEAD_QUIET.swap(0, Ordering::Relaxed));
+    s.push_str(match by {
+        By::Block => " blk w=",
+        By::Half => " half w=",
+        By::Loop => " loop w=",
+    })
+    .push_u32(b.written)
+    .push_str(" f=")
+    .push_u32(b.fill)
+    .push_str(" p=")
+    .push_u32(r.played)
+    .push_str(" at=")
+    .push_u32(r.at)
+    .push_str(" n=")
+    .push_u32(l.stale)
+    .push_str(" dec=")
+    .push_u32(LAST_DEC_US.load(Ordering::Relaxed) / 1000)
+    .push_str("ms mk=")
+    .push_u32(WHERE.load(Ordering::Relaxed))
+    .push_str(" +")
+    .push_u32(HEAD_QUIET.swap(0, Ordering::Relaxed));
     s.emit();
 }
 
@@ -895,6 +963,10 @@ impl PcmOut {
     }
 
     fn start(&mut self) {
+        // What ran while the DAC was stopped (an unlimited chore at a track
+        // start, after a seek or a pause) had no deadline: it cannot be the
+        // cause of an underrun after this.
+        critical_section::with(|cs| LEDGER.borrow(cs).borrow_mut().kept_up());
         PLAYED.store(0, Ordering::Release);
         // SAFETY: channel 5 belongs to this module.
         let ch = unsafe { DmaCh::steal(DAC_CH) };
@@ -1661,7 +1733,13 @@ async fn head(
     spare: &mut [u8],
 ) -> Option<Result<End, &'static [u8]>> {
     match got {
-        Some(Ok(PlayReq::Edit(e))) if b.driven => b.flow.merge(srv.edit(e, vol.serial())),
+        // The player's answer is CPU only (its code may page in): noted, so
+        // an underrun after it names it (`ub=req:<label>`), not a chore.
+        Some(Ok(PlayReq::Edit(e))) if b.driven => {
+            let t0 = now32();
+            b.flow.merge(srv.edit(e, vol.serial()));
+            note_as(UB_SERVE, D_REQ + 7, t0);
+        }
         Some(Ok(r))
             if b.driven
                 && !matches!(
@@ -1672,7 +1750,9 @@ async fn head(
                         | PlayReq::Shutdown
                 ) =>
         {
+            let (t0, d) = (now32(), req_detail(&r));
             b.flow.merge(srv.play_req(r));
+            note_as(UB_SERVE, d, t0);
         }
         Some(Ok(r)) => {
             // A new queue, power-off, or any player request during
@@ -1788,26 +1868,26 @@ async fn chores(
             prefetch(vol, ring, srv, item).await;
         }
         jset(J_PREFETCH_US, now32().wrapping_sub(t0));
-        note(UB_PREFETCH, t0);
+        note_as(UB_PREFETCH, due.kind as u8, t0);
     } else if due.what == Chore::Prepare {
         let l0 = pager_loads();
         Apart(prepare(vol, ring, spare)).await;
         // The reads of all its pieces (each its own chore).
         jadd(J_PREP_US, now32().wrapping_sub(t0));
         jadd(J_PREP_LOADS, pager_loads().wrapping_sub(l0));
-        note(UB_PREPARE, t0);
+        note_as(UB_PREPARE, due.kind as u8, t0);
     } else if due.what == Chore::Serve {
         b.serve_due = false;
         let go_on = serve_one(vol, srv, spare).await;
         T_SERVE.fetch_add(now32().wrapping_sub(t0), Ordering::Relaxed);
-        note(UB_SERVE, t0);
+        note_as(UB_SERVE, due.kind as u8, t0);
         if !go_on {
             end = Some(Ok(End::Pending));
         }
     } else if due.what == Chore::Job {
         srv.step(vol).await;
         T_SERVE.fetch_add(now32().wrapping_sub(t0), Ordering::Relaxed);
-        note(UB_SERVE, t0);
+        note_as(UB_SERVE, due.kind as u8, t0);
     } else if b.meta == 1 {
         // A folder that missed before, or no library: nothing to look for.
         b.lib_find = b.st.track.and_then(|t| crate::library::find_begin(srv, t.locator()));
@@ -1823,7 +1903,7 @@ async fn chores(
             b.meta = 3;
         }
         jset(J_LIB_US, jget(J_LIB_US).max(now32().wrapping_sub(t0)));
-        note(UB_LIB, t0);
+        note_as(UB_LIB, due.kind as u8, t0);
     } else {
         b.meta = 0;
         // An album's next track keeps the cover shown.
@@ -1831,7 +1911,7 @@ async fn chores(
             crate::pictures::track_art_cached(vol, srv, t.locator()).await;
         }
         jset(J_ART_US, now32().wrapping_sub(t0));
-        note(UB_ART, t0);
+        note_as(UB_ART, due.kind as u8, t0);
         jset(J_UNDER_META, UNDERRUNS.load(Ordering::Relaxed));
     }
     piece_end(due.kind, due.starved);
@@ -1934,7 +2014,7 @@ async fn play_block(
                 piece_begin(K_DRAIN, budget);
                 Apart(drain_flush_rows(vol, spare)).await;
                 piece_end(K_DRAIN, false);
-                note(UB_SERVE, t0);
+                note_as(UB_SERVE, K_DRAIN as u8, t0);
             }
             // The step counter's file and trace (SENS-1): the same rule.
             if crate::sensor::card_due()
@@ -1944,7 +2024,7 @@ async fn play_block(
                 piece_begin(K_SENSOR, budget);
                 Apart(sensor_flush_rows(vol, spare)).await;
                 piece_end(K_SENSOR, false);
-                note(UB_SERVE, t0);
+                note_as(UB_SERVE, K_SENSOR as u8, t0);
             }
             reader_check(b, ring, srv);
             Went::On

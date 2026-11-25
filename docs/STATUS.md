@@ -22,7 +22,7 @@ of every session. Newest entries first in §3.
 | T-3, PG-1 | done | pagelink, PagerCore, check-resident; demand paging on the player (8 KiB pages, 1 KiB lines) |
 | T-6 | started | Rust NOR payload `fw/payloads/norprog` (erase/program, full-layout guard); ymon and nordump still the reference repo's C payloads. **Stage 2 slot fallback built and host-tested, not yet installed** (`orpheus_proto::boot::decide`; 964 B; lead's `install-stage2` + crash test: session entry 2026-11-24 "T-6 (stage2)") |
 | T-8 | **built (host + firmware), not yet run on the player** | PC sampler (T2, level 0) and pager fault log into the 2 KiB profiler block at `0x307000` (SRAM3), `prof pc\|faults on\|burst`, `prof off\|status`; `cargo xtask dev prof --pc\|--faults S [--during "soak --replay F"] [--only TEXT] [--update-hot NAME]`, `cargo xtask prof DIR`; reports in `target/orpheus/prof/<stamp>/`. Resident +656 B. User/lead check: U-TMR-1 and the Pictures-while-playing profile (session entry 2026-11-25 "T-8") |
-| AU-PERF | **built (host + firmware), not yet run on the player** | Playback per block out of the large async functions (`play_block` + small named functions, `Apart` poll boundaries, `orpheus_audio::pcm::Feeder`), codecs' `decode` not inlined, DSP stage mask kept, clusters `mp3-frame` 11 + `play-block` 15 + `play-fill` 6 = 32 lines (no shared physical line; `fits_with` check), 53 % of the measured fault loads in that set or gone; stack on the playback wake-up 6.6 → 1.5 KB; soft I2C timed on T0 (true 100 kHz, was ≈ 30 kHz: sample ≈ 2.7 → 1.0 ms), `acc bus`. Lead: profiles and checks in the session entry 2026-11-25 "AU-PERF"; U-I2C-1. **Up next titles: `seek_dir` per cluster (3,507 → 7 steps per title on 128 KiB exFAT), window keeps its titles (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: Up next titles cheap". **Chore budgets: every chore runs only when the headroom less a decoder margin covers its measured need, splittable ones stop at the budget (`orpheus_audio::chore`, host model; built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: chore budgets". **Listing pieces reopen the index file from its entry (no path walk after `job:index`), the need counts a piece's fixed cost (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: listing pieces reopen the index file" |
+| AU-PERF | **built (host + firmware), not yet run on the player** | Playback per block out of the large async functions (`play_block` + small named functions, `Apart` poll boundaries, `orpheus_audio::pcm::Feeder`), codecs' `decode` not inlined, DSP stage mask kept, clusters `mp3-frame` 11 + `play-block` 15 + `play-fill` 6 = 32 lines (no shared physical line; `fits_with` check), 53 % of the measured fault loads in that set or gone; stack on the playback wake-up 6.6 → 1.5 KB; soft I2C timed on T0 (true 100 kHz, was ≈ 30 kHz: sample ≈ 2.7 → 1.0 ms), `acc bus`. Lead: profiles and checks in the session entry 2026-11-25 "AU-PERF"; U-I2C-1. **Up next titles: `seek_dir` per cluster (3,507 → 7 steps per title on 128 KiB exFAT), window keeps its titles (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: Up next titles cheap". **Chore budgets: every chore runs only when the headroom less a decoder margin covers its measured need, splittable ones stop at the budget (`orpheus_audio::chore`, host model; built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: chore budgets". **Listing pieces reopen the index file from its entry (no path walk after `job:index`), the need counts a piece's fixed cost (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: listing pieces reopen the index file" **The 55 ms `serve` block: precise `ub=` labels (`ub=serve:picture`, `job:rows`, `req:skip`, …), DAC start forgets the candidate, large overruns always logged, RAM-only pieces do not lower a need, soak reads at every action's end (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: the 55 ms `serve` block" |
 | LAY-1 | done (device) | Full layout installed (`xtask dev install-full --i-have-a-backup`), layout-aware `stage`, `restore vendor [--verify]`. Unifont pack in NOR not done (the UI's fonts are built in) |
 | LCD-1, INPUT-1, PWR-2, AU-0 | done pending user checks 7, 8, 9, 10 | |
 | SD-1, FM-0, USB-1, USB-3, PWR-1 | done | |
@@ -64,6 +64,109 @@ of every session. Newest entries first in §3.
 | VER-10 (static stack) | **tool done (host-tested), gate step; firmware cut from ≥ 30,232 to 22,900 B nested worst case (built, not yet run on the player)** | `cargo xtask stack [--check] [--root P]`, `stack.toml`, `budgets.toml stack_static_margin_bytes` (−1,536 B: a ratchet, the static worst case still exceeds the 22,016 B stack by 884 B; the rest is the audio task's own frames, AU-PERF). Lead: `fuzz-ui --replay` of the VER-8 stack sequence, suite stack line (session entry 2026-11-25 "VER-10") |
 
 ## 3. Session log
+
+### 2026-11-25 — AU-PERF: the 55 ms `serve` block; precise `ub=` labels (worker, no hardware)
+
+From the lead's soak (`mixed` seed 1, `pcm: head -817 … dec=6ms mk=0
+ub=serve:55ms`, 2 underruns, `tests/regress/soak/mixed-underrun-seed1-4.soak`).
+
+* **Every path of the playback loop that runs while the DAC plays**
+  (`play_file` → `play_block`), and whether it can block it for tens of ms:
+
+  | path | rule | noted as (before → now) | tens of ms? |
+  |---|---|---|---|
+  | `chores`: served request (`serve_one` → `Server::serve`), listing piece (`step`), read-ahead open/head, library place, art | `chore::decide` | `serve`/`pf`/`prep`/`lib`/`art` → `serve:<req>`, `job:<piece>`, `pf`, … | yes, only as an **overrun** of its budget (≤ 42 ms): logged `chore:` — but at most one line a second |
+  | battery / step log writes (`drain_flush_rows`, `sensor_flush_rows`) | `log_due` (decide, roomy, never forced) | `serve` → `drain` / `sensor` | yes (FAT append or truncate + flush; SD write busy) when the logger runs, the steps file is due or a trace is on; overrun logged |
+  | player requests in `head` (`play_req`, `edit`: skip, pause, shuffle, A–B, bookmark, Up next edits) | none (CPU only, no card) | **not noted** → `req:<label>` | no (the player's code may page in: a few ms) |
+  | skip / stop / new queue / **radio start** / card hand-over / power-off | — | the file ends: `out.stop()` aborts the DMA, no look, **no underrun counted** | n/a (abrupt cut, no ramp) |
+  | seek | — | `out.stop()` first, then `seek_to` reads the card | n/a (DAC stopped) |
+  | refill | — | `fill` | read-ahead's head only when roomy |
+  | gapless join (next decoder's open with the DAC running) | — | `join` | yes (Vorbis setup): its own label |
+  | `after_block` / `reader_check` player events (`Tick` once a second, `ReaderAtEnd`, position), a Sound change (`apply_sound`) | none | not noted | no (sub-ms) |
+  | **a chore while the DAC is stopped** (track start, after a seek or a resume: `headroom()` is `i32::MAX`, budget unlimited) | decide: runs anything | noted; never logged (no budget to overrun); **the candidate stayed in the ledger** until the first clean half after the start | n/a (no deadline), but a later underrun could be charged to it |
+  | `serve_one` elsewhere | — | only from `chores`; `head`'s `Some(Err(req))` → `srv.serve` only from the **paused loop** | n/a (DAC stopped) |
+  | paused loop (`pause`: state save, logs, listing pieces with no budget) | none | not noted | DAC stopped: no underrun; a resume waits for the piece running |
+  | starved chore | decide `Starved` (roomy) | as its kind | logged `chore: starved` |
+  | other tasks (UI, USB, Bluetooth, radio on the thread executor) | — | — | cannot preempt the RT audio task, **except a NOR erase/program** (BASEPRI-masked; 4 KiB erase typ. ≈ 45 ms): the stall lands inside whatever operation runs |
+
+* **Radio start**: opening Radio (`RadioScreen::enter`) → `Fw::radio_request`
+  → `PlayReq::Stop` → `head` → `End::Idle` → `out.stop()`. A deliberate,
+  clean stop: nothing is counted, so the two underruns were **not** caused
+  by it, and the soak was right to count them. But it could not say where
+  they came from: the read in `radio-keys` covered 28 s since the last one
+  in `browse pictures` (the track went 27,984 → 54,504 ms: it played to
+  ~1.5 s before that read, i.e. to the Radio entry). The underruns are from
+  the end of `browse pictures` or the navigation Pictures → Home → Radio,
+  with music playing.
+* **What the 55 ms was** (no hardware here; ranked): (1) **a chore that
+  overran its budget by ≥ 13 ms whose `chore:` line was swallowed by the
+  one-line-a-second limit** (`job:rows 16/16`-style lines are routine during
+  a listing): every `serve`-noted operation is inside `piece_begin`/
+  `piece_end` with a budget ≤ 42 ms while the DAC runs, so a 55-ms one *was*
+  an overrun; likeliest kinds: one whose need had decayed on a variant that
+  reads no card (`want` while a folder plays: see fix 4), `serve:browse`'s
+  cursor or `job:index` on a new folder, or a NOR write landing inside a
+  chore; (2) a stale candidate from an unlimited chore before a DAC
+  (re)start (no restart in that window: low); (3) a step-file write
+  (`sensor`; needs steps walked). The next run names it.
+* **Fixes**:
+  1. **Ledger labels** (`orpheus_audio::Ledger`): a detail byte with the
+     candidate (`note_as`); the `pcm:` line names the exact path,
+     **first after the headroom** (the 96-byte line cut long ones):
+     `pcm: head -817 ub=serve:picture:55ms blk w=… mk=0 +0`. Labels: chore
+     kinds (`pf`, `prep`, `lib`, `art`, `drain`, `sensor`,
+     `job:count|index|focus|rows|win|qtitle`, `serve:<request>`), player
+     requests `req:pause|skip|seek|stop|shuffle|ab|mark|edit|other`, else
+     the cause (`fill`, `join`, `dec`). Counts (`status ub:`) unchanged (8
+     causes; `req:`, `drain`, `sensor` count under `serve`). Ledger
+     44 → 24 B (u16 counts, saturating; no `Option`, all zeros: `.bss`).
+  2. **The DAC's start forgets the candidate** (`PcmOut::start` →
+     `kept_up`): work done while it was stopped cannot be charged.
+  3. **Large overruns always logged**: a piece ≥ `LOUD_OVER_US` (4.4 ms,
+     a fifth of the margin) over its budget, or starved, bypasses the
+     one-line-a-second limit.
+  4. **A piece without card work does not lower its kind's need**
+     (`Costs::observe_piece`, `Piece::with_io`/`worked` over
+     `yoton_bsp::card::io_count`): `want` while a folder plays only starts a
+     listing job, so five answers from RAM took a 25-ms `want` need to
+     ~6 ms and the next library-list window ran at a budget of a few ms.
+     Raises still count.
+  5. **Soak**: every action is read at its end (`Ctx::boundary`, if the last
+     read is ≥ 2 s old), and the Radio entry is read just before the OK
+     that stops the music, after which its disruption window opens. A
+     finding now names the action it happened in; the clean radio stop
+     gets the source-change allowance like `radio-on`.
+* **Not done**: a ramp on deliberate stops (skip, stop, radio): the DMA is
+  aborted mid-half (no underrun, possibly a click). Splitting `want` into
+  folder/library kinds (fix 4 covers it without new statics).
+* **Tests**: `orpheus-audio` `ledger::tests::regress_the_candidate_keeps_its_detail`;
+  `chore::tests::regress_a_piece_without_card_work_does_not_lower_the_need`
+  (host model, the soak's load, 1 kind of 25 ms with 5 RAM-only answers in
+  6: 0 underruns on 5 seeds; measuring every piece as before: ≥ 1 underrun
+  on every seed, 6 in all); `xtask` `dev::soak::tests::regress_underruns_are_read_in_the_action_they_happen_in`
+  (simulator; fails with the boundary read disabled).
+* **RAM / stack**: bss 123,936 → 123,920 B (−16: the ledger), resident
+  80,091 → 80,107 B (+16: linker-merged constants; the new label strings
+  are paged statics, as plain literals they cost +32), so
+  `__stack_bottom` stays at 0x131D00: usable 22,016 B, nested worst case
+  21,804 B, margin 212 B (unchanged; still exactly on a 256-B step).
+  `play_block` / `chores` frames unchanged on the worst chain.
+* **Gate**: host `cargo fmt --check`, `cargo clippy --workspace
+  --all-targets -D warnings`, `cargo test --workspace` (1,123 passed) pass;
+  fw fmt, clippy `-D warnings`, `xtask build` (release), `check-resident`
+  (none paged), `size --check`, `stack --check` (margin 212 B) pass. Not
+  run: `xtask test all` beyond `cargo test --workspace`, brand/site checks,
+  HIL (no hardware).
+* **Lead, on the player**: (1) `cargo xtask dev soak --replay
+  tests/regress/soak/mixed-underrun-seed1-4.soak`: if it still underruns,
+  the finding names the action and the `pcm:` line the path; a 55-ms
+  overrun now has its own `chore:` line. (2) `dev soak mixed --minutes 30
+  --seed 1`: collect every `pcm: head` line (`ub=<path>`) and `chore:`
+  line. `ub=serve:<req>` / `job:<piece>` with a matching `chore:` line:
+  that kind needs splitting or a higher seed; `ub=req:<label>`: a player
+  request (paging); `ub=drain|sensor`: the log write; a `serve:`/`job:`
+  label with **no** `chore:` line: something outside the chore (a NOR write
+  inside it) — then say so.
 
 ### 2026-11-25 — chore margin calibrated; one uncontrolled 55 ms block left (lead)
 
