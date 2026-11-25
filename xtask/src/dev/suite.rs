@@ -227,10 +227,18 @@ pub fn to_home(p: &mut dyn Player, homes: &[Vec<u16>], masks: &MaskFile) -> Resu
     let f = player::settled_frame(p, 5)?;
     let m = masks.for_shot("Home", None, true);
     let n = homes.len();
-    let Some(k) = (0..n).find(|&k| mask::compare(&f, &homes[k], &m).0.pass()) else {
+    let cmps: Vec<Compared> = homes.iter().map(|h| mask::compare(&f, h, &m).0).collect();
+    let Some(k) = cmps.iter().position(Compared::pass) else {
+        let (best, c) = cmps
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, c)| c.differing)
+            .ok_or_else(|| anyhow!("no Home frames"))?;
         bail!(
-            "Home on the player matches none of the simulator's {n} Home frames: appearance (Dark, Blue, English), \
-             Home apps, or something playing?"
+            "Home on the player matches none of the simulator's {n} Home frames: closest is focus {best} with {} \
+             differing pixels in {:?} (x0, y0, x1, y1): appearance (test look on?), Home apps, or something playing?",
+            c.differing,
+            c.bbox
         );
     };
     let (key, times) = if k <= n - k { (Key::Prev, k) } else { (Key::Next, n - k) };
@@ -637,6 +645,9 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     let f0 = p.fault()?.map(|r| r.count);
     player::command(p, "stop", None, 0)?;
     p.sleep(300);
+    // The simulator's appearance for this session only (the owner's
+    // settings stay as they are; off again at the end, and after a reboot).
+    player::test_look(p, true)?;
     let mut results = Vec::new();
     for j in &js {
         log(&format!("== suite/{}", j.name));
@@ -675,6 +686,9 @@ pub fn cmd(args: &mut Args) -> Result<String> {
             notes.push(format!("stack free {} of {} B", h1.stack_free, h1.stack_size));
         }
         (Err(e), _) | (_, Err(e)) => notes.push(format!("FAIL: player not answering after the suite: {e:#}")),
+    }
+    if let Err(e) = player::test_look(p, false) {
+        notes.push(format!("test look not switched off: {e:#} (the reboot clears it)"));
     }
     if !no_reboot {
         // CLAUDE.md rule 4: every test ends in a reboot.

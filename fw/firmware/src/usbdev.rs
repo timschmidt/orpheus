@@ -266,6 +266,10 @@ impl Target for Fw {
             crate::ui::top_reply();
             return true;
         }
+        if data == b"ui test-look on" || data == b"ui test-look off" {
+            crate::ui::set_test_look(data.ends_with(b"on"));
+            return true;
+        }
         if CARD_WITH_USB.load(Ordering::Relaxed) {
             crate::audio::busy_reply();
             return true;

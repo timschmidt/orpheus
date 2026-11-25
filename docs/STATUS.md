@@ -134,10 +134,40 @@ of every session. Newest entries first in §3.
 * **User**: check 26 (roll-around on the player, and whether on is the
   right default). Open: the Up next/Details exception above; VER-7's
   on-device journey for roll-around.
-| VER-7 | **tooling built (host + `ui top`), not yet run on the player** | `cargo xtask dev suite`: 15 journeys (`tests/suite/journeys.toml`) in the simulator's script language, run in the simulator (expected frames `tests/suite/expected/`, 48 shots) and on the player (keys, `ui top`, screenshots under `tests/suite/masks.toml`, `cmd:` reply checks), report in `target/orpheus/suite/<ts>/`, `--setup` fixtures in `/.orpheus/test/suite/`, `--sim` dry run, ends in a reboot. 07 §5.7 "As built". Not done: every interaction of every screen (VER-7 proper), audio CRC and card-image oracles |
+| VER-7 | **tooling built (host + `ui top`, `ui test-look`); first player run failed at Home (owner's accent) → session-only test look added** | `cargo xtask dev suite`: 15 journeys (`tests/suite/journeys.toml`) in the simulator's script language, run in the simulator (expected frames `tests/suite/expected/`, 48 shots) and on the player (keys, `ui top`, screenshots under `tests/suite/masks.toml`, `cmd:` reply checks), report in `target/orpheus/suite/<ts>/`, `--setup` fixtures in `/.orpheus/test/suite/`, `--sim` dry run, ends in a reboot. 07 §5.7 "As built". Not done: every interaction of every screen (VER-7 proper), audio CRC and card-image oracles |
 | VER-8 | **groundwork built, not yet run on the player** | `cargo xtask dev fuzz-ui --seed N --minutes M`: `ui_keys` grammar without Power, a `ui top` guard before every key (dialogs, Bluetooth, USB, Recorder, vault, settings), oracles every K keys (fault record, uptime, stack ≥ `[hil] stack_free_min_bytes`, underruns), card root listing before/after, replay + ddmin into `tests/regress/ui-device/`, `--replay`. Not done: model-guided sequences, injected events, simulator divergence |
 
 ## 3. Session log
+
+### 2026-11-24 — VER-7: session-only test look after the first device run (worker, no hardware)
+
+From the lead's first `cargo xtask dev suite --setup`: all 15 journeys
+failed at the start ("Home on the player matches none of the simulator's
+11 Home frames"): the owner's player uses the green accent, and the suite
+must not change the owner's stored settings.
+
+* **Firmware**: `ui test-look on|off` → `test-look on|off`. A RAM flag
+  (`ui::TEST_LOOK`, cleared by `off` and by every reboot) under which
+  `Fw::setting` returns the defaults for Display 0x0304–0x030C (theme,
+  accent, wallpaper, screen saver, animations, rotation, clock in the bar,
+  Home apps, roll round), the language and Now Playing's view; the store
+  is not written. The UI loop notices the switch (≤ 1 s), reloads Home and
+  redraws everything. `ui top` now also reports `look=0|1`.
+* **Simulator**: its defaults are this look already (host test
+  `simulator_starts_in_the_test_look`); no change.
+* **Suite and fuzzer**: `ui test-look on` after `stop`, before the first
+  journey / key (an older firmware is reported by name), `off` at the end,
+  then the reboot. The Home finder's error now names the closest of the 11
+  frames, its differing pixels and their bounding box.
+* Re-blessed with UI-8 (roll round): `settings/display` (scroll bar of the
+  longer group), `tools/alarm` (first alarm focused) — as the lead did on
+  main.
+* **Numbers**: resident 77,500 → 77,532 B, `.bss` 123,664 → 123,672 B
+  (+8: the flag, aligned), 99 code + 18 rodata pages.
+* **Gate**: host fmt, clippy (`--all-targets -D warnings`), `cargo test
+  --workspace` (941 passed); fw fmt, clippy; `xtask build`,
+  `check-resident`, `size --check` pass; `cargo xtask dev suite --sim`:
+  15 journeys, 48 shots pass. Not run: the suite on the player (the lead).
 
 ### 2026-11-24 — VER-7 tooling and VER-8 groundwork: on-device suite and UI fuzzer (worker, no hardware)
 
@@ -2998,6 +3028,7 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 | 2026-11-24 | Coverage after VER-4 part 1, regions / lines / branches | host + fuzz 83.27 % (74,194 / 89,102) / 83.37 % / 80.81 %; fuzz only 78.04 % (48,171 / 61,729 regions of the files fuzz binaries contain) | `xtask cover --fuzz-only`, `xtask cover` (+ fuzz replays), nightly-2026-11-05 |
 | 2026-11-24 | Committed fuzz corpora | 30 targets, 13.5 k files, 15 MB | `du --apparent-size tests/fuzz-corpus` |
 | 2026-11-24 | Firmware with `ui top` (VER-7), worker worktree build | resident 77,500 B (`size --check`: 77,495), bss 123,664 B (+8: `TOP`, `TOP_NAME`), 99 code + 18 rodata pages, slot 1,040,384 B | `xtask build`, `xtask size --check` |
+| 2026-11-24 | Firmware with `ui test-look` (VER-7), worker worktree build | resident 77,532 B (was 77,500), bss 123,672 B (was 123,664: +8, `TEST_LOOK` aligned), 99 code + 18 rodata pages | `xtask build`, `xtask size --check` |
 | 2026-11-24 | On-device suite estimate (VER-7) | 15 journeys, 48 shots, ≈ 106 s + reboot; expected frames 256 KiB | `cargo test -p xtask list_estimates`, `du` |
 | 2026-11-24 | Firmware with SENS-1, UI-5c, UI-5d, worker worktree build | resident 83,316 → 83,484 B; `__stack_bottom` 0x132238 → 0x132498 (+608 B); 75 → 79 code pages (+16 rodata), slot 835,584 → 868,352 B; cluster `steps-sample` 3,648 B (4 lines) at 0x222000; sensor task poll frame 68 B, audio task poll 4,992 B (unchanged) | `xtask build`, `llvm-nm`, `llvm-objdump` `sub sp` |
 | 2026-11-24 | Step detector on synthetic traces (25 Hz, 8 seeds × walk/slow/brisk/pocket 120 s, run 90 s) | all within ± 5 %; 0 steps: table 10 min, handling, bus 10 min, shaking 3.8–8 Hz | `cargo test -p orpheus-steps` |

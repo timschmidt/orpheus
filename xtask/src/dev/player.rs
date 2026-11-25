@@ -212,6 +212,23 @@ pub fn command(
     }
 }
 
+/// `ui test-look on|off`: for this session the player draws with the
+/// simulator's appearance (Dark, Blue, English, all Home apps, clock in the
+/// bar, lists roll round) without touching the owner's stored settings; a
+/// reboot clears it. On: waits for the UI's next loop (≤ 1 s) to redraw.
+pub fn test_look(p: &mut dyn Player, on: bool) -> Result<()> {
+    let want = if on { "test-look on" } else { "test-look off" };
+    let re = regex::Regex::new(&format!("^{want}$|^commands:|^card:"))?;
+    let r = command(p, &format!("ui {want}"), Some(&re), 3000)?;
+    if r != want {
+        bail!("the firmware does not know `ui {want}` (reply `{r}`): stage a build with the VER-7 test look");
+    }
+    if on {
+        p.sleep(1200);
+    }
+    Ok(())
+}
+
 /// The developer channel of a running Orpheus.
 pub struct UsbPlayer {
     d: Option<DevChannel>,
@@ -380,6 +397,9 @@ impl Player for SimPlayer {
             }
             t if t.starts_with("ls ") => "Music/\n.orpheus/\n(2 entries)".into(),
             t if t.starts_with("playdir ") => "playdir ok".into(),
+            // The simulator's defaults are the test look already.
+            "ui test-look on" => "test-look on".into(),
+            "ui test-look off" => "test-look off".into(),
             // Commands without a reply leave the last one.
             "stop" | "crc on" | "crc off" => return Ok(()),
             _ => "commands: ls PATH, play PATH, playdir PATH [START], vol N".into(),
@@ -452,6 +472,32 @@ mod tests {
             };
             assert_eq!(usize::from(hw_key(Key::from_name(&name).unwrap())), i, "{name}");
         }
+    }
+
+    /// The firmware's test look (`ui test-look on`: the settings
+    /// 0x0304–0x030C, language and Now Playing view read as their defaults)
+    /// is what the simulator starts with, so it needs no counterpart.
+    #[test]
+    fn simulator_starts_in_the_test_look() {
+        use orpheus_apps::settings::{SettingId, def, id};
+        let sim = AppSim::new();
+        let ids = (0x0304..=0x030Cu16).chain([0x0A01, 0x0D03]).map(SettingId);
+        for sid in ids {
+            let Some(d) = def(sid) else { continue };
+            assert_eq!(sim.sys.settings.get(sid), d.default, "{:#06x}", sid.0);
+        }
+        for (sid, v) in [
+            (id::THEME, 0),
+            (id::ACCENT, 0),
+            (id::CLOCK_IN_BAR, 1),
+            (id::LIST_ROLL, 1),
+            (id::HOME_APPS, 0x07FF),
+        ] {
+            assert_eq!(def(sid).unwrap().default, v, "{:#06x}", sid.0);
+        }
+        let mut p = SimPlayer::default();
+        test_look(&mut p, true).unwrap();
+        test_look(&mut p, false).unwrap();
     }
 
     #[test]

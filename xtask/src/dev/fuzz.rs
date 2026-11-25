@@ -615,6 +615,7 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     let mut p = UsbPlayer::open()?;
     if let Some(file) = args.value("replay") {
         let steps = read_keys(Path::new(&file))?;
+        player::test_look(&mut p, true)?;
         reset_ui(&mut p)?;
         let mut b = baseline(&mut p, stack_min)?;
         let mut ex = Exec { settings, ..Exec::default() };
@@ -627,6 +628,7 @@ pub fn cmd(args: &mut Args) -> Result<String> {
             }
         };
         reset_ui(&mut p)?;
+        let _ = player::test_look(&mut p, false);
         p.reboot()?;
         return match found {
             Some(f) => bail!("{}: {} ({})", file, f.kind.name(), f.detail),
@@ -646,6 +648,9 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     };
     let play = args.flag("play");
     let before = root_listing(&mut p)?;
+    // The simulator's appearance for the session (RAM only; a reboot, as
+    // after a crash, clears it).
+    player::test_look(&mut p, true)?;
     if play {
         let re = regex::Regex::new("playdir").unwrap();
         let r =
@@ -660,6 +665,7 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     // the card's root compared, then a reboot (CLAUDE.md rule 4).
     let _ = reset_ui(&mut p);
     let _ = player::command(&mut p, "stop", None, 0);
+    let _ = player::test_look(&mut p, false);
     let card = match (before, root_listing(&mut p)) {
         (Some(a), Ok(Some(b))) if a != b => {
             let new: Vec<&String> = b.iter().filter(|x| !a.contains(x)).collect();
