@@ -113,6 +113,19 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
     /// Start with `root` as the only screen (boot logo, charging screen).
     /// `Nav::Home` later replaces it with `T::HOME`.
     pub fn with_root(svc: &mut S, root: ScreenId, arg: Arg, now: Instant) -> Self {
+        let mut s = Self::unentered(svc, root, arg, now);
+        s.enter_root(svc);
+        s
+    }
+
+    /// [`Shell::with_root`] in two steps, for a caller that keeps the shell
+    /// in a static: build it here (the root screen created and on the
+    /// navigation stack, not entered), move it into place, then call
+    /// [`Shell::enter_root`] on it there. Built and entered in one call,
+    /// the whole shell is a temporary in the caller's frame while the root
+    /// screen's `enter` runs below it (4.8 KB of the firmware's UI task,
+    /// VER-10).
+    pub fn unentered(svc: &mut S, root: ScreenId, arg: Arg, now: Instant) -> Self {
         let mut s = Shell {
             stack: NavStack::new(),
             top: T::create(root),
@@ -137,10 +150,16 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
             _svc: PhantomData,
         };
         s.stack.push(NavEntry { id: root, arg, resume: Default::default() });
-        let mut cx = Cx { svc, ui: &mut s.ui, now, roll: s.roll };
-        s.top.enter(&mut cx, arg);
-        s.apply_requests(svc, now);
         s
+    }
+
+    /// Enter the root screen of a shell built with [`Shell::unentered`]
+    /// (once, before any event).
+    pub fn enter_root(&mut self, svc: &mut S) {
+        let (now, arg) = (self.now, self.stack.top().map_or(Arg(0), |e| e.arg));
+        let mut cx = Cx { svc, ui: &mut self.ui, now, roll: self.roll };
+        self.top.enter(&mut cx, arg);
+        self.apply_requests(svc, now);
     }
 
     /// The top screen.
@@ -426,8 +445,11 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
         }
     }
 
+    /// The new screen is built in [`Self::replace_top`]'s frame: built here,
+    /// the temporary (the size of the largest screen) stayed in this frame
+    /// under the new screen's `enter` (VER-10).
     fn rebuild(&mut self, svc: &mut S, e: NavEntry, restore: bool, now: Instant) {
-        self.top = T::create(e.id);
+        self.replace_top(e.id);
         let mut cx = Cx { svc, ui: &mut self.ui, now, roll: self.roll };
         self.top.enter(&mut cx, e.arg);
         if restore {
@@ -439,6 +461,11 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
         self.sheet = None;
         self.dialog = None;
         self.modal_fresh = false;
+    }
+
+    #[inline(never)]
+    fn replace_top(&mut self, id: ScreenId) {
+        self.top = T::create(id);
     }
 
     fn apply_nav(&mut self, svc: &mut S, nav: Nav, now: Instant) {

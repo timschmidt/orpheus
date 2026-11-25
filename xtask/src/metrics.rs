@@ -92,6 +92,14 @@ pub fn cmd(args: &mut Args) -> Result<String> {
         for (name, bytes) in frames.iter().take(40) {
             m.push(("stack_frame".into(), name.clone(), *bytes));
         }
+        // The static worst case (`xtask stack`) needs the link map.
+        let map = elf.with_extension("map");
+        if map.exists() {
+            match crate::stack::metrics(&elf, &map) {
+                Ok(rows) => m.extend(rows.into_iter().map(|(k, v)| ("stack_static".to_string(), k, v))),
+                Err(e) => log(&format!("metrics: stack analysis failed ({e:#}); stack_static not recorded")),
+            }
+        }
         let rows: Vec<String> = m
             .iter()
             .map(|(metric, key, v)| {
@@ -152,105 +160,197 @@ fn objdump() -> PathBuf {
     if p.exists() { p } else { PathBuf::from("llvm-objdump") }
 }
 
-/// Bytes the prologue of each function reserves on the stack: registers
-/// pushed (`push` 4 B each, `vpush` 4 B per `s`, 8 B per `d` register) plus
-/// `sub sp, #imm` within the first 16 instructions. Largest first.
-pub fn stack_frames(elf: &Path) -> Result<Vec<(String, u64)>> {
+/// `llvm-objdump -d` of `elf` (with addresses, without raw bytes).
+pub fn disassemble(elf: &Path) -> Result<String> {
     let out = Command::new(objdump())
-        .args(["-d", "--no-show-raw-insn", "--no-leading-addr"])
+        .args(["-d", "--no-show-raw-insn"])
         .arg(elf)
         .output()
         .context("spawn llvm-objdump")?;
     if !out.status.success() {
         bail!("llvm-objdump: {}", String::from_utf8_lossy(&out.stderr));
     }
-    let text = String::from_utf8_lossy(&out.stdout);
-    Ok(parse_frames(&text))
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Bytes the prologue of each function reserves on the stack: registers
+/// pushed (`push` 4 B each, `vpush` 4 B per `s`, 8 B per `d` register) plus
+/// `sub sp, #imm` within the first 16 instructions. Largest first.
+pub fn stack_frames(elf: &Path) -> Result<Vec<(String, u64)>> {
+    Ok(parse_frames(&disassemble(elf)?))
 }
 
 fn parse_frames(text: &str) -> Vec<(String, u64)> {
     let mut frames: BTreeMap<String, u64> = BTreeMap::new();
-    let mut cur: Option<(String, u64, usize)> = None;
-    let mut flush = |c: Option<(String, u64, usize)>| {
-        if let Some((n, b, _)) = c
-            && b > 0
-        {
-            let e = frames.entry(n).or_default();
-            *e = (*e).max(b);
+    for f in parse_functions(text) {
+        if f.prologue > 0 {
+            let e = frames.entry(f.name).or_default();
+            *e = (*e).max(f.prologue);
         }
-    };
+    }
+    let mut v: Vec<(String, u64)> = frames.into_iter().collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    v
+}
+
+/// One function of a disassembly.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FnFrame {
+    /// Start address (`None` in a listing without addresses).
+    pub addr: Option<u32>,
+    /// Demangled name without hash.
+    pub name: String,
+    /// Bytes reserved in the first 16 instructions (the `stack_frame` metric).
+    pub prologue: u64,
+    /// Deepest the function itself takes the stack below its entry SP: the
+    /// running sum of every SP adjustment in address order (`push`,
+    /// `str rX, [sp, #-4]!`, `vpush`, `sub sp` add; `pop`, `vpop`,
+    /// `add sp`, `ldr rX, [sp], #4`, `ldm sp!` subtract; clamped at 0), so a
+    /// prologue that shrink-wrapping moved behind an early exit, or a second
+    /// prologue copy, still counts.
+    pub peak: u64,
+    /// A `bl`/`b` to its own start (direct recursion: relocations do not
+    /// show branches within one section).
+    pub self_call: bool,
+}
+
+/// Every function of an `llvm-objdump -d` listing (with or without leading
+/// addresses).
+pub fn parse_functions(text: &str) -> Vec<FnFrame> {
+    let mut out = Vec::new();
+    // (function, raw symbol, instructions seen, running depth, depth at r7)
+    let mut cur: Option<(FnFrame, String, usize, i64, Option<i64>)> = None;
     for line in text.lines() {
         let t = line.trim();
         // Symbol headers: `<name>:` (or `00100000 <name>:` with addresses).
         let header = if line.starts_with(char::is_whitespace) {
             None
         } else {
-            t.strip_suffix(">:").and_then(|s| s.split_once('<')).map(|(_, n)| n)
+            t.strip_suffix(">:").and_then(|s| s.split_once('<'))
         };
-        if let Some(name) = header {
-            flush(cur.take());
-            cur = Some((format!("{:#}", rustc_demangle::demangle(name)), 0, 0));
+        if let Some((addr, name)) = header {
+            if let Some((f, ..)) = cur.take() {
+                out.push(f);
+            }
+            let f = FnFrame {
+                addr: u32::from_str_radix(addr.trim(), 16).ok(),
+                name: format!("{:#}", rustc_demangle::demangle(name)),
+                prologue: 0,
+                peak: 0,
+                self_call: false,
+            };
+            cur = Some((f, name.to_string(), 0, 0, None));
             continue;
         }
-        let Some((_, bytes, n)) = cur.as_mut() else { continue };
-        if t.is_empty() || t.starts_with('.') {
+        let Some((f, raw, n, depth, fp)) = cur.as_mut() else { continue };
+        // Drop the address column (`  100234:`).
+        let t = match t.split_once(char::is_whitespace) {
+            Some((a, rest))
+                if a.len() > 1 && a.ends_with(':') && u32::from_str_radix(&a[..a.len() - 1], 16).is_ok() =>
+            {
+                rest.trim()
+            }
+            _ => t,
+        };
+        if t.is_empty() || t.starts_with('.') || t.starts_with('<') {
             continue;
         }
         *n += 1;
-        if *n > 16 {
-            continue;
-        }
         let mut parts = t.splitn(2, char::is_whitespace);
         let op = parts.next().unwrap_or("");
-        let rest = parts.next().unwrap_or("").split(" @").next().unwrap_or("").trim();
-        let regs = |r: &str| -> Vec<String> {
-            let inner = r.trim_start_matches('{').split('}').next().unwrap_or("");
-            let mut v = Vec::new();
-            for item in inner.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-                if let Some((a, b)) = item.split_once('-') {
-                    let (pa, na) = a.split_at(1);
-                    let (_, nb) = b.split_at(1);
-                    if let (Ok(x), Ok(y)) = (na.parse::<u32>(), nb.parse::<u32>()) {
-                        for i in x..=y {
-                            v.push(format!("{pa}{i}"));
-                        }
-                    }
-                } else {
-                    v.push(item.to_string());
+        let full = parts.next().unwrap_or("");
+        let rest = full.split(" @").next().unwrap_or("").trim();
+        let delta = sp_delta(op, rest);
+        if delta > 0 && *n <= 16 {
+            f.prologue += delta.unsigned_abs();
+        }
+        *depth = (*depth + delta).max(0);
+        // The frame pointer: `add r7, sp, #n` records the depth at r7,
+        // `sub sp, r7, #n` / `mov sp, r7` (epilogues) restore from it.
+        let ops: Vec<&str> = rest.split(',').map(str::trim).collect();
+        let base = op.split('.').next().unwrap_or(op);
+        match (base, ops.as_slice()) {
+            ("add" | "addw", ["r7", "sp", k]) => *fp = imm(k).map(|k| *depth - k),
+            ("sub" | "subw", ["sp", "r7", k]) => {
+                if let (Some(at), Some(k)) = (*fp, imm(k)) {
+                    *depth = (at + k).max(0);
                 }
             }
-            v
-        };
-        match op {
-            "push" | "push.w" | "stmdb" => {
-                let r = if op == "stmdb" { rest.split_once(',').map_or("", |x| x.1).trim() } else { rest };
-                if op != "stmdb" || rest.starts_with("sp!") {
-                    *bytes += 4 * regs(r).len() as u64;
-                }
-            }
-            "vpush" | "vpush.64" | "vpush.32" => {
-                *bytes += regs(rest).iter().map(|r| if r.starts_with('d') { 8 } else { 4 }).sum::<u64>();
-            }
-            "sub" | "sub.w" | "subw" | "sub.n" => {
-                let ops: Vec<&str> = rest.split(',').map(str::trim).collect();
-                if ops.first() == Some(&"sp")
-                    && let Some(imm) = ops.last().and_then(|x| x.strip_prefix('#'))
-                {
-                    let v = if let Some(h) = imm.strip_prefix("0x") {
-                        u64::from_str_radix(h, 16).unwrap_or(0)
-                    } else {
-                        imm.parse().unwrap_or(0)
-                    };
-                    *bytes += v;
+            ("mov", ["sp", "r7"]) => {
+                if let Some(at) = *fp {
+                    *depth = at.max(0);
                 }
             }
             _ => {}
         }
+        f.peak = f.peak.max(depth.unsigned_abs());
+        if matches!(op, "bl" | "b" | "b.w" | "b.n")
+            && let Some(target) = full.split_once('<').map(|x| x.1.trim_end_matches('>'))
+            && target == raw.as_str()
+        {
+            f.self_call = true;
+        }
     }
-    flush(cur.take());
-    let mut v: Vec<(String, u64)> = frames.into_iter().collect();
-    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    if let Some((f, ..)) = cur.take() {
+        out.push(f);
+    }
+    out
+}
+
+/// Registers of a list `{r4, r5, d8-d9}`.
+fn reg_list(r: &str) -> Vec<String> {
+    let inner = r.trim().trim_start_matches('{').split('}').next().unwrap_or("");
+    let mut v = Vec::new();
+    for item in inner.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some((a, b)) = item.split_once('-') {
+            let (pa, na) = a.split_at(1);
+            let (_, nb) = b.split_at(1);
+            if let (Ok(x), Ok(y)) = (na.parse::<u32>(), nb.parse::<u32>()) {
+                for i in x..=y {
+                    v.push(format!("{pa}{i}"));
+                }
+            }
+        } else {
+            v.push(item.to_string());
+        }
+    }
     v
+}
+
+/// `#123`, `#0x7b`, `#-4`.
+fn imm(s: &str) -> Option<i64> {
+    let s = s.trim().strip_prefix('#')?;
+    let (neg, s) = s.strip_prefix('-').map_or((false, s), |r| (true, r));
+    let v =
+        if let Some(h) = s.strip_prefix("0x") { i64::from_str_radix(h, 16).ok()? } else { s.parse().ok()? };
+    Some(if neg { -v } else { v })
+}
+
+/// Bytes one instruction moves SP down (negative: up). Conditional forms
+/// (`popeq`) count like the plain ones; `sub sp, r7, #n` (frame-pointer
+/// epilogue) and other SP writes from another register do not count.
+fn sp_delta(op: &str, rest: &str) -> i64 {
+    let base = op.split('.').next().unwrap_or(op);
+    let base = ["vpush", "vpop", "push", "pop"].into_iter().find(|b| base.starts_with(b)).unwrap_or(base);
+    let regs = |r: &str| reg_list(r).iter().map(|r| if r.starts_with('d') { 8 } else { 4 }).sum::<i64>();
+    let ops: Vec<&str> = rest.split(',').map(str::trim).collect();
+    let sp_sp = ops.first() == Some(&"sp") && (ops.len() == 2 || ops.get(1) == Some(&"sp"));
+    let after_sp = || rest.split_once(',').map_or("", |x| x.1);
+    match base {
+        "push" | "vpush" => regs(rest),
+        "pop" | "vpop" => -regs(rest),
+        "stmdb" | "stmfd" if rest.starts_with("sp!") => regs(after_sp()),
+        "ldm" | "ldmia" | "ldmfd" if rest.starts_with("sp!") => -regs(after_sp()),
+        // `str rX, [sp, #-4]!` (a one-register push).
+        "str" if rest.ends_with("]!") && rest.contains("[sp, #-") => {
+            rest.split("[sp, ").nth(1).and_then(|x| imm(x.trim_end_matches(['!', ']']))).map_or(0, |v| -v)
+        }
+        // `ldr rX, [sp], #4` (a one-register pop).
+        "ldr" if rest.contains("[sp], #") => -rest.split("], ").nth(1).and_then(imm).unwrap_or(0),
+        "sub" | "subw" if sp_sp => ops.last().and_then(|x| imm(x)).unwrap_or(0),
+        "add" | "addw" if sp_sp => -ops.last().and_then(|x| imm(x)).unwrap_or(0),
+        _ => 0,
+    }
 }
 
 #[cfg(test)]
@@ -278,5 +378,47 @@ mod tests {
 ";
         let f = parse_frames(text);
         assert_eq!(f, vec![("foo".to_string(), 20 + 12 + 16 + 1032), ("bar".to_string(), 16)]);
+    }
+
+    /// With addresses (what `xtask stack` reads): a shrink-wrapped prologue
+    /// behind an early return, a second prologue copy, one-register pushes,
+    /// conditional pops, the frame-pointer epilogue, direct recursion.
+    #[test]
+    fn peak_with_addresses() {
+        let text = "\
+Disassembly of section .text:
+
+00100000 <wrapped>:
+  100000:      \tcmp\tr0, #0x0
+  100002:      \tit\teq
+  100004:      \tbxeq\tlr
+  100006:      \tpush\t{r4, r5, r6, r7, lr}
+  100008:      \tadd\tr7, sp, #0xc
+  10000a:      \tstr\tr11, [sp, #-4]!
+  10000e:      \tsub\tsp, #0x100
+  100010:      \tbl\t0x100000 <wrapped>
+  100014:      \tsub.w\tsp, r7, #0x10
+  100018:      \tpopeq\t{r4, r5, r6, r7, pc}
+  10001a:      \tldr\tr11, [sp], #4
+  10001e:      \tpop\t{r4, r5, r6, r7, pc}
+  100020:      \tpush\t{r4, lr}
+  100022:      \tsubw\tsp, sp, #0x204
+  100026:      \taddw\tsp, sp, #0x204
+  10002a:      \tpop\t{r4, pc}
+  10002c: 00 00 00 00 \t.word\t0x00000000
+
+00100030 <leaf>:
+  100030:      \tbx\tlr
+";
+        let f = super::parse_functions(text);
+        assert_eq!(f.len(), 2);
+        assert_eq!(f[0].addr, Some(0x100000));
+        assert_eq!(f[0].name, "wrapped");
+        assert_eq!(f[0].prologue, 20 + 4 + 0x100 + 8 + 0x204);
+        // `sub sp, r7, #0x10` restores the depth to 24 (r7 = entry - 8),
+        // the pops take it to 0, the second copy reaches 8 + 0x204.
+        assert_eq!(f[0].peak, 8 + 0x204);
+        assert!(f[0].self_call);
+        assert_eq!((f[1].name.as_str(), f[1].peak, f[1].self_call), ("leaf", 0, false));
     }
 }

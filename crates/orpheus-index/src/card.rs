@@ -56,6 +56,15 @@ pub fn spin<F: Future>(cx: &mut Context<'_>, f: F) -> F::Output {
     }
 }
 
+/// [`spin`] in a frame of its own: `make` builds the future there, so it
+/// takes no room in the caller's frame. A caller with several file-system
+/// calls otherwise holds all their futures at once, under the deepest of
+/// them (`Inner::slot`: 2.5 KB of the RT task's stack, VER-10).
+#[inline(never)]
+pub fn spin_in<F: Future>(cx: &mut Context<'_>, make: impl FnOnce() -> F) -> F::Output {
+    spin(cx, make())
+}
+
 /// Files opened by a [`CardIo`] (plain values, about 250 bytes). Keep the
 /// table between calls of one session and call [`CardIo::close_all`] at
 /// its end (before the volume is used for anything that might touch these
@@ -163,20 +172,21 @@ impl<'v, 'c, D: BlockDevice> Inner<'_, 'v, 'c, D> {
         };
         let mut pb = [0u8; PATH];
         let p = path(f, alt, self.base, &mut pb);
-        let file =
-            match spin(self.cx, self.vol.open(p, if write { OpenMode::ReadWrite } else { OpenMode::Read })) {
-                Ok(file) => file,
-                Err(orpheus_fs::Error::NotFound) if create && write => {
-                    // Parents one by one (`/.orpheus`, `/.orpheus/index`, the shard;
-                    // or the base directory's).
-                    for (i, _) in p.match_indices('/').skip(1) {
-                        let _ = spin(self.cx, self.vol.create_dir(&p[..i]));
-                    }
-                    spin(self.cx, self.vol.open(p, OpenMode::Create))?
+        let file = match spin_in(self.cx, || {
+            self.vol.open(p, if write { OpenMode::ReadWrite } else { OpenMode::Read })
+        }) {
+            Ok(file) => file,
+            Err(orpheus_fs::Error::NotFound) if create && write => {
+                // Parents one by one (`/.orpheus`, `/.orpheus/index`, the shard;
+                // or the base directory's).
+                for (i, _) in p.match_indices('/').skip(1) {
+                    let _ = spin_in(self.cx, || self.vol.create_dir(&p[..i]));
                 }
-                Err(orpheus_fs::Error::NotFound) => return Ok(None),
-                Err(e) => return Err(e),
-            };
+                spin_in(self.cx, || self.vol.open(p, OpenMode::Create))?
+            }
+            Err(orpheus_fs::Error::NotFound) => return Ok(None),
+            Err(e) => return Err(e),
+        };
         let i = match self.h.open.iter().position(Option::is_none) {
             Some(i) => i,
             None => {
@@ -184,7 +194,7 @@ impl<'v, 'c, D: BlockDevice> Inner<'_, 'v, 'c, D> {
                 let i = usize::from(self.h.next) % OPEN;
                 self.h.next = self.h.next.wrapping_add(1);
                 if let Some((_, old)) = self.h.open[i].take() {
-                    spin(self.cx, self.vol.close(old))?;
+                    spin_in(self.cx, || self.vol.close(old))?;
                 }
                 i
             }
@@ -268,7 +278,7 @@ impl<'a, 'v, 'c, D: BlockDevice> CardIo<'a, 'v, 'c, D> {
         let mut r = Ok(());
         for o in &mut io.h.open {
             if let Some((_, f)) = o.take() {
-                let c = spin(io.cx, io.vol.close(f));
+                let c = spin_in(io.cx, || io.vol.close(f));
                 if r.is_ok() {
                     r = c;
                 }
@@ -293,7 +303,7 @@ impl<D: BlockDevice> Storage for CardStore<'_, '_, '_, '_, D> {
     fn read_at(&mut self, file: FileName, offset: u32, buf: &mut [u8]) -> Result<usize, Self::Error> {
         let r = self.io.borrow_mut().on(file, false, |vol, cx, f| {
             f.set_position(u64::from(offset));
-            spin(cx, vol.read_exact_or_eof(f, buf))
+            spin_in(cx, || vol.read_exact_or_eof(f, buf))
         })?;
         Ok(r.unwrap_or(0))
     }
@@ -301,7 +311,7 @@ impl<D: BlockDevice> Storage for CardStore<'_, '_, '_, '_, D> {
     fn write_at(&mut self, file: FileName, offset: u32, data: &[u8]) -> Result<(), Self::Error> {
         let r = self.io.borrow_mut().on(file, true, |vol, cx, f| {
             f.set_position(u64::from(offset));
-            spin(cx, vol.write(f, data))
+            spin_in(cx, || vol.write(f, data))
         })?;
         r.map(|_| ()).ok_or(orpheus_fs::Error::NotFound)
     }
@@ -311,14 +321,14 @@ impl<D: BlockDevice> Storage for CardStore<'_, '_, '_, '_, D> {
         // created for a directory that fits in one run).
         self.io
             .borrow_mut()
-            .on(file, false, |vol, cx, f| spin(cx, vol.set_len(f, u64::from(len))))
+            .on(file, false, |vol, cx, f| spin_in(cx, || vol.set_len(f, u64::from(len))))
             .map(|_| ())
     }
 
     fn sync(&mut self, file: FileName) -> Result<(), Self::Error> {
         // The entry (size), then every dirty sector: data before anything
         // written later.
-        self.io.borrow_mut().on(file, false, |vol, cx, f| spin(cx, vol.flush_file(f))).map(|_| ())
+        self.io.borrow_mut().on(file, false, |vol, cx, f| spin_in(cx, || vol.flush_file(f))).map(|_| ())
     }
 
     fn remove(&mut self, file: FileName) -> Result<(), Self::Error> {
@@ -328,12 +338,12 @@ impl<D: BlockDevice> Storage for CardStore<'_, '_, '_, '_, D> {
             && let Some((_, f)) = o.take()
         {
             // The entry must name its clusters before they can be freed.
-            spin(io.cx, io.vol.close(f))?;
+            spin_in(io.cx, || io.vol.close(f))?;
         }
         let alt = matches!(io.mode, Mode::Write { alt: true });
         let mut pb = [0u8; PATH];
         let p = path(file, alt, io.base, &mut pb);
-        match spin(io.cx, io.vol.remove(p)) {
+        match spin_in(io.cx, || io.vol.remove(p)) {
             Ok(()) | Err(orpheus_fs::Error::NotFound) => Ok(()),
             Err(e) => Err(e),
         }
@@ -352,7 +362,7 @@ impl<D: BlockDevice> NameSource for CardNames<'_, '_, '_, '_, D> {
     fn name_of(&mut self, loc: Locator, name: &mut [u8]) -> Result<Option<usize>, Self::Error> {
         let mut io = self.io.borrow_mut();
         let io = &mut *io;
-        match spin(io.cx, io.vol.open_locator(loc, self.e)) {
+        match spin_in(io.cx, || io.vol.open_locator(loc, self.e)) {
             Ok(()) => {}
             Err(orpheus_fs::Error::NotFound) => return Ok(None),
             Err(e) => return Err(e),
@@ -384,7 +394,7 @@ impl<D: BlockDevice> DirSource for CardDir<'_, '_, '_, '_, D> {
         let mut io = self.io.borrow_mut();
         let io = &mut *io;
         loop {
-            if !spin(io.cx, io.vol.read_dir(self.cur, self.e))? {
+            if !spin_in(io.cx, || io.vol.read_dir(self.cur, self.e))? {
                 return Ok(None);
             }
             if is_dot(self.e) {

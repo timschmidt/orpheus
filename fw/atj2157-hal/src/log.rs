@@ -73,31 +73,32 @@ impl LineBuf {
         Self { buf: [0; 96], n: 0 }
     }
 
+    // Nothing here can panic (no indexing the compiler cannot prove): the
+    // panic handler formats with it, and a panic inside it would recurse
+    // (VER-10, `xtask stack`).
+    fn push_byte(&mut self, b: u8) {
+        if let Some(d) = self.buf.get_mut(self.n) {
+            *d = b;
+            self.n += 1;
+        }
+    }
+
     pub fn push_str(&mut self, s: &str) -> &mut Self {
         for &b in s.as_bytes() {
-            if self.n < self.buf.len() {
-                self.buf[self.n] = b;
-                self.n += 1;
-            }
+            self.push_byte(b);
         }
         self
     }
 
-    pub fn push_u32(&mut self, mut v: u32) -> &mut Self {
-        let mut d = [0u8; 10];
-        let mut i = d.len();
-        loop {
-            i -= 1;
-            d[i] = b'0' + (v % 10) as u8;
-            v /= 10;
-            if v == 0 {
-                break;
-            }
-        }
-        for &c in &d[i..] {
-            if self.n < self.buf.len() {
-                self.buf[self.n] = c;
-                self.n += 1;
+    pub fn push_u32(&mut self, v: u32) -> &mut Self {
+        // Most significant digit first; `checked_*` keep the division-by-
+        // zero panic out.
+        let mut started = false;
+        for p in [1_000_000_000, 100_000_000, 10_000_000, 1_000_000, 100_000, 10_000, 1_000, 100, 10, 1u32] {
+            let d = v.checked_div(p).unwrap_or(0).checked_rem(10).unwrap_or(0);
+            if d != 0 || started || p == 1 {
+                started = true;
+                self.push_byte(b'0' + d as u8);
             }
         }
         self
@@ -107,18 +108,14 @@ impl LineBuf {
         self.push_str("0x");
         for s in (0..8).rev() {
             let nib = ((v >> (s * 4)) & 0xF) as u8;
-            let c = if nib < 10 { b'0' + nib } else { b'a' + nib - 10 };
-            if self.n < self.buf.len() {
-                self.buf[self.n] = c;
-                self.n += 1;
-            }
+            self.push_byte(if nib < 10 { b'0' + nib } else { b'a' + nib - 10 });
         }
         self
     }
 
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
-        &self.buf[..self.n]
+        self.buf.get(..self.n).unwrap_or(&[])
     }
 
     pub fn emit(&self) {

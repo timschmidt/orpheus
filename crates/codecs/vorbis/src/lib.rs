@@ -173,7 +173,10 @@ impl VorbisDecoder<'_> {
         }
     }
 
-    /// Parse the set-up packet into the arena.
+    /// Parse the set-up packet into the arena. Not inlined (nor
+    /// [`Self::audio_packet`]): inlined into `step`, their temporaries sat
+    /// above the Ogg reader's call chain (a 1.9 KB frame; VER-10).
+    #[inline(never)]
     fn load_setup(&mut self, v: View<'_>, p: &Packet) -> Result<(), DecodeError> {
         let fail = |e: SetupError| DecodeError::Unsupported(bad(e));
         let sz = setup::setup(&mut Bits::new(v, p), &self.id, None).map_err(fail)?;
@@ -269,6 +272,7 @@ impl VorbisDecoder<'_> {
     }
 
     /// Decode an audio packet and set up its emission.
+    #[inline(never)]
     fn audio_packet(&mut self, v: View<'_>, p: &Packet) -> bool {
         let Some(s) = self.setup.as_ref() else { return false };
         let ch = usize::from(self.id.channels);

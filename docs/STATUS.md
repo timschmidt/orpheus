@@ -60,8 +60,120 @@ of every session. Newest entries first in §3.
 | UI-5b | **built (host + firmware), not yet run on the player** | Recorder app (meters, timer, pause/mark/stop question, gain, menu with source/format/quality/AGC/VOX/split/monitor/low-cut), Recordings… (newest first, play, delete with question); simulator back end over the same session and a fake ADC; 122 goldens, 10 behaviour tests |
 | UI-8 | **done (host); not yet on the player** | List roll-around in every list (`ListView` + `ListView::step_plain`), Settings › Display › List roll-around (`0x030C`, on by default), held keys stop at the end; Up next/Details keep their view change. User check 26; the on-device journey belongs to VER-7 |
 | USB-W1 (bug) | **fixed and self-recovering (host-tested, built); not yet run on the player** | Root cause: the SETUP read was not cancel-safe (embassy-usb drops it on bus events; the interrupt stayed masked for good) and late stages landed on the next transfer. Drop-safe driver, liveness recovery, watchdog only when recovery cannot help, counters in `STATS` 24–30, soak logs self-recoveries, `xtask dev usb-cancel`. 06 §2.6; user check 28 |
+| VER-10 (static stack) | **tool done (host-tested), gate step; firmware cut from ≥ 30,232 to 22,900 B nested worst case (built, not yet run on the player)** | `cargo xtask stack [--check] [--root P]`, `stack.toml`, `budgets.toml stack_static_margin_bytes` (−1,536 B: a ratchet, the static worst case still exceeds the 22,016 B stack by 884 B; the rest is the audio task's own frames, AU-PERF). Lead: `fuzz-ui --replay` of the VER-8 stack sequence, suite stack line (session entry 2026-11-25 "VER-10") |
 
 ## 3. Session log
+
+### 2026-11-25 — VER-10: static worst-case stack depth (worker, no hardware)
+
+Trigger: VER-8 measured 1,912 B free (budget 2,048 B) after
+`tests/regress/ui-device/stack-seed8-340.keys`.
+
+**Tool** (`cargo xtask stack`, 07 §4.4 "Static worst-case stack depth"):
+`linkgraph` now keeps the direct branches between code sections (`BL` =
+call, `B` = tail call); frames come from `metrics::parse_functions`
+(running SP sum over the whole function, frame-pointer epilogues tracked;
+the DWARF CFI follows `r7` and does not give SP); contexts, indirect
+targets and bounded recursion in `stack.toml`; nesting per phase (`init`:
+`main` before the executors; `run`) with 108 B per exception (eager FPU
+frame + alignment). Gate step `stack --check` (07 §6); `xtask metrics`
+records `stack_static` rows. Host tests: synthetic graphs (tail calls,
+indirect sites resolved / bounded / unresolved, recursion, nesting),
+objdump listing (shrink-wrapped and duplicated prologues, `sub sp, r7`,
+self-calls), `stack.toml` parses.
+
+**Stack**: 22,296 B region (`0x131ce8..0x137400`), 22,016 B usable above
+the 256-B-aligned MPU guard (21,760 B before: `.bss` shrank 48 B and the
+guard alignment moved; the usable size varies by up to 255 B with `.bss`).
+The VER-8 measurement (1,912 B free of 21,760 B) means **19,848 B used**.
+
+**Static worst case per context** (before → after, bytes):
+
+| Context | Prio | Before | After | Deepest root / chain after |
+|---|---|---|---|---|
+| init (`main` before the executors) | thread | 12,368 | 12,368 | `audio::init_chain` 11,192 B frame (the DSP chain built on the stack); RT and USB do not exist yet |
+| thread (main executor) | thread | ≥ 10,736 | 6,876 | UI task 6,772: `Fw::derive` → `derive_finish` 4,008 (the vault's finish future) → seal → SHA-256. Before: `new_ui` 4,824 (the whole `Ui` temporary) → root `enter` → Authenticator → HOTP/SHA-512 |
+| irq-normal (USB) | L3 | 80 | 80 | `usb::on_irq` |
+| rt (RT executor) | L2 | ≥ 18,040 | 14,856 | audio task closure **5,840** → `play_file` **2,296** → `seek_to` **1,488** → `VorbisDecoder::step` 808 → `load_setup` 1,320 → `setup::setup` 2,576 → sort → panic. Before: … `play_file` → `Server::serve` 2,352 → `resolve` → index build → `CardStore::write_at` → `Inner::slot` 2,560 → `Volume::open` … → SD → time driver → panic (≥, the panic handler recursed) |
+| deadline (time, DMA) | L1 | ≥ 600 | 312 | `time::on_t1` (its panic tail shrank) |
+| pager | L0 | 236 | 236 | `orpheus_memmanage` → `orpheus_pager_fault` → `PagerCore::touch` |
+| prof (T2 sampler) | L0 | 80 | 80 | |
+| fault (own 512 B stack) | — | 32 | 32 | `fault_entry` → `record_fault` |
+| **nested, run** | | **≥ 30,232** | **22,900** | thread 6,876 + L3 80+108 + L2 14,856+108 + L1 312+108 + L0 236+108 + fault frame 108 |
+| nested, init | | ≥ 13,528 | 13,240 | |
+
+Other task roots after: USB task 3,424 (DevChannel `control_out` → OTP
+URI parse), Bluetooth 1,424, radio 816, steps 688, power 520, watchdog
+472, input 424, health 416, `rt_beat` 368. Indirect calls: all resolved
+(task polls, `irq_dispatch` handlers, waker vtable slots, `dyn
+ByteSource`/`SeekSource`/`RowSink`/`ListSource`/`embassy_usb::Handler`/
+`RequestHandler`, the index sort comparators, the pictures `cancelled`
+fn; `dyn GlyphSource` bound 0 B: no implementation is linked, asserted).
+Recursion: core's `str::slice_error_fail_rt` (bounded, listed); the panic
+handler's own cycle is gone (below).
+
+**Fixes** (no behaviour change; bytes off the chains they were on):
+
+* `Shell::with_root` = `unentered` + `enter_root` (orpheus-ui); `new_ui`
+  builds the `Ui` without entering, `ui::enter_root` enters in place.
+  With the HMAC split below, the thread context went 10,736 → 7,480 B (the
+  4.8 KB temporary was under the root `enter`, which the graph cannot tell
+  from any screen's; `new_ui`'s frame is 2,904 B now and calls nothing deep).
+* `Shell::replace_top` (not inlined): the new screen's temporary (928 B
+  frame of `rebuild`) is no longer under its `enter`.
+* `orpheus_index::card::spin_in` (future built in its own frame) for all
+  file-system calls of `CardIo`: `Inner::slot` 2,560 → 344 B (its four
+  futures had been in one frame); the open future itself is 1,496 B.
+* `media::with_io` → `io_session` (not inlined): `Server::step` 1,280 →
+  720 B; `firmware::frame::Own` (a future polled in its own frame) on
+  every await of `Server::serve`: its frame 2,352 → 32 B (the index path
+  under it fell out of the top).
+* `orpheus_otp::otp::mac` not inlined: `hotp` 1,576 → 104 B (three HMAC
+  states had been in one frame); `Fw::auth_entry` not inlined (Authenticator
+  row loop 992 → 752 B).
+* `Fw::derive` split into `derive_start` / `derive_finish`: 4,240 → 304 B
+  frame (the finish future, 4,008 B, is now the UI's deepest frame).
+* `VorbisDecoder::load_setup`, `audio_packet` not inlined: `step` 1,904 →
+  808 B.
+* The panic handler (`atj2157_hal::panic`, `log::LineBuf`) formats
+  without indexing or string patterns that can panic: it was on a cycle
+  with its own bounds checks (unbounded recursion until the stack guard),
+  and its tail under every chain is ~300 B shorter. A bug fix with no host
+  test (HAL): the regression guard is `stack --check`, which fails on an
+  unbounded cycle.
+
+**Not done / remaining depth**: the RT context is 14,856 B, of which
+9,624 B are three frames in `audio.rs` that this package left alone for
+AU-PERF: the audio task closure's poll frame (5,840 B: `sub sp, #0x1688`),
+`play_file`'s (2,296 B) and `seek_to`'s (1,488 B). Below `play_file`, five
+paths are within 800 B of each other (seek via the Vorbis set-up 6,656 B,
+`Server::step` index rows 6,496, `orpheus_codecs::open` (Ogg page copies:
+`header_packets` 1,592, `peek_packets` 1,240, `assemble` 1,256),
+`Server::serve` 6,160, decode 5,872), so more cuts there give little each.
+The thread side: `derive_finish` (4,008 B, the vault's `finish` future
+holding the PBKDF2 job and the seal) and the HOTP path (`mac<Sha512>` 1,232
++ `compress512` 1,448; sha2's `compact` backend would also slow the
+PBKDF2 unlock). Init: `init_chain`'s 11,192 B is safe today (RT and USB
+do not exist yet) but is the largest frame in the image. **≥ 4 KiB
+margin needs ~4.9 KB more**; halving the audio task closure's frame and
+`play_file`'s would get most of it.
+
+**Budget**: `stack_static_margin_bytes = -1536` — a ratchet (fails on a
+regression of more than ~650 B, or 255 B of guard-alignment luck), not a
+proof that the stack is enough. Raise it as the frames shrink.
+
+Gate: host fmt, clippy `-D warnings`, `cargo test --workspace`; fw fmt,
+clippy; `xtask build`, `check-resident` (57 sections from 19 roots, none
+paged), `size --check` (resident 79,963 B), `stack --check` passed. Not
+run: `dev …` (the lead owns the player).
+
+**Lead checks** (player): `cargo xtask dev fuzz-ui --replay
+tests/regress/ui-device/stack-seed8-340.keys` (expect more than 1,912 B
+free: the UI path lost ~3.9 KB statically, the RT index path ~2.5 KB);
+the suite's stack line (`dev hil` INFO stack free); the Authenticator
+(codes, unlock, change PIN: `derive`/`hotp` were split), a Vorbis seek,
+Files browsing during playback (`with_io`/`spin_in`), a panic message in
+the fault record if one happens (the handler's formatting was rewritten).
 
 ### 2026-11-25 — on-device UI fuzzing (VER-8, lead)
 

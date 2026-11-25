@@ -59,10 +59,12 @@ pub fn panic(info: &core::panic::PanicInfo) -> ! {
     if let Some(loc) = info.location() {
         let f = loc.file();
         // Keep the tail of the path so the line number fits.
-        // Keep the last three path components (crate/src/file).
+        // Keep the last three path components (crate/src/file). Without
+        // indexing or string patterns that could panic: a panic in here
+        // would recurse (VER-10, `xtask stack`).
         let mut cut = f.len();
         for _ in 0..3 {
-            match f[..cut].rfind('/') {
+            match f.as_bytes().get(..cut).and_then(|b| b.iter().rposition(|&c| c == b'/')) {
                 Some(i) => cut = i,
                 None => {
                     cut = 0;
@@ -70,7 +72,8 @@ pub fn panic(info: &core::panic::PanicInfo) -> ! {
                 }
             }
         }
-        buf.push_str(f[cut..].trim_start_matches('/'));
+        let tail = f.get(cut..).unwrap_or("");
+        buf.push_str(if tail.as_bytes().first() == Some(&b'/') { tail.get(1..).unwrap_or("") } else { tail });
         buf.push_str(":");
         buf.push_u32(loc.line());
     }

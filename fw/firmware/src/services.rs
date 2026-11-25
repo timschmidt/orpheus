@@ -1641,6 +1641,9 @@ impl AuthService for Fw {
     fn unix_time(&self) -> Option<u64> {
         crate::vault::unix_now()
     }
+    // Not inlined: in the Authenticator screen's row loop its future and
+    // the decoded entry sat in the frame above the code's HMAC (VER-10).
+    #[inline(never)]
     fn auth_entry(&mut self, i: usize) -> Option<AuthEntry> {
         embassy_futures::block_on(self.auth.entry(i)).ok().map(|e| AuthEntry::of(&e))
     }
