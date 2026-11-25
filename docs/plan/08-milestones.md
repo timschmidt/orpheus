@@ -233,14 +233,13 @@ verifies them.
 ### M15 — Speech, accessibility and books (owner's requirement 2026-11-25)
 
 Spec: [04 §8](04-audio.md) (speech engine), [05 §7.14–7.15](05-ui-apps.md).
-Needs D-14 for the languages beyond English. After M10; M13 measures speech
+English only (D-14). After M10; M13 measures speech
 quality and reading battery life, M11 verifies.
 
 | WP | Content | Spec | Dev | Size | User |
 |---|---|---|---|---|---|
 | TTS-1 | `orpheus-tts` front end: normaliser, English letter-to-sound rules and exception lexicon, phoneme goldens, fuzzing | 04 §8 | H | M | — |
 | TTS-2 | Formant synthesiser, prosody, voices; speech voice in the mixer with ducking; budgets; host intelligibility test (offline recogniser) | 04 §8 | H+D | L | Listen and rate the voices |
-| TTS-3 | Russian (rules + stress dictionary) and Japanese kana | 04 §8 | H | M | A speaker of each checks samples (D-14) |
 | A11Y-1 | Screen reader: accessible labels and roles in the toolkit (lint test), spoken journeys as goldens, verbosity, interrupt, earcons, where-am-I, global toggle, screen-off operation | 05 §7.14 | H+D | L | Use the player with the screen off |
 | A11Y-2 | Large text, high-contrast themes, reduced motion, hold and repeat timing, key confirmation sound | 05 §7.14 | H+D | M | — |
 | BOOK-1 | Books app and reader core: TXT (encodings), Markdown, FB2; layout and page index cache, fonts and palettes, position, bookmarks, contents, go to percent | 05 §7.15 | H+D | L | Read a chapter |

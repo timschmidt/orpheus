@@ -423,15 +423,15 @@ and read-aloud (05 §7.14–7.15).
 * **Front end**: text normalisation (numbers, ordinals, dates, times,
   units, currency, abbreviations, initials, Roman numerals in titles, file
   names, punctuation to pauses and intonation); letter-to-sound by rules —
-  English from the public-domain 1976 NRL rule set plus a compressed
-  exception lexicon built from a permissively licensed dictionary (CMUdict,
-  BSD-style), Russian by its largely phonemic orthography with a stress
-  dictionary for common words and a heuristic otherwise, Japanese kana
-  only (kanji are not read in v1); a spell-out mode for unknown strings.
+  **English only** (D-14, owner 2026-11-25): the public-domain 1976 NRL
+  rule set plus a compressed exception lexicon built from a permissively
+  licensed dictionary (CMUdict, BSD-style); a spell-out mode for unknown
+  strings; text in other scripts is skipped or spelled by character
+  name.
 * **Synthesiser**: own formant synthesiser (cascade/parallel resonators
   after the published Klatt design; written from the papers, no code
   copied), 16 kHz internal rate resampled to the DAC rate, phoneme
-  durations and formant targets per language, prosody (declination,
+  durations and formant targets, prosody (declination,
   phrase-final lengthening, question rise, emphasis), two or three voices as
   parameter sets (pitch, formant scaling, breathiness).
 * **Output**: a speech voice in the audio mixer next to the music path,
@@ -442,7 +442,7 @@ and read-aloud (05 §7.14–7.15).
   after a request; numbers in `budgets.toml`.
 * **Not used**: eSpeak NG (GPL) and SAM (no licence) — licence D-1. Flite
   (BSD-style) may be studied for its data only if the sizes fit.
-* **Tests**: phoneme-string goldens for word lists per language; the
+* **Tests**: phoneme-string goldens for word lists; the
   normaliser and the rule engine fuzzed; intelligibility measured on the
   host by running the synthesised audio through an offline speech
   recogniser (word error rate below a budget on a fixed sentence set);

@@ -2794,6 +2794,35 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-25 — a start-up fault in slot A caught by the fallback; check-resident hole closed (lead)
+
+* Chasing the Pictures stall (soak seed 1, step 5 `browse pictures`: the
+  UI and USB blocked ≥ 2 s, once past the watchdog) needed the log lines
+  from before a reset, so `log::init` now keeps an intact ring and appends
+  `--- boot ---` (`logring::keep`, `regress_log_ring_survives_a_reset`).
+* That build **faulted at every start** (fault record: PC 0x2276fc =
+  paged `atj2157_hal::log::line`, called by `log::init` before the pager
+  started). **Stage 2 fell back to slot B** after three failed starts —
+  the T-6 fallback working on a real failure — so the player kept running
+  (yesterday's build) and the replays silently tested the old firmware.
+* Why the gate missed it: `log::init` and `pager::arm_deny` were inlined
+  into `main`, their `resident.toml` roots matched nothing, and
+  `check-resident` only warned. Now an unmatched root fails the check
+  (`regress_unmatched_resident_root_is_an_error`) and both functions are
+  `#[inline(never)]`: 52 sections from 18 roots, none paged; resident
+  79,332 B (+136 B for `log::line` and friends).
+* On the player: slot A runs the new build; after `hang` (watchdog reset)
+  the ring shows the previous start's lines, `--- boot ---`, then the new
+  start.
+* D-14 decided: English only for speech (TTS-3 dropped).
+* Pictures stall: not reproduced by hand with Shuffle all playing; the
+  failing soak runs had reached Shuffle all through the (now fixed)
+  roll-around navigation. Open.
+* UI finding: the now-playing strip's scrolling title looks smeared on the
+  player (screenshot during Pictures with a track playing). Open.
+* Follow-up: the soak should check the running build id against the one it
+  staged (a slot fallback otherwise goes unnoticed).
+
 ### 2026-11-25 — plan: M14 games, M15 speech, accessibility and books (owner's request)
 
 * M14 (08; spec 05 §7.13; PLAN item 13): Games app with Blocks,
