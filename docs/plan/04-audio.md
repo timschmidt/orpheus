@@ -477,8 +477,11 @@ resonators (M15).
   cymbal, percussion: oscillators, noise and envelopes), per voice: pitch
   and amplitude envelopes (ADSR), a state-variable filter (low/band/high
   pass, resonance, envelope amount), LFOs, velocity, pan.
-* **Engine**: up to 16 voices at 44.1/48 kHz at the Base clock as the
-  target (the number is measured and becomes a budget; voice stealing by
+* **Engine**: up to 16 voices at 44.1/48 kHz; **measured (SYN-1, 2026-11-25):
+  about 6 saw-lead voices fit the Base clock (48 MHz) and 16 take ≈ 79 % at
+  144 MHz, so the synth raises the governor's clock floor to High (144 MHz)
+  when more than ~6 voices sound (as the codecs raise it for heavy formats);
+  the 16-voice target applies at High** — the earlier target was 16 voices at the Base clock (the number is measured and becomes a budget; voice stealing by
   age and level), events scheduled at sample offsets inside a block (no
   timing jitter from the UI), per-channel mixing, send effects (delay,
   chorus, a small reverb), a soft limiter; f32 without fused multiply-add
