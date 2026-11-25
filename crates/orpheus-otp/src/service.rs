@@ -283,58 +283,80 @@ impl<S: Storage> Authenticator<S> {
     /// Run what is left of `job` and finish it. `scratch` ([`SCRATCH`]
     /// bytes) is used only by a PIN change and a bitmap compaction, and is
     /// wiped after.
-    pub async fn finish(&mut self, mut job: Job, now_ms: u64, scratch: &mut [u8]) -> Event {
+    pub async fn finish(&mut self, job: Job, now_ms: u64, scratch: &mut [u8]) -> Event {
+        match job.work() {
+            Work::Unlock => self.finish_unlock(job, now_ms, scratch).await,
+            Work::Create => self.finish_create(job, now_ms).await,
+            Work::ChangePin => self.finish_change(job, now_ms, scratch).await,
+        }
+    }
+
+    /// [`finish`](Self::finish) for a job whose [`Job::work`] is
+    /// [`Work::Unlock`] (another kind: [`Event::Failed`]). The three kinds
+    /// are separate futures so a caller that polls one at a time (the
+    /// firmware, each in a frame of its own) never holds the others' state
+    /// on its stack.
+    pub async fn finish_unlock(&mut self, mut job: Job, now_ms: u64, scratch: &mut [u8]) -> Event {
         while !job.step(u32::MAX) {}
-        match job.kind {
-            JobKind::Unlock(j) => {
-                let mut chunk = [0u8; 256];
-                match self.vault.finish_unlock_key(j, now_ms, &mut chunk).await {
-                    Ok(k) => {
-                        let Ok(n) = self.vault.count(&k).await else { return Event::Failed };
-                        self.count = u8::try_from(n).unwrap_or(0);
-                        self.key = Some(k);
-                        self.touch(now_ms);
-                        if self.vault.needs_compaction() {
-                            let _ = self.vault.compact_with(scratch).await;
-                        }
-                        Event::Unlocked
-                    }
-                    Err(VaultError::WrongKey) => Event::WrongPin,
-                    Err(_) => Event::Failed,
+        let JobKind::Unlock(j) = job.kind else { return Event::Failed };
+        let mut chunk = [0u8; 256];
+        match self.vault.finish_unlock_key(j, now_ms, &mut chunk).await {
+            Ok(k) => {
+                let Ok(n) = self.vault.count(&k).await else { return Event::Failed };
+                self.count = u8::try_from(n).unwrap_or(0);
+                self.key = Some(k);
+                self.touch(now_ms);
+                if self.vault.needs_compaction() {
+                    let _ = self.vault.compact_with(scratch).await;
                 }
+                Event::Unlocked
             }
-            JobKind::Create(j) => match self.vault.finish_create(j, &mut self.pool).await {
-                Ok(k) => {
-                    self.key = Some(k);
-                    self.count = 0;
-                    self.status = Some(Status::Locked { kind: SecretKind::Pin, failures: 0 });
-                    self.touch(now_ms);
-                    Event::Created
-                }
-                Err(_) => {
-                    self.status = Some(Status::Damaged);
-                    Event::Failed
-                }
-            },
-            JobKind::Change(j) => {
-                let Some(old) = self.key.take() else { return Event::Failed };
-                let r = match self.vault.open(&old, scratch).await {
-                    Ok(mut p) => self.vault.finish_rekey(j, &mut p, &mut self.pool).await,
-                    Err(e) => Err(e),
-                };
-                match r {
-                    Ok(k) => {
-                        self.key = Some(k);
-                        self.touch(now_ms);
-                        Event::PinChanged
-                    }
-                    Err(_) => {
-                        // The old key still opens the vault unless the
-                        // write was torn.
-                        self.key = Some(old);
-                        Event::Failed
-                    }
-                }
+            Err(VaultError::WrongKey) => Event::WrongPin,
+            Err(_) => Event::Failed,
+        }
+    }
+
+    /// [`finish`](Self::finish) for [`Work::Create`] (another kind:
+    /// [`Event::Failed`]).
+    pub async fn finish_create(&mut self, mut job: Job, now_ms: u64) -> Event {
+        while !job.step(u32::MAX) {}
+        let JobKind::Create(j) = job.kind else { return Event::Failed };
+        match self.vault.finish_create(j, &mut self.pool).await {
+            Ok(k) => {
+                self.key = Some(k);
+                self.count = 0;
+                self.status = Some(Status::Locked { kind: SecretKind::Pin, failures: 0 });
+                self.touch(now_ms);
+                Event::Created
+            }
+            Err(_) => {
+                self.status = Some(Status::Damaged);
+                Event::Failed
+            }
+        }
+    }
+
+    /// [`finish`](Self::finish) for [`Work::ChangePin`] (another kind:
+    /// [`Event::Failed`]).
+    pub async fn finish_change(&mut self, mut job: Job, now_ms: u64, scratch: &mut [u8]) -> Event {
+        while !job.step(u32::MAX) {}
+        let JobKind::Change(j) = job.kind else { return Event::Failed };
+        let Some(old) = self.key.take() else { return Event::Failed };
+        let r = match self.vault.open(&old, scratch).await {
+            Ok(mut p) => self.vault.finish_rekey(j, &mut p, &mut self.pool).await,
+            Err(e) => Err(e),
+        };
+        match r {
+            Ok(k) => {
+                self.key = Some(k);
+                self.touch(now_ms);
+                Event::PinChanged
+            }
+            Err(_) => {
+                // The old key still opens the vault unless the
+                // write was torn.
+                self.key = Some(old);
+                Event::Failed
             }
         }
     }
@@ -357,10 +379,19 @@ impl<S: Storage> Authenticator<S> {
     /// [`next_code`](Self::next_code) (none before).
     pub async fn code(&mut self, i: usize, unix_time: Option<u64>) -> R<Option<Code>, S> {
         let e = self.entry(i).await?;
-        Ok(match e.kind {
+        Ok(self.code_of(i, &e, unix_time))
+    }
+
+    /// [`code`](Self::code) for entry `i` already read with
+    /// [`entry`](Self::entry): the firmware reads the entry in a frame of
+    /// its own and hashes outside it, so the read's state is not on the
+    /// stack under the HMAC (STACK, 2026-11-25).
+    #[must_use]
+    pub fn code_of(&self, i: usize, e: &Entry, unix_time: Option<u64>) -> Option<Code> {
+        match e.kind {
             Kind::Totp { .. } => unix_time.map(|t| e.code(t)),
             Kind::Hotp { .. } => self.hotp.filter(|(k, _)| usize::from(*k) == i).map(|(_, c)| c),
-        })
+        }
     }
 
     /// The HOTP code shown for entry `i`, if one was generated.
@@ -637,6 +668,76 @@ mod tests {
         assert_eq!(block_on(a.entry(0)).err(), Some(VaultError::NoVault));
         assert_eq!(block_on(a.add(&e, &mut s, 8)).err(), Some(VaultError::NoVault));
         assert_eq!(a.hotp_shown(0), None);
+    }
+
+    /// Set-up, an import, a PIN change and an unlock, finished through
+    /// [`Authenticator::finish`] or (`per_kind`) the finishes the firmware
+    /// polls in frames of their own (STACK, 2026-11-25); the sector after.
+    fn sector_after(per_kind: bool) -> (Vec<u8>, Option<Code>) {
+        let mut ram = Ram::default();
+        let mut s = std::vec![0u8; SCRATCH];
+        let mut a = Authenticator::new(&mut ram, b"dev", IT);
+        block_on(a.load(0)).unwrap();
+        a.mix(b"keys");
+        let job = a.create(b"2580", 0).unwrap();
+        let ev = if per_kind { block_on(a.finish_create(job, 0)) } else { run(&mut a, job, 0, &mut s) };
+        assert_eq!(ev, Event::Created);
+        assert!(block_on(a.import(GH, &mut s, 1)).unwrap().consumed());
+        let job = a.change_pin(b"13579", 2).unwrap();
+        let ev =
+            if per_kind { block_on(a.finish_change(job, 2, &mut s)) } else { run(&mut a, job, 2, &mut s) };
+        assert_eq!(ev, Event::PinChanged);
+        a.lock();
+        let job = block_on(a.unlock(b"13579", 3)).unwrap();
+        let ev =
+            if per_kind { block_on(a.finish_unlock(job, 3, &mut s)) } else { run(&mut a, job, 3, &mut s) };
+        assert_eq!(ev, Event::Unlocked);
+        let code = if per_kind {
+            let e = block_on(a.entry(0)).unwrap();
+            a.code_of(0, &e, Some(59))
+        } else {
+            block_on(a.code(0, Some(59))).unwrap()
+        };
+        drop(a);
+        (ram.mem, code)
+    }
+
+    /// The per-kind finishes and `code_of` write and show what `finish`
+    /// and `code` do, bit for bit (the same keys, salts and nonces).
+    #[test]
+    fn per_kind_finish_equals_finish() {
+        let (sector, code) = sector_after(false);
+        assert_eq!(sector_after(true), (sector, code));
+        assert_eq!(code.unwrap().as_str(), "287082");
+    }
+
+    /// A job handed to another kind's finish is refused: nothing is
+    /// written, the vault's state and key stay as they were.
+    #[test]
+    fn per_kind_finish_refuses_other_kinds() {
+        let mut ram = Ram::default();
+        let mut s = std::vec![0u8; SCRATCH];
+        let mut a = Authenticator::new(&mut ram, b"dev", IT);
+        block_on(a.load(0)).unwrap();
+        let job = a.create(b"2580", 0).unwrap();
+        assert_eq!(block_on(a.finish_unlock(job, 0, &mut s)), Event::Failed);
+        let job = a.create(b"2580", 0).unwrap();
+        assert_eq!(block_on(a.finish_change(job, 0, &mut s)), Event::Failed);
+        assert_eq!(a.state(0), State::Absent);
+        let job = a.create(b"2580", 0).unwrap();
+        assert_eq!(block_on(a.finish_create(job, 0)), Event::Created);
+        let job = a.change_pin(b"13579", 1).unwrap();
+        assert_eq!(block_on(a.finish_create(job, 1)), Event::Failed);
+        let job = a.change_pin(b"13579", 1).unwrap();
+        assert_eq!(block_on(a.finish_unlock(job, 1, &mut s)), Event::Failed);
+        assert!(a.is_unlocked(), "the key is kept");
+        a.lock();
+        let job = block_on(a.unlock(b"2580", 2)).unwrap();
+        assert_eq!(block_on(a.finish_change(job, 2, &mut s)), Event::Failed);
+        assert!(!a.is_unlocked());
+        // The PIN is still the first one.
+        let job = block_on(a.unlock(b"2580", 3)).unwrap();
+        assert_eq!(block_on(a.finish_unlock(job, 3, &mut s)), Event::Unlocked);
     }
 
     impl Authenticator<&mut Ram> {

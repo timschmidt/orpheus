@@ -443,15 +443,52 @@ impl Fw {
         .ok()
     }
 
-    #[inline(never)]
+    /// Each kind of job is finished in a frame of its own: one future for
+    /// all three held the unlock's, the set-up's and the PIN change's
+    /// states side by side (a 4,008 B frame under the sealing and hashing,
+    /// the UI task's deepest path; STACK, 2026-11-25).
     fn derive_finish(&mut self, job: service::Job, now_ms: u64, scratch: &mut [u8]) -> AuthEvent {
-        block_on(self.auth.finish(job, now_ms, scratch))
+        match job.work() {
+            service::Work::Unlock => self.finish_unlock(job, now_ms, scratch),
+            service::Work::Create => self.finish_create(job, now_ms),
+            service::Work::ChangePin => self.finish_change(job, now_ms, scratch),
+        }
+    }
+
+    #[inline(never)]
+    fn finish_unlock(&mut self, job: service::Job, now_ms: u64, scratch: &mut [u8]) -> AuthEvent {
+        block_on(self.auth.finish_unlock(job, now_ms, scratch))
+    }
+
+    #[inline(never)]
+    fn finish_create(&mut self, job: service::Job, now_ms: u64) -> AuthEvent {
+        block_on(self.auth.finish_create(job, now_ms))
+    }
+
+    #[inline(never)]
+    fn finish_change(&mut self, job: service::Job, now_ms: u64, scratch: &mut [u8]) -> AuthEvent {
+        block_on(self.auth.finish_change(job, now_ms, scratch))
+    }
+
+    /// Entry `i`'s code at `t`: the entry is read in a frame of its own
+    /// and hashed in this one. Through `Authenticator::code`, the read's
+    /// future (a 640 B `block_on` frame) stayed under the HMAC-SHA-512,
+    /// the UI task's deepest path with Salvo built in (STACK, 2026-11-25).
+    #[inline(never)]
+    pub(crate) fn auth_code_now(&mut self, i: usize, t: Option<u64>) -> Option<orpheus_otp::Code> {
+        let e = self.auth_read_entry(i)?;
+        self.auth.code_of(i, &e, t)
+    }
+
+    #[inline(never)]
+    fn auth_read_entry(&mut self, i: usize) -> Option<Entry> {
+        block_on(self.auth.entry(i)).ok()
     }
 
     /// Type the current code of entry `i` on the USB keyboard.
     pub(crate) fn auth_type(&mut self, i: u8) {
         let t = unix_now();
-        let Some(code) = block_on(self.auth.code(usize::from(i), t)).ok().flatten() else {
+        let Some(code) = self.auth_code_now(usize::from(i), t) else {
             self.auth_out(AuthOutcome::NoCode);
             return;
         };

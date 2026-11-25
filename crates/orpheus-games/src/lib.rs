@@ -271,18 +271,22 @@ impl Session {
             g.decode_from(&mut r)?;
             return r.done().then_some(());
         }
-        *self = Session::decode_small(kind, version, &mut r)?;
+        self.decode_small(kind, version, &mut r)?;
         r.done().then_some(())
     }
 
+    /// The other games, into this session (unchanged if damaged): a
+    /// returned `Session` was a 680-byte temporary on the UI task's deepest
+    /// path with Salvo built in (STACK, 2026-11-25).
     #[inline(never)]
-    fn decode_small(kind: u8, version: u8, r: &mut save::Reader<'_>) -> Option<Session> {
-        Some(match (kind, version) {
-            (id::BLOCKS, blocks::VERSION) => Session::Blocks(Blocks::decode(r)?),
-            (id::TILES, tiles::VERSION) => Session::Tiles(Tiles::decode(r)?),
-            (id::SOLITAIRE, solitaire::VERSION) => Session::Solitaire(Solitaire::decode(r)?),
+    fn decode_small(&mut self, kind: u8, version: u8, r: &mut save::Reader<'_>) -> Option<()> {
+        match (kind, version) {
+            (id::BLOCKS, blocks::VERSION) => *self = Session::Blocks(Blocks::decode(r)?),
+            (id::TILES, tiles::VERSION) => *self = Session::Tiles(Tiles::decode(r)?),
+            (id::SOLITAIRE, solitaire::VERSION) => *self = Session::Solitaire(Solitaire::decode(r)?),
             _ => return None,
-        })
+        }
+        Some(())
     }
 
     /// Make the session a (blank) Salvo game, in place if it is one.
@@ -456,5 +460,38 @@ mod tests {
         let t = Session::Tiles(Tiles::new(tiles::Config::DEFAULT, 5));
         let n = t.encode(&mut buf).unwrap();
         assert_eq!(Session::decode(&buf[..n], None), Some(t));
+    }
+
+    /// `decode_into` over a session holding another game (the other games
+    /// are decoded into the session in place since STACK, 2026-11-25):
+    /// the file's game replaces it; a damaged file or one of another game
+    /// leaves no game.
+    #[test]
+    fn decode_into_replaces_the_session() {
+        let mut buf = [0u8; SAVE_MAX];
+        let games = [
+            Session::Blocks(Blocks::new(blocks::Config::DEFAULT, 7)),
+            Session::Tiles(Tiles::new(tiles::Config::DEFAULT, 8)),
+            Session::Solitaire(Solitaire::new(solitaire::Config::DEFAULT, 9)),
+        ];
+        let mut held_games = games.to_vec();
+        held_games.push(Session::None);
+        #[cfg(feature = "salvo")]
+        held_games.push(Session::Salvo(Salvo::new(salvo::Config::DEFAULT, 10)));
+        for g in &games {
+            let n = g.encode(&mut buf).unwrap();
+            for held in &held_games {
+                let mut s = held.clone();
+                assert!(s.decode_into(&buf[..n], g.game()));
+                assert_eq!(&s, g);
+                let mut s = held.clone();
+                assert!(!s.decode_into(&buf[..n - 1], None), "truncated");
+                assert_eq!(s, Session::None);
+                let mut s = held.clone();
+                let other = if g.game() == Some(id::TILES) { id::BLOCKS } else { id::TILES };
+                assert!(!s.decode_into(&buf[..n], Some(other)), "another game's file");
+                assert_eq!(s, Session::None);
+            }
+        }
     }
 }

@@ -49,6 +49,11 @@ stack_bytes = 12288             # 12 KiB
 # step). Thread context 6,876 -> 6,900 B. The ratchet is the VER-10 goal
 # itself (one step less would allow < 4 KiB): the next static step needs
 # a stack cut first.
+# 2026-11-25 (STACK, Salvo on in the firmware): .bss +368 B moved the
+# stack's start two more steps (usable 19,712 B); the Authenticator's
+# finishes, a code's entry read and the games' decoding cut the UI task's
+# deepest path 6,796 -> 5,840 B: measured 4,560 B (15,152 B nested worst
+# case). Budget unchanged.
 stack_static_margin_bytes = 4096
 # Firmware partition in the dual-boot layout (slot A): the whole "YFW1"
 # image (header sector, resident image, page store).

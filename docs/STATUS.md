@@ -68,6 +68,88 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-25 — STACK: room for Salvo; Salvo on in the firmware (worker, no hardware)
+
+Salvo did not fit the static stack budget (GAME-4/5 entry below: margin
+3,604 B < 4,096 B with it). Three cuts of the UI task's deepest paths,
+then `salvo` added to `orpheus-apps`' features in
+`fw/firmware/Cargo.toml` and the `games` journey's fourth-row mask
+removed (`tests/suite/journeys.toml`: the values mask now covers all four
+rows, 33..110).
+
+* **Numbers** (`cargo xtask build`, `size`, `stack`; Salvo on):
+
+  | | before (Salvo on) | after |
+  |---|---|---|
+  | worst thread path | 6,796 B: `derive` → `derive_finish` (4,008-B frame) → `seal` → `Pool::fill` → SHA-256 | 5,840 B: Authenticator list `reload` → `auth_code_now` (400) → HMAC-SHA-512 (`mac` 1,232 + `compress512` 1,448) |
+  | nested worst case | 16,108 of 19,712 B usable | 15,152 of 19,712 B |
+  | margin (budget 4,096) | **3,604 B** | **4,560 B** (+956; 464 B slack, 1.8 steps of 256 B) |
+  | resident | 81,043 B | 81,043 B (budget 81,920) |
+  | `.bss` | 125,232 B | 125,232 B (budget 126,976) |
+
+  The rt context (8,144 B, the card path under `media::Server::step`) is
+  unchanged; it is now the larger half of the nested worst case.
+* **Cuts** (no RAM moved, no behaviour change):
+  1. `orpheus_otp::service::Authenticator::finish` split into
+     `finish_unlock`, `finish_create`, `finish_change` (`finish` calls
+     them; another kind's job is refused with `Event::Failed`, nothing
+     written). The firmware's `Fw::derive_finish` dispatches on
+     `Job::work` to three `#[inline(never)]` frames, each polling one
+     kind's future: one future for all three kept the unlock's,
+     set-up's and PIN change's states side by side (4,008 B; now
+     `finish_change` 2,728 B, `finish_create` and `finish_unlock` less).
+     The derivation itself (`Job::step`, `Vault::finish_*`) is untouched:
+     `per_kind_finish_equals_finish` runs set-up, import, PIN change and
+     unlock both ways and compares the sector bytes and the code (equal,
+     bit for bit); the KDF and vault test vectors pass unchanged.
+     `derive` 6,652 → 5,372 B from the UI task.
+  2. `Session::decode_small` decodes Blocks/2048/Solitaire into the
+     session in place (it returned a 680-B `Session` into
+     `decode_inner`'s 1,480-B frame; now 144 + 1,392 B), and
+     `GamesIo::done`'s score-table decoding is a function of its own
+     (`games::loaded`; the ≈ 490-B table stayed in `done`'s 1,008-B frame
+     under a save file's decoding; now 24 B). The games path (settle →
+     … → `games_poll` → decode) 6,432 → ≈ 4,450 B from the UI task (`games_poll` 4,496 → 2,512 B).
+  3. `Authenticator::code_of` (the code of an entry already read; `code`
+     uses it). The firmware's `auth_code` and `auth_type` read the entry
+     in one `#[inline(never)]` frame (`auth_read_entry`) and hash in
+     another (`auth_code_now`): `block_on(code)`'s 640-B future no longer
+     sits under the HMAC. `AuthScreen::reload` 752 → 440 B (the code was
+     inlined into it). That path 6,248 → 5,696 B from the UI task.
+  Next in line from the UI task: `derive` 5,372, `new_ui` 5,064,
+  `auth_run` 4,888 B. The next ≈ 324 B would need the HMAC-SHA-512 frame
+  (`hmac` crate's `finalize` copies, 1,232 B) and the derivation's
+  `finish_change` cut together.
+* **Salvo on the UI task** (`xtask stack --root`): `Salvo::step` (the
+  computers' search, one simulated shot, is inlined into it) 752 B with
+  the panic tail, under `event_of<GameScreen>` 984 B, ≈ 2,530 B on the
+  thread; `SalvoView::draw` 1,192 B, ≈ 3,330 B on the thread through
+  `Ui::draw` (the worst draw is Now Playing's details, 2,512 B). Neither
+  is near the worst path. Host cost (release, `measure_cost`, re-run):
+  a decision 0.41–2.05 ms (worst 2.60), worst logic step 0.437 ms (one
+  simulated shot, the Moon), 25 ns per physics step, 1.0 µs per flight
+  logic step: unchanged from GAME-4/5; player estimate ≤ 20–25 ms per
+  logic step with a shot (one per frame).
+* **Tests**: `orpheus-otp` `per_kind_finish_equals_finish`,
+  `per_kind_finish_refuses_other_kinds`; `orpheus-games`
+  `decode_into_replaces_the_session` (each game's file over each other
+  game, none, and Salvo with the feature: replaced; truncated or another
+  game's file: no game). No bug fixed, so no `regress_` test.
+* **Gate**: host `fmt --check`, `clippy --workspace --all-targets -D
+  warnings` (and `orpheus-apps` without features, with `games`, with
+  `salvo`; `orpheus-games` with and without `salvo`), `cargo test
+  --workspace` (1,400 passed, 11 ignored; goldens unchanged); fw `fmt --check`, `clippy --workspace -D
+  warnings`, `cargo xtask build`, `size --check`, `check-resident`,
+  `stack --check`: pass. Not run: every `xtask dev` step (the lead owns
+  the player).
+* **Lead, on the player**: Salvo is in this build. Check: the Games list
+  shows four rows (`dev suite` journey `games`, now unmasked); play Salvo
+  against computers while music plays (underruns, UI loop time, the
+  computers' thinking frames); Continue after a reboot; the
+  Authenticator's unlock, set-up, PIN change and a code (the per-kind
+  finishes; same vault bytes on the host); stack free in `status` after
+  those (≥ `stack_free_min_bytes`).
+
 ### 2026-11-25 — UI-PERF: idle Home thrashed the code cache; games during music on the player (lead)
 
 * **Regression found on the player** after merging the in-place saves
@@ -502,7 +584,7 @@ simulator or `orpheus-apps`.
   `xtask test all` — the disk had 0.9–2.6 GB free while other workers
   built. Open: none for the owner; TTS-2 needs the items listed at the end
   of 04 §8 "as built".
-| GAME-4/5 Salvo (M14) | **built (host + simulator); not in the firmware** (feature `salvo`: margin 3,604 B with it, budget 4,096) | Artillery duel: terrain styles, destructible ground, SI physics with drag and wind, seven weapons, shop, 2–4 players, computers of four difficulties; 21 settings packed into 4 words; 53 goldens; fuzz `salvo_keys`. Games card operations now in pieces while music plays (lead's 100 ms `serve:games`). Lead: session entries 2026-11-25 "GAME-4/5" and "games card operations in pieces" |
+| GAME-4/5 Salvo (M14) | **built (host + simulator + firmware), not yet run on the player** (feature `salvo` on in the firmware since STACK 2026-11-25: stack margin 4,560 B, budget 4,096) | Artillery duel: terrain styles, destructible ground, SI physics with drag and wind, seven weapons, shop, 2–4 players, computers of four difficulties; 21 settings packed into 4 words; 53 goldens; fuzz `salvo_keys`. Games card operations now in pieces while music plays (lead's 100 ms `serve:games`). Lead: session entries 2026-11-25 "GAME-4/5" and "games card operations in pieces" |
 | GAME-2 + Games on the player (M14) | **built (host + simulator + firmware), not yet run on the player** | Solitaire (Klondike: draw 1/3, passes, standard/casino/none, auto-move, auto-complete, exact undo, best-effort winnable deals; fuzz target `solitaire_keys`, 33 goldens, 7 settings `0x0E41–0x0E47` with differential tests); firmware `GamesService` (hub 872 B + 512 B buffer, card task `Req::Games` as a chore while playing, saves on pause, quit, power-off and USB hand-over), Games on Home (default mask 0x0FFF; the owner's stored mask needs the Games bit). Stack margin 4,268 B (budget 4,096). Lead: session entry 2026-11-25 "GAME-2" |
 
 ## 3. Session log

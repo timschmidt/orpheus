@@ -1042,8 +1042,8 @@ other product).
   bricks broken; deterministic replays; key-sequence fuzzing; golden
   images; settings in the VER-13 manifest with differential tests; saved
   games and scores like the other games.
-**As built (GAME-4/5 Salvo, 2026-11-25; host and simulator; not in the
-firmware yet: feature `salvo`, see below).**
+**As built (GAME-4/5 Salvo, 2026-11-25; host, simulator and firmware:
+feature `salvo`, on in the firmware since STACK, see below).**
 * Engine `orpheus_games::salvo` (feature `salvo`; the only floats in the
   crate). World: one `u8` height per column, 128/192/256/384 px wide
   (`WIDTHS`), 128 px high (ground at most 104), 4 m per pixel. Terrain per
@@ -1133,15 +1133,16 @@ firmware yet: feature `salvo`, see below).**
   the only one at once). Score table: the best human's points, won when a
   human leads; variant from players, hardest computer, gravity, wind,
   gusts, drag, width, weapons, shop.
-* Firmware: **not built in.** With Salvo the firmware measured (2026-11-25)
-  resident +368 B (constant pools and strings, mergeable sections stay
-  resident), `.bss` +368 B (the hub +328, settings +8, …): the stack's
-  start moved three 256-B steps, usable 20,480 → 19,712 B, nested worst
-  case 16,108 B: margin **3,604 B < 4,096 B**. It needs ≈ 490 B more: a cut
-  of the UI task's deepest path (`Fw::derive_finish`, the Authenticator's
-  4,008-B future, 6,796 B in all) or ≈ 460 B less static RAM. Then
-  `orpheus-apps/salvo` on in `fw/firmware/Cargo.toml` (and the suite's
-  masked fourth Games row unmasked).
+* Firmware: **built in** (STACK, 2026-11-25). With Salvo the firmware
+  measured resident +368 B (constant pools and strings, mergeable
+  sections stay resident), `.bss` +368 B (the hub +328, settings +8, …):
+  the stack's start moved three 256-B steps, usable 20,480 → 19,712 B,
+  margin 3,604 B < 4,096 B. STACK cut the UI task's deepest paths (the
+  Authenticator's finishes one future per kind, a code's entry read
+  outside the HMAC, the games' saves and score table decoded without
+  temporaries on the stack): nested worst case 15,152 B, margin 4,560 B.
+  Salvo's own depth on the UI task: `Salvo::step` (with the computers'
+  search) 752 B, `SalvoView::draw` 1,192 B.
 * Measured (host, release): one simulated shot ≤ 0.43 ms (Moon, 384 px),
   a computer's decision 0.4–2.0 ms (Jupiter fastest, the Moon slowest), 25 ns per physics step, 1 µs per logic step of a
   flight; game loop per 33-ms frame (simulator, all services): aiming
