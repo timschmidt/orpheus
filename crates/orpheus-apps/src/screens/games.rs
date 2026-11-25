@@ -13,6 +13,8 @@ use orpheus_ui::theme::Role;
 use orpheus_ui::widgets::dialog::DialogSpec;
 use orpheus_ui::widgets::list::{Accessory, ListAction, ListView, draw_scrollbar};
 
+#[cfg(feature = "bricks")]
+use super::GAME_BRICKS;
 #[cfg(feature = "salvo")]
 use super::GAME_SALVO;
 use super::rows::Rows;
@@ -51,6 +53,8 @@ pub const fn game_screen(g: Game) -> ScreenId {
         Game::Solitaire => GAME_SOLITAIRE,
         #[cfg(feature = "salvo")]
         Game::Salvo => GAME_SALVO,
+        #[cfg(feature = "bricks")]
+        Game::Bricks => GAME_BRICKS,
     }
 }
 

@@ -513,3 +513,86 @@ default = 61
 contexts = ["Salvo"]
 oracle = "Not shown: holds the bits of the Salvo settings packed into it; each of those has its own entry and tests."
 tests = ["crates/orpheus-apps/src/settings.rs::tests::packed_settings"]
+
+# ---------------------------------------------------------------- Bricks
+# GAME-6 (2026-11-25): seven settings packed into the stored word 0x0EB0.
+
+[[setting]]
+id = "0x0EA1"
+name = "Games › Bricks › Settings › Start level"
+scope = "local"
+values = [1, 5, 10]
+default = 1
+contexts = ["Bricks", "Games", "GamePause"]
+oracle = "Bricks: the first level is this one (status line \"Level n\", its bricks; engine `level()`); score table variant. Applies from the next game."
+tests = ["sim/tests/games.rs::bricks_settings::start_level_and_level_set"]
+
+[[setting]]
+id = "0x0EA2"
+name = "Games › Bricks › Settings › Ball"
+scope = "local"
+values = ["Slow", "Normal", "Fast"]
+default = 1
+contexts = ["Bricks", "Games", "GamePause"]
+oracle = "Bricks: the ball's speed (75 / 98 / 120 px/s at level 1; engine `speed()`), so where it is after the same time; score table variant. Applies from the next game."
+tests = ["sim/tests/games.rs::bricks_settings::ball_speed_paddle_lives"]
+
+[[setting]]
+id = "0x0EA3"
+name = "Games › Bricks › Settings › Paddle"
+scope = "local"
+values = ["Small", "Medium", "Large"]
+default = 1
+contexts = ["Bricks", "Games", "GamePause"]
+oracle = "Bricks: the paddle 16, 22 or 28 px wide (engine `paddle().1`); score table variant. Applies from the next game."
+tests = ["sim/tests/games.rs::bricks_settings::ball_speed_paddle_lives"]
+
+[[setting]]
+id = "0x0EA4"
+name = "Games › Bricks › Settings › Lives"
+scope = "local"
+values = ["1", "3", "5"]
+default = 1
+contexts = ["Bricks", "Games", "GamePause"]
+oracle = "Bricks: lives at the start (the status line's dots; engine `lives()`); score table variant. Applies from the next game."
+tests = ["sim/tests/games.rs::bricks_settings::ball_speed_paddle_lives"]
+
+[[setting]]
+id = "0x0EA5"
+name = "Games › Bricks › Settings › Power-ups"
+scope = "local"
+values = [0, 1]
+default = 1
+contexts = ["Bricks", "Games", "GamePause"]
+oracle = "Bricks: on, one breakable brick in seven carries a capsule that falls when it breaks (a capsule on screen); off, none does (no `CARRY` bit, no capsule); score table variant. Applies from the next game."
+tests = ["sim/tests/games.rs::bricks_settings::power_ups"]
+
+[[setting]]
+id = "0x0EA6"
+name = "Games › Bricks › Settings › Levels"
+scope = "local"
+values = ["Hand-made", "Generated", "Mixed"]
+default = 2
+contexts = ["Bricks", "Games", "GamePause"]
+oracle = "Bricks: the bricks of a level: the hand-made set (round again, harder, after the eighth), generated from the seed (`bricks::layout(Generated, n, seed)`), or hand-made then generated; score table variant. Applies from the next game."
+tests = ["sim/tests/games.rs::bricks_settings::start_level_and_level_set"]
+
+[[setting]]
+id = "0x0EA7"
+name = "Games › Bricks › Settings › Steering"
+scope = "local"
+values = ["Slow", "Normal", "Fast"]
+default = 1
+contexts = ["Bricks"]
+oracle = "Bricks: how fast the paddle moves while Prev/Next is held (0.75 → 2, 1.1 → 3, 1.5 → 4.5 px a step; engine `paddle().0` after the same hold). Applies at once, also to a game in progress."
+tests = ["sim/tests/games.rs::bricks_settings::steering"]
+
+[[setting]]
+id = "0x0EB0"
+name = "(storage) Bricks' packed settings"
+scope = "local"
+values = ["bit fields of the Bricks settings above"]
+default = 13649
+contexts = ["Bricks"]
+oracle = "Not shown: holds the bits of the Bricks settings packed into it; each of those has its own entry and tests."
+tests = ["crates/orpheus-apps/src/settings.rs::tests::bricks_packed_settings"]

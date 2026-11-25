@@ -975,6 +975,7 @@ impl Host for HostServices {
             "Game4096" => screens::GAME_TILES,
             "Solitaire" => screens::GAME_SOLITAIRE,
             "Salvo" => screens::GAME_SALVO,
+            "Bricks" => screens::GAME_BRICKS,
             _ => return None,
         })
     }

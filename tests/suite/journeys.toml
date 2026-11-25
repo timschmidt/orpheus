@@ -313,4 +313,5 @@ prev*2 ok wait:300 expect-screen:Games shot:list back
 rects = [
     { x = 60, y = 33, w = 68, h = 57, why = "the games' values: Continue or the best result" },
     { x = 0, y = 90, w = 128, h = 20, why = "fourth row: Salvo (GAME-4/5) is in the simulator (feature `salvo`), not yet in the firmware" },
+    { x = 122, y = 12, w = 6, h = 104, why = "scrollbar: the simulator lists six games (Salvo, Bricks), the firmware fewer" },
 ]

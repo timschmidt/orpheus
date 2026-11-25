@@ -1150,6 +1150,85 @@ firmware yet: feature `salvo`, see below).**
   ≤ 20–25 ms (one per frame), a decision 20–100 ms spread over its frames,
   a flight step ≈ 50 µs.
 
+**As built (GAME-6 Bricks, 2026-11-25; host, simulator and firmware
+build, not yet run on the player).**
+* Engine `orpheus_games::bricks` (feature `bricks`): **integers only**
+  (positions and speeds in 1/256 px, sine and cosine in 1/4096): the
+  thumbv7em build of it has no floating-point instruction at all (checked:
+  0 `v…` instructions in the Bricks functions, 0 `vfma` in the image).
+  Field 128 × 116 px under a 12-px status line; walls left, right, top.
+  Bricks 10 × 5 px cells (drawn 9 × 4) in up to 10 rows of 12 from y 12;
+  paddle 3 px high at y 106, 16/22/28 px wide; ball 3 × 3.
+* Physics: a ball moves at the game's speed in one of seven directions
+  each side of the vertical (12°, 20° … 60° from it); each 60 Hz step is
+  cut into sub-steps of at most a pixel per axis (as many as the speed
+  needs), each sub-step x then y; a move that would overlap a wall, a
+  brick or the paddle is not made, the ball turns on that axis instead
+  (and hits every brick it would have entered). Every obstacle is thicker
+  than a sub-step, so nothing is passed through at any speed (tested at
+  5 px/step, twice the fastest the game reaches), and the ball is never
+  inside anything after a step. The paddle sets the angle by where it is
+  met (centre 12°, ends 60°, to that side) and stops at a ball beside it
+  rather than push into it. Speeds 75/98/120 px/s (slow/normal/fast) at
+  level 1, +1/40 per level (ten at most), +1/24 of the base every 4 s of
+  play up to 1.5 × the level's speed; never above 300 px/s. A ball that
+  meets only walls and unbreakable bricks for 15 s is nudged to the next
+  angle (no endless loops).
+* Bricks: one, two or three hits (10 points per hit it took when new, paid
+  when it breaks; fading by wear, a dot per hit left beyond the first),
+  unbreakable (grey, riveted); a cleared level +100. Levels: eight
+  hand-made symmetric layouts of our own (shelves, funnel, pillars,
+  diamond, gates, frame, waves, keep) and generated ones from the seed and
+  the level (patterns random / rows / chequer / pyramid / blocks, mirrored;
+  4–10 rows, density 45–85 %, harder bricks and from level 4 unbreakable
+  ones rising with the level); a breadth-first search over the cells makes
+  every breakable brick reachable (walls closing a pocket become three-hit
+  bricks), checked for 60 levels × 3 sets × 3 seeds. Level set: hand-made
+  (round again with a hit more per brick), generated, mixed (hand-made,
+  then generated).
+* Power-ups (own set; one breakable brick in seven carries a capsule,
+  three falling at most, 0.75 px/step): wider (+8 px a pixel a step, up to
+  40, until a life is lost or the level ends; never into a wall or a ball),
+  slower (speed × ¾), split (up to three balls), catch (20 s: the paddle
+  holds a ball it meets; OK, Menu or 2.5 s lets it go, aimed by where it
+  sits), extra life (nine at most). Capsule signs 5 × 3: a bar with ends,
+  S, three dots, C, +; colours accent, good, warning and mixes.
+* Keys: Prev/Next or Down/Up move the paddle (from 0.75/1.1/1.5 to
+  2/3/4.5 px a step over 15 steps held: the steering setting); the last
+  pressed wins while both are held; OK or Menu launches; Back pauses. A
+  new game opens with the ball on the paddle ("OK to launch"); a game
+  continued in mid-rally opens paused.
+* Settings (`0x0EA_`, packed into one stored word `0x0EB0`: `STORED` with
+  Salvo 124 → 125, without 120 → 121): Start level `0x0EA1` (1–10, 1), Ball
+  `0x0EA2` (Slow/Normal/Fast, Normal), Paddle `0x0EA3` (Small/Medium/Large,
+  Medium), Lives `0x0EA4` (1/3/5, 3), Power-ups `0x0EA5` (on), Levels
+  `0x0EA6` (Hand-made/Generated/Mixed, Mixed), Steering `0x0EA7`
+  (Slow/Normal/Fast, Normal; the only one at once). Score table: the
+  score, detail the level reached, won once a level is cleared; variant
+  from all but steering.
+* Drawing (`screens/bricks.rs`): partial redraw: the brick rows whose
+  cells changed, and for each ball, capsule and the paddle that moved the
+  rectangle over where it was and where it is, each cleared and drawn
+  again in order clipped to it (`bricks_partial_redraw_equals_full`); the
+  status line (score, "Level n", lives as balls) when it changes; a change
+  of phase or view draws the whole screen with its banner (level cleared,
+  paused, game over).
+* RAM: `Bricks` 256 B (fits under Blocks' and Solitaire's 344: the session
+  and hub do not grow); save `bricks.sav` (version 1, all state) 255 B.
+  App: `Game::Bricks` (Games list fifth; fourth on a build without Salvo),
+  screen `Bricks` (`ScreenId` 55), `GameScreen` keeps ≈ 108 B of drawn
+  keys and rectangles for it (the screen enum's size is still the list
+  screen's: `.bss` grew by the settings word only).
+* Firmware: **built in** (`orpheus-apps/bricks` on in
+  `fw/firmware/Cargo.toml`): resident 80,795 → 80,923 B, `.bss` 124,864 →
+  124,872 B, slot +16 KiB (two code pages), stack 16,108 B nested worst
+  case of 20,224 usable, margin 4,116 B unchanged; `check-resident` ok.
+* Measured (host, release): 80 ns per logic step (autopilot play, fast);
+  game loop per 33-ms frame (simulator, all services) in play 3.6 µs / 31
+  dirty rows (the band from the highest moving thing to the paddle).
+  Player estimate (× 40–60): ≈ 5 µs a logic step, ≈ 0.2 ms a frame before
+  the flush.
+
 ### 7.14 Accessibility and speech (M15; owner's requirement 2026-11-25)
 
 * **Screen reader** (A11Y-1): spoken output from the text-to-speech engine

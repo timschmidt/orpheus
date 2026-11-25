@@ -22,7 +22,9 @@
 //! pass); `gamesio=on|off` the deferred mode. Salvo (the game in RAM):
 //! `salvoturn=P`, `salvoaim=P.A.W` (angle °, power ‰), `salvowind=T`
 //! (tenths of m/s), `salvohealth=P.H`, `salvoflat=H`, `salvoplace=P.X`,
-//! `salvoblast=X.Y.W` (weapon W's blast at X, Y px).
+//! `salvoblast=X.Y.W` (weapon W's blast at X, Y px). Bricks (the game in
+//! RAM): `bricksball=I.X.Y.A.D`, `brickscap=K.X.Y`, `brickslevel=N`,
+//! `bricksclear=1`, `brickslives=N`, `bricksspeed=S`, `brickspaddle=X`.
 
 use anyhow::{Result, bail};
 use orpheus_apps::games::{self as app, CardOp, CardRun, Game, GamesIo, GamesRequest};
@@ -377,6 +379,48 @@ impl SimGames {
                     "salvoplace" => g.place(usize::try_from(n(0))?, i16::try_from(n(1))?),
                     // `salvoblast=X.Y.W`: weapon W's blast at (X, Y) px.
                     "salvoblast" => g.explode_at(n(0), n(1), u8::try_from(n(2))?),
+                    _ => bail!("unknown {k}"),
+                }
+            }
+            k if k.starts_with("bricks") => {
+                let Session::Bricks(g) = &mut self.hub.session else { bail!("{k}: no Bricks game") };
+                let nums: Vec<i32> = v.split('.').map(str::parse).collect::<Result<_, _>>()?;
+                let n = |i: usize| nums.get(i).copied().unwrap_or(0);
+                let one = orpheus_games::bricks::ONE;
+                match k {
+                    // `bricksball=I.X.Y.A.D`: ball I free at (X, Y) px of the
+                    // field, angle index A, D bit 0 left, bit 1 up.
+                    "bricksball" => {
+                        let (i, d) = (usize::try_from(n(0))?, n(4));
+                        if !g.place_ball(
+                            i,
+                            n(1) * one,
+                            n(2) * one,
+                            u8::try_from(n(3))?,
+                            d & 1 != 0,
+                            d & 2 != 0,
+                        ) {
+                            bail!("bricksball: the place is taken");
+                        }
+                    }
+                    // `brickscap=K.X.Y`: a capsule of power K (1 wider …
+                    // 5 life) at (X, Y) px.
+                    "brickscap" => {
+                        let p = orpheus_games::bricks::Power::from_u8(u8::try_from(n(0))?);
+                        let Some(p) = p else { bail!("brickscap: power 1 to 5") };
+                        g.drop_capsule(p, u8::try_from(n(1))?, n(2));
+                    }
+                    // `brickslevel=N`: level N now, served.
+                    "brickslevel" => g.goto_level(u16::try_from(n(0))?),
+                    // `bricksclear=1`: the level's bricks gone: cleared.
+                    "bricksclear" => g.clear_now(),
+                    "brickslives" => g.set_lives(u8::try_from(n(0))?),
+                    // `bricksspeed=S`: ball speed in 1/256 px a step.
+                    "bricksspeed" => g.set_speed(n(0)),
+                    // `brickspaddle=X`: the paddle's left edge at X px.
+                    "brickspaddle" => {
+                        g.set_paddle(n(0) * one);
+                    }
                     _ => bail!("unknown {k}"),
                 }
             }

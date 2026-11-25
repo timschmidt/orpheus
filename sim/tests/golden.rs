@@ -196,6 +196,9 @@ fn games_cases(add: &mut dyn FnMut(String, String)) {
     let round = format!(
         "{salvo} set:salvohealth=1.0 menu down*6 ok set:salvoaim=0.90.150 press:ok release:ok wait:6000"
     );
+    let bricks = format!("{list} down*4 ok wait:100 expect-screen:Bricks");
+    // The paddle is 53..75 px at the start: a capsule dropped over it.
+    let catch = |k: u8| format!("{bricks} ok wait:100 set:brickscap={k}.60.96 wait:200");
     let journeys: &[(&str, String)] = &[
         ("list", list.into()),
         ("list_continue", format!("{blocks} ok wait:500 back up ok wait:100 expect-screen:Games")),
@@ -279,6 +282,37 @@ fn games_cases(add: &mut dyn FnMut(String, String)) {
         ("salvo_settings_world", format!("{salvo} back down*2 ok down ok expect-screen:GameSettings")),
         ("salvo_settings_rules", format!("{salvo} back down*2 ok down*2 ok expect-screen:GameSettings")),
         ("salvo_help", format!("{salvo} back down*3 ok expect-screen:GameHelp")),
+        // GAME-6 Bricks.
+        ("bricks_serve", bricks.clone()),
+        ("bricks_moved", format!("{bricks} press:prev wait:400 release:prev")),
+        ("bricks_play", format!("{bricks} ok wait:1200")),
+        ("bricks_life_lost", format!("{bricks} ok wait:100 set:bricksball=0.30.70.4.2 wait:2500")),
+        (
+            "bricks_capsules",
+            format!("{bricks} ok set:brickscap=1.20.70 set:brickscap=2.50.80 set:brickscap=3.90.75 wait:30"),
+        ),
+        ("bricks_capsules2", format!("{bricks} ok set:brickscap=4.30.75 set:brickscap=5.90.80 wait:30")),
+        ("bricks_wide", catch(1)),
+        ("bricks_split", catch(3)),
+        ("bricks_catch", format!("{} set:bricksball=0.62.90.0.0 wait:200", catch(4))),
+        (
+            "bricks_worn",
+            "set:gameseed=7 goto:Bricks set:brickslevel=6 ok wait:100 set:bricksball=0.40.75.1.2 wait:330"
+                .into(),
+        ),
+        ("bricks_level5", "set:gameseed=7 goto:Bricks set:brickslevel=5 wait:100".into()),
+        ("bricks_level8", "set:gameseed=7 goto:Bricks set:brickslevel=8 wait:100".into()),
+        ("bricks_generated", "set:gameseed=7 set:0x0ea6=1 set:0x0ea1=6 goto:Bricks wait:100".into()),
+        ("bricks_cleared", format!("{bricks} ok set:bricksclear=1 wait:50")),
+        ("bricks_next_level", format!("{bricks} ok set:bricksclear=1 wait:2000")),
+        ("bricks_over", format!("set:0x0ea4=0 {bricks} ok set:bricksball=0.2.100.0.0 wait:600")),
+        ("bricks_paused", format!("{bricks} ok wait:500 power wait:300 power wait:300")),
+        ("bricks_pause", format!("{bricks} ok wait:300 back expect-screen:GamePause")),
+        ("bricks_settings", format!("{bricks} back down*2 ok expect-screen:GameSettings")),
+        ("bricks_settings_end", format!("{bricks} back down*2 ok up")),
+        ("list_bricks", format!("{list} down*4")),
+        ("bricks_help", format!("{bricks} back down*3 ok expect-screen:GameHelp")),
+        ("bricks_help_end", format!("{bricks} back down*3 ok down*40")),
     ];
     for t in ["dark", "light"] {
         for (name, script) in journeys {
@@ -298,6 +332,11 @@ fn games_cases(add: &mut dyn FnMut(String, String)) {
     add(
         "games_salvo_four_amber".into(),
         format!("@apps theme:amber set:0x0e61=2 set:0x0e6c=0 {salvo} press:ok wait:600 release:ok"),
+    );
+    // Brick wear and capsule signs without colour.
+    add(
+        "games_bricks_worn_amber".into(),
+        "@apps theme:amber set:gameseed=7 goto:Bricks set:brickslevel=6 ok wait:100 set:bricksball=0.40.75.1.2 wait:330 set:brickscap=2.20.80 set:brickscap=4.100.80".into(),
     );
 }
 

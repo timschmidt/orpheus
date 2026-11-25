@@ -7,6 +7,7 @@
 
 use orpheus_apps::games::{self as app, GamesService};
 use orpheus_games::blocks::Blocks;
+use orpheus_games::bricks::{self, Bricks};
 use orpheus_games::salvo::{self, Phase as SalvoPhase, Salvo};
 use orpheus_games::scores::Scores;
 use orpheus_games::solitaire::{self, Solitaire};
@@ -53,6 +54,13 @@ fn salvo(s: &AppSim) -> &Salvo {
     }
 }
 
+fn bricks_game(s: &AppSim) -> &Bricks {
+    match &s.sys.games().session {
+        Session::Bricks(g) => g,
+        other => panic!("not Bricks: {other:?}"),
+    }
+}
+
 fn file(s: &mut AppSim, name: &str) -> Option<Vec<u8>> {
     read(&mut s.sys.media, &format!("{}/{name}", app::DIR))
 }
@@ -62,6 +70,7 @@ const BLOCKS: &str = "set:gameseed=7 goto:Blocks wait:100 expect-screen:Blocks";
 const TILES: &str = "set:gameseed=7 goto:Game4096 wait:100 expect-screen:Game4096";
 const SOL: &str = "set:gameseed=7 goto:Solitaire wait:100 expect-screen:Solitaire";
 const SALVO: &str = "set:gameseed=7 goto:Salvo wait:100 expect-screen:Salvo";
+const BRICKS: &str = "set:gameseed=7 goto:Bricks wait:100 expect-screen:Bricks";
 
 /// Home › Games › 4096: a game played, paused (saved to the card), quit
 /// and continued, also after a restart of the player (the card's save
@@ -315,6 +324,9 @@ mod settings_effects {
         }
         if !(0x0E61..0x0EA0).contains(&key) {
             others.push(format!("{SALVO} up right press:ok release:ok wait:1000"));
+        }
+        if !(0x0EA0..0x0EC0).contains(&key) {
+            others.push(format!("{BRICKS} press:prev wait:200 release:prev ok wait:800"));
         }
         for other in &others {
             assert_eq!(
@@ -715,6 +727,157 @@ fn salvo_saved_and_continued() {
     assert!(s.sys.games().can_continue(id::SALVO));
 }
 
+/// Bricks (GAME-6): every setting shows in the game and nowhere else.
+mod bricks_settings {
+    use super::settings_effects::{after, shows_only_in};
+    use super::*;
+
+    #[test]
+    fn start_level_and_level_set() {
+        shows_only_in(0x0EA1, 5, 1, BRICKS);
+        let (_, five) = after("set:0x0ea1=5", BRICKS);
+        assert_eq!(bricks_game(&five).level(), 5);
+        // Hand-made, generated, mixed: level 1 hand-made in two of them.
+        shows_only_in(0x0EA6, 1, 2, BRICKS);
+        shows_only_in(0x0EA6, 0, 2, &format!("set:0x0ea1=9 {BRICKS}"));
+        let (_, gen_) = after("set:0x0ea6=1", BRICKS);
+        let cells: Vec<u8> = bricks_game(&gen_).cells().iter().map(|c| c & !bricks::CARRY).collect();
+        assert_eq!(cells, bricks::layout(bricks::LevelSet::Generated, 1, 7).to_vec());
+    }
+
+    #[test]
+    fn ball_speed_paddle_lives() {
+        let play = format!("{BRICKS} ok wait:500");
+        shows_only_in(0x0EA2, 2, 1, &play);
+        shows_only_in(0x0EA2, 0, 1, &play);
+        let (_, fast) = after("set:0x0ea2=2", BRICKS);
+        assert_eq!(bricks_game(&fast).speed(), bricks::BASE_SPEEDS[2]);
+        shows_only_in(0x0EA3, 0, 1, BRICKS);
+        shows_only_in(0x0EA3, 2, 1, BRICKS);
+        let (_, small) = after("set:0x0ea3=0", BRICKS);
+        assert_eq!(bricks_game(&small).paddle().1, bricks::PADDLE_WIDTHS[0]);
+        shows_only_in(0x0EA4, 2, 1, BRICKS);
+        shows_only_in(0x0EA4, 0, 1, BRICKS);
+        let (_, five) = after("set:0x0ea4=2", BRICKS);
+        assert_eq!(bricks_game(&five).lives(), 5);
+    }
+
+    /// Power-ups: with them a brick that carries one drops a capsule when
+    /// the ball breaks it; without, no brick carries one.
+    #[test]
+    fn power_ups() {
+        // A seed whose level 1 has a capsule in an exposed brick (the
+        // bottom row), and a shot straight up under it.
+        let (seed, col) = (0..100u64)
+            .find_map(|seed| {
+                let (_, s) = after(&format!("set:gameseed={seed}"), "goto:Bricks wait:50");
+                let g = bricks_game(&s);
+                (0..bricks::COLS).find(|&c| g.cell(5, c) & bricks::CARRY != 0).map(|c| (seed, c))
+            })
+            .expect("a capsule in the bottom row");
+        let x = bricks::BRICKS_X + col as i32 * bricks::BRICK_W + 3;
+        let shot = format!("set:gameseed={seed} goto:Bricks wait:50 ok set:bricksball=0.{x}.48.0.2 wait:150");
+        shows_only_in(0x0EA5, 0, 1, &shot);
+        let (_, on) = after("set:0x0ea5=1", &shot);
+        assert!(bricks_game(&on).capsules().iter().any(|c| c.kind != 0), "a capsule falls");
+        let (_, off) = after("set:0x0ea5=0", &shot);
+        assert!(bricks_game(&off).capsules().iter().all(|c| c.kind == 0));
+        assert!(bricks_game(&off).cells().iter().all(|c| c & bricks::CARRY == 0));
+    }
+
+    /// Steering: the paddle's speed, at once (also in a game in progress).
+    #[test]
+    fn steering() {
+        let slide = format!("{BRICKS} press:next wait:300 release:next");
+        shows_only_in(0x0EA7, 2, 1, &slide);
+        shows_only_in(0x0EA7, 0, 1, &slide);
+        let x = |v: i16| bricks_game(&after(&format!("set:0x0ea7={v}"), &slide).1).paddle().0;
+        assert!(x(0) < x(1) && x(1) < x(2));
+        // Changed in the pause menu: the game in progress takes it.
+        let mut s = sim(&format!("{BRICKS} back expect-screen:GamePause"));
+        run(&mut s, "set:0x0ea7=2 back expect-screen:Bricks press:next wait:300 release:next");
+        assert_eq!(bricks_game(&s).config().sens, 2);
+        assert_eq!(bricks_game(&s).paddle().0, x(2));
+    }
+}
+
+/// Bricks in the app: a game played, saved on pause, quit, continued
+/// after a restart of the player; a lost game recorded in the scores.
+#[test]
+fn bricks_saved_and_continued() {
+    let mut s = sim(&format!(
+        "{LIST} down*4 ok wait:100 expect-screen:Bricks press:next wait:200 release:next ok wait:600"
+    ));
+    run(&mut s, "back expect-screen:GamePause");
+    let saved = file(&mut s, "bricks.sav").expect("saved on pause");
+    assert_eq!(Session::decode(&saved, Some(id::BRICKS)), Some(s.sys.games().session.clone()));
+    run(&mut s, "up ok wait:100 expect-screen:Games");
+    assert!(s.sys.games().can_continue(id::BRICKS));
+    let game = bricks_game(&s).clone();
+    let media = std::mem::replace(&mut s.sys.media, orpheus_sim::media::Media::new());
+    let mut r = Sim::with_sys(HostServices::with_media(media), Box::new(HexFont::subset()));
+    run(&mut r, LIST);
+    run(&mut r, "down*4 ok wait:100 expect-screen:Bricks");
+    assert_eq!(bricks_game(&r), &game, "the same game after a restart");
+    // One life left, the ball falling past the paddle: over, recorded.
+    run(&mut r, "ok wait:50 set:brickslives=1 set:bricksball=0.2.100.0.0 wait:600");
+    assert!(bricks_game(&r).ended());
+    let scores = Scores::decode(&file(&mut r, app::SCORES_FILE).unwrap()).unwrap();
+    let v = bricks_game(&r).config().variant();
+    assert_eq!(scores.get(id::BRICKS, v).map(|rec| rec.played), Some(1));
+    assert!(file(&mut r, "bricks.sav").is_none(), "a finished game's save is removed");
+}
+
+/// Every Bricks frame drawn in parts equals the same frame drawn whole:
+/// balls, capsules and the paddle moving over bricks and each other.
+#[test]
+fn bricks_partial_redraw_equals_full() {
+    let keys = [
+        "press:next",
+        "release:next",
+        "press:prev",
+        "release:prev",
+        "ok",
+        "wait:200",
+        "wait:500",
+        "set:brickscap=1.30.60",
+        "set:brickscap=3.60.96",
+        "set:brickscap=4.70.97",
+        "set:brickscap=2.10.70",
+        "set:bricksball=1.50.70.3.2",
+        "set:bricksspeed=1280",
+    ];
+    for seed in 0..4u64 {
+        let mut s = sim(&format!("set:gameseed={seed} set:0x0ea4=2 goto:Bricks wait:100 ok"));
+        let mut r = orpheus_games::Rng::new(seed);
+        for step in 0..120 {
+            if s.screen() != "Bricks" {
+                run(&mut s, "back");
+                continue;
+            }
+            if bricks_game(&s).ended() {
+                run(&mut s, "ok");
+            }
+            let k = keys[r.below(keys.len() as u32) as usize];
+            // A place may be taken: then nothing happens.
+            let _ = s.run_script(k);
+            run(&mut s, "wait:34");
+            let partial = s.fb.clone();
+            s.shell.invalidate();
+            s.draw();
+            let diff: Vec<(usize, usize)> = (0..partial.len())
+                .filter(|&i| partial[i] != s.fb[i])
+                .map(|i| (i % 128, i / 128))
+                .take(12)
+                .collect();
+            assert!(
+                diff.is_empty(),
+                "seed {seed} step {step}: after `{k}` the screen differs from a full draw at {diff:?}"
+            );
+        }
+    }
+}
+
 /// The game loop's cost on the host (05 §7.13: up to 30 frames/s, partial
 /// redraw): per 33 ms frame, the logic steps and the drawing, and the
 /// panel rows a frame leaves to flush (the firmware flushes the band of
@@ -755,8 +918,14 @@ fn game_loop_cost() {
     let _ = measure("salvo, aiming", SALVO, &["up", "right", "down"]);
     let _ = measure("salvo, a flight", &format!("{SALVO} set:salvoaim=0.70.900 press:ok release:ok"), &[]);
     let _ = measure("salvo, computers", &format!("set:0x0e62=4 set:0x0e63=4 {SALVO}"), &[]);
+    let bricks = measure(
+        "bricks, in play (balls, capsules, the paddle moving)",
+        &format!("set:0x0ea4=2 {BRICKS} set:brickslives=9 ok set:brickscap=3.60.96 wait:300"),
+        &["press:next", "release:next", "ok", "press:prev", "release:prev", "ok"],
+    );
     assert!(home < 1.0);
     assert!(blocks < 128.0 * 0.9, "Blocks redraws the whole screen every frame ({blocks:.1} rows)");
     assert!(sol < 128.0 * 0.6, "Solitaire redraws too much per frame ({sol:.1} rows)");
     assert!(sol_idle < 2.0, "the timer alone ({sol_idle:.1} rows per frame)");
+    assert!(bricks < 128.0 * 0.9, "Bricks redraws the whole screen every frame ({bricks:.1} rows)");
 }

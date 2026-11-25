@@ -11,7 +11,7 @@ atj2157-hal = { path = "../atj2157-hal", features = ["prof"] }
 yoton-bsp = { path = "../yoton-bsp" }
 orpheus-proto.workspace = true
 orpheus-ui = { path = "../../crates/orpheus-ui" }
-orpheus-apps = { path = "../../crates/orpheus-apps", features = ["games"] }
+orpheus-apps = { path = "../../crates/orpheus-apps", features = ["games", "bricks"] }
 orpheus-input = { path = "../../crates/orpheus-input" }
 orpheus-power = { path = "../../crates/orpheus-power" }
 orpheus-settings = { path = "../../crates/orpheus-settings" }

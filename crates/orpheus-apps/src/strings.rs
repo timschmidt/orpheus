@@ -910,6 +910,27 @@ strings! {
     HelpSalvo3 = "Shells fly as in real air: gravity of the world you chose, drag that grows with speed, and a wind (the arrow at the top) that pushes light shells more than heavy ones. Gusts change it during the flight.",
     HelpSalvo4 = "Weapons: the shell; the heavy shell (bigger blast, less drift); the cluster (splits into three at the top); the roller (rolls downhill and goes off where it stops); the digger (cuts a trench); the dirt bomb (a mound of earth for cover); smoke (shows the wind).",
     HelpSalvo5 = "Ground blown away lets the earth above fall in; tanks fall and slide, and a long fall hurts. In the shop between rounds, credits buy weapons. Back pauses the game.",
+    // M14 Bricks, the brick-breaking game (GAME-6).
+    GameBricks = "Bricks",
+    GameBallSpeed = "Ball",
+    GameSlow = "Slow",
+    GameNormal = "Normal",
+    GameFast = "Fast",
+    GamePaddleSize = "Paddle",
+    GameSmall = "Small",
+    GameLarge = "Large",
+    GameLives = "Lives",
+    GamePowerUps = "Power-ups",
+    GameLevelSet = "Levels",
+    GameHandMade = "Hand-made",
+    GameGenerated = "Generated",
+    GamePaddleSpeed = "Steering",
+    GameLevelCleared = "Level cleared",
+    GameOkToLaunch = "OK to launch",
+    HelpBricks = "Keep the ball in play with the paddle and break every brick to clear the level. Bricks take one, two or three hits and fade as they wear; grey ones never break. A brick scores 10 for each hit it took, a cleared level 100.",
+    HelpBricks2 = "Prev and Next (or Down and Up) move the paddle, faster while held. OK launches the ball. Where the ball meets the paddle sets its way: the middle sends it nearly straight up, the ends off to the side. The ball speeds up a little as the level goes on.",
+    HelpBricks3 = "Some bricks drop a capsule: catch it with the paddle. A bar widens the paddle, S slows the ball, three dots split it into three, C lets the paddle hold the ball (OK lets it go), + is a life. Back pauses the game.",
+    HelpBricks4 = "The first eight levels are hand-made; after them (or from the start, with the Levels setting) they are generated, fuller and harder as you go.",
 }
 
 /// Number of strings.

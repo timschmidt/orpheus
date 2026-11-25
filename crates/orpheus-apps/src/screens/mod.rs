@@ -3,6 +3,8 @@
 
 mod auth;
 mod bluetooth;
+#[cfg(feature = "bricks")]
+mod bricks;
 mod clocks;
 mod drive;
 mod edit;
@@ -164,6 +166,9 @@ pub const GAME_SOLITAIRE: ScreenId = ScreenId(53);
 /// Salvo being played (GAME-4/5).
 #[cfg(feature = "salvo")]
 pub const GAME_SALVO: ScreenId = ScreenId(54);
+/// Bricks being played (GAME-6).
+#[cfg(feature = "bricks")]
+pub const GAME_BRICKS: ScreenId = ScreenId(55);
 
 /// One variant per screen. Only the top screen exists, so the enum's size
 /// (its largest variant, the list screen) is the UI's screen RAM.
@@ -346,6 +351,8 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             GAME_SOLITAIRE => AppScreen::Game(GameScreen::new(crate::games::Game::Solitaire)),
             #[cfg(feature = "salvo")]
             GAME_SALVO => AppScreen::Game(GameScreen::new(crate::games::Game::Salvo)),
+            #[cfg(feature = "bricks")]
+            GAME_BRICKS => AppScreen::Game(GameScreen::new(crate::games::Game::Bricks)),
             #[cfg(feature = "games")]
             GAME_PAUSE => {
                 AppScreen::GameList(GameListScreen::new(GameList::Pause(crate::games::Game::Blocks)))
