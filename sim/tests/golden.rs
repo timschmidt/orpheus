@@ -145,7 +145,7 @@ fn media_cases(add: &mut dyn FnMut(String, String)) {
     ];
     for t in ["dark", "light"] {
         for (l, album, artist, book, lyr, track) in
-            [("latin", "takk", 2, 0, 1, 0), ("cyrillic", "kino", 4, 2, 0, 1), ("cjk", "yoasobi", 3, 3, 0, 1)]
+            [("latin", "takk", 2, 0, 1, 0), ("cyrillic", "kino", 4, 4, 0, 1), ("cjk", "yoasobi", 3, 6, 0, 1)]
         {
             for (name, script) in journeys {
                 let script = script
@@ -168,6 +168,81 @@ fn media_cases(add: &mut dyn FnMut(String, String)) {
     auth_cases(add);
     drive_cases(add);
     games_cases(add);
+    books_cases(add);
+}
+
+/// M15 Books (BOOK-1): the library, the reader in each format and font
+/// size, its palettes and settings, the reader menu, contents, bookmarks
+/// and Go to, over the simulator's books in /Books (`sim/src/card.rs`:
+/// public-domain excerpts). The library lists by title: Alice's
+/// Adventures in Wonderland, A Tale of Two Cities, Moby-Dick, Война и
+/// мир, Пиковая дама, 枕草子. Book strings are English in every language
+/// until the packs have them: Dark and Light in English, two in Amber.
+fn books_cases(add: &mut dyn FnMut(String, String)) {
+    let lib = "set:books=on goto:Books wait:50 expect-screen:Books";
+    let open = |row: usize| format!("{lib} down*{row} ok wait:50 expect-screen:Reader");
+    let journeys: &[(&str, String)] = &[
+        ("home", "set:books=on prev*2".into()),
+        ("home_row4", "set:books=on prev".into()),
+        ("library", lib.into()),
+        ("library_searching", "set:books=on set:booksteps=12 goto:Books wait:10".into()),
+        ("library_menu", format!("{lib} menu")),
+        ("library_progress", format!("{} next next back wait:50 down*2", open(0))),
+        ("preparing", format!("{lib} down*3 set:booksteps=1 ok")),
+        ("alice", open(0)),
+        ("alice_page2", format!("{} next wait:50", open(0))),
+        ("alice_line_down", format!("{} next wait:50 down down wait:50", open(0))),
+        ("alice_line_up", format!("{} next wait:50 up wait:50", open(0))),
+        ("tale", open(1)),
+        ("moby", open(2)),
+        ("war", open(3)),
+        ("queen", open(4)),
+        ("queen_page2", format!("{} next wait:50", open(4))),
+        ("pillow", open(5)),
+        ("chapter_next", format!("{} hold:next wait:50", open(0))),
+        ("end", format!("{} set:0x0f80=16 next*30 wait:50", open(5))),
+        ("medium", format!("set:0x0f01=1 {}", open(0))),
+        ("large", format!("set:0x0f01=2 {}", open(3))),
+        ("xlarge", format!("set:0x0f01=3 {}", open(0))),
+        ("narrow", format!("set:0x0f02=0 {}", open(1))),
+        ("wide", format!("set:0x0f02=2 {}", open(1))),
+        ("tight", format!("set:0x0f03=0 {}", open(1))),
+        ("relaxed", format!("set:0x0f03=2 {}", open(1))),
+        ("justify", format!("set:0x0f04=1 {}", open(1))),
+        ("sepia", format!("set:0x0f05=3 {}", open(0))),
+        ("paper", format!("set:0x0f05=1 {}", open(4))),
+        ("night", format!("set:0x0f05=2 {}", open(4))),
+        ("menu", format!("{} ok wait:50 expect-screen:BookMenu", open(0))),
+        ("menu_settings", format!("{} ok wait:50 down*8", open(0))),
+        ("menu_font", format!("{} ok wait:50 down*4 ok expect-screen:Choice", open(0))),
+        ("contents", format!("{} ok wait:50 ok wait:50 expect-screen:BookContents", open(4))),
+        ("contents_alice", format!("{} ok wait:50 ok wait:50 down", open(0))),
+        ("contents_go", format!("{} ok wait:50 ok wait:50 down*2 ok wait:50 expect-screen:Reader", open(0))),
+        (
+            "bookmarks",
+            format!(
+                "{} next wait:50 ok down*2 ok wait:50 next next ok down*2 ok wait:50 ok down ok wait:50 expect-screen:BookBookmarks",
+                open(1)
+            ),
+        ),
+        ("bookmark_toast", format!("{} menu ok wait:100", open(1))),
+        ("goto", format!("{} ok wait:50 down*3 ok expect-screen:BookGoTo", open(3))),
+        ("goto_set", format!("{} ok wait:50 down*3 ok up*7 next*2", open(3))),
+        ("goto_done", format!("{} ok wait:50 down*3 ok next*5 ok wait:50 expect-screen:Reader", open(3))),
+        ("quick_menu", format!("{} menu", open(3))),
+        ("find_in_card", format!("set:0x0f07=1 {lib} wait:50 down*5")),
+        ("find_in_menu", format!("{lib} menu down ok")),
+        ("find_in_chosen", format!("{lib} menu down ok down ok back back wait:50 down*4")),
+    ];
+    for t in ["dark", "light"] {
+        for (name, script) in journeys {
+            add(format!("books_{name}_{t}"), format!("@apps theme:{t} {script}"));
+        }
+    }
+    for name in ["library", "alice"] {
+        let script = &journeys.iter().find(|(n, _)| *n == name).expect("journey").1;
+        add(format!("books_{name}_amber"), format!("@apps theme:amber {script}"));
+    }
 }
 
 /// M14 (GAME-0/1/2/3): the Games app over the simulator's games back end

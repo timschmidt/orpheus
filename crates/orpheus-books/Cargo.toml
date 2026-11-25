@@ -1,0 +1,17 @@
+[package]
+name = "orpheus-books"
+description = "Books reader core: encoding detection, TXT/Markdown/FB2 to a normalised stream, page layout and its index, positions, bookmarks, contents and the library scan, run in bounded card steps (05-ui-apps §7.15, BOOK-1)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+orpheus-fs = { path = "../orpheus-fs" }
+
+[dev-dependencies]
+orpheus-fs = { path = "../orpheus-fs", features = ["std"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,21 @@
+---
+title: Notes
+author: Me
+---
+# Title
+
+Some *emphasis*, **bold**, `code_x`, a [link](http://x/y_(z)) and ![an image](a.png).
+
+> A quote
+> over two lines
+
+- one
+- two
+3. three
+
+---
+## Part
+```
+let  x = 1;
+```
+#hashtag and snake_case_words

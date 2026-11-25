@@ -185,10 +185,14 @@ impl App {
             .into_iter()
             .find(|a| a.name() == s)
     }
-    /// Home position (the simulator's grid with all apps: `App::GRID`,
-    /// Games before Settings since GAME-2) and screen name.
+    /// Home position (the player's grid: `App::GRID` without the apps not
+    /// on the player, such as Books, which the workspace's `orpheus-apps`
+    /// has through the simulator; Games before Settings since GAME-2) and
+    /// screen name.
     fn home(self) -> (usize, &'static str) {
-        let at = |a: orpheus_apps::App| orpheus_apps::App::GRID.iter().position(|&g| g == a).unwrap_or(0);
+        let at = |a: orpheus_apps::App| {
+            orpheus_apps::App::GRID.iter().filter(|g| g.on_player()).position(|&g| g == a).unwrap_or(0)
+        };
         match self {
             App::Files => (at(orpheus_apps::App::Files), "Files"),
             App::Library | App::NowPlaying => (at(orpheus_apps::App::Music), "Music"),

@@ -457,6 +457,115 @@ impl<'a> Gfx<'a> {
         self.dirty.add(a);
     }
 
+    // ----- reading text (Books; feature `book-fonts`) ------------------
+
+    /// The glyph `ch` is drawn with in `face` (else the UI font, else the
+    /// fallback font), or what to draw instead.
+    #[cfg(feature = "book-fonts")]
+    fn resolve_face(&mut self, ch: char, face: &'static crate::font::Font) -> Resolved {
+        if u32::from(ch) < 0x20 || ch == '\u{200b}' || ch == '\u{feff}' {
+            return Resolved::Skip;
+        }
+        if let Some(g) = face.glyph(ch).or_else(|| UI.glyph(ch)) {
+            return Resolved::Static(g);
+        }
+        let Ok(cp) = u16::try_from(u32::from(ch)) else {
+            return Resolved::Missing;
+        };
+        if let Some(fb) = self.fallback.as_mut() {
+            let base = fb.src.baseline();
+            if let Some(rec) = fb.cache.get(fb.src, cp)
+                && fallback_glyph(rec, base).is_some()
+            {
+                return Resolved::Fallback(*rec, base);
+            }
+        }
+        Resolved::Missing
+    }
+
+    /// Blit `g` scaled `st.scale` times, slanted (a quarter pixel per row
+    /// above the baseline) and emboldened (drawn again one pixel right) as
+    /// `st` says.
+    #[cfg(feature = "book-fonts")]
+    fn blit_styled(&mut self, ax: i16, ay: i16, g: &Glyph<'_>, c: Color, st: crate::font::Style) -> Rect {
+        let s = i16::from(st.scale.clamp(1, 4));
+        let x0 = ax + i16::from(g.x) * s;
+        let y0 = ay - i16::from(g.top) * s;
+        let (w, h) = (i16::from(g.w) * s, i16::from(g.h) * s);
+        let lean = if st.slant { (i16::from(g.top) * s) / 4 + 1 } else { 0 };
+        let area = Rect::new(x0 - lean - 1, y0, w + 2 * lean + 3, h).intersect(&self.clip);
+        if area.is_empty() {
+            return Rect::EMPTY;
+        }
+        let bpp = usize::from(g.bpp.clamp(1, 8));
+        let maxv = (1u16 << bpp) - 1;
+        let wu = usize::from(g.w);
+        for row in 0..usize::from(g.h) {
+            for col in 0..wu {
+                let bit = (row * wu + col) * bpp;
+                let Some(&byte) = g.bits.get(bit >> 3) else { continue };
+                let lv = (u16::from(byte) >> (8 - bpp - (bit & 7))) & maxv;
+                if lv == 0 {
+                    continue;
+                }
+                let a = if lv == maxv { 255 } else { u8::try_from(lv * 255 / maxv).unwrap_or(255) };
+                for sy in 0..s {
+                    let y = y0 + i16::try_from(row).unwrap_or(0) * s + sy;
+                    // Pixels above the baseline lean right.
+                    let shift = if st.slant { (ay - y).div_euclid(4) } else { 0 };
+                    for sx in 0..s {
+                        let x = x0 + i16::try_from(col).unwrap_or(0) * s + sx + shift;
+                        self.put_abs(x, y, c, a);
+                        if st.bold {
+                            self.put_abs(x + 1, y, c, a);
+                        }
+                    }
+                }
+            }
+        }
+        area
+    }
+
+    /// Draw one character of reading text with its pen at `x` and its
+    /// baseline at `y` (local), from `face` (else the UI font, else the
+    /// fallback font), in style `st`. The caller places characters (the
+    /// Books layout measures them itself).
+    #[cfg(feature = "book-fonts")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn char_styled(
+        &mut self,
+        x: i16,
+        y: i16,
+        ch: char,
+        face: &'static crate::font::Font,
+        c: Color,
+        st: crate::font::Style,
+    ) {
+        let (ax, ay) = (x + self.org_x, y + self.org_y);
+        let r = match self.resolve_face(ch, face) {
+            Resolved::Static(g) => self.blit_styled(ax, ay, &g, c, st),
+            Resolved::Fallback(rec, b) => match fallback_glyph(&rec, b) {
+                Some(g) => self.blit_styled(ax, ay, &g, c, st),
+                None => Rect::EMPTY,
+            },
+            Resolved::Missing => {
+                let s = i16::from(st.scale.clamp(1, 4));
+                let r = Rect::new(ax + s, ay - 9 * s, 6 * s, 9 * s);
+                let r2 = r.intersect(&self.clip);
+                for px in r2.x..r2.right() {
+                    for py in r2.y..r2.bottom() {
+                        if px < r.x + s || px >= r.right() - s || py < r.y + s || py >= r.bottom() - s {
+                            self.put_abs(px, py, c, 160);
+                        }
+                    }
+                }
+                r2
+            }
+            Resolved::Skip => Rect::EMPTY,
+        };
+        self.dirty.add(r);
+    }
+
     // ----- text --------------------------------------------------------
 
     fn resolve(&mut self, ch: char, font: FontId) -> Resolved {

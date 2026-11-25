@@ -135,6 +135,14 @@ and the dialog are never open together and could share one union (−140 B).
 | `fonts/ui12b.yfnt` | DejaVu Sans Condensed Bold 12 px, 2 bpp, 521 glyphs (Latin-1, Extended-A, Greek, basic Cyrillic) | 12 466 |
 | `fonts/num28.yfnt` | Fira Sans Condensed, 28 px digits, 4 bpp, tabular; `0-9 : . - + % / ,` and space | 3 551 |
 | `fonts/num16.yfnt` | Fira Sans Condensed Medium, 16 px digits, 4 bpp, tabular | 1 253 |
+| `fonts/book16.yfnt` | DejaVu Sans Condensed 16 px, 2 bpp, 450 glyphs: Latin, Latin-1, Extended-A, Romanian, basic Cyrillic and Ukrainian Ґ, punctuation, €, № (Books' Medium size; feature `book-fonts`) | 14 468 |
+| `fonts/book20.yfnt` | the same at 20 px (Books' Large size; feature `book-fonts`) | 20 244 |
+
+The reading faces are only linked with the `book-fonts` feature (the Books
+app, BOOK-1), which also brings `Gfx::char_styled`: a character pixel-
+scaled (Extra large: the UI font at 2×), emboldened (drawn again one pixel
+right) or slanted (italic emphasis: a quarter pixel per row above the
+baseline), from the reading face, else the UI font, else the fallback font.
 
 Code size is measured by `xtask size` once the firmware links the toolkit.
 

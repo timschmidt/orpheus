@@ -4,7 +4,9 @@
 //! process; every simulator mounts a copy-on-write overlay of it.
 //!
 //! Contents: music in Latin, Cyrillic and Japanese folders with ID3v2 tags
-//! and `.lrc` lyrics, a 5000-file folder, text files, other file types the
+//! and `.lrc` lyrics, a 5000-file folder, text files, books for the Books
+//! app (public-domain excerpts in Markdown, UTF-16 text with a Gutenberg
+//! header, and a Windows-1251 FB2 with contents), other file types the
 //! browser recognises (pictures that decode, and two that do not), an
 //! 8.3-only name, hidden entries.
 
@@ -151,6 +153,36 @@ const BOOK_EN: &str = "It was the best of times, it was the worst of times, it w
 const BOOK_RU: &str = "— Eh bien, mon prince. Gênes et Lucques ne sont plus que des apanages, des поместья, de la famille Buonaparte.\n\nТак говорила в июле 1805 года известная Анна Павловна Шерер, фрейлина и приближённая императрицы Марии Феодоровны, встречая важного и чиновного князя Василия, первого приехавшего на её вечер.\n\nАнна Павловна кашляла несколько дней, у неё был грипп, как она говорила (грипп был тогда новое слово, употреблявшееся только редкими).\n";
 const BOOK_JA: &str = "春は、あけぼの。やうやう白くなりゆく山ぎは、すこしあかりて、紫だちたる雲の細くたなびきたる。\n\n夏は、夜。月の頃はさらなり、闇もなほ、蛍の多く飛びちがひたる。また、ただ一つ二つなど、ほのかにうち光りて行くもをかし。雨など降るもをかし。\n\n秋は、夕暮れ。夕日のさして山の端いと近うなりたるに、烏の寝どころへ行くとて、三つ四つ、二つ三つなど、飛びいそぐさへあはれなり。\n";
 
+/// Lewis Carroll, *Alice's Adventures in Wonderland* (1865, public
+/// domain): the opening of the first two chapters, as Markdown.
+const ALICE: &str = "---\ntitle: Alice's Adventures in Wonderland\nauthor: Lewis Carroll\n---\n\n# Alice's Adventures in Wonderland\n\n## Chapter I. Down the Rabbit-Hole\n\nAlice was beginning to get very tired of sitting by her sister on the bank, and of having nothing to do: once or twice she had peeped into the book her sister was reading, but it had no pictures or conversations in it, *\u{201c}and what is the use of a book,\u{201d}* thought Alice *\u{201c}without pictures or conversations?\u{201d}*\n\nSo she was considering in her own mind (as well as she could, for the hot day made her feel very sleepy and stupid), whether the pleasure of making a daisy-chain would be worth the trouble of getting up and picking the daisies, when suddenly a **White Rabbit** with pink eyes ran close by her.\n\nThere was nothing so *very* remarkable in that; nor did Alice think it so *very* much out of the way to hear the Rabbit say to itself, \u{201c}Oh dear! Oh dear! I shall be late!\u{201d}\n\n## Chapter II. The Pool of Tears\n\n\u{201c}Curiouser and curiouser!\u{201d} cried Alice (she was so much surprised, that for the moment she quite forgot how to speak good English); \u{201c}now I\u{2019}m opening out like the largest telescope that ever was! Good-bye, feet!\u{201d}\n\n> For when she looked down at her feet, they seemed to be almost out of sight, they were getting so far off.\n\n- Drink me\n- Eat me\n\n";
+
+/// Herman Melville, *Moby-Dick* (1851, public domain): the opening, with a
+/// Project Gutenberg style header (UTF-16 LE with a byte-order mark on
+/// the card).
+const MOBY: &str = "Title: Moby-Dick; or, The Whale\r\nAuthor: Herman Melville\r\n\r\nCHAPTER 1. Loomings.\r\n\r\nCall me Ishmael. Some years ago\u{2014}never mind how long precisely\u{2014}having\r\nlittle or no money in my purse, and nothing particular to interest me\r\non shore, I thought I would sail about a little and see the watery part\r\nof the world. It is a way I have of driving off the spleen and\r\nregulating the circulation.\r\n\r\nThere now is your insular city of the Manhattoes, belted round by\r\nwharves as Indian isles by coral reefs\u{2014}commerce surrounds it with\r\nher surf.\r\n\r\nCHAPTER 2. The Carpet-Bag.\r\n\r\nI stuffed a shirt or two into my old carpet-bag, tucked it under my\r\narm, and started for Cape Horn and the Pacific.\r\n";
+
+/// Alexander Pushkin, *The Queen of Spades* (1834, public domain): the
+/// epigraph and the opening of chapter I, as FB2 (Windows-1251 on the
+/// card, as many Russian FB2 files are).
+const QUEEN: &str = "<?xml version=\"1.0\" encoding=\"windows-1251\"?>\n<FictionBook xmlns=\"http://www.gribuser.ru/xml/fictionbook/2.0\"><description><title-info><genre>prose_classic</genre><author><first-name>Александр</first-name><last-name>Пушкин</last-name></author><book-title>Пиковая дама</book-title><lang>ru</lang></title-info></description><body><title><p>Пиковая дама</p></title><epigraph><p>Пиковая дама означает тайную недоброжелательность.</p><text-author>Новейшая гадательная книга</text-author></epigraph><section><title><p>I</p></title><p>Однажды играли в карты у конногвардейца Нарумова. Долгая зимняя ночь прошла незаметно; сели ужинать в пятом часу утра. Те, которые остались в выигрыше, ели с большим аппетитом; прочие, в рассеянности, сидели перед пустыми своими приборами.</p><p>— Что ты сделал, <emphasis>Сурин</emphasis>? — спросил хозяин.</p><p>— Проиграл, по обыкновению. Надобно признаться, что я несчастлив: играю мирандолем, никогда не горячусь, ничем меня с толку не собьёшь, а всё проигрываюсь!</p><empty-line/><p>— А Германн-то каков! — сказал один из гостей, указывая на молодого инженера.</p></section><section><title><p>II</p></title><p>Старая графиня *** сидела в своей уборной перед зеркалом. Три девушки окружали её.</p></section></body></FictionBook>";
+
+/// `s` in Windows-1251 (Russian letters, `—`, `«`, `»`, `ё`; ASCII as is).
+fn cp1251(s: &str) -> Vec<u8> {
+    s.chars()
+        .map(|c| match c {
+            'А'..='я' => u8::try_from(u32::from(c) - 0x410 + 0xC0).unwrap_or(b'?'),
+            'Ё' => 0xA8,
+            'ё' => 0xB8,
+            '—' => 0x97,
+            '«' => 0xAB,
+            '»' => 0xBB,
+            c if c.is_ascii() => c as u8,
+            _ => b'?',
+        })
+        .collect()
+}
+
 fn build() -> Vec<u8> {
     let img = mkfs_fat16(SECTORS);
     let mut cache: Vec<CacheSlot> = vec![CacheSlot::EMPTY; 32];
@@ -224,6 +256,11 @@ fn build() -> Vec<u8> {
     write(&mut vol, "/Books/Война и мир.txt", BOOK_RU.repeat(6).as_bytes());
     write(&mut vol, "/Books/枕草子.txt", BOOK_JA.repeat(6).as_bytes());
     write(&mut vol, "/Books/Lyrics.lrc", b"[00:01.00]la la la\n");
+    write(&mut vol, "/Books/Alice in Wonderland.md", ALICE.repeat(2).as_bytes());
+    let mut moby = vec![0xFF, 0xFE];
+    moby.extend(MOBY.repeat(3).encode_utf16().flat_map(u16::to_le_bytes));
+    write(&mut vol, "/Books/Moby Dick.txt", &moby);
+    write(&mut vol, "/Books/Пиковая дама.fb2", &cp1251(QUEEN));
     write(&mut vol, "/Pictures/Iceland.jpg", &[0xFF, 0xD8, 0xFF, 0xE0]);
     #[cfg(not(target_arch = "wasm32"))]
     {

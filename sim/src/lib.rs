@@ -28,6 +28,7 @@
 
 pub mod apps;
 pub mod auth;
+pub mod books;
 pub mod bt;
 pub mod card;
 pub mod demo;

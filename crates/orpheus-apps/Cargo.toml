@@ -19,6 +19,7 @@ orpheus-usb = { path = "../orpheus-usb" }
 orpheus-update = { path = "../orpheus-update" }
 orpheus-games = { path = "../orpheus-games", optional = true }
 orpheus-fs = { path = "../orpheus-fs", optional = true }
+orpheus-books = { path = "../orpheus-books", optional = true }
 
 [dev-dependencies]
 orpheus-fs = { path = "../orpheus-fs", features = ["std"] }
@@ -34,6 +35,12 @@ games = ["dep:orpheus-games", "dep:orpheus-fs", "orpheus-ui/menu-key"]
 # build and the UI fuzzer; off in the firmware until there is static RAM
 # and stack for it (docs/STATUS.md, GAME-4/5).
 salvo = ["games", "orpheus-games/salvo"]
+# M15 Books (BOOK-1, 05 §7.15): the Books app (library, reader, contents,
+# bookmarks, go to), its settings, strings and `BooksService` over the
+# `orpheus-books` core. On in the simulator, the browser build and the UI
+# fuzzer; off in the firmware until there is static RAM and stack for it
+# (docs/STATUS.md, BOOK-1).
+books = ["dep:orpheus-books", "orpheus-ui/book-fonts"]
 
 [lints]
 workspace = true

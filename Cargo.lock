@@ -903,6 +903,7 @@ dependencies = [
 name = "orpheus-apps"
 version = "0.1.0"
 dependencies = [
+ "orpheus-books",
  "orpheus-fm",
  "orpheus-fs",
  "orpheus-games",
@@ -921,6 +922,13 @@ name = "orpheus-audio"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+]
+
+[[package]]
+name = "orpheus-books"
+version = "0.1.0"
+dependencies = [
+ "orpheus-fs",
 ]
 
 [[package]]
@@ -1170,6 +1178,7 @@ dependencies = [
  "minifb",
  "orpheus-apps",
  "orpheus-audio",
+ "orpheus-books",
  "orpheus-codec-flac",
  "orpheus-codec-wav",
  "orpheus-fm",

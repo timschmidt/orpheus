@@ -563,17 +563,21 @@ pub static GROUPS: [Group; 12] = [
     Group { label: Str::GSystem, items: SYSTEM },
 ];
 
-/// Every item, group by group, then the apps' own.
-#[cfg(not(feature = "games"))]
+/// Every item, group by group, then the apps' own, the games' (M14) and
+/// the reading settings (M15 Books) with their features.
 pub fn all() -> impl Iterator<Item = &'static Setting> {
-    GROUPS.iter().flat_map(|g| g.items.iter()).chain(APP_ITEMS.iter())
+    let it = GROUPS.iter().flat_map(|g| g.items.iter()).chain(APP_ITEMS.iter());
+    #[cfg(feature = "games")]
+    let it = it.chain(crate::games::SETTINGS.iter());
+    #[cfg(feature = "books")]
+    let it = it.chain(BOOK_ITEMS.iter());
+    it
 }
 
-/// Every item, group by group, then the apps' own and the games' (M14).
-#[cfg(feature = "games")]
-pub fn all() -> impl Iterator<Item = &'static Setting> {
-    GROUPS.iter().flat_map(|g| g.items.iter()).chain(APP_ITEMS.iter()).chain(crate::games::SETTINGS.iter())
-}
+/// The reading settings (M15 Books, after the games') with the `books`
+/// feature.
+#[cfg(feature = "books")]
+const BOOK_ITEMS: &[Setting] = &crate::books::SETTINGS;
 
 /// The item lists in [`all`]'s order, as plain slices: the lookups below
 /// walk them with loops (no iterator adapters).
@@ -603,7 +607,12 @@ pub fn def(id: SettingId) -> Option<&'static Setting> {
             }
         }
     }
-    for list in [apps, games] {
+    for list in [
+        apps,
+        games,
+        #[cfg(feature = "books")]
+        BOOK_ITEMS,
+    ] {
         for s in list {
             if s.id == id {
                 return Some(s);
@@ -613,11 +622,17 @@ pub fn def(id: SettingId) -> Option<&'static Setting> {
     None
 }
 
-/// Number of stored items (the games' settings with the `games` feature).
-#[cfg(not(feature = "games"))]
-pub const STORED: usize = 98;
+/// Number of stored items (the games' settings with the `games` feature,
+/// the reading settings' word with `books`).
+pub const STORED: usize = 98 + GAMES_STORED + BOOKS_STORED;
 #[cfg(feature = "games")]
-pub const STORED: usize = 98 + crate::games::STORED_SETTINGS;
+const GAMES_STORED: usize = crate::games::STORED_SETTINGS;
+#[cfg(not(feature = "games"))]
+const GAMES_STORED: usize = 0;
+#[cfg(feature = "books")]
+const BOOKS_STORED: usize = crate::books::STORED_SETTINGS;
+#[cfg(not(feature = "books"))]
+const BOOKS_STORED: usize = 0;
 
 /// Position among stored items (cache index).
 #[must_use]
@@ -636,7 +651,12 @@ pub fn index(id: SettingId) -> Option<usize> {
             }
         }
     }
-    for list in [apps, games] {
+    for list in [
+        apps,
+        games,
+        #[cfg(feature = "books")]
+        BOOK_ITEMS,
+    ] {
         for s in list {
             if s.stored() {
                 if s.id == id {
@@ -915,7 +935,9 @@ mod tests {
     #[test]
     fn packed_settings() {
         let mut c = SettingsCache::new();
-        let packed: Vec<&Setting> = all().filter(|s| s.pack.is_some()).collect();
+        // The games' (the reading settings of Books are packed too: their
+        // own test, `books::tests::settings_table`).
+        let packed: Vec<&Setting> = all().filter(|s| s.pack.is_some() && s.id.0 >> 8 == 0x0E).collect();
         assert_eq!(packed.len(), 22);
         let mut used = std::collections::BTreeMap::<u16, u16>::new();
         for s in &packed {

@@ -1195,6 +1195,104 @@ firmware yet: feature `salvo`, see below).**
   default from the screen reader's) and voice settings, and resume where speech
   stopped.
 
+**As built (BOOK-1, 2026-11-25; host and simulator; not in the firmware
+yet: feature `orpheus-apps/books`, see docs/STATUS.md).**
+* Core crate `orpheus-books` (`no_std`, no alloc, no `core::fmt`,
+  host-tested). A book is converted once, in pieces, to a **normalised
+  stream** (UTF-8 text; `0x10 + kind` starts a paragraph of kind body, H1–H3,
+  subtitle, quote, verse, preformatted, list item, author line or break;
+  `0x08 | flags` sets bold/italic; single spaces, no empty paragraphs) in
+  `/.orpheus/cache/books/<id>.txt` with a 32-byte header (source size and
+  time, encoding, length, contents count; made again when the book
+  changes). Offsets in that stream are the book's positions: they do not
+  change with the layout.
+* **Encodings** (`enc`): byte-order marks (UTF-8, UTF-16 LE/BE), UTF-16
+  without a mark (zero/0x04 bytes on one side), the XML declaration (FB2),
+  valid UTF-8, else Windows-1251 or KOI8-R when most letters are high
+  bytes (lower case decides: 0xE0–FF in 1251, 0xC0–DF in KOI8-R), else
+  Latin-1 decoded as Windows-1252. Streaming decoder, undecodable input
+  U+FFFD byte by byte, never stalls.
+* **Formats**: plain text: hard-wrapped (lines joined, a blank or indented
+  line starts a paragraph) or one paragraph per line (a line over 120
+  characters in the head); a one-line paragraph naming a part or chapter
+  (Part/Book/Volume/Часть/Книга/Том → H1, Chapter/Prologue/Epilogue/
+  Глава/Пролог/… or a Roman or decimal numeral alone → H2) becomes a
+  heading, "* * *" a break; `Title:`/`Author:` lines (Gutenberg) for the
+  library. Markdown, a reduced set: ATX headings, paragraphs, block quotes,
+  bullet/numbered items (flattened), fences (lines preformatted), thematic
+  breaks, `*`/`_`/`**`/`__`/`***` emphasis with flanking rules, inline code
+  plain, links and images as their text, escapes, HTML tags dropped, YAML
+  front matter (title, author); not setext headings, tables, reference
+  definitions. FB2: an XML tokenizer (comments, CDATA, PIs, declarations,
+  named and numeric entities, namespace prefixes, unclosed and stray tags
+  tolerated, 24-deep element stack); sections nest into H1–H3, a
+  `<title>` of several paragraphs is one contents entry ("Part One. 1805"),
+  subtitle/epigraph/cite/annotation/poem/text-author/empty-line/emphasis/
+  strong map to the stream; `<body name="notes">` keeps its title, its
+  footnote titles become subtitles (not contents); `<binary>` skipped
+  without being kept. EPUB is BOOK-2.
+* **Layout** (`layout`): `Liner` breaks at spaces, before/after CJK
+  (kinsoku: no line starts with closing punctuation), after hyphens and
+  dashes, inside a word only when it alone is too wide (no hyphenation);
+  `Pager` stacks lines by pixel height (headings get half a line before,
+  a break half a line, paragraph gaps not at a page's top; a page ends
+  early rather than span over 1,536 bytes, a line over 256). A line's
+  breaks depend only on its start and the stream state there (`Mark`:
+  offset, kind, style, first line; one byte in files), so the page index
+  pass and the reader drawing a page from its mark find the same lines
+  (tests: no word lost or duplicated across all pages, any piece sizes,
+  the stable index, fuzzed). Page index `/.orpheus/cache/books/<id>.idx`:
+  8 bytes per page, a header with the layout key (geometry, spacing,
+  indent and font) and done flag; laid out again when the key changes.
+* **Card work** (`shelf::Shelf::step`): one bounded piece per call — the
+  library search (16 directory entries, or one 512-byte head read of a
+  candidate), one 512-byte read and up to two writes of conversion, one
+  512-byte piece of layout (64-byte sub-pieces) or 512 bytes of index
+  written, a 2 KiB text-window read, one 64-entry index chunk of a binary
+  search, contents rows; folders made one per step, the sector cache
+  written back one sector per step (`Volume::flush_step`). Measured on
+  FAT32/exFAT images: at most 16 sectors read and 12 written per step (12
+  only when a folder is made: its cluster is zeroed). Positions are
+  saved when the reader closes, another book opens, or every 16 position
+  changes; the state file is rewritten in place (`Volume::rewrite`).
+* **Library**: `/Books` and its folders by default, or the whole card
+  (Library › Menu › Find books in; hidden entries and `/.orpheus` never),
+  8 levels deep, at most 200 books (`.txt .text .md .markdown .fb2`),
+  title and author from the file (else the file name), sorted by a 4-letter
+  title key (Latin and Cyrillic folded), progress per book (per mille, or
+  New); `/.orpheus/books/library.bin` (header, order table, 384-byte
+  records: path ≤ 255 bytes, title, author, format, size, time, progress).
+* **Reader** (screen `Reader`, 128 × 114): Next/Prev pages (Prev from the
+  index, so it also realigns a view moved by lines or a jump), hold
+  Next/Prev the next/previous heading, Down one line, Up one line (the
+  index page before laid out to the line before the top), OK the reader
+  menu (page "n / total · %", Contents, Bookmarks, Add bookmark, Go to,
+  Font size, Margins, Spacing, Justify, Palette, Auto page turn, Read aloud
+  greyed for BOOK-3), Menu a quick menu (bookmark, contents, bookmarks, go
+  to), Back closes (position kept). A position bar at the right edge.
+  Contents (`BookContents`: titles indented by level, per cent),
+  Bookmarks (`BookBookmarks`: first words, per cent; Menu deletes; 12 per
+  book), Go to (`BookGoTo`: per cent, ◀▶ 10 %, ▲▼ 1 %). Pages show as soon
+  as the text is converted; jumps by per cent or Prev wait until the
+  layout has passed them.
+* **Fonts and palettes**: Small = the UI font (real bold), Medium and Large
+  = DejaVu Sans Condensed 16 and 20 px reading faces (`orpheus-ui` feature
+  `book-fonts`, 35 KB rodata; drawn bold), Extra large = the UI font at 2×;
+  italic is drawn slanted (`Gfx::char_styled`), characters missing from a
+  face come from the UI font, then the fallback font (CJK 16 px wide).
+  Margins 2/5/9 px, spacing tight/normal/relaxed (14/16/19 px at Small),
+  justification (breaks unchanged), palette Theme/Light/Dark/Sepia, auto
+  page turn off/10/20/30/60 s. Settings 0x0F01–0x0F07 packed in one stored
+  word 0x0F80; manifest entries and differential tests (VER-13).
+* Home: thirteen apps (Games and Books) make a fourth row that scrolls into
+  view; Books is off Home unless the system offers it (the simulator:
+  `set:books=on`; `App::Books.on_player()` is false).
+* Not done in BOOK-1: the firmware integration (STATUS: RAM, stack and
+  what it needs), EPUB (BOOK-2), read aloud (BOOK-3), hyphenation (Extra
+  large breaks long words), setext headings and tables, the empty-library
+  golden (the simulator's card always has /Books), translations of the
+  Books strings.
+
 ### 7.16 Sequencer (drum machine and synth; M17; owner's requirement 2026-11-25)
 
 A step sequencer on `orpheus-synth` (04 §9): drum and synth tracks in

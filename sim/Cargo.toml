@@ -13,7 +13,8 @@ window = ["dep:minifb"]
 
 [dependencies]
 orpheus-ui = { path = "../crates/orpheus-ui" }
-orpheus-apps = { path = "../crates/orpheus-apps", features = ["games", "salvo"] }
+orpheus-apps = { path = "../crates/orpheus-apps", features = ["games", "salvo", "books"] }
+orpheus-books = { path = "../crates/orpheus-books" }
 orpheus-games = { path = "../crates/orpheus-games", features = ["salvo"] }
 orpheus-power = { path = "../crates/orpheus-power" }
 orpheus-fm = { path = "../crates/orpheus-fm", features = ["fake"] }

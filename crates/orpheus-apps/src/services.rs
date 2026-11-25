@@ -1205,6 +1205,15 @@ pub trait GamesPart {}
 #[cfg(not(feature = "games"))]
 impl<T: ?Sized> GamesPart for T {}
 
+/// The Books app's service (M15) with the `books` feature; without it, a
+/// part every type has.
+#[cfg(feature = "books")]
+pub use crate::books::BooksService as BooksPart;
+#[cfg(not(feature = "books"))]
+pub trait BooksPart {}
+#[cfg(not(feature = "books"))]
+impl<T: ?Sized> BooksPart for T {}
+
 /// Everything the apps need. Implemented automatically for any type with
 /// all the parts; the toolkit's `System` (status bar, volume, mini-player)
 /// can be implemented with [`status`], [`mini_player`] and
@@ -1232,6 +1241,7 @@ pub trait Services:
     + UsbDriveService
     + UpdateService
     + GamesPart
+    + BooksPart
 {
 }
 
@@ -1258,6 +1268,7 @@ impl<T> Services for T where
         + UsbDriveService
         + UpdateService
         + GamesPart
+        + BooksPart
 {
 }
 
@@ -1375,6 +1386,8 @@ pub mod other {
     /// Games: a card operation was answered (the hub changed: a save file
     /// was read, the scores arrived).
     pub const GAMES: u16 = 9;
+    /// Books: card work changed the library or the open book.
+    pub const BOOKS: u16 = 10;
 }
 
 /// Browser order (Files menu › Sort).

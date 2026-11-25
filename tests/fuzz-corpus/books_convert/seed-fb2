@@ -1,0 +1,7 @@
+?<?xml version="1.0" encoding="UTF-8"?>
+<FictionBook><description><title-info><author><first-name>Lewis</first-name><last-name>Carroll</last-name></author><book-title>Alice</book-title></title-info></description>
+<body><title><p>Alice's Adventures</p></title><epigraph><p>All in the golden afternoon</p><text-author>L. C.</text-author></epigraph>
+<section><title><p>Chapter I</p><p>Down the Rabbit-Hole</p></title><p>Alice was beginning to get <emphasis>very</emphasis> tired of sitting by her sister on the bank, and of having <strong>nothing</strong> to do&#8230;</p><empty-line/><poem><stanza><v>How doth the little crocodile</v><v>Improve his shining tail</v></stanza></poem></section>
+<section><title><p>Chapter II</p></title><p>&laquo;Curiouser and curiouser!&raquo; cried Alice.<a l:href="#n1" type="note">[1]</a></p><p><![CDATA[a <raw> bit]]></p></section></body>
+<body name="notes"><title><p>Notes</p></title><section id="n1"><title><p>1</p></title><p>A note.</p></section></body>
+<binary id="x" content-type="image/png">iVBORw0KGgo=</binary></FictionBook>

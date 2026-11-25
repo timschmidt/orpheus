@@ -1,6 +1,8 @@
 //! Home (05 §6.2): a 4 × 3 grid of 32 × 32 cells with 24 × 24 icons; the
 //! focused cell is an accent rounded square. The strip names the focused
 //! app, or shows the mini-player (the name then appears as a 1 s toast).
+//! More than twelve apps (Books, M15, with Games) make a fourth row: the
+//! grid scrolls by rows to keep the focused cell in view.
 
 use orpheus_ui::event::{Event, Key, KeyPhase, UiEvent};
 use orpheus_ui::geom::Rect;
@@ -16,6 +18,7 @@ use crate::settings::id;
 use crate::strings::{Lang, Str};
 
 const COLS: usize = 4;
+/// Cells on the screen (three rows).
 const CELLS: usize = 12;
 const CELL: i16 = 32;
 
@@ -25,6 +28,8 @@ pub struct HomeScreen {
     n: u8,
     focus: u8,
     drawn_focus: Option<u8>,
+    /// The first row drawn (more than twelve apps).
+    drawn_row: u8,
     lang: Lang,
 }
 
@@ -50,19 +55,46 @@ impl HomeScreen {
         self.apps.get(usize::from(pos)).and_then(|&i| App::from_index(i))
     }
 
+    /// Cells of the whole grid: twelve, or whole rows for more apps (only
+    /// Books makes more than twelve: without it, the constant, so the
+    /// firmware's Home code is what it was).
+    fn cells(&self) -> usize {
+        #[cfg(feature = "books")]
+        {
+            usize::from(self.n).div_ceil(COLS).max(3) * COLS
+        }
+        #[cfg(not(feature = "books"))]
+        {
+            CELLS
+        }
+    }
+
+    /// The first row shown: the focused cell in view.
+    fn top_row(&self) -> u8 {
+        #[cfg(feature = "books")]
+        {
+            (self.focus / COLS as u8).saturating_sub(2)
+        }
+        #[cfg(not(feature = "books"))]
+        {
+            0
+        }
+    }
+
     fn step(&self, k: Key) -> u8 {
         let n = usize::from(self.n.max(1));
         let p = usize::from(self.focus);
+        let cells = self.cells();
         let next = match k {
             Key::Next => (p + 1) % n,
             Key::Prev => (p + n - 1) % n,
             Key::Down | Key::Up => {
                 // Move by a row, wrapping within the column; empty cells
                 // are skipped.
-                let d = if k == Key::Down { COLS } else { CELLS - COLS };
+                let d = if k == Key::Down { COLS } else { cells - COLS };
                 let mut c = p;
-                for _ in 0..3 {
-                    c = (c + d) % CELLS;
+                for _ in 0..cells / COLS {
+                    c = (c + d) % cells;
                     if c < n {
                         break;
                     }
@@ -74,13 +106,13 @@ impl HomeScreen {
         u8::try_from(next).unwrap_or(0)
     }
 
-    fn cell(pos: u8) -> Rect {
-        let p = i16::from(pos);
+    fn cell(&self, pos: u8) -> Rect {
+        let p = i16::from(pos) - i16::from(self.top_row()) * COLS as i16;
         Rect::new((p % 4) * CELL, (p / 4) * CELL, CELL, CELL)
     }
 
     fn draw_cell(&self, g: &mut Gfx<'_>, pos: u8) {
-        let r = Self::cell(pos);
+        let r = self.cell(pos);
         g.fill_role(r, Role::Bg);
         let Some(app) = self.app(pos) else { return };
         let focused = pos == self.focus;
@@ -141,6 +173,14 @@ impl<S: Services + ?Sized> Screen<S> for HomeScreen {
                 if app == App::Games {
                     return Nav::Push(super::GAMES, Arg(0));
                 }
+                #[cfg(feature = "books")]
+                if app == App::Books {
+                    return match cx.svc.card() {
+                        CardState::Ready => Nav::Push(super::BOOKS, Arg(0)),
+                        CardState::Unreadable => Nav::Push(NOTICE, Arg(Notice::CardUnreadable.arg())),
+                        _ => Nav::Push(NOTICE, Arg(Notice::NoCard.arg())),
+                    };
+                }
                 if app == App::Recorder && cx.svc.card() == CardState::Ready {
                     return Nav::Push(super::RECORDER, Arg(0));
                 }
@@ -178,20 +218,23 @@ impl<S: Services + ?Sized> Screen<S> for HomeScreen {
     }
 
     fn draw(&mut self, _cx: &Cx<'_, S>, g: &mut Gfx<'_>, dirty: Dirty) {
+        let row = self.top_row();
         match (dirty, self.drawn_focus) {
             (Dirty::Changed, Some(old)) if old == self.focus => {}
-            (Dirty::Changed, Some(old)) => {
+            (Dirty::Changed, Some(old)) if row == self.drawn_row => {
                 self.draw_cell(g, old);
                 self.draw_cell(g, self.focus);
             }
             _ => {
                 g.clear(Role::Bg);
-                for pos in 0..u8::try_from(CELLS).unwrap_or(12) {
+                let first = row * COLS as u8;
+                for pos in first..first + u8::try_from(CELLS).unwrap_or(12) {
                     self.draw_cell(g, pos);
                 }
             }
         }
         self.drawn_focus = Some(self.focus);
+        self.drawn_row = row;
     }
 
     fn menu(&self, _cx: &Cx<'_, S>, out: &mut MenuBuilder) {
@@ -241,5 +284,25 @@ mod tests {
         let mut small = home(5);
         small.focus = 2;
         assert_eq!(small.step(Key::Down), 2, "nothing below or above: stay");
+    }
+
+    /// Thirteen apps (Books with Games): a fourth row, the grid scrolls to
+    /// keep the focus in view; twelve or fewer never scroll.
+    #[cfg(all(feature = "games", feature = "books"))]
+    #[test]
+    fn a_fourth_row_scrolls() {
+        let mut h = home(13);
+        h.focus = 11;
+        assert_eq!(h.top_row(), 0);
+        assert_eq!(h.step(Key::Next), 12);
+        h.focus = 12;
+        assert_eq!(h.top_row(), 1);
+        assert_eq!(h.cell(12), Rect::new(0, 64, CELL, CELL));
+        assert_eq!(h.step(Key::Down), 0, "wraps to the top of the column");
+        assert_eq!(h.step(Key::Up), 8);
+        h.focus = 9;
+        assert_eq!(h.step(Key::Down), 1, "cell 13 is empty: wraps");
+        let full = home(12);
+        assert_eq!((full.cells(), full.top_row()), (12, 0));
     }
 }
