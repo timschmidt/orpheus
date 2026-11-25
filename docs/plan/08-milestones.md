@@ -43,7 +43,7 @@ Two tracks run side by side from the start:
 | M9 | USB extras and authenticator | HID keyboard, authenticator, disk/CD emulation, (USB audio) | All requested extras that the hardware allows |
 | M10 | Polish and release | Battery-life tuning, self-update, full-flash layout option, languages, manual, release | 1.0 |
 | M12 | **Documentation, website and branding** | Concise, current documentation for users and developers; open-source project files; GitHub Pages site built from the repository with Orpheus running in the browser (WASM) and a browser installer (WebUSB where supported); shared Orpheus/lyre branding across firmware, docs and site (09) | Runs alongside M10–M11; release depends on it |
-| M14 | **Games** | Games app with Blocks, Solitaire (Klondike), 4096 and an artillery duel (generated terrain, wind, gravity, drag; against the computer or passing the player), each with settings, saved games and scores | After M10; before M13 and M11 |
+| M14 | **Games** | Games app with Blocks, Solitaire (Klondike), 4096, a brick breaker and an artillery duel (generated terrain, wind, gravity, drag; against the computer or passing the player), each with settings, saved games and scores | After M10; before M13 and M11 |
 | M15 | **Speech, accessibility and books** | Tiny text-to-speech engine, screen reader and vision/motor settings, book reader (TXT, Markdown, FB2, EPUB) with read-aloud | After M10; before M13 and M11 |
 | M16 | **USB sound card** | The player as a USB audio interface: host audio out to the headphone jack and Bluetooth, the microphone in to the host; UAC2 (UAC1 option), asynchronous with feedback, volume and mute both ways, level meters | After M9/M10; before M13 and M11; supersedes USB-7 |
 | M17 | **Synth engine, MIDI and Sequencer** | Shared synthesis crate (oscillators, FM, samples, drum models, filters, effects), MIDI file playback with an own General MIDI sound set, and a step-sequencer drum machine / synth app with songs and WAV/MIDI export | After M10; before M13 and M11 |
@@ -232,6 +232,7 @@ verifies them.
 | GAME-3 | 4096: boards 4–6, goals, spawn odds, undo, animations | 05 §7.13 | H+D | S | Play a game |
 | GAME-4 | Artillery world: terrain generator (styles, roughness, seed), destructible terrain and falling dirt, physics (gravity presets, wind and gusts, quadratic drag, fixed step, deterministic on host and player), weapons, camera and overview, rendering | 05 §7.13 | H+D | L | — |
 | GAME-5 | Artillery play: turns for 2–4 players, pass-the-player screens, computer players by simulated shots with difficulty, shop, rounds and scores, all settings | 05 §7.13 | H+D | M | Play against the computer and hot-seat |
+| GAME-6 | Brick breaker (owner's request 2026-11-25; working name "Bricks", an original game in the genre): paddle and ball with angle by contact point, multi-hit and unbreakable bricks, hand-made and generated levels, own power-ups, lives and scores, swept collision (no tunnelling), settings, saves; invariants, fuzzing, goldens, VER-13 entries | 05 §7.13 | H+D | M | Play a few levels |
 
 ### M15 — Speech, accessibility and books (owner's requirement 2026-11-25)
 

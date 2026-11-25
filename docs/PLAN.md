@@ -43,7 +43,7 @@ identity throughout.
 | Stopwatch, pedometer, recorder, pictures, radio, Bluetooth, music, settings, folder browser | 05 §7 | Each specified with acceptance tests |
 | Boot a computer from an ISO/IMG on the card | 06 §3, 05 §7.10 | Disk and CD-ROM modes; automated boot test with QEMU |
 | 2FA token | 06 §5, 05 §7.9 | TOTP/HOTP, typed over USB; honest limit on at-rest secrecy |
-| Games: blocks, solitaire, 4096, and an artillery duel against the computer or passing the player, with generated terrain, realistic wind and gravity, and useful settings for each (owner, 2026-11-25) | 05 §7.13, 08 M14 | Original implementations of the genres (own names, art, sounds) |
+| Games: blocks, solitaire, 4096, a brick breaker ("breakout"-style; owner 2026-11-25), and an artillery duel against the computer or passing the player, with generated terrain, realistic wind and gravity, and useful settings for each (owner, 2026-11-25) | 05 §7.13, 08 M14 | Original implementations of the genres (own names, art, sounds) |
 | Tiny text-to-speech engine, accessible UI and a book reader with read-aloud (owner, 2026-11-25) | 04 §8, 05 §7.14–7.15, 08 M15 | English only (D-14) |
 | USB sound card: the player as a USB audio interface, microphone to the host, host audio to the headphone (TRS) and Bluetooth outputs (owner, 2026-11-25) | 06 §2.7, 08 M16 | UAC2 with feedback; isochronous endpoints still to be proven (U-USB-12) |
 | Synth engine, MIDI playback, and a step-sequencer drum machine / synth app (owner, 2026-11-25) | 04 §9, 05 §7.16, 08 M17 | Own sound set and patches; no GPL synth code |
@@ -153,7 +153,7 @@ Written up in `docs/hw/` (four reverse-engineering reports),
     become budgets. Comes after the features it measures and before M11.
 
 13. **Games (M14, owner's requirement 2026-11-25).** A Games app with
-    Blocks, Solitaire (Klondike), 4096 and an artillery duel (generated
+    Blocks, Solitaire (Klondike), 4096, a brick breaker and an artillery duel (generated
     terrain, wind, gravity and air drag; against the computer or passing the
     player), each with settings, saved games and scores; the logic is a
     host-tested crate that also runs in the simulator and on the website.

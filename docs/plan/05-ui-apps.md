@@ -781,7 +781,7 @@ tests for each profile's key sequences; **[HIL]** as 06 §4.3.3.
 
 ### 7.13 Games (M14; owner's requirement 2026-11-25)
 
-One **Games** app on Home lists four games. They are original
+One **Games** app on Home lists five games. They are original
 implementations of well-known genres: own names, artwork, sounds and rule
 texts, no names, art, levels or look taken from any existing product.
 
@@ -1010,6 +1010,34 @@ built, not yet run on the player).**
   2.9 µs; Blocks falling with a key every 200 ms 7.1 µs and 28.6 dirty
   rows; Solitaire with cursor keys 13.9 µs and 15.2 rows; Solitaire's
   timer alone 3.1 µs and 0.3 rows (`sim/tests/games.rs::game_loop_cost`).
+
+**Brick breaker (GAME-6; owner's request 2026-11-25; working name
+"Bricks")** — a paddle-and-ball brick-breaking game in the genre the
+owner calls "breakout": an original implementation with its own name,
+levels, look and power-ups (no name, layouts or art from Atari's or any
+other product).
+* **Play**: a paddle along the bottom (Prev/Next move, hold accelerates;
+  Up/Down as an alternative), OK launches the ball; the bounce angle
+  follows where the ball meets the paddle; bricks in rows at the top, some
+  needing several hits, some unbreakable; lives, score, levels; the ball
+  speeds up gently over a level.
+* **Levels**: an original hand-made set plus generated levels from the
+  seed (symmetric patterns, density and hardness rising with the level).
+* **Power-ups** (own set, falling from some bricks): wider paddle,
+  slower ball, multi-ball (up to 3), sticky paddle, extra life; off as a
+  setting.
+* **Rendering**: playfield 128 × 116 under a status line, 30–60 fps with
+  partial redraw of the ball, paddle and changed bricks only.
+* **Physics**: fixed-step, swept collision (the ball never passes through
+  a brick or the paddle at any speed: sub-steps sized to the speed), f32
+  without FMA or fixed point so replays match on host and player.
+* **Settings**: start level, ball speed, paddle size, lives, power-ups
+  on/off, level set (hand-made / generated / mixed), paddle sensitivity.
+* **Invariants and tests**: the ball is never inside a brick, the paddle
+  or a wall after a step; brick counts only fall; score follows the
+  bricks broken; deterministic replays; key-sequence fuzzing; golden
+  images; settings in the VER-13 manifest with differential tests; saved
+  games and scores like the other games.
 
 ### 7.14 Accessibility and speech (M15; owner's requirement 2026-11-25)
 

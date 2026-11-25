@@ -67,6 +67,22 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-25 — games on the player (hands-on); a 100 ms games chore; plan: brick breaker (lead)
+
+* Hands-on on the player (games build): Games on Home; Blocks plays
+  (moves, rotation, hold, hard drop; score counts), Back pauses, Quit saves
+  `/.orpheus/games/blocks.sav` and the list shows "Continue"; **after a
+  reboot the saved game resumes**; 4096 slides and merges; Solitaire deals
+  and auto-moves. Without music: 0 underruns.
+* **With music playing** (a real MP3) while switching games: 8 underruns,
+  `chore: starved serve:games 100/26 ms u100` → `pcm: … ub=serve:games:100ms`.
+  A games card operation (a save written before another game is read) takes
+  100 ms in one piece, more than any chore budget (≈ 42 ms), so it is
+  forced after 2 s. Open: split the games file operations into budgeted
+  pieces (open / write in sectors / close), or defer saves while playing.
+* Plan (owner's request): GAME-6, a brick breaker ("breakout"-style; an
+  original game, working name "Bricks") added to M14 (05 §7.13, 08, PLAN).
+
 ### 2026-11-25 — on-device suite on the games build: 16/16 (lead)
 
 * Build `40953ef7` (Games on Home, Solitaire, Recordings fix): 16 journeys
