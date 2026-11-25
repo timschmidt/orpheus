@@ -1,0 +1,10 @@
+# soak scenario=mixed seed=1 oracle=underrun: 1 underruns outside seeks (serve=1) on `Jupiter & Okwess： NPR ` q=1/256; over the 11.9 s since the last sample
+# 6 actions before the finding
+# replay: cargo xtask dev soak --replay <this file> [--sim]
+# minimised to 6 actions (8 replays)
+volume 2
+listen 161
+browse files 37 1267047402
+seek-start
+volume 1
+browse pictures 23 1669336479

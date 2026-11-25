@@ -65,6 +65,22 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-25 — seed-1 soak after the performance work (lead)
+
+* `dev soak mixed --minutes 30 --seed 1` on `942c258c`: ran 21.4 min;
+  **line loads/s mean 1,076 (was 1,700–2,500), CPU idle mean 72 % (was
+  29–51 %), stack free ≥ 9,360 B (was 5,300–6,400), uptime drift +5 ppm**.
+  Stopped on **1 underrun** (`serve`, headroom −93 frames) during
+  `browse pictures` with a 256-track shuffled queue
+  (`tests/regress/soak/mixed-underrun-seed1-6.soak`); the `pcm:` lines show
+  chores of 25–55 ms (was 300–465 ms).
+* Cause: `chore_due` runs chores when the headroom is ≥ 1.5 halves
+  (48 ms) **or after 300 ms of waiting at any headroom**; under UI load the
+  headroom seldom reaches 1.5 halves, so a 25–55 ms chore is forced in at
+  low headroom. Open: cap every chore piece at ≤ 8 ms of card/CPU work
+  (the listing job already has `PIECE_US`; the queue title and request
+  serving do not), or a third DAC half (+6 KB RAM).
+
 ### 2026-11-25 — Up next titles cheap; Pictures-while-playing replay passes (lead)
 
 * Merged `cb99dec0` (`seek_dir` jumps inside a cluster: 3,507 → 7 steps
