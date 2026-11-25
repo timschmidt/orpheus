@@ -22,7 +22,10 @@ in `docs/PLAN.md`; start every session there and in `docs/STATUS.md`.
 1. Never write NOR sector 0 or the vendor data at `0x7E0000` and above. The
    player runs the full layout since 2026-11-24 (decision D-2): Orpheus owns
    `0x001000–0x7DFFFF`, written only through `xtask dev stage` /
-   `install-stage2` / `install-full`. Only `xtask dev install-boot
+   `install-stage2` / `install-full` and the firmware-update path (UPD-1:
+   `xtask dev update`, the on-player Update screen, the web installer's
+   Update; inactive slot plus the old slot's magic word only, approved by
+   the owner 2026-11-24). Only `xtask dev install-boot
    --i-have-a-backup` and `restore vendor --i-have-a-backup` may touch
    sector 0.
 2. Before the first NOR write of a session, `xtask dev backup-verify`. If the

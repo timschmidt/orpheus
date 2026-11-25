@@ -2393,9 +2393,12 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   and WEB-3 (browser installer over WebUSB, Install page). On the player:
   the build stages and boots; the developer interface carries the WebUSB
   descriptor (landing page `…/orpheus/install.html`) and an MS OS 2.0
-  descriptor; `dev slots` reads A valid / B empty. **The update path
-  (`dev update`, on-player Update) is a new NOR writer not listed in
-  CLAUDE.md rule 1 — not run until the owner approves.** Stage 2 does not
+  descriptor; `dev slots` reads A valid / B empty. **The update path was approved by the owner
+  and added to CLAUDE.md rule 1.** On the player: `dev update
+  orpheus-0.1.0+cf5f4240.ofw` wrote and verified 1,085,440 B into slot B in
+  31.7 s, the player restarted from slot B and played (0 underruns);
+  `dev slots` showed A superseded / B valid; `dev switch-slot` + reset went
+  back to slot A (both valid). Stage 2 does not
   yet fall back to the other slot when a valid image keeps crashing
   (install-stage2 step; open).
 
