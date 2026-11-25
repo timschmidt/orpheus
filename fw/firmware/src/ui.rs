@@ -102,6 +102,13 @@ impl Ui {
                     n += 1;
                 }
             }
+            // VER-12: a test session keeps every change in RAM (the
+            // reboot that ends the test brings the stored values back).
+            let session = session_on();
+            if session {
+                SESSION_HELD.fetch_add(n as u16, core::sync::atomic::Ordering::Relaxed);
+                n = 0;
+            }
             for (k, v) in &dirty[..n] {
                 let t0 = atj2157_hal::time::now_us();
                 let _ = store.set(*k, v).await;
@@ -110,12 +117,18 @@ impl Ui {
                 SET_LAST.store(u32::from(*k) | us << 16, core::sync::atomic::Ordering::Relaxed);
             }
             // A newly connected Bluetooth device becomes the reconnect target.
-            if let Some(a) = self.fw.bt_to_save.take() {
+            if let Some(a) = self.fw.bt_to_save.take()
+                && !session
+            {
                 let _ = store.set(crate::bt::LAST_KEY, &a.0).await;
             }
             // The radio presets (UI-5a), in their stored form (a static).
             if core::mem::take(&mut self.fw.presets_dirty) {
-                let _ = store.set(orpheus_fm::presets::STORE_KEY, self.fw.presets.bytes()).await;
+                if session {
+                    SESSION_HELD.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                } else {
+                    let _ = store.set(orpheus_fm::presets::STORE_KEY, self.fw.presets.bytes()).await;
+                }
             }
         }
         while let Some(a) = self.fw.actions.pop() {
@@ -368,6 +381,147 @@ fn test_look_on() -> bool {
     TEST_LOOK.load(core::sync::atomic::Ordering::Relaxed)
 }
 
+// ------------------------------------------------- VER-12 soak test hooks
+
+/// `settings test-session on`: setting changes (keys, `settings test-set`,
+/// the radio presets) stay in RAM and are not written to NOR; the reboot
+/// that ends every test brings the stored values back. A RAM flag: no
+/// command switches it off, every reboot does.
+static SESSION: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// Changes kept from NOR during the session.
+static SESSION_HELD: core::sync::atomic::AtomicU16 = core::sync::atomic::AtomicU16::new(0);
+/// `settings test-set ID VALUE` for the UI task: `id << 16 | value`, 0 none.
+static PENDING_SET: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// Settings keys loaded from NOR at boot (0xFFFF: the store did not mount)
+/// and a CRC-32 over them (key, bytes): the soak compares the boot before
+/// and after a run (the store is readable and unchanged).
+static STORE_KEYS: core::sync::atomic::AtomicU16 = core::sync::atomic::AtomicU16::new(0xFFFF);
+static STORE_CRC: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// `ui screen-off`: the screen goes off without locking the keys (as a
+/// backlight timeout would); the next key wakes it.
+static SCREEN_OFF: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+fn session_on() -> bool {
+    SESSION.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// Settings a session may set from the host: Sound, Playback, Display
+/// (not the Home apps), Language, Performance, Files sort and hidden
+/// files, Now Playing's view. Never Bluetooth, power, clock, USB, storage,
+/// alarms or the radio's station (CLAUDE.md rules 4 and 6).
+fn session_settable(id: u16) -> bool {
+    (matches!(id >> 8, 0x01 | 0x02 | 0x03 | 0x0A) && id != 0x030B) || matches!(id, 0x0C07 | 0x0D01..=0x0D03)
+}
+
+fn session_reply() {
+    let keys = STORE_KEYS.load(core::sync::atomic::Ordering::Relaxed);
+    crate::audio::reply(|r| {
+        r.s(if session_on() { b"test-session on held=" } else { b"test-session off held=" })
+            .u(u64::from(SESSION_HELD.load(core::sync::atomic::Ordering::Relaxed)))
+            .s(if keys == 0xFFFF { b" store=none keys=0" } else { b" store=ok keys=" });
+        if keys != 0xFFFF {
+            r.u(u64::from(keys));
+        }
+        r.s(b" crc=").h(STORE_CRC.load(core::sync::atomic::Ordering::Relaxed));
+    });
+}
+
+fn parse_num(w: &[u8]) -> Option<i32> {
+    let (neg, d) = match w.split_first() {
+        Some((b'-', d)) => (true, d),
+        _ => (false, w),
+    };
+    let (radix, d) = match d.strip_prefix(b"0x") {
+        Some(h) => (16, h),
+        None => (10, d),
+    };
+    if d.is_empty() || d.len() > 6 {
+        return None;
+    }
+    let mut v = 0i32;
+    for &c in d {
+        let x = match c {
+            b'0'..=b'9' => c - b'0',
+            b'a'..=b'f' if radix == 16 => c - b'a' + 10,
+            _ => return None,
+        };
+        v = v * radix + i32::from(x);
+    }
+    Some(if neg { -v } else { v })
+}
+
+/// Developer `settings …` (VER-12): `test-session on`, `test-session`
+/// (status), `test-set ID VALUE` (only in a session; the UI task applies
+/// it as the screens do and answers `test-set ID=VALUE ok|refused`).
+pub fn settings_command(rest: &[u8]) -> bool {
+    if rest == b"test-session on" {
+        SESSION.store(true, core::sync::atomic::Ordering::Relaxed);
+        session_reply();
+        return true;
+    }
+    if rest == b"test-session" {
+        session_reply();
+        return true;
+    }
+    let Some(args) = rest.strip_prefix(b"test-set ") else { return false };
+    let mut w = args.split(|&b| b == b' ').filter(|w| !w.is_empty());
+    let (Some(id), Some(v)) = (w.next().and_then(parse_num), w.next().and_then(parse_num)) else {
+        crate::audio::reply(|r| {
+            r.s(b"usage: settings test-set ID VALUE");
+        });
+        return true;
+    };
+    let ok_id = u16::try_from(id).ok().filter(|&i| i != 0 && session_settable(i));
+    match (session_on(), ok_id, i16::try_from(v)) {
+        (false, ..) => crate::audio::reply(|r| {
+            r.s(b"test-set: no test session (settings test-session on)");
+        }),
+        (true, Some(i), Ok(v)) => {
+            crate::audio::reply(|r| {
+                r.s(b"test-set: queued");
+            });
+            PENDING_SET
+                .store(u32::from(i) << 16 | u32::from(v as u16), core::sync::atomic::Ordering::Relaxed);
+        }
+        _ => crate::audio::reply(|r| {
+            r.s(b"test-set: not allowed");
+        }),
+    }
+    true
+}
+
+pub fn request_screen_off() {
+    SCREEN_OFF.store(true, core::sync::atomic::Ordering::Relaxed);
+    crate::audio::reply(|r| {
+        r.s(b"screen-off");
+    });
+}
+
+/// The UI task's side of the hooks (every loop).
+fn soak_hooks(ui: &mut Ui) {
+    use orpheus_apps::services::SettingsService;
+    let p = PENDING_SET.swap(0, core::sync::atomic::Ordering::Relaxed);
+    if p != 0 && session_on() {
+        let sid = orpheus_apps::settings::SettingId((p >> 16) as u16);
+        let want = p as u16 as i16;
+        ui.fw.set_setting(sid, want);
+        ui.settle();
+        let got = ui.fw.settings.get(sid);
+        crate::audio::reply(|r| {
+            r.s(b"test-set ").u(u64::from(sid.0)).s(b"=").i(got).s(if got == want {
+                b" ok"
+            } else {
+                b" refused"
+            });
+        });
+        ui.shell.invalidate();
+    }
+    if SCREEN_OFF.swap(false, core::sync::atomic::Ordering::Relaxed) && ui.shell.gate.screen_on {
+        ui.shell.gate.screen_on = false;
+        ui.shell.invalidate();
+    }
+}
+
 static mut FW_CELL: core::mem::MaybeUninit<Fw> = core::mem::MaybeUninit::uninit();
 static mut STORE_CELL: Option<Store<NorRegion, 4>> = None;
 static mut UI_CELL: core::mem::MaybeUninit<Ui> = core::mem::MaybeUninit::uninit();
@@ -434,9 +588,12 @@ pub async fn ui() {
                 n += 1;
             }
         }
+        let mut crc = 0xFFFF_FFFF;
         for &k in &keys[..n] {
             let mut b = [0u8; 8];
+            crc = orpheus_proto::hash::crc32_update(crc, &k.to_le_bytes());
             if let Ok(Some(len)) = s.get(k, &mut b).await {
+                crc = orpheus_proto::hash::crc32_update(crc, &b[..len.min(8)]);
                 fw.settings.load(k, &b[..len]);
                 if k == crate::bt::LAST_KEY && len == 6 {
                     let mut a = [0u8; 6];
@@ -445,11 +602,20 @@ pub async fn ui() {
                 }
             }
         }
+        STORE_KEYS.store(n as u16, core::sync::atomic::Ordering::Relaxed);
+        STORE_CRC.store(crc, core::sync::atomic::Ordering::Relaxed);
     }
     // The radio presets: straight into their static (332 bytes).
     if let Some(s) = store.as_mut() {
         match s.get(orpheus_fm::presets::STORE_KEY, fw.presets.raw_mut()).await {
-            Ok(Some(n)) => fw.presets.loaded(n),
+            Ok(Some(n)) => {
+                fw.presets.loaded(n);
+                let crc = orpheus_proto::hash::crc32_update(
+                    STORE_CRC.load(core::sync::atomic::Ordering::Relaxed),
+                    fw.presets.bytes(),
+                );
+                STORE_CRC.store(crc, core::sync::atomic::Ordering::Relaxed);
+            }
             _ => *fw.presets = orpheus_fm::Presets::new(),
         }
     }
@@ -538,6 +704,8 @@ pub async fn ui() {
                 .push(Event::Service(ServiceEvent::SettingChanged(orpheus_apps::settings::id::HOME_APPS.0)));
             ui.shell.invalidate();
         }
+        // VER-12: `settings test-set`, `ui screen-off`.
+        soak_hooks(ui);
         let w0 = atj2157_hal::time::now_us();
         LOOPS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         atj2157_hal::wdt::beat(&atj2157_hal::wdt::UI_BEAT);

@@ -62,7 +62,9 @@ replaced).
 - **Tools**: `cargo xtask` for building, size budgets, tests, golden
   images (620), codec conformance, 30 fuzz targets with committed corpora,
   coverage, sanitizers, metrics, device commands, battery-drain reports;
-  desktop simulator.
+  desktop simulator; long soaks on the player (`xtask dev soak`: music,
+  radio, browsing, settings churn, mixed, stress) with oracles, time
+  series and minimised findings (not yet run on the player).
 - **Project**: MIT OR Apache-2.0 licence (decision D-1); brand palette and
   assets (`cargo xtask brand`); user and developer documentation; website
   generator (`cargo xtask site`); contribution guide, code of conduct,
