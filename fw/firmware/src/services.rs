@@ -1724,8 +1724,7 @@ impl AuthService for Fw {
         embassy_futures::block_on(self.auth.entry(i)).ok().map(|e| AuthEntry::of(&e))
     }
     fn auth_code(&mut self, i: usize) -> Option<Code> {
-        let t = crate::vault::unix_now();
-        embassy_futures::block_on(self.auth.code(i, t)).ok().flatten()
+        self.auth_code_now(i, crate::vault::unix_now())
     }
     fn auth_request(&mut self, r: AuthRequest) {
         use crate::vault::AuthOp;

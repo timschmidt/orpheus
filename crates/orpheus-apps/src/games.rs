@@ -779,13 +779,7 @@ impl GamesIo {
                 // card may be back by then); the table is never written
                 // before it was read.
                 if a.ok {
-                    hub.loaded = true;
-                    if let Some(s) = orpheus_games::Scores::decode(data) {
-                        hub.scores = s;
-                    }
-                    for g in Game::ALL {
-                        hub.set_saved(g.id(), a.saved & (1 << g.id()) != 0);
-                    }
+                    loaded(hub, a.saved, data);
                 }
                 true
             }
@@ -810,6 +804,20 @@ impl GamesIo {
             // A failed write is made again with the next score change.
             CardOp::WriteScores => false,
         }
+    }
+}
+
+/// The score table and the save files' bits read. A frame of its own:
+/// the decoded table (≈ 490 B) stayed in [`GamesIo::done`]'s frame under
+/// a save file's decoding, the UI task's deepest path (STACK, 2026-11-25).
+#[inline(never)]
+fn loaded(hub: &mut Hub, saved: u8, data: &[u8]) {
+    hub.loaded = true;
+    if let Some(s) = orpheus_games::Scores::decode(data) {
+        hub.scores = s;
+    }
+    for g in Game::ALL {
+        hub.set_saved(g.id(), saved & (1 << g.id()) != 0);
     }
 }
 
