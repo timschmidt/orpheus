@@ -66,6 +66,14 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-25 — soak seed 1 clean on the merged build (lead)
+
+* Build `ac68421b` (stack headroom, settings commands, games behind a
+  feature, synth crate): `dev soak mixed --minutes 30 --seed 1` **PASS**,
+  35.3 min, 27 actions, **0 underruns** (none even in disruption windows),
+  DAC headroom ≥ 571 frames, stack free ≥ 9,616 B (static worst case
+  16,196 of 22,272 B), uptime drift −20 ppm.
+
 ### 2026-11-25 — **`fuzz-ui --settings` changed the owner's stored settings** (lead) — fixed
 
 * The on-device suite on the stack-headroom build (`10607b87`): 13 of 15
