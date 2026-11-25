@@ -67,6 +67,28 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-25 — Recorder › Recordings fixed; the lead's test recordings removed (lead)
+
+* Recorder › Recordings… listed the **card's root** instead of
+  `/Recordings`: the screen sends the folder's id, and `Fw::entry_of`
+  resolves ids only through the current browse window (empty when coming
+  from the Recorder), so the card task was sent "no entry" = root. Fix:
+  `rec::find_dir` (and the first recording) also keep `/Recordings`' own
+  entry, and `entry_of` answers it (also for "Play folder"). Deleting from
+  the root view would have been refused (the card task only deletes inside
+  `/Recordings`). On the player: the screen lists REC-0001.wav (102 MB) and
+  REC-0002.wav.
+* After a delete the screen showed the deleted file: the firmware answered
+  the screen's re-browse from its cached listing. Fix: a queued delete marks
+  the listing incomplete. Not verifiable by a test without recording into
+  `/Recordings` (rule 5): user check 29 (record, delete, the list updates).
+* With the owner's approval ("delete files, keep folder"): REC-0001.wav and
+  REC-0002.wav (the lead's 2026-11-24 test recordings) deleted through
+  Recorder › Recordings › Delete; `/Recordings` kept, now empty.
+* Soak seed 3 passed (39.2 min, 24 actions, 0 underruns); `ls` of some
+  large root folders gets no answer within 18 s (`/KEXP`, `/Tinydesk`,
+  `/Vulfpeck`) — the developer `ls` should answer big folders (tooling).
+
 ### 2026-11-25 — soak start-up hang: the command timeout counted only sleeps (lead)
 
 * A second soak (seed 3) sat after "player back" for over 28 min, like

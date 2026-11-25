@@ -826,7 +826,16 @@ impl Fw {
             return Some(self.path[i].1);
         }
         let w = &*self.browse;
-        let row = w.rows[..w.n as usize].iter().find(|r| r.child == dir)?;
+        let Some(row) = w.rows[..w.n as usize].iter().find(|r| r.child == dir) else {
+            // Recorder › Recordings… opens its folder without browsing to it.
+            if dir.0 == crate::rec::rec_dir()
+                && let Some((d, index)) = crate::rec::rec_entry()
+            {
+                self.depth = 0;
+                return Some(FileRef { dir: d, index });
+            }
+            return None;
+        };
         let (file, name) = (row.file, row.name);
         if self.depth == self.path.len() {
             self.path.copy_within(1.., 0);
@@ -1101,7 +1110,15 @@ impl BrowseService for Fw {
         match op {
             FileOp::Delete(f) => {
                 let dir = crate::rec::rec_dir();
-                dir != 0 && f.dir == dir && media::try_request(media::Req::Delete(f))
+                let ok = dir != 0 && f.dir == dir && media::try_request(media::Req::Delete(f));
+                if ok {
+                    // The screen browses again at once: the card task serves
+                    // that after the delete (one queue), so the cached listing
+                    // must not answer it (2026-11-25: the deleted recording
+                    // stayed in the list).
+                    self.browse.listing.complete = false;
+                }
+                ok
             }
         }
     }

@@ -113,6 +113,12 @@ pub struct Shared {
     keepalive_ms: AtomicU32,
     /// `/Recordings`' first cluster (0: none yet).
     rec_dir: AtomicU32,
+    /// `/Recordings`' own entry (its parent's first cluster, entry index):
+    /// the Recordings screen and "Play folder" open the folder from it.
+    /// Without it they were sent the root (2026-11-25: Recorder ›
+    /// Recordings… listed the card's root folders).
+    rec_ref_dir: AtomicU32,
+    rec_ref_index: AtomicU32,
     /// Changes (the UI turns them into events).
     seq: AtomicU32,
     /// The file name (UTF-8, length first).
@@ -148,6 +154,8 @@ pub fn init() {
         fm_khz: AtomicU32::new(0),
         keepalive_ms: AtomicU32::new(0),
         rec_dir: AtomicU32::new(0),
+        rec_ref_dir: AtomicU32::new(0),
+        rec_ref_index: AtomicU32::new(0),
         seq: AtomicU32::new(0),
         name: Mutex::new(RefCell::new([0; 40])),
     };
@@ -659,6 +667,9 @@ async fn record(
     if dev.is_none() {
         let mut e = DirEntry::new();
         if vol.stat(name::FOLDER, &mut e).await.is_ok() {
+            let l = e.locator();
+            shared().rec_ref_dir.store(l.dir, Relaxed);
+            shared().rec_ref_index.store(l.index, Relaxed);
             shared().rec_dir.store(e.first_cluster(), Relaxed);
         }
     }
@@ -919,7 +930,17 @@ pub async fn delete(vol: &mut Vol, f: FileRef) -> bool {
 pub async fn find_dir(vol: &mut Vol) {
     let mut e = DirEntry::new();
     let c = if vol.stat(name::FOLDER, &mut e).await.is_ok() && e.is_dir() { e.first_cluster() } else { 0 };
+    let l = e.locator();
+    shared().rec_ref_dir.store(if c == 0 { 0 } else { l.dir }, Relaxed);
+    shared().rec_ref_index.store(l.index, Relaxed);
     shared().rec_dir.store(c, Relaxed);
+}
+
+/// `/Recordings`' own entry as `(parent cluster, entry index)`, when the
+/// folder exists.
+pub fn rec_entry() -> Option<(u32, u32)> {
+    let s = shared();
+    (s.rec_dir.load(Relaxed) != 0).then(|| (s.rec_ref_dir.load(Relaxed), s.rec_ref_index.load(Relaxed)))
 }
 
 // ------------------------------------------------------ developer channel

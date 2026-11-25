@@ -71,3 +71,9 @@ the result and date. "Blocking" entries hold up the package named.
   from an ISO (only if the QEMU pass-through test could not run).
 * **M10**: two weeks of daily use on a release candidate; optional current
   measurements for the battery-life table.
+
+## 29. Recordings list after a delete (2026-11-25)
+
+Record a few seconds in the Recorder, open Recorder › Recordings…, delete
+the recording: the list must no longer show it (fixed in firmware; a test
+may not write `/Recordings`).
