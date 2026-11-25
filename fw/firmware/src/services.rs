@@ -5,9 +5,9 @@ use core::sync::atomic::Ordering;
 
 use orpheus_apps::browse::letter_of;
 use orpheus_apps::services::{
-    self, BatteryInfo, BluetoothService, CardInfo, CardState, ClockService, DateTime, PlaybackService,
-    Playing, PowerRequest, PowerService, SettingsService, StorageRequest, StorageService, SystemService,
-    UsbMode, UsbService, UsbState,
+    self, BatteryInfo, BluetoothService, CardInfo, CardState, ClockService, DateTime, FsKind,
+    PlaybackService, Playing, PowerRequest, PowerService, SettingsService, StorageRequest, StorageService,
+    SystemService, UsbMode, UsbService, UsbState,
 };
 use orpheus_apps::services::{
     AuthEntry, AuthOutcome, AuthRequest, AuthService, Code, VaultState, auth_event, other,
@@ -929,7 +929,22 @@ impl StorageService for Fw {
         }
     }
     fn card_info(&self) -> Option<CardInfo> {
-        None
+        // From the card task (`audio::publish_card`, `count_free`); the
+        // free space reads 0 for the moment it is still being counted.
+        let mib = state::CARD_MIB.load(Ordering::Relaxed);
+        if self.card() != CardState::Ready || mib == 0 {
+            return None;
+        }
+        let free = state::CARD_FREE_MIB.load(Ordering::Relaxed);
+        Some(CardInfo {
+            capacity_mib: mib,
+            free_mib: if free == state::FREE_UNKNOWN { 0 } else { free },
+            fs: match state::CARD_FS.load(Ordering::Relaxed) {
+                state::CARD_FS_FAT32 => FsKind::Fat32,
+                state::CARD_FS_EXFAT => FsKind::ExFat,
+                _ => FsKind::Other,
+            },
+        })
     }
     fn storage(&mut self, req: StorageRequest) {
         self.actions.push(Action::Storage(req));
@@ -1702,7 +1717,9 @@ impl SystemService for Fw {
         "YM03"
     }
     fn hardware(&self) -> &str {
-        "Yoton YM03 (ATJ2157)"
+        // As the simulator (05 §7.11, System › About): the model fits the row; the
+        // longer "Yoton YM03 (ATJ2157)" shortened both value and label.
+        "YM03"
     }
     fn app_available(&self, app: App) -> bool {
         // The transmitter module is fitted on every YM03 (06 §4.1); a

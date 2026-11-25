@@ -704,6 +704,7 @@ async fn mount(card: Card) -> Option<Volume<'static, Card>> {
     let mut vol = Volume::mount(card, cache, opts).await.ok()?;
     // SAFETY: as `CACHE`: lent to the one volume that exists.
     vol.set_walk_cache(unsafe { &mut *(&raw mut WALKS) });
+    publish_card(&vol);
     // The project was renamed (orpheus → Orpheus, 2026-11-24): its card
     // folder moves from `/.orpheus` to `/.orpheus` once, keeping the queue,
     // resume point, indexes and caches (owner's decision). Only this one
@@ -720,6 +721,33 @@ async fn mount(card: Card) -> Option<Volume<'static, Card>> {
         });
     }
     Some(vol)
+}
+
+/// Card info (Settings › Storage): size and file system now; the free
+/// space is counted in the idle loop ([`count_free`]).
+fn publish_card(vol: &Volume<'static, Card>) {
+    use crate::state::{CARD_FREE_MIB, CARD_FS, CARD_MIB, FREE_UNKNOWN};
+    let bytes = u64::from(vol.cluster_count()) * u64::from(vol.cluster_size());
+    CARD_MIB.store(u32::try_from(bytes >> 20).unwrap_or(u32::MAX), Ordering::Relaxed);
+    CARD_FS.store(
+        match vol.kind() {
+            orpheus_fs::FsKind::Fat32 => crate::state::CARD_FS_FAT32,
+            orpheus_fs::FsKind::ExFat => crate::state::CARD_FS_EXFAT,
+            _ => crate::state::CARD_FS_OTHER,
+        },
+        Ordering::Relaxed,
+    );
+    CARD_FREE_MIB.store(FREE_UNKNOWN, Ordering::Relaxed);
+}
+
+/// The card's free space for Card info: counted once after a mount (exFAT:
+/// the allocation bitmap, about 240 KB for 238 GB; FAT32: FSINFO, else one
+/// scan of the FAT), then kept by the volume as files grow or go.
+async fn count_free(vol: &mut Volume<'static, Card>) {
+    if let Ok(b) = vol.free_bytes().await {
+        let mib = u32::try_from(b >> 20).unwrap_or(crate::state::FREE_UNKNOWN - 1);
+        crate::state::CARD_FREE_MIB.store(mib, Ordering::Relaxed);
+    }
 }
 
 fn ext_of(path: &str) -> Option<&[u8]> {
@@ -2539,6 +2567,10 @@ pub async fn audio() {
             }
             if srv.wants_build() && !work_waiting() {
                 build_slot(&mut vol, srv, arena).await;
+            }
+            // Card info's free space (counted once, then the volume's own).
+            if !work_waiting() {
+                count_free(&mut vol).await;
             }
             // The music library builds when it is due and nothing else waits.
             if crate::library::wait_ms(srv) == Some(0) && !srv.wants_build() && !work_waiting() {
