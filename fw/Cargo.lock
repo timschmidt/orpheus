@@ -843,6 +843,7 @@ name = "orpheus-apps"
 version = "0.1.0"
 dependencies = [
  "orpheus-fm",
+ "orpheus-games",
  "orpheus-otp",
  "orpheus-power",
  "orpheus-rec",
@@ -939,6 +940,10 @@ version = "0.1.0"
 
 [[package]]
 name = "orpheus-fs"
+version = "0.1.0"
+
+[[package]]
+name = "orpheus-games"
 version = "0.1.0"
 
 [[package]]

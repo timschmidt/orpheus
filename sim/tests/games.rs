@@ -1,11 +1,14 @@
-//! M14 (GAME-0/1/3): the Games app over the simulator's games back end
+//! M14 (GAME-0/1/2/3): the Games app over the simulator's games back end
 //! (`sim/src/games.rs`): saved games and scores on the card, pause and
-//! interruptions, the Menu key in Blocks, and the differential tests of
-//! every game setting (07 §5.12; `tests/settings/effects.toml`).
+//! interruptions, the Menu key in Blocks, Solitaire's keys and drawing,
+//! the firmware's deferred card queue (`set:gamesio=on`), and the
+//! differential tests of every game setting (07 §5.12;
+//! `tests/settings/effects.toml`).
 
 use orpheus_apps::games::{self as app, GamesService};
 use orpheus_games::blocks::Blocks;
 use orpheus_games::scores::Scores;
+use orpheus_games::solitaire::{self, Solitaire};
 use orpheus_games::tiles::{Phase, Tiles};
 use orpheus_games::{Session, id};
 use orpheus_sim::fallback::HexFont;
@@ -35,6 +38,13 @@ fn tiles(s: &AppSim) -> &Tiles {
     }
 }
 
+fn sol(s: &AppSim) -> &Solitaire {
+    match &s.sys.games().session {
+        Session::Solitaire(g) => g,
+        other => panic!("not Solitaire: {other:?}"),
+    }
+}
+
 fn file(s: &mut AppSim, name: &str) -> Option<Vec<u8>> {
     read(&mut s.sys.media, &format!("{}/{name}", app::DIR))
 }
@@ -42,6 +52,7 @@ fn file(s: &mut AppSim, name: &str) -> Option<Vec<u8>> {
 const LIST: &str = "set:games=on set:gameseed=7 prev*2 ok wait:100 expect-screen:Games";
 const BLOCKS: &str = "set:gameseed=7 goto:Blocks wait:100 expect-screen:Blocks";
 const TILES: &str = "set:gameseed=7 goto:Game4096 wait:100 expect-screen:Game4096";
+const SOL: &str = "set:gameseed=7 goto:Solitaire wait:100 expect-screen:Solitaire";
 
 /// Home › Games › 4096: a game played, paused (saved to the card), quit
 /// and continued, also after a restart of the player (the card's save
@@ -151,6 +162,118 @@ fn new_game_asks_first() {
     assert_eq!(tiles(&s).seed(), 99);
 }
 
+/// Solitaire from the Games list: a deal, a few moves, saved on pause,
+/// quit and continued after a restart; hold OK takes a move back; Back
+/// with cards in hand puts them back instead of pausing.
+#[test]
+fn solitaire_saved_undo_and_back() {
+    let mut s = sim(&format!("{LIST} down*2 ok wait:100 expect-screen:Solitaire"));
+    let start = sol(&s).position();
+    // The stock: OK turns a card.
+    run(&mut s, "up ok");
+    assert_eq!(sol(&s).board().len(solitaire::WASTE), 1);
+    // Hold OK: taken back.
+    run(&mut s, "hold:ok");
+    assert_eq!(sol(&s).position(), start, "undo restores the deal");
+    run(&mut s, "ok down next");
+    // Pick up a column's card, Back puts it back.
+    run(&mut s, "ok");
+    assert!(sol(&s).held().is_some());
+    run(&mut s, "back expect-screen:Solitaire");
+    assert!(sol(&s).held().is_none());
+    let moves = sol(&s).moves();
+    assert!(moves > 0);
+    run(&mut s, "back expect-screen:GamePause");
+    let saved = file(&mut s, "solitaire.sav").expect("saved on pause");
+    assert_eq!(Session::decode(&saved, Some(id::SOLITAIRE)), Some(s.sys.games().session.clone()));
+    run(&mut s, "up ok wait:100 expect-screen:Games");
+    let media = std::mem::replace(&mut s.sys.media, orpheus_sim::media::Media::new());
+    let mut r = Sim::with_sys(HostServices::with_media(media), Box::new(HexFont::subset()));
+    run(&mut r, LIST);
+    assert!(r.sys.games().can_continue(id::SOLITAIRE));
+    run(&mut r, "down*2 ok wait:100 expect-screen:Solitaire");
+    assert_eq!(sol(&r).moves(), moves);
+    assert_eq!(sol(&r).board(), sol(&s).board());
+}
+
+/// Every frame drawn piece by piece equals the same frame drawn whole
+/// (partial redraw: cursor frames reach into the gaps between piles).
+#[test]
+fn solitaire_partial_redraw_equals_full() {
+    let keys = ["next", "prev", "up", "down", "ok", "menu", "hold:ok", "next*3", "up*2", "back"];
+    for seed in 0..4u64 {
+        let mut s = sim(&format!("set:gameseed={seed} goto:Solitaire wait:100 set:solplay=25 wait:50"));
+        let mut r = orpheus_games::Rng::new(seed);
+        for _ in 0..80 {
+            let k = keys[r.below(keys.len() as u32) as usize];
+            run(&mut s, k);
+            if s.screen() != "Solitaire" {
+                run(&mut s, "back");
+                continue;
+            }
+            run(&mut s, "wait:40");
+            let partial = s.fb.clone();
+            s.shell.invalidate();
+            s.draw();
+            let diff: Vec<(usize, usize)> = (0..partial.len())
+                .filter(|&i| partial[i] != s.fb[i])
+                .map(|i| (i % 128, i / 128))
+                .take(12)
+                .collect();
+            assert!(
+                diff.is_empty(),
+                "seed {seed}: after `{k}` the screen differs from a full draw at {diff:?}"
+            );
+        }
+    }
+}
+
+/// The firmware's way (`set:gamesio=on`): the list asks, the card answers
+/// a step later. Opening shows "Loading…" until the save is read; a game in
+/// progress is written before another is read; quitting writes the save.
+#[test]
+fn deferred_card_queue() {
+    use orpheus_apps::games::CardOp;
+    // A saved Solitaire game on the card first (the direct way).
+    let mut s = sim(&format!("{LIST} down*2 ok wait:100 up ok back up ok wait:100 expect-screen:Games"));
+    let moves = sol(&s).moves();
+    let media = std::mem::replace(&mut s.sys.media, orpheus_sim::media::Media::new());
+    let mut r = Sim::with_sys(HostServices::with_media(media), Box::new(HexFont::subset()));
+    run(&mut r, "set:gamesio=on set:gameseed=7 prev*2 ok wait:100 expect-screen:Games");
+    assert!(r.sys.games().loaded, "the list's Load was answered");
+    assert!(r.sys.games().can_continue(id::SOLITAIRE));
+    // Open: the screen waits for the save file.
+    run(&mut r, "down*2 ok");
+    assert_eq!(r.sys.games().opening, None, "answered within the step");
+    run(&mut r, "wait:100 expect-screen:Solitaire");
+    assert_eq!(sol(&r).moves(), moves, "the saved game, not a new one");
+    // Blocks while Solitaire is in progress: Solitaire is written first.
+    let before = r.sys.games.ops.len();
+    run(&mut r, "back up ok wait:100 expect-screen:Games up*2 ok wait:200 expect-screen:Blocks");
+    let ops = &r.sys.games.ops[before..];
+    let w = ops.iter().position(|o| *o == CardOp::Write(id::SOLITAIRE)).expect("Solitaire written");
+    let rd = ops.iter().position(|o| *o == CardOp::Read(id::BLOCKS)).expect("Blocks read");
+    assert!(w < rd, "written before the other is read: {ops:?}");
+    assert!(matches!(r.sys.games().session, Session::Blocks(_)));
+}
+
+/// Casino scoring: a deal costs 52 from the bank, cards on the
+/// foundations pay 5 when the game is left for a new one.
+#[test]
+fn casino_bank_carries_over() {
+    let mut s = sim(&format!("set:0x0e43=1 set:0x0e44=0 set:0x0e45=0 {SOL}"));
+    assert_eq!(s.sys.games().scores.bank(id::SOLITAIRE), -52);
+    let scores = orpheus_games::scores::Scores::decode(&file(&mut s, app::SCORES_FILE).unwrap()).unwrap();
+    assert_eq!(scores.bank(id::SOLITAIRE), -52, "written at the deal");
+    // Some cards up with Menu (as many as can go), then a new game.
+    run(&mut s, "set:solnear=2 goto:Solitaire wait:50");
+    let up = sol(&s).board().on_foundations() as i32;
+    run(&mut s, "back down ok");
+    assert!(s.shell.dialog_open(), "a game in progress: New game asks");
+    run(&mut s, "next ok wait:100 expect-screen:Solitaire");
+    assert_eq!(s.sys.games().scores.bank(id::SOLITAIRE), -52 + 5 * up - 52);
+}
+
 /// The differential tests of `tests/settings/effects.toml`: each game
 /// setting at a value against its reference changes its own game (the
 /// declared oracle) and nothing in the other game or on Home.
@@ -170,11 +293,17 @@ mod settings_effects {
         let (a, _) = after(&set(v), own);
         let (b, _) = after(&set(reference), own);
         assert_ne!(a, b, "{key:#06x}={v} shows in its game");
-        let blocks_key = key < 0x0E20;
-        let others = [
-            if blocks_key { format!("{TILES} right down") } else { format!("{BLOCKS} ok wait:400") },
-            "wait:10".into(),
-        ];
+        // The other games, and Home.
+        let mut others = vec!["wait:10".to_string()];
+        if key >= 0x0E20 {
+            others.push(format!("{BLOCKS} ok wait:400"));
+        }
+        if !(0x0E21..0x0E40).contains(&key) {
+            others.push(format!("{TILES} right down"));
+        }
+        if key < 0x0E40 {
+            others.push(format!("{SOL} up ok next ok"));
+        }
         for other in &others {
             assert_eq!(
                 after(&set(v), other).0,
@@ -349,4 +478,142 @@ mod settings_effects {
         let late = format!("{TILES} right down wait:300");
         assert_eq!(after("set:0x0e25=0", &late).0, after("set:0x0e25=1", &late).0);
     }
+
+    // ------------------------------------------------------------ Solitaire
+
+    /// Draw three: OK on the stock turns three cards (the waste fans).
+    #[test]
+    fn solitaire_draw() {
+        let script = format!("{SOL} up ok wait:50");
+        shows_only_in(0x0E41, 1, 0, &script);
+        let (_, three) = after("set:0x0e41=1", &script);
+        assert_eq!(sol(&three).board().len(solitaire::WASTE), 3);
+        assert_eq!(sol(&three).config().draw, 3);
+    }
+
+    /// One pass: after the stock is gone through, OK on it does nothing
+    /// (unlimited: the waste goes back).
+    #[test]
+    fn solitaire_passes() {
+        let script = format!("set:0x0e44=0 {SOL} up {} wait:50", "ok ".repeat(26));
+        shows_only_in(0x0E42, 2, 0, &script);
+        let (_, one) = after("set:0x0e42=2", &script);
+        let (_, many) = after("set:0x0e42=0", &script);
+        let (_, more) = after("set:0x0e42=2", &format!("set:0x0e44=0 {SOL} up {} wait:50", "ok ".repeat(30)));
+        assert_eq!(sol(&one).board(), sol(&more).board(), "OK on the empty stock does nothing");
+        assert_eq!(sol(&one).board().passes(), 0);
+        assert!(sol(&many).board().passes() > 0);
+        assert_eq!(sol(&one).config().passes, 1);
+        let (_, three) = after("set:0x0e42=1", &script);
+        assert_eq!(sol(&three).config().passes, 3);
+    }
+
+    /// Standard points, the casino bank, or the moves.
+    #[test]
+    fn solitaire_scoring() {
+        let script = format!("{SOL} up ok wait:50");
+        shows_only_in(0x0E43, 1, 0, &script);
+        shows_only_in(0x0E43, 2, 0, &script);
+        let (_, casino) = after("set:0x0e43=1", &script);
+        assert_eq!(sol(&casino).score(), sol(&casino).board().on_foundations() as i32 * 5 - 52);
+        assert_eq!(casino.sys.games().scores.bank(id::SOLITAIRE), -52);
+        let (_, none) = after("set:0x0e43=2", &script);
+        assert_eq!(none.sys.games().scores.bank(id::SOLITAIRE), 0);
+    }
+
+    /// Auto-move: the deal's aces (and safe twos) go up at once.
+    #[test]
+    fn solitaire_auto_move() {
+        let seed = (0..100u64)
+            .find(|&k| {
+                let s = sim(&format!("set:0x0e44=1 set:gameseed={k} goto:Solitaire"));
+                sol(&s).board().on_foundations() > 0
+            })
+            .expect("a deal with an ace on top");
+        let script = format!("set:gameseed={seed} goto:Solitaire wait:100");
+        shows_only_in(0x0E44, 0, 1, &script);
+        let (_, off) = after("set:0x0e44=0", &script);
+        assert_eq!(sol(&off).board().on_foundations(), 0);
+    }
+
+    /// Auto-complete: a game with every card up plays itself out.
+    #[test]
+    fn solitaire_auto_complete() {
+        let script = "set:solnear=4 goto:Solitaire wait:1000";
+        shows_only_in(0x0E45, 0, 1, script);
+        let (_, on) = after("set:0x0e45=1", script);
+        let (_, off) = after("set:0x0e45=0", script);
+        assert!(sol(&on).won());
+        assert!(!sol(&off).won());
+    }
+
+    /// The timer: shown or not; the game is the same.
+    #[test]
+    fn solitaire_timer() {
+        let script = format!("{SOL} wait:2100");
+        shows_only_in(0x0E46, 0, 1, &script);
+        let (_, a) = after("set:0x0e46=0", &script);
+        let (_, b) = after("set:0x0e46=1", &script);
+        assert_eq!(sol(&a), sol(&b));
+        assert!(sol(&a).steps() >= 120);
+    }
+
+    /// Winnable deals: the deal check chooses another deal for some seeds.
+    #[test]
+    fn solitaire_winnable() {
+        let seed = (0..50u64)
+            .find(|&k| {
+                let on = sim(&format!("set:0x0e47=1 set:gameseed={k} goto:Solitaire"));
+                let off = sim(&format!("set:0x0e47=0 set:gameseed={k} goto:Solitaire"));
+                sol(&on).seed() != sol(&off).seed()
+            })
+            .expect("a seed whose own deal the check does not win");
+        let script = format!("set:gameseed={seed} goto:Solitaire wait:100");
+        shows_only_in(0x0E47, 0, 1, &script);
+        let (_, on) = after("set:0x0e47=1", &script);
+        assert!(sol(&on).checked());
+    }
+}
+
+/// The game loop's cost on the host (05 §7.13: up to 30 frames/s, partial
+/// redraw): per 33 ms frame, the logic steps and the drawing, and the
+/// panel rows a frame leaves to flush (the firmware flushes the band of
+/// dirty rows). Printed for docs/STATUS.md; the bounds only catch a
+/// frame that redraws the whole screen every time.
+#[test]
+fn game_loop_cost() {
+    let frames = 600u32;
+    let measure = |name: &str, setup: &str, keys: &[&str]| {
+        let mut s = sim(setup);
+        let _ = s.take_dirty();
+        let mut rows = 0u64;
+        let t0 = std::time::Instant::now();
+        for f in 0..frames {
+            if !keys.is_empty() && f % 6 == 0 {
+                // A key about every 200 ms.
+                run(&mut s, keys[(f / 6) as usize % keys.len()]);
+            } else {
+                s.advance(33);
+            }
+            let d = s.take_dirty();
+            if !d.is_empty() {
+                let b = d.bounds();
+                rows += u64::try_from(b.h).unwrap_or(0);
+            }
+        }
+        let us = t0.elapsed().as_secs_f64() * 1e6 / f64::from(frames);
+        let per = rows as f64 / f64::from(frames);
+        println!(
+            "{name}: {us:.1} µs per frame on the host (sim, all services), {per:.1} dirty rows per frame"
+        );
+        per
+    };
+    let home = measure("home (idle baseline)", "wait:10", &[]);
+    let blocks = measure("blocks, falling", &format!("{BLOCKS} ok wait:100"), &["next", "prev", "up"]);
+    let sol = measure("solitaire, cursor", &format!("{SOL} set:solplay=30"), &["next", "up", "prev", "down"]);
+    let sol_idle = measure("solitaire, timer only", SOL, &[]);
+    assert!(home < 1.0);
+    assert!(blocks < 128.0 * 0.9, "Blocks redraws the whole screen every frame ({blocks:.1} rows)");
+    assert!(sol < 128.0 * 0.6, "Solitaire redraws too much per frame ({sol:.1} rows)");
+    assert!(sol_idle < 2.0, "the timer alone ({sol_idle:.1} rows per frame)");
 }

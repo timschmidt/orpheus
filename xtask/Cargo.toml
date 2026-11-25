@@ -30,7 +30,7 @@ flate2 = "1"
 # VER-7/8: the on-device suite and fuzzer run journeys in the simulator
 # (expected frames), key indices of the developer channel, reply checks.
 orpheus-sim = { path = "../sim" }
-orpheus-apps = { path = "../crates/orpheus-apps" }
+orpheus-apps = { path = "../crates/orpheus-apps", features = ["games"] }
 orpheus-input = { path = "../crates/orpheus-input" }
 regex = { version = "1", default-features = false, features = ["std", "unicode-perl"] }
 

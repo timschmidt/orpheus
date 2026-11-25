@@ -269,7 +269,7 @@ pub fn update_expected(f: &SuiteFile) -> Result<(usize, usize, usize)> {
 pub fn home_frames(appearance: &str) -> Result<Vec<Vec<u16>>> {
     let mut sim = sim_with(appearance)?;
     let mut v: Vec<Vec<u16>> = Vec::new();
-    for _ in 0..12 {
+    for _ in 0..=orpheus_apps::App::COUNT {
         sim.draw();
         if v.first() == Some(&sim.fb) {
             break;
@@ -923,7 +923,7 @@ mod tests {
     fn home_focus_is_normalised() {
         let masks = MaskFile::load(&suite_dir().join("masks.toml")).unwrap();
         let homes = home_frames("").unwrap();
-        assert_eq!(homes.len(), 11);
+        assert_eq!(homes.len(), orpheus_apps::App::COUNT, "one frame per app (Games since GAME-2)");
         let mut p = SimPlayer::one_session();
         for _ in 0..7 {
             player::tap(&mut p, Key::Next).unwrap();

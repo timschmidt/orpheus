@@ -141,6 +141,11 @@ pub struct Fw {
     drive_gen: u32,
     drive_name: StrBuf<{ crate::drive::NAME_LEN }>,
     rec_name: StrBuf<40>,
+    /// The Games app (`crate::games`): the hub and its card queue, in
+    /// their static.
+    pub games: &'static mut crate::games::GamesRam,
+    /// Seeds handed out (two new games in the same microsecond differ).
+    game_seeds: u32,
 }
 
 /// A frequency is saved as the radio's last one after playing this long
@@ -298,6 +303,8 @@ impl Fw {
             otp_phase: crate::vault::OtpPhase::Idle,
             otp_seq: 0,
             kbd_seen: None,
+            games: crate::games::ram(),
+            game_seeds: 0,
             rec: RecInfo::default(),
             rec_seq: 0,
             rec_name: StrBuf::new(),
@@ -422,6 +429,9 @@ impl Fw {
         });
         if tag == media::tag::OTP {
             self.otp_sync();
+        }
+        if tag == crate::games::TAG {
+            self.games_poll(now_ms());
         }
         // The listing arrived or was re-sorted: the rows the screen shows
         // may not be in the new window.
@@ -1629,6 +1639,55 @@ pub fn alarm_status() {
         w.s(b" now=").u(u64::from(t.hour)).s(b":").u(u64::from(t.minute)).s(b":").u(u64::from(t.second));
         w.s(b" wake_from_off=").u(u64::from(ALARM_WAKE_FROM_OFF));
     });
+}
+
+impl Fw {
+    /// The games' card queue (every UI loop, on its data tag, after each
+    /// request): the screens hear `other::GAMES` when the hub changed.
+    #[inline(never)]
+    pub fn games_poll(&mut self, now_ms: u64) {
+        if self.games.pump(now_ms) {
+            self.pending.push(Event::Service(ServiceEvent::Other {
+                kind: orpheus_apps::services::other::GAMES,
+                value: 0,
+            }));
+        }
+    }
+
+    /// Games operations are queued or out (power-off and USB hand-over
+    /// wait for them).
+    #[must_use]
+    pub fn games_busy(&self) -> bool {
+        self.games.busy()
+    }
+}
+
+impl orpheus_apps::games::GamesService for Fw {
+    fn games(&self) -> &orpheus_apps::games::engine::Hub {
+        &self.games.hub
+    }
+
+    fn games_mut(&mut self) -> &mut orpheus_apps::games::engine::Hub {
+        &mut self.games.hub
+    }
+
+    fn games_request(&mut self, r: orpheus_apps::games::GamesRequest) {
+        self.games.io.request(&mut self.games.hub, r);
+        self.games_poll(now_ms());
+    }
+
+    /// The uptime in microseconds and the RTC's seconds since 2000, mixed.
+    fn game_seed(&mut self) -> u64 {
+        self.game_seeds = self.game_seeds.wrapping_add(1);
+        let rtc = atj2157_hal::rtc_clock::epoch2000(atj2157_hal::rtc_clock::now());
+        let up = atj2157_hal::time::now_us() ^ u64::from(self.game_seeds) << 48;
+        orpheus_apps::games::seed_from(up, u64::from(rtc))
+    }
+
+    /// The screen as the UI task last switched it (`drain::Shared`).
+    fn display_on(&self) -> bool {
+        crate::drain::shared().screen_on.load(Ordering::Relaxed)
+    }
 }
 
 impl AuthService for Fw {

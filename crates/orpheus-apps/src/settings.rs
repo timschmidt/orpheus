@@ -306,6 +306,9 @@ const PLAYBACK: &[Setting] = &[
     ),
 ];
 
+/// The Home-screen mask with every app shown (`App::ALL`'s bits).
+pub const HOME_ALL: i16 = (1 << crate::App::COUNT) - 1;
+
 const DISPLAY: &[Setting] = &[
     r(0x0301, Str::Brightness, 1, 16, 1, Unit::None, 10),
     c(
@@ -325,7 +328,9 @@ const DISPLAY: &[Setting] = &[
     // UI-8: on by default (the owner's requirement); shown before Home
     // screen as in 05 §7.11.
     t(0x030C, Str::ListRollAround, 1),
-    Setting { id: SettingId(0x030B), label: Str::HomeScreen, kind: Kind::HomeApps, default: 0x07FF },
+    // Every app (Games, bit 11, with the `games` feature: on the player since
+    // GAME-2's integration).
+    Setting { id: SettingId(0x030B), label: Str::HomeScreen, kind: Kind::HomeApps, default: HOME_ALL },
 ];
 
 const POWER: &[Setting] = &[

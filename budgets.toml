@@ -41,7 +41,15 @@ stack_bytes = 12288             # 12 KiB
 # (the guard is aligned to 256 B; `__stack_bottom` 0x131B00 is on a step).
 # 2026-11-25: `settings changed` (+8 B resident) crossed one step: margin
 # 6,340 -> 6,076 B; ratchet at that less one step.
-stack_static_margin_bytes = 5820
+# 2026-11-25 (GAME-2, the Games app on the player): measured 4,268 B
+# (16,212 B nested worst case of 20,480 B usable). Static RAM +1.9 KB:
+# the games' hub (848 B) with its card queue (`GamesRam`, 872 B, .bss),
+# the 512 B card buffer, settings cache +22 keys; usable stack 22,528 ->
+# 20,480 B (eight 256 B steps; `__bss_end` 0x1322A0, 96 B below the next
+# step). Thread context 6,876 -> 6,900 B. The ratchet is the VER-10 goal
+# itself (one step less would allow < 4 KiB): the next static step needs
+# a stack cut first.
+stack_static_margin_bytes = 4096
 # Firmware partition in the dual-boot layout (slot A): the whole "YFW1"
 # image (header sector, resident image, page store).
 slot_bytes_dual = 491520        # 480 KiB

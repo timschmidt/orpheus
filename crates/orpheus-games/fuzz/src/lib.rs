@@ -13,6 +13,7 @@
 #![allow(clippy::missing_panics_doc)]
 
 use orpheus_games::blocks::{self, Blocks, CLEAR_POINTS, COMBO_POINTS, H, HIDDEN, ROWS, W, level_for};
+use orpheus_games::solitaire;
 use orpheus_games::tiles::{self, Dir, Tiles, TilesOut};
 use orpheus_games::{Input, SAVE_MAX, Session};
 
@@ -308,4 +309,229 @@ pub fn blocks_run(data: &[u8]) -> Blocks {
 pub fn blocks_keys(data: &[u8]) {
     let a = blocks_run(data);
     assert_eq!(a, blocks_run(data), "deterministic");
+}
+
+// ------------------------------------------------------------ Solitaire
+
+/// The Solitaire configuration of an input's first byte: bit 0 draw
+/// three, bits 1–2 passes (unlimited, one, three), bits 3–4 scoring, bit 5
+/// no auto-move, bit 6 no auto-complete, bit 7 the deal check.
+#[must_use]
+pub fn solitaire_config(d: &[u8]) -> solitaire::Config {
+    let b = d.first().copied().unwrap_or(0);
+    solitaire::Config {
+        draw: if b & 1 != 0 { 3 } else { 1 },
+        passes: [0, 1, 3, 0][usize::from(b >> 1 & 3)],
+        scoring: solitaire::Scoring::from_u8((b >> 3 & 3) % 3).unwrap_or_default(),
+        auto_move: b & 0x20 == 0,
+        auto_complete: b & 0x40 == 0,
+        winnable: b & 0x80 != 0,
+    }
+}
+
+/// An independent model of the piles: cards with their faces, and the
+/// rules written out plainly. Every move the game records is applied to it
+/// and checked; the result must equal the game's board.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SolRef {
+    pub piles: Vec<Vec<(u8, bool)>>,
+    pub passes: u8,
+}
+
+fn sol_red(c: u8) -> bool {
+    (c / 13) % 2 == 1
+}
+
+impl SolRef {
+    #[must_use]
+    pub fn of(b: &solitaire::Board) -> SolRef {
+        let piles = (0..solitaire::PILES as u8)
+            .map(|p| {
+                let d = b.down(p);
+                b.pile(p).iter().enumerate().map(|(i, &c)| (c, i >= d)).collect()
+            })
+            .collect();
+        SolRef { piles, passes: b.passes() }
+    }
+
+    /// Apply a recorded move if the rules allow it.
+    pub fn apply(&mut self, m: solitaire::Move, cfg: &solitaire::Config) -> Result<(), String> {
+        let (f, t, n) = (usize::from(m.from), usize::from(m.to), usize::from(m.n));
+        if f >= 13 || t >= 13 || f == t || n == 0 {
+            return Err(format!("bad move {m:?}"));
+        }
+        if f == 0 && t == 1 {
+            let want = self.piles[0].len().min(usize::from(cfg.draw));
+            if want == 0 || n != want || m.flipped {
+                return Err(format!("draw of {n} from a stock of {}", self.piles[0].len()));
+            }
+            for _ in 0..n {
+                let (c, _) = self.piles[0].pop().unwrap();
+                self.piles[1].push((c, true));
+            }
+            return Ok(());
+        }
+        if f == 1 && t == 0 {
+            let allowed = cfg.passes == 0 || self.passes + 1 < cfg.passes;
+            if !self.piles[0].is_empty() || n != self.piles[1].len() || n == 0 || !allowed {
+                return Err("waste back to the stock not allowed".into());
+            }
+            while let Some((c, _)) = self.piles[1].pop() {
+                self.piles[0].push((c, false));
+            }
+            self.passes += 1;
+            return Ok(());
+        }
+        if f == 0 || t <= 1 {
+            return Err(format!("{m:?} touches the stock or waste"));
+        }
+        let from = &self.piles[f];
+        if from.len() < n {
+            return Err("not that many cards".into());
+        }
+        let moving: Vec<(u8, bool)> = from[from.len() - n..].to_vec();
+        if moving.iter().any(|&(_, up)| !up) {
+            return Err("moves a face-down card".into());
+        }
+        if (f < 6 || t < 6) && n != 1 {
+            return Err("only columns give or take several cards".into());
+        }
+        let first = moving[0].0;
+        if (2..6).contains(&t) {
+            if (2..6).contains(&f) {
+                return Err("foundation to foundation".into());
+            }
+            let ok = match self.piles[t].last() {
+                None => first % 13 == 0,
+                Some(&(top, _)) => top / 13 == first / 13 && first % 13 == top % 13 + 1,
+            };
+            if !ok {
+                return Err(format!("card {first} does not go onto foundation {t}"));
+            }
+        } else {
+            for w in moving.windows(2) {
+                if sol_red(w[0].0) == sol_red(w[1].0) || w[0].0 % 13 != w[1].0 % 13 + 1 {
+                    return Err("not a run".into());
+                }
+            }
+            let ok = match self.piles[t].last() {
+                None => first % 13 == 12,
+                Some(&(top, up)) => up && sol_red(top) != sol_red(first) && top % 13 == first % 13 + 1,
+            };
+            if !ok {
+                return Err(format!("card {first} does not go onto column {t}"));
+            }
+        }
+        let keep = self.piles[f].len() - n;
+        let moved: Vec<(u8, bool)> = self.piles[f].drain(keep..).collect();
+        self.piles[t].extend(moved);
+        let turn = f >= 6 && self.piles[f].last().is_some_and(|&(_, up)| !up);
+        if turn != m.flipped {
+            return Err(format!("flip recorded {} but the rules say {turn}", m.flipped));
+        }
+        if turn && let Some(last) = self.piles[f].last_mut() {
+            last.1 = true;
+        }
+        Ok(())
+    }
+}
+
+/// Play Solitaire with the input's keys and steps (a byte with bit 7 set
+/// is `(b & 0x7F) + 1` logic steps, any other an input); every invariant
+/// asserted after each: the 52 cards each once (`Board::valid`), every
+/// recorded move legal by the reference ([`SolRef`]) and the board equal
+/// to the reference's, undo back to exactly the position before the move
+/// it takes back, the score's rules, a save read back equal. Returns the
+/// final game.
+pub fn solitaire_run(data: &[u8]) -> solitaire::Solitaire {
+    use solitaire::{Scoring, SolOut, Solitaire};
+    let cfg = solitaire_config(data);
+    let mut g = Solitaire::new(cfg, seed(data.get(1..9).unwrap_or(&[])));
+    assert!(g.board().valid());
+    // Positions before each player move still in the history: (history
+    // length before it, position).
+    let mut restore: Vec<(usize, (solitaire::Board, u16, u16, u32))> = Vec::new();
+    let mut buf = [0u8; SAVE_MAX];
+    for (k, &b) in data.iter().skip(9).enumerate() {
+        let before = g.clone();
+        let hist_before: Vec<solitaire::Move> = before.history().collect();
+        let out = if b & 0x80 != 0 {
+            let mut last = SolOut::None;
+            for _ in 0..=(b & 0x7F) {
+                let o = g.step();
+                if o != SolOut::None {
+                    last = o;
+                }
+            }
+            last
+        } else {
+            match Input::from_byte(b) {
+                Some(i) => g.input(i),
+                None => continue,
+            }
+        };
+        let b_after = g.board();
+        assert!(b_after.valid(), "board invalid after byte {k}: {b_after:?}");
+        let hist: Vec<solitaire::Move> = g.history().collect();
+        if out == SolOut::Undone {
+            // Back to the position before the last player move.
+            assert!(hist.len() < hist_before.len());
+            assert_eq!(&hist[..], &hist_before[..hist.len()], "undo pops the history");
+            assert!(!hist_before[hist.len()].auto, "back to a player move");
+            if let Some(i) = restore.iter().rposition(|(n, _)| *n == hist.len()) {
+                assert_eq!(g.position(), restore[i].1, "byte {k}: undo restores exactly");
+                restore.truncate(i);
+            } else {
+                restore.clear();
+            }
+        } else if hist != hist_before {
+            // New moves: find what was kept (the oldest drop out of a full
+            // history) and check the new ones against the reference.
+            let kept = (0..=hist_before.len())
+                .find(|&d| hist.starts_with(&hist_before[d..]))
+                .expect("the history only grows at its end");
+            let new = &hist[hist_before.len() - kept..];
+            assert!(!new.is_empty());
+            let mut r = SolRef::of(before.board());
+            for m in new {
+                r.apply(*m, &g.config()).unwrap_or_else(|e| panic!("byte {k}: illegal move {m:?}: {e}"));
+            }
+            assert_eq!(r, SolRef::of(b_after), "byte {k}: the board is the reference's");
+            if kept > 0 {
+                restore.clear();
+            } else if !new[0].auto {
+                restore.push((hist_before.len(), before.position()));
+            }
+        } else {
+            assert_eq!(g.board(), before.board(), "byte {k}: the board changed without a move");
+        }
+        // Score rules.
+        let up = g.board().on_foundations() as i32;
+        match cfg.scoring {
+            Scoring::Standard => assert!(g.score() >= 0),
+            Scoring::Casino => assert_eq!(g.score(), 5 * up - 52),
+            Scoring::None => assert_eq!(g.score(), 0),
+        }
+        assert_eq!(g.won(), up == 52);
+        if let Some((p, n)) = g.held() {
+            assert!(usize::from(n) <= g.board().face_up(p), "held cards are face up");
+        }
+        if k % 61 == 0 {
+            let s = Session::Solitaire(g.clone());
+            let n = s.encode(&mut buf).expect("fits SAVE_MAX");
+            let back = Session::decode(&buf[..n], Some(orpheus_games::id::SOLITAIRE)).expect("reads back");
+            let Session::Solitaire(x) = back else { panic!("another game") };
+            // Held cards are not saved.
+            assert_eq!(x.position(), g.position());
+            assert_eq!(x.history().collect::<Vec<_>>(), hist);
+            assert_eq!((x.steps(), x.cursor().0, x.seed()), (g.steps(), g.cursor().0, g.seed()));
+        }
+    }
+    g
+}
+
+/// The fuzz target: the same input twice gives the same game.
+pub fn solitaire_keys(data: &[u8]) {
+    let a = solitaire_run(data);
+    assert_eq!(a, solitaire_run(data), "deterministic");
 }

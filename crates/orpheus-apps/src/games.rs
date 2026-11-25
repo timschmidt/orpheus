@@ -11,22 +11,23 @@
 //! pause and quit) and the scores to `/.orpheus/games/scores.bin`.
 
 pub use orpheus_games as engine;
-use orpheus_games::{Hub, Outcome, Rng, Session, blocks, id as gid, tiles};
+use orpheus_games::{Hub, Outcome, Rng, Session, blocks, id as gid, solitaire, tiles};
 
 use crate::services::SettingsService;
 use crate::settings::{Choice, Setting, SettingId, Unit, c, r, t};
 use crate::strings::Str;
 
-/// The games of the app, in list order. Solitaire (GAME-2) and the
-/// artillery game (GAME-4/5) are not listed until they are built.
+/// The games of the app, in list order. The artillery game (GAME-4/5)
+/// is not listed until it is built.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Game {
     Blocks,
     Tiles,
+    Solitaire,
 }
 
 impl Game {
-    pub const ALL: [Game; 2] = [Game::Blocks, Game::Tiles];
+    pub const ALL: [Game; 3] = [Game::Blocks, Game::Tiles, Game::Solitaire];
 
     /// The engine's id (save files, scores).
     #[must_use]
@@ -34,6 +35,7 @@ impl Game {
         match self {
             Game::Blocks => gid::BLOCKS,
             Game::Tiles => gid::TILES,
+            Game::Solitaire => gid::SOLITAIRE,
         }
     }
 
@@ -47,6 +49,7 @@ impl Game {
         match self {
             Game::Blocks => Str::GameBlocks,
             Game::Tiles => Str::Game4096,
+            Game::Solitaire => Str::GameSolitaire,
         }
     }
 
@@ -58,6 +61,13 @@ impl Game {
                 &[Str::HelpBlocks, Str::HelpBlocks2, Str::HelpBlocks3, Str::HelpBlocks4, Str::HelpBlocks5]
             }
             Game::Tiles => &[Str::Help4096, Str::Help40962, Str::Help40963],
+            Game::Solitaire => &[
+                Str::HelpSolitaire,
+                Str::HelpSolitaire2,
+                Str::HelpSolitaire3,
+                Str::HelpSolitaire4,
+                Str::HelpSolitaire5,
+            ],
         }
     }
 
@@ -67,6 +77,17 @@ impl Game {
         match self {
             Game::Blocks => "blocks.sav",
             Game::Tiles => "4096.sav",
+            Game::Solitaire => "solitaire.sav",
+        }
+    }
+
+    /// The save file's path ([`DIR`] and [`Game::file`]).
+    #[must_use]
+    pub const fn path(self) -> &'static str {
+        match self {
+            Game::Blocks => "/.orpheus/games/blocks.sav",
+            Game::Tiles => "/.orpheus/games/4096.sav",
+            Game::Solitaire => "/.orpheus/games/solitaire.sav",
         }
     }
 
@@ -75,7 +96,8 @@ impl Game {
     pub fn settings(self) -> &'static [Setting] {
         match self {
             Game::Blocks => &SETTINGS[..BLOCKS_SETTINGS],
-            Game::Tiles => &SETTINGS[BLOCKS_SETTINGS..],
+            Game::Tiles => &SETTINGS[BLOCKS_SETTINGS..SOLITAIRE_FROM],
+            Game::Solitaire => &SETTINGS[SOLITAIRE_FROM..],
         }
     }
 
@@ -89,9 +111,12 @@ impl Game {
 /// Where the games keep their files (05 §7.13).
 pub const DIR: &str = "/.orpheus/games";
 pub const SCORES_FILE: &str = "scores.bin";
+/// [`SCORES_FILE`] in [`DIR`].
+pub const SCORES_PATH: &str = "/.orpheus/games/scores.bin";
 
 /// Store keys of the games' settings: `0x0E__` (the games' own range, like
-/// the apps' `0x0D__`), Blocks from `0x0E01`, 4096 from `0x0E21`.
+/// the apps' `0x0D__`), Blocks from `0x0E01`, 4096 from `0x0E21`,
+/// Solitaire from `0x0E41`.
 pub mod id {
     use crate::settings::SettingId;
     pub const BLOCKS_MODE: SettingId = SettingId(0x0E01);
@@ -109,6 +134,13 @@ pub mod id {
     pub const TILES_FOUR: SettingId = SettingId(0x0E23);
     pub const TILES_UNDO: SettingId = SettingId(0x0E24);
     pub const TILES_ANIMATIONS: SettingId = SettingId(0x0E25);
+    pub const SOL_DRAW: SettingId = SettingId(0x0E41);
+    pub const SOL_PASSES: SettingId = SettingId(0x0E42);
+    pub const SOL_SCORING: SettingId = SettingId(0x0E43);
+    pub const SOL_AUTO_MOVE: SettingId = SettingId(0x0E44);
+    pub const SOL_AUTO_COMPLETE: SettingId = SettingId(0x0E45);
+    pub const SOL_TIMER: SettingId = SettingId(0x0E46);
+    pub const SOL_WINNABLE: SettingId = SettingId(0x0E47);
 }
 
 /// Lock delay, auto-shift delay and repeat interval choices (ms).
@@ -143,13 +175,20 @@ const BOARDS: &[Choice] = &[Choice::Lit("4 × 4"), Choice::Lit("5 × 5"), Choice
 const GOAL_TILES: &[Choice] =
     &[Choice::Lit("2048"), Choice::Lit("4096"), Choice::Lit("8192"), Choice::S(Str::GameEndless)];
 const FOURS: &[Choice] = &[Choice::Lit("0 %"), Choice::Lit("10 %"), Choice::Lit("25 %"), Choice::Lit("50 %")];
+const DRAWS: &[Choice] = &[Choice::S(Str::GameDrawOne), Choice::S(Str::GameDrawThree)];
+const PASSES: &[Choice] = &[Choice::S(Str::GameUnlimited), Choice::Lit("3"), Choice::Lit("1")];
+const SCORINGS: &[Choice] =
+    &[Choice::S(Str::GameStandard), Choice::S(Str::GameCasino), Choice::S(Str::GameNoScore)];
+/// Passes through the stock per choice of `PASSES` (0 = unlimited).
+pub const PASS_LIMITS: [u8; 3] = [0, 3, 1];
 
 const BLOCKS_SETTINGS: usize = 10;
+const SOLITAIRE_FROM: usize = 15;
 
-/// Every game setting (Blocks', then 4096's), each with the default that
-/// suits a first game. Stored like the apps' settings; edited in the
-/// pause menu's Settings.
-pub const SETTINGS: [Setting; 15] = [
+/// Every game setting (Blocks', 4096's, Solitaire's), each with the
+/// default that suits a first game. Stored like the apps' settings; edited
+/// in the pause menu's Settings.
+pub const SETTINGS: [Setting; 22] = [
     c(0x0E01, Str::GameMode, MODES, 0),
     r(0x0E02, Str::GameStartLevel, 1, 15, 1, Unit::None, 1),
     c(0x0E03, Str::GamePieces, PIECES, 0),
@@ -165,14 +204,31 @@ pub const SETTINGS: [Setting; 15] = [
     c(0x0E23, Str::GameChanceOfFour, FOURS, 1),
     c(0x0E24, Str::GameUndoSteps, ZERO_TO_THREE, 1),
     t(0x0E25, Str::Animations, 1),
+    c(0x0E41, Str::GameDraw, DRAWS, 0),
+    c(0x0E42, Str::GamePasses, PASSES, 0),
+    c(0x0E43, Str::GameScoring, SCORINGS, 0),
+    t(0x0E44, Str::GameAutoMove, 1),
+    t(0x0E45, Str::GameAutoComplete, 1),
+    t(0x0E46, Str::GameTimer, 1),
+    t(0x0E47, Str::GameWinnable, 1),
 ];
 
 /// Settings that change the rules apply from the next game; the others
-/// (ghost, previews, animations, auto-shift and repeat) at once.
+/// (ghost, previews, animations, auto-shift and repeat, Solitaire's
+/// assists and timer) at once.
 #[must_use]
 pub fn applies_next_game(sid: SettingId) -> bool {
-    ![id::BLOCKS_GHOST, id::BLOCKS_PREVIEWS, id::BLOCKS_AUTO_SHIFT, id::BLOCKS_REPEAT, id::TILES_ANIMATIONS]
-        .contains(&sid)
+    ![
+        id::BLOCKS_GHOST,
+        id::BLOCKS_PREVIEWS,
+        id::BLOCKS_AUTO_SHIFT,
+        id::BLOCKS_REPEAT,
+        id::TILES_ANIMATIONS,
+        id::SOL_AUTO_MOVE,
+        id::SOL_AUTO_COMPLETE,
+        id::SOL_TIMER,
+    ]
+    .contains(&sid)
 }
 
 fn pick<T: Copy>(table: &[T], v: i16, default: T) -> T {
@@ -221,6 +277,25 @@ pub fn tiles_animations<S: SettingsService + ?Sized>(s: &S) -> bool {
     s.setting(id::TILES_ANIMATIONS) != 0
 }
 
+/// The Solitaire rules from the settings.
+pub fn solitaire_config<S: SettingsService + ?Sized>(s: &S) -> solitaire::Config {
+    solitaire::Config {
+        draw: if s.setting(id::SOL_DRAW) == 1 { 3 } else { 1 },
+        passes: pick(&PASS_LIMITS, s.setting(id::SOL_PASSES), 0),
+        scoring: solitaire::Scoring::from_u8(u8::try_from(s.setting(id::SOL_SCORING)).unwrap_or(0))
+            .unwrap_or_default(),
+        auto_move: s.setting(id::SOL_AUTO_MOVE) != 0,
+        auto_complete: s.setting(id::SOL_AUTO_COMPLETE) != 0,
+        winnable: s.setting(id::SOL_WINNABLE) != 0,
+    }
+    .sanitised()
+}
+
+/// Solitaire's timer is shown.
+pub fn solitaire_timer<S: SettingsService + ?Sized>(s: &S) -> bool {
+    s.setting(id::SOL_TIMER) != 0
+}
+
 /// What the screens ask of the service's storage side.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum GamesRequest {
@@ -255,14 +330,272 @@ pub trait GamesService {
     }
 }
 
+/// What the card side is asked to do, one at a time ([`GamesIo`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CardOp {
+    /// Read [`SCORES_PATH`] into the buffer and see which games have a
+    /// save file ([`Game::path`]).
+    Load,
+    /// Read the game's save file into the buffer.
+    Read(u8),
+    /// Write the buffer's bytes as the game's save file (creating
+    /// [`DIR`]).
+    Write(u8),
+    /// Remove the game's save file (none is fine).
+    Remove(u8),
+    /// Write the buffer's bytes as [`SCORES_PATH`].
+    WriteScores,
+}
+
+/// The card side's answer to a [`CardOp`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct CardAnswer {
+    pub ok: bool,
+    /// Bytes read into the buffer (`Load`, `Read`).
+    pub len: u16,
+    /// `Load`: bit `id` set for every game with a save file.
+    pub saved: u8,
+}
+
+impl CardAnswer {
+    /// The operation could not be carried out (no card, a card error, no
+    /// answer in time).
+    pub const FAILED: CardAnswer = CardAnswer { ok: false, len: 0, saved: 0 };
+}
+
+/// Operations queued at most.
+const IO_QUEUE: usize = 8;
+
+/// The storage side of [`GamesService`] for a firmware whose card belongs
+/// to another task: requests become card operations in a short queue, one
+/// out at a time, each with the bytes it writes encoded when it goes out
+/// (so a save holds the game as it is then) and its answer applied to the
+/// hub when it comes back. `Open` is answered late: until the save file is
+/// read the hub's `opening` names the game and the game screen waits.
+/// The simulator runs the same logic in its deferred mode (`set:gamesio=on`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct GamesIo {
+    queue: [Option<CardOp>; IO_QUEUE],
+    out: Option<CardOp>,
+}
+
+impl Default for GamesIo {
+    fn default() -> Self {
+        GamesIo::new()
+    }
+}
+
+impl GamesIo {
+    #[must_use]
+    pub const fn new() -> GamesIo {
+        GamesIo { queue: [None; IO_QUEUE], out: None }
+    }
+
+    /// The operation out (sent to the card side, not answered yet).
+    #[must_use]
+    pub fn out(&self) -> Option<CardOp> {
+        self.out
+    }
+
+    /// Something is queued or out.
+    #[must_use]
+    pub fn busy(&self) -> bool {
+        self.out.is_some() || self.queue[0].is_some()
+    }
+
+    fn push(&mut self, op: CardOp) {
+        if self.queue.contains(&Some(op)) {
+            return;
+        }
+        if let Some(slot) = self.queue.iter_mut().find(|s| s.is_none()) {
+            *slot = Some(op);
+        }
+    }
+
+    /// The operation out could not be sent (the card side's queue was
+    /// full): it goes back to the front, to be sent again.
+    pub fn put_back(&mut self) {
+        if let Some(op) = self.out.take() {
+            self.queue.copy_within(..IO_QUEUE - 1, 1);
+            self.queue[0] = Some(op);
+        }
+    }
+
+    fn pop(&mut self) -> Option<CardOp> {
+        let op = self.queue[0].take()?;
+        self.queue.copy_within(1.., 0);
+        self.queue[IO_QUEUE - 1] = None;
+        Some(op)
+    }
+
+    /// A screen's request, as card operations. The score table is read
+    /// before anything else.
+    pub fn request(&mut self, hub: &mut Hub, r: GamesRequest) {
+        if !hub.loaded && self.out != Some(CardOp::Load) {
+            self.push(CardOp::Load);
+        }
+        match r {
+            GamesRequest::Load => {}
+            GamesRequest::Open(id) => {
+                if hub.session.game() == Some(id) {
+                    hub.opening = None;
+                    return;
+                }
+                if hub.opening == Some(id) {
+                    return;
+                }
+                // Another game in progress waits in its file.
+                if let Some(g) = hub.session.game().filter(|_| hub.session.in_progress()) {
+                    self.push(CardOp::Write(g));
+                }
+                hub.opening = Some(id);
+                self.push(CardOp::Read(id));
+            }
+            GamesRequest::Save => {
+                if let Some(g) = hub.session.game() {
+                    self.push(CardOp::Write(g));
+                }
+            }
+            GamesRequest::Discard(id) => {
+                hub.set_saved(id, false);
+                self.push(CardOp::Remove(id));
+            }
+            GamesRequest::SaveScores => self.push(CardOp::WriteScores),
+        }
+    }
+
+    /// The next operation for the card side and the length of the bytes
+    /// it writes (encoded into `buf`, at least [`orpheus_games::SAVE_MAX`]
+    /// bytes); `None` while one is out or when nothing waits. A save of a
+    /// game no longer in RAM is dropped; of a finished one, it removes the
+    /// file; a read nobody waits for any more is dropped.
+    pub fn next(&mut self, hub: &Hub, buf: &mut [u8]) -> Option<(CardOp, usize)> {
+        if self.out.is_some() {
+            return None;
+        }
+        while let Some(op) = self.pop() {
+            let job = match op {
+                CardOp::Load | CardOp::Remove(_) => Some((op, 0)),
+                CardOp::Read(g) => (hub.opening == Some(g)).then_some((op, 0)),
+                CardOp::Write(g) if hub.session.game() == Some(g) => {
+                    if hub.session.in_progress() {
+                        hub.session.encode(buf).map(|n| (op, n))
+                    } else {
+                        Some((CardOp::Remove(g), 0))
+                    }
+                }
+                CardOp::Write(_) => None,
+                CardOp::WriteScores => hub.scores.encode(buf).map(|n| (op, n)),
+            };
+            if let Some(j) = job {
+                self.out = Some(j.0);
+                return Some(j);
+            }
+        }
+        None
+    }
+
+    /// The card side answered the operation out; `buf` holds the bytes it
+    /// read. True if the hub changed (the screens look again).
+    pub fn done(&mut self, hub: &mut Hub, a: CardAnswer, buf: &[u8]) -> bool {
+        let Some(op) = self.out.take() else { return false };
+        let data = buf.get(..usize::from(a.len)).unwrap_or(&[]);
+        match op {
+            CardOp::Load => {
+                // A failed read is tried again with the next request (the
+                // card may be back by then); the table is never written
+                // before it was read.
+                if a.ok {
+                    hub.loaded = true;
+                    if let Some(s) = orpheus_games::Scores::decode(data) {
+                        hub.scores = s;
+                    }
+                    for g in Game::ALL {
+                        hub.set_saved(g.id(), a.saved & (1 << g.id()) != 0);
+                    }
+                }
+                true
+            }
+            CardOp::Read(g) => {
+                if hub.opening != Some(g) {
+                    return false;
+                }
+                hub.opening = None;
+                hub.session = if a.ok {
+                    Session::decode(data, Some(g)).unwrap_or(Session::None)
+                } else {
+                    Session::None
+                };
+                true
+            }
+            CardOp::Write(g) => {
+                hub.set_saved(g, a.ok);
+                true
+            }
+            CardOp::Remove(g) => {
+                hub.set_saved(g, false);
+                true
+            }
+            // A failed write is made again with the next score change.
+            CardOp::WriteScores => false,
+        }
+    }
+}
+
 /// Start a new game of `game` with the settings as they are now.
+///
+/// Solitaire with casino scoring: the game it replaces pays out its
+/// foundation cards, the new deal is charged to the bank (so that a deal
+/// cannot be refused for free), and the table is written.
 pub fn new_game<S: SettingsService + GamesService + ?Sized>(svc: &mut S, game: Game) {
     let seed = svc.game_seed();
+    let banked = settle_casino(svc);
     let session = match game {
         Game::Blocks => Session::Blocks(blocks::Blocks::new(blocks_config(svc), seed)),
         Game::Tiles => Session::Tiles(tiles::Tiles::new(tiles_config(svc), seed)),
+        Game::Solitaire => Session::Solitaire(solitaire::Solitaire::new(solitaire_config(svc), seed)),
     };
+    let charge =
+        matches!(&session, Session::Solitaire(s) if s.config().scoring == solitaire::Scoring::Casino);
+    if charge {
+        svc.games_mut().scores.add_to_bank(gid::SOLITAIRE, -solitaire::CASINO_DEAL, true);
+    }
     svc.games_mut().session = session;
+    if banked || charge {
+        svc.games_request(GamesRequest::SaveScores);
+    }
+}
+
+/// What a casino game earned so far: 5 per card on the foundations.
+fn casino_earned(s: &Session) -> Option<i32> {
+    match s {
+        Session::Solitaire(g) if g.config().scoring == solitaire::Scoring::Casino => {
+            Some(solitaire::CASINO_CARD * i32::try_from(g.board().on_foundations()).unwrap_or(0))
+        }
+        _ => None,
+    }
+}
+
+/// A casino game in progress that is left for a new one pays out what it
+/// earned (its deal was charged when it was dealt). True if it did.
+fn settle_casino<S: GamesService + ?Sized>(svc: &mut S) -> bool {
+    let hub = svc.games_mut();
+    match casino_earned(&hub.session) {
+        Some(earned) if hub.session.in_progress() => {
+            hub.scores.add_to_bank(gid::SOLITAIRE, earned, false);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// The casino bank as shown during a game: the table's bank (the deal
+/// already paid) plus what the game on screen has earned so far.
+#[must_use]
+pub fn casino_bank<S: GamesService + ?Sized>(svc: &S) -> i32 {
+    let hub = svc.games();
+    let earned = if hub.session.in_progress() { casino_earned(&hub.session).unwrap_or(0) } else { 0 };
+    hub.scores.bank(gid::SOLITAIRE) + earned
 }
 
 /// The score-table entry of a finished game: (game id, variant, outcome).
@@ -301,6 +634,33 @@ pub fn outcome(s: &Session) -> Option<(u8, u16, Outcome)> {
                 won: t.goal_reached(),
             },
         )),
+        Session::Solitaire(g) if g.ended() => {
+            let ms = orpheus_games::steps_to_ms(g.steps());
+            let won = g.won();
+            let up = g.board().on_foundations();
+            let o = match g.config().scoring {
+                solitaire::Scoring::Standard => Outcome {
+                    result: u32::try_from(g.score()).unwrap_or(0),
+                    detail: ms,
+                    lower_is_better: false,
+                    ranked: true,
+                    won,
+                },
+                // The game's payout (5 per card); the bank is the table's.
+                solitaire::Scoring::Casino => Outcome {
+                    result: up * solitaire::CASINO_CARD.unsigned_abs(),
+                    detail: ms,
+                    lower_is_better: false,
+                    ranked: true,
+                    won,
+                },
+                // No score: the time of a won game.
+                solitaire::Scoring::None => {
+                    Outcome { result: ms.max(1), detail: up, lower_is_better: true, ranked: won, won }
+                }
+            };
+            Some((gid::SOLITAIRE, g.config().variant(), o))
+        }
         _ => None,
     }
 }
@@ -310,6 +670,9 @@ pub fn outcome(s: &Session) -> Option<(u8, u16, Outcome)> {
 /// best.
 pub fn finish<S: GamesService + ?Sized>(svc: &mut S) -> bool {
     let Some((game, variant, o)) = outcome(&svc.games().session) else { return false };
+    if let Some(earned) = casino_earned(&svc.games().session) {
+        svc.games_mut().scores.add_to_bank(gid::SOLITAIRE, earned, false);
+    }
     let best = svc.games_mut().scores.record(game, variant, o);
     svc.games_request(GamesRequest::SaveScores);
     svc.games_request(GamesRequest::Discard(game));
@@ -321,13 +684,18 @@ pub fn best<S: SettingsService + GamesService + ?Sized>(svc: &S, game: Game) -> 
     let variant = match game {
         Game::Blocks => blocks_config(svc).variant(),
         Game::Tiles => tiles_config(svc).variant(),
+        Game::Solitaire => solitaire_config(svc).variant(),
     };
     svc.games().scores.get(game.id(), variant).map(|r| r.best).filter(|&b| b > 0)
 }
 
 /// Whether the best result of `game` under the current settings is a time.
 pub fn best_is_time<S: SettingsService + ?Sized>(svc: &S, game: Game) -> bool {
-    game == Game::Blocks && blocks_config(svc).mode == blocks::Mode::Lines40
+    match game {
+        Game::Blocks => blocks_config(svc).mode == blocks::Mode::Lines40,
+        Game::Solitaire => solitaire_config(svc).scoring == solitaire::Scoring::None,
+        Game::Tiles => false,
+    }
 }
 
 /// A seed from two numbers that differ between games (uptime, clock).
@@ -369,8 +737,12 @@ mod tests {
             let key = std::format!("id = \"{:#06X}\"", s.id.0).replace("0X", "0x");
             assert!(manifest.contains(&key), "{key} missing from tests/settings/effects.toml");
         }
-        assert_eq!(Game::Blocks.settings().len() + Game::Tiles.settings().len(), SETTINGS.len());
-        assert!(Game::Tiles.settings().iter().all(|s| s.id.0 >= 0x0E21));
+        assert_eq!(
+            Game::Blocks.settings().len() + Game::Tiles.settings().len() + Game::Solitaire.settings().len(),
+            SETTINGS.len()
+        );
+        assert!(Game::Solitaire.settings().iter().all(|s| s.id.0 >= 0x0E41));
+        assert!(Game::Tiles.settings().iter().all(|s| (0x0E21..0x0E41).contains(&s.id.0)));
         assert!(matches!(def(id::BLOCKS_MODE).map(|d| d.kind), Some(Kind::Choice(_))));
     }
 
@@ -402,5 +774,125 @@ mod tests {
         }
         assert_eq!(Game::from_id(0), None);
         assert_ne!(Game::Blocks.file(), Game::Tiles.file());
+        for g in Game::ALL {
+            assert_eq!(g.path(), std::format!("{DIR}/{}", g.file()));
+        }
+        assert_eq!(SCORES_PATH, std::format!("{DIR}/{SCORES_FILE}"));
+    }
+
+    /// The firmware's card queue: the table first, a game in progress
+    /// written before another is read, `Open` answered late, reads nobody
+    /// waits for dropped, a finished game's save removed.
+    #[test]
+    fn games_io_queue() {
+        use orpheus_games::{SAVE_MAX, blocks::Blocks, tiles::Tiles};
+        let mut hub = Hub::new();
+        let mut io = GamesIo::new();
+        let mut buf = [0u8; SAVE_MAX];
+        io.request(&mut hub, GamesRequest::Open(gid::TILES));
+        assert_eq!(hub.opening, Some(gid::TILES));
+        assert_eq!(io.next(&hub, &mut buf), Some((CardOp::Load, 0)));
+        assert_eq!(io.next(&hub, &mut buf), None, "one out at a time");
+        let ok = CardAnswer { ok: true, len: 0, saved: 1 << gid::TILES };
+        assert!(io.done(&mut hub, ok, &buf));
+        assert!(hub.loaded && hub.has_save(gid::TILES));
+        // The save file arrives.
+        let saved = Session::Tiles(Tiles::new(tiles::Config::DEFAULT, 4));
+        let mut file = [0u8; SAVE_MAX];
+        let n = saved.encode(&mut file).unwrap();
+        assert_eq!(io.next(&hub, &mut buf), Some((CardOp::Read(gid::TILES), 0)));
+        buf[..n].copy_from_slice(&file[..n]);
+        assert!(io.done(&mut hub, CardAnswer { ok: true, len: n as u16, saved: 0 }, &buf));
+        assert_eq!((hub.opening, &hub.session), (None, &saved));
+        // Another game: this one is written first, with its bytes.
+        io.request(&mut hub, GamesRequest::Open(gid::BLOCKS));
+        let (op, len) = io.next(&hub, &mut buf).unwrap();
+        assert_eq!(op, CardOp::Write(gid::TILES));
+        assert_eq!(Session::decode(&buf[..len], Some(gid::TILES)), Some(saved));
+        assert!(io.done(&mut hub, CardAnswer { ok: true, ..CardAnswer::default() }, &buf));
+        // The player went back before the read: the read is dropped.
+        hub.opening = None;
+        assert_eq!(io.next(&hub, &mut buf), None);
+        assert!(!io.busy());
+        // A finished game's save goes; a failed read starts no game.
+        hub.session = Session::Blocks(Blocks::new(blocks::Config::DEFAULT, 1));
+        io.request(&mut hub, GamesRequest::Open(gid::SOLITAIRE));
+        assert_eq!(io.next(&hub, &mut buf).map(|j| j.0), Some(CardOp::Write(gid::BLOCKS)));
+        io.done(&mut hub, CardAnswer::FAILED, &buf);
+        assert!(!hub.has_save(gid::BLOCKS), "a failed write is no save");
+        assert_eq!(io.next(&hub, &mut buf).map(|j| j.0), Some(CardOp::Read(gid::SOLITAIRE)));
+        io.done(&mut hub, CardAnswer::FAILED, &buf);
+        assert_eq!((hub.opening, hub.session.game()), (None, None));
+        hub.session = Session::Tiles(Tiles::from_cells(
+            tiles::Config::DEFAULT,
+            1,
+            &[1, 2, 1, 2, 2, 1, 2, 1, 1, 2, 1, 2, 2, 1, 2, 1],
+        ));
+        assert!(!hub.session.in_progress());
+        io.request(&mut hub, GamesRequest::Save);
+        assert_eq!(io.next(&hub, &mut buf).map(|j| j.0), Some(CardOp::Remove(gid::TILES)));
+        io.done(&mut hub, CardAnswer { ok: true, ..CardAnswer::default() }, &buf);
+        // Scores: encoded when they go out; the queue holds each op once.
+        io.request(&mut hub, GamesRequest::SaveScores);
+        io.request(&mut hub, GamesRequest::SaveScores);
+        let (op, len) = io.next(&hub, &mut buf).unwrap();
+        assert_eq!((op, orpheus_games::Scores::decode(&buf[..len]).is_some()), (CardOp::WriteScores, true));
+        io.done(&mut hub, CardAnswer { ok: true, ..CardAnswer::default() }, &buf);
+        assert_eq!(io.next(&hub, &mut buf), None);
+        // A failed table read is tried again; the table is not written
+        // before it was read.
+        let mut hub = Hub::new();
+        let mut io = GamesIo::new();
+        io.request(&mut hub, GamesRequest::Load);
+        io.next(&hub, &mut buf);
+        io.done(&mut hub, CardAnswer::FAILED, &buf);
+        assert!(!hub.loaded);
+        io.request(&mut hub, GamesRequest::SaveScores);
+        assert_eq!(io.next(&hub, &mut buf).map(|j| j.0), Some(CardOp::Load));
+    }
+
+    /// Casino: the deal is charged, a game left pays its cards out.
+    #[test]
+    fn casino_deal_charged_and_paid() {
+        struct G(SettingsCache, Hub, u32);
+        impl SettingsService for G {
+            fn setting(&self, id: SettingId) -> i16 {
+                self.0.get(id)
+            }
+            fn set_setting(&mut self, id: SettingId, v: i16) {
+                self.0.set(id, v);
+            }
+            fn factory_reset(&mut self) {}
+        }
+        impl GamesService for G {
+            fn games(&self) -> &Hub {
+                &self.1
+            }
+            fn games_mut(&mut self) -> &mut Hub {
+                &mut self.1
+            }
+            fn games_request(&mut self, r: GamesRequest) {
+                if r == GamesRequest::SaveScores {
+                    self.2 += 1;
+                }
+            }
+            fn game_seed(&mut self) -> u64 {
+                9
+            }
+        }
+        let mut g = G(SettingsCache::new(), Hub::new(), 0);
+        g.set_setting(id::SOL_SCORING, 1);
+        new_game(&mut g, Game::Solitaire);
+        assert_eq!((g.1.scores.bank(gid::SOLITAIRE), g.2), (-52, 1));
+        let up = match &g.1.session {
+            Session::Solitaire(s) => s.board().on_foundations() as i32,
+            _ => unreachable!(),
+        };
+        assert_eq!(casino_bank(&g), -52 + 5 * up);
+        new_game(&mut g, Game::Solitaire);
+        assert_eq!(g.1.scores.bank(gid::SOLITAIRE), -104 + 5 * up);
+        assert!(!best_is_time(&g, Game::Solitaire));
+        g.set_setting(id::SOL_SCORING, 2);
+        assert!(best_is_time(&g, Game::Solitaire));
     }
 }

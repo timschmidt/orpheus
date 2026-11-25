@@ -524,7 +524,7 @@ mod tests {
             (id::ACCENT, 0),
             (id::CLOCK_IN_BAR, 1),
             (id::LIST_ROLL, 1),
-            (id::HOME_APPS, 0x07FF),
+            (id::HOME_APPS, 0x0FFF),
         ] {
             assert_eq!(def(sid).unwrap().default, v, "{:#06x}", sid.0);
         }

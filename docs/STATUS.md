@@ -63,8 +63,161 @@ of every session. Newest entries first in §3.
 | USB-W1 (bug) | **fixed and self-recovering (host-tested, built); not yet run on the player** | Root cause: the SETUP read was not cancel-safe (embassy-usb drops it on bus events; the interrupt stayed masked for good) and late stages landed on the next transfer. Drop-safe driver, liveness recovery, watchdog only when recovery cannot help, counters in `STATS` 24–30, soak logs self-recoveries, `xtask dev usb-cancel`. 06 §2.6; user check 28 |
 | VER-10 (static stack) | **tool done (host-tested), gate step; firmware cut from ≥ 30,232 to 22,900 B, then to 16,188 B nested worst case of 22,528 B usable: margin 6,340 B, goal ≥ 4 KiB met (built, not yet run on the player)** | `cargo xtask stack [--check] [--root P]`, `stack.toml`, `budgets.toml stack_static_margin_bytes` = 6,084 B (the measured margin less one 256 B step: a ratchet). Second round: the card task's poll frames (the volume and the decoder no longer move by value; `idle`'s and start-up's children are futures of their own), .bss −512 B. Lead: soak, a Vorbis seek, the Authenticator, card hand-over to USB (session entry 2026-11-25 "VER-10: card task frames") |
 | SYN-1 | **done (host)**; not in the firmware (SYN-3) | `orpheus-synth`: band-limited oscillators (polyBLEP/BLAMP, sine, wavetables, white/pink noise), 2–4 operator FM (8 algorithms, feedback), ADSR (linear/exponential), pitch envelope, SVF LP/BP/HP, LFOs (Hz or tempo sync), 16 voices + 4 fade-out tails with stealing, mono legato glide, sample-accurate events, 6 drum voices, delay/chorus/reverb sends, soft limiter; 69,040 B engine; golden hashes equal at opt-level 1 and release; player estimate: 16 saw-lead voices ≈ 79 % of 144 MHz (session entry 2026-11-25 "SYN-1") |
+| GAME-2 + Games on the player (M14) | **built (host + simulator + firmware), not yet run on the player** | Solitaire (Klondike: draw 1/3, passes, standard/casino/none, auto-move, auto-complete, exact undo, best-effort winnable deals; fuzz target `solitaire_keys`, 33 goldens, 7 settings `0x0E41–0x0E47` with differential tests); firmware `GamesService` (hub 872 B + 512 B buffer, card task `Req::Games` as a chore while playing, saves on pause, quit, power-off and USB hand-over), Games on Home (default mask 0x0FFF; the owner's stored mask needs the Games bit). Stack margin 4,268 B (budget 4,096). Lead: session entry 2026-11-25 "GAME-2" |
 
 ## 3. Session log
+
+### 2026-11-25 — GAME-2: Games on the player; Solitaire (host, simulator, firmware) (worker, no hardware)
+
+Two parts: the Games app (GAME-0/1/3) integrated into the firmware, and
+GAME-2 Solitaire. 05 §7.13 has a second "As built" note (rules, keys,
+layout, scoring, files, settings, numbers).
+
+**Firmware integration** (built, not yet run on the player):
+* `orpheus-apps/games` on in `fw/firmware` (and `orpheus-ui/menu-key`
+  with it); `App::Games.on_player()` true; the default Home mask is every
+  app (`settings::HOME_ALL` = 0x0FFF): Home has twelve cells, Games before
+  Settings. **The owner's player has 0x07FF stored** (restored with
+  `settings default` on 2026-11-25): Games appears only after Settings ›
+  Display › Home screen › Games, or `settings default 0x30b` (the lead's
+  call). The test look (suite) reads the default, so the suite sees Games.
+* String table: the game strings are no longer behind the feature (the
+  numbers no longer depend on it); new strings (Solitaire, 23) are
+  appended after them.
+* `GamesService` (`fw/firmware/src/games.rs`, `services.rs`): the hub in
+  `GamesRam` (872 B, `.bss`, written once by `Fw::new`; a `const` hub
+  landed in `.data` first: +1.4 KB resident) and a 512 B card buffer
+  (`static mut`, reached through raw pointers by one side at a time).
+  Requests become card operations in `orpheus_apps::games::GamesIo`
+  (host-tested `games_io_queue`; the simulator's `set:gamesio=on` runs the
+  same queue, `deferred_card_queue`): Load (read `scores.bin`, look for
+  the three save files), Read, Write (truncate, write, close, flush),
+  Remove, WriteScores; one out at a time as `media::Req::Games` (request
+  kind 15, `REQ_KINDS` 16) with the buffer lent (slot protocol as the
+  Authenticator's import: `games::SLOT`, data tag 0x101). Idle: served at
+  once. **While music plays: a chore of its own kind under the chore rule
+  (`audio::SEED_US` 25 ms until measured)**. `Open` is answered late: the
+  hub's `opening` names the game, the game screen shows "Loading…" until
+  the save is read (Back leaves); a game in progress is written before
+  another is read; a read nobody waits for is dropped; the score table
+  is never written before it was read. A job not started in 3 s is taken
+  back; without a mounted card operations fail at once (a read starts a
+  new game; nothing is marked saved).
+* Seeds: uptime (µs, with a counter) and the RTC's seconds since 2000,
+  mixed (`seed_from`). `display_on`: the screen state the UI task
+  publishes (`drain::Shared::screen_on`).
+* Saves: pause and quit (as before), **power-off** (`Ui::power_off`, after
+  the recorder, before the card is flushed: up to 1.5 s) and **before
+  the card goes to a computer** (USB file transfer or disk image: up to
+  1 s before the USB task is signalled, so the save is ahead of
+  `Req::Release` in the card task's queue).
+
+**Solitaire (GAME-2)**: `orpheus_games::solitaire` (Klondike: draw one or
+three, passes unlimited / 3 / 1, standard / casino / no scoring,
+safe auto-move also at the deal, auto-complete, a 100-move exact undo,
+game over when no move changes anything, a best-effort winnable-deal
+check), the Solitaire screen (`screens/solitaire.rs`: 128 × 128 layout,
+seven 18 px columns, 17 × 20 px cards, own 3 × 5 ranks and 5 × 5 / 7 × 7
+suit shapes that differ by ≥ 3 pixels, fans closing up when long, 2 px
+cursor frame, partial redraw per pile), cursor model and keys per §7.13,
+seven settings `0x0E41–0x0E47` (`STORED` 113 → 120), casino bank in the
+score table (`Scores::bank`, variant 0xFFFF). The Games list has
+Solitaire third.
+
+**Tests**: engine unit tests (9); `tests/solitaire.rs`: 300 random games
+and every rule combination through the fuzz body, winning lines of the
+deal check played with the keys (≥ 10 won games), assists, keys, save and
+continue seamless, fixed deals, the deal check's effort; fuzz target
+`solitaire_keys` (every recorded move checked against an independent
+reference model of the piles and rules, the board equal to the
+reference's, undo back to exactly the position before the move it takes
+back, score rules, saves read back, determinism) with 4 seeds in
+`tests/fuzz-corpus/solitaire_keys/` (one a won game), replayed by
+`tests/fuzz_corpus.rs`; 120 s of `cargo fuzz` (nightly-2026-11-05): 2,955
+runs, no finding (slow: every input twice, every move checked).
+Simulator (`sim/tests/games.rs`): Solitaire saved/undo/Back, **partial
+redraw equals a full draw after every key** (found and fixed: blended
+frame corners over stale gap pixels, a target mark not keyed), the
+deferred card queue, casino bank, and **differential tests of all seven
+settings** (own game changes, the other two games and Home do not);
+`games::tests::games_io_queue`, `casino_deal_charged_and_paid`.
+
+**Measured** (host): deal check, release: 0.93 ms per new game on average,
+2.89 ms worst (draw one, every new game checked); 2.20 / 4.60 ms (draw
+three, 75 % checked); 1.31 / 1.72 ms (draw three, one pass: the check
+rarely wins, the first deal is used). Effort was cut from 24 deals × 6
+play-outs to 16 × 4 for the player. Player estimate (× 100–150 for an
+M4 at 96–144 MHz, code paged): 0.1–0.5 s per new game, the UI waiting
+(no "Dealing…" frame; a user check). Game loop (simulator with every
+service, per 33 ms frame): Home 2.9 µs; Blocks falling, a key every
+200 ms: 7.1 µs and 28.6 dirty rows; Solitaire with cursor keys 13.9 µs
+and 15.2 rows; Solitaire's timer alone 3.1 µs and 0.3 rows. Blocks
+already ran at 30 frames/s (`TICK_MS` 33) with partial redraw (well and
+panel keyed): unchanged.
+
+**Firmware numbers** (`cargo xtask build`): resident 80,620 B (text
+27,896, rodata 36,351, data 16,372), `.bss` 124,848 B (VER-10's record:
+resident 80,108, bss 123,408); code pages 113/128. **Static stack: 16,212
+B nested worst case of 20,480 B usable, margin 4,268 B** (was 6,076 of
+22,528): static RAM +1.9 KB (hub and queue 872, buffer 512, settings cache
++22 keys) moved the guard eight 256 B steps; `__bss_end` 0x1322A0 is
+96 B below the next step. Thread context 6,876 → 6,900 B, rt 8,144
+(unchanged). `budgets.toml` `stack_static_margin_bytes` 5,820 → **4,096**
+(the VER-10 goal: the next static step needs a stack cut first).
+Alternative kept in reserve: lend the frame buffer's last two rows as
+the card buffer (−512 B static, two steps) at the cost of no drawing
+while a save is out (up to 300 ms while music plays).
+
+**Suite and goldens**:
+* `tests/suite/journeys.toml`: journey `home` — `next*6` from Recorder
+  now reaches Games: new shot `home_games`, then `next shot:home_settings`;
+  expected `home.png`, `home_menu.png`, `home_recorder.png`,
+  `home_settings.png` redrawn (twelve-cell grid), `home_games.png` new.
+  New journey `games` (Home › Games list, values masked: they follow what
+  was played; reads only) with `expected/games/list.png`. Other journeys
+  unchanged (Settings is still `prev` from Music; the others are within
+  the first ten cells). `xtask dev suite`'s Home frames: one per app
+  (`App::COUNT`).
+* Soak: `App::Settings`'s Home position follows `App::GRID` (10 → 11:
+  **`browse settings` would have opened Games**); new explicit step
+  `browse games N SEED` (random keys in the Games app over the music; not
+  in the random picks, so `mixed` seed 1 replays as before).
+* Goldens: 36 changed — Home (`app_home_*` 6, `app_home_playing_*` 6,
+  `radio_home_*` 6, `tools_indicators_*` 6, `app_accent_red_home`,
+  `app_amber_home`: the Games cell), Settings › Display › Home screen
+  (`app_home_apps_*` 6: a Games row), the Games list (`games_list_*`,
+  `games_list_continue_*`: a Solitaire row); 33 new `games_sol_*` (new
+  deal, mid-game, depth, held, refused, draw three, long column, auto-
+  complete, won, no moves, casino, no score, pause, settings top/end,
+  How to play; Dark and Light; mid-game in Amber). Looked at all of them.
+
+**Gate**: host `fmt --check`, `clippy --workspace --all-targets -D
+warnings` (and `orpheus-apps`/`orpheus-ui`/`orpheus-games` without
+features), `cargo test --workspace` (1,266 passed, 9 ignored), goldens;
+fw `fmt --check`, `clippy --workspace -D warnings`, `cargo xtask build`,
+`size --check` (resident 80,619 B, bss 124,848 B), `check-resident` (57
+sections from 19 roots, none paged), `stack --check` (margin 4,268 B,
+budget 4,096 B): pass. Not run: `xtask test all` beyond `cargo test
+--workspace`, brand/site checks, HIL and every `xtask dev` step (the lead
+owns the player).
+
+**Lead, on the player** (user checks):
+* Home shows Games (after restoring the Home mask, above); Games › each
+  game: play Blocks, 4096 and Solitaire (draw one and three; casino once).
+* Save/continue: Back → pause menu (save written: `/.orpheus/games/<g>.sav`),
+  Quit, open again → "Continue" in the list and the same game; open
+  another game while one is in progress (the first is written first);
+  reboot and continue.
+* Power-off during a game (not from a test: by hand) → power on → the game
+  continues; USB file transfer during a game → the save is on the card
+  the computer sees; back → Continue.
+* Music while playing: Blocks during MP3/FLAC playback (no underruns;
+  `pcm:` lines; `chore` lines name `serve:games` with its measured need);
+  a pause/quit save while playing; `cargo xtask dev soak --replay` of a
+  file with `browse games 40 1`.
+* Solitaire's new game with Winnable only on: how long the UI waits (the
+  estimate above), drawing three.
+* The device suite (`home` and the new `games` journey).
 
 ### 2026-11-25 — **`fuzz-ui --settings` changed the owner's stored settings** (lead) — fixed
 

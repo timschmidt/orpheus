@@ -321,9 +321,11 @@ const SEED_US: [u32; KINDS] = [
     // each, was one 52–60 ms piece)
     20_000, 15_000, 15_000, 16_000, 8_000, 8_000,
     // requests: browse, want, text, queue-win, release, image, picture,
-    // lib-list, rebuild, drain, sensor, alert, otp, delete, update
+    // lib-list, rebuild, drain, sensor, alert, otp, delete, update, games
+    // (a save file or the score table: open, one write, close, flush; a
+    // guess like the import file's until measured)
     10_000, 15_000, 15_000, 2_000, 1_000, 1_000, 30_000, 20_000, 1_000, 15_000, 15_000, 1_000, 25_000, 30_000,
-    30_000,
+    30_000, 25_000,
 ];
 
 /// The chore kinds' measured needs (zeros: the seeds stand until measured;

@@ -41,7 +41,8 @@ about = "Home grid: app names in the strip, Home menu, quick panel"
 script = """
 expect-screen:Home shot:home
 next*4 shot:home_recorder
-next*6 shot:home_settings
+next*6 shot:home_games
+next shot:home_settings
 menu shot:home_menu back
 hold:menu expect-screen:QuickPanel shot:quick back
 expect-screen:Home
@@ -281,3 +282,17 @@ variants = [
 script = """
 next*9 ok expect-screen:UsbDrive shot:home back
 """
+
+# Games (M14, on Home since GAME-2's integration): the list only. Opening
+# it reads the score table and looks for save files (reads only); a
+# game's value ("Continue" or its best) follows what the player played,
+# so it is masked.
+[[journey]]
+name = "games"
+about = "Games app: the list of games (values masked)"
+script = """
+prev*2 ok wait:300 expect-screen:Games shot:list back
+"""
+
+[journey.shot.list]
+rects = [{ x = 60, y = 33, w = 68, h = 57, why = "the games' values: Continue or the best result" }]

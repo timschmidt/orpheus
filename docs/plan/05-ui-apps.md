@@ -867,8 +867,8 @@ to Player n" screen between turns) or computer.
   bounded without wind; terrain heights within the world; the same seed and
   inputs give the same round on host and player.
 
-**As built (GAME-0/1/3, 2026-11-25; host and simulator, not yet on the
-player's Home).**
+**As built (GAME-0/1/3, 2026-11-25; host and simulator; on the player's
+Home since the GAME-2 integration below).**
 * Logic: crate `orpheus-games` (no_std, no alloc, no floats,
   `forbid(unsafe_code)`): SplitMix64 `Rng` (state saved with the game),
   `StepClock` (ticks → whole 60 Hz steps, a gap over 250 ms pauses),
@@ -920,8 +920,96 @@ player's Home).**
   the next game (a toast says so); ghost, previews, shift, repeat and
   animations at once.
 * Not built yet: the effects synthesiser and music ducking, player
-  names, Solitaire, the artillery game, the firmware's `GamesService`
-  (card task: the files above; the power-off path: save the game).
+  names, the artillery game.
+
+**As built (GAME-2 Solitaire and the firmware integration, 2026-11-25;
+built, not yet run on the player).**
+* Firmware: `orpheus-apps/games` on (with it `orpheus-ui/menu-key`);
+  `App::Games.on_player()` true and bit 11 in the default Home mask
+  (`settings::HOME_ALL`, every app): Home has twelve cells, Games before
+  Settings. A player whose stored mask is the old default (0x07FF) keeps
+  it: Settings › Display › Home screen › Games, or `settings default
+  0x30b`. The game strings are no longer behind the feature (append only,
+  as everywhere).
+* `GamesService` on the player: the hub (`GamesRam`, 872 B in `.bss`)
+  and a 512 B card buffer; requests become card operations in
+  `orpheus_apps::games::GamesIo` (Load, Read, Write, Remove, WriteScores;
+  one out at a time, the bytes encoded when it goes out, a game in
+  progress written before another is read, a read nobody waits for
+  dropped, the score table never written before it was read). The card
+  task carries each out as `media::Req::Games` (`fw/firmware/src/games.rs`):
+  at once when idle, while music plays as a chore of its own kind under
+  the chore rule (seed need 25 ms until measured). `Open` is answered
+  late: the hub's `opening` names the game and the game screen shows
+  "Loading…" until the file is read (the simulator's `set:gamesio=on` runs
+  the same queue one operation per step). A job not started in 3 s is
+  taken back; without a mounted card operations fail at once (a read
+  starts a new game). Seeds: uptime (µs) and the RTC's seconds, mixed;
+  `display_on` from the UI's published screen state (`drain::Shared`).
+* Saves: on pause and quit (as on the host), on power-off (before the card
+  is flushed, up to 1.5 s) and before the card goes to the computer
+  (USB file transfer or a disk image, up to 1 s).
+* Solitaire (`orpheus_games::solitaire`): one deck, 13 piles in one array
+  of 52 (pile after pile; face-down counts per column), moves as
+  `from | to | n | flipped | auto` in a 100-move history; undo takes back
+  a move and the moves the game made after it (auto-move,
+  auto-complete) exactly. Rules: ace-up foundations by suit, columns down
+  in alternating colours, kings (or runs from one) into empty columns,
+  stock turns one or three cards, the waste goes back as often as Passes
+  allows (unlimited, 3, 1). Safe auto-move: aces, twos, and a card whose
+  two lower cards of the other colour are up; also at the deal. Auto-
+  complete: stock and waste empty and every card face up → a card every
+  4 steps. Game over: won, or no move changes anything (foundation moves,
+  waste to column, column moves that turn a card up, empty a column onto
+  a card or uncover a card for a foundation; the stock gone through as
+  often as allowed turns up no playable card). Scoring (own): standard
+  10 per card up, 5 per card turned up and per waste-to-column card, −15
+  per card taken back from a foundation, a pass −50 (one card) or −20
+  (three), a win +2 per second under 15 minutes, never shown below 0;
+  casino: a deal costs 52 from the bank (charged at the deal, so a deal
+  cannot be refused for free), 5 per card up, paid when the game ends or
+  is left for a new one, the bank a record of the score table (variant
+  0xFFFF, `Scores::bank`); none: the best is the time of a won game.
+  Winnable deals (best effort): the deal of the seed, else up to 16 deals
+  drawn from it, each tried with 4 randomised greedy play-outs of at most
+  400 moves (foundations first, then column moves that turn a card up,
+  then waste to column, then the stock); measured on the host (release):
+  0.9 ms per new game on average, 2.9 ms worst, drawing one; 2.2 / 4.6 ms
+  drawing three (75 % of draw-three new games get a checked deal); on the
+  player estimated 0.1–0.5 s, the UI waiting.
+* Keys: Prev/Next along the piles (stock, waste, the four foundations,
+  the seven columns; repeat while held), Up/Down one card more or less of
+  a column's face-up run, Up at its top to the pile above, Down from the
+  top row to the column below; OK (on release) picks up or puts down (on
+  the same pile: back; refused: the target flashes and the cards stay in
+  hand; on the stock: draw or turn the waste back); Menu sends the
+  cursor's card to its foundation, else every card that can go; hold OK
+  undoes; Back puts held cards back, else pauses.
+* Screen (full screen, 128 × 128): info line (Score / Bank / Moves; the
+  timer m:ss), top row at y 12 (stock, waste — draw three fans the top
+  three 9 px apart with the suit under each rank —, foundations), columns
+  from y 34, 18 px apart, cards 17 × 20 px; own 3 × 5 rank glyphs and
+  5 × 5 / 7 × 7 suit shapes (spade point with stem, heart, three-lobed club
+  with gaps, lozenge: they differ by at least three pixels, so suits read
+  without colour); red suits in the warning colour, black in the text
+  colour; face down: an accent hatch. Columns fan 3 px (face down) and
+  8 px (face up), closing to 1 and 5 px when long. Cursor: a 2 px accent
+  frame (the cards' border and the gap); held cards: a "good" frame; a
+  target mark under the cursor while holding. Partial redraw per pile
+  (a changed pile and its row neighbours, which share the gap), the info
+  line once a second; plain strokes so a pile drawn over an old frame
+  equals one drawn on a clear screen (`solitaire_partial_redraw_equals_full`).
+* Settings (`0x0E4_`, `tests/settings/effects.toml`): Draw `0x0E41` (One
+  card), Passes `0x0E42` (Unlimited / 3 / 1), Scoring `0x0E43`
+  (Standard / Casino / None), Auto-move `0x0E44` (on), Auto-complete
+  `0x0E45` (on), Show timer `0x0E46` (on), Winnable only `0x0E47` (on).
+  Draw, passes, scoring and winnable apply from the next game; the
+  assists and the timer at once. `STORED` 113 → 120.
+* Files: `/.orpheus/games/solitaire.sav` beside the others.
+* Game loop (host, simulator with every service, per 33 ms frame): Home
+  2.9 µs; Blocks falling with a key every 200 ms 7.1 µs and 28.6 dirty
+  rows; Solitaire with cursor keys 13.9 µs and 15.2 rows; Solitaire's
+  timer alone 3.1 µs and 0.3 rows (`sim/tests/games.rs::game_loop_cost`).
 
 ### 7.14 Accessibility and speech (M15; owner's requirement 2026-11-25)
 

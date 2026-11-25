@@ -14,7 +14,9 @@ use orpheus_ui::widgets::dialog::DialogSpec;
 use orpheus_ui::widgets::list::{Accessory, ListAction, ListView, draw_scrollbar};
 
 use super::rows::Rows;
-use super::{CHOICE, GAME_BLOCKS, GAME_HELP, GAME_PAUSE, GAME_SETTINGS, GAME_TILES, GAMES, SLIDER};
+use super::{
+    CHOICE, GAME_BLOCKS, GAME_HELP, GAME_PAUSE, GAME_SETTINGS, GAME_SOLITAIRE, GAME_TILES, GAMES, SLIDER,
+};
 use crate::games::{self, Game, GamesRequest};
 use crate::services::Services;
 use crate::settings::{Kind, SettingId, format_value};
@@ -42,6 +44,7 @@ pub const fn game_screen(g: Game) -> ScreenId {
     match g {
         Game::Blocks => GAME_BLOCKS,
         Game::Tiles => GAME_TILES,
+        Game::Solitaire => GAME_SOLITAIRE,
     }
 }
 
@@ -193,10 +196,13 @@ impl GameListScreen {
         match self.kind {
             GameList::Games => match Game::from_id(u8::try_from(tag).unwrap_or(0)) {
                 Some(g) => {
-                    // The game in progress (in RAM or saved), else a new one.
+                    // The game in progress (in RAM or saved), else a new
+                    // one. A save file still being read (a firmware's card
+                    // task answers later): the game screen waits for it.
                     cx.svc.games_request(GamesRequest::Open(g.id()));
-                    let s = &cx.svc.games().session;
-                    if !(g.is(s) && s.in_progress()) {
+                    let hub = cx.svc.games();
+                    let s = &hub.session;
+                    if hub.opening != Some(g.id()) && !(g.is(s) && s.in_progress()) {
                         games::new_game(cx.svc, g);
                     }
                     Nav::Push(game_screen(g), Arg(0))
