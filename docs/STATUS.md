@@ -68,6 +68,26 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-25 — Salvo on the player; games pieces are paging-bound (lead)
+
+* Merged STACK (`e2a55208`: key derivation finish split by kind, games
+  save decode in place, one-time codes read and hashed in separate frames;
+  margin 4,560 B with Salvo on) and the settings lookups by list:
+  margin 4,520 B, then 4,496 B with the new log counters.
+* **Salvo on the player** (`1515866f`): in the Games list (4 rows),
+  plays against the computer with music: terrain, wind, shells, the
+  between-rounds shop; 0 underruns over a round, stack free 7,056 B;
+  pause menu; Quit saves (`Salvo — Continue`). While Salvo animates the
+  UI is busy ≈ 48 % at ≈ 2,700 line loads/s (open: a Salvo hot cluster).
+  Idle Home: 18 ms per UI loop, 570 line loads/s.
+* **Games pieces during music are paging-bound**: the `serve:` line now
+  counts pager loads and card I/O (`e8edd7e8`): `serve: games 40 ms while
+  playing pl=170 r=2 w=2 bp=2`, `53 ms pl=223 r=3 w=0`, `37 ms pl=156 r=1
+  w=2` — 156–223 code lines paged in for 1–3 card blocks. Six Salvo
+  continue/quit cycles with music: 3 underruns (`ub=serve:games`,
+  `job:games` 41 ms). A worker builds a call-graph-derived `games-io`
+  cluster (tooling `xtask hot --from`).
+
 ### 2026-11-25 — UI-PERF: settings lookups go to their own list (lead)
 
 * Fault profile of two game switches during music (`dev prof --faults 1
