@@ -63,6 +63,28 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-25 — T-8 on the player: Pictures-while-playing profiled (lead)
+
+* Merged T-8 (`dda322b6`); the profiler is behind the HAL feature `prof`
+  (firmware only — its T2 vector overflowed the NOR payload's `.bss` by
+  232 B and staging failed); `xtask build` now builds the payloads too.
+  U-TMR-1 answered: T2 at 1 kHz counted 15,041 ticks in 15,041 ms.
+* Fault profile of `browse pictures` with MP3 playing (140 s, 1 in 4096
+  logged): 2,981 line loads/s; the faults are mostly the **playback path**
+  (audio task closure, `play_file`, `AnyDecoder::decode`,
+  `Chain::active`, `Mp3Decoder::find`), not Pictures. `play-block` packs
+  to 77 lines (3× the 24-line budget): hot code is scattered inside huge
+  async closures.
+* A generated 24-line `playback-hot` cluster changed nothing (3,022/s,
+  9 underruns from slow fills) and was reverted.
+* PC profile (135 s): 0 % idle; handler 62 % (decode 12.8 %, audio task
+  9.4 %, `play_file` 9.4 %, `Chain::active` 6.8 % — paging charged to a
+  trivial function, MP3 synth 6.8 % resident); thread 38 % with
+  **bit-banged I²C 7.9 %** (sensor polling).
+* Next (worker AU-PERF): move the per-block path out of the async
+  closures into small named functions packed into a cluster that fits;
+  make per-block predicates cheap; stop the I²C busy-wait.
+
 ### 2026-11-25 — plan: M18 jack tools (owner's request)
 
 * New milestone M18 (08; spec 05 §7.17–7.19; PLAN item 17): signal
