@@ -88,13 +88,22 @@ pub const BUILD_BUDGET: u32 = 64;
 /// most this many rows (8 KiB of index, one piece between ring refills).
 pub const FOCUS_SCAN_PLAYING: u32 = 256;
 /// While playing, a listing is made in pieces between ring refills
-/// ([`Server::step`]): each stops after this long (µs) or this many
-/// directory entries (counting) or rows (filling the window). Whole, a
-/// browse or a window took longer than the PCM ring holds at 48 kHz
-/// (≈ 64 ms; 8–14 underruns per track, all `serve`, 2026-11-24).
-pub const PIECE_US: u32 = 8_000;
+/// ([`Server::step`]): each stops when its chore budget is used up
+/// (`audio::piece_left`, asked before each card operation: the DAC ring's
+/// headroom, `orpheus_audio::chore`) or after this many directory entries
+/// (counting) or rows (filling the window). Whole, a browse or a window
+/// took longer than the PCM ring holds at 48 kHz (≈ 64 ms; 8–14 underruns
+/// per track, all `serve`, 2026-11-24); pieces of a fixed 8 ms were still
+/// forced in at too little headroom (soak seed 1, 2026-11-25).
 pub const PIECE_ENTRIES: u32 = 32;
 pub const PIECE_ROWS: u32 = 8;
+
+/// Kinds of listing piece (`Server::job_kind`), each with its own measured
+/// need (`audio`'s chore costs): the count of a folder, the index file's
+/// open, the focused row's search, rows from the index, a window of an
+/// unsorted folder, an Up next title.
+pub const JOB_KINDS: usize = 6;
+pub const JOB_NAMES: [&str; JOB_KINDS] = ["count", "index", "focus", "rows", "win", "qtitle"];
 
 /// A listing being made while a track plays, one piece per chore.
 #[derive(Clone, Copy)]
@@ -108,6 +117,10 @@ pub enum Job {
     /// (`u32::MAX`: the focused file is looked for first), `n` filled;
     /// `letters`: the letter table follows.
     Rows { ix: Index, start: u32, n: u32, letters: bool },
+    /// A window of an unsorted listing from `start`: `cur` (once placed at
+    /// the checkpoint before it), `skip` entries still to pass, `n` rows
+    /// filled.
+    Win { cur: Option<DirCursor>, start: u32, skip: u32, n: u32 },
 }
 /// Letter runs kept in RAM for letter jumps ([`LETTERS`]).
 pub const LETTER_RUNS: usize = 80;
@@ -162,27 +175,54 @@ pub enum Req {
     Update(crate::update::Op),
 }
 
+/// Request kinds ([`Req::kind`]) and their names for the log.
+pub const REQ_KINDS: usize = 15;
+pub const REQ_NAMES: [&str; REQ_KINDS] = [
+    "browse",
+    "want",
+    "text",
+    "queue-win",
+    "release",
+    "image",
+    "picture",
+    "lib-list",
+    "rebuild",
+    "drain",
+    "sensor",
+    "alert",
+    "otp",
+    "delete",
+    "update",
+];
+
 impl Req {
+    /// The request's kind (`0..REQ_KINDS`, the order of [`Req::name`]):
+    /// each has its own measured need as a chore while playing.
+    #[must_use]
+    pub fn kind(&self) -> usize {
+        match self {
+            Req::Browse { .. } => 0,
+            Req::Want { .. } => 1,
+            Req::Text { .. } => 2,
+            Req::QueueWin { .. } => 3,
+            Req::Release => 4,
+            Req::Image => 5,
+            Req::Picture(_) => 6,
+            Req::LibList { .. } => 7,
+            Req::Rebuild => 8,
+            Req::Drain => 9,
+            Req::Sensor => 10,
+            Req::Alert => 11,
+            Req::Otp(_) => 12,
+            Req::Delete(_) => 13,
+            Req::Update(_) => 14,
+        }
+    }
+
     /// Short name for the log.
     #[must_use]
     pub fn name(&self) -> &'static str {
-        match self {
-            Req::Browse { .. } => "browse",
-            Req::Want { .. } => "want",
-            Req::Text { .. } => "text",
-            Req::QueueWin { .. } => "queue-win",
-            Req::Release => "release",
-            Req::Image => "image",
-            Req::Picture(_) => "picture",
-            Req::LibList { .. } => "lib-list",
-            Req::Rebuild => "rebuild",
-            Req::Drain => "drain",
-            Req::Sensor => "sensor",
-            Req::Alert => "alert",
-            Req::Otp(_) => "otp",
-            Req::Delete(_) => "delete",
-            Req::Update(_) => "update",
-        }
+        REQ_NAMES.get(self.kind()).copied().unwrap_or("?")
     }
 }
 
@@ -951,7 +991,7 @@ impl Server {
                 if idle {
                     Own(self.window(vol, first)).await;
                 } else {
-                    Own(self.window_playing(vol, first)).await;
+                    self.window_playing(first);
                 }
                 true
             }
@@ -1169,15 +1209,34 @@ impl Server {
         self.job.is_some() || self.qjob.is_some()
     }
 
-    /// One piece of the listing being made while a track plays: at most
-    /// [`PIECE_US`] (and [`PIECE_ENTRIES`] entries or [`PIECE_ROWS`] rows;
-    /// a single card read may take longer). The window is published as it
-    /// fills, with `complete: false` until it is whole (the UI asks for
-    /// nothing meanwhile).
+    /// The kind of the next listing piece (`0..JOB_KINDS`, [`JOB_NAMES`]).
+    #[must_use]
+    pub fn job_kind(&self) -> usize {
+        if self.qjob.is_some() {
+            return 5;
+        }
+        match self.job {
+            Some(Job::Count { .. }) | None => 0,
+            Some(Job::Counted { .. }) => 1,
+            Some(Job::Rows { start: u32::MAX, .. }) => 2,
+            Some(Job::Rows { .. }) => 3,
+            Some(Job::Win { .. }) => 4,
+        }
+    }
+
+    /// One piece of the listing being made while a track plays: card
+    /// operations while the chore's budget lasts (`audio::piece_left`, at
+    /// least one), at most [`PIECE_ENTRIES`] entries or [`PIECE_ROWS`]
+    /// rows. Up next titles come first, one per operation. The window is
+    /// published as it fills, with `complete: false` until it is whole (the
+    /// UI asks for nothing meanwhile).
     pub async fn step(&mut self, vol: &mut Vol) {
-        if let Some((qgen, first, mask)) = self.qjob.take() {
+        if let Some((qgen, first, mut mask)) = self.qjob.take() {
             if qgen == self.qgen {
-                let (mask, more) = self.queue_title(vol, first, mask).await;
+                let mut more = true;
+                while more && crate::audio::piece_left() {
+                    (mask, more) = Own(self.queue_title(vol, first, mask)).await;
+                }
                 self.publish_qwin(first, mask);
                 if more {
                     self.qjob = Some((qgen, first, mask));
@@ -1185,15 +1244,13 @@ impl Server {
             }
             return;
         }
-        let t0 = atj2157_hal::time::now_us();
-        let spent = move || (atj2157_hal::time::now_us() - t0) as u32;
         match self.job.take() {
             None => {}
             Some(Job::Count { mut cur, mut sig, mut n }) => {
                 let mut e = DirEntry::new();
                 let mut k = 0;
                 let end = loop {
-                    if k >= PIECE_ENTRIES || spent() > PIECE_US {
+                    if k >= PIECE_ENTRIES || !crate::audio::piece_left() {
                         break false;
                     }
                     let before = cur.index();
@@ -1265,8 +1322,7 @@ impl Server {
             Some(Job::Rows { ix, start, n, letters }) => {
                 let mut e = DirEntry::new();
                 let e = &mut e;
-                let (n, done) =
-                    with_io(vol, Mode::Read, |io| Self::fill_some(io, &ix, start, n, e, t0)).await;
+                let (n, done) = with_io(vol, Mode::Read, |io| Self::fill_some(io, &ix, start, n, e)).await;
                 if done && letters {
                     with_io(vol, Mode::Read, |io| Self::load_letters(io, &ix, self.lgen)).await;
                 }
@@ -1283,46 +1339,99 @@ impl Server {
                     self.job = Some(Job::Rows { ix, start, n, letters });
                 }
             }
+            Some(Job::Win { cur, start, skip, n }) => Own(self.win_piece(vol, cur, start, skip, n)).await,
         }
     }
 
-    /// A window of the listing while a track plays: from the index in
-    /// pieces (`step`); an unsorted listing reads at most two windows of
-    /// entries, as idle.
-    async fn window_playing(&mut self, vol: &mut Vol, first: u32) {
-        match self.index {
+    /// A piece of the window of an unsorted listing (`Job::Win`): placed at
+    /// the checkpoint before it (one card operation), then entries while
+    /// the budget lasts; published when whole.
+    async fn win_piece(
+        &mut self,
+        vol: &mut Vol,
+        cur: Option<DirCursor>,
+        start: u32,
+        mut skip: u32,
+        mut n: u32,
+    ) {
+        let mut cur = match cur {
+            Some(c) => c,
+            None => {
+                // The first operation (always allowed): the entries are
+                // asked for one by one after it.
+                crate::audio::piece_left();
+                let k = ((start / WINDOW) as usize).min(CHECKPOINTS - 1);
+                let Some(mut c) = Self::cursor(vol, self.entry).await else { return };
+                if vol.seek_dir(&mut c, self.checkpoints[k]).await.is_err() {
+                    return;
+                }
+                c
+            }
+        };
+        let mut e = DirEntry::new();
+        while n < WINDOW {
+            if !crate::audio::piece_left() {
+                self.job = Some(Job::Win { cur: Some(cur), start, skip, n });
+                return;
+            }
+            match vol.read_dir(&mut cur, &mut e).await {
+                Ok(true) => {}
+                _ => break,
+            }
+            if !Self::matches(self.filter, &e) {
+                continue;
+            }
+            if skip > 0 {
+                skip -= 1;
+                continue;
+            }
+            let row = Self::row(&e);
+            critical_section::with(|cs| BROWSE.borrow(cs).borrow_mut().rows[n as usize] = row);
+            n += 1;
+        }
+        critical_section::with(|cs| {
+            let mut w = BROWSE.borrow(cs).borrow_mut();
+            w.first = start;
+            w.n = n;
+        });
+        ready(tag::BROWSE);
+    }
+
+    /// A window of the listing while a track plays: in pieces (`step`),
+    /// from the index, or (an unsorted listing) from the checkpoint before
+    /// it, at most two windows of entries, as idle.
+    fn window_playing(&mut self, first: u32) {
+        self.job = Some(match self.index {
             Some(ix) => {
                 let start = first.saturating_sub(WINDOW / 4).min(ix.count().saturating_sub(1));
-                self.job = Some(Job::Rows { ix, start, n: 0, letters: false });
+                Job::Rows { ix, start, n: 0, letters: false }
             }
-            None => self.window(vol, first).await,
-        }
+            None => {
+                let start = first.saturating_sub(WINDOW / 4).min(self.count.saturating_sub(1));
+                let k = (start / WINDOW).min(CHECKPOINTS as u32 - 1);
+                Job::Win { cur: None, start, skip: start - k * WINDOW, n: 0 }
+            }
+        });
     }
 
-    /// Rows `start + n..` of `ix` into the window until it is full or the
-    /// piece's time ([`PIECE_US`] from `t0`) or [`PIECE_ROWS`] are used up;
-    /// returns the rows filled and whether the window is complete.
+    /// Rows `start + n..` of `ix` into the window until it is full, the
+    /// chore's budget is used up (`audio::piece_left` before each row's
+    /// entry is read) or [`PIECE_ROWS`] are filled; returns the rows filled
+    /// and whether the window is complete.
     #[inline(never)]
-    fn fill_some(
-        io: &Io<'_, '_>,
-        ix: &Index,
-        start: u32,
-        mut n: u32,
-        e: &mut DirEntry,
-        t0: u64,
-    ) -> (u32, bool) {
+    fn fill_some(io: &Io<'_, '_>, ix: &Index, start: u32, mut n: u32, e: &mut DirEntry) -> (u32, bool) {
         let mut rows = [ROW0; 4];
         let n0 = n;
         while n < WINDOW {
-            if n - n0 >= PIECE_ROWS || (atj2157_hal::time::now_us() - t0) as u32 > PIECE_US {
-                return (n, false);
-            }
             let want = ((WINDOW - n) as usize).min(rows.len());
             let got = match ix.rows(&mut io.store(), start + n, &mut rows[..want]) {
                 Ok(g) if g > 0 => g,
                 _ => break,
             };
             for r in &rows[..got] {
+                if n - n0 >= PIECE_ROWS || !crate::audio::piece_left() {
+                    return (n, false);
+                }
                 let found = io.with_vol(|vol, cx| spin(cx, vol.open_locator(r.loc, e)).is_ok());
                 let row = if found {
                     Self::row(e)

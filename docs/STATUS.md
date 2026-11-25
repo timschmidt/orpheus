@@ -22,7 +22,7 @@ of every session. Newest entries first in §3.
 | T-3, PG-1 | done | pagelink, PagerCore, check-resident; demand paging on the player (8 KiB pages, 1 KiB lines) |
 | T-6 | started | Rust NOR payload `fw/payloads/norprog` (erase/program, full-layout guard); ymon and nordump still the reference repo's C payloads. **Stage 2 slot fallback built and host-tested, not yet installed** (`orpheus_proto::boot::decide`; 964 B; lead's `install-stage2` + crash test: session entry 2026-11-24 "T-6 (stage2)") |
 | T-8 | **built (host + firmware), not yet run on the player** | PC sampler (T2, level 0) and pager fault log into the 2 KiB profiler block at `0x307000` (SRAM3), `prof pc\|faults on\|burst`, `prof off\|status`; `cargo xtask dev prof --pc\|--faults S [--during "soak --replay F"] [--only TEXT] [--update-hot NAME]`, `cargo xtask prof DIR`; reports in `target/orpheus/prof/<stamp>/`. Resident +656 B. User/lead check: U-TMR-1 and the Pictures-while-playing profile (session entry 2026-11-25 "T-8") |
-| AU-PERF | **built (host + firmware), not yet run on the player** | Playback per block out of the large async functions (`play_block` + small named functions, `Apart` poll boundaries, `orpheus_audio::pcm::Feeder`), codecs' `decode` not inlined, DSP stage mask kept, clusters `mp3-frame` 11 + `play-block` 15 + `play-fill` 6 = 32 lines (no shared physical line; `fits_with` check), 53 % of the measured fault loads in that set or gone; stack on the playback wake-up 6.6 → 1.5 KB; soft I2C timed on T0 (true 100 kHz, was ≈ 30 kHz: sample ≈ 2.7 → 1.0 ms), `acc bus`. Lead: profiles and checks in the session entry 2026-11-25 "AU-PERF"; U-I2C-1. **Up next titles: `seek_dir` per cluster (3,507 → 7 steps per title on 128 KiB exFAT), window keeps its titles (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: Up next titles cheap" |
+| AU-PERF | **built (host + firmware), not yet run on the player** | Playback per block out of the large async functions (`play_block` + small named functions, `Apart` poll boundaries, `orpheus_audio::pcm::Feeder`), codecs' `decode` not inlined, DSP stage mask kept, clusters `mp3-frame` 11 + `play-block` 15 + `play-fill` 6 = 32 lines (no shared physical line; `fits_with` check), 53 % of the measured fault loads in that set or gone; stack on the playback wake-up 6.6 → 1.5 KB; soft I2C timed on T0 (true 100 kHz, was ≈ 30 kHz: sample ≈ 2.7 → 1.0 ms), `acc bus`. Lead: profiles and checks in the session entry 2026-11-25 "AU-PERF"; U-I2C-1. **Up next titles: `seek_dir` per cluster (3,507 → 7 steps per title on 128 KiB exFAT), window keeps its titles (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: Up next titles cheap". **Chore budgets: every chore runs only when the headroom less a decoder margin covers its measured need, splittable ones stop at the budget (`orpheus_audio::chore`, host model; built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: chore budgets" |
 | LAY-1 | done (device) | Full layout installed (`xtask dev install-full --i-have-a-backup`), layout-aware `stage`, `restore vendor [--verify]`. Unifont pack in NOR not done (the UI's fonts are built in) |
 | LCD-1, INPUT-1, PWR-2, AU-0 | done pending user checks 7, 8, 9, 10 | |
 | SD-1, FM-0, USB-1, USB-3, PWR-1 | done | |
@@ -64,6 +64,102 @@ of every session. Newest entries first in §3.
 | VER-10 (static stack) | **tool done (host-tested), gate step; firmware cut from ≥ 30,232 to 22,900 B nested worst case (built, not yet run on the player)** | `cargo xtask stack [--check] [--root P]`, `stack.toml`, `budgets.toml stack_static_margin_bytes` (−1,536 B: a ratchet, the static worst case still exceeds the 22,016 B stack by 884 B; the rest is the audio task's own frames, AU-PERF). Lead: `fuzz-ui --replay` of the VER-8 stack sequence, suite stack line (session entry 2026-11-25 "VER-10") |
 
 ## 3. Session log
+
+### 2026-11-25 — AU-PERF: chore budgets (no chore may empty the DAC ring) (worker, no hardware)
+
+Problem (lead, soak seed 1 on `942c258c`): under UI load the headroom
+seldom reached 1.5 halves, so after 300 ms of waiting a chore ran at *any*
+headroom; chores of 25–55 ms then ran at −93…−649 frames (1 underrun each).
+
+* **The rule** (`orpheus_audio::chore::decide`, a pure function of the
+  headroom, the DAC rate, the chore's measured need, its wait and the
+  recent decoder calls). Budget = headroom in µs − margin, margin =
+  max(10 ms, 1.25 × the longest recent decoder call, `DecPeak`: decays
+  1/256 per call). The first chore due (fixed order: read-ahead open,
+  read-ahead head, request, listing piece, library/art; the others wait
+  behind it) runs **only if budget ≥ its need**, and then when roomy
+  (≥ 1.5 halves) or after 300 ms of waiting. A need that no headroom
+  covered for 2 s (longer than the ring) runs at the next roomy moment
+  anyway (`Starved`, logged): the UI always gets an answer. The battery
+  and step logs: roomy, need covered, no chore waiting, never forced.
+* **Pieces** (`chore::Piece`, firmware `audio::piece_left`): splittable
+  chores ask before each card operation; the first always goes, later ones
+  only if time spent + the longest operation known fits the budget; they
+  resume in the next chore. **Needs** (`chore::Costs`, 27 kinds, u16 in
+  16-µs units, `.bss`): the longest unsplittable stretch per piece (gap
+  between two asks, or the whole piece), rising at once, decaying ¼ of the
+  way per shorter piece; seeds (µs) until measured: pf 12k, prep 10k, lib
+  6k, art 15k, drain/sensor rows 20k; job count 8k, index 25k, focus 15k,
+  rows 8k, win 8k, qtitle 8k; requests browse 10k, want 15k, text 15k,
+  queue-win 2k, picture 30k, lib-list 20k, drain/sensor 15k, otp 25k,
+  delete/update 30k, release/image/rebuild/alert 1k.
+* **Made splittable**: the listing count (per entry), index rows (per row;
+  was per 4), **the window of an unsorted folder while playing** (new
+  `Job::Win`: was the whole `Server::window` in one request), Up next titles
+  (several per piece while the budget lasts), the library search (steps
+  while the budget lasts), the read-ahead's head (`prepare`: one 2-KiB read
+  per operation, resumed across chores). `PIECE_US` (fixed 8 ms) is gone.
+* **Not split** (run only when the headroom covers the measured need):
+  the read-ahead open (`open_target`), Now Playing art from the cache
+  (`serve:picture`: bucket path open + 52² or 128² px, up to 64 sector
+  reads — the likeliest long one), `serve:text`, the library window /
+  list (`publish_list`), `serve:browse`'s cursor, `job:index` (the index
+  file's path open; with no index also `want_build`), `job:focus`
+  (`position_of` over ≤ 256 rows), the gapless track's art, the log rows,
+  and one card operation of every splittable chore. Each has its own need,
+  so the measured worst case decides.
+* **Log**: `chore: <kind> took/budget ms u<longest stretch> +<not logged>`
+  when a piece overran its budget, `chore: starved …` for a starved run;
+  at most one a second. Kinds: `pf`, `prep`, `lib`, `art`, `drain`,
+  `sensor`, `job:count|index|focus|rows|win|qtitle`, `serve:<request>`.
+  `pcm:`, `serve:` (≥ 30 ms) and `qtitle` unchanged. A request is looked
+  at with `REQS.try_peek` (its kind decides) and taken when it runs.
+* **Host model** (`chore.rs` tests): DAC ring of 2 × 1,536 frames at
+  48 kHz, MP3 blocks, decoder calls and refills as load, a UI that asks
+  one thing at a time, a read-ahead open every 5 s, the costs learning.
+  `regress_forced_chore_never_exceeds_headroom` (soak load: calls 14–19 ms
+  per 24-ms block, refills 3–8 ms every other block, UI 5–60 ms think
+  time; 5 seeds × 120 s): 0 underruns, 0 starved, the forced path taken,
+  worst answer < 2.5 s; `old_rule_underruns_under_the_soak_load`: the old
+  rule ≥ 1 underrun per seed, ≥ 10 over the 5 (asserted) on that load;
+  `every_chore_that_fits_is_answered_in_bounded_time` (4 loads from light
+  to the soak's: worst answer < 0.6 / 0.8 / 1.5 / 2.5 s, no underrun; at
+  ≈ 85 % load the 28-ms request is answered by the starvation escape,
+  still no underrun, < 5 s); `a_chore_that_cannot_fit_is_still_answered`
+  (80 ms unsplittable: answered within 2.2 s, one underrun per piece, the
+  only case that can still run the ring dry — the `chore: starved` line
+  names it); unit tests of the budget, rule, piece and costs.
+* **Third DAC half: not done.** The model closes the gap without it.
+  Trade-off: +1,536 frames (+32 ms at 48 kHz, +6 KiB). SRAM3 is full (rodata
+  page cache 16 KiB, PCM ring 12 KiB, profiler 2 KiB, shared 2 KiB), so it
+  would come out of the rodata cache (16 → 10 KiB: more rodata faults) or
+  main RAM (the stack: not possible). Worth it only if a kind that cannot
+  be split shows `chore: starved` on the player.
+* **RAM / stack**: resident 80,068 → 80,076 B, bss 123,808 → 123,920 B
+  (+112: needs 56, piece 28, log counters 8, read-ahead state, futures);
+  stack region bottom 0x131C68 → 0x131CE0, usable unchanged at 22,016 B
+  (usable goes in 256-B steps: **the next step down is at 0x131D00, 32 B
+  away**). Nested worst case 21,740 B unchanged, margin 276 B. Frames:
+  `chores` poll 232 → 200 B, `play_block` 208, `step` 720 (unchanged;
+  titles and the unsorted window poll through `Own`), `prepare` its own
+  `Apart` frame (328), `chore_due` 80. `play-block` cluster: + `chore::
+  decide`, `need_of` (run every block while a chore waits): 15 lines
+  (15,052 B), the 32-line fit holds. `stack.toml`: `chore_due` calls the
+  waker (`try_peek` wakes a sender of a full channel).
+* **Gate**: host fmt, clippy `-D warnings`, `cargo test --workspace`
+  pass; fw fmt, clippy `-D warnings`, `xtask build`, `check-resident` (none
+  paged), `size --check`, `stack --check` (margin 276 B) pass. Not run:
+  `xtask test all` beyond `cargo test --workspace`, brand/site checks, HIL.
+* **Lead, on the player**: (1) `cargo xtask dev soak --replay
+  tests/regress/soak/mixed-underrun-seed1-6.soak`: expect no finding and
+  no `pcm: head` line. (2) `dev soak mixed --minutes 30 --seed 1`: 0
+  underruns expected; collect the `pcm:` lines (any `ub=` names the cause),
+  `serve:` lines (≥ 30 ms requests, now only at ≥ 40 ms headroom), and
+  every `chore:` line: an overrun names the kind whose need was too low
+  (the first piece of a kind, or a longer operation than seen before), a
+  `starved` line a kind that fits no headroom (split it, or the third
+  half). (3) Browse Files/Pictures with a shuffled queue: answers should
+  feel as before; slow ones show as `chore: starved`.
 
 ### 2026-11-25 — seed-1 soak after the performance work (lead)
 

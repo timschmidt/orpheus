@@ -261,6 +261,9 @@ symbols = [
     "firmware::audio::begin_block",
     "firmware::audio::after_block",
     "firmware::audio::chore_due",
+    # Every block while a chore waits for room (`orpheus_audio::chore`).
+    "orpheus_audio::chore::decide",
+    "firmware::audio::need_of",
     "firmware::audio::reader_check",
     "firmware::audio::Room as *>::poll",
     "embassy_sync::waitqueue::atomic_waker::AtomicWaker>::register",

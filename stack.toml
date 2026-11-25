@@ -163,6 +163,9 @@ callers = [
     "firmware::audio::idle::{closure#0}",
     "<firmware::audio::Apart<*",
     "firmware::audio::play_file::{closure#0}",
+    # The chore check peeks at the request channel (`try_peek` wakes a
+    # waiting sender when the channel is full).
+    "firmware::audio::chore_due",
     "<yoton_bsp::settings::NorRegion as orpheus_settings::Nor>::program::{closure#0}",
 ]
 targets = ["embassy_executor::raw::waker::*"]

@@ -18,6 +18,8 @@
 //!   them.
 //! * [`pcm`]: the PCM ring's headroom and underrun accounting between the
 //!   writer and the DAC's DMA.
+//! * [`chore`]: when the playback loop may do other card work, and for how
+//!   long (the headroom's budget, the chores' measured needs).
 //! * [`ring`]: [`StreamRing`], the stream ring with gapless read-ahead into
 //!   the next file (04 §2.2).
 //! * [`bits`], [`crc`]: bit reader over a ring view, the CRCs the formats use.
@@ -32,6 +34,7 @@ extern crate std;
 
 pub mod arena;
 pub mod bits;
+pub mod chore;
 pub mod crc;
 pub mod decoder;
 pub mod ledger;

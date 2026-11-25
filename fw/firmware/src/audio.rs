@@ -49,6 +49,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::waitqueue::AtomicWaker;
 use embassy_time::Timer;
+use orpheus_audio::chore::{self, Ask, Costs, DecPeak, Piece, Spent, Verdict};
 use orpheus_audio::pcm::{self, Book, Fed, Feeder, Look, Reading, Sink};
 use orpheus_audio::ring::{Space, Target as Part};
 use orpheus_audio::{
@@ -268,6 +269,12 @@ fn jget(i: usize) -> u32 {
     JOIN[i].load(Ordering::Relaxed)
 }
 
+/// Add `v` to a join statistic (`-` counts as 0).
+fn jadd(i: usize, v: u32) {
+    let was = jget(i);
+    jset(i, if was == J_NONE { v } else { was.saturating_add(v).min(J_NONE - 1) });
+}
+
 fn now32() -> u32 {
     time::now_us() as u32
 }
@@ -276,14 +283,150 @@ fn pager_loads() -> u32 {
     atj2157_hal::pager::stats().loads as u32
 }
 
-/// Card work besides the current file's refill (UI requests, the
-/// read-ahead open and reads, a gapless track's library place and art)
-/// waits until the DAC has this many frames ahead of it (≈ 52 ms at
-/// 44.1 kHz; `PcmOut::headroom`): each piece runs while nothing feeds the
-/// DAC. After [`CHORE_WAIT_US`] a waiting piece runs anyway (a decoder
-/// that never gets ahead must not starve the UI).
+/// Card work besides the current file's refill (chores: UI requests,
+/// listing pieces, the read-ahead open and head, a gapless track's library
+/// place and art, the battery and step logs) waits until the DAC has this
+/// many frames ahead of it (≈ 52 ms at 44.1 kHz; `PcmOut::headroom`), or
+/// has waited `orpheus_audio::chore::WAIT_US`; either way only when the
+/// headroom less a margin for the next decoder call covers the chore's
+/// measured need, and a splittable chore stops at that budget
+/// (`orpheus_audio::chore`: the rule and its host model; soak seed 1,
+/// 2026-11-25: chores of 25–55 ms forced in at −93…−649 frames).
 const ROOMY: i32 = (HALF + HALF / 2) as i32;
-const CHORE_WAIT_US: u64 = 300_000;
+
+/// Chore kinds, each with its own measured need (`COSTS`): fixed ones,
+/// the listing pieces (`media::JOB_KINDS`), the request kinds
+/// (`media::REQ_KINDS`).
+const K_PF: usize = 0;
+const K_PREP: usize = 1;
+const K_LIB: usize = 2;
+const K_ART: usize = 3;
+const K_DRAIN: usize = 4;
+const K_SENSOR: usize = 5;
+const K_JOB: usize = 6;
+const K_SERVE: usize = K_JOB + media::JOB_KINDS;
+const KINDS: usize = K_SERVE + media::REQ_KINDS;
+
+/// Needs (µs) until measured: guesses on the high side (a kind runs only
+/// at a headroom that covers its need, so too low a guess costs an
+/// underrun, too high one a later answer; the first pieces measure it).
+const SEED_US: [u32; KINDS] = [
+    // read-ahead open, head (one 2-KiB read), library step, art, battery
+    // log, step log
+    12_000, 10_000, 6_000, 15_000, 20_000, 20_000,
+    // listing pieces: count, index open, focus, rows, unsorted window, title
+    8_000, 25_000, 15_000, 8_000, 8_000, 8_000,
+    // requests: browse, want, text, queue-win, release, image, picture,
+    // lib-list, rebuild, drain, sensor, alert, otp, delete, update
+    10_000, 15_000, 15_000, 2_000, 1_000, 1_000, 30_000, 20_000, 1_000, 15_000, 15_000, 1_000, 25_000, 30_000,
+    30_000,
+];
+
+/// The chore kinds' measured needs (zeros: the seeds stand until measured;
+/// in `.bss`, so no initialised RAM next to the stack).
+static COSTS: critical_section::Mutex<core::cell::RefCell<Costs<KINDS>>> =
+    critical_section::Mutex::new(core::cell::RefCell::new(Costs::new()));
+
+fn seed_of(kind: usize) -> u32 {
+    SEED_US.get(kind).copied().unwrap_or(0)
+}
+
+fn need_of(kind: usize) -> u32 {
+    critical_section::with(|cs| COSTS.borrow(cs).borrow().need(kind, seed_of(kind)))
+}
+
+/// The chore piece running (its budget; [`piece_left`]); `None` outside
+/// chores (idle, paused: nothing plays, no budget).
+static PIECE: critical_section::Mutex<core::cell::Cell<Option<Piece>>> =
+    critical_section::Mutex::new(core::cell::Cell::new(None));
+
+/// Before a card operation of a splittable chore (listing pieces, Up next
+/// titles, the library search, the read-ahead's head): may it start within
+/// the piece's budget? The first one always does; outside a chore always.
+pub(crate) fn piece_left() -> bool {
+    let now = now32();
+    critical_section::with(|cs| {
+        let c = PIECE.borrow(cs);
+        let Some(mut p) = c.get() else { return true };
+        let ok = p.left(now);
+        c.set(Some(p));
+        ok
+    })
+}
+
+/// A chore piece of `kind` starts with `budget` (µs).
+#[inline(never)]
+fn piece_begin(kind: usize, budget: u32) {
+    let p = Piece::new(now32(), budget, need_of(kind));
+    critical_section::with(|cs| PIECE.borrow(cs).set(Some(p)));
+}
+
+/// The piece of `kind` is over: its time measured into the kind's need
+/// (`Costs::observe`), an overrun (or a starved run) logged.
+#[inline(never)]
+fn piece_end(kind: usize, starved: bool) {
+    let now = now32();
+    let seed = seed_of(kind);
+    let s = critical_section::with(|cs| {
+        let s = PIECE.borrow(cs).take().map(|p| p.end(now))?;
+        COSTS.borrow(cs).borrow_mut().observe(kind, s.unit, seed);
+        Some(s)
+    });
+    if let Some(s) = s.filter(|s| s.over || starved) {
+        chore_log(kind, s, starved);
+    }
+}
+
+/// When the last `chore:` line was logged (ms, 0: never) and the lines
+/// not logged since.
+static CHORE_LOG_MS: AtomicU32 = AtomicU32::new(0);
+static CHORE_QUIET: AtomicU32 = AtomicU32::new(0);
+
+/// The `chore:` line's name of a kind: `pf`, `prep`, `lib`, `art`,
+/// `drain`, `sensor`, `job:<piece>` (`media::JOB_NAMES`), `serve:<request>`
+/// (`media::REQ_NAMES`).
+fn kind_name(kind: usize) -> (&'static str, &'static str) {
+    match kind {
+        K_PF => ("pf", ""),
+        K_PREP => ("prep", ""),
+        K_LIB => ("lib", ""),
+        K_ART => ("art", ""),
+        K_DRAIN => ("drain", ""),
+        K_SENSOR => ("sensor", ""),
+        k if k < K_SERVE => ("job:", media::JOB_NAMES.get(k - K_JOB).copied().unwrap_or("")),
+        k => ("serve:", media::REQ_NAMES.get(k - K_SERVE).copied().unwrap_or("")),
+    }
+}
+
+/// A chore piece took longer than its budget, or ran starved (its need fit
+/// no headroom for `chore::STARVE_US`): `chore: serve:picture 31/22 ms
+/// u31 +0` (took / budget, the longest unsplittable stretch, lines not
+/// logged since the last). At most one line a second.
+#[inline(never)]
+fn chore_log(kind: usize, s: Spent, starved: bool) {
+    let now = ((time::now_us() / 1000) as u32).max(1);
+    let last = CHORE_LOG_MS.load(Ordering::Relaxed);
+    if last != 0 && now.wrapping_sub(last) < 1000 {
+        CHORE_QUIET.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+    CHORE_LOG_MS.store(now, Ordering::Relaxed);
+    let (name, sub) = kind_name(kind);
+    let mut l = atj2157_hal::log::LineBuf::new();
+    l.push_str(if starved { "chore: starved " } else { "chore: " })
+        .push_str(name)
+        .push_str(sub)
+        .push_str(" ")
+        .push_u32(s.took / 1000)
+        .push_str("/")
+        .push_u32(s.budget / 1000)
+        .push_str(" ms u")
+        .push_u32(s.unit / 1000)
+        .push_str(" +")
+        .push_u32(CHORE_QUIET.swap(0, Ordering::Relaxed));
+    l.emit();
+}
+
 /// A gapless track's library place and art are looked for after this much
 /// of it has played (its first seconds stay free of card work).
 const META_AFTER_MS: u64 = 2000;
@@ -362,6 +505,10 @@ pub(crate) struct Next {
     /// (`prepare`): `Some(Ok)` ready, `Some(Err)` gave up (the hand-over
     /// does it the ordinary way).
     prep: Option<Result<Prepared, ()>>,
+    /// `prepare`'s next read (offset) and the reads done (one per card
+    /// operation, resumed in the next chore).
+    prep_at: u32,
+    prep_reads: u8,
 }
 
 /// A stream probed and inspected ahead: its format, the decoder's plan, and
@@ -1058,7 +1205,7 @@ async fn prefetch(vol: &mut Volume<'static, Card>, ring: &mut Ring, srv: &Server
     let got = open_target(vol, srv, Target::Item(item), Some(&mut title), &mut ring.next_file).await;
     if let (Some((track, ext, ext_len)), Some(f)) = (got, ring.next_file.as_ref()) {
         ring.s.begin_next(Some(f.size()));
-        ring.next = Some(Next { item, track, ext, ext_len, title, prep: None });
+        ring.next = Some(Next { item, track, ext, ext_len, title, prep: None, prep_at: 0, prep_reads: 0 });
     }
 }
 
@@ -1094,33 +1241,44 @@ fn inspect_head(src: &mut orpheus_audio::WindowSource<'_>, ext: Option<&[u8]>) -
 /// Probe and inspect the file read ahead from its own head (read into
 /// `buf`, free arena memory; a copy of its handle, so the ring's reading is
 /// untouched), while the current file plays: at the hand-over only the
-/// decoder opens. Up to 8 KiB per read; a stream that needs more is left
-/// to the hand-over.
+/// decoder opens. Up to 8 KiB per read, at most 4 reads, as many as the
+/// chore's budget allows (`piece_left`; the rest in the next chore); a
+/// stream that needs more is left to the hand-over.
 async fn prepare(vol: &mut Volume<'static, Card>, ring: &mut Ring, buf: &mut [u8]) {
     let Some(mut f) = ring.next_file.clone() else { return };
     let Some(n) = ring.next.as_ref().filter(|n| n.prep.is_none()) else { return };
     let (ext, ext_len) = (n.ext, usize::from(n.ext_len));
+    let (mut off, mut reads) = (u64::from(n.prep_at), n.prep_reads);
     let ext = ext.get(..ext_len).filter(|e| !e.is_empty());
     let len = f.size();
     let n = buf.len().min(8192);
     let Some(buf) = buf.get_mut(..n) else { return };
-    let mut off = 0u64;
-    let mut r = Err(());
-    for _ in 0..4 {
+    let mut r = None;
+    while reads < 4 {
+        if !piece_left() {
+            break;
+        }
+        reads += 1;
         f.set_position(off);
         let got = vol.read_exact_or_eof(&mut f, buf).await.unwrap_or(0);
         let mut w = orpheus_audio::WindowSource::new(buf.get(..got).unwrap_or_default(), off, Some(len));
         match inspect_head(&mut w, ext) {
             HeadStep::Ready(p) => {
-                r = Ok(p);
+                r = Some(Ok(p));
                 break;
             }
             HeadStep::SkipTo(at) if at < len => off = at,
-            _ => break,
+            _ => {
+                r = Some(Err(()));
+                break;
+            }
         }
     }
     if let Some(n) = ring.next.as_mut() {
-        n.prep = Some(r);
+        // Four reads, or a head beyond 4 GiB: left to the hand-over.
+        n.prep = r.or((reads >= 4 || off > u64::from(u32::MAX)).then_some(Err(())));
+        n.prep_at = u32::try_from(off).unwrap_or(u32::MAX);
+        n.prep_reads = reads;
     }
 }
 
@@ -1239,18 +1397,32 @@ struct Blk {
     /// keeps its art: an album's cover).
     prev_dir: u32,
     chore_since: u64,
+    /// The longest recent decoder call (`chore::margin_us`).
+    dec: DecPeak,
     /// A gapless join being measured: 1 until the first block, 2 until two
     /// halves are out.
     join: u8,
     early: Option<u32>,
 }
 
-/// The chores due now (`chore_due`), in the order they are tried.
+/// The chore to run now (`chore_due`): which, its kind (`COSTS`), the
+/// piece's budget (µs), and whether it ran starved.
 #[derive(Clone, Copy)]
 struct Due {
-    serve: bool,
-    prep: bool,
-    job: bool,
+    what: Chore,
+    kind: usize,
+    budget: u32,
+    starved: bool,
+}
+
+/// The chores, in the order they are tried.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Chore {
+    Prefetch,
+    Prepare,
+    Serve,
+    Job,
+    Meta,
 }
 
 /// What `play_block` found.
@@ -1396,34 +1568,72 @@ fn after_block(b: &mut Blk, ring: &mut Ring, srv: &mut Server, samples: usize) -
     ring.available() < RING / 2
 }
 
-/// The chores due once the DAC has room (`ROOMY`), or that waited longer
-/// than [`CHORE_WAIT_US`]; `None`: none now.
+/// The first chore due, if `chore::decide` lets it run now (`ROOMY`); the
+/// others wait behind it. `None`: none now.
 #[inline(never)]
 fn chore_due(b: &mut Blk, ring: &Ring, srv: &Server, out: &mut PcmOut) -> Option<Due> {
-    // The gapless track's library place and art once its first seconds
-    // have played.
-    let meta_now = b.meta != 0 && b.join == 0 && u64::from(b.frames) * 1000 >= META_AFTER_MS * b.rate;
-    // Requests wait while the current file's last bytes play (≤ 0.7 s: the
-    // hand-over comes first).
-    let serve = b.serve_due && !(ring.eof() && ring.next.is_some());
-    // The file read ahead, probed and inspected before the end.
-    let prep = ring.next.as_ref().is_some_and(|n| n.prep.is_none());
-    // A listing being made in pieces (Files while playing).
-    let job = srv.has_job() && !(ring.eof() && ring.next.is_some());
-    if !(b.pf_due.is_some() || serve || meta_now || prep || job) {
-        return None;
+    b.dec = b.dec.after(LAST_DEC_US.load(Ordering::Relaxed));
+    // Requests and listing pieces wait while the current file's last bytes
+    // play (≤ 0.7 s: the hand-over comes first).
+    let tail = ring.eof() && ring.next.is_some();
+    // A request may be waiting (looked at, not taken: its kind decides).
+    let req = if b.serve_due && !tail { media::REQS.try_peek().ok().map(|r| r.kind()) } else { None };
+    if b.serve_due && !tail && req.is_none() {
+        b.serve_due = false;
     }
+    let (what, kind) = if b.pf_due.is_some() {
+        (Chore::Prefetch, K_PF)
+    } else if ring.next.as_ref().is_some_and(|n| n.prep.is_none()) {
+        // The file read ahead, probed and inspected before the end.
+        (Chore::Prepare, K_PREP)
+    } else if let Some(r) = req {
+        (Chore::Serve, K_SERVE + r)
+    } else if srv.has_job() && !tail {
+        // A listing being made in pieces (Files while playing).
+        (Chore::Job, K_JOB + srv.job_kind())
+    } else if b.meta != 0 && b.join == 0 && u64::from(b.frames) * 1000 >= META_AFTER_MS * b.rate {
+        // The gapless track's library place and art once its first seconds
+        // have played.
+        (Chore::Meta, if b.meta == 3 { K_ART } else { K_LIB })
+    } else {
+        b.chore_since = 0;
+        return None;
+    };
     let now = time::now_us();
     if b.chore_since == 0 {
         b.chore_since = now;
     }
-    let head = out.headroom();
-    if head >= ROOMY || now - b.chore_since > CHORE_WAIT_US {
-        b.chore_since = 0;
-        Some(Due { serve, prep, job })
-    } else {
-        None
+    let a = Ask {
+        head: out.headroom(),
+        rate: RATE.load(Ordering::Relaxed),
+        roomy: ROOMY,
+        need_us: need_of(kind),
+        waited_us: (now - b.chore_since).min(u64::from(u32::MAX)) as u32,
+        dec_us: b.dec.0,
+    };
+    let v = chore::decide(&a);
+    let budget = v.budget()?;
+    b.chore_since = 0;
+    Some(Due { what, kind, budget, starved: matches!(v, Verdict::Starved { .. }) })
+}
+
+/// The battery or step log (kind `kind`) may write now: never forced (no
+/// wait), only roomy, only when its need fits, only when no chore waits.
+/// Returns the budget.
+#[inline(never)]
+fn log_due(b: &Blk, out: &mut PcmOut, kind: usize) -> Option<u32> {
+    if b.chore_since != 0 {
+        return None;
     }
+    let a = Ask {
+        head: out.headroom(),
+        rate: RATE.load(Ordering::Relaxed),
+        roomy: ROOMY,
+        need_us: need_of(kind),
+        waited_us: 0,
+        dec_us: b.dec.0,
+    };
+    chore::decide(&a).budget()
 }
 
 /// The current file's last bytes are near: the player hears of the
@@ -1569,27 +1779,32 @@ async fn chores(
 ) -> Option<Result<End, &'static [u8]>> {
     mark(2);
     let t0 = now32();
+    piece_begin(due.kind, due.budget);
+    let mut end = None;
     // The read-ahead first: the current file's last bytes may last only
     // ~0.15 s (FLAC).
-    if let Some(item) = b.pf_due.take() {
-        prefetch(vol, ring, srv, item).await;
+    if due.what == Chore::Prefetch {
+        if let Some(item) = b.pf_due.take() {
+            prefetch(vol, ring, srv, item).await;
+        }
         jset(J_PREFETCH_US, now32().wrapping_sub(t0));
         note(UB_PREFETCH, t0);
-    } else if due.prep {
+    } else if due.what == Chore::Prepare {
         let l0 = pager_loads();
-        prepare(vol, ring, spare).await;
-        jset(J_PREP_US, now32().wrapping_sub(t0));
-        jset(J_PREP_LOADS, pager_loads().wrapping_sub(l0));
+        Apart(prepare(vol, ring, spare)).await;
+        // The reads of all its pieces (each its own chore).
+        jadd(J_PREP_US, now32().wrapping_sub(t0));
+        jadd(J_PREP_LOADS, pager_loads().wrapping_sub(l0));
         note(UB_PREPARE, t0);
-    } else if due.serve {
+    } else if due.what == Chore::Serve {
         b.serve_due = false;
         let go_on = serve_one(vol, srv, spare).await;
         T_SERVE.fetch_add(now32().wrapping_sub(t0), Ordering::Relaxed);
         note(UB_SERVE, t0);
         if !go_on {
-            return Some(Ok(End::Pending));
+            end = Some(Ok(End::Pending));
         }
-    } else if due.job {
+    } else if due.what == Chore::Job {
         srv.step(vol).await;
         T_SERVE.fetch_add(now32().wrapping_sub(t0), Ordering::Relaxed);
         note(UB_SERVE, t0);
@@ -1619,9 +1834,10 @@ async fn chores(
         note(UB_ART, t0);
         jset(J_UNDER_META, UNDERRUNS.load(Ordering::Relaxed));
     }
+    piece_end(due.kind, due.starved);
     mark(0);
     LAST_SERVE_MS.store((time::now_us() / 1000) as u32, Ordering::Relaxed);
-    None
+    end
 }
 
 /// One pass of the playback loop while playing: a request (unless `polled`
@@ -1709,17 +1925,25 @@ async fn play_block(
             {
                 return Went::End(e);
             }
-            // The battery log (PWR-5): only with room to spare, never
-            // forced like the chores above.
-            if crate::drain::due() && out.headroom() >= ROOMY {
+            // The battery log (PWR-5): only with room to spare and its
+            // need covered, never forced like the chores above.
+            if crate::drain::due()
+                && let Some(budget) = log_due(b, out, K_DRAIN)
+            {
                 let t0 = now32();
+                piece_begin(K_DRAIN, budget);
                 Apart(drain_flush_rows(vol, spare)).await;
+                piece_end(K_DRAIN, false);
                 note(UB_SERVE, t0);
             }
             // The step counter's file and trace (SENS-1): the same rule.
-            if crate::sensor::card_due() && out.headroom() >= ROOMY {
+            if crate::sensor::card_due()
+                && let Some(budget) = log_due(b, out, K_SENSOR)
+            {
                 let t0 = now32();
+                piece_begin(K_SENSOR, budget);
                 Apart(sensor_flush_rows(vol, spare)).await;
+                piece_end(K_SENSOR, false);
                 note(UB_SERVE, t0);
             }
             reader_check(b, ring, srv);
@@ -1944,6 +2168,7 @@ async fn play_file(
         lib_find: None,
         prev_dir: u32::MAX,
         chore_since: 0,
+        dec: DecPeak(0),
         join: if st.gapless { 1 } else { 0 },
         early: st.early,
     };

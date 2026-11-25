@@ -648,11 +648,28 @@ pub fn find_begin(srv: &Server, loc: Locator) -> Option<FindStep> {
     Some(lib.find_begin(loc, hint))
 }
 
-/// One step of a search begun with [`find_begin`] (one library session, at
-/// most three small reads): true when it is over.
+/// Steps of [`find`] in one library session while the chore's budget lasts
+/// (`audio::piece_left` before each; at least one, at most 64 as
+/// [`find_all`]).
+#[inline(never)]
+fn find_some(io: &Io<'_, '_>, lib: &Library, st: &mut FindStep) -> Option<bool> {
+    for _ in 0..64 {
+        if !crate::audio::piece_left() {
+            break;
+        }
+        if let Some(found) = find(io, lib, st) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Steps of a search begun with [`find_begin`] (one library session; each
+/// step at most three small reads) while the chore's budget lasts: true
+/// when it is over.
 pub async fn find_more(vol: &mut Vol, srv: &mut Server, st: &mut FindStep, loc: Locator) -> bool {
     let Some(lib) = srv.lib.lib.as_ref() else { return true };
-    match with_lib_io(vol, Mode::Read, |io| find(io, lib, st)).await {
+    match with_lib_io(vol, Mode::Read, |io| find_some(io, lib, st)).await {
         None => false,
         Some(found) => {
             srv.lib.miss_dir = (!found).then_some(loc.dir);
