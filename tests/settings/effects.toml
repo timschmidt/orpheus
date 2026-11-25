@@ -271,7 +271,7 @@ scope = "local"
 values = ["Human", "Novice", "Easy", "Hard", "Expert"]
 default = 0
 contexts = ["Salvo", "Games", "GamePause"]
-oracle = "Salvo: player 1 aims with the keys (Human) or a computer of that difficulty searches and fires (info line "Player 1 thinking"); score table variant (hardest computer). Applies from the next game."
+oracle = "Salvo: player 1 aims with the keys (Human) or a computer of that difficulty searches and fires (info line \"Player 1 thinking\"); score table variant (hardest computer). Applies from the next game."
 tests = ["sim/tests/games.rs::salvo_settings::players_and_who_plays"]
 
 [[setting]]
@@ -281,7 +281,7 @@ scope = "local"
 values = ["Human", "Novice", "Easy", "Hard", "Expert"]
 default = 2
 contexts = ["Salvo", "Games", "GamePause"]
-oracle = "Salvo: as Player 1 for tank 2; two humans: "Pass to Player n" before each human turn. Applies from the next game."
+oracle = "Salvo: as Player 1 for tank 2; two humans: \"Pass to Player n\" before each human turn. Applies from the next game."
 tests = ["sim/tests/games.rs::salvo_settings::players_and_who_plays"]
 
 [[setting]]

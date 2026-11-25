@@ -759,28 +759,42 @@ fn deterministic_and_pinned() {
         rounds: 2,
         ..Config::DEFAULT
     };
-    let run = || {
-        let mut g = Salvo::new(c, 0x0005_A170);
-        let mut crc = 0u32;
-        for k in 0..30_000u32 {
-            g.step();
-            if k % 500 == 0 {
-                let mut buf = [0u8; SAVE_MAX];
-                let n = Session::Salvo(g.clone()).encode(&mut buf).unwrap();
-                crc = orpheus_games::save::crc32(&buf[..n]) ^ crc.rotate_left(5);
-            }
-        }
-        (g, crc)
-    };
-    let (a, ca) = run();
-    let (b, cb) = run();
+    let (a, ca) = pinned_run(c, 0x0005_A170);
+    let (b, cb) = pinned_run(c, 0x0005_A170);
     assert_eq!(a, b);
     assert_eq!(ca, cb);
     eprintln!("pinned checksum {ca:#010x}");
     assert_eq!(ca, PINNED, "the game changed: if on purpose, pin {ca:#010x}");
 }
 
-const PINNED: u32 = 0xd5cb_f752;
+const PINNED: u32 = 0xce76_c783;
+
+/// A scripted game's checksum: the save files every 500 steps, each
+/// without its trailing CRC (a CRC-32 over data followed by its own CRC is
+/// the same constant for any data).
+fn pinned_run(c: Config, seed: u64) -> (Salvo, u32) {
+    let mut g = Salvo::new(c, seed);
+    let mut crc = 0u32;
+    for k in 0..30_000u32 {
+        g.step();
+        if k % 500 == 0 {
+            let mut buf = [0u8; SAVE_MAX];
+            let n = Session::Salvo(g.clone()).encode(&mut buf).unwrap();
+            crc = orpheus_games::save::crc32(&buf[..n - 4]) ^ crc.rotate_left(5);
+        }
+    }
+    (g, crc)
+}
+
+/// 2026-11-25: the pinned checksum hashed whole save files, CRC included,
+/// so it was the same constant for every game and pinned nothing: two
+/// different games must give different checksums.
+#[test]
+fn regress_salvo_pin_depends_on_the_game() {
+    let c =
+        Config { players: 2, kinds: [Kind::Expert, Kind::Hard, Kind::Human, Kind::Human], ..Config::DEFAULT };
+    assert_ne!(pinned_run(c, 1).1, pinned_run(c, 2).1);
+}
 
 #[test]
 fn widths_and_view() {

@@ -136,3 +136,17 @@ fn main() -> ExitCode {
         }
     }
 }
+
+#[cfg(test)]
+mod manifest_tests {
+    /// 2026-11-25: `tests/settings/effects.toml` held unescaped quotes in
+    /// three Salvo oracles and was not TOML (only searched as text then);
+    /// the VER-13 gate parses it, so it must parse.
+    #[test]
+    fn regress_settings_manifest_is_valid_toml() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/settings/effects.toml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let v: toml::Value = toml::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        assert!(v.as_table().is_some_and(|t| !t.is_empty()));
+    }
+}
