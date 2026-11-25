@@ -1,0 +1,33 @@
+# fuzz-ui seed=8 oracle=stack: stack free 1912 B of 22248 (budget 2048 B)
+# 340 steps sent before the finding
+# replay: cargo xtask dev fuzz-ui --replay <this file>
+# did not reproduce on replay: the whole session is kept
+prev back down hold:vol-:480 hold:down:2000 up menu wait:2000 down prev down press:down
+hold:back:1240 wait:149 hold:back:788 wait:2000 down press:up vol- release:down release:up up ok hold:back:700
+hold:ok:1220 vol+ down wait:2000 wait:704 menu back vol+ down vol- back hold:back:1048
+wait:2000 press:prev hold:ok:2000 down prev release:prev menu vol- down vol+ wait:1592 prev
+next prev vol+ down hold:back:724 press:up vol- hold:vol+:220 prev hold:back:1296 down menu
+down hold:vol-:2000 release:up down up next up wait:2000 next ok menu down
+down back back up up up prev press:next next hold:back:932 vol+ release:next
+down ok next up down next hold:back:1164 press:back down up up up
+wait:1 up ok hold:ok:1160 back menu down ok release:back ok wait:2000 hold:back:1720
+hold:back:1720 hold:back:1720 hold:back:1720 hold:back:1720 hold:back:1720 hold:back:700 back up hold:up:280 hold:menu:1620 down press:up
+down press:menu wait:2000 release:up release:menu hold:menu:1920 hold:menu:1920 hold:menu:1920 hold:menu:1920 hold:menu:1920 back wait:2000
+prev vol- wait:2000 menu hold:back:1152 vol+ down down up up hold:back:700 down
+ok wait:2000 back hold:back:700 vol- menu ok prev back back vol+ vol-
+up hold:ok:220 menu vol- up hold:menu:2000 hold:menu:2000 wait:2000 back hold:back:1240 back hold:back:1588
+vol- down up hold:back:1308 down next press:next vol- vol- menu prev release:next
+hold:menu:2000 hold:back:972 prev hold:menu:1000 down down back back up up up up
+prev ok up hold:up:480 back ok back down next prev prev wait:2000
+wait:2000 down up up press:up hold:back:1516 hold:vol+:1340 hold:back:756 menu ok prev hold:back:1176
+ok vol- vol- menu release:up hold:prev:2000 back hold:menu:2000 hold:vol-:2000 vol- hold:back:924 vol-
+wait:2000 ok press:vol+ vol+ hold:back:1644 up hold:vol+:2000 wait:1666 ok hold:back:1044 next press:back
+release:vol+ release:back hold:vol+:2000 press:next up hold:next:1100 menu vol+ hold:ok:2000 press:back hold:prev:2000 hold:vol+:2000
+ok vol+ prev vol- menu hold:back:1800 hold:back:788 menu release:next release:back hold:back:848 hold:up:820
+press:down wait:2000 hold:next:2000 hold:back:1156 back press:up hold:back:1512 vol- hold:back:1440 hold:back:1516 next wait:2000
+up down next hold:down:2000 hold:back:1592 release:down release:up up up hold:back:1720 hold:back:1720 hold:back:1720
+hold:back:1720 up up up vol- hold:vol+:2000 hold:vol+:2000 up menu down hold:down:2000 hold:back:1592
+up vol+ hold:back:1356 down up prev ok up hold:menu:320 prev press:down up
+prev up up up hold:menu:2000 up release:down back back up up up
+wait:2000 wait:2000 next ok menu down down down up up down next
+ok vol+ hold:menu:2000 up

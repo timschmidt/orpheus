@@ -65,6 +65,14 @@ of every session. Newest entries first in §3.
 
 ### 2026-11-25 — on-device UI fuzzing (VER-8, lead)
 
+* `fuzz-ui --seed 8 --minutes 30 --play --settings`: **stack finding** —
+  stack free **1,912 B of 22,248 B** (budget 2,048 B) after a 340-step
+  sequence with settings changes (`tests/regress/ui-device/stack-seed8-340.keys`;
+  did not reproduce with the last 20–320 steps). The stack region itself
+  shrank from 23,768 B (VER-7 suite) as the resident image grew
+  (78,684 → 80,012 B; the T-8 profiler alone +656 B). Open: find the deep
+  path (after AU-PERF, which changes the audio frames), reduce it, and
+  consider building the profiler only into profiling builds.
 * `cargo xtask dev fuzz-ui --seed 7 --minutes 30 --play`: **no finding**
   — 2,720 key steps (ui_keys grammar, no Power) over all screens with music
   playing, 136 oracle checks (fault record, resets, stack, underruns,
