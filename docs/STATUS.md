@@ -63,6 +63,16 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-25 — plan: M18 jack tools (owner's request)
+
+* New milestone M18 (08; spec 05 §7.17–7.19; PLAN item 17): signal
+  generator, IR remote through the owner's jack IR adapter (anti-phase
+  stereo carrier at half frequency, or 96 kHz; NEC/Samsung/SIRC/RC5/RC6/
+  Kaseikyo/JVC/Sharp/raw/Pronto; remotes from `/IR/`), and peripheral
+  control (gate, pulses, servo PWM, tone keying, serial over audio, CV)
+  with device profiles from `/Peripherals/`. WPs JACK-0…3; new unknowns
+  U-AUD-15 (output swing/DC/impedance) and U-AUD-16 (96 kHz for carriers).
+
 ### 2026-11-25 — T-8: profilers and the `hot.toml` loop (worker, no hardware)
 
 Why now: browsing Pictures while music plays runs at ~0 % idle and

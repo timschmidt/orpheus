@@ -337,6 +337,8 @@ that. Added:
 | U-USB-12 | Isochronous FIFOs with the Actions DMA; feedback endpoint | The sound card plays a tone and records the microphone | UAC-1 (M16) |
 | U-USB-15 | Start-of-frame interrupt or frame counter usable for the feedback value | Feedback computed from SOF counts keeps the buffer centred | UAC-2 (M16) |
 | U-AUD-14 | DAC and ADC running at once at the same rate family (full duplex) | Playback and microphone capture together without glitches | UAC-3 (M16) |
+| U-AUD-15 | Low-frequency and DC behaviour of the direct-drive output: how long a constant level holds (any DC servo or blocking), the swing at maximum PA gain into a light load and into an IR LED pair (~tens of Ω), the output impedance | Measured through the line input with USB disconnected (M13 rig), then with the owner's IR adapter | JACK-0 (M18) |
+| U-AUD-16 | DAC at 96 kHz (U-AUD-2) for IR carriers above 24 kHz (36–40 kHz directly); otherwise the anti-phase stereo method (each LED driven at half the carrier) at 48 kHz | Tone at 19 kHz anti-phase on L/R seen at 38 kHz across the adapter; 96 kHz rate test | JACK-0 (M18) |
 
 ### Audio, radio, sensor, Bluetooth
 

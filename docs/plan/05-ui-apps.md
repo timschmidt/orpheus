@@ -949,6 +949,106 @@ patterns, chained into songs.
   the project exactly, render of a saved song is bit-identical); a long
   soak scenario playing a song while editing.
 
+### 7.17 Signal generator (M18; owner's requirement 2026-11-25)
+
+Configurable reference signals on the headphone output (and, if chosen,
+over Bluetooth), built on `orpheus-synth`'s band-limited oscillators
+(04 §9) and the jack output engine (§7.19 common part).
+
+* **Waveforms**: sine, square, triangle, sawtooth, pulse with duty cycle,
+  white and pink noise, linear and logarithmic sweeps (start, stop,
+  duration, repeat), stepped tones, multi-tone (up to 8 lines), bursts
+  (on/off cycles), impulses, silence; per channel or linked, with phase
+  offset and polarity, so left/right identification, phase and polarity
+  tests are possible.
+* **Parameters**: frequency 1 Hz to 0.45 × the sample rate (fine and
+  coarse steps, note names, A4 tuning reference), level in dBFS and, once
+  M13 has calibrated the output, in dBV/Vrms into a stated load; DC offset
+  if U-AUD-15 shows the output can hold one; sample rate 44.1/48 kHz
+  (96 kHz if available); a run timer; presets (1 kHz at −20 dBFS, 440 Hz,
+  sweep 20 Hz–20 kHz, pink noise for speaker checks, the M13 test set) and
+  user presets.
+* **Screen**: a large readout of frequency and level, the waveform drawn,
+  Up/Down change the focused value, Prev/Next move between values, OK
+  starts/stops, hold Prev/Next fast change; a level ramp at start and stop
+  (no clicks) unless "hard edges" is chosen; works with the screen off.
+* **Safety**: a confirmation before levels above a set limit with
+  headphones (hearing), the volume limit applies unless overridden for
+  line-level use; the USB-ground rule for the jack (07 §7) shown once.
+* **Tests**: generated buffers checked on the host (frequency, THD,
+  level, phase) and through the M13 capture on the player; golden images
+  of the screens; VER-13 entries for every parameter.
+
+### 7.18 IR remote (M18; owner's requirement 2026-11-25)
+
+Sends infrared remote-control codes through an **IR adapter in the
+headphone jack** (provided by the owner: typically two IR LEDs in
+anti-parallel between the left and right contacts, so that opposite-phase
+signals on the two channels light one LED or the other).
+
+* **Signal**: the carrier (30–56 kHz; 38 kHz by default) is made as
+  anti-phase stereo at half the carrier frequency, so the LED pair sees the
+  full carrier at a 48 kHz sample rate (or directly at 96 kHz if the DAC
+  allows, U-AUD-16); marks and spaces are gated with sample accuracy; the
+  PA runs at the gain the adapter needs (U-AUD-15), volume and DSP
+  bypassed while sending; Bluetooth output off for the duration.
+* **Protocols**: NEC (and extended), Samsung, Sony SIRC 12/15/20, RC5,
+  RC6 (mode 0), Panasonic/Kaseikyo, JVC, Sharp, raw timing lists, Pronto
+  hex; repeat frames while a key is held.
+* **Remotes**: our own small set of generic layouts (TV, audio, projector,
+  air conditioner as raw codes), and the owner's files from the card
+  (`/IR/`: a simple text format, Pronto hex, LIRC `.conf` raw and
+  space-encoded remotes, CSV of protocol/device/function) — no third-party
+  database is bundled unless its licence allows; a "search" mode that steps
+  through a protocol's power codes for an unknown device.
+* **Screen**: a remote's buttons as a list or a grid, favourites, a macro
+  (sequence with delays), the last sent code shown; keys map directly
+  (Vol± can send volume codes while the app is open, configurable).
+* **Limits**: sending only (no IR receiver on the board); range depends on
+  the adapter and the output swing (measured in JACK-0).
+* **Tests**: waveform generation per protocol checked on the host against
+  the protocol timing specs (bit-exact mark/space lists, carrier duty);
+  on the player the jack output captured through the line input (USB
+  disconnected) and decoded by a host IR decoder; the owner checks a real
+  TV with the adapter.
+
+### 7.19 Peripheral control (M18; owner's requirement 2026-11-25)
+
+Simple control of external devices plugged into the TRS jack through
+small adapters, using the two output channels as control signals.
+
+* **Jack output engine (common to §7.17–7.19)**: sample-accurate
+  waveforms on L and R independently, the PA at a chosen fixed gain,
+  volume, DSP, ReplayGain and the key click bypassed, music playback
+  paused, Bluetooth audio off, the output level and limits checked against
+  U-AUD-15's measurements; the mode is shown in the status bar while
+  active.
+* **Signal kinds** (each per channel): a level or gate (DC or, if the
+  output cannot hold DC, a tone that an adapter rectifies), pulses and
+  pulse trains (period, width, count), servo PWM (50 Hz, 0.5–2.5 ms, for
+  hobby servos via a level-shifting adapter), a tone on/off (for a
+  tone-detect relay adapter), and serial data over audio (UART-style
+  frames at 300–9600 baud or FSK at 1200 baud, for a microcontroller
+  adapter), plus control-voltage/gate/trigger for modular synthesisers
+  (within the output's range).
+* **Devices**: profiles stored on the card (`/Peripherals/*.txt`) naming
+  the channel mapping and the controls: buttons (pulse, toggle), sliders
+  (level, servo angle, PWM duty), sequences with timing, and serial
+  commands; examples shipped for a camera shutter release (via an
+  optocoupler), a relay board, a servo, and a modular gate/CV pair.
+* **Screen**: the profile's controls as a list (buttons, sliders), the
+  current state of each channel, an emergency "all off" on Back-hold;
+  works with the screen off for timed sequences (intervalometer).
+* **Safety**: adapters, never direct loads (the output is a headphone
+  amplifier: no inductive loads, no current beyond its rating); the
+  USB-ground rule (07 §7); a confirmation for levels above the headphone
+  limit; all outputs return to silence when the app closes, on any
+  interruption and at power-off.
+* **Tests**: generated control waveforms checked on the host (timing to
+  the sample, levels, servo pulse widths, serial frames decoded); on the
+  player through the line-input capture; adapter schematics documented in
+  `docs/hardware/` (owner-built), each checked once by the owner.
+
 ## 8. Non-goals for v1 (recorded so nobody builds them by accident)
 
 Video playback; third-party plugins (games are M14, owner 2026-11-25); touch or pointer UI on the player itself; a

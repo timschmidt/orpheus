@@ -47,6 +47,7 @@ Two tracks run side by side from the start:
 | M15 | **Speech, accessibility and books** | Tiny text-to-speech engine, screen reader and vision/motor settings, book reader (TXT, Markdown, FB2, EPUB) with read-aloud | After M10; before M13 and M11 |
 | M16 | **USB sound card** | The player as a USB audio interface: host audio out to the headphone jack and Bluetooth, the microphone in to the host; UAC2 (UAC1 option), asynchronous with feedback, volume and mute both ways, level meters | After M9/M10; before M13 and M11; supersedes USB-7 |
 | M17 | **Synth engine, MIDI and Sequencer** | Shared synthesis crate (oscillators, FM, samples, drum models, filters, effects), MIDI file playback with an own General MIDI sound set, and a step-sequencer drum machine / synth app with songs and WAV/MIDI export | After M10; before M13 and M11 |
+| M18 | **Jack tools** | Signal generator, IR remote through an IR adapter in the jack, and peripheral control (gates, pulses, servo PWM, serial over audio, CV) through jack adapters; a shared jack output engine | After M10 and M17's oscillators; before M13 and M11 |
 | M13 | **Unplugged measurement and optimisation** | Audio quality, battery life, power and performance measured with USB disconnected (on battery, analogue output into the workstation's input, optional Bluetooth status channel), then optimised from the numbers; battery indicator calibrated; budgets for audio figures and runtime per scenario | After the features it measures (M7–M9), before M11's final verification; supersedes PWR-4 |
 | M11 | **Verification** (last stage) | 100 % coverage of the project's own source by unit, adversarial-input and fuzz tests under sanitizers; every on-device function and every screen/app interaction exercised in fuzzed sequences on the player; memory use and performance tracked as thoroughly as coverage; every fuzz finding kept as a regression test | Release only after M11 is green |
 
@@ -281,13 +282,27 @@ After M10; M13 measures it, M11 verifies it.
 | SEQ-1 | Sequencer app: project model (patterns, tracks, songs) as a host crate with save/load, grid and transport screens, step editing, mute/solo, screen-off playing | 05 §7.16 | H+D | L | Make a beat |
 | SEQ-2 | Sound screens and parameter locks, synth tracks with note entry, scale lock, live record, song mode, WAV and MIDI export, USB MIDI clock (with M16, optional) | 05 §7.16 | H+D | M | Make a song and export it |
 
+### M18 — Jack tools: signal generator, IR remote, peripheral control (owner's requirement 2026-11-25)
+
+Spec: [05 §7.17–7.19](05-ui-apps.md). Uses `orpheus-synth`'s oscillators
+(M17, SYN-1) and the M13 output calibration where available. The owner
+provides the IR adapter and builds peripheral adapters from documented
+schematics. After M10; M13 measures the outputs, M11 verifies.
+
+| WP | Content | Spec | Dev | Size | User |
+|---|---|---|---|---|---|
+| JACK-0 | Hardware first: output swing, impedance, low-frequency/DC behaviour into light and LED loads, 96 kHz (U-AUD-15, U-AUD-16); the jack output engine (independent L/R sample-accurate waveforms, fixed PA gain, bypasses, music paused, Bluetooth off, status-bar mode, silence on exit) | 05 §7.19, 01 §9 | H+D | M | Plug in the IR adapter when asked |
+| JACK-1 | Signal generator app: waveforms, sweeps, noise, multi-tone, bursts, per-channel phase/polarity, levels in dBFS (dBV once calibrated), presets, ramps, hearing-safety confirmation | 05 §7.17 | H+D | M | Check a tone and a sweep |
+| JACK-2 | IR remote: carrier by anti-phase stereo (or 96 kHz), protocol encoders (NEC, Samsung, SIRC, RC5, RC6, Kaseikyo, JVC, Sharp, raw, Pronto), repeats, remotes from the card (own format, Pronto, LIRC, CSV), generic layouts, search mode, macros; host timing tests, capture-and-decode on the player | 05 §7.18 | H+D | M | Provide the adapter; control a TV |
+| JACK-3 | Peripheral control: gate/level, pulses, servo PWM, tone keying, serial over audio (UART-style, FSK), CV/gate; device profiles from the card with buttons, sliders and timed sequences (intervalometer); all-off; adapter schematics in `docs/hardware/` | 05 §7.19 | H+D | M | Build one adapter and try a profile |
+
 ### M13 — Unplugged measurement and optimisation (owner's requirement 2026-11-25)
 
 Spec: [07 §5.11](07-tooling-testing.md). On battery with USB disconnected,
 the analogue output recorded by the workstation's microphone or line input,
 a status channel over Bluetooth where it helps, the full log on the card.
 Supersedes PWR-4 and the device half of PWR-5 (user check 19 is automated
-here). Runs after the features it measures (including M14–M17); M11
+here). Runs after the features it measures (including M14–M18); M11
 (verification) and the release follow it. Every fix it leads to follows the regression-test rule
 (CLAUDE.md). Needs D-12 (rig) before MEAS-1's hardware part; D-13 only for
 runs below the 3.55 V floor.

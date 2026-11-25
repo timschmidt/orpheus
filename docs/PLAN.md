@@ -47,6 +47,7 @@ identity throughout.
 | Tiny text-to-speech engine, accessible UI and a book reader with read-aloud (owner, 2026-11-25) | 04 §8, 05 §7.14–7.15, 08 M15 | English only (D-14) |
 | USB sound card: the player as a USB audio interface, microphone to the host, host audio to the headphone (TRS) and Bluetooth outputs (owner, 2026-11-25) | 06 §2.7, 08 M16 | UAC2 with feedback; isochronous endpoints still to be proven (U-USB-12) |
 | Synth engine, MIDI playback, and a step-sequencer drum machine / synth app (owner, 2026-11-25) | 04 §9, 05 §7.16, 08 M17 | Own sound set and patches; no GPL synth code |
+| Signal generator, IR remote (owner's jack IR adapter) and peripheral control through the TRS jack (owner, 2026-11-25) | 05 §7.17–7.19, 08 M18 | Output only; adapters required; output limits measured first (U-AUD-15/16) |
 | Audio quality, battery, power and performance measured and optimised with USB disconnected: output into the workstation's input, battery discharging, status over Bluetooth where possible (owner, 2026-11-25) | 07 §5.11, 08 M13 | Rig decision D-12; deeper discharge D-13 |
 | Bluetooth presentation remote; IMU (tilt) mouse only over Bluetooth | 05 §7.12, 06 §4.3 | **Remote in scope (owner, 2026-11-24)** over the module's HID service (keyboard + consumer reports, read 2026-11-24); BT-3 finds the command that feeds it, BT-4 builds the transport, UI-6b the app. **Tilt pointer conditional (D-10):** built only if BT-3 finds a Bluetooth transport for mouse data, otherwise dropped |
 | Bluetooth audio receiver | — | **Removed from scope by the owner on 2026-11-23** (the module cannot receive audio) |
@@ -179,6 +180,16 @@ Written up in `docs/hw/` (four reverse-engineering reports),
     Sequencer app (patterns of drum and synth tracks, songs, export to WAV
     and MIDI). The games' effects and the speech resonators use the same
     crate. After M10, before M13 and M11.
+
+17. **Jack tools (M18, owner's requirement 2026-11-25).** The headphone
+    output becomes a tool: a signal generator with configurable reference
+    signals, an IR remote through an IR adapter in the jack (carrier made as
+    anti-phase stereo; common protocols and remotes from the card), and
+    peripheral control through jack adapters (gates, pulses, servo PWM,
+    serial over audio, CV). A shared engine drives both channels
+    sample-accurately with the music paused; the output's swing and DC
+    behaviour are measured first. After M10 and M17's oscillators, before
+    M13 and M11.
 
 ## 5. Decisions that are the user's
 
