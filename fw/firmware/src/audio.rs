@@ -970,7 +970,20 @@ fn codec_name(ext: Option<&[u8]>) -> &'static str {
 async fn serve_one(vol: &mut Volume<'static, Card>, srv: &mut Server, scratch: &mut [u8]) -> bool {
     match media::REQS.try_receive() {
         Ok(r) => {
+            let (name, t0) = (r.name(), time::now_us());
             let done = srv.serve(vol, r, scratch, false).await;
+            let took = time::now_us() - t0;
+            if took >= 30_000 {
+                // A request that blocks the playback loop this long can
+                // empty the DAC ring (soak, 2026-11-25: 309 ms).
+                let mut l = atj2157_hal::log::LineBuf::new();
+                l.push_str("serve: ")
+                    .push_str(name)
+                    .push_str(" ")
+                    .push_u32((took / 1000) as u32)
+                    .push_str(" ms while playing");
+                l.emit();
+            }
             LAST_SERVE_MS.store((time::now_us() / 1000) as u32, Ordering::Relaxed);
             done
         }

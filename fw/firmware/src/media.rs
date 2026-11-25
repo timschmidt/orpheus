@@ -160,6 +160,30 @@ pub enum Req {
     Update(crate::update::Op),
 }
 
+impl Req {
+    /// Short name for the log.
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        match self {
+            Req::Browse { .. } => "browse",
+            Req::Want { .. } => "want",
+            Req::Text { .. } => "text",
+            Req::QueueWin { .. } => "queue-win",
+            Req::Release => "release",
+            Req::Image => "image",
+            Req::Picture(_) => "picture",
+            Req::LibList { .. } => "lib-list",
+            Req::Rebuild => "rebuild",
+            Req::Drain => "drain",
+            Req::Sensor => "sensor",
+            Req::Alert => "alert",
+            Req::Otp(_) => "otp",
+            Req::Delete(_) => "delete",
+            Req::Update(_) => "update",
+        }
+    }
+}
+
 /// The Authenticator's import file `/.orpheus/otp-import.txt` (OTP-2, 06
 /// §5.4): read it into bytes the UI lent (part of the frame buffer; the UI
 /// draws nothing while they are out), or overwrite it with zeros and
