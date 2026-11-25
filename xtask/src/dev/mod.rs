@@ -45,6 +45,8 @@ cargo xtask dev <subcommand>
                                 arm test mode and collect the results
   hil SUITE                     run an on-device suite (smoke)
   usbtest [--cycles N]          USB-1 acceptance: enumerate, control sizes, re-enumeration
+  usb-cancel [--rounds N]       USB-W1: provoke abandoned control transfers (firmware held
+                                2.5 s, host cuts after 1 ms); the player must answer again
   usbimage-test [--img F] [--iso F] [--rw] [--qemu]
                                 USB-6: put images into /.orpheus/images/, present each,
                                 read the whole block device, compare hashes, detach
@@ -172,6 +174,7 @@ pub fn cmd(args: &mut Args) -> Result<String> {
             }
         }
         "usbtest" => usbtest::cmd(args),
+        "usb-cancel" => usbtest::cancel_cmd(args),
         "keys" => {
             let script = args.positional("key script")?;
             keys(&script)
@@ -240,8 +243,10 @@ pub fn cmd(args: &mut Args) -> Result<String> {
                     )
                 } else {
                     String::new()
-                }
-            ))
+                },
+            ) + &orpheus_proto::devchan::usb::Counters::from_words(&w)
+                .map(|u| format!("\n{}", soak::usb_line(&u)))
+                .unwrap_or_default())
         }
         "put" => {
             let local = args.positional("LOCAL file")?;

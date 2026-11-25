@@ -465,6 +465,7 @@ run on the player.
 | U-SD-3 | Which of IRQ 17/18 and DMA selector 5/6 belongs to SD0 | SD0 read with mode `0x86` vs `0x85`; enable the SD0 interrupt and read `NVIC_ISPR` | SD-1 |
 | U-SD-4 | Does `SD_STATE` DAT0 show card busy (replacing CMD13 polling) | Sample STATE after CMD24 | SD-1 |
 | U-USB-13 | Registers `+0x000…0x0FC` (FOTG210 keeps OTG/EHCI registers there) | Read-only dump after init | USB-5 |
+| U-USB-14 | EP0 when the host abandons a control transfer (bug USB-W1, 06 §2.6): is a newer SETUP drained by an EP0 OUT DMA that waits for data; does `GISR0` b5 `CX_COMABT` [FOTG210] get set, and must it be cleared (W1C, now done at every SETUP read) before the next SETUP is accepted; does writing the channel control word alone stop a running EP0 DMA (now `DMA_EN = 0` as the vendor); does `CX_STALL` clear at the next SETUP | `xtask dev usb-cancel` (counters `comabt`, `aborts`, `re-inits` in `xtask dev stats`); then a long `dev soak` | USB-W1 |
 | U-SPI-1 | SPI0 `+0x14`, `+0x20…0x2C` (descrambler seed?) | Read-only dump in ROM state and after a descrambled read | UI-1 |
 | U-TWI-1 | TWI SCL source (HOSC per formula; CMU+0x28 named "SPTWILK") | Time a 32-byte transfer at CLKDIV 15 against T0 | FM-1 |
 | U-GPIO-2 | What `DNMOS` (bit 15) does (open drain?) | Spare pin with OUTEN+DNMOS, ODAT = 1, read IDAT | HAL-1 |

@@ -9,5 +9,6 @@
 extern crate std;
 
 pub mod devchan;
+pub mod liveness;
 pub mod msc;
 pub mod webusb;

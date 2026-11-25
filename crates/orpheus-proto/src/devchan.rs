@@ -103,6 +103,143 @@ impl Info {
     }
 }
 
+/// USB controller counters in `STATS` group 0 (USB-W1, 06-connectivity
+/// §2.6). Words 0–2 have always been bus resets, SETUP packets read and
+/// USB DMA errors; words 24–30 follow the soak words.
+pub mod usb {
+    /// Bus resets seen.
+    pub const W_RESETS: usize = 0;
+    /// SETUP packets read.
+    pub const W_SETUPS: usize = 1;
+    /// USB DMA errors and timeouts (EP0 and bulk).
+    pub const W_DMA_ERRORS: usize = 2;
+    /// EP0 stalls sent (rejected requests).
+    pub const W_STALLS: usize = 24;
+    /// Control transfers given up: a data or status stage overtaken by the
+    /// next SETUP (the host cancelled), timed out, or cut by a bus reset.
+    pub const W_ABORTS: usize = 25;
+    /// Recoveries: controller re-initialisations after a liveness failure
+    /// or a VBUS cycle.
+    pub const W_REINITS: usize = 26;
+    /// The last error: code (low byte, [`error_name`]) | uptime in seconds
+    /// << 8.
+    pub const W_LAST_ERROR: usize = 27;
+    /// Controller initialisations (every personality switch, every
+    /// recovery).
+    pub const W_INITS: usize = 28;
+    /// `CX_COMABT` (control transfer aborted by a new SETUP, FOTG210) found
+    /// set when a SETUP was read.
+    pub const W_COMABT: usize = 29;
+    /// Liveness state: bit 0 VBUS, bit 1 a SETUP waits unread, bit 2 wedged
+    /// (the watchdog is no longer fed), bits 8–15 consecutive recoveries
+    /// without a SETUP answered in between.
+    pub const W_STATE: usize = 30;
+    /// Words in group 0 with these counters.
+    pub const WORDS: usize = 31;
+
+    pub const ERR_NONE: u8 = 0;
+    /// Reading a SETUP packet failed (DMA error or timeout).
+    pub const ERR_SETUP_DMA: u8 = 1;
+    /// A SETUP read was cut short (the read future was dropped on a bus
+    /// event, or a bus reset came first).
+    pub const ERR_SETUP_LOST: u8 = 2;
+    /// An EP0 data stage timed out (the host stopped asking).
+    pub const ERR_DATA_TIMEOUT: u8 = 3;
+    /// An EP0 data DMA reported an error.
+    pub const ERR_DATA_DMA: u8 = 4;
+    /// A data or status stage was overtaken by the next SETUP.
+    pub const ERR_OVERTAKEN: u8 = 5;
+    /// A bus reset cut an EP0 transfer.
+    pub const ERR_RESET: u8 = 6;
+    /// A bulk DMA failed or timed out.
+    pub const ERR_BULK: u8 = 7;
+    /// Recovery: a bus reset went unanswered.
+    pub const ERR_RECOVER_RESET: u8 = 8;
+    /// Recovery: a SETUP stayed unread.
+    pub const ERR_RECOVER_SETUP: u8 = 9;
+    /// Recovery: the controller was re-initialised after VBUS came back.
+    pub const ERR_VBUS_REINIT: u8 = 10;
+    /// Wedged: a recovery was asked for and the USB task never did it.
+    pub const ERR_WEDGED_TASK: u8 = 11;
+    /// Wedged: SETUPs stay unread after two recoveries.
+    pub const ERR_WEDGED_SETUP: u8 = 12;
+
+    /// Name of an error code.
+    #[must_use]
+    pub fn error_name(code: u8) -> &'static str {
+        match code {
+            ERR_NONE => "none",
+            ERR_SETUP_DMA => "setup-dma",
+            ERR_SETUP_LOST => "setup-lost",
+            ERR_DATA_TIMEOUT => "data-timeout",
+            ERR_DATA_DMA => "data-dma",
+            ERR_OVERTAKEN => "overtaken",
+            ERR_RESET => "reset",
+            ERR_BULK => "bulk",
+            ERR_RECOVER_RESET => "recover-reset",
+            ERR_RECOVER_SETUP => "recover-setup",
+            ERR_VBUS_REINIT => "vbus-reinit",
+            ERR_WEDGED_TASK => "wedged-task",
+            ERR_WEDGED_SETUP => "wedged-setup",
+            _ => "?",
+        }
+    }
+
+    /// The USB words of a group-0 reply.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct Counters {
+        pub resets: u32,
+        pub setups: u32,
+        pub dma_errors: u32,
+        pub stalls: u32,
+        pub aborts: u32,
+        pub reinits: u32,
+        /// Code of the last error.
+        pub last_error: u8,
+        /// Uptime (s) at the last error.
+        pub last_error_s: u32,
+        pub inits: u32,
+        pub comabt: u32,
+        pub vbus: bool,
+        pub setup_waiting: bool,
+        pub wedged: bool,
+        pub failed_recoveries: u8,
+    }
+
+    impl Counters {
+        /// `None` for firmware older than USB-W1 (no words 24–30).
+        #[must_use]
+        pub fn from_words(w: &[u32]) -> Option<Self> {
+            if w.len() < WORDS {
+                return None;
+            }
+            let st = w[W_STATE];
+            Some(Self {
+                resets: w[W_RESETS],
+                setups: w[W_SETUPS],
+                dma_errors: w[W_DMA_ERRORS],
+                stalls: w[W_STALLS],
+                aborts: w[W_ABORTS],
+                reinits: w[W_REINITS],
+                last_error: (w[W_LAST_ERROR] & 0xFF) as u8,
+                last_error_s: w[W_LAST_ERROR] >> 8,
+                inits: w[W_INITS],
+                comabt: w[W_COMABT],
+                vbus: st & 1 != 0,
+                setup_waiting: st & 2 != 0,
+                wedged: st & 4 != 0,
+                failed_recoveries: (st >> 8) as u8,
+            })
+        }
+
+        /// The state word as the firmware packs it.
+        #[must_use]
+        pub fn state_word(vbus: bool, setup_waiting: bool, wedged: bool, failed: u8) -> u32 {
+            u32::from(vbus) | u32::from(setup_waiting) << 1 | u32::from(wedged) << 2 | u32::from(failed) << 8
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,5 +248,21 @@ mod tests {
     fn info_roundtrip() {
         let i = Info { version: VERSION, layout: 1, uptime_ms: 1234, battery_mv: 3900, ..Default::default() };
         assert_eq!(Info::from_bytes(&i.to_bytes()), Some(i));
+    }
+
+    #[test]
+    fn usb_words() {
+        assert_eq!(usb::Counters::from_words(&[0; 24]), None);
+        let mut w = [0u32; usb::WORDS];
+        w[usb::W_SETUPS] = 7;
+        w[usb::W_REINITS] = 2;
+        w[usb::W_LAST_ERROR] = u32::from(usb::ERR_OVERTAKEN) | 125 << 8;
+        w[usb::W_STATE] = usb::Counters::state_word(true, false, true, 3);
+        let c = usb::Counters::from_words(&w).unwrap();
+        assert_eq!((c.setups, c.reinits, c.last_error, c.last_error_s), (7, 2, usb::ERR_OVERTAKEN, 125));
+        assert!(c.vbus && !c.setup_waiting && c.wedged);
+        assert_eq!(c.failed_recoveries, 3);
+        assert_eq!(usb::error_name(c.last_error), "overtaken");
+        assert_eq!(usb::error_name(200), "?");
     }
 }

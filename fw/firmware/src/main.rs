@@ -10,7 +10,7 @@
 //! | `power` | main | charger state machine, battery gauge (1 Hz) |
 //! | `usb` | main | embassy-usb device with the developer channel |
 //! | `health` | main | marks the start healthy after 30 s |
-//! | `watchdog` | main | feeds the watchdog when RT, main and UI progress |
+//! | `watchdog` | main | feeds the watchdog when RT, main and UI progress and USB is not wedged; USB liveness (USB-W1) |
 //! | `rt_beat` | RT | RT executor heartbeat for `watchdog` |
 //! | `bt` | main | Bluetooth transmitter module (off until asked) |
 //! | `fm` | main | FM tuner and its route to the amplifier (off until asked) |
@@ -167,8 +167,12 @@ fn drain_sample(
 async fn watchdog() {
     let mut h = wdt::Health::new();
     let mut gov = Governor::new();
+    // USB-W1: USB liveness, here because this task runs whatever the USB
+    // task does; sets `wdt::USB_WEDGED` only when recoveries cannot help.
+    let mut usb_live = orpheus_usb::liveness::Liveness::new();
     loop {
         Timer::after_millis(1000).await;
+        usbdev::liveness_tick(&mut usb_live);
         h.check();
         if GOV_ON.load(core::sync::atomic::Ordering::Relaxed) {
             gov.step();

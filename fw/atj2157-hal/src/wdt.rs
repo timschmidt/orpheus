@@ -89,9 +89,17 @@ pub fn beat(b: &core::sync::atomic::AtomicU32) {
     b.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
+/// Set by the firmware's USB liveness check (USB-W1,
+/// `orpheus_usb::liveness`) when the USB controller cannot be brought back
+/// by re-initialising it: VBUS present, the host's SETUPs unanswered after
+/// two recoveries, or a requested recovery never carried out. Never set
+/// while unplugged or while the host is merely idle.
+pub static USB_WEDGED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 /// Health check for the `watchdog` task (which itself proves the main
 /// executor runs): feeds only when the RT executor and the UI loop have
-/// made progress since the last feed. Returns whether it fed.
+/// made progress since the last feed and USB is not wedged. Returns
+/// whether it fed.
 pub struct Health {
     rt: u32,
     ui: u32,
@@ -106,7 +114,8 @@ impl Health {
     pub fn check(&mut self) -> bool {
         let rt = RT_BEAT.load(core::sync::atomic::Ordering::Relaxed);
         let ui = UI_BEAT.load(core::sync::atomic::Ordering::Relaxed);
-        if rt != self.rt && ui != self.ui {
+        let usb_ok = !USB_WEDGED.load(core::sync::atomic::Ordering::Relaxed);
+        if rt != self.rt && ui != self.ui && usb_ok {
             self.rt = rt;
             self.ui = ui;
             feed();

@@ -884,6 +884,51 @@ pub struct Counters {
     pub battery_mv: u16,
     /// The firmware reports the VER-12 words (21–23).
     pub soak_words: bool,
+    /// The USB controller's counters (USB-W1, words 0–2 and 24–30).
+    pub usb: Option<UsbCounters>,
+}
+
+pub use orpheus_proto::devchan::usb::Counters as UsbCounters;
+
+/// One line of USB counters (printed on a channel loss).
+pub fn usb_line(u: &UsbCounters) -> String {
+    use orpheus_proto::devchan::usb::error_name;
+    format!(
+        "usb: setups {} resets {} stalls {} aborts {} dma-errors {} re-inits {} inits {} comabt {}, \
+         last error {} at {} s{}{}{}",
+        u.setups,
+        u.resets,
+        u.stalls,
+        u.aborts,
+        u.dma_errors,
+        u.reinits,
+        u.inits,
+        u.comabt,
+        error_name(u.last_error),
+        u.last_error_s,
+        if u.vbus { "" } else { ", no VBUS" },
+        if u.setup_waiting { ", a SETUP waiting" } else { "" },
+        if u.wedged { ", WEDGED" } else { "" },
+    )
+}
+
+/// After a lost channel: did the firmware recover USB by itself (same boot,
+/// more re-initialisations than before)? `Some(text)` describes it.
+pub fn self_recovery(
+    before: Option<&UsbCounters>,
+    after: Option<&UsbCounters>,
+    rebooted: bool,
+) -> Option<String> {
+    let (b, a) = (before?, after?);
+    if rebooted || a.reinits <= b.reinits {
+        return None;
+    }
+    Some(format!(
+        "USB recovered by itself ({} re-init{}, last error {}), channel lost and back without a reboot",
+        a.reinits - b.reinits,
+        if a.reinits - b.reinits == 1 { "" } else { "s" },
+        orpheus_proto::devchan::usb::error_name(a.last_error),
+    ))
 }
 
 impl Counters {
@@ -892,6 +937,7 @@ impl Counters {
         let g = |i: usize| w.get(i).copied().unwrap_or(0);
         let head = g(21) as i32;
         Counters {
+            usb: UsbCounters::from_words(w),
             uptime_ms: g(8),
             idle_us: g(3),
             loads: g(4),
@@ -943,11 +989,15 @@ pub enum Kind {
     Queue,
     Seek,
     Pause,
+    /// The channel was lost and USB came back by itself (USB-W1): logged,
+    /// the run goes on.
+    UsbRecovery,
 }
 
 impl Kind {
     pub fn name(self) -> &'static str {
         match self {
+            Kind::UsbRecovery => "usb-recovery",
             Kind::Fault => "fault",
             Kind::Reset => "reset",
             Kind::Stack => "stack",
@@ -1650,6 +1700,12 @@ pub struct Ctx {
     pub battery_stop: Option<u16>,
     /// Why the run ended early (not a finding).
     pub stopped: Option<String>,
+    /// USB self-recoveries (USB-W1): findings that do not stop the run.
+    pub recoveries: Vec<Finding>,
+    /// The USB counters of the last sample.
+    pub last_usb: Option<UsbCounters>,
+    /// The uptime of the last sample.
+    last_uptime: u32,
 }
 
 /// Failed seek (or pause) checks in a row that make a finding.
@@ -1699,12 +1755,17 @@ impl Ctx {
             keep: true,
             battery_stop: None,
             stopped: None,
+            recoveries: Vec::new(),
+            last_usb: None,
+            last_uptime: 0,
         }
     }
 
     /// Read every oracle once.
     pub fn sample(&mut self, rig: &mut dyn Rig) -> Result<()> {
         let s = take_sample(rig, self)?;
+        self.last_usb = s.c.usb;
+        self.last_uptime = s.uptime_ms;
         let found = self.oracles.check(&s, self.action_no);
         for f in &found {
             log(&format!("   FOUND ({}): {}", f.kind.name(), f.detail));
@@ -2293,8 +2354,24 @@ fn drive(rig: &mut dyn Rig, ctx: &mut Ctx, a: &Action) -> Result<()> {
         Err(e) if e.is::<Locked>() => Err(e),
         Err(e) => {
             log(&format!("   channel lost: {e:#}; waiting for the player"));
-            rig.reconnect()?;
-            ctx.sample(rig)?;
+            let before = ctx.last_usb;
+            let up_before = ctx.last_uptime;
+            come_back(rig, ctx)?;
+            if let Some(u) = &ctx.last_usb {
+                log(&format!("   {}", usb_line(u)));
+            }
+            let rebooted = ctx.last_uptime < up_before;
+            if let Some(text) = self_recovery(before.as_ref(), ctx.last_usb.as_ref(), rebooted) {
+                log(&format!("   FOUND (usb-recovery; the run goes on): {text}"));
+                let t = rig.wall_ms();
+                ctx.recoveries.push(Finding {
+                    kind: Kind::UsbRecovery,
+                    detail: format!("{text}; the request: {e:#}"),
+                    t_ms: t,
+                    action: ctx.action_no,
+                });
+                return Ok(());
+            }
             if ctx.findings.is_empty() {
                 let t = rig.wall_ms();
                 ctx.findings.push(Finding {
@@ -2305,6 +2382,27 @@ fn drive(rig: &mut dyn Rig, ctx: &mut Ctx, a: &Action) -> Result<()> {
                 });
             }
             Ok(())
+        }
+    }
+}
+
+/// Reconnect and take a sample. A player whose USB recovers by itself
+/// (USB-W1: soft detach, controller reset) re-enumerates a few seconds
+/// after the failure, and the old device may still be listed at first: a
+/// few bounded tries, not a blind retry loop (CLAUDE.md rule 7).
+fn come_back(rig: &mut dyn Rig, ctx: &mut Ctx) -> Result<()> {
+    const TRIES: u32 = 4;
+    let mut n = 1;
+    loop {
+        rig.reconnect()?;
+        match ctx.sample(rig) {
+            Ok(()) => return Ok(()),
+            Err(e) if n < TRIES => {
+                n += 1;
+                log(&format!("   not answering yet ({e:#}); trying again in 3 s"));
+                rig.sleep(3000);
+            }
+            Err(e) => return Err(e),
         }
     }
 }
@@ -2804,6 +2902,15 @@ impl Report<'_> {
         for n in self.after.iter().chain(&self.ctx.notes) {
             let _ = writeln!(t, "note: {n}");
         }
+        for f in &self.ctx.recoveries {
+            let _ = writeln!(
+                t,
+                "usb-recovery at {:.0} s (action #{}): {}",
+                f.t_ms as f64 / 1000.0,
+                f.action,
+                f.detail
+            );
+        }
         t
     }
 
@@ -2847,6 +2954,9 @@ impl Report<'_> {
             "done": self.ctx.done,
             "skipped": self.ctx.skipped,
             "notes": self.after.iter().chain(&self.ctx.notes).collect::<Vec<_>>(),
+            "usb_recoveries": self.ctx.recoveries.iter().map(|f| serde_json::json!({
+                "detail": f.detail, "t_s": f.t_ms as f64 / 1000.0, "action": f.action,
+            })).collect::<Vec<_>>(),
         });
         std::fs::write(dir.join("summary.json"), serde_json::to_string_pretty(&json)?)?;
         std::fs::write(dir.join("index.html"), self.html(&text))?;
@@ -3419,6 +3529,33 @@ mod tests {
         assert!(!Counters::from_words(&w[..21], 0).soak_words);
         w[21] = (-12i32) as u32;
         assert_eq!(Counters::from_words(&w, 0).head_min, Some(-12));
+        assert_eq!(Counters::from_words(&w, 0).usb, None);
+    }
+
+    #[test]
+    fn usb_counters_and_self_recovery() {
+        use orpheus_proto::devchan::usb as u;
+        let mut w = vec![0u32; u::WORDS];
+        w[u::W_SETUPS] = 120;
+        w[u::W_RESETS] = 2;
+        w[u::W_ABORTS] = 1;
+        w[u::W_REINITS] = 0;
+        w[u::W_STATE] = 1;
+        let before = Counters::from_words(&w, 0).usb.unwrap();
+        assert_eq!((before.setups, before.resets, before.aborts), (120, 2, 1));
+        w[u::W_REINITS] = 1;
+        w[u::W_SETUPS] = 130;
+        w[u::W_LAST_ERROR] = u32::from(u::ERR_RECOVER_SETUP) | 300 << 8;
+        let after = Counters::from_words(&w, 0).usb.unwrap();
+        let line = usb_line(&after);
+        assert!(line.contains("re-inits 1") && line.contains("last error recover-setup at 300 s"), "{line}");
+        let r = self_recovery(Some(&before), Some(&after), false).unwrap();
+        assert!(r.contains("1 re-init,") && r.contains("recover-setup"), "{r}");
+        // A reboot, no new re-init, or old firmware: not a self-recovery.
+        assert!(self_recovery(Some(&before), Some(&after), true).is_none());
+        assert!(self_recovery(Some(&after), Some(&after), false).is_none());
+        assert!(self_recovery(None, Some(&after), false).is_none());
+        assert_eq!(Kind::UsbRecovery.name(), "usb-recovery");
     }
 
     /// A healthy sample stream at `t` seconds: 48 kHz playing, 3,000

@@ -64,7 +64,7 @@ HAL implements its driver traits. Mapping:
 |---|---|
 | `Driver::alloc_endpoint_in/out` | Assign a FIFO (0–3) and endpoint number; record type and max packet size; refuse when FIFOs run out. Bulk IN may claim two FIFOs for double buffering when the personality leaves room |
 | `Driver::start` | Controller bring-up; returns `Bus` and `ControlPipe` |
-| `Bus::poll` | Awaits a `Signal` set by the IRQ 12 handler: reset (re-program endpoint/FIFO maps, as `bus_reset()` in the port), suspend, resume; power events from the `power` task (VBUS) |
+| `Bus::poll` | Awaits a `Signal` set by the IRQ 12 handler: reset (re-program endpoint/FIFO maps, as `bus_reset()` in the port), suspend, resume; VBUS polled every 250 ms while waiting (`PowerRemoved` after 0.75 s without; §2.6) |
 | `Bus::enable/disable` | Soft attach/detach (`PHYTMSR` bit 0), PHY suspend, clock gate |
 | `Bus::endpoint_set_stalled/is_stalled` | Bit 11 of the endpoint's max-packet register; pulse bit 12 on clear (toggle reset) |
 | `ControlPipe::setup` | Wait for `CX_SETUP`, read 8 bytes with DMA channel 0 |
@@ -166,6 +166,122 @@ pieces (a screenshot is then 512 requests, about half a second).
 A Microsoft OS 2.0 descriptor set (WinUSB) is included so the channel works on
 Windows without a driver; on Linux a udev rule for the product id goes into
 `tools/udev/`.
+
+### 2.6 Robustness and recovery (bug USB-W1, as built 2026-11-25)
+
+**The failure (first soak, 2026-11-24).** On a `volume` action the host's
+`TEST` OUT timed out after 2 s (`Cancelled`); the next request, a `PEEK` of
+the fault record, got `Stall`; from then on no SETUP was answered, not even
+after re-plugging on two ports (xHCI "device not responding to setup
+address", -71: the SETUP transaction itself got no answer). The UI ran on,
+the watchdog was fed, a reboot cured it.
+
+**Root cause (analysis without the player; ranked).**
+
+1. *The SETUP read is not cancel-safe* (certain as a mechanism, the one
+   that makes the failure permanent). embassy-usb's `run_until_suspend`
+   is `select(bus.poll(), control.setup())`: when a bus event (reset,
+   suspend, resume) wins, the `setup()` future is **dropped**. The driver
+   cleared `SETUP_READY` and kept the SETUP interrupt masked (`GIMR0` b0,
+   masked by the ISR because `CX_SETUP` is level) until the DMA read had
+   finished; a drop in between left it masked for good. No later SETUP is
+   ever read; a bus reset (re-plug) did not unmask it and a VBUS cycle did
+   not re-initialise the controller, so nothing short of a reboot helped.
+   The host retries after errors with resets, which is exactly what drops
+   a read in progress. Reproduced with embassy-usb itself over a model of
+   the hardware state: `crates/orpheus-usb/tests/ep0_model.rs`
+   (`before_w1_a_bus_event_during_the_setup_read_deafens_ep0_for_good`).
+2. *A late data or status stage lands on the next transfer* (explains the
+   `Cancelled` → `Stall` step). The controller has no notion of which
+   transfer `CX_DONE`/`CX_STALL` or an EP0 DMA belongs to. When the host
+   gives up on an OUT whose data the device has not read yet and sends the
+   next SETUP, the waiting OUT DMA drains the CX FIFO — now the new SETUP —
+   as the old request's data, and the old request's `CX_DONE` finishes the
+   new one: the host's IN sees a status stage where it wanted data. Model
+   test `before_w1_a_late_status_lands_on_the_next_transfer`. The FOTG210
+   flags the abort in `GISR0` b5 `CX_COMABT`, which the driver never
+   cleared (the ROM only clears it at init; the vendor never overlaps
+   control transfers).
+3. *What made the device late* (trigger; not determined without the
+   player). The main executor or the USB task held for more than 2 s.
+   Candidates: a stretch of BASEPRI-masked NOR work or paging at 48 MHz
+   while the volume overlay redraws and music decodes (the soak runs a
+   test session, so no settings write is expected); a 500 ms EP0 DMA
+   timeout per chunk of a stage the host had already abandoned. The new
+   test hook `usb delay` reproduces the effect of any such delay.
+4. *Smaller defects found on the way* (fixed): `dma_wait` failed every DMA
+   while the sticky `BUS_EVENTS` reset bit waited for `Bus::poll`, and a
+   SETUP read that kept failing retried without yielding (a possible
+   executor hang); DMA aborts only wrote the channel's control word (the
+   vendor writes `DMA_EN = 0`); a bulk OUT read pending at a bus reset was
+   never woken (card reader dead after a reset until a personality
+   switch); VBUS removal was never reported; a SETUP while embassy-usb
+   believes the bus suspended was never read if the resume interrupt was
+   missed.
+5. *Ruled out.* A panic in the USB task (the panic handler reboots the
+   whole player; it did not reboot). PEEK of a bad address (a fault
+   reboots; a bus stall would starve the watchdog; the soak peeks SRAM).
+   PEEK length handling (`min(wLength, 1 KiB)`, host-tested). LPM (the
+   USB 2.0 extension descriptor advertises none).
+
+**Driver fixes** (`atj2157-hal::usb`): the SETUP read holds a guard that
+unmasks the interrupt and aborts the EP0 DMA however it ends (also on
+drop); a bus reset re-arms EP0 (clears `SETUP_READY`, unmasks) and wakes
+every endpoint future; data and status stages check for a newer SETUP
+before and after each DMA and before `CX_DONE`/`CX_STALL`, and give the
+old transfer up (`ERR_OVERTAKEN`); `CX_COMABT` is cleared (W1C, as the
+FOTG210 driver does) and counted when a SETUP is read; aborts are the
+vendor's (`DMA_EN = 0`, channel cleared); DMA waits end on a reset by
+epoch, not on the sticky bit; a failed SETUP read yields before retrying;
+`Bus::poll` reports `PowerRemoved` after VBUS has been absent for
+0.75 s and the next `enable` re-initialises the controller completely
+(resets pulsed, init sequence); a SETUP while suspended is reported as a
+resume.
+
+**Self-recovery** (`orpheus_usb::liveness`, host-tested; run once a second
+by the firmware's `watchdog` task, which runs whatever the USB task does):
+
+| Evidence (VBUS present) | Action |
+|---|---|
+| A bus reset not followed by a SETUP within 2 s | Recovery |
+| A SETUP latched but unread (or its read failing) for ≥ 2.5 s | Recovery |
+| A recovery asked for, not carried out within 10 s | Wedged |
+| SETUPs unread again after 2 recoveries without a SETUP answered | Wedged |
+| No VBUS, a charger (no resets, no SETUPs), an idle host | Nothing |
+
+A recovery ends the running personality's `select` (`REINIT`), the
+controller is shut down (detached) and the same personality starts on a
+fresh controller, as a personality switch does (a USB Drive image ends
+instead; the card comes back). Consecutive recoveries back off (0, 5, 15,
+30, 60 s). Unanswered resets alone never escalate: a port can look like
+resets.
+
+**Watchdog** (decided for, with limits): `wdt::USB_WEDGED` stops
+`Health::check` from feeding only when re-initialising cannot help (the
+two "Wedged" rows), with VBUS present, after this boot answered at least
+one SETUP, and after 60 s of uptime (past the healthy-start mark, so the
+reboot never counts as a failed start for stage 2's fallback). Unplugging
+or a SETUP answered clears it. Reasons for: the only cure seen on the
+player was a reboot, the soak must run unattended, and a USB task that
+does not act on a recovery request is as stuck as a hung executor.
+Reasons for the limits: never reboot an unplugged or charging player, or
+one whose host is simply idle.
+
+**Observability**: `STATS` group 0 words 0–2 (resets, SETUPs, DMA errors)
+and 24–30 (`orpheus_proto::devchan::usb`: stalls, given-up transfers,
+recoveries, last error code and time, controller initialisations,
+`CX_COMABT` seen, liveness state); `usb: recovery (…)` and `usb: wedged`
+lines in the log ring; `xtask dev stats` prints them; the soak prints them
+on a channel loss and records a self-recovery as a `usb-recovery` finding
+that does not stop the run.
+
+**Provoking it**: test command `usb delay setup|data|status <ms>` holds the
+next control transfer at that stage (a timer in the USB task, nothing
+blocked); `usb recover` runs a recovery. `xtask dev usb-cancel [--rounds
+N]` holds a request 2.5 s at each stage, sends the PEEK the soak sent, cuts
+40 transfers after 1 ms, and requires INFO to answer again within 20 s
+each time. Firmware before USB-W1 has no `usb delay`; its `usb-cancel`
+rounds fail at the first held request, the 1 ms cuts still run.
 
 ## 3. Disk and CD emulation ("USB Drive" app)
 

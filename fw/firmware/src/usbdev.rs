@@ -83,7 +83,7 @@ impl Target for Fw {
         out[2] = usb::DMA_ERRORS.load(Ordering::Relaxed);
         out[3] = executor::idle_us();
         let p = atj2157_hal::pager::stats();
-        let n = out.len().min(24);
+        let n = out.len().min(dc::usb::WORDS);
         let v = [
             p.loads,
             p.code_faults,
@@ -108,6 +108,15 @@ impl Target for Fw {
             crate::audio::take_head_min(),
             yoton_bsp::card::error_count(),
             atj2157_hal::pager::LOAD_ERRORS.load(Ordering::Relaxed),
+            // USB-W1: the controller's counters and the liveness state
+            // (`orpheus_proto::devchan::usb`).
+            usb::STALLS.load(Ordering::Relaxed),
+            usb::ABORTS.load(Ordering::Relaxed),
+            usb::REINITS.load(Ordering::Relaxed),
+            usb::last_error(),
+            usb::INITS.load(Ordering::Relaxed),
+            usb::COMABTS.load(Ordering::Relaxed),
+            LIVE_STATE.load(Ordering::Relaxed),
         ];
         out[4..n].copy_from_slice(&v[..n - 4]);
         n
@@ -165,6 +174,28 @@ impl Target for Fw {
         }
         if data == b"usb kbd" {
             MODE.signal(Personality::Keyboard);
+            return true;
+        }
+        // USB-W1: `usb delay setup|data|status <ms>` holds the next control
+        // transfer at that stage (a late USB task; `xtask dev usb-cancel`);
+        // `usb recover` asks for a recovery as the liveness check would.
+        if let Some(rest) = data.strip_prefix(b"usb delay ") {
+            let (stage, ms) = rest.split_at(rest.iter().position(|&b| b == b' ').unwrap_or(rest.len()));
+            let stage = match stage {
+                b"setup" => usb::Stage::Setup,
+                b"data" => usb::Stage::Data,
+                b"status" => usb::Stage::Status,
+                _ => return false,
+            };
+            let ms = ms
+                .iter()
+                .filter(|d| d.is_ascii_digit())
+                .fold(0u32, |n, d| n.saturating_mul(10).saturating_add(u32::from(d - b'0')));
+            usb::delay_next(stage, ms);
+            return true;
+        }
+        if data == b"usb recover" {
+            request_recovery(dc::usb::ERR_RECOVER_SETUP);
             return true;
         }
         // USB-5: the HID keyboard (`kbd type <text>`, `kbd status`, …).
@@ -432,6 +463,71 @@ pub static MODE: embassy_sync::signal::Signal<
     Personality,
 > = embassy_sync::signal::Signal::new();
 
+/// A recovery (USB-W1): the running personality ends, the controller is
+/// shut down and the same personality starts again on a fresh controller
+/// (soft detach, controller reset, re-enumeration). Carries the reason code.
+static REINIT: embassy_sync::signal::Signal<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, u8> =
+    embassy_sync::signal::Signal::new();
+
+/// The liveness state word for `STATS` (`orpheus_proto::devchan::usb::W_STATE`).
+static LIVE_STATE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+fn request_recovery(code: u8) {
+    usb::note_recovery(code);
+    let mut l = log::LineBuf::new();
+    l.push_str("usb: recovery (").push_str(dc::usb::error_name(code)).push_str("), setups ");
+    l.push_u32(usb::SETUPS.load(Ordering::Relaxed)).push_str(" resets ");
+    l.push_u32(usb::RESETS.load(Ordering::Relaxed)).push_str(" aborts ");
+    l.push_u32(usb::ABORTS.load(Ordering::Relaxed)).push_str(" last ");
+    l.push_str(dc::usb::error_name(usb::last_error() as u8));
+    l.emit();
+    REINIT.signal(code);
+}
+
+/// The USB liveness check, once a second from the `watchdog` task (which
+/// runs whatever the USB task does): asks the USB task for a recovery when
+/// the host goes unanswered, and holds the watchdog (`wdt::USB_WEDGED`)
+/// when recoveries cannot help (`orpheus_usb::liveness`).
+pub fn liveness_tick(l: &mut orpheus_usb::liveness::Liveness) {
+    use orpheus_usb::liveness::{Sample, Verdict};
+    let s = Sample {
+        now_ms: (time::now_us() / 1000) as u32,
+        vbus: usb::vbus_present(),
+        setups: usb::SETUPS.load(Ordering::Relaxed),
+        resets: usb::RESETS.load(Ordering::Relaxed),
+        setup_waiting: usb::setup_waiting(),
+        inits: usb::INITS.load(Ordering::Relaxed),
+    };
+    let was = wdt::USB_WEDGED.load(Ordering::Relaxed);
+    let v = l.step(s);
+    match v {
+        Verdict::Ok => {}
+        Verdict::Reinit(r) => request_recovery(r.code()),
+        Verdict::Wedged(w) => {
+            if !was {
+                usb::note_error(w.code());
+                let mut b = log::LineBuf::new();
+                b.push_str("usb: wedged (").push_str(dc::usb::error_name(w.code()));
+                b.push_str("): watchdog not fed");
+                b.emit();
+            }
+        }
+    }
+    let wedged = matches!(v, Verdict::Wedged(_));
+    wdt::USB_WEDGED.store(wedged, Ordering::Relaxed);
+    LIVE_STATE
+        .store(dc::usb::Counters::state_word(s.vbus, s.setup_waiting, wedged, l.failed()), Ordering::Relaxed);
+}
+
+/// A personality switch (`MODE`) or a recovery (`REINIT`: the same
+/// personality `current` again).
+async fn next_mode(current: Personality) -> Personality {
+    match embassy_futures::select::select(MODE.wait(), REINIT.wait()).await {
+        embassy_futures::select::Either::First(p) => p,
+        embassy_futures::select::Either::Second(_) => current,
+    }
+}
+
 /// The card is with the USB task (card reader); card commands answer busy.
 pub static CARD_WITH_USB: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
@@ -501,6 +597,8 @@ impl orpheus_usb::msc::BlockDevice for CardDev<'_> {
 }
 
 fn builder(product: &'static str) -> Builder<'static, usb::Driver> {
+    // A recovery asked for before this fresh controller is already done.
+    REINIT.reset();
     let driver = usb::Driver::new();
     let mut config = Config::new(dc::DEV_VID, dc::DEV_PID);
     config.manufacturer = Some("orpheus");
@@ -531,7 +629,7 @@ async fn run_dev() -> Personality {
     // the browser installer opens it without a driver.
     orpheus_usb::webusb::dev_interface(&mut b, true);
     let mut dev = b.build();
-    let r = embassy_futures::select::select3(dev.run(), supervisor(), MODE.wait()).await;
+    let r = embassy_futures::select::select3(dev.run(), supervisor(), next_mode(Personality::Dev)).await;
     usb::set_attached(false);
     match r {
         embassy_futures::select::Either3::Third(p) => p,
@@ -582,7 +680,7 @@ async fn run_msc() -> Personality {
                 }
             }
         };
-        let r = embassy_futures::select::select3(dev.run(), pump, MODE.wait()).await;
+        let r = embassy_futures::select::select3(dev.run(), pump, next_mode(Personality::FileTransfer)).await;
         usb::set_attached(false);
         match r {
             embassy_futures::select::Either3::Second(p) | embassy_futures::select::Either3::Third(p) => p,
@@ -698,7 +796,9 @@ async fn run_image() -> Personality {
                         crate::drive::update(|i| i.host = false);
                     }
                 };
-                let r = embassy_futures::select::select3(dev.run(), pump, MODE.wait()).await;
+                // A recovery ends the drive (the computer has lost it
+                // anyway); the card goes back as after an eject.
+                let r = embassy_futures::select::select3(dev.run(), pump, next_mode(Personality::Dev)).await;
                 usb::set_attached(false);
                 match r {
                     embassy_futures::select::Either3::Second(p)
@@ -752,7 +852,8 @@ async fn run_kbd() -> Personality {
         crate::kbd::pump(&mut w).await;
         Personality::Dev
     };
-    let r = embassy_futures::select::select4(dev.run(), supervisor(), MODE.wait(), pump).await;
+    let r = embassy_futures::select::select4(dev.run(), supervisor(), next_mode(Personality::Keyboard), pump)
+        .await;
     usb::set_attached(false);
     crate::kbd::ended();
     match r {

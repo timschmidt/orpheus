@@ -409,4 +409,104 @@ mod tests {
             Some(OutResponse::Rejected)
         ));
     }
+
+    /// USB-W1: PEEK never reads more than the control buffer holds nor
+    /// more than `wLength`, whatever the host asks; the address is
+    /// `wIndex:wValue`.
+    #[test]
+    fn peek_lengths_and_address() {
+        #[derive(Default)]
+        struct Rec {
+            seen: Vec<(u32, usize)>,
+        }
+        impl Target for Rec {
+            fn info(&mut self) -> Info {
+                Info::default()
+            }
+            fn read_mem(&mut self, addr: u32, buf: &mut [u8]) -> bool {
+                self.seen.push((addr, buf.len()));
+                buf.fill(0x5A);
+                true
+            }
+            fn read_frame(&mut self, _o: u32, _b: &mut [u8]) -> usize {
+                0
+            }
+            fn read_log(&mut self, _o: u32, _b: &mut [u8]) -> usize {
+                0
+            }
+            fn stats(&mut self, _g: u16, _o: &mut [u32]) -> usize {
+                0
+            }
+            fn keys(&mut self, _e: &[(u8, bool)]) {}
+            fn request_reboot(&mut self, _t: u16) {}
+            fn development(&self) -> bool {
+                true
+            }
+        }
+        let mut d = DevChannel::new(Rec::default());
+        // wLength above the 1 KiB control buffer: clamped to the buffer.
+        let mut buf = [0u8; 1024];
+        match d.control_in(req(true, REQ_PEEK, 0x7D00, 0x0013, 0xFFFF), &mut buf) {
+            Some(InResponse::Accepted(b)) => assert_eq!(b.len(), 1024),
+            _ => panic!("peek"),
+        }
+        // Zero length: nothing read, an empty reply.
+        match d.control_in(req(true, REQ_PEEK, 0, 0x0010, 0), &mut buf) {
+            Some(InResponse::Accepted(b)) => assert!(b.is_empty()),
+            _ => panic!("peek 0"),
+        }
+        // Odd length and address: exactly what was asked.
+        let mut small = [0u8; 64];
+        match d.control_in(req(true, REQ_PEEK, 0x0003, 0x0010, 7), &mut small) {
+            Some(InResponse::Accepted(b)) => assert_eq!(b, &[0x5A; 7]),
+            _ => panic!("peek 7"),
+        }
+        assert_eq!(d.target.seen, [(0x0013_7D00, 1024), (0x0010_0000, 0), (0x0010_0003, 7)]);
+        // INFO with a short wLength is cut, not overrun.
+        match d.control_in(req(true, REQ_INFO, 0, 0, 5), &mut small) {
+            Some(InResponse::Accepted(b)) => assert_eq!(b.len(), 5),
+            _ => panic!("info"),
+        }
+        // STATS words never exceed wLength.
+        match d.control_in(req(true, REQ_STATS, 0, 0, 6), &mut small) {
+            Some(InResponse::Accepted(b)) => assert!(b.len() <= 6),
+            _ => panic!("stats"),
+        }
+    }
+
+    /// Without development requests PEEK is refused and reads nothing.
+    #[test]
+    fn peek_refused_outside_development() {
+        struct Locked(bool);
+        impl Target for Locked {
+            fn info(&mut self) -> Info {
+                Info::default()
+            }
+            fn read_mem(&mut self, _a: u32, _b: &mut [u8]) -> bool {
+                self.0 = true;
+                true
+            }
+            fn read_frame(&mut self, _o: u32, _b: &mut [u8]) -> usize {
+                0
+            }
+            fn read_log(&mut self, _o: u32, _b: &mut [u8]) -> usize {
+                0
+            }
+            fn stats(&mut self, _g: u16, _o: &mut [u32]) -> usize {
+                0
+            }
+            fn keys(&mut self, _e: &[(u8, bool)]) {}
+            fn request_reboot(&mut self, _t: u16) {}
+            fn development(&self) -> bool {
+                false
+            }
+        }
+        let mut d = DevChannel::new(Locked(false));
+        let mut buf = [0u8; 64];
+        assert!(matches!(
+            d.control_in(req(true, REQ_PEEK, 0, 0x10, 4), &mut buf),
+            Some(InResponse::Rejected)
+        ));
+        assert!(!d.target.0);
+    }
 }

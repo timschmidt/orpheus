@@ -86,3 +86,102 @@ pub fn cmd(args: &mut Args) -> Result<String> {
         bail!("{fails} failures, {ok_cycles}/{cycles} re-enumerations")
     }
 }
+
+/// How long the player may take to answer again after a provoked failure
+/// (a recovery: about 3 s to notice, re-enumeration).
+const ANSWER_AGAIN: Duration = Duration::from_secs(20);
+
+/// `xtask dev usb-cancel [--rounds N]` (USB-W1): provoke the soak's USB
+/// failure on purpose against the running firmware and check that the
+/// player answers again by itself. Every round:
+///
+/// 1. for each stage (`setup`, `data`, `status`): `usb delay <stage>
+///    2500` makes the firmware hold the next request (`status`, TEST OUT)
+///    2.5 s at that stage, as a late USB task would; the host gives up
+///    after 2 s ("Cancelled") and at once sends a PEEK of the fault record
+///    — the incident's sequence (STATUS 2026-11-24, bug USB-W1);
+/// 2. 20 PEEKs of 1 KiB and 20 TEST OUTs with a 1 ms timeout, back to back:
+///    the host cancels them mid-transfer;
+///
+/// after each, INFO must answer within [`ANSWER_AGAIN`]. Prints the USB
+/// counters before and after. Never powers the player off; it keeps
+/// running (no reboot needed).
+pub fn cancel_cmd(args: &mut Args) -> Result<String> {
+    use orpheus_host::transport::{Control, Transport, block_on};
+    use orpheus_proto::devchan::{REQ_PEEK, REQ_TEST};
+    use orpheus_proto::fault;
+    let rounds = args.value("rounds").map(|s| num(&s)).transpose()?.unwrap_or(3);
+    let mut d = DevChannel::open(Duration::from_secs(5))?;
+    let first = usb_counters(&d)?;
+    log(&format!("before: {}", super::soak::usb_line(&first)));
+    let mut worst = Duration::ZERO;
+    let peek = |d: &DevChannel| {
+        d.control_in(REQ_PEEK, fault::BASE as u16, (fault::BASE >> 16) as u16, 64).map(|b| b.len())
+    };
+    for round in 1..=rounds {
+        for stage in ["setup", "data", "status"] {
+            d.control_out(REQ_TEST, 0, 0, format!("usb delay {stage} 2500").as_bytes())?;
+            let held = d.control_out(REQ_TEST, 0, 0, b"status");
+            let p = peek(&d);
+            let (nd, dt) = answer_again(d)?;
+            d = nd;
+            worst = worst.max(dt);
+            log(&format!(
+                "round {round} {stage:>6}: held request {}, PEEK right after {}, INFO again after {:.1} s",
+                held.as_ref().map_or_else(|e| format!("failed ({e:#})"), |()| "ok".into()),
+                p.as_ref().map_or_else(|e| format!("failed ({e:#})"), |n| format!("{n} B")),
+                dt.as_secs_f32()
+            ));
+        }
+        for i in 0..20u16 {
+            let a = 0x0010_0000u32 + u32::from(i) * 1024;
+            let c = Control { request: REQ_PEEK, value: a as u16, index: (a >> 16) as u16 };
+            let _ = block_on(d.link.t.control_in(c, 1024, 1));
+            let c = Control { request: REQ_TEST, value: 0, index: 0 };
+            let _ = block_on(d.link.t.control_out(c, b"status", 1));
+        }
+        let (nd, dt) = answer_again(d)?;
+        d = nd;
+        worst = worst.max(dt);
+        log(&format!(
+            "round {round}   cuts: 40 requests cut after 1 ms, INFO again after {:.1} s",
+            dt.as_secs_f32()
+        ));
+    }
+    let last = usb_counters(&d)?;
+    log(&format!("after:  {}", super::soak::usb_line(&last)));
+    Ok(format!(
+        "PASS: answered after every provoked failure (worst {:.1} s); {} recoveries, {} transfers given up",
+        worst.as_secs_f32(),
+        last.reinits.saturating_sub(first.reinits),
+        last.aborts.saturating_sub(first.aborts)
+    ))
+}
+
+fn usb_counters(d: &DevChannel) -> Result<super::soak::UsbCounters> {
+    orpheus_proto::devchan::usb::Counters::from_words(&d.stats(0)?)
+        .ok_or_else(|| anyhow::anyhow!("the firmware has no USB counters (older than USB-W1)"))
+}
+
+/// Wait until INFO answers, opening the channel again as needed (a
+/// recovery re-enumerates the player).
+fn answer_again(d: DevChannel) -> Result<(DevChannel, Duration)> {
+    let t = Instant::now();
+    let mut d = d;
+    loop {
+        if d.info().is_ok() {
+            return Ok((d, t.elapsed()));
+        }
+        if t.elapsed() > ANSWER_AGAIN {
+            bail!(
+                "the player stopped answering USB for {} s (USB-W1 not fixed): wait two minutes for the \
+                 watchdog, then stop and ask the user (CLAUDE.md rule 7)",
+                ANSWER_AGAIN.as_secs()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(500));
+        if let Ok(n) = DevChannel::open(Duration::from_secs(2)) {
+            d = n;
+        }
+    }
+}

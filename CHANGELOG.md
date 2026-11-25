@@ -48,7 +48,10 @@ replaced).
 - **USB**: card reader for a computer; developer channel in every USB
   personality (logs, screenshots, key injection, test commands); a USB
   keyboard personality (boot keyboard; US, UK, German and French layouts)
-  — built, not yet tried on the player.
+  — built, not yet tried on the player. USB recovers by itself when the
+  computer stops being answered (the controller is reset and the player
+  re-enumerates; a fix for USB going deaf until a restart, bug USB-W1 —
+  built, not yet tried on the player).
 - **USB Drive** (built, not yet tried on the player): an `.iso` or `.img`
   from the card's `Images` folder presented to a computer as a read-only
   CD-ROM or disk, so that it can start from it; files stored in more than

@@ -58,8 +58,108 @@ of every session. Newest entries first in §3.
 | AU-13 | **built; first player run 2026-11-24: capture runs, microphone silent → front-end fix + `rec raw`/`rec width`/`rec mic` (not yet re-run)** | `orpheus-rec` (WAV PCM, IMA ADPCM, FLAC 0–2 encoders; low-cut, AGC, meter, voice activation; names; write-behind ring; the recording session), `atj2157_hal::adc` (vendor capture sequence VERBATIM, DMA ch 6), `firmware::rec` (recording mode of the card task, SRAM3 state after the radio's), developer `rec start/stop/status`. Not built: voice (Opus/Speex) encoders, mic monitoring, pre-record. User check 23 |
 | UI-5b | **built (host + firmware), not yet run on the player** | Recorder app (meters, timer, pause/mark/stop question, gain, menu with source/format/quality/AGC/VOX/split/monitor/low-cut), Recordings… (newest first, play, delete with question); simulator back end over the same session and a fake ADC; 122 goldens, 10 behaviour tests |
 | UI-8 | **done (host); not yet on the player** | List roll-around in every list (`ListView` + `ListView::step_plain`), Settings › Display › List roll-around (`0x030C`, on by default), held keys stop at the end; Up next/Details keep their view change. User check 26; the on-device journey belongs to VER-7 |
+| USB-W1 (bug) | **fixed and self-recovering (host-tested, built); not yet run on the player** | Root cause: the SETUP read was not cancel-safe (embassy-usb drops it on bus events; the interrupt stayed masked for good) and late stages landed on the next transfer. Drop-safe driver, liveness recovery, watchdog only when recovery cannot help, counters in `STATS` 24–30, soak logs self-recoveries, `xtask dev usb-cancel`. 06 §2.6; user check 28 |
 
 ## 3. Session log
+
+### 2026-11-25 — USB-W1: the USB wedge — root cause, self-recovery, liveness in the watchdog (worker, no hardware)
+
+Analysis, design and decisions: 06-connectivity §2.6 (new); open hardware
+questions U-USB-14 (01 §9).
+
+* **Root cause (mechanism certain, trigger not determined).** (1)
+  embassy-usb drops `ControlPipe::setup()` whenever a bus event wins its
+  `select`; our driver kept the SETUP interrupt masked until its DMA read
+  finished, so a drop mid-read left it **masked for good**: SETUPs latched,
+  never read, a bus reset did not unmask it and VBUS loss did not
+  re-initialise the controller — exactly "-71 on setup address" after
+  re-plugging, cured only by a reboot. (2) The `Cancelled` → `Stall` step:
+  when the host abandons an OUT whose data the device has not read and
+  sends the next SETUP, the waiting EP0 OUT DMA drains the new SETUP as
+  data and the old request's `CX_DONE` finishes the new transfer (the PEEK
+  sees a status stage instead of data). Both reproduced with embassy-usb
+  itself over a model of the EP0 hardware state
+  (`crates/orpheus-usb/tests/ep0_model.rs`, "before" and "after"
+  flavours). (3) The trigger, a device more than 2 s late on one request,
+  is not identified (candidates in 06 §2.6); `usb delay` now produces it on
+  demand. Ruled out: a panic in the USB task (would reboot), PEEK of a bad
+  address (would fault or starve the watchdog), PEEK length handling
+  (host-tested), LPM (not advertised).
+* **Driver** (`atj2157-hal::usb`): drop-safe SETUP read (guard unmasks and
+  aborts the EP0 DMA however the read ends); a bus reset re-arms EP0 and
+  wakes every endpoint future (a bulk OUT read pending at a reset waited for
+  ever: card reader dead until a personality switch); data/status stages
+  overtaken by a newer SETUP are given up; `CX_COMABT` cleared (W1C) and
+  counted at each SETUP read [FOTG210]; vendor DMA aborts (`DMA_EN = 0`);
+  DMA waits end on a reset epoch, not the sticky `BUS_EVENTS` bit (which
+  made a failing SETUP read spin without yielding); `Bus::poll` reports
+  `PowerRemoved` after 0.75 s without VBUS, and the next `enable`
+  re-initialises the controller fully; a SETUP while suspended counts as a
+  resume. Test hooks `usb delay setup|data|status <ms>`, `usb recover`.
+* **Self-recovery** (`orpheus_usb::liveness`, pure, 10 host tests): once a
+  second from the `watchdog` task. VBUS present and a bus reset not answered
+  within 2 s, or a SETUP unread for 2.5 s → recovery: the personality's
+  `select` ends (`REINIT`), controller shut down, same personality on a
+  fresh controller (USB Drive ends instead); backoff 0/5/15/30/60 s.
+  Unplugged, charger, idle host: nothing ever happens.
+* **Watchdog** (decided for, limited): `wdt::USB_WEDGED` stops
+  `Health::check` feeding only if a requested recovery is not carried out
+  within 10 s, or SETUPs stay unread after two recoveries — and only with
+  VBUS, after this boot answered a SETUP, after 60 s uptime (never a failed
+  start for stage 2). Unanswered resets alone never reboot.
+* **Observability**: `STATS` group 0 words 24–30 (stalls, given-up
+  transfers, recoveries, last error code + time, initialisations,
+  `CX_COMABT`, liveness state; layout in `orpheus_proto::devchan::usb`);
+  log lines `usb: recovery (…)`, `usb: wedged (…)`; `xtask dev stats` prints
+  a `usb:` line. **Soak**: prints the counters after a channel loss,
+  reconnects up to 4 times 3 s apart (a recovering player re-enumerates),
+  and a loss with more re-inits and the same boot is a `usb-recovery`
+  finding that is logged and reported but does not stop the run.
+* **New tool**: `xtask dev usb-cancel [--rounds N]` (not run: no hardware)
+  — per round, the next request held 2.5 s at each stage then the soak's
+  PEEK at once, and 40 transfers cut by the host after 1 ms; INFO must
+  answer again within 20 s each time; counters before/after.
+* **Tests**: `orpheus_usb::liveness` 10, `ep0_model` 7 (embassy-usb 0.6
+  over the model: both flavours answer; before: a bus event during the
+  SETUP read deafens EP0 for good, a late status lands on the next
+  transfer; after: drop-safe read, overtaken transfer given up, a reset
+  re-arms EP0), `devchan` PEEK lengths/address and refusal, proto USB
+  words, soak counters and self-recovery classification.
+* **Numbers**: firmware resident 79,052 B (`xtask build`; `size --check`
+  79,043 B, within the 81,920 B budget), bss 123,988 B: **RAM +128 B**
+  (`.bss` 123,348 → 123,476 B, `.data` 16,340 B unchanged; `cargo build
+  --release -p firmware` of `e91558eb` and of this commit, `llvm-size`;
+  the watchdog task with the detector and 52 B of counters and flags; the
+  main stack is 128 B smaller), 105
+  code + 18 rodata pages, slot 1,093,632 B; `check-resident` ok, 48
+  sections from 16 roots, the same 3 indirect branches (`on_irq` and the
+  bus-reset path stay resident).
+* **Gate**: host `fmt --check`, `clippy --workspace --all-targets -D
+  warnings`, `cargo test --workspace`; fw `fmt --check`, `clippy
+  --workspace -D warnings`; `cargo xtask build`, `check-resident`, `size
+  --check`: pass. Not run: HIL, `dev soak`, `dev usb-cancel` (no
+  hardware).
+* **Lead's device test plan** (one process at a time; nothing needs the
+  case opened; ends with the player running normally):
+  1. `cargo xtask build`, `xtask dev stage` (or `dev update`), reboot;
+     `xtask dev stats`: the `usb:` line shows `re-inits 0`.
+  2. `xtask dev usb-cancel --rounds 3`: expect PASS; note `aborts`,
+     `comabt` and `re-inits` (0 re-inits: the driver fixes alone handled
+     every abandoned transfer; > 0: the liveness recovery did). A FAIL
+     saying the player stopped answering: wait two minutes (watchdog),
+     then stop and ask (rule 7).
+  3. Re-plug the cable five times; `dev stats` after each: `re-inits`
+     grows by one per plug (`vbus-reinit`), INFO always answers.
+  4. `xtask dev cmd "usb recover"`: the player re-enumerates within ~1 s
+     (`recover-setup`, `re-inits` + 1).
+  5. `dev soak mixed --minutes 30 --setup --seed 1` again: a channel loss
+     must now end in `usb-recovery` (the run goes on) or not happen.
+  6. User check 28 (re-plug, host sleep, charger, idle hour).
+* **Open**: what made the device 2 s late in the first place (watch
+  `data-timeout`/`overtaken` in the counters during the soak, and the
+  settings/clock words); U-USB-14 (is `CX_COMABT` set, is the W1C needed;
+  does `DMA_EN = 0` matter); the ZLP after an exact multiple of 64 bytes
+  (U-USB-2, unchanged).
 
 ### 2026-11-24 — T-6 (stage2): automatic fallback to the next slot (worker, no hardware)
 
@@ -3515,6 +3615,7 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 | 2026-11-24 | Miri | 14 crates, 232 tests, no UB; full run ≈ 35 min | `xtask test miri` |
 | 2026-11-24 | Browser build (WEB-2) | module 2,677,523 B (1,816,547 gzip; 1,219,820 B of it the committed demo files), glue 19,664 B, page scripts and styles ≈ 26 KB; 1,830 KB gzip in all (budget 4,000 KB; also under it uncompressed) | `xtask wasm` |
 | 2026-11-24 | Browser build in headless Chromium 155 / Firefox 157 (localhost) | first screen 155–220 ms; per-frame simulation + draw 0.08–0.11 ms mean, ≤ 1 ms worst; 230 frames in 4 s; 4.0 s of Lyre Study played with 0 dropouts (also with Chromium's fake sink); wasm memory 80 MiB with the 36 MiB card | `xtask wasm --test`, `tests/web/try.mjs --browser firefox` |
+| 2026-11-25 | Firmware with USB-W1 (drop-safe EP0, liveness, counters), worker worktree build | resident 79,052 B (`size --check` 79,043), `.bss` 123,348 → 123,476 B (+128: watchdog task pool 144 B with the detector, 52 B of USB counters/flags), `.data` 16,340 B unchanged, 105 code + 18 rodata pages, slot 1,093,632 B | `xtask build`, `xtask size --check`, `cargo build --release -p firmware` + `llvm-size` of `e91558eb` and USB-W1, `llvm-nm` |
 
 ## 5. Open questions for the user
 
