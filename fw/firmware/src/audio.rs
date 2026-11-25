@@ -1199,17 +1199,30 @@ async fn serve_one(vol: &mut Volume<'static, Card>, srv: &mut Server, scratch: &
     match media::REQS.try_receive() {
         Ok(r) => {
             let (name, t0) = (r.name(), time::now_us());
+            let (pl0, sd0) = (atj2157_hal::pager::stats().loads as u32, vol.device().stats());
             let done = srv.serve(vol, r, scratch, false).await;
             let took = time::now_us() - t0;
             if took >= 30_000 {
                 // A request that blocks the playback loop this long can
-                // empty the DAC ring (soak, 2026-11-25: 309 ms).
+                // empty the DAC ring (soak, 2026-11-25: 309 ms). Where the
+                // time went: code lines paged in (`pl`), blocks read and
+                // written (`r`, `w`) and the card's busy polls after writes
+                // (`bp`, ~0.25 ms each) (2026-11-25: games pieces of 33–40
+                // ms against a few sector I/Os on the host).
+                let sd1 = vol.device().stats();
                 let mut l = atj2157_hal::log::LineBuf::new();
                 l.push_str("serve: ")
                     .push_str(name)
                     .push_str(" ")
                     .push_u32((took / 1000) as u32)
-                    .push_str(" ms while playing");
+                    .push_str(" ms while playing pl=")
+                    .push_u32((atj2157_hal::pager::stats().loads as u32).wrapping_sub(pl0))
+                    .push_str(" r=")
+                    .push_u32(sd1.blocks_read.wrapping_sub(sd0.blocks_read))
+                    .push_str(" w=")
+                    .push_u32(sd1.blocks_written.wrapping_sub(sd0.blocks_written))
+                    .push_str(" bp=")
+                    .push_u32(sd1.busy_polls.wrapping_sub(sd0.busy_polls));
                 l.emit();
             }
             LAST_SERVE_MS.store((time::now_us() / 1000) as u32, Ordering::Relaxed);
