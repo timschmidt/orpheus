@@ -65,6 +65,23 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-25 — chore budgets on the player (lead)
+
+* Merged `0d2e672b` (chore budgets, `orpheus_audio::chore`); all gates
+  pass, static stack unchanged (21,740 / 22,016 B).
+* Replay `mixed-underrun-seed1-6.soak`: 1 underrun of 37 frames
+  (`chore: job:count 19/18 ms u16`). Raising the margin by a fixed
+  code-reload allowance (8 or 4 ms) made the host model starve 30 ms
+  chores; reverted (the model's decoder, 14–19 ms per call, is twice the
+  player's 4–9 ms).
+* 30-min seed 1: CPU idle 71 %, loads/s 1,058, stack free ≥ 7,744 B; 11
+  underruns at 7.7 min from **`job:rows` pieces of 37–40 ms against
+  36–38 ms budgets, with a single card operation of 31 ms (`u31`)**. Each
+  piece opens a new index I/O session (files reopened by path) whose cost
+  is not in the piece's estimate. Next (worker): keep the index handles
+  across pieces, count the session overhead in the need, find the 31 ms
+  operation.
+
 ### 2026-11-25 — AU-PERF: chore budgets (no chore may empty the DAC ring) (worker, no hardware)
 
 Problem (lead, soak seed 1 on `942c258c`): under UI load the headroom
