@@ -192,7 +192,7 @@ fn dispatch(sub: &str, args: &mut Args) -> Result<String> {
         "usbtest" => usbtest::cmd(args),
         "usb-cancel" => usbtest::cancel_cmd(args),
         "keys" => {
-            let script = args.positional("key script")?;
+            let script = key_script(args)?;
             keys(&script)
         }
         "cmd" => {
@@ -572,6 +572,17 @@ const KEY_NAMES: [&str; 10] =
     ["power", "back", "menu", "ok", "prev", "next", "up", "down", "volup", "voldown"];
 
 /// `ok`, `down*3`, `hold:menu` (800 ms), `long:power` (4.5 s), `wait:300`.
+/// The key script: every remaining word (a shell passes one quoted
+/// argument; `prof --during "keys …"` splits on whitespace).
+fn key_script(args: &mut Args) -> Result<String> {
+    let mut script = args.positional("key script")?;
+    while let Some(w) = args.next_positional() {
+        script.push(' ');
+        script.push_str(&w);
+    }
+    Ok(script)
+}
+
 fn keys(script: &str) -> Result<String> {
     let d = orpheus_host::devchan::DevChannel::open(Duration::from_secs(3))?;
     let send =
@@ -622,4 +633,20 @@ fn civil(secs: u64) -> (i64, u8, u8, u8, u8, u8) {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
     (y, m as u8, d as u8, (rem / 3600) as u8, (rem / 60 % 60) as u8, (rem % 60) as u8)
+}
+
+#[cfg(test)]
+mod key_script_tests {
+    use super::*;
+
+    /// 2026-11-25: `dev prof --during "keys up*3 wait:200 ok …"` sent only
+    /// `up*3` (the subcommand's words arrive as separate arguments and
+    /// `keys` took the first): the whole script must arrive.
+    #[test]
+    fn regress_keys_takes_every_word_of_the_script() {
+        let words: Vec<String> = ["up*3", "wait:200", "ok"].iter().map(|s| (*s).to_string()).collect();
+        assert_eq!(key_script(&mut Args::from_vec(words)).unwrap(), "up*3 wait:200 ok");
+        let one = vec!["next*2 ok".to_string()];
+        assert_eq!(key_script(&mut Args::from_vec(one)).unwrap(), "next*2 ok");
+    }
 }
