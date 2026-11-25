@@ -69,6 +69,26 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-25 — GAME-6 merged; Bricks on the player (lead)
+
+* Merged GAME-6 (`ebbf8ce3`) with Salvo: firmware features `games`,
+  `salvo`, `bricks`; the in-place save decode (STACK) gained Bricks;
+  suite mask: values column (four rows) and the list's scroll bar. Gate:
+  1,429 host tests, fw build/size/resident, stack margin 4,496 B.
+* Fixed two problems the GAME-6 worker found (`2ca82de5`): Salvo's pinned
+  checksum hashed whole saves including their CRC, so it pinned nothing
+  (`regress_salvo_pin_depends_on_the_game`, re-pinned `0xce76c783`);
+  `tests/settings/effects.toml` was not TOML (three oracles with
+  unescaped quotes; `regress_settings_manifest_is_valid_toml`).
+* On the player (`2ca82de5`): Games lists five games (scroll bar);
+  Bricks opens (after "Loading…" ≈ 2.5 s with music: the games file
+  pieces), level 1, launch, a brick breaks (10 points), a lost ball
+  returns to "OK to launch". While Bricks plays: ≈ 14 UI loops/s, busy ≈
+  46 %, ≈ 2,700 line loads/s. Underruns came only from the games file
+  pieces (`serve: games 51 ms … pl=217 r=2 w=2 bp=2`, `job:games 49 ms`):
+  5 over two game opens and quits — the `games-io` cluster work.
+  Hands-on play (power-ups, levels, three balls) is the owner's check.
+
 ### 2026-11-25 — Salvo on the player; games pieces are paging-bound (lead)
 
 * Merged STACK (`e2a55208`: key derivation finish split by kind, games
