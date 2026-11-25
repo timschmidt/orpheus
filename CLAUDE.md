@@ -61,6 +61,14 @@ in `docs/PLAN.md`; start every session there and in `docs/STATUS.md`.
 * RAM and size budgets live in `budgets.toml`; exceeding one needs the
   measured numbers and the reason in the same commit.
 * Every screen has a golden image; look at the PNG you produce.
+* Every fixed bug becomes a regression test in the same commit as the fix
+  (owner's policy, 2026-11-25): a host test named `regress_<bug>` whose doc
+  comment names the bug, the date and the symptom, and which fails without
+  the fix. Logic in hardware crates is factored into a host crate to make
+  that possible; what cannot be (timing, the controller itself) gets an
+  on-device check as well (`xtask dev suite` journey, `dev usb-cancel`-style
+  tool or a soak replay). Fuzz and soak findings also keep their input in
+  `tests/regress/`. `cargo test regress_` runs them all.
 * Hardware facts learned go into `docs/plan/01-hardware.md` §9 and the source
   document in the same commit as the code that relies on them. Sequences
   copied from the vendor without understanding are marked `VERBATIM`.

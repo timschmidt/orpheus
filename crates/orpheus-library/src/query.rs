@@ -39,6 +39,12 @@ impl SampleStep {
         self.picked
     }
 
+    /// Rows of the track table looked at so far.
+    #[must_use]
+    pub fn rows_seen(&self) -> u32 {
+        self.i
+    }
+
     /// splitmix64.
     fn next(&mut self) -> u64 {
         self.s = self.s.wrapping_add(0x9E37_79B9_7F4A_7C15);

@@ -635,8 +635,21 @@ fn queue_windows_and_sample() {
     let chi2: f64 = hits.values().map(|&h| (f64::from(h) - expect).powi(2) / expect).sum();
     assert!(chi2 < 1.3 * f64::from(n), "chi² {chi2} for {n} tracks");
     assert_eq!(l.sample(&mut store, 9, 5000, |_| true).unwrap(), n);
-    // In steps (the firmware's way, so a big library never holds the CPU
-    // into the watchdog): the same picks however the rows are split.
+}
+
+/// Regression: Music › Shuffle all reset the player (2026-11-25, found by
+/// the first soak; STATUS "fix: Music › Shuffle all reset the player").
+/// The sample walked the whole track table in one library session, holding
+/// the RT executor past the 5.6-s watchdog on a large library. The fix
+/// samples in bounded steps; they must pick exactly what one pass picks.
+#[test]
+fn regress_shuffle_all_sample_in_bounded_steps() {
+    let mut r = Rng(5);
+    let mut card = random_card(&mut r, 1000);
+    let mut store = MemStore::new();
+    let l = build(&mut store, &mut card, cfg());
+    let n = l.tracks();
+    // The same picks however the rows are split.
     for (seed, step) in [(3u64, 1u32), (4, 8), (5, 13), (6, 64), (7, 1000)] {
         let mut one = Vec::new();
         l.sample(&mut store, seed, 100, |t| {
@@ -647,6 +660,7 @@ fn queue_windows_and_sample() {
         let mut st = l.sample_begin(seed, 100);
         let mut parts = Vec::new();
         let mut calls = 0;
+        let mut before = 0;
         while !l
             .sample_step(&mut store, &mut st, step, |t| {
                 parts.push(tk(&t));
@@ -656,6 +670,12 @@ fn queue_windows_and_sample() {
         {
             calls += 1;
             assert!(calls <= n, "sample_step made no progress");
+            // Bounded work per step: whole reads of 8 rows, never more
+            // than one read past the budget.
+            let seen = st.rows_seen();
+            assert!(seen - before <= step.div_ceil(8) * 8, "{} rows in one step of {step}", seen - before);
+            assert!(seen > before, "a step looked at no rows");
+            before = seen;
         }
         assert_eq!(parts, one, "seed {seed}, {step} rows per step");
         assert_eq!(st.picked(), 100);

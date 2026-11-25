@@ -100,6 +100,18 @@ traits in 05 §5.1, `embassy-usb-driver`).
 | Step counter | Recorded accelerometer traces with labelled step counts |
 | Protocol codecs | Bluetooth frames (whatever docs/hw/bluetooth.md specifies), SD response parsing (CID/CSD/SCR), ID3/Vorbis-comment/MP4 parsers; all parsers fuzzed (§3.4) |
 
+**Regression tests for fixed bugs (owner's policy, 2026-11-25).** Every bug
+fix lands with a host test `regress_<bug>` (doc comment: bug id or STATUS
+entry, date, symptom) that fails on the code before the fix; the fix's
+commit carries both. Where the bug lives in hardware code, the decision is
+moved into a host crate and tested there (example: `mailbox::stale_test`
+for the stale test request; `Library::sample_step` for the Shuffle-all
+watchdog reset); behaviour only the player shows also gets an on-device
+check (a suite journey, a `dev` tool such as `usb-cancel`, or a soak
+replay in `tests/regress/soak/`). Fuzz and soak findings keep their inputs
+in `tests/regress/` (§3.4, §5.10). `cargo test regress_` runs the set, and
+the §6 gate runs it as part of `xtask test all`.
+
 ### 3.2 Simulator and golden images
 
 `sim/` is a desktop binary that links the same `orpheus-ui` and `orpheus-apps`

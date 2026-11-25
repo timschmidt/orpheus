@@ -261,8 +261,11 @@ impl Mailbox {
 mod tests {
     use super::*;
 
+    /// Regression: a test request from `xtask dev ram` survived warm
+    /// reboots (2026-11-25, found by the second soak): every later start
+    /// from flash ran as a 300-s test and quit to USB recovery.
     #[test]
-    fn stale_test_only_on_a_flash_start() {
+    fn regress_stale_test_request() {
         let armed = Mailbox::test(1, FLAG_RETURN_ADFU, &[300]);
         // As `dev ram` leaves it: no boot info, a real test.
         assert!(!stale_test(armed.test_mode, armed.boot_info));
