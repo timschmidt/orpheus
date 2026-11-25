@@ -563,52 +563,75 @@ pub static GROUPS: [Group; 12] = [
     Group { label: Str::GSystem, items: SYSTEM },
 ];
 
-/// Every item, group by group, then the apps' own.
-#[cfg(not(feature = "games"))]
+/// Every item, group by group, then the apps' own and (with the `games`
+/// feature) the games' (M14): the lists of [`LISTS`], so one copy of each
+/// table serves the iteration and the lookups.
 pub fn all() -> impl Iterator<Item = &'static Setting> {
-    GROUPS.iter().flat_map(|g| g.items.iter()).chain(APP_ITEMS.iter())
+    LISTS.iter().flat_map(|l| l.iter())
 }
 
-/// Every item, group by group, then the apps' own and the games' (M14).
-#[cfg(feature = "games")]
-pub fn all() -> impl Iterator<Item = &'static Setting> {
-    GROUPS.iter().flat_map(|g| g.items.iter()).chain(APP_ITEMS.iter()).chain(crate::games::SETTINGS.iter())
-}
-
-/// The item lists in [`all`]'s order, as plain slices: the lookups below
-/// walk them with loops (no iterator adapters).
-#[inline(always)]
-fn lists() -> (&'static [Group], &'static [Setting], &'static [Setting]) {
+/// The item lists by the high byte of their keys: groups `0x01..=0x0C`
+/// in [`GROUPS`]' order, the apps' items `0x0D`, the games' `0x0E` (a test
+/// holds every key to its list's byte). Plain slices, so a lookup touches
+/// one list and no closure.
+static LISTS: [&[Setting]; 14] = {
     #[cfg(feature = "games")]
     let games: &'static [Setting] = &crate::games::SETTINGS;
     #[cfg(not(feature = "games"))]
     let games: &'static [Setting] = &[];
-    (&GROUPS, APP_ITEMS, games)
+    [
+        SOUND, PLAYBACK, DISPLAY, POWER, DATE_TIME, BLUETOOTH, RADIO, RECORDING, USB, LANGUAGE, STORAGE,
+        SYSTEM, APP_ITEMS, games,
+    ]
+};
+
+/// Stored items before each list (the cache index of its first stored
+/// item), computed at build time.
+const FIRST_STORED: [u16; 14] = {
+    let mut out = [0u16; 14];
+    let mut n = 0u16;
+    let mut l = 0;
+    while l < 14 {
+        out[l] = n;
+        let list = LISTS[l];
+        let mut i = 0;
+        while i < list.len() {
+            if list[i].stored() {
+                n += 1;
+            }
+            i += 1;
+        }
+        l += 1;
+    }
+    out
+};
+
+/// The list a key belongs to, by its high byte.
+#[inline(always)]
+fn list_of(id: SettingId) -> Option<usize> {
+    let hi = (id.0 >> 8) as usize;
+    (1..=14).contains(&hi).then(|| hi - 1)
 }
 
 /// Look an item up by key.
 ///
-/// One function with plain loops, no closure: the iterator form
+/// It searches only the key's own list (by the key's high byte) with a
+/// plain loop. 2026-11-25 on the player: the iterator form
 /// (`all().find(..)`) called its closure out of line for every item, and
-/// on the player that closure and its caller landed on the same code-cache
-/// line, so each lookup of ~130 items cost ~260 line loads (2026-11-25:
-/// idle Home 1.7 s per UI loop, 2,939 line loads/s, keys 3.3 s each).
+/// that closure and its caller shared a code-cache line (idle Home 1.7 s per
+/// UI loop, 2,939 line loads/s, keys 3.3 s each); and a scan of all ~150
+/// items reads 3.6 KB of tables in several rodata lines on every lookup
+/// (a third of all line loads while switching games).
 #[must_use]
+#[inline(never)]
 pub fn def(id: SettingId) -> Option<&'static Setting> {
-    let (groups, apps, games) = lists();
-    for g in groups {
-        for s in g.items {
-            if s.id == id {
-                return Some(s);
-            }
+    let list = LISTS[list_of(id)?];
+    let mut i = 0;
+    while i < list.len() {
+        if list[i].id == id {
+            return Some(&list[i]);
         }
-    }
-    for list in [apps, games] {
-        for s in list {
-            if s.id == id {
-                return Some(s);
-            }
-        }
+        i += 1;
     }
     None
 }
@@ -620,31 +643,24 @@ pub const STORED: usize = 98;
 pub const STORED: usize = 98 + crate::games::STORED_SETTINGS;
 
 /// Position among stored items (cache index).
-#[must_use]
 ///
-/// Plain loops for the reason given at [`def`].
+/// The key's list only, for the reasons given at [`def`].
+#[must_use]
+#[inline(never)]
 pub fn index(id: SettingId) -> Option<usize> {
-    let (groups, apps, games) = lists();
-    let mut n = 0;
-    for g in groups {
-        for s in g.items {
-            if s.stored() {
-                if s.id == id {
-                    return Some(n);
-                }
-                n += 1;
+    let l = list_of(id)?;
+    let list = LISTS[l];
+    let mut n = FIRST_STORED[l] as usize;
+    let mut i = 0;
+    while i < list.len() {
+        let s = &list[i];
+        if s.stored() {
+            if s.id == id {
+                return Some(n);
             }
+            n += 1;
         }
-    }
-    for list in [apps, games] {
-        for s in list {
-            if s.stored() {
-                if s.id == id {
-                    return Some(n);
-                }
-                n += 1;
-            }
-        }
+        i += 1;
     }
     None
 }
@@ -866,10 +882,29 @@ impl SettingsCache {
 
 #[cfg(test)]
 mod tests {
-    /// The loop lookups give exactly what the iterator definitions give,
-    /// for every item and for keys that are not items (2026-11-25: `def`
-    /// and `index` became plain loops, the closure form thrashed the
-    /// player's code cache).
+    /// Every key's high byte names its list, and the lists are `all()`
+    /// in order (the lookups rely on both).
+    #[test]
+    fn keys_are_grouped_by_their_high_byte() {
+        let mut flat = LISTS.iter().flat_map(|l| l.iter());
+        for s in all() {
+            assert!(core::ptr::eq(flat.next().unwrap(), s));
+        }
+        assert!(flat.next().is_none());
+        for (l, list) in LISTS.iter().enumerate() {
+            for s in *list {
+                assert_eq!(usize::from(s.id.0 >> 8), l + 1, "key {:#06x}", s.id.0);
+            }
+        }
+        for (g, list) in GROUPS.iter().zip(LISTS) {
+            assert!(core::ptr::eq(g.items, list));
+        }
+    }
+
+    /// The lookups give exactly what the iterator definitions give, for
+    /// every item and for keys that are not items (2026-11-25: `def` and
+    /// `index` became per-list loops; the closure form thrashed the
+    /// player's code cache, idle Home 1.7 s per UI loop).
     #[test]
     fn regress_settings_lookup_loops_match_the_iterator_form() {
         let stored: Vec<SettingId> = all().filter(|s| s.stored()).map(|s| s.id).collect();

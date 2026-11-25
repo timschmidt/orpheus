@@ -68,6 +68,29 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-25 — UI-PERF: settings lookups go to their own list (lead)
+
+* Fault profile of two game switches during music (`dev prof --faults 1
+  --during "keys …"`, 17.6 s, 3,072 line loads/s): the two hottest
+  sections were **settings tables in rodata** (`.Lanon…905` = the games'
+  settings, `.Lanon…922` = a group's), 27 % of all line loads; idle Home
+  showed them too. Every `def`/`index` scanned all ~150 items (3.6 KB in
+  several rodata lines), and the UI looks settings up many times a frame.
+* Fix: keys are grouped by their high byte (groups `0x01–0x0C`, apps
+  `0x0D`, games `0x0E`); `def` and `index` search only that list
+  (`LISTS`, a static; `FIRST_STORED` offsets computed at build time);
+  `all()` iterates `LISTS`, so the games' table (a `const` array) is no
+  longer copied twice into rodata. `#[inline(never)]`: inlined, the UI
+  task's frame grew 40 B. Tests: `keys_are_grouped_by_their_high_byte`,
+  `regress_settings_lookup_loops_match_the_iterator_form` (no feature,
+  `games`, `games,salvo`).
+* On the player (before Salvo's merge): idle Home 27 ms per UI loop (was
+  47), 704 line loads/s; five game switches during music **0 underruns**
+  (was 1; 12 two builds ago). The games pieces still take 32–36 ms
+  (`serve: games … while playing`): open.
+* Tooling: `dev keys` takes every word of its script (`be2fc7af`, with
+  `regress_keys_takes_every_word_of_the_script`).
+
 ### 2026-11-25 — STACK: room for Salvo; Salvo on in the firmware (worker, no hardware)
 
 Salvo did not fit the static stack budget (GAME-4/5 entry below: margin
