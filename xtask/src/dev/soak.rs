@@ -2383,6 +2383,7 @@ fn drive(rig: &mut dyn Rig, ctx: &mut Ctx, a: &Action) -> Result<()> {
                 log(&format!("   {}", usb_line(u)));
             }
             let rebooted = ctx.last_uptime < up_before;
+            lost_evidence(rig, rebooted);
             if let Some(text) = self_recovery(before.as_ref(), ctx.last_usb.as_ref(), rebooted) {
                 log(&format!("   FOUND (usb-recovery; the run goes on): {text}"));
                 let t = rig.wall_ms();
@@ -2404,6 +2405,35 @@ fn drive(rig: &mut dyn Rig, ctx: &mut Ctx, a: &Action) -> Result<()> {
                 });
             }
             Ok(())
+        }
+    }
+}
+
+/// After a channel loss: what the player shows and its last log lines
+/// (before anything else changes them), and a screenshot under
+/// `target/orpheus/soak/`. Best effort: nothing here fails the run.
+fn lost_evidence(rig: &mut dyn Rig, rebooted: bool) {
+    if let Ok(t) = player::top(rig) {
+        log(&format!(
+            "   screen: {} (depth {}, dialog {}, screen on {})",
+            t.name, t.depth, t.dialog, t.screen_on
+        ));
+    }
+    if !rig.is_sim()
+        && let Ok(fb) = rig.frame()
+        && let Ok(png) = super::mask::png_frame(&fb)
+    {
+        let path = out_dir().join("soak").join(format!("lost-{}.png", stamp()));
+        if std::fs::create_dir_all(path.parent().unwrap_or(&path)).is_ok()
+            && std::fs::write(&path, png).is_ok()
+        {
+            log(&format!("   screenshot: {}", path.display()));
+        }
+    }
+    if let Ok(lines) = rig.log_lines() {
+        let tail = lines.len().saturating_sub(if rebooted { 4 } else { 8 });
+        for l in &lines[tail..] {
+            log(&format!("   log: {l}"));
         }
     }
 }

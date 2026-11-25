@@ -92,6 +92,11 @@ pub trait Player {
     fn health(&mut self) -> Result<Health>;
     /// The fault record (it survives resets), if one was written.
     fn fault(&mut self) -> Result<Option<FaultRecord>>;
+    /// The firmware's log ring, oldest line first (empty where there is
+    /// none, as in the simulator).
+    fn log_lines(&mut self) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
     /// Normal reboot; returns once the player answers again.
     fn reboot(&mut self) -> Result<()>;
     /// The channel failed: wait (up to [`COME_BACK`]) for the player.
@@ -323,6 +328,16 @@ impl Player for UsbPlayer {
     }
     fn fault(&mut self) -> Result<Option<FaultRecord>> {
         Ok(FaultRecord::from_bytes(&self.d()?.peek(fault::BASE, fault::SIZE)?))
+    }
+    fn log_lines(&mut self) -> Result<Vec<String>> {
+        let area = self.d()?.log_area()?;
+        let mut out = vec![0u8; area.len()];
+        let Some((n, _)) = orpheus_proto::logring::unroll(&area, &mut out) else { return Ok(Vec::new()) };
+        Ok(out[..n]
+            .split(|b| *b == 0)
+            .filter(|l| !l.is_empty())
+            .map(|l| String::from_utf8_lossy(l).into_owned())
+            .collect())
     }
     fn reboot(&mut self) -> Result<()> {
         if let Some(d) = self.d.take() {

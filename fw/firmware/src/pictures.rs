@@ -229,29 +229,60 @@ async fn run(
     sink: &mut dyn RowSink,
     cancelled: fn() -> bool,
 ) -> Result<(), Stop> {
-    let mut t0 = time::now_us();
+    let start = time::now_us();
+    let mut t0 = start;
+    // Longest stretch without giving the CPU back (VER-12 soak finding,
+    // 2026-11-25: browsing pictures stalled thread mode for seconds).
+    let mut longest = 0u64;
+    let mut r = Err(Stop::Img(orpheus_img::Error::Corrupt));
     // Each step does some work or needs data the next fill brings: bounded
     // by the file, the bound only stops a broken decoder.
     for _ in 0..4_000_000u32 {
         match dec.step(ring, sink) {
-            Ok(Step::Done) => return Ok(()),
+            Ok(Step::Done) => {
+                r = Ok(());
+                break;
+            }
             Ok(Step::Progress) => {}
             Ok(Step::NeedData(_)) => {
+                longest = longest.max(time::now_us() - t0);
                 if (ring.eof() && !ring.reseek()) || (!ring.fill(vol, Some(f)).await && !ring.eof()) {
-                    return Err(Stop::Io);
+                    r = Err(Stop::Io);
+                    break;
                 }
+                t0 = time::now_us();
             }
-            Err(e) => return Err(Stop::Img(e)),
+            Err(e) => {
+                r = Err(Stop::Img(e));
+                break;
+            }
         }
         if cancelled() {
-            return Err(Stop::Cancelled);
+            r = Err(Stop::Cancelled);
+            break;
         }
-        if time::now_us() - t0 >= 8_000 {
+        let el = time::now_us() - t0;
+        if el >= 8_000 {
+            longest = longest.max(el);
             Timer::after_micros(1_500).await;
             t0 = time::now_us();
         }
     }
-    Err(Stop::Img(orpheus_img::Error::Corrupt))
+    longest = longest.max(time::now_us() - t0);
+    let total = time::now_us() - start;
+    if total >= 500_000 || longest >= 50_000 {
+        let mut l = atj2157_hal::log::LineBuf::new();
+        l.push_str("pic: slow ")
+            .push_u32((total / 1000) as u32)
+            .push_str(" ms, longest ")
+            .push_u32((longest / 1000) as u32)
+            .push_str(" ms without a yield");
+        if let Some(i) = dec.info() {
+            l.push_str(", ").push_u32(i.width).push_str("x").push_u32(i.height);
+        }
+        l.emit();
+    }
+    r
 }
 
 /// Place `v()` at the start of `buf` (aligned); returns it and the rest.
