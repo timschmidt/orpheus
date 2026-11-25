@@ -720,6 +720,11 @@ pub type Vol = Volume<'static, Card>;
 /// One session of index I/O on the card (see `orpheus_index::card`).
 pub type Io<'a, 'c> = CardIo<'a, 'static, 'c, Card>;
 
+/// Code-line loads of the pager since boot.
+fn page_loads() -> u32 {
+    atj2157_hal::pager::stats().loads as u32
+}
+
 fn loc(f: FileRef) -> Locator {
     Locator { dir: f.dir, index: f.index }
 }
@@ -811,10 +816,12 @@ pub struct Server {
     /// The listing being made in pieces while a track plays.
     job: Option<Job>,
     /// The Up next window being filled while a track plays: (queue
-    /// generation, first position, titles done). One title per chore piece
-    /// (`step`): a whole window at once took 465 ms with a shuffled queue
-    /// (each title opens a track somewhere on the card) and emptied the DAC
-    /// ring (soak, 2026-11-25).
+    /// generation, first position, mask of the slots filled). One title
+    /// per chore piece (`step`): a whole window at once took 465 ms with a
+    /// shuffled queue (each title opens a track somewhere on the card) and
+    /// emptied the DAC ring (soak, 2026-11-25). Titles the window had for
+    /// the same generation are kept (`keep_titles`): when a track ends the
+    /// window moves on by one and one title is new.
     qjob: Option<(u32, u32, u32)>,
     /// The index file of an abandoned build, removed (with the scratch
     /// files) before the next build starts.
@@ -980,6 +987,8 @@ impl Server {
             }
             Req::Delete(f) => {
                 Own(crate::rec::delete(vol, f)).await;
+                // The file may be queued: Up next titles are looked up again.
+                self.titles_stale();
                 true
             }
             Req::Update(op) => {
@@ -999,8 +1008,10 @@ impl Server {
                 true
             }
             Req::QueueWin { first } => {
-                // While playing: in pieces (`step`).
-                self.qjob = Some((self.qgen, first, 0));
+                // While playing: in pieces (`step`); what the window had
+                // is shown at once.
+                let mask = self.keep_titles(first);
+                self.qjob = Some((self.qgen, first, mask));
                 true
             }
             Req::Release | Req::Image => {
@@ -1164,11 +1175,12 @@ impl Server {
     /// fills, with `complete: false` until it is whole (the UI asks for
     /// nothing meanwhile).
     pub async fn step(&mut self, vol: &mut Vol) {
-        if let Some((qgen, first, done)) = self.qjob.take() {
+        if let Some((qgen, first, mask)) = self.qjob.take() {
             if qgen == self.qgen {
-                let done = self.queue_title(vol, first, done).await;
-                if let Some(done) = done {
-                    self.qjob = Some((qgen, first, done));
+                let (mask, more) = self.queue_title(vol, first, mask).await;
+                self.publish_qwin(first, mask);
+                if more {
+                    self.qjob = Some((qgen, first, mask));
                 }
             }
             return;
@@ -1527,6 +1539,9 @@ impl Server {
     /// comes back; a build in progress is given up and its files removed.
     pub async fn card_leaving(&mut self, vol: &mut Vol) {
         crate::library::card_leaving(self);
+        // The host may rename or replace queued files: no Up next title is
+        // kept across the hand-over.
+        self.titles_stale();
         self.job = None;
         self.index = None;
         // The host may change the folder's pictures.
@@ -1607,68 +1622,113 @@ impl Server {
         ready(tag::TEXT);
     }
 
-    /// Titles of the queue around `first` for Up next.
-    /// One more title of the Up next window from `first` (`done` filled so
-    /// far), published at once; `Some(done)` while more remain.
-    async fn queue_title(&mut self, vol: &mut Vol, first: u32, done: u32) -> Option<u32> {
-        let qgen = self.qgen;
-        let pos = first.saturating_add(done);
-        let more =
-            (done as usize) < QWIN && self.player.as_ref().is_some_and(|pl| pos < pl.len().min(self.qlen));
-        let n = if more {
-            let item = self.player.as_ref().map_or(0, |pl| pl.item_at(pos));
-            let title = match self.queue.get(item as usize) {
-                Some(&l) => {
-                    let mut e = DirEntry::new();
-                    if vol.open_locator(l, &mut e).await.is_ok() {
-                        Short::title(e.name())
-                    } else {
-                        Short::new("?")
-                    }
-                }
-                None => Short::new("?"),
-            };
-            critical_section::with(|cs| QWINDOW.borrow(cs).borrow_mut().titles[done as usize] = title);
-            done + 1
-        } else {
-            done
-        };
-        critical_section::with(|cs| {
-            let mut w = QWINDOW.borrow(cs).borrow_mut();
-            w.qgen = qgen;
-            w.first = first;
-            w.n = n;
-        });
-        ready(tag::QUEUE);
-        more.then_some(n)
+    /// Queued files may have changed on the card: a new queue generation,
+    /// so no title is kept from the window ([`Server::keep_titles`]) and
+    /// the UI asks for it again.
+    fn titles_stale(&mut self) {
+        self.qgen = self.qgen.wrapping_add(1);
+        self.qjob = None;
+        self.publish();
     }
 
-    async fn queue_win(&mut self, vol: &mut Vol, first: u32) {
-        let mut e = DirEntry::new();
-        let qgen = self.qgen;
-        let mut n = 0u32;
-        while (n as usize) < QWIN {
-            let pos = first.saturating_add(n);
-            let Some(pl) = self.player.as_ref() else { break };
-            if pos >= pl.len().min(self.qlen) {
-                break;
-            }
-            let Some(&l) = self.queue.get(pl.item_at(pos) as usize) else { break };
-            let title = if vol.open_locator(l, &mut e).await.is_ok() {
-                Short::title(e.name())
+    /// Slots of the Up next window at `first` that are queue positions
+    /// (at most [`QWIN`]), as a mask.
+    fn qwin_slots(&self, first: u32) -> u32 {
+        let len = self.player.as_ref().map_or(0, |pl| pl.len().min(self.qlen));
+        let n = len.saturating_sub(first).min(QWIN as u32);
+        ((1u64 << n) - 1) as u32
+    }
+
+    /// The Up next window moves to `first`: the titles it holds for the
+    /// same queue generation stay (moved to their slots) and the filled
+    /// start of it is shown; returns the mask of the slots filled.
+    fn keep_titles(&self, first: u32) -> u32 {
+        let (qgen, slots) = (self.qgen, self.qwin_slots(first));
+        critical_section::with(|cs| {
+            let mut w = QWINDOW.borrow(cs).borrow_mut();
+            let kept = if w.qgen == qgen {
+                let (from, n) = (w.first, w.n);
+                orpheus_player::queue::shift_window(&mut w.titles, from, n, first)
             } else {
-                Short::new("?")
+                0
             };
-            critical_section::with(|cs| QWINDOW.borrow(cs).borrow_mut().titles[n as usize] = title);
-            n += 1;
-        }
+            let mask = kept & slots;
+            w.qgen = qgen;
+            w.first = first;
+            w.n = orpheus_player::queue::window_prefix(mask, QWIN as u32);
+            mask
+        })
+    }
+
+    /// Publish the Up next window at `first` with the slots of `mask`
+    /// filled (the start of it without a gap is shown).
+    fn publish_qwin(&self, first: u32, mask: u32) {
+        let qgen = self.qgen;
         critical_section::with(|cs| {
             let mut w = QWINDOW.borrow(cs).borrow_mut();
             w.qgen = qgen;
             w.first = first;
-            w.n = n;
+            w.n = orpheus_player::queue::window_prefix(mask, QWIN as u32);
         });
         ready(tag::QUEUE);
+    }
+
+    /// One more title of the Up next window at `first` (`mask`: the slots
+    /// filled so far): the first missing one, by its locator. Returns the
+    /// new mask and whether titles are still missing. A title that takes
+    /// 20 ms or more is logged with its card operations and code-line
+    /// loads (`qtitle ms/io/ld A/B/C`), for the player check of AU-PERF.
+    async fn queue_title(&mut self, vol: &mut Vol, first: u32, mask: u32) -> (u32, bool) {
+        let todo = self.qwin_slots(first) & !mask;
+        if todo == 0 {
+            return (mask, false);
+        }
+        let i = todo.trailing_zeros();
+        let item = self.player.as_ref().map_or(0, |pl| pl.item_at(first.saturating_add(i)));
+        let (t0, io0, l0) = (atj2157_hal::time::now_us(), yoton_bsp::card::io_count(), page_loads());
+        let title = match self.queue.get(item as usize) {
+            Some(&l) => {
+                let mut e = DirEntry::new();
+                if vol.open_locator(l, &mut e).await.is_ok() {
+                    Short::title(e.name())
+                } else {
+                    Short::new("?")
+                }
+            }
+            None => Short::new("?"),
+        };
+        let us = (atj2157_hal::time::now_us() - t0) as u32;
+        if us >= 20_000 {
+            let mut l = atj2157_hal::log::LineBuf::new();
+            // Short strings: they land in resident rodata (the stack's RAM).
+            l.push_str("qtitle ms/io/ld ")
+                .push_u32(us / 1000)
+                .push_str("/")
+                .push_u32(yoton_bsp::card::io_count().wrapping_sub(io0))
+                .push_str("/")
+                .push_u32(page_loads().wrapping_sub(l0));
+            l.emit();
+        }
+        critical_section::with(|cs| {
+            if let Some(t) = QWINDOW.borrow(cs).borrow_mut().titles.get_mut(i as usize) {
+                *t = title;
+            }
+        });
+        let mask = mask | 1 << i;
+        (mask, todo & !(1 << i) != 0)
+    }
+
+    /// The Up next window at `first`, whole (idle: nothing plays).
+    async fn queue_win(&mut self, vol: &mut Vol, first: u32) {
+        let mut mask = self.keep_titles(first);
+        loop {
+            let (m, more) = self.queue_title(vol, first, mask).await;
+            mask = m;
+            if !more {
+                break;
+            }
+        }
+        self.publish_qwin(first, mask);
     }
 
     /// Fill the queue with the audio files of a folder: in the listing's

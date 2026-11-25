@@ -22,7 +22,7 @@ of every session. Newest entries first in §3.
 | T-3, PG-1 | done | pagelink, PagerCore, check-resident; demand paging on the player (8 KiB pages, 1 KiB lines) |
 | T-6 | started | Rust NOR payload `fw/payloads/norprog` (erase/program, full-layout guard); ymon and nordump still the reference repo's C payloads. **Stage 2 slot fallback built and host-tested, not yet installed** (`orpheus_proto::boot::decide`; 964 B; lead's `install-stage2` + crash test: session entry 2026-11-24 "T-6 (stage2)") |
 | T-8 | **built (host + firmware), not yet run on the player** | PC sampler (T2, level 0) and pager fault log into the 2 KiB profiler block at `0x307000` (SRAM3), `prof pc\|faults on\|burst`, `prof off\|status`; `cargo xtask dev prof --pc\|--faults S [--during "soak --replay F"] [--only TEXT] [--update-hot NAME]`, `cargo xtask prof DIR`; reports in `target/orpheus/prof/<stamp>/`. Resident +656 B. User/lead check: U-TMR-1 and the Pictures-while-playing profile (session entry 2026-11-25 "T-8") |
-| AU-PERF | **built (host + firmware), not yet run on the player** | Playback per block out of the large async functions (`play_block` + small named functions, `Apart` poll boundaries, `orpheus_audio::pcm::Feeder`), codecs' `decode` not inlined, DSP stage mask kept, clusters `mp3-frame` 11 + `play-block` 15 + `play-fill` 6 = 32 lines (no shared physical line; `fits_with` check), 53 % of the measured fault loads in that set or gone; stack on the playback wake-up 6.6 → 1.5 KB; soft I2C timed on T0 (true 100 kHz, was ≈ 30 kHz: sample ≈ 2.7 → 1.0 ms), `acc bus`. Lead: profiles and checks in the session entry 2026-11-25 "AU-PERF"; U-I2C-1 |
+| AU-PERF | **built (host + firmware), not yet run on the player** | Playback per block out of the large async functions (`play_block` + small named functions, `Apart` poll boundaries, `orpheus_audio::pcm::Feeder`), codecs' `decode` not inlined, DSP stage mask kept, clusters `mp3-frame` 11 + `play-block` 15 + `play-fill` 6 = 32 lines (no shared physical line; `fits_with` check), 53 % of the measured fault loads in that set or gone; stack on the playback wake-up 6.6 → 1.5 KB; soft I2C timed on T0 (true 100 kHz, was ≈ 30 kHz: sample ≈ 2.7 → 1.0 ms), `acc bus`. Lead: profiles and checks in the session entry 2026-11-25 "AU-PERF"; U-I2C-1. **Up next titles: `seek_dir` per cluster (3,507 → 7 steps per title on 128 KiB exFAT), window keeps its titles (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: Up next titles cheap" |
 | LAY-1 | done (device) | Full layout installed (`xtask dev install-full --i-have-a-backup`), layout-aware `stage`, `restore vendor [--verify]`. Unifont pack in NOR not done (the UI's fonts are built in) |
 | LCD-1, INPUT-1, PWR-2, AU-0 | done pending user checks 7, 8, 9, 10 | |
 | SD-1, FM-0, USB-1, USB-3, PWR-1 | done | |
@@ -79,6 +79,81 @@ of every session. Newest entries first in §3.
 * On the player: `fuzz-ui --replay tests/regress/ui-device/stack-seed8-340.keys`
   → **no finding** (was stack free 1,912 B). Full 30-min settings fuzz
   rerunning.
+### 2026-11-25 — AU-PERF: Up next titles cheap (`open_locator` seeks per cluster) (worker, no hardware)
+
+* **Host measurement** (`crates/orpheus-fs/tests/locator_cost.rs`,
+  `measure_open_locator`, `--ignored --nocapture`). One `open_locator`
+  with a cold 8-slot cache (as after the playback loop's reads), by entry
+  position, folder size (200/2,000 files), name length (11 vs 60 chars)
+  and layout (contiguous; fragmented: the folder's clusters interleaved
+  with another folder's and file data, so its chain goes through the FAT).
+  "Steps": directory positions stepped one at a time (new host-only
+  counter `Volume::dir_steps`, not in the firmware build).
+
+  | format | case | slot of entry | steps before → after | cold reads before → after |
+  |---|---|---|---|---|
+  | exFAT 128 KiB clusters (the owner's card) | 2,000 long names | 3,500 | **3,507 → 7** | 2 → 2 |
+  | exFAT 128 KiB | 2,000 long names | 7,000 / 13,993 | 2,912 / 1,715 → 8 / 10 | 1 → 1 |
+  | exFAT 128 KiB | 200 long names | 1,393 | 1,400 → 7 | 1 → 1 |
+  | exFAT 32 KiB | 2,000 long names | 7,000 | 869 → 13 | 1–2 → 1–2 |
+  | FAT32 4 KiB clusters | 2,000 long names | 11,996 | 191 → 99 | 3 → 3 (6 fragmented) |
+  | FAT32 4 KiB | 2,000 short names | 2,001 | 97 → 16 | 2 → 2 |
+
+  Sector reads were never the problem: 1–3 per call on exFAT, at most 6
+  on fragmented FAT32 with small clusters (one FAT sector per hop), 0
+  warm. The cost was the seek: inside the entry's cluster it stepped slot
+  by slot (`advance` per 32-byte slot), up to 4,095 steps in a 128 KiB
+  cluster: host time grew with the slot (13.6 µs at slot 3,500, ~57
+  instructions per step), on the player ~3,500 × (1–2 µs, or a code-line
+  load each if the seek loop and `advance` share a physical line of the
+  pager's direct-mapped cache) — consistent with the measured 70–120 ms.
+  Host time after: ≤ 1.1 µs for every case.
+* **`seek_dir`** jumps inside a cluster (or the FAT12/16 fixed root) in one
+  step: one step per cluster crossed. **`open_locator`** looks at the slot
+  first and fails at once when no entry set starts there (a stale locator:
+  the entry deleted, or the folder changed); `read_dir` used to scan on to
+  the next set: measured 127 reads and 1,800 steps for a locator before a
+  run of 299 deleted files, now ≤ 2 reads. Validity rules unchanged (the
+  entry at the index, with that index, or `NotFound`).
+* **Up next window keeps its titles** (`Server::keep_titles`,
+  `orpheus_player::queue::shift_window`/`window_prefix`, host-tested):
+  when the window moves (a track ended: by one) the titles it had for the
+  same queue generation move to their slots and are shown at once; only
+  the missing ones are looked up (one per chore while playing, the first
+  missing slot first; idle all at once, published once). The queue
+  generation now also changes when the card goes to USB and after a
+  delete (`Server::titles_stale`), so no kept title outlives a change on
+  the card. While playing a window move costs one lookup instead of 8.
+* **`qtitle ms/io/ld A/B/C`** log line when one title takes ≥ 20 ms: ms,
+  card operations, pager line loads — splits card time from paging.
+* **Not done** (not needed by the measurement): titles from the library or
+  a title file under `/.orpheus/`, a cluster cache for FAT-chained
+  folders. If the player still shows slow titles, the log line says which.
+* **RAM**: no static added (bss 123,808 B unchanged); resident 80,100 →
+  80,116 B (+16 B, the log strings), so `__stack_bottom` 0x131C88 →
+  0x131C98 (**−16 B of stack**). Frames: `Server::queue_title`'s poll is a
+  frame of its own now (124 B, below `step`; it was inlined),
+  `keep_titles` 20 B, `audio::hand_over` 300 → 308 B; `open_locator`,
+  `fill_rows`, `fill_some` unchanged.
+* **Tests**: `regress_open_locator_steps_per_cluster` (FAT32 4 KiB,
+  exFAT 128 KiB, 600 long names: every entry ≤ clusters crossed + 22
+  steps and ≤ 3 cold reads, name checked; the old seek took up to
+  ~3,600 steps there), `regress_stale_locator_fails_fast` (FAT32, exFAT: ≤ 2
+  reads; fails without the check: 127 reads), `seek_dir_matches_sequential_listing`
+  (all 9 formats of the matrix, root incl. fixed FAT12/16 root and a
+  multi-cluster folder: forward, back, past the end), orpheus-player
+  `shift_window_keeps_the_shared_positions`.
+* **Gate**: host fmt, clippy `-D warnings`, `cargo test --workspace` pass;
+  fw fmt, clippy pass; `xtask build --release`, `check-resident` (none
+  paged), `size --check` pass. Not run: `xtask test all` beyond
+  `cargo test --workspace`, brand/site checks, HIL (no hardware).
+* **Lead, on the player**: (1) `soak --replay
+  tests/regress/soak/mixed-ring-seed1-7.soak`: expect 0 `serve` underruns
+  from Up next (was 20). (2) Now Playing › Up next on the Shuffle-all
+  queue while playing: `serve:` lines should no longer name `queue-win`;
+  no `qtitle` line expected (each < 20 ms); if one appears, its io/ld
+  numbers say card or paging. (3) `pcm:`/`status` underruns stay 0 across
+  track changes with Up next shown (one lookup per change).
 
 ### 2026-11-25 — AU-PERF on the player; Up next window found blocking playback (lead)
 

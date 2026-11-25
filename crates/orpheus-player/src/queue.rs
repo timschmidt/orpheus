@@ -169,10 +169,92 @@ pub fn unshuffle<T: Copy>(q: &mut [T], s: &Shuffle) {
     }
 }
 
+/// A window of values for play positions (the Up next titles): `w` holds
+/// those of positions `first..first + n` in its first `n` slots. Move the
+/// ones the window at `to` keeps into their slots (slot `i` is position
+/// `to + i`) and return the mask of slots that hold their value now (bit
+/// `i`: slot `i`; at most 32 slots). The rest are to be filled. Valid only
+/// while the queue and its order stay the same (the firmware's queue
+/// generation): a title is resolved once per window position it keeps,
+/// not again each time the window moves on by one track (AU-PERF,
+/// 2026-11-25: each title is a directory lookup on the card).
+pub fn shift_window<T: Copy>(w: &mut [T], first: u32, n: u32, to: u32) -> u32 {
+    let cap = w.len().min(32);
+    let n = (n as usize).min(cap);
+    // (No panicking paths: the firmware keeps panic sites out of its
+    // resident image, and their locations would cost RAM.)
+    let ones = |k: usize| (1u64.checked_shl(k as u32).unwrap_or(0).wrapping_sub(1)) as u32;
+    if to >= first {
+        let d = (to - first) as usize;
+        if d >= n {
+            return 0;
+        }
+        for i in 0..n - d {
+            if let Some(&v) = w.get(i + d)
+                && let Some(s) = w.get_mut(i)
+            {
+                *s = v;
+            }
+        }
+        ones(n - d)
+    } else {
+        let d = (first - to) as usize;
+        if d >= cap {
+            return 0;
+        }
+        let k = n.min(cap - d);
+        for i in (0..k).rev() {
+            if let Some(&v) = w.get(i)
+                && let Some(s) = w.get_mut(i + d)
+            {
+                *s = v;
+            }
+        }
+        ones(k).checked_shl(d as u32).unwrap_or(0)
+    }
+}
+
+/// Slots `0..` of a window [`shift_window`] mask filled without a gap
+/// (what may be shown), at most `cap`.
+#[must_use]
+pub fn window_prefix(mask: u32, cap: u32) -> u32 {
+    (!mask).trailing_zeros().min(cap)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::vec::Vec;
+
+    /// Every kept slot holds the value of its position, every other slot
+    /// is reported missing, for moves forward, back, by one (a track
+    /// ended) and out of range.
+    #[test]
+    fn shift_window_keeps_the_shared_positions() {
+        for n in [0u32, 1, 5, 8] {
+            for first in [0u32, 3, 10, 40] {
+                for to in [0u32, 1, 2, 3, 4, 9, 10, 11, 13, 17, 18, 40, 41, 47, 48, 60, u32::MAX] {
+                    let mut w = [u32::MAX; 8];
+                    for (i, s) in w.iter_mut().take(n as usize).enumerate() {
+                        *s = first + i as u32;
+                    }
+                    let m = shift_window(&mut w, first, n, to);
+                    for (i, &v) in w.iter().enumerate() {
+                        let pos = u64::from(to) + i as u64;
+                        let kept = pos >= u64::from(first) && pos < u64::from(first) + u64::from(n);
+                        assert_eq!(m & 1 << i != 0, kept, "n {n} first {first} to {to} slot {i}");
+                        if kept {
+                            assert_eq!(u64::from(v), pos, "n {n} first {first} to {to} slot {i}");
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(window_prefix(0b0111, 8), 3);
+        assert_eq!(window_prefix(0b1110, 8), 0);
+        assert_eq!(window_prefix(u32::MAX, 8), 8);
+        assert_eq!(window_prefix(0b1111, 2), 2);
+    }
 
     #[test]
     fn unshuffle_writes_the_play_order() {
