@@ -1050,6 +1050,7 @@ name = "orpheus-index"
 version = "0.1.0"
 dependencies = [
  "orpheus-apps",
+ "orpheus-audio",
  "orpheus-fs",
 ]
 

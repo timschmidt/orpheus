@@ -29,7 +29,7 @@ use core::future::Future;
 use core::pin::pin;
 use core::task::{Context, Poll};
 
-use orpheus_fs::{BlockDevice, DirCursor, DirEntry, File, Locator, OpenMode, Volume};
+use orpheus_fs::{BlockDevice, DirCursor, DirEntry, File, Locator, OpenMode, PathWalk, Volume};
 
 use crate::{DirSource, FileName, MAX_NAME, NameSource, SrcEntry, Storage, mtime_of};
 
@@ -120,6 +120,18 @@ impl Place {
     pub fn locator(&self) -> Locator {
         self.loc
     }
+}
+
+/// What a piece of [`CardIo::find_index`] came to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Lookup {
+    /// Not yet: the next piece goes on from the walk.
+    More,
+    /// Opened; its place is the session's ([`CardIo::place`]). Current or
+    /// not is the caller's check ([`crate::Index::is_current`]).
+    Found(crate::Index),
+    /// There is no (complete) index of that directory and listing.
+    Missing,
 }
 
 /// What a session may do.
@@ -328,6 +340,65 @@ impl<'a, 'v, 'c, D: BlockDevice> CardIo<'a, 'v, 'c, D> {
     #[inline(never)]
     pub fn place(&self, f: &FileName) -> Option<Place> {
         self.inner.borrow().kept.as_ref().filter(|(k, _)| k == f).map(|&(_, at)| at)
+    }
+
+    /// One stretch of looking for `f` by path in a read-only session: at
+    /// most `sets` entry sets ([`Volume::walk_step`]; `w` holds where it is,
+    /// [`PathWalk::START`] before the first). `Ok(true)`: found, and kept as
+    /// [`CardIo::reuse`] keeps a place (the session's [`Storage`] opens it
+    /// from there, [`CardIo::place`] gives it); once found, later calls say
+    /// so again without I/O. `Ok(false)`: not yet. `Err(NotFound)`: no such
+    /// file.
+    #[inline(never)]
+    pub fn find_step(&self, f: &FileName, w: &mut PathWalk, sets: u32) -> Result<bool, FsError<D>> {
+        let mut io = self.inner.borrow_mut();
+        let io = &mut *io;
+        let alt = matches!(io.mode, Mode::Write { alt: true });
+        let mut pb = [0u8; PATH];
+        let p = path(*f, alt, io.base, &mut pb);
+        let Some(loc) = spin_in(io.cx, || io.vol.walk_step(w, p, sets))? else { return Ok(false) };
+        io.kept = Some((*f, Place { loc, serial: io.vol.serial() }));
+        Ok(true)
+    }
+
+    /// One piece of opening the index of `dir` for `spec` by path, for a
+    /// caller with a deadline (the firmware's `job:index` while music
+    /// plays): `left` is asked before each card operation and the piece
+    /// ends when it says no (it should say yes the first time). The
+    /// operations: stretches of the path walk of at most `sets` entry sets
+    /// ([`CardIo::find_step`]), then the file opened where it was found
+    /// and its header read ([`Index::open`]: the same checks). Keep `w`
+    /// between the pieces. The whole lookup in one call was 6–15 sector
+    /// reads with the walk cache holding `/.orpheus/index`, 100–330 with it
+    /// lost (AU-PERF 2026-11-25, `tests/index_piece.rs`).
+    #[inline(never)]
+    pub fn find_index(
+        &self,
+        dir: u32,
+        spec: crate::Spec,
+        w: &mut PathWalk,
+        sets: u32,
+        mut left: impl FnMut() -> bool,
+    ) -> Result<Lookup, crate::Error<FsError<D>>> {
+        let f = FileName::index(dir, spec);
+        loop {
+            if !left() {
+                return Ok(Lookup::More);
+            }
+            match self.find_step(&f, w, sets) {
+                Ok(true) => break,
+                Ok(false) => {}
+                Err(orpheus_fs::Error::NotFound) => return Ok(Lookup::Missing),
+                Err(e) => return Err(crate::Error::Io(e)),
+            }
+        }
+        if !left() {
+            return Ok(Lookup::More);
+        }
+        Ok(match crate::Index::open(&mut self.store(), dir, spec)? {
+            Some(ix) => Lookup::Found(ix),
+            None => Lookup::Missing,
+        })
     }
 
     /// The index files.

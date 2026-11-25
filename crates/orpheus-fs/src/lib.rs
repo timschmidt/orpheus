@@ -37,7 +37,7 @@ pub mod host;
 
 pub use block::{BlockDevice, SECTOR_SIZE, Sector, SyncPoll};
 pub use cache::CacheSlot;
-pub use dir::{DirCursor, DirEntry, Locator, MAX_NAME_UTF8, WalkCache};
+pub use dir::{DirCursor, DirEntry, Locator, MAX_NAME_UTF8, PathWalk, WalkCache};
 pub use file::{Extent, ExtentIter, File, OpenMode, SeekFrom};
 pub use volume::{DateTime, FsKind, MountOptions, Volume};
 

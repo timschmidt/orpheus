@@ -22,7 +22,7 @@ of every session. Newest entries first in §3.
 | T-3, PG-1 | done | pagelink, PagerCore, check-resident; demand paging on the player (8 KiB pages, 1 KiB lines) |
 | T-6 | started | Rust NOR payload `fw/payloads/norprog` (erase/program, full-layout guard); ymon and nordump still the reference repo's C payloads. **Stage 2 slot fallback built and host-tested, not yet installed** (`orpheus_proto::boot::decide`; 964 B; lead's `install-stage2` + crash test: session entry 2026-11-24 "T-6 (stage2)") |
 | T-8 | **built (host + firmware), not yet run on the player** | PC sampler (T2, level 0) and pager fault log into the 2 KiB profiler block at `0x307000` (SRAM3), `prof pc\|faults on\|burst`, `prof off\|status`; `cargo xtask dev prof --pc\|--faults S [--during "soak --replay F"] [--only TEXT] [--update-hot NAME]`, `cargo xtask prof DIR`; reports in `target/orpheus/prof/<stamp>/`. Resident +656 B. User/lead check: U-TMR-1 and the Pictures-while-playing profile (session entry 2026-11-25 "T-8") |
-| AU-PERF | **built (host + firmware), not yet run on the player** | Playback per block out of the large async functions (`play_block` + small named functions, `Apart` poll boundaries, `orpheus_audio::pcm::Feeder`), codecs' `decode` not inlined, DSP stage mask kept, clusters `mp3-frame` 11 + `play-block` 15 + `play-fill` 6 = 32 lines (no shared physical line; `fits_with` check), 53 % of the measured fault loads in that set or gone; stack on the playback wake-up 6.6 → 1.5 KB; soft I2C timed on T0 (true 100 kHz, was ≈ 30 kHz: sample ≈ 2.7 → 1.0 ms), `acc bus`. Lead: profiles and checks in the session entry 2026-11-25 "AU-PERF"; U-I2C-1. **Up next titles: `seek_dir` per cluster (3,507 → 7 steps per title on 128 KiB exFAT), window keeps its titles (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: Up next titles cheap". **Chore budgets: every chore runs only when the headroom less a decoder margin covers its measured need, splittable ones stop at the budget (`orpheus_audio::chore`, host model; built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: chore budgets". **Listing pieces reopen the index file from its entry (no path walk after `job:index`), the need counts a piece's fixed cost (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: listing pieces reopen the index file" **The 55 ms `serve` block: precise `ub=` labels (`ub=serve:picture`, `job:rows`, `req:skip`, …), DAC start forgets the candidate, large overruns always logged, RAM-only pieces do not lower a need, soak reads at every action's end (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: the 55 ms `serve` block" |
+| AU-PERF | **built (host + firmware), not yet run on the player** | Playback per block out of the large async functions (`play_block` + small named functions, `Apart` poll boundaries, `orpheus_audio::pcm::Feeder`), codecs' `decode` not inlined, DSP stage mask kept, clusters `mp3-frame` 11 + `play-block` 15 + `play-fill` 6 = 32 lines (no shared physical line; `fits_with` check), 53 % of the measured fault loads in that set or gone; stack on the playback wake-up 6.6 → 1.5 KB; soft I2C timed on T0 (true 100 kHz, was ≈ 30 kHz: sample ≈ 2.7 → 1.0 ms), `acc bus`. Lead: profiles and checks in the session entry 2026-11-25 "AU-PERF"; U-I2C-1. **Up next titles: `seek_dir` per cluster (3,507 → 7 steps per title on 128 KiB exFAT), window keeps its titles (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: Up next titles cheap". **Chore budgets: every chore runs only when the headroom less a decoder margin covers its measured need, splittable ones stop at the budget (`orpheus_audio::chore`, host model; built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: chore budgets". **Listing pieces reopen the index file from its entry (no path walk after `job:index`), the need counts a piece's fixed cost (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: listing pieces reopen the index file" **The 55 ms `serve` block: precise `ub=` labels (`ub=serve:picture`, `job:rows`, `req:skip`, …), DAC start forgets the candidate, large overruns always logged, RAM-only pieces do not lower a need, soak reads at every action's end (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: the 55 ms `serve` block". **`job:index` in stretches of 16 entry sets (`Volume::walk_step`, `CardIo::find_index`); removing a file no longer empties the walk cache (index builds did, and the next lookup searched the root: 52–60 ms) (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: `job:index` in stretches" |
 | LAY-1 | done (device) | Full layout installed (`xtask dev install-full --i-have-a-backup`), layout-aware `stage`, `restore vendor [--verify]`. Unifont pack in NOR not done (the UI's fonts are built in) |
 | LCD-1, INPUT-1, PWR-2, AU-0 | done pending user checks 7, 8, 9, 10 | |
 | SD-1, FM-0, USB-1, USB-3, PWR-1 | done | |
@@ -64,6 +64,112 @@ of every session. Newest entries first in §3.
 | VER-10 (static stack) | **tool done (host-tested), gate step; firmware cut from ≥ 30,232 to 22,900 B nested worst case (built, not yet run on the player)** | `cargo xtask stack [--check] [--root P]`, `stack.toml`, `budgets.toml stack_static_margin_bytes` (−1,536 B: a ratchet, the static worst case still exceeds the 22,016 B stack by 884 B; the rest is the audio task's own frames, AU-PERF). Lead: `fuzz-ui --replay` of the VER-8 stack sequence, suite stack line (session entry 2026-11-25 "VER-10") |
 
 ## 3. Session log
+
+### 2026-11-25 — AU-PERF: `job:index` in stretches; file removals keep the walk cache (worker, no hardware)
+
+From the lead's soak (`chore: job:index 52/26 ms u52`, `pcm: head -621
+ub=job:index:52ms`; earlier 59–60 ms): one unsplittable piece above every
+budget (≤ ≈ 42 ms), so it was forced and underran once per first listing.
+
+* **Where the 52–60 ms went** (host count, `orpheus-index`
+  `tests/index_piece.rs`, `measure_index_piece`, `--ignored --nocapture`:
+  owner-like images, exFAT 128 KiB clusters and FAT32 512-B clusters, a root
+  of 300 or 1,000 long-named folders with `/.orpheus` made after them, 16
+  shards of 40 or 100 index files, the walk cache as on the player —
+  `/.orpheus/index` warmed and boosted, art and library walks after it — and
+  the sector cache cold). r = sector reads, s = directory slots stepped.
+
+  | part of the old piece | exFAT 128K, root 300 / 1,000, 40 per shard | FAT32 512, root 300 / 1,000 | 100 per shard (root 300) exFAT / FAT32 |
+  |---|---|---|---|
+  | shard search in `/.orpheus/index` (walk cache hit) | 1 r 6 s / 3 r 45 s | 1 r 15 s / 1 r 6 s | 1 r / 1 r |
+  | shard + file search | 5 r 69 s / 7 r 108 s | 8 r 80 s / 8 r 71 s | 11 r 159 s / 13 r 170 s |
+  | file open + header read (68 B) | 1 r | 1–2 r | 1 r / 2 r |
+  | **whole piece, cache as on the player** | **6 r 69 s / 8 r 108 s** | **9 r / 9 r** | 12 r / 15 r |
+  | **whole piece after an index build while idle** | **102 r 1,582 s / 324 r 5,121 s** | **108 r 1,587 s / 334 r 5,078 s** | 108 r / 113 r |
+  | no index (shard searched to its end) | 9 r / 11 r | 12 r / 12 r | 20 r / 24 r |
+  | next pieces: focus over 300 rows; 8 rows + letters | 20 r; 5 r | 24 r; 10 r | — |
+
+  `resolve` is not on this path while playing (it is the idle `browse`'s),
+  so there are no candidates or alt files to compare: the piece is the path
+  walk to `/.orpheus/index/X/NAME`, the open and one header sector; the
+  first rows are in the next sector (header 512 B, rows sector aligned), so
+  header and rows never share one. **The time was the root search**: every
+  index build (and library build) removes its scratch files at its end
+  (`Builder` → `Storage::remove`), every `delete_entry` emptied the whole
+  walk cache, so the mount-time warm-up of `/.orpheus/index` was gone after
+  the first build and the next lookup searched the root. At 0.5 ms a read
+  that is 56 ms for a 300-folder root (model), the soak's 52–60 ms; with the
+  cache it is 5–14 reads (3–8 ms). Paging (≈ 0.3 ms a line) adds to either;
+  not measurable on the host.
+* **Fixes.**
+  1. `orpheus-fs`: removing or renaming a **file** keeps the walk cache (a
+     file is never cached; the entries around it stay put); a directory's
+     delete/restore still empties it; FAT directory growth keeps it (a
+     cached FAT directory is its first cluster and a fixed bound), exFAT
+     growth still empties it. After a build the lookup is 5–14 reads again.
+  2. `Volume::walk_step(&mut PathWalk, path, sets)`: the path walk in
+     stretches of at most `sets` entry sets, resumable (`PathWalk`, 56 B,
+     `Copy`; starts at the longest cached directory, caches the directories
+     it passes, reports the found entry's `Locator`, again without I/O).
+     `CardIo::find_step` (one stretch; the found place kept as `reuse`
+     keeps one) and `CardIo::find_index(dir, spec, &mut walk, sets, left)`
+     (stretches while `left()` says yes, then the open from the place and the
+     header read: `Index::open`, the same checks), returning
+     `Lookup::{More, Found(ix), Missing}`.
+  3. Firmware: `Job::Counted` → `Job::Find { walk, sig, n }` (the lookup in
+     stretches of `media::FIND_SETS` = 16 sets, `audio::piece_left` before
+     each; state in the job, no new static) and `Job::Unsorted` (no current
+     index: the folder's cursor for the build, asked for, else its own
+     piece). Both are kind `job:index`; its seed 25 → 15 ms. `index_at`,
+     the place rules and the validity rules are unchanged (the place comes
+     from the found entry, checked by name and serial as before).
+* **Per stretch** (16 sets): at most 3 reads / 48 steps on exFAT, 6 reads /
+  84 steps on FAT32 512-B clusters (a FAT sector per cluster). In the host
+  model (`chore::Piece` and `chore::Costs` as the firmware uses them, 20 ms
+  budget, 0.5 ms a read + 3 µs a slot, cold sectors between pieces): cache
+  as on the player one or two pieces of ≤ 5.5 ms; **cache lost** (root of
+  300 / 1,000 searched) 8 / 18 pieces, the longest 9.2 / 14.7 ms, the
+  longest stretch ≤ 3.7 ms; no piece over its budget.
+* **Tests**: `orpheus-index` `tests/index_piece.rs`:
+  `regress_index_lookup_card_operations` (owner-like exFAT 128K and FAT32,
+  root 300, 40 per shard, a build before each of 3 listings: lookup ≤ 12
+  reads / 200 steps, one stretch ≤ 4 (exFAT) / 6 (FAT32) reads, lookup +
+  8 rows + letter table ≤ 30 reads; cache lost: a stretch ≤ 6 reads; fails
+  with removals emptying the cache: 102 r 1,585 s),
+  `index_lookup_pieces_fit_a_20ms_budget` (the model above; the old single
+  piece is > 50 ms in it). `orpheus-fs` `tests/walk_step.rs`:
+  `walk_step_on_every_format` (the 9-format matrix: same locator as
+  `open_located` at stretches of 1, 2, 16, 1000 sets, case-insensitive,
+  missing file/directory, `NotADirectory`, `..`, cached afterwards, a
+  stretch of 2 sets ≤ 16 slots, fsck clean),
+  `regress_removing_a_file_keeps_the_walk_cache` (FAT32, exFAT: scratch
+  files made, renamed, removed: the lookup stays ≤ warm + 8 steps; fails
+  with the old rule: 1,014 vs 5 steps; a removed directory still empties
+  it, nothing stale served). The existing `walk_cache_on_every_format`
+  (growth, renamed and removed directories) passes unchanged.
+* **RAM / stack** (`xtask build` in this worktree, base `fe9a4c31`):
+  resident 80,108 B unchanged, `__image_end` 0x1138ec and `__bss_end`
+  0x131b00 unchanged, `__stack_bottom` 0x131d00 unchanged (usable 22,016 B;
+  paged code 107 → 108 pages, slot 1,110,016 → 1,118,208 B;
+  `Job` keeps its size: `Find` 84 B < `Rows`; `COSTS` unchanged, no new
+  kind). Nested worst case 21,820 → **21,812 B, margin 196 → 204 B**
+  (`Volume::walk` frame 568 → 560). The new chain below `io_session`:
+  `CardIo::find_index` 320 B, 4,408 B in all (the `fill_some` chain it sits
+  beside is 5,464 B).
+* **Gate**: host fmt, clippy `-D warnings`, `cargo test --workspace`
+  (1,130 passed, 8 ignored); fw fmt, clippy `-D warnings`, `xtask build`,
+  `check-resident` (none paged), `size --check` (resident 80,107 B, bss
+  123,920 B), `stack --check` (margin 204 B): pass. Not run: `xtask test all`
+  beyond `cargo test --workspace`, brand/site checks, HIL (no hardware).
+* **Lead, on the player**: the 30-minute `mixed` soak, seed 1. Expected:
+  no `ub=job:index` and no `chore: job:index` line with `u` above a few ms
+  (a stretch is ≤ 3 reads on the owner's card); the first listing after
+  an idle index build no longer searches the root. If a `chore: job:index
+  N/B ms uU` line still shows `U` ≥ 10 ms, the stretch is paging-bound
+  (cold walk code), not card-bound: say so with the line. Also watch
+  `job:focus` (a pass over ≤ 256 rows, 16–24 reads, one operation) — the
+  next candidate if the first listing of a ≤ 256-row folder still
+  underruns.
 
 ### 2026-11-25 — soak seed 1: one job:index underrun left; one stuck run (lead)
 
@@ -4828,6 +4934,8 @@ Finding: 30-minute `mixed` soak, seed 1, 10.4 min, read in `radio-keys 8
 | 2026-11-24 | Browser build (WEB-2) | module 2,677,523 B (1,816,547 gzip; 1,219,820 B of it the committed demo files), glue 19,664 B, page scripts and styles ≈ 26 KB; 1,830 KB gzip in all (budget 4,000 KB; also under it uncompressed) | `xtask wasm` |
 | 2026-11-24 | Browser build in headless Chromium 155 / Firefox 157 (localhost) | first screen 155–220 ms; per-frame simulation + draw 0.08–0.11 ms mean, ≤ 1 ms worst; 230 frames in 4 s; 4.0 s of Lyre Study played with 0 dropouts (also with Chromium's fake sink); wasm memory 80 MiB with the 36 MiB card | `xtask wasm --test`, `tests/web/try.mjs --browser firefox` |
 | 2026-11-25 | Firmware with USB-W1 (drop-safe EP0, liveness, counters), worker worktree build | resident 79,052 B (`size --check` 79,043), `.bss` 123,348 → 123,476 B (+128: watchdog task pool 144 B with the detector, 52 B of USB counters/flags), `.data` 16,340 B unchanged, 105 code + 18 rodata pages, slot 1,093,632 B | `xtask build`, `xtask size --check`, `cargo build --release -p firmware` + `llvm-size` of `e91558eb` and USB-W1, `llvm-nm` |
+| 2026-11-25 | Index lookup of a listing (`job:index`), owner-like images (exFAT 128 KiB / FAT32 512 B, root 300–1,000 folders, 40–100 files per shard), cold sectors | walk cache as on the player 6–15 sector reads; after an index build, before the fix 102–334 reads / 1,582–5,121 slots (≈ 56–182 ms at 0.5 ms a read), after it 5–14 reads; one stretch of 16 sets ≤ 3 reads (exFAT) / 6 (FAT32); in 20-ms chore pieces (model) longest 14.7 ms, stretch ≤ 3.7 ms | `orpheus-index` `tests/index_piece.rs` `measure_index_piece` |
+| 2026-11-25 | Firmware with `job:index` in stretches, worker worktree build | resident 80,108 B, `__image_end` 0x1138ec, `__bss_end` 0x131b00, `__stack_bottom` 0x131d00 (all unchanged); 108 code pages (was 107), slot 1,118,208 B; nested worst stack 21,812 of 22,016 B (was 21,820) | `xtask build`, `xtask stack --check`, `nm` |
 
 ## 5. Open questions for the user
 

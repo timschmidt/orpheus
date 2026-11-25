@@ -316,8 +316,10 @@ const SEED_US: [u32; KINDS] = [
     12_000, 10_000, 6_000, 15_000, 20_000, 20_000,
     // listing pieces: count, index open, focus, rows, unsorted window, title
     // (count and rows as measured on the player, 2026-11-25: one directory
-    // read up to 21 ms, row pieces 15–18 ms)
-    20_000, 25_000, 15_000, 16_000, 8_000, 8_000,
+    // read up to 21 ms, row pieces 15–18 ms; the index file's lookup in
+    // stretches of `media::FIND_SETS` entry sets, one to six sector reads
+    // each, was one 52–60 ms piece)
+    20_000, 15_000, 15_000, 16_000, 8_000, 8_000,
     // requests: browse, want, text, queue-win, release, image, picture,
     // lib-list, rebuild, drain, sensor, alert, otp, delete, update
     10_000, 15_000, 15_000, 2_000, 1_000, 1_000, 30_000, 20_000, 1_000, 15_000, 15_000, 1_000, 25_000, 30_000,

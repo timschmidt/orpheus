@@ -30,9 +30,11 @@ pub(crate) const ATTR_ARCHIVE: u8 = 0x20;
 /// alone can take tens of sector reads to search, and the firmware opens
 /// files under `/.orpheus/...` while audio plays. Keys are the exact path
 /// bytes up to a component (at most [`WALK_KEY`] bytes); the cache is
-/// emptied whenever a directory may have changed shape: an entry set is
-/// deleted or restored (remove, rename) or a directory grows (exFAT
-/// lengths).
+/// emptied whenever a cached directory may have moved or changed shape: a
+/// directory's entry set is deleted or restored (remove, rename) or an
+/// exFAT directory grows (its length). Removing or renaming a file keeps
+/// it (a file is never cached, and the entries around it stay where they
+/// are).
 pub(crate) const WALK_KEY: usize = 24;
 const WALK_SLOTS: usize = 3;
 
@@ -241,6 +243,38 @@ impl DirCursor {
     #[must_use]
     pub fn dir_cluster(&self) -> u32 {
         self.spec.first
+    }
+}
+
+/// Where a path walk in stretches is ([`Volume::walk_step`]; 56 bytes,
+/// `Copy`): keep it between the calls. [`PathWalk::START`] before the first.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PathWalk {
+    /// The directory searched and the place reached; once found, the
+    /// parent and (`pos.index`) the entry's index.
+    cur: DirCursor,
+    /// Byte offset in the path of the component looked for (`FRESH`: not
+    /// started; `FOUND`: done).
+    from: u16,
+}
+
+impl PathWalk {
+    const FRESH: u16 = u16::MAX;
+    const FOUND: u16 = u16::MAX - 1;
+
+    /// A walk not started yet.
+    pub const START: PathWalk = PathWalk {
+        cur: DirCursor {
+            spec: DirSpec { first: 0, contig: false, len: 0, self_loc: EntryLoc::NONE },
+            pos: DirPos { cluster: END, off: 0, index: 0 },
+        },
+        from: Self::FRESH,
+    };
+
+    /// The walk found its entry ([`Volume::walk_step`] returned it).
+    #[must_use]
+    pub fn found(&self) -> bool {
+        self.from == Self::FOUND
     }
 }
 
@@ -1383,6 +1417,85 @@ impl<'c, D: BlockDevice> Volume<'c, D> {
         }
     }
 
+    /// One stretch of a path walk to the entry `path` names (pass the same
+    /// path every time), for a caller that must keep each card operation
+    /// short: at most `sets` entry sets are looked at (at least one), then
+    /// the call returns, and the walk goes on from `w` in the next call
+    /// (between them the volume may be used for anything). `Ok(Some(loc))`:
+    /// found, its entry's [`Locator`] ([`Volume::open_at`] opens a file from
+    /// it); later calls return it again without I/O. `Ok(None)`: not yet.
+    /// `Err(NotFound)`: a component is missing; `NotADirectory`, `InvalidName`,
+    /// `NameTooLong` as [`Volume::open`]. The first call starts at the
+    /// longest directory above the last component that the walk cache holds
+    /// (no I/O); the directories passed go into the cache, as a walk's do.
+    /// A stretch of 16 sets is at most 3 sector reads (exFAT) or 6 (FAT32
+    /// with 512-byte clusters: a FAT sector per cluster); a whole walk
+    /// through a root of hundreds of folders was 100–330 reads in one call
+    /// (AU-PERF 2026-11-25). An entry added to a directory meanwhile, before
+    /// the place the walk had reached, is not seen (`NotFound`); the found
+    /// entry is the one with that name.
+    pub async fn walk_step(
+        &mut self,
+        w: &mut PathWalk,
+        path: &str,
+        sets: u32,
+    ) -> Result<Option<Locator>, D::Error> {
+        if w.from == PathWalk::FRESH {
+            if components(path).count() > MAX_DEPTH {
+                return Err(Error::NameTooLong);
+            }
+            if components(path).any(|c| c == "..") {
+                return Err(Error::InvalidName);
+            }
+            let last = components(path).last().map_or(0, |c| c.as_ptr() as usize - path.as_ptr() as usize);
+            let cached = self.walks.as_deref_mut().and_then(|wc| {
+                let r = wc.lookup(path.get(..last).unwrap_or(""))?;
+                wc.hits = wc.hits.wrapping_add(1);
+                Some(r)
+            });
+            let (spec, from) = cached.unwrap_or((self.spec_root(), 0));
+            w.cur = self.cursor_for(spec);
+            w.from = u16::try_from(from).map_err(|_| Error::NameTooLong)?;
+        }
+        let spec = w.cur.spec;
+        let loc =
+            |index: u32| Locator { dir: spec.first, index: index | if spec.contig { 1 << 31 } else { 0 } };
+        if w.from == PathWalk::FOUND {
+            return Ok(Some(loc(w.cur.pos.index)));
+        }
+        let rest = path.get(usize::from(w.from)..).ok_or(Error::InvalidName)?;
+        let mut it = components(rest);
+        let name = it.next().ok_or(Error::InvalidName)?;
+        let last = it.next().is_none();
+        let mut m = Matcher::new(name);
+        for _ in 0..sets.max(1) {
+            let Some(info) = self.next_set(&spec, &mut w.cur.pos, &mut m, None).await? else {
+                return Err(Error::NotFound);
+            };
+            if !(m.ok || (info.has_lfn && !self.g.is_exfat() && self.sfn_matches(&info, name))) {
+                continue;
+            }
+            if last {
+                w.cur.pos.index = info.index;
+                w.from = PathWalk::FOUND;
+                return Ok(Some(loc(info.index)));
+            }
+            if !info.is_dir() {
+                return Err(Error::NotADirectory);
+            }
+            let dspec = self.dir_spec(&info);
+            // `path` up to the end of this directory's name.
+            let end = name.as_ptr() as usize - path.as_ptr() as usize + name.len();
+            if let (Some(k), Some(wc)) = (path.as_bytes().get(..end), self.walks.as_deref_mut()) {
+                wc.insert(k, dspec);
+            }
+            w.cur = self.cursor_for(dspec);
+            w.from = u16::try_from(end).map_err(|_| Error::NameTooLong)?;
+            return Ok(None);
+        }
+        Ok(None)
+    }
+
     /// Walks served from the directory cache so far.
     #[must_use]
     pub fn walk_hits(&self) -> u32 {
@@ -1477,7 +1590,12 @@ impl<'c, D: BlockDevice> Volume<'c, D> {
 
     /// Add one zeroed cluster to a directory; updates `spec`.
     async fn grow_dir(&mut self, spec: &mut DirSpec) -> Result<u32, D::Error> {
-        self.forget_walks();
+        // exFAT: the directory's cached length bound (and maybe its
+        // contiguity) changes. FAT: a cached directory is its first cluster
+        // and a fixed bound, which growth leaves as they are.
+        if self.g.is_exfat() {
+            self.forget_walks();
+        }
         if spec.first == 0 && !self.g.is_exfat() {
             return Err(Error::DirectoryFull);
         }
@@ -1740,7 +1858,14 @@ impl<'c, D: BlockDevice> Volume<'c, D> {
 
     /// Mark an entry set deleted.
     pub(crate) async fn delete_entry(&mut self, info: &EntryInfo) -> Result<(), D::Error> {
-        self.forget_walks();
+        // Only a directory can be in the walk cache (or hold one); a file's
+        // entry going leaves every directory where it was. Every removal
+        // emptied the cache: each index or library build removes its
+        // scratch files, and the next listing searched the card's root again
+        // while music played (AU-PERF 2026-11-25, `job:index` 52–60 ms).
+        if info.is_dir() {
+            self.forget_walks();
+        }
         let exfat = self.g.is_exfat();
         let mut l = info.start;
         for k in 0..info.count {
@@ -1761,7 +1886,9 @@ impl<'c, D: BlockDevice> Volume<'c, D> {
 
     /// Undo `delete_entry` (used when a rename cannot complete).
     async fn undelete_entry(&mut self, info: &EntryInfo) -> Result<(), D::Error> {
-        self.forget_walks();
+        if info.is_dir() {
+            self.forget_walks();
+        }
         let exfat = self.g.is_exfat();
         let mut l = info.start;
         let lfn = info.count.saturating_sub(1);

@@ -97,6 +97,11 @@ pub const FOCUS_SCAN_PLAYING: u32 = 256;
 /// forced in at too little headroom (soak seed 1, 2026-11-25).
 pub const PIECE_ENTRIES: u32 = 32;
 pub const PIECE_ROWS: u32 = 8;
+/// Entry sets per stretch of the index file's path walk (`Job::Find`):
+/// at most 3 sector reads on exFAT, 6 on FAT32 with 512-byte clusters
+/// (`orpheus-index` `tests/index_piece.rs`), `audio::piece_left` asked
+/// between them.
+pub const FIND_SETS: u32 = 16;
 
 /// Kinds of listing piece (`Server::job_kind`), each with its own measured
 /// need (`audio`'s chore costs): the count of a folder, the index file's
@@ -111,8 +116,15 @@ pub enum Job {
     /// The counting pass: the next entry, the signature and the rows so
     /// far.
     Count { cur: DirCursor, sig: Signature, n: u32 },
-    /// Counted: the index is looked for next (a piece of its own).
-    Counted { sig: Signature, n: u32 },
+    /// Counted: the index file is looked for by path (`walk`: stretches of
+    /// [`FIND_SETS`] entry sets, while the budget lasts), then opened and
+    /// its header checked against `sig` (`CardIo::find_index`). In one
+    /// piece it was 52–60 ms on the player (soak seed 1, 2026-11-25), above
+    /// every chore budget.
+    Find { walk: PathWalk, sig: Signature, n: u32 },
+    /// No current index: the folder's cursor is read again for the
+    /// background build (a piece of its own; the unsorted listing is out).
+    Unsorted,
     /// Rows of the sorted listing `ix` into the window from `start`
     /// (`u32::MAX`: the focused file is looked for first), `n` filled;
     /// `letters`: the letter table follows.
@@ -751,8 +763,8 @@ fn cmd(c: Command) -> Event {
 use core::future::poll_fn;
 use core::task::Poll;
 
-use orpheus_fs::{DirCursor, DirEntry, Locator, Volume};
-use orpheus_index::card::{CardIo, Handles, Mode, Place, is_dot, spin, src_entry};
+use orpheus_fs::{DirCursor, DirEntry, Locator, PathWalk, Volume};
+use orpheus_index::card::{CardIo, Handles, Lookup, Mode, Place, is_dot, spin, src_entry};
 use orpheus_index::{Builder, FileName, Index, Progress, Signature, Spec, Storage, Suspended};
 use yoton_bsp::card::Card;
 
@@ -1256,7 +1268,7 @@ impl Server {
         }
         match self.job {
             Some(Job::Count { .. }) | None => 0,
-            Some(Job::Counted { .. }) => 1,
+            Some(Job::Find { .. } | Job::Unsorted) => 1,
             Some(Job::Rows { start: u32::MAX, .. }) => 2,
             Some(Job::Rows { .. }) => 3,
             Some(Job::Win { .. }) => 4,
@@ -1314,32 +1326,41 @@ impl Server {
                     }
                     n += 1;
                 };
-                self.job = Some(if end { Job::Counted { sig, n } } else { Job::Count { cur, sig, n } });
+                self.job = Some(if end {
+                    Job::Find { walk: PathWalk::START, sig, n }
+                } else {
+                    Job::Count { cur, sig, n }
+                });
             }
-            Some(Job::Counted { sig, n }) => {
+            Some(Job::Find { mut walk, sig, n }) => {
                 self.count = n;
                 let spec = Spec::from(self.filter);
                 if n >= 2 {
                     let dircl = self.dircl;
-                    // The one path walk of the listing: its pieces reopen
-                    // the file from where this found it.
+                    // The one path walk of the listing, in stretches: its
+                    // pieces reopen the file from where this found it.
                     let f = FileName::index(dircl, spec);
                     let mut at = None;
-                    let ix =
-                        with_index(vol, f, &mut at, |io| match Index::open(&mut io.store(), dircl, spec) {
-                            Ok(Some(ix)) if ix.is_current(&sig) => Some(ix),
-                            _ => None,
-                        })
-                        .await;
-                    if let Some(ix) = ix {
-                        self.claim(ix.file());
-                        if self.build.is_some_and(|b| b.dircl == dircl && b.spec == spec) {
-                            self.build = None;
+                    let r = with_index(vol, f, &mut at, |io| {
+                        io.find_index(dircl, spec, &mut walk, FIND_SETS, crate::audio::piece_left)
+                    })
+                    .await;
+                    match r {
+                        Ok(Lookup::More) => {
+                            self.job = Some(Job::Find { walk, sig, n });
+                            return;
                         }
-                        self.set_index(Some(ix));
-                        self.index_at = at;
-                        self.job = Some(Job::Rows { ix, start: u32::MAX, n: 0, letters: true });
-                        return;
+                        Ok(Lookup::Found(ix)) if ix.is_current(&sig) => {
+                            self.claim(ix.file());
+                            if self.build.is_some_and(|b| b.dircl == dircl && b.spec == spec) {
+                                self.build = None;
+                            }
+                            self.set_index(Some(ix));
+                            self.index_at = at;
+                            self.job = Some(Job::Rows { ix, start: u32::MAX, n: 0, letters: true });
+                            return;
+                        }
+                        _ => {}
                     }
                 }
                 let (dir, lgen) = (self.dir, self.lgen);
@@ -1352,12 +1373,16 @@ impl Server {
                     w.n = n.min(WINDOW);
                 });
                 ready(tag::BROWSE);
-                if n >= 2
-                    && let Some(start) = Self::cursor(vol, self.entry).await
-                {
-                    self.want_build(start, spec);
+                if n >= 2 {
+                    // The cursor is a card operation: asked for.
+                    if crate::audio::piece_left() {
+                        self.unsorted(vol).await;
+                    } else {
+                        self.job = Some(Job::Unsorted);
+                    }
                 }
             }
+            Some(Job::Unsorted) => self.unsorted(vol).await,
             Some(Job::Rows { ix, start: u32::MAX, n, letters }) => {
                 // The focused file first (a piece of its own).
                 let mut at = self.index_at;
@@ -1398,6 +1423,14 @@ impl Server {
                 }
             }
             Some(Job::Win { cur, start, skip, n }) => Own(self.win_piece(vol, cur, start, skip, n)).await,
+        }
+    }
+
+    /// The listing (published unsorted) has no current index: its folder's
+    /// cursor read again for the background build (`Job::Unsorted`).
+    async fn unsorted(&mut self, vol: &mut Vol) {
+        if let Some(start) = Self::cursor(vol, self.entry).await {
+            self.want_build(start, Spec::from(self.filter));
         }
     }
 
