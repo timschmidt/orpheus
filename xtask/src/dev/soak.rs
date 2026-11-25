@@ -2345,6 +2345,16 @@ pub struct Outcome {
 /// session (settings in RAM only).
 pub fn prologue(rig: &mut dyn Rig) -> Result<Caps> {
     rig.reboot()?;
+    if !rig.is_sim() {
+        let re = regex::Regex::new("^slot |^not started|^unknown")?;
+        let r = player::command(rig, "boot status", Some(&re), 3000).unwrap_or_default();
+        if let Some(why) = fallback_start(&r) {
+            bail!(
+                "the player started by stage 2's fallback ({why}): the firmware under test failed to start; \
+                 read the fault record (`cargo xtask dev results`) before soaking"
+            );
+        }
+    }
     let mut caps = Caps::default();
     player::test_look(rig, true)?;
     let re = regex::Regex::new("^test-session|^commands:|^card:")?;
@@ -2414,6 +2424,13 @@ fn drive(rig: &mut dyn Rig, ctx: &mut Ctx, a: &Action) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// `boot status` says the running slot was started because another failed
+/// (2026-11-25: a build that faulted at every start was soaked as the old
+/// build in the other slot without anyone noticing).
+fn fallback_start(reply: &str) -> Option<&str> {
+    reply.contains(" failed").then_some(reply.trim())
 }
 
 /// After a channel loss: what the player shows and its last log lines
@@ -3485,6 +3502,15 @@ pub fn cmd(args: &mut Args) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    /// Regression (2026-11-25): a soak ran on the fallback slot's old
+    /// build because the build under test faulted at every start.
+    #[test]
+    fn regress_soak_refuses_a_fallback_start() {
+        assert!(super::fallback_start("slot B, start 1, after A failed").is_some());
+        assert!(super::fallback_start("slot A, start 1").is_none());
+        assert!(super::fallback_start("not started by stage 2").is_none());
+    }
+
     use super::*;
 
     fn budget() -> Budget {
