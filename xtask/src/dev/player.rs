@@ -101,6 +101,11 @@ pub trait Player {
     fn peek_word(&mut self, _addr: u32) -> Result<Option<u32>> {
         Ok(None)
     }
+    /// `(uptime ms, pager line loads)` from the firmware's counters
+    /// (`None` in the simulator).
+    fn pager_loads(&mut self) -> Result<Option<(u32, u32)>> {
+        Ok(None)
+    }
     /// Normal reboot; returns once the player answers again.
     fn reboot(&mut self) -> Result<()>;
     /// The channel failed: wait (up to [`COME_BACK`]) for the player.
@@ -343,6 +348,11 @@ impl Player for UsbPlayer {
     }
     fn fault(&mut self) -> Result<Option<FaultRecord>> {
         Ok(FaultRecord::from_bytes(&self.d()?.peek(fault::BASE, fault::SIZE)?))
+    }
+    fn pager_loads(&mut self) -> Result<Option<(u32, u32)>> {
+        let r = self.d()?.control_in(orpheus_proto::devchan::REQ_STATS, 0, 0, 128)?;
+        let w = |i: usize| r.get(4 * i..4 * i + 4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]));
+        Ok(w(8).zip(w(4)))
     }
     fn peek_word(&mut self, addr: u32) -> Result<Option<u32>> {
         let b = self.d()?.peek(addr, 4)?;

@@ -16,7 +16,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use orpheus_sim::AppSim;
@@ -824,6 +824,12 @@ pub fn cmd(args: &mut Args) -> Result<String> {
             break;
         }
     }
+    // Idle Home must not thrash the code cache (2026-11-25: a layout where
+    // the settings lookup and its closure shared a line made idle Home
+    // load 2,939 lines/s, 1.7 s per UI loop; a healthy build ≈ 730/s).
+    if let Some(note) = idle_home_check(p) {
+        notes.push(note);
+    }
     // Oracles over the whole run: no reset, no new fault record.
     match (p.health(), p.fault()) {
         (Ok(h1), Ok(f1)) => {
@@ -860,9 +866,43 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     Ok(format!("{} journeys passed; report in {}", results.len(), out.display()))
 }
 
+/// Line loads per second the idle Home screen may cost (a healthy build
+/// measured ≈ 730/s, the thrashing one 2,939/s).
+const IDLE_LOADS_MAX_PER_S: u32 = 1_500;
+
+/// The verdict on two `(uptime ms, line loads)` samples of idle Home.
+fn idle_verdict(a: (u32, u32), b: (u32, u32)) -> String {
+    let ms = b.0.saturating_sub(a.0).max(1);
+    let rate = u64::from(b.1.wrapping_sub(a.1)) * 1000 / u64::from(ms);
+    if rate > u64::from(IDLE_LOADS_MAX_PER_S) {
+        format!(
+            "FAIL: idle Home loads {rate} code lines/s (at most {IDLE_LOADS_MAX_PER_S}): the code cache thrashes (profile with `dev prof --faults 15`)"
+        )
+    } else {
+        format!("idle Home: {rate} line loads/s")
+    }
+}
+
+/// Sample the pager over 5 s of idle Home (the player only).
+fn idle_home_check(p: &mut dyn Player) -> Option<String> {
+    let a = p.pager_loads().ok().flatten()?;
+    std::thread::sleep(Duration::from_secs(5));
+    let b = p.pager_loads().ok().flatten()?;
+    Some(idle_verdict(a, b))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The figures of 2026-11-25: the thrashing build (idle Home 2,939
+    /// line loads/s, keys 3.3 s each) fails, the healthy one passes.
+    #[test]
+    fn regress_idle_home_thrash_fails_the_suite() {
+        assert!(idle_verdict((27_512, 84_697), (43_400, 131_405)).starts_with("FAIL"));
+        assert!(!idle_verdict((22_316, 16_327), (32_441, 23_673)).starts_with("FAIL"));
+        assert!(!idle_verdict((0, u32::MAX - 10), (5_000, 100)).starts_with("FAIL"));
+    }
 
     #[test]
     fn journeys_are_device_safe_and_end_at_home() {

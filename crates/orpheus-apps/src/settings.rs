@@ -575,10 +575,42 @@ pub fn all() -> impl Iterator<Item = &'static Setting> {
     GROUPS.iter().flat_map(|g| g.items.iter()).chain(APP_ITEMS.iter()).chain(crate::games::SETTINGS.iter())
 }
 
+/// The item lists in [`all`]'s order, as plain slices: the lookups below
+/// walk them with loops (no iterator adapters).
+#[inline(always)]
+fn lists() -> (&'static [Group], &'static [Setting], &'static [Setting]) {
+    #[cfg(feature = "games")]
+    let games: &'static [Setting] = &crate::games::SETTINGS;
+    #[cfg(not(feature = "games"))]
+    let games: &'static [Setting] = &[];
+    (&GROUPS, APP_ITEMS, games)
+}
+
 /// Look an item up by key.
+///
+/// One function with plain loops, no closure: the iterator form
+/// (`all().find(..)`) called its closure out of line for every item, and
+/// on the player that closure and its caller landed on the same code-cache
+/// line, so each lookup of ~130 items cost ~260 line loads (2026-11-25:
+/// idle Home 1.7 s per UI loop, 2,939 line loads/s, keys 3.3 s each).
 #[must_use]
 pub fn def(id: SettingId) -> Option<&'static Setting> {
-    all().find(|s| s.id == id)
+    let (groups, apps, games) = lists();
+    for g in groups {
+        for s in g.items {
+            if s.id == id {
+                return Some(s);
+            }
+        }
+    }
+    for list in [apps, games] {
+        for s in list {
+            if s.id == id {
+                return Some(s);
+            }
+        }
+    }
+    None
 }
 
 /// Number of stored items (the games' settings with the `games` feature).
@@ -589,8 +621,32 @@ pub const STORED: usize = 98 + crate::games::STORED_SETTINGS;
 
 /// Position among stored items (cache index).
 #[must_use]
+///
+/// Plain loops for the reason given at [`def`].
 pub fn index(id: SettingId) -> Option<usize> {
-    all().filter(|s| s.stored()).position(|s| s.id == id)
+    let (groups, apps, games) = lists();
+    let mut n = 0;
+    for g in groups {
+        for s in g.items {
+            if s.stored() {
+                if s.id == id {
+                    return Some(n);
+                }
+                n += 1;
+            }
+        }
+    }
+    for list in [apps, games] {
+        for s in list {
+            if s.stored() {
+                if s.id == id {
+                    return Some(n);
+                }
+                n += 1;
+            }
+        }
+    }
+    None
 }
 
 /// Value to store bytes.
@@ -810,6 +866,25 @@ impl SettingsCache {
 
 #[cfg(test)]
 mod tests {
+    /// The loop lookups give exactly what the iterator definitions give,
+    /// for every item and for keys that are not items (2026-11-25: `def`
+    /// and `index` became plain loops, the closure form thrashed the
+    /// player's code cache).
+    #[test]
+    fn regress_settings_lookup_loops_match_the_iterator_form() {
+        let stored: Vec<SettingId> = all().filter(|s| s.stored()).map(|s| s.id).collect();
+        assert_eq!(stored.len(), STORED);
+        for s in all() {
+            assert!(core::ptr::eq(def(s.id).unwrap(), all().find(|t| t.id == s.id).unwrap()));
+            assert_eq!(index(s.id), stored.iter().position(|&k| k == s.id));
+        }
+        for k in [0u16, 1, 0x7FFF, 0xFFFF, 0x0DFF] {
+            let id = SettingId(k);
+            assert_eq!(def(id).is_some(), all().any(|t| t.id == id));
+            assert_eq!(index(id), stored.iter().position(|&x| x == id));
+        }
+    }
+
     extern crate std;
     use super::*;
     use std::collections::BTreeSet;
