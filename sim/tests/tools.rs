@@ -148,6 +148,9 @@ fn no_alarm_without_a_clock() {
     assert_eq!(s.sys.tools().ringing(), None);
 }
 
+/// Regression: the release of the Prev that switched to the Alarm tab
+/// paged the alarm list, with roll-around to its last row (found on the way
+/// in UI-8, 2026-11-24): `prev ok` must switch the first alarm on.
 #[test]
 fn alarm_list_edits() {
     // Alarm tab (Prev from the stopwatch); the first alarm on.

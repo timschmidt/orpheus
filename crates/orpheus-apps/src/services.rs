@@ -558,6 +558,11 @@ pub fn push_preset_name<const N: usize>(p: &Preset, out: &mut StrBuf<N>) {
     out.push_str_or_ellipsis(s.trim());
 }
 
+/// The player's hardware as System › About shows it (the firmware's and the
+/// simulator's [`SystemService::hardware`]): the model only, which leaves
+/// the "Hardware" label room (05 §7.11).
+pub const PLAYER_HARDWARE: &str = "YM03";
+
 pub trait SystemService {
     /// The active language (the firmware switches packs when the Language
     /// setting changes).
@@ -1964,6 +1969,9 @@ mod bt_tests {
         assert_eq!(unix_of(&d(2026, 11, 24, 12, 41, 0)), 1_795_524_060);
     }
 
+    /// Regression: Now Playing › Info said "Bitrate 0 kbit/s" on the player
+    /// (AU-5, 2026-11-24: the firmware always passed 0); `average_kbps`
+    /// falls back to the file's size over its duration.
     #[test]
     fn bitrate_shown() {
         // The decoder's figure first.

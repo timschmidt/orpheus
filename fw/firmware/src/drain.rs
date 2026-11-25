@@ -56,7 +56,7 @@ macro_rules! t {
 /// SRAM3 above the PCM ring (`0x304000–0x306FFF`) and the 2 KiB reserved
 /// for the persistent log ring (`orpheus_proto::logring::BASE`,
 /// `0x307000`): `0x307800–0x307FFF` is free plain RAM (02 §1 memory map).
-pub const SHARED_ADDR: usize = 0x0030_7800;
+pub const SHARED_ADDR: usize = orpheus_proto::mem::SRAM3_SHARED as usize;
 
 /// State shared by the logger, the UI, the power task and the governor.
 #[repr(C)]

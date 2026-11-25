@@ -785,6 +785,8 @@ mod tests {
         assert_eq!(l.focus, 1);
     }
 
+    /// Regression: rolling round in a six-row settings group hid the group
+    /// title (found on the way in UI-8, 2026-11-24).
     #[test]
     fn rolling_to_the_top_shows_the_header_above() {
         // A settings group: a title header and five rows, five visible.

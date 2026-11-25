@@ -84,6 +84,9 @@ mod tests {
     /// block the writer for their length; the writer's half boundaries
     /// check like `PcmOut::push`. The ledger must account for every missed
     /// half and name the operation that caused it.
+    ///
+    /// Regression: on the player the `ub:` per-cause counters did not add
+    /// up to `underruns` (AU-5, 2026-11-24, gapless FLAC run).
     #[test]
     fn every_underrun_is_charged_once_to_its_cause() {
         // (time ms, cause, length ms) of blocking operations; the DAC plays

@@ -498,8 +498,9 @@ impl Ring {
 // ----------------------------------------------------------------- PCM out
 
 /// PCM ring in SRAM3 (0x304000, 12 KiB = 3072 stereo frames).
-const PCM_ADDR: u32 = 0x0030_4000;
+const PCM_ADDR: u32 = orpheus_proto::mem::SRAM3_PCM_RING;
 const PCM_FRAMES: usize = 3072;
+const _: () = assert!(PCM_FRAMES * 4 == orpheus_proto::mem::SRAM3_PCM_RING_SIZE as usize);
 const HALF: usize = PCM_FRAMES / 2;
 const DAC_CH: usize = 5;
 

@@ -8,7 +8,7 @@ pub use orpheus_fs::BlockDevice;
 /// anything: the word is not cleared at boot): the battery logger's
 /// `card_io` column (PWR-5). The last word of SRAM3, outside SRAM0, whose
 /// every byte comes off the stack (02 §1 memory map).
-pub const IO_ADDR: usize = 0x0030_7FFC;
+pub const IO_ADDR: usize = orpheus_proto::mem::SRAM3_CARD_IO as usize;
 
 fn io() -> &'static core::sync::atomic::AtomicU32 {
     // SAFETY: the last word of SRAM3 (enabled in crt0, inside the MPU's

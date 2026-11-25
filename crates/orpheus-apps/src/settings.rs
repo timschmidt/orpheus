@@ -752,6 +752,9 @@ mod tests {
     use std::collections::BTreeSet;
     use std::vec::Vec;
 
+    /// Regression: the M7 merge gave the radio frequency the step goal's
+    /// store key 0x0D20 (2026-11-24; the radio's moved to 0x0D50): every
+    /// table id is unique (with `id_tests` for the named ids).
     #[test]
     fn table_is_consistent() {
         let mut ids = BTreeSet::new();

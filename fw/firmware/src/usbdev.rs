@@ -347,7 +347,7 @@ impl Target for Fw {
             crate::audio::busy_reply();
             return true;
         }
-        if data.starts_with(b"playdir ") {
+        if orpheus_proto::devchan::stops_track_first(data) {
             // The card task reads commands only between tracks: stop the
             // one playing (and so the queue) first; the new queue starts
             // when the command is served.

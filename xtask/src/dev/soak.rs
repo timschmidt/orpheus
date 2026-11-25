@@ -1541,8 +1541,12 @@ impl SoakSim {
                 if !self.session {
                     return Some("test-set: no test session (settings test-session on)".into());
                 }
-                let id =
-                    u16::from_str_radix(id.trim_start_matches("0x"), 16).ok().or_else(|| id.parse().ok());
+                // As the firmware's `parse_num`: hexadecimal with `0x`,
+                // decimal otherwise (the session sends decimal ids).
+                let id = match id.strip_prefix("0x") {
+                    Some(h) => u16::from_str_radix(h, 16).ok(),
+                    None => id.parse().ok(),
+                };
                 match (id.filter(|i| session_settable(*i)), v.parse::<i16>()) {
                     (Some(i), Ok(v)) => {
                         self.looks.retain(|x| x.0 != i);
@@ -1919,7 +1923,10 @@ impl Ctx {
         }
         if app == App::NowPlaying {
             // Music's first row is Now Playing while a queue exists; a
-            // held key stops at the end of a list.
+            // held key stops at the end of a list when the ends clamp. The
+            // test look reads list roll-around as its default (on), so the
+            // session's "off" (`clamp_lists`) holds only without it.
+            self.look(rig, false)?;
             rig.sleep(300);
             player::hold(rig, Key::Up, 1500)?;
             player::tap(rig, Key::Ok)?;
@@ -3752,6 +3759,28 @@ mod tests {
 
     fn sim_rig() -> (SoakSim, Vec<Vec<u16>>) {
         (SoakSim::default(), crate::dev::suite::home_frames("").unwrap())
+    }
+
+    /// Regression: the soak's way to Now Playing opened Music › Shuffle all
+    /// (VER-12, 2026-11-25, third soak; on the owner's library Shuffle all
+    /// then reset the player): with UI-8's list roll-around on, the default,
+    /// its held Up wrapped past Music's first row. The session turns
+    /// roll-around off before it navigates there (`Ctx::clamp_lists`).
+    #[test]
+    fn regress_soak_now_playing_does_not_open_shuffle_all() {
+        let b = budget();
+        let (mut rig, homes) = sim_rig();
+        let caps = prologue(&mut rig).unwrap();
+        let mut ctx = new_ctx(&mut rig, &b, caps, &homes, false).unwrap();
+        let roll = orpheus_apps::settings::SettingId(LIST_ROLL);
+        assert_eq!(rig.p.sim.sys.settings.get(roll), 1, "roll-around on, as on the player");
+        ctx.run(&mut rig, &Action::PlayDir(folders()[0].clone())).unwrap();
+        let before = ctx.status(&mut rig).expect("status");
+        assert!(before.q_len > 0, "{before:?}");
+        assert!(ctx.goto(&mut rig, App::NowPlaying).unwrap());
+        let after = ctx.status(&mut rig).expect("status");
+        assert_eq!((after.q_len, &after.title), (before.q_len, &before.title), "the queue was replaced");
+        assert_eq!(rig.p.sim.sys.settings.get(roll), 0);
     }
 
     /// The tool against the simulator: every scenario runs for a few

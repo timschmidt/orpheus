@@ -612,8 +612,11 @@ mod tests {
         assert_eq!(chip.read_addrs.last(), Some(&ADDR));
     }
 
+    /// Regression: `fm on` reported `chip=0000` on the player (FM-1,
+    /// 2026-11-24, first device run): the driver only read the id from 0Eh
+    /// of the sequential read at 0x10, and never register 00h at 0x11.
     #[test]
-    fn identify_falls_back_to_register_00_at_0x11() {
+    fn regress_fm_identify_falls_back_to_register_00_at_0x11() {
         // 0Eh after the reset holds no id (seen as 0x0000 on the player).
         let mut chip = FakeChip::new();
         chip.seq_id = 0;

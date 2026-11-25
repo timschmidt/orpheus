@@ -110,7 +110,8 @@ watchdog reset); behaviour only the player shows also gets an on-device
 check (a suite journey, a `dev` tool such as `usb-cancel`, or a soak
 replay in `tests/regress/soak/`). Fuzz and soak findings keep their inputs
 in `tests/regress/` (§3.4, §5.10). `cargo test regress_` runs the set, and
-the §6 gate runs it as part of `xtask test all`.
+the §6 gate runs it as part of `xtask test all`. `docs/regressions.md` lists
+every fixed bug with its test or on-device check; a fix adds its row.
 
 ### 3.2 Simulator and golden images
 

@@ -22,6 +22,29 @@ pub const SRAM23_SIZE: u32 = 32 * 1024;
 pub const SRAM2_DMA: u32 = 0x1000_0000;
 pub const SRAM3_DMA: u32 = 0x1800_0000;
 
+/// SRAM3 above the rodata page cache: the PCM ring (12 KiB), the
+/// persistent log ring ([`crate::logring`], 2 KiB), then a window of plain
+/// RAM for state shared between tasks, ending at the card I/O counter in
+/// the last word (02 §1 memory map).
+pub const SRAM3_PCM_RING: u32 = 0x0030_4000;
+pub const SRAM3_PCM_RING_SIZE: u32 = 12 * 1024;
+/// The shared-state window: the battery logger's state first, then the
+/// step counter's, the radio's and the recorder's, each placed after the
+/// one before with [`sram3_next`] (FM-1 fix, 2026-11-24: fixed addresses
+/// chosen apart had put the step counter's state over the radio's).
+pub const SRAM3_SHARED: u32 = 0x0030_7800;
+/// The card I/O counter (`yoton_bsp::card::IO_ADDR`): the last word of
+/// SRAM3, where the shared window ends.
+pub const SRAM3_CARD_IO: u32 = SRAM3_BASE + SRAM23_SIZE - 4;
+
+/// Where the next block of the shared window starts after one that ends at
+/// `end` (8-byte aligned).
+#[inline(always)]
+#[must_use]
+pub const fn sram3_next(end: usize) -> usize {
+    (end + 7) & !7
+}
+
 /// Where a firmware or bring-up image is loaded and entered (Thumb: +1).
 pub const IMAGE_BASE: u32 = SRAM0_BASE;
 /// The `ymon` RAM monitor occupies `0x118000..0x11C000` while the host loads
@@ -56,5 +79,44 @@ mod tests {
         const { assert!(YMON_BASE > IMAGE_BASE) };
         assert_eq!(FB_SIZE, SRAM1_SIZE);
         assert_eq!(RAM_IMAGE_MAX, 96 * 1024);
+    }
+
+    /// Regression: the radio's RAM was overwritten by the step counter's
+    /// (FM-1, 2026-11-24, first device run: `fm on` gave `khz=0 chip=0000`,
+    /// the scan found nothing). Both had fixed SRAM3 addresses, `0x307A00`
+    /// (1,144 B) and `0x307C00`. The map's regions are disjoint, and blocks
+    /// chained with [`sram3_next`] never overlap; the firmware asserts at
+    /// build time that its blocks (the sizes of its own types) end below the
+    /// card I/O counter.
+    #[test]
+    fn regress_sram3_blocks_chained_not_overlapping() {
+        let log_end = crate::logring::BASE + crate::logring::SIZE as u32;
+        let map = [
+            (SRAM3_PCM_RING, SRAM3_PCM_RING + SRAM3_PCM_RING_SIZE),
+            (crate::logring::BASE, log_end),
+            (SRAM3_SHARED, SRAM3_CARD_IO),
+            (SRAM3_CARD_IO, SRAM3_CARD_IO + 4),
+        ];
+        for w in map.windows(2) {
+            assert!(w[0].1 <= w[1].0, "{:#x?} overlaps {:#x?}", w[0], w[1]);
+        }
+        assert!(map[0].0 >= SRAM3_BASE && map[3].1 == SRAM3_BASE + SRAM23_SIZE);
+        // The blocks as measured with the fix: logger 252 B, step counter
+        // 1,144 B, radio and its text 520 B, then an odd-sized one.
+        let mut at = SRAM3_SHARED as usize;
+        let mut blocks = std::vec::Vec::new();
+        for size in [252, 1144, 520, 61] {
+            assert_eq!(at % 8, 0);
+            blocks.push((at, at + size));
+            at = sram3_next(at + size);
+        }
+        for w in blocks.windows(2) {
+            assert!(w[0].1 <= w[1].0);
+        }
+        assert_eq!(blocks[1].0, 0x0030_7900);
+        assert!(blocks[3].1 <= SRAM3_CARD_IO as usize);
+        // The placement before the fix fails the same check.
+        let old = [(0x0030_7A00usize, 0x0030_7A00 + 1144), (0x0030_7C00, 0x0030_7C00 + 848)];
+        assert!(old[0].1 > old[1].0);
     }
 }

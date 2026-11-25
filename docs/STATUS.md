@@ -62,6 +62,64 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-25 — VER-1: regression tests for every fixed bug (backfill) (worker, no hardware)
+
+Owner's policy of 2026-11-25 (07 §3.1) applied to the bugs fixed so far.
+The inventory is `docs/regressions.md` (new; one row per bug: date, fix
+commit, test or on-device check, status).
+
+* **Inventory**: 56 rows (59 product bugs; three rows hold two each) from
+  this log, the CHANGELOG and the commit log, plus 10 test-tool fixes. 27
+  rows were covered already: 19 by a host test (renamed `regress_…` where
+  dedicated: USB-W1 ×4 in `ep0_model` and `liveness`, governor, FM id
+  fallback, Ogg large pages, F-SET-1; else a `Regression:` doc line), 8 by
+  fuzz inputs in `tests/regress/` (the UI-8 marquee-under-menu input
+  `58133401…` copied there from the corpus); 9 got a new host test; 20 are
+  on-device only (each row names the check).
+* **New tests** (each failed with the fix reverted locally, then passed;
+  the SRAM3 one excepted, see its row): `mailbox::regress_fault_reboot_keeps_the_boot_counter`,
+  `mem::regress_sram3_blocks_chained_not_overlapping`,
+  `devchan::regress_playdir_during_playback_stops_the_track` (orpheus-proto);
+  `adc::regress_mic_front_end_is_the_left_side` (atj2157-pac);
+  `proto::regress_bt_volume_keys_act_at_the_dac` (orpheus-bt);
+  `regress_every_app_is_on_the_players_home`, `regress_about_hardware_row_fits`,
+  `id_tests::regress_service_kinds_screen_ids_setting_ids_unique` (orpheus-apps;
+  the last reads the sources, so a new `other::` kind, `data::` tag, screen
+  id or `settings::id` is checked without being listed);
+  `dev::soak::tests::regress_soak_now_playing_does_not_open_shuffle_all`
+  (xtask, simulator rig).
+* **Decisions moved into host crates** (pure refactors): `mailbox::Reboot`,
+  `fault_reboot`, `deliberate_reboot` (HAL `wdt`); `mem::SRAM3_*`,
+  `sram3_next` (drain, sensor, fm, rec, bsp card counter, PCM ring);
+  `devchan::stops_track_first` (`usbdev`); `adc::mic_mix_for_mic`,
+  `ctl_for_mic` (HAL `adc`); `proto::dac_level`, `SINK_VOLUME_SENT`
+  (firmware `apply_dac`, `bt_boot`); `App::on_player` (firmware
+  `app_available`); `services::PLAYER_HARDWARE` (firmware and simulator).
+* **Bugs found while writing the soak test (fixed, xtask only)**: (1) the
+  soak's `clamp_lists` (b7949dc9) could not work on the player either: the
+  test look reads every look setting, list roll-around included, as its
+  default, and `goto` turns the look on before the held Up, so the wrap to
+  Shuffle all stayed; the Now Playing step now turns the look off first.
+  (2) The simulator rig parsed `settings test-set` ids as hexadecimal while
+  the session sends decimal (the firmware's `parse_num`): every set was
+  refused in the simulator, which is why the dry run passed. The new test
+  fails with either part reverted.
+* **Numbers**: resident 79,148 B, `.bss` 123,988 B, paged code 852,188 B,
+  105 code + 18 rodata pages, slot 1,093,632 B — identical to `acc73592`
+  built in the same worktree (a first cut of the `wdt` refactor cost 8 B of
+  resident text; `reboot_as` inlined brings it back). `size --check`
+  79,139 B.
+* **Gate**: host `fmt --check`, `clippy --workspace --all-targets -D
+  warnings`, `cargo test --workspace` (1,054 passed); `cargo test
+  --workspace regress_`: 19 tests; fw `fmt --check`, `clippy --workspace
+  -D warnings`; `xtask build`, `check-resident`, `size --check`: pass. Not
+  run: `xtask test golden` separately (the goldens ran in `cargo test`),
+  any `xtask dev` command (the player was in a soak), HIL.
+* **Open, not fixed** (listed at the end of `docs/regressions.md`): F-SET-2,
+  F-UI-1, F-UI-4, the RTC stop, AU-0b, the first FLAC join, art dropouts,
+  "Start original firmware" in the full layout, language packs on the
+  player.
+
 ### 2026-11-25 — USB-W1: the USB wedge — root cause, self-recovery, liveness in the watchdog (worker, no hardware)
 
 Analysis, design and decisions: 06-connectivity §2.6 (new); open hardware

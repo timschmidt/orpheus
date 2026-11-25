@@ -71,7 +71,7 @@ const TRACE_MAX_S: u32 = 3600;
 /// 8-byte aligned); the radio's follows (`fm::FM_ADDR`), all below the
 /// card I/O counter (`0x307FFC`). Chained so that no two overlap: at a
 /// fixed `0x307A00` this state ran into the radio's (2026-11-24).
-pub const SHARED_ADDR: usize = (crate::drain::SHARED_END + 7) & !7;
+pub const SHARED_ADDR: usize = orpheus_proto::mem::sram3_next(crate::drain::SHARED_END);
 /// End of [`Shared`].
 pub const SHARED_END: usize = SHARED_ADDR + core::mem::size_of::<Shared>();
 

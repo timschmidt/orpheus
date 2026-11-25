@@ -47,8 +47,17 @@ pub enum Target {
 pub fn reboot(target: Target) -> ! {
     // A deliberate reboot is not a failed start (fault reboots go through
     // `reboot_after_fault` and keep the count).
-    write_word(mailbox::ADDR_BOOT_COUNT, 0);
-    reboot_keep_count(target)
+    reboot_as(mailbox::deliberate_reboot(target == Target::Adfu))
+}
+
+/// What `r` asks of the mailbox, then the reset. Inlined, so each caller
+/// keeps only its own case.
+#[inline(always)]
+fn reboot_as(r: mailbox::Reboot) -> ! {
+    if r.clear_count {
+        write_word(mailbox::ADDR_BOOT_COUNT, 0);
+    }
+    reboot_keep_count(if r.adfu { Target::Adfu } else { Target::Normal })
 }
 
 fn reboot_keep_count(target: Target) -> ! {
@@ -64,18 +73,15 @@ fn reboot_keep_count(target: Target) -> ! {
 }
 
 /// After a fault record was written: back to ADFU when a host test asked for
-/// it (mailbox flag), otherwise a normal reboot. Keeps the boot counter: a
-/// start that faults before it was confirmed healthy counts as failed, so
-/// stage 2 falls back to the next slot after three (until T-6 this went
-/// through `reboot` and cleared the counter, so only hangs counted).
+/// it (mailbox flag), otherwise a normal reboot. Keeps the boot counter
+/// (`mailbox::fault_reboot`, host-tested): a start that faults before it was
+/// confirmed healthy counts as failed, so stage 2 falls back to the next slot
+/// after three (until T-6 this went through `reboot` and cleared the
+/// counter, so only hangs counted).
 pub fn reboot_after_fault() -> ! {
     let flags = read_word(mailbox::BASE + mailbox::OFF_FLAGS as u32);
-    let test = read_word(mailbox::ADDR_TEST_MODE) == mailbox::TEST_MODE_MAGIC;
-    reboot_keep_count(if test && flags & mailbox::FLAG_RETURN_ADFU != 0 {
-        Target::Adfu
-    } else {
-        Target::Normal
-    })
+    let test = read_word(mailbox::ADDR_TEST_MODE);
+    reboot_as(mailbox::fault_reboot(test, flags))
 }
 
 /// Progress counters for the firmware's `watchdog` task (02 §8): the RT

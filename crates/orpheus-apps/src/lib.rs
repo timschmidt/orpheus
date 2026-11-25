@@ -11,6 +11,8 @@
 
 pub mod browse;
 pub mod icons;
+#[cfg(test)]
+mod id_tests;
 pub mod screens;
 pub mod services;
 pub mod settings;
@@ -101,8 +103,66 @@ impl App {
         matches!(self, App::Music | App::Files | App::Pictures | App::Recorder | App::UsbDrive)
     }
 
+    /// Built and verified on the player, so the firmware offers it on Home
+    /// (its `SystemService::app_available`; all of them since 2026-11-24).
+    /// Exhaustive on purpose: a new app is a decision here.
+    #[must_use]
+    pub const fn on_player(self) -> bool {
+        match self {
+            App::Music
+            | App::Files
+            | App::Radio
+            | App::Bluetooth
+            | App::Recorder
+            | App::Pictures
+            | App::Steps
+            | App::Stopwatch
+            | App::Authenticator
+            | App::UsbDrive
+            | App::Settings => true,
+        }
+    }
+
     #[must_use]
     pub fn from_index(i: u8) -> Option<App> {
         App::ALL.get(usize::from(i)).copied()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use super::*;
+    use orpheus_ui::theme::{Accent, Theme};
+    use orpheus_ui::{DirtySet, FontId, Gfx};
+
+    /// Regression: Recorder and USB Drive were missing from Home on the
+    /// player (VER-7, 2026-11-24, first on-device suite run): the
+    /// firmware's `app_available` still listed only the apps that existed
+    /// when it was last edited. It now asks [`App::on_player`].
+    #[test]
+    fn regress_every_app_is_on_the_players_home() {
+        for a in App::ALL {
+            assert!(a.on_player(), "{a:?} missing from the player's Home");
+        }
+    }
+
+    /// Regression: System › About on the player shortened its Hardware row
+    /// to "Har…" (VER-7, 2026-11-24, shot system/about): the firmware's
+    /// hardware string "Yoton YM03 (ATJ2157)" left the label no room. Label
+    /// and value must fit side by side in a row of a scrolling list
+    /// (`ListView::draw_row`: label at x 7, value right-aligned 7 px from
+    /// the edge, 6 px between them, 4 px for the scroll thumb).
+    #[test]
+    fn regress_about_hardware_row_fits() {
+        let mut fb = std::vec![0u16; orpheus_ui::gfx::FB_PIXELS];
+        let mut d = DirtySet::new();
+        let mut g = Gfx::new(&mut fb, &mut d, Theme::Dark.palette(Accent::Blue), None);
+        let avail = orpheus_ui::gfx::SCREEN_W - 4 - 7 - 7 - 6;
+        let fits = |g: &mut Gfx<'_>, value: &str| {
+            g.measure(Lang::ENGLISH.get(Str::Hardware), FontId::Ui) + g.measure(value, FontId::Ui) <= avail
+        };
+        assert!(fits(&mut g, services::PLAYER_HARDWARE));
+        assert!(!fits(&mut g, "Yoton YM03 (ATJ2157)"), "the old string");
     }
 }

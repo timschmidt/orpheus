@@ -1460,6 +1460,9 @@ mod tests {
     /// absolute volume is 0 after every connection. The player's volume
     /// goes out on connect (before the audio start), its start-up report
     /// of 0 is answered with ours, a later change by the user is taken.
+    ///
+    /// Regression: the stream to a host A2DP sink stayed silent (found
+    /// 2026-11-24, fixed in UI-6a): the firmware never sent 0x26.
     #[test]
     fn connect_sends_player_volume() {
         let (mut t, mut tx) = started(Config::default(), &[HEADSET], None);
