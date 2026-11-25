@@ -2011,6 +2011,14 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — UI-8 list roll-around on the player (lead)
+
+* Merged UI-8 (`9d9cdfa6`). On the player: Settings root, Up on the first
+  row (Sound) → last row (System), Down → Sound again. Open question for
+  the owner: Now Playing's Up next / Details views switch views at their
+  ends instead of rolling round (rolling would leave no way out by
+  Up/Down).
+
 ### 2026-11-24 — plan: list roll-around (owner's request)
 
 * Added UI-8: every scrollable list rolls round at both ends (Down on the
