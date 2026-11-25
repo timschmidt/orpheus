@@ -509,6 +509,128 @@ resonators (M15).
   event lands on its sample; CPU per voice per clock level into VER-10;
   M13 measures the rendered output.
 
+**As built (SYN-1, 2026-11-25): the engine core, host side.**
+`crates/orpheus-synth` (`no_std`, no `alloc`, `#![forbid(unsafe_code)]`;
+depends only on `orpheus-dsp` for `exp2`/`log2`/`sin`/`cos` at control
+rate). Module docs are the reference; in short:
+
+* **API.** `Engine::new(rate, seed)` (8–48 kHz); `set_patch(part, &Patch)`
+  on 16 parts; `render_i16(&mut [i16], &[Event])` and `render_f32` fill an
+  interleaved stereo block and apply each `Event { offset, kind }` at its
+  sample (`NoteOn`, `NoteOff`, `Param { part, Param::…, value }` for
+  volume, pan, cutoff, resonance, bend, glide, LFO rate/depths, sustain,
+  level, the three sends; `Fx { FxParam::…, value }`; `AllNotesOff`,
+  `AllSoundOff`, `Tempo`, `Master`); `apply(kind)` between blocks;
+  `set_voice_limit`, `set_delay/chorus/reverb`, `voices()`, `reset(seed)`.
+  A `Patch` is plain `Copy` data: `Kind::Subtractive` (2 oscillators +
+  noise), `Kind::Fm` (2–4 operators, 8 algorithms as operator graphs,
+  feedback, key scaling), `Kind::Drum(DrumParams)` or `Kind::Kit` (GM
+  notes → drum voices); filter (`Off`/LP/BP/HP, cutoff, resonance, envelope
+  amount, key tracking, velocity), amplitude, filter and pitch ADSRs
+  (linear or exponential), one LFO (sine/triangle/square/saw/S&H, Hz or
+  cycles per beat; pitch, cutoff, amplitude, pulse-width depths), glide,
+  mono/legato, level, velocity sensitivity, bend range. Every value is
+  clamped on installation (NaN included). The building blocks (`Osc`,
+  `Svf`, `Env`, `Lfo`, `FmState`, `DrumVoice`, `Delay`, `Chorus`,
+  `Reverb`, `Limiter`) are public for the signal generator (§7.17), the
+  games' effects and the speech resonators.
+* **Determinism.** `f32` with IEEE basic operations only (no `mul_add`, no
+  `libm`), 32-bit phase accumulators, seeded xorshift noise. Requirement on
+  the player: `FPSCR.FZ` left at its reset value 0. Rendering is cut into
+  segments at event offsets and at the control ticks of the engine's own
+  sample clock (every 32 samples); gains and the master ramp over a fixed
+  32 samples, tiny state is flushed and drum voices decide their end only
+  on ticks, the chorus phase is integer, so **the output does not depend
+  on the block sizes** (tested at 1, 7, 16, 256, 1023, 4096 frames). The golden hashes
+  are equal in the test build (opt-level 1) and the release build
+  (opt-level "s", fat LTO; `render --check`).
+* **Oscillators.** Saw and pulse by two-sample polyBLEP, triangle by
+  polyBLAMP, sine by a degree-11 polynomial on the integer phase (error
+  < 2.5·10⁻⁷), 4 built-in wavetables × 7 mip levels (const-built, 14 KiB
+  read-only), white noise, pink noise (Voss–McCartney, 12 rows). The pulse
+  is zero-mean (its DC moved with PWM: a ±0.6 sub-audio wander in the first
+  render). Fundamentals at or above 0.45 fs are muted.
+* **Aliasing** (`tests/spectrum.rs`, 65 536-point Blackman–Harris FFT,
+  alias = everything outside ±8 bins of the harmonics, relative to the
+  total): saw 1046/2794/4186 Hz −31/−27/−24 dB in all, **−51/−44/−43 dB
+  below 12 kHz** (naive −16/−12/−10); pulse similar; triangle −60/−46 dB
+  (below 12 kHz −82/−62); wavetables −47 to −87 dB; sine at the window's
+  floor (−94 dB). The two-sample polyBLEP leaves its residue in the octave
+  below Nyquist; budgets are the measured values + ~2 dB.
+* **Envelopes, filter, LFO, glide.** The amplitude envelope runs per
+  sample (attack 0 = full level on the note-on sample, release 0 = silent
+  on the note-off sample); filter and pitch envelopes, LFO, glide and the
+  SVF design run at control rate (32 samples) with one-step 32-sample
+  coefficients; FM operator envelopes run at control rate one period ahead
+  and are interpolated per sample. SVF: trapezoidal (Zavalishin/Simper
+  descriptions), cutoff 16 Hz–0.49 fs, resonance to Q 50, stable under
+  per-period cutoff jumps to the top (test).
+* **Voices.** 16 slots + 4 hidden tails: a stolen or retriggered voice
+  fades out over 256 samples (5.3 ms; 64 left visible clicks in the
+  spectrogram) in a tail while the new note starts on its sample. Order: the
+  same part+note, a free slot, the quietest released or < −40 dB voice, the
+  oldest. Mono parts: held-note stack (8), last-note priority, legato glide
+  without retrigger, return to the held note. Sustain pedal. Drums ignore
+  note-off; a closed hat chokes open hats of its part.
+* **Drum voices** (kick, snare, closed/open hat, clap, tom; tune, decay,
+  tone, snap, level): sines with pitch drops, six band-limited squares at
+  the analogue hat's frequencies, noise through the SVF, exponential decays.
+* **Mixing and effects.** Constant-power pan; mono sends (delay, chorus,
+  reverb) returning stereo; delay 12 288 × `i16` (**256 ms at 48 kHz**,
+  tempo sync in beats; 16 384 would put the engine over the 72 KiB arena),
+  chorus 1 024 × `f32` (two quadrature taps around 7 ms), reverb 4 LP-combs
+  (Schroeder's 29.7–43.7 ms) + 2×2 all-passes in 8 192 × `i16`; the `i16`
+  lines truncate toward zero so tails reach exact silence and the effect
+  then skips its work. Master: peak follower (instant, 100 ms release),
+  gain smoothed down over 1 ms (an instant gain drop splattered), soft clip
+  from −1.9 dBFS: output always within ±1.
+* **RAM** (`ram_table` test): voice slot 328 B (drum source 140 B,
+  oscillator 56 B), patch 292 B, part ≈ 1 KiB with its coefficients;
+  delay 24.6 KiB, chorus 4.1 KiB, reverb 16.3 KiB; core (20 slots, 16
+  parts, buses) 23.6 KiB; **engine 69,040 B** (≤ the 72 KiB decoder
+  arena, asserted). Code (thumbv7em, opt "s", no LTO, whole crate incl.
+  3.9 KB demo scenarios) 38.6 KB, read-only data 22.4 KB (wavetables 14.3).
+* **Cost.** Host (x86-64, `cargo bench -p orpheus-synth`, opt "s"), ns per
+  voice-sample: sine 4.4, saw 3.6, saw+LP 7.2, pulse+LP 8.6, wavetable+LP
+  9.3, saw-lead (2 saws, LP, envelopes, LFO) 9.8, PWM pad 11.7, FM 2-op
+  20.6, FM 4-op 41.7; drums 5–25; per sample: delay 4.4, chorus 9.7,
+  reverb 19.1, empty engine (limiter, i16) 10.1 ns/frame. **Player
+  estimate** (thumbv7em disassembly: instructions + 1 per load/store + 2
+  per taken branch; ±30 %, to be replaced by SYN-3's measurement), cycles
+  per voice-sample including the amplitude envelope, mix and amortised
+  control: sine ≈ 75, saw-lead ≈ 140, PWM pad ≈ 190, FM 2-op ≈ 120, FM
+  4-op ≈ 260; per sample: delay ≈ 95, chorus ≈ 120, reverb ≈ 190, engine
+  + limiter ≈ 135. At 48 kHz that is **16 saw-lead voices ≈ 114 MHz (79 %
+  of 144 MHz)**, with all three effects ≈ 93 %; 16 sine voices ≈ 40 %;
+  4-op FM ≈ 10 voices at 144 MHz. At Base (48 MHz) ≈ 6 saw-lead or 3
+  4-op FM voices: **the "16 voices at Base" target is not met**; the
+  governor floor by voice count (SYN-3) must go to 144 MHz for full
+  polyphony, and the inner loops (fused passes, state in registers) are
+  the place to win.
+* **Tests**: unit tests per module; `tests/engine.rs` (every note-on/off
+  on its exact sample over random block sizes; parameter changes start on
+  their sample; block-size independence; seeds; stealing order; 16-voice
+  cap; mono legato; sustain; SVF stability under extreme modulation; RAM
+  table); `tests/golden.rs` (28 scenarios, 33 s: every preset's phrase,
+  every drum, kit groove, glide, stealing, each effect, LFO sync,
+  parameter sweeps, a 4 s demo at 48 and 44.1 kHz; FNV-1a hashes in
+  `tests/goldens.txt`, rewritten with `ORPHEUS_WRITE_GOLDENS=1`);
+  `tests/spectrum.rs`; fuzz target `synth_events` (`crates/orpheus-synth/
+  fuzz`; event streams, any `f32` parameters, wild patches, odd blocks;
+  oracle: finite, within ±1, ≤ 20 voices) with 4 committed seeds replayed
+  by `tests/fuzz_corpus.rs`. `cargo run --release -p orpheus-synth
+  --example render -- <dir>` writes the scenarios as WAVs (not committed).
+* **Left for SYN-2**: more drum models (cymbal, percussion) and the full
+  kit, sample playback from the card, presets and kits as data files,
+  richer effects (a longer delay from memory the synth may take while it
+  plays, e.g. the idle stream ring; reverb quality); listening to the
+  kits. **For SYN-3**: place the 69 KB engine in the decoder arena (it is
+  one value; `reset` re-initialises in place), feed the DAC ring from
+  `render_i16`, check the golden hashes on the player (FZ = 0), measure
+  cycles per voice type into `budgets.toml`, clock floor by voice count,
+  keep the wavetables and hot loops resident or clustered (they are read
+  per sample).
+
 ## 10. Work packages
 
 * **WP-AU-1 Pipeline core**: rings, pool leases, `ByteSource`, `Decoder`

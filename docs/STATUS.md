@@ -62,8 +62,94 @@ of every session. Newest entries first in §3.
 | UI-8 | **done (host); not yet on the player** | List roll-around in every list (`ListView` + `ListView::step_plain`), Settings › Display › List roll-around (`0x030C`, on by default), held keys stop at the end; Up next/Details keep their view change. User check 26; the on-device journey belongs to VER-7 |
 | USB-W1 (bug) | **fixed and self-recovering (host-tested, built); not yet run on the player** | Root cause: the SETUP read was not cancel-safe (embassy-usb drops it on bus events; the interrupt stayed masked for good) and late stages landed on the next transfer. Drop-safe driver, liveness recovery, watchdog only when recovery cannot help, counters in `STATS` 24–30, soak logs self-recoveries, `xtask dev usb-cancel`. 06 §2.6; user check 28 |
 | VER-10 (static stack) | **tool done (host-tested), gate step; firmware cut from ≥ 30,232 to 22,900 B, then to 16,188 B nested worst case of 22,528 B usable: margin 6,340 B, goal ≥ 4 KiB met (built, not yet run on the player)** | `cargo xtask stack [--check] [--root P]`, `stack.toml`, `budgets.toml stack_static_margin_bytes` = 6,084 B (the measured margin less one 256 B step: a ratchet). Second round: the card task's poll frames (the volume and the decoder no longer move by value; `idle`'s and start-up's children are futures of their own), .bss −512 B. Lead: soak, a Vorbis seek, the Authenticator, card hand-over to USB (session entry 2026-11-25 "VER-10: card task frames") |
+| SYN-1 | **done (host)**; not in the firmware (SYN-3) | `orpheus-synth`: band-limited oscillators (polyBLEP/BLAMP, sine, wavetables, white/pink noise), 2–4 operator FM (8 algorithms, feedback), ADSR (linear/exponential), pitch envelope, SVF LP/BP/HP, LFOs (Hz or tempo sync), 16 voices + 4 fade-out tails with stealing, mono legato glide, sample-accurate events, 6 drum voices, delay/chorus/reverb sends, soft limiter; 69,040 B engine; golden hashes equal at opt-level 1 and release; player estimate: 16 saw-lead voices ≈ 79 % of 144 MHz (session entry 2026-11-25 "SYN-1") |
 
 ## 3. Session log
+
+### 2026-11-25 — SYN-1: `orpheus-synth` core (worker, no hardware)
+
+New crate `crates/orpheus-synth` (`no_std`, no `alloc`, `forbid(unsafe)`;
+spec and the full "as built" in 04 §9). Not wired into the firmware, the
+simulator or `orpheus-apps` (SYN-3; the Games worker owns `orpheus-apps`).
+
+**API**: `Engine::new(rate, seed)`, `set_patch(part, &Patch)` (16 parts),
+`render_i16`/`render_f32(&mut buf, &[Event])` with `Event { offset, kind }`
+(note on/off, part parameters, effect parameters, all-notes/sound off,
+tempo, master) applied on their exact sample; `apply`, `set_voice_limit`,
+`set_delay/chorus/reverb`, `voices()`, `reset(seed)`. `Patch` is plain
+data: subtractive (2 oscillators + noise), FM (2–4 operators), drum, GM
+kit; filter, three ADSRs, LFO, glide, mono/legato. Building blocks (`Osc`,
+`Svf`, `Env`, `Lfo`, `FmState`, `DrumVoice`, effects) are public for the
+signal generator, games and speech. 12 melodic presets and 6 drum voices
+(`presets`).
+
+**Determinism**: IEEE basic `f32` operations only, integer phases, seeded
+noise; rendering cut at events and at 32-sample control ticks of the
+engine's own clock, ramps of fixed length, so the output is independent
+of the caller's block sizes (tested 1…4096). The golden hashes match in the
+test build (opt-level 1) and in the release build (`cargo run --release
+-p orpheus-synth --example render -- --check`: 28 scenarios, 0
+mismatches). The player must keep `FPSCR.FZ` = 0 (reset value).
+
+**Looked at, fixed** (renders as waveform + spectrogram PNGs; no
+listening possible here): the PWM pad wandered ±0.6 at the LFO rate (the
+pulse's DC moved with the width) → zero-mean pulse; voice steals left
+broadband clicks with a 64-sample fade → 256 samples in hidden tail slots;
+the instant-attack limiter splattered on dense mixes → gain smoothed over
+1 ms with a soft clip for the overshoot; the default delay (¾ beat) did
+not fit the line → ½ beat. FM: an event between ticks advanced the
+operator envelopes twice → they advance on ticks only.
+
+**Measured (host, x86-64, opt "s")**, ns per voice-sample: sine 4.4, saw
+3.6, saw + LP 7.2, pulse + LP 8.6, wavetable + LP 9.3, saw-lead 9.8, PWM
+pad 11.7, FM 2-op 20.6, FM 4-op 41.7, drums 5.3–24.8; effects per sample:
+delay 4.4, chorus 9.7, reverb 19.1; empty engine 10.1 ns/frame. Optimised
+on the way (saw-lead 13.5 → 9.8, sine 10.8 → 4.4, FM 4-op 56 → 42):
+32-sample envelope steps, cached pitch/cutoff designs, integer-phase sine,
+FM graph as a matrix written out per operator count, no division at the
+BLEP edges, control period 16 → 32.
+
+**Player estimate** (thumbv7em disassembly, ±30 %): cycles per
+voice-sample sine ≈ 75, saw-lead ≈ 140, PWM pad ≈ 190, FM 4-op ≈ 260;
+delay ≈ 95, chorus ≈ 120, reverb ≈ 190, engine + limiter ≈ 135 per sample.
+16 saw-lead voices at 48 kHz ≈ 114 MHz (79 % of 144 MHz; 93 % with all
+effects), ≈ 6 voices at Base (48 MHz): **the plan's "16 voices at Base"
+is not met**; SYN-3 measures and sets the clock floor by voice count.
+
+**RAM**: voice slot 328 B, patch 292 B, delay 24.6 KiB (12,288 × `i16`:
+256 ms at 48 kHz; 16,384 put the engine at 77 KB, over the 72 KiB
+decoder arena), chorus 4.1 KiB, reverb 16.3 KiB, core 23.6 KiB, **engine
+69,040 B** (asserted ≤ 72 KiB). Code 38.6 KB, read-only data 22.4 KB
+(wavetables 14.3 KB) for the whole crate (thumbv7em, opt "s", before LTO).
+
+**Aliasing** (65,536-point FFT): saw at 1046/2794/4186 Hz −31/−27/−24 dB
+of all energy, −51/−44/−43 dB below 12 kHz (naive −16/−12/−10); triangle
+−60/−46; wavetables ≤ −47; budgets = measured + ~2 dB. The 2-sample
+polyBLEP's residue sits in the octave below Nyquist (the sweep effect at
+C9 shows it).
+
+**Tests**: 19 unit tests; `tests/engine.rs` 10 (scheduling over random
+blocks, parameter timing, block-size independence, seeds, stealing order,
+16-voice cap, mono legato, sustain, SVF stability, RAM table);
+`tests/golden.rs` (28 scenarios, `tests/goldens.txt`); `tests/spectrum.rs`;
+fuzz target `synth_events` (`crates/orpheus-synth/fuzz`, built with
+`nightly-2026-11-05`; 2 min, 17 k runs under ASan, no finding; 4 seeds in
+`tests/fuzz-corpus/synth_events/` replayed by `tests/fuzz_corpus.rs`).
+
+Gate: host fmt, clippy `-D warnings` (workspace, all targets), `cargo test
+--workspace` (1,163 passed, 9 ignored): pass; the fuzz target builds
+(`cargo +nightly-2026-11-05 fuzz build synth_events`) and ran 60 s (18.9 k
+runs, no finding); release golden check 0 mismatches. Not run: `xtask test
+all` beyond `cargo test --workspace`, brand/site checks, firmware build,
+size/resident/stack checks (no firmware change), HIL (no hardware). No
+simulator hook (not trivial: SYN-3).
+
+**Open / next**: SYN-2 (drum models, sample playback, kits and presets as
+data, longer delay from memory the synth may borrow, listening); SYN-3
+(engine in the decoder arena, DAC feed, golden hashes on the player,
+cycles per voice into `budgets.toml`, clock floor, wavetables and hot loops
+resident or clustered). Plan question for the lead: the 16-voice-at-Base
+target (04 §9) against the estimate above.
 
 ### 2026-11-25 — VER-10: card task frames, static stack margin 204 → 6,340 B (worker, no hardware)
 
