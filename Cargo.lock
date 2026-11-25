@@ -1198,6 +1198,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "orpheus-synth"
+version = "0.1.0"
+dependencies = [
+ "orpheus-dsp",
+]
+
+[[package]]
 name = "orpheus-ui"
 version = "0.1.0"
 dependencies = [

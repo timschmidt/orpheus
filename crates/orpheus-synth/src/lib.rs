@@ -1,0 +1,142 @@
+//! `orpheus-synth`: the synthesis engine shared by MIDI playback, the
+//! Sequencer, the games' sound effects, the signal generator and the speech
+//! engine's resonators (docs/plan/04-audio.md §9; WP SYN-1).
+//!
+//! ```ignore
+//! use orpheus_synth::{Engine, Event, Param, presets};
+//! let mut synth = Engine::new(48_000, 1);
+//! synth.set_patch(0, &presets::SAW_LEAD);
+//! let events = [
+//!     Event::note_on(0, 0, 60, 100),          // part 0, C4, at sample 0
+//!     Event::param(100, 0, Param::Cutoff, 900.0),
+//!     Event::note_off(1000, 0, 60),
+//! ];
+//! let mut block = [0i16; 2 * 1152];           // interleaved stereo
+//! synth.render_i16(&mut block, &events);      // events land on their sample
+//! ```
+//!
+//! # Building blocks (usable on their own)
+//!
+//! * [`osc`]: band-limited saw and pulse (polyBLEP), triangle (polyBLAMP),
+//!   sine, wavetables ([`wavetable`], mip-mapped), white and pink noise.
+//! * [`fm`]: 2–4 operator FM with 8 algorithms and feedback.
+//! * [`env`]: ADSR with linear or exponential segments (also the pitch
+//!   envelope).
+//! * [`filter`]: trapezoidal state-variable filter, low/band/high pass.
+//! * [`lfo`]: sine, triangle, square, saw, sample-and-hold; Hz or tempo sync.
+//! * [`drum`]: kick, snare, closed/open hat, clap, tom.
+//! * [`fx`]: delay, chorus, reverb (sends), soft limiter (master).
+//! * [`engine`]: [`PARTS`] parts, [`MAX_VOICES`] voices with stealing, mono
+//!   legato with glide, sample-accurate events, mixing and rendering.
+//!
+//! # Determinism
+//!
+//! Everything is `f32` with only IEEE basic operations (no fused
+//! multiply-add, no `libm`), integer phase accumulators and seeded xorshift
+//! noise, so a render is a pure function of the seed, the patches and the
+//! events — bit-identical on the host, in the browser and on the player
+//! ([`math`] states the one FPU requirement), at any optimisation level,
+//! and independent of the block sizes the caller uses. The golden test
+//! hashes the renders; the `render` example checks the same hashes in a
+//! release build.
+//!
+//! # Memory
+//!
+//! All state lives in [`Engine`]; no allocation, no `unsafe`. [`ram`] gives
+//! the sizes (the `ram_table` test prints them).
+
+#![no_std]
+#![forbid(unsafe_code)]
+
+#[cfg(test)]
+extern crate std;
+
+pub mod demo;
+pub mod drum;
+pub mod engine;
+pub mod env;
+pub mod filter;
+pub mod fm;
+pub mod fx;
+pub mod lfo;
+pub mod math;
+pub mod osc;
+pub mod patch;
+pub mod presets;
+mod voice;
+pub mod wavetable;
+
+pub use drum::{DrumKind, DrumParams};
+pub use engine::{
+    CONTROL_PERIOD, Engine, Event, EventKind, FxParam, MAX_VOICES, PARTS, Param, TAILS, VoiceInfo,
+};
+pub use env::{Adsr, Curve};
+pub use filter::FilterMode;
+pub use fm::{FmParams, OpParams};
+pub use fx::{ChorusParams, DelayParams, ReverbParams};
+pub use lfo::{LfoParams, LfoRate, LfoWave};
+pub use osc::{Osc, Waveform};
+pub use patch::{FilterParams, Kind, OscParams, Patch, SubParams};
+
+/// RAM of the engine's parts, in bytes (`size_of`, this build).
+pub mod ram {
+    use core::mem::size_of;
+
+    /// One voice slot (sources, envelopes, filter, LFO, gains).
+    #[must_use]
+    pub fn voice() -> usize {
+        size_of::<crate::voice::Voice>()
+    }
+
+    /// One drum voice's source state (inside a voice slot).
+    #[must_use]
+    pub fn drum_voice() -> usize {
+        size_of::<crate::drum::DrumVoice>()
+    }
+
+    /// One oscillator.
+    #[must_use]
+    pub fn osc() -> usize {
+        size_of::<crate::osc::Osc>()
+    }
+
+    /// One patch.
+    #[must_use]
+    pub fn patch() -> usize {
+        size_of::<crate::patch::Patch>()
+    }
+
+    /// The delay.
+    #[must_use]
+    pub fn delay() -> usize {
+        size_of::<crate::fx::Delay>()
+    }
+
+    /// The chorus.
+    #[must_use]
+    pub fn chorus() -> usize {
+        size_of::<crate::fx::Chorus>()
+    }
+
+    /// The reverb.
+    #[must_use]
+    pub fn reverb() -> usize {
+        size_of::<crate::fx::Reverb>()
+    }
+
+    /// The whole engine.
+    #[must_use]
+    pub fn engine() -> usize {
+        size_of::<crate::engine::Engine>()
+    }
+
+    /// The engine without its effects (voices, parts, buses).
+    #[must_use]
+    pub fn core() -> usize {
+        engine() - delay() - chorus() - reverb()
+    }
+
+    /// Read-only data: the wavetables.
+    pub const WAVETABLE_ROM: usize =
+        crate::wavetable::TABLES * crate::wavetable::LEVELS * crate::wavetable::LEN * 2;
+}
