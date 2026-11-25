@@ -13,8 +13,10 @@ replaced).
 
 ### Added
 
-- **Boot and memory**: Rust boot stage 2 with a boot counter that falls
-  back to the next slot and then to USB recovery; demand paging of code
+- **Boot and memory**: Rust boot stage 2 that starts the first valid
+  slot (an invalid image is skipped) and goes to USB recovery when the boot
+  counter trips (a valid image that keeps crashing is switched back from
+  the host: `xtask dev switch-slot` or the Install page); demand paging of code
   and constants from SPI flash (1 KiB lines, 8 KiB pages) with a
   profile-guided page packer and a static proof of the resident set;
   watchdog fed only while both executors and the UI make progress; fault
