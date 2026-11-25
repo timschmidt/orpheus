@@ -21,6 +21,7 @@ of every session. Newest entries first in §3.
 | T-1, T-2, T-4a, HAL-0, HAL-1, T-5 | done | see earlier log entries |
 | T-3, PG-1 | done | pagelink, PagerCore, check-resident; demand paging on the player (8 KiB pages, 1 KiB lines) |
 | T-6 | started | Rust NOR payload `fw/payloads/norprog` (erase/program, full-layout guard); ymon and nordump still the reference repo's C payloads. **Stage 2 slot fallback built and host-tested, not yet installed** (`orpheus_proto::boot::decide`; 964 B; lead's `install-stage2` + crash test: session entry 2026-11-24 "T-6 (stage2)") |
+| T-8 | **built (host + firmware), not yet run on the player** | PC sampler (T2, level 0) and pager fault log into the 2 KiB profiler block at `0x307000` (SRAM3), `prof pc\|faults on\|burst`, `prof off\|status`; `cargo xtask dev prof --pc\|--faults S [--during "soak --replay F"] [--only TEXT] [--update-hot NAME]`, `cargo xtask prof DIR`; reports in `target/orpheus/prof/<stamp>/`. Resident +656 B. User/lead check: U-TMR-1 and the Pictures-while-playing profile (session entry 2026-11-25 "T-8") |
 | LAY-1 | done (device) | Full layout installed (`xtask dev install-full --i-have-a-backup`), layout-aware `stage`, `restore vendor [--verify]`. Unifont pack in NOR not done (the UI's fonts are built in) |
 | LCD-1, INPUT-1, PWR-2, AU-0 | done pending user checks 7, 8, 9, 10 | |
 | SD-1, FM-0, USB-1, USB-3, PWR-1 | done | |
@@ -61,6 +62,86 @@ of every session. Newest entries first in §3.
 | USB-W1 (bug) | **fixed and self-recovering (host-tested, built); not yet run on the player** | Root cause: the SETUP read was not cancel-safe (embassy-usb drops it on bus events; the interrupt stayed masked for good) and late stages landed on the next transfer. Drop-safe driver, liveness recovery, watchdog only when recovery cannot help, counters in `STATS` 24–30, soak logs self-recoveries, `xtask dev usb-cancel`. 06 §2.6; user check 28 |
 
 ## 3. Session log
+
+### 2026-11-25 — T-8: profilers and the `hot.toml` loop (worker, no hardware)
+
+Why now: browsing Pictures while music plays runs at ~0 % idle and
+~3,000 line loads/s, the cover search reads ~30 entries per 250 ms with
+~900 loads; Hybrid Opus and MP3 page more than they should. As built: 07
+§5.6 "As built (T-8)".
+
+* **RAM, honestly**: the 2 KiB at `0x307000` (SRAM3, after the PCM ring)
+  were reserved for the persistent log ring, which has always run in SRAM0
+  (`logring::ALT_BASE`, `0x137400`); nothing used them. They are now the
+  **profiler block** (`orpheus_proto::mem::SRAM3_PROF`, layout in
+  `orpheus_proto::prof`). No mode-pool partition is borrowed (Pictures
+  while playing uses the whole decoder arena for the art, so borrowing
+  would change what is measured) and nothing comes off the stack (≈ 5.8 KiB
+  free at the soak's peak). SRAM0: +8 B of flags.
+* **Thinning instead of draining**: 2 KiB hold 500 PC samples or 250
+  faults. A capture started with `on` keeps a uniform sample of the whole
+  run: when full it keeps every other entry and doubles its stride (host
+  test: entry *i* is event *i* · 2^shift for any length); `burst` keeps the
+  first 500/250 complete. No draining during the run: the scenario starves
+  the USB task, and a reader would perturb what it measures.
+* **PC sampler**: timer T2 (first use; [DS] only: U-TMR-1, new in 01 §9),
+  own vector entry at **level 0** so critical sections and the level-1
+  handlers are sampled too; a tick during a line load lands on the faulting
+  instruction (paging time charged to the code that faulted). Resident:
+  entry 18 B, handler 74 B.
+* **Fault log**: `pager::orpheus_pager_fault` → `prof::log_fault` (84 B)
+  per served fault while on; when off, one load and one branch (checked in
+  the disassembly: `ldrb` of the flag, `cbz`). Ring push shared by both:
+  310 B. Two words per fault: address, faulting PC, load/re-map,
+  data/fetch, time (1,024 µs units, 18 bits, unwrapped by the host).
+* **Commands**: `prof pc on|burst [µs]`, `prof faults on|burst`, `prof
+  off`, `prof status` (answered by the USB task at once).
+* **xtask**: `dev prof --pc S | --faults S`, `--during "<dev subcommand>"`
+  (same process, sequentially; whitelist of subcommands that leave the
+  firmware running and write no NOR); the soak calls `dev::prof::hook`
+  after its prologue, around every action and before its final reboot,
+  `--only TEXT` limits the capture to the first action containing TEXT. A
+  build-id mismatch between the player and `layout.json` is refused
+  (`--any-build`). Reports (text + CSV) and the raw capture in
+  `target/orpheus/prof/<stamp>/`, plus `log.txt` (the log ring at the stop;
+  `art: cover search` lines are printed). `--update-hot NAME` writes a
+  `[[cluster]]` (≤ 24 code lines, ≤ 8 rodata lines by default, skipping
+  sections owned by other clusters, hottest first). `cargo xtask prof DIR`
+  reports a saved capture again (no player).
+* **Host tests** (19 new): ring thinning, burst, entry round trips, parse
+  errors (`orpheus_proto::prof`); symbolisation against a hand-built ELF32
+  and layout sections, PC and fault aggregation, windows, time unwrap,
+  cluster coverage, the generator's budget, ownership and order, the
+  `hot.toml` rewrite (replace, append, idempotent, comments kept)
+  (`xtask::profile`); the hook's start/stop decision, options, `meta.json`
+  (`xtask::dev::prof`). A synthetic capture over the real `layout.json`
+  went through `cargo xtask prof DIR --update-hot`, and pagelink packed the
+  generated cluster (25 sections, 13,396 B = 14 lines; the generator's
+  conservative estimate 13,451 B); `hot.toml` restored afterwards.
+* **Seen on the way (not changed)**: cluster `play-block` packs 25
+  sections into **77 lines** (78,036 B), three times the 24-line budget:
+  `AnyDecoder::decode` with the MP3 frame code inlined and the card read
+  path. The fault report flags clusters over budget; a measured profile
+  should decide what of it stays.
+* **Numbers**: resident 79,356 → 80,012 B (+656 B; budget 81,920 B),
+  `.bss` 124,032 → 124,040 B, 106 code + 18 rodata pages (105 before: the
+  `prof` command and its status text are paged),
+  slot 1,101,824 B.
+* **Gate**: host `fmt --check`, `clippy --workspace --all-targets -D
+  warnings`, `cargo test --workspace` (debuginfo off); fw `fmt --check`,
+  `clippy --workspace -D warnings`; `xtask build`, `check-resident`,
+  `size --check`: pass (`cargo test --workspace`: 1,092 passed). Not run: any `cargo xtask dev …` (the
+  lead owns the player), HIL, brand/site.
+* **For the lead (player)**: stage this build, then
+  `cargo xtask dev prof --faults --during "soak --replay tests/regress/soak/mixed-ring-seed1-7.soak" --only "browse pictures"`
+  and the same with `--pc` instead of `--faults`; check U-TMR-1 once with
+  `dev cmd 'prof pc on 1000'` … `prof status` … `prof off`. Then
+  `cargo xtask prof target/orpheus/prof/<stamp> --update-hot pictures-browse`,
+  review the `hot.toml` diff, `cargo xtask build`, stage, and profile again:
+  the fault report's "pager counters" line (line loads/s over the Pictures
+  step) and the `art: cover search … ms, N entries, … loads` lines should
+  improve. Open: whether 250 thinned faults per capture are enough (take
+  two or three captures, or a `--burst` one for the working set).
 
 ### 2026-11-25 — VER-1: regression tests for every fixed bug (backfill) (worker, no hardware)
 

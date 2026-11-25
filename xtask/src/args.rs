@@ -46,6 +46,26 @@ impl Args {
     }
 }
 
+impl Args {
+    /// `--name VALUE` (a value not starting with `--`), `--name=VALUE`, or
+    /// a bare `--name` (`Some(None)`); `None` when absent.
+    pub fn flag_or_value(&mut self, name: &str) -> Option<Option<String>> {
+        let key = format!("--{name}");
+        let prefix = format!("--{name}=");
+        if let Some(i) = self.items.iter().position(|a| a.starts_with(&prefix)) {
+            let v = self.items.remove(i);
+            return Some(Some(v[prefix.len()..].to_string()));
+        }
+        let i = self.items.iter().position(|a| *a == key)?;
+        self.items.remove(i);
+        if i < self.items.len() && !self.items[i].starts_with("--") {
+            Some(Some(self.items.remove(i)))
+        } else {
+            Some(None)
+        }
+    }
+}
+
 /// Parse `0x…` hex or decimal.
 pub fn num(s: &str) -> Result<u32> {
     let s = s.replace('_', "");

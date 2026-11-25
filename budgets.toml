@@ -9,6 +9,12 @@
 # process functions; resident.toml) is resident because paged it thrashed
 # the 4-slot code cache into the watchdog, and the NOR driver is a residency
 # root because a page fault while the chip programs executed garbage.
+# 2026-11-25 (T-8): 80,012 B measured; the profilers take 656 B of it
+# (PC sampler entry and handler, fault-log call and ring push: resident
+# because the T2 vector and the MemManage handler reach them). Their ring
+# is the 2 KiB profiler block in SRAM3 at 0x307000, outside these
+# budgets: the log ring's first placement, never used (the log runs in
+# SRAM0), so no other user loses RAM; SRAM0 gains 8 B of flags.
 resident_bytes = 81920          # 80 KiB
 # Static RAM in SRAM0 (.bss + .uninit, excluding the stack).
 # 2026-11-24: 20 -> 124 KiB. Measured 123,000 B. Reason: the mode pool is

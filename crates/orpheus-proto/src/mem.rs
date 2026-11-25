@@ -23,11 +23,17 @@ pub const SRAM2_DMA: u32 = 0x1000_0000;
 pub const SRAM3_DMA: u32 = 0x1800_0000;
 
 /// SRAM3 above the rodata page cache: the PCM ring (12 KiB), the
-/// persistent log ring ([`crate::logring`], 2 KiB), then a window of plain
-/// RAM for state shared between tasks, ending at the card I/O counter in
-/// the last word (02 §1 memory map).
+/// profiler block (2 KiB, [`SRAM3_PROF`]), then a window of plain RAM for
+/// state shared between tasks, ending at the card I/O counter in the last
+/// word (02 §1 memory map).
 pub const SRAM3_PCM_RING: u32 = 0x0030_4000;
 pub const SRAM3_PCM_RING_SIZE: u32 = 12 * 1024;
+/// The profiler's ring ([`crate::prof`], WP-T-8): the 2 KiB after the PCM
+/// ring. Reserved for the persistent log ring at first
+/// ([`crate::logring::BASE`]), which runs in SRAM0 instead
+/// ([`crate::logring::ALT_BASE`]); nothing else ever used it (2026-11-25).
+pub const SRAM3_PROF: u32 = SRAM3_PCM_RING + SRAM3_PCM_RING_SIZE;
+pub const SRAM3_PROF_SIZE: u32 = 2048;
 /// The shared-state window: the battery logger's state first, then the
 /// step counter's, the radio's and the recorder's, each placed after the
 /// one before with [`sram3_next`] (FM-1 fix, 2026-11-24: fixed addresses
@@ -90,10 +96,9 @@ mod tests {
     /// card I/O counter.
     #[test]
     fn regress_sram3_blocks_chained_not_overlapping() {
-        let log_end = crate::logring::BASE + crate::logring::SIZE as u32;
         let map = [
             (SRAM3_PCM_RING, SRAM3_PCM_RING + SRAM3_PCM_RING_SIZE),
-            (crate::logring::BASE, log_end),
+            (SRAM3_PROF, SRAM3_PROF + SRAM3_PROF_SIZE),
             (SRAM3_SHARED, SRAM3_CARD_IO),
             (SRAM3_CARD_IO, SRAM3_CARD_IO + 4),
         ];

@@ -2669,7 +2669,10 @@ pub fn session(rig: &mut dyn Rig, ctx: &mut Ctx, c: &Config, homes: &[Vec<u16>])
             ));
         }
         out.history.push(a.clone());
+        let text = a.text();
+        super::prof::hook(rig.is_sim(), super::prof::Phase::Before(ctx.action_no, &text));
         drive(rig, ctx, &a)?;
+        super::prof::hook(rig.is_sim(), super::prof::Phase::After(ctx.action_no, &text));
         if ctx.findings.is_empty() && rig.wall_ms() >= ctx.next_sample {
             ctx.sample(rig)?;
         }
@@ -2680,6 +2683,8 @@ pub fn session(rig: &mut dyn Rig, ctx: &mut Ctx, c: &Config, homes: &[Vec<u16>])
     if ctx.findings.is_empty() {
         ctx.sample(rig)?;
     }
+    // A profile ends here, before any replay reboots the player (T-8).
+    super::prof::hook(rig.is_sim(), super::prof::Phase::End);
     if let Some(f) = ctx.findings.first().cloned() {
         let history = out.history.clone();
         let mut header = vec![
@@ -3410,12 +3415,17 @@ pub fn cmd(args: &mut Args) -> Result<String> {
         let stress = sc == Some(Scenario::Stress);
         let ran = |rig: &mut dyn Rig| -> Result<Ctx> {
             let caps = prologue(rig)?;
+            // `dev prof --during "soak --replay …"` (T-8): no-ops otherwise.
+            super::prof::hook(rig.is_sim(), super::prof::Phase::Start);
             let mut ctx = new_ctx(rig, &b, caps, &homes, stress)?;
             ctx.sample(rig)?;
             for (i, a) in actions.iter().enumerate() {
                 ctx.action_no = i;
-                log(&format!("#{i} {}", a.text()));
+                let text = a.text();
+                log(&format!("#{i} {text}"));
+                super::prof::hook(rig.is_sim(), super::prof::Phase::Before(i, &text));
                 drive(rig, &mut ctx, a)?;
+                super::prof::hook(rig.is_sim(), super::prof::Phase::After(i, &text));
                 if !ctx.findings.is_empty() {
                     break;
                 }
@@ -3426,7 +3436,9 @@ pub fn cmd(args: &mut Args) -> Result<String> {
             }
             Ok(ctx)
         };
-        let ctx = ran(rig).map_err(|e| rebooted(rig, e))?;
+        let r = ran(rig);
+        super::prof::hook(rig.is_sim(), super::prof::Phase::End);
+        let ctx = r.map_err(|e| rebooted(rig, e))?;
         let _ = fuzz::reset_ui(rig);
         let _ = player::command(rig, "stop", None, 0);
         rig.reboot()?;
@@ -3485,6 +3497,7 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     ));
     // A fresh boot, then the card and the settings store as they are.
     let caps = prologue(rig).map_err(|e| rebooted(rig, e))?;
+    super::prof::hook(rig.is_sim(), super::prof::Phase::Start);
     if !caps.session && !sim {
         let e = anyhow!(
             "the firmware has no `settings test-session` (VER-12): stage a build with the soak hooks first"
