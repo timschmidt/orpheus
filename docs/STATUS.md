@@ -65,6 +65,20 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-25 — Up next titles cheap; Pictures-while-playing replay passes (lead)
+
+* Merged `cb99dec0` (`seek_dir` jumps inside a cluster: 3,507 → 7 steps
+  per title on 128 KiB exFAT clusters; stale locators fail in ≤ 2 reads;
+  Up next keeps titles across window moves). All gates pass; static stack
+  21,740 of 22,016 B.
+* On the player: `soak --replay tests/regress/soak/mixed-ring-seed1-7.soak`
+  → **7 actions, no finding** (was 20 underruns); no `pcm: head` lines on
+  that boot. `fuzz-ui --replay tests/regress/ui-device/underrun-seed8-685.keys`
+  (hold Back with a shuffled queue: 18 `serve` underruns on the previous
+  build) → no finding.
+* The cover search (before playback starts) still reads ~37 entries per
+  250 ms, ~1,000 line loads: paging-bound; capped, does not affect playback.
+
 ### 2026-11-25 — stack: static analysis merged, worst case 21,740 of 22,016 B (lead)
 
 * Merged VER-10 `f6fcc23e` (`cargo xtask stack`: static worst-case depth
