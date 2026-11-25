@@ -395,6 +395,9 @@ static PENDING_SET: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU3
 /// `PENDING_SET` value asking for the `settings changed` list (no setting
 /// has id 0xFFFF).
 const CHANGED_REQ: u32 = u32::MAX;
+/// `PENDING_SET` value field asking for the setting's default
+/// (`settings default ID`; no setting uses i16::MIN).
+const DEFAULT_MARK: i16 = i16::MIN;
 /// Settings keys loaded from NOR at boot (0xFFFF: the store did not mount)
 /// and a CRC-32 over them (key, bytes): the soak compares the boot before
 /// and after a run (the store is readable and unchanged).
@@ -466,6 +469,16 @@ pub fn settings_command(rest: &[u8]) -> bool {
         session_reply();
         return true;
     }
+    // `settings default ID`: store the setting's default (persistent; for
+    // repairs the owner approved, e.g. after the 2026-11-25 fuzzing).
+    if let Some(id) = rest.strip_prefix(b"default ").and_then(parse_num) {
+        let Ok(id) = u16::try_from(id) else { return false };
+        PENDING_SET.store(
+            u32::from(id) << 16 | u32::from(DEFAULT_MARK as u16),
+            core::sync::atomic::Ordering::Relaxed,
+        );
+        return true;
+    }
     if rest == b"changed" {
         // Read-only: the UI loop lists every stored setting whose value is
         // not its default (no session needed; nothing is written).
@@ -519,6 +532,23 @@ fn soak_hooks(ui: &mut Ui) {
                     r.s(b" ").h(u32::from(d.id.0)).s(b"=").i(v);
                 }
             }
+        });
+        return;
+    }
+    if p != 0 && p as u16 as i16 == DEFAULT_MARK {
+        let sid = orpheus_apps::settings::SettingId((p >> 16) as u16);
+        if let Some(d) = orpheus_apps::settings::def(sid).filter(|d| d.stored()) {
+            ui.fw.set_setting(sid, d.default);
+            ui.settle();
+            ui.shell.invalidate();
+        }
+        let got = ui.fw.settings.get(sid);
+        crate::audio::reply(|r| {
+            r.s(b"default ").h(u32::from(sid.0)).s(b"=").i(got).s(if session_on() {
+                b" (session: RAM only)"
+            } else {
+                b" stored"
+            });
         });
         return;
     }

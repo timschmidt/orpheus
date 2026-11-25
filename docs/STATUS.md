@@ -84,6 +84,12 @@ of every session. Newest entries first in §3.
   files sort 1, timer presets reordered (300/1500/180/·/60 s), Home apps
   2046, output 1 (Bluetooth, from the lead's Bluetooth tests), radio
   95.0 MHz. **Asked the owner which to restore.**
+* **Restored with the owner's approval ("restore all but radio")**: new
+  developer command `settings default ID` (stores the default; hex ids in
+  lowercase); equaliser, shuffle, repeat, brightness, accent, Home apps,
+  output, files sort and the five timer presets back to their defaults;
+  after a reboot `settings changed` lists only the radio station
+  (d50=9500).
 * Fix: every fuzz session and replay runs inside the test session
   (`fuzz::reset_ui` turns it on after each reboot), `--settings` refuses
   firmware without it (`regress_settings_fuzzing_requires_the_ram_only_session`),
