@@ -1,0 +1,244 @@
+# Static stack analysis (`cargo xtask stack`, 07 §4.4, VER-10).
+#
+# One MSP stack takes thread mode and every exception (02 §4). The tool
+# walks the final link's call graph with each function's frame and needs
+# three things it cannot see:
+#
+#   * contexts: where the stack is entered (thread mode, each NVIC level of
+#     `atj2157_hal::interrupt`, the pager, the fault path) and at which
+#     priority, so it can stack one context per priority on the others;
+#   * indirect calls (`blx rN`): their possible targets, per calling
+#     function (symbol patterns as in resident.toml), globally or per
+#     context; `bound = N` with a `why` instead of targets when the callee
+#     set is open but known to be shallow;
+#   * recursion known to be bounded.
+#
+# A depth through an unresolved indirect site or an unbounded cycle is a
+# lower bound; `--check` fails on either (add the targets here), on a
+# pattern that matches nothing, on a task poll in no context, and when the
+# nested total leaves less than budgets.toml `stack_static_margin_bytes`.
+
+# Hardware frame per exception: FPU context is stacked eagerly (FPCCR.ASPEN
+# = 1, LSPEN = 0; rt.rs), 26 words = 104 B, plus up to 4 B of alignment
+# padding (CCR.STKALIGN).
+exception_frame_bytes = 108
+# `rt::enable_stack_guard`: 256 B no-access MPU region at `__stack_bottom`
+# rounded up to 256; the stack ends where the guard starts.
+guard_bytes = 256
+
+# ---------------------------------------------------------------------------
+# Contexts, lowest priority first. Priority 4 is thread mode; 0..3 are the
+# levels of fw/atj2157-hal/src/interrupt.rs. Every NVIC vector enters
+# `irq_entry` (naked, no frame) and tail-calls `irq_dispatch`, which calls
+# the handler bound with `rt::bind`/`interrupt::install` (indirect).
+
+# Phases: "init" is `main` before it starts the executors (firmware/src/
+# main.rs: the pager, the HAL, the DSP chain and the SRAM3 states; the time
+# driver's interrupts can run, the RT executor and USB do not exist yet);
+# "run" is everything after. Contexts without a phase exist in both.
+[[context]]
+name = "init"
+priority = 4
+phase = "init"
+entry = "main"
+stop = ["*MainExecutor>::run*"]
+
+[[context]]
+name = "thread"
+priority = 4
+phase = "run"
+entry = "*MainExecutor>::run*"
+# `main` never returns from `run`: its frame stays below.
+under = ["main"]
+indirect = [
+    # `MainExecutor::run`: the raw executor's poll (inlined) calls each
+    # task's poll through its header. The main executor's tasks
+    # (firmware/src/main.rs).
+    { callers = ["*MainExecutor>::run*"], targets = [
+        "*TaskStorage<firmware::__input_task::*>::poll",
+        "*TaskStorage<firmware::__power_task::*>::poll",
+        "*TaskStorage<firmware::ui::*>::poll",
+        "*TaskStorage<firmware::usbdev::*>::poll",
+        "*TaskStorage<firmware::__health_task::*>::poll",
+        "*TaskStorage<firmware::__watchdog_task::*>::poll",
+        "*TaskStorage<firmware::bt::*>::poll",
+        "*TaskStorage<firmware::fm::*>::poll",
+        "*TaskStorage<firmware::sensor::*>::poll",
+    ] },
+]
+
+# Level 3 (Normal): USB.
+[[context]]
+name = "irq-normal"
+phase = "run"
+priority = 3
+entry = "atj2157_hal::rt::irq_dispatch"
+indirect = [
+    { callers = ["atj2157_hal::rt::irq_dispatch"], targets = ["atj2157_hal::usb::on_irq"] },
+]
+
+# Level 2: the RT executor (software-pended line 9) and its tasks.
+[[context]]
+name = "rt"
+phase = "run"
+priority = 2
+entry = "atj2157_hal::rt::irq_dispatch"
+indirect = [
+    { callers = ["atj2157_hal::rt::irq_dispatch"], targets = ["atj2157_hal::executor::on_rt"] },
+    # `InterruptExecutor::on_interrupt` (inlined): the task polls.
+    { callers = ["atj2157_hal::executor::on_rt"], targets = [
+        "*TaskStorage<firmware::audio::*>::poll",
+        "*TaskStorage<firmware::__rt_beat_task::*>::poll",
+    ] },
+]
+
+# Level 1 (Deadline): the time driver, the DMA completion handlers (audio
+# DAC, the UART ring, the channels' wakers).
+[[context]]
+name = "deadline"
+priority = 1
+entry = "atj2157_hal::rt::irq_dispatch"
+indirect = [
+    { callers = ["atj2157_hal::rt::irq_dispatch"], targets = [
+        "atj2157_hal::time::on_t0",
+        "atj2157_hal::time::on_t1",
+        "firmware::audio::on_dac_dma",
+        "atj2157_hal::dma::on_ring_irq",
+        "<atj2157_hal::dma::HANDLERS::{closure#*}*",
+    ] },
+]
+
+# Level 0: the pager's MemManage handler. Faults are synchronous, it is
+# resident and never faults itself, and nothing preempts level 0 (the
+# profiler's T2 sampler, `prof` builds only, is level 0 as well), so it
+# stacks once, on top of whatever faulted.
+[[context]]
+name = "pager"
+priority = 0
+entry = "orpheus_memmanage"
+
+[[context]]
+name = "prof"
+priority = 0
+entry = "atj2157_hal::prof::entry"
+optional = true
+
+# HardFault/BusFault/UsageFault/NMI: the shim switches to the 512 B
+# emergency stack (rt.rs) before it calls anything; the main stack only
+# takes the exception frame.
+[[context]]
+name = "fault"
+priority = 0
+entry = "fault_entry"
+stack = "emergency"
+stack_bytes = 512
+
+# ---------------------------------------------------------------------------
+# Indirect calls valid everywhere.
+
+# Waker calls: `RawWakerVTable` slots clone (#0), wake (#4), wake_by_ref
+# (#8), drop (#0xc) — `ldr rX, [vtable, #slot]; blx rX` in every future
+# that stores, wakes or drops a waker (embassy-sync, embassy-time, the
+# time driver's queue, the tasks with those futures inlined). Every waker
+# in the firmware is the executor's (`embassy_executor::raw::waker`) or
+# `embassy_futures::block_on`'s no-op one (closures folded into leaves).
+[[indirect]]
+callers = [
+    "<atj2157_hal::time::TimeDriver>::rearm",
+    "<embassy_sync::*",
+    "<core::future::poll_fn::PollFn<<embassy_sync::*",
+    "<core::future::poll_fn::PollFn<<embassy_time::*",
+    "<embassy_time::timer::Timer as core::future::future::Future>::poll",
+    "<embassy_futures::select::Select*",
+    "*TaskStorage<firmware::sensor::*>::poll",
+    "*TaskStorage<firmware::__power_task::*>::poll",
+    "firmware::usbdev::next_mode::{closure#0}",
+    "firmware::usbdev::request_recovery",
+    "firmware::usbdev::__usb_task::__usb_task_inner_function::{closure#0}",
+    "firmware::media::play",
+    "firmware::media::ready",
+    "firmware::ui::__ui_task::__ui_task_inner_function::{closure#0}",
+    "firmware::audio::__audio_task::__audio_task_inner_function::{closure#0}",
+    "firmware::audio::play_file::{closure#0}",
+    "<yoton_bsp::settings::NorRegion as orpheus_settings::Nor>::program::{closure#0}",
+]
+targets = ["embassy_executor::raw::waker::*"]
+
+# `dyn ByteSource` / `dyn SeekSource` (orpheus-audio): the codecs' and the
+# tag reader's input. Implementations: the audio ring, the stream ring and
+# its look-ahead, slices and windows, the tag reader's window, the picture
+# reader's card source.
+[[indirect]]
+callers = [
+    "orpheus_codecs::inspect",
+    "orpheus_audio::probe::probe",
+    "orpheus_codec_*",
+    "<orpheus_codec_*",
+    "orpheus_ogg::*",
+    "<orpheus_ogg::*",
+    "orpheus_meta::*",
+    "<orpheus_meta::*",
+]
+targets = [
+    "<* as orpheus_audio::source::ByteSource>::*",
+    "<* as orpheus_audio::source::SeekSource>::*",
+]
+
+# `dyn RowSink` (orpheus-img): the decoders' output rows into the art tee
+# or the scaler; the tee forwards to its two sinks, which are scalers (a
+# tee of tees is never built: orpheus_img::art).
+[[indirect]]
+callers = ["<orpheus_img::jpeg::*", "<orpheus_img::png::*", "<orpheus_img::gif::*", "<orpheus_img::bmp::*", "<orpheus_img::Decoder>::*"]
+targets = ["<* as orpheus_img::RowSink>::*"]
+
+[[indirect]]
+callers = ["<orpheus_img::art::Tee as orpheus_img::RowSink>::*"]
+targets = ["<orpheus_img::scale::Scaler as orpheus_img::RowSink>::*"]
+
+# The pictures job's `cancelled: fn() -> bool`.
+[[indirect]]
+callers = ["firmware::pictures::run::{closure#0}"]
+targets = ["firmware::pictures::ui_cancelled"]
+
+# The library build's external sort comparators (`Js::cmp`).
+[[indirect]]
+callers = ["<orpheus_index::extsort::ExtSort>::pick::*", "orpheus_index::build::heapsort_by::*"]
+targets = ["orpheus_library::build::pre::*", "orpheus_library::build::str_cmp"]
+
+# `dyn ListSource`, `dyn GlyphSource` (orpheus-ui).
+[[indirect]]
+callers = ["<orpheus_ui::widgets::list::ListView>::*"]
+targets = ["<* as orpheus_ui::widgets::list::ListSource>::*"]
+
+# `dyn GlyphSource`: the firmware never attaches a fallback font (no
+# implementation is linked), so the calls cannot happen.
+[[indirect]]
+callers = ["<orpheus_ui::gfx::Gfx>::resolve", "<orpheus_ui::font::GlyphCache>::get"]
+bound = 0
+why = "no GlyphSource implementation in the firmware"
+absent = ["<* as orpheus_ui::font::GlyphSource>::*"]
+
+# embassy-usb: `dyn Handler` (the classes' and the firmware's handlers) and
+# the waker calls inlined into the device's run loop; the HID class calls
+# its `dyn RequestHandler` (firmware::kbd).
+[[indirect]]
+callers = ["<embassy_usb::Inner<*", "<embassy_usb::UsbDevice<*"]
+targets = ["<* as embassy_usb::Handler>::*", "embassy_executor::raw::waker::*"]
+
+[[indirect]]
+callers = ["<embassy_usb::class::hid::Control as embassy_usb::Handler>::*"]
+targets = ["<* as embassy_usb::class::hid::RequestHandler>::*"]
+
+# ---------------------------------------------------------------------------
+# Bounded recursion.
+
+# (The panic handler, `atj2157_hal::panic`, formats without anything that
+# can panic since VER-10: it used to be on a cycle with its own bounds
+# checks.)
+#
+# core's `str` slicing error: `slice_error_fail_rt` re-slices the string
+# for its message at a char boundary it has just computed, so the inner
+# call cannot fail again (counted as one more pass).
+[[recursion]]
+through = "core::str::slice_error_fail_rt"
+why = "the inner slice is at a computed char boundary"

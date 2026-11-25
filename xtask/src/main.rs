@@ -24,6 +24,7 @@ mod savedlink;
 mod selftest;
 mod site;
 mod size;
+mod stack;
 mod test;
 mod thumb;
 mod util;
@@ -46,6 +47,10 @@ usage: cargo xtask <command> [options]
   bringup NAME [--debug]           build a RAM-only bring-up image (fw/bringup/NAME)
   size [--check] [--bin NAME] [--elf PATH]
                                    size report; --check enforces budgets.toml
+  stack [--check] [--top N] [--root PATTERN] [--elf PATH]
+                                   static worst-case MSP depth per task, handler and
+                                   in total with interrupt nesting (stack.toml);
+                                   --check enforces budgets.toml's margin
   test [host|golden|pagelink|codecs|fuzz-smoke|codec-size|all]
                                    host test suites (pagelink: the paged toy end to end)
   test fuzz-seeds                  rewrite the committed seed inputs of every fuzz
@@ -96,6 +101,7 @@ fn main() -> ExitCode {
         "pagelink" => pagelink::cmd(&mut args),
         "check-resident" => resident::cmd(&mut args),
         "size" => size::cmd(&mut args),
+        "stack" => stack::cmd(&mut args),
         "test" => test::cmd(&mut args),
         "gate" => gate::cmd(&mut args),
         "cover" => cover::cmd(&mut args),

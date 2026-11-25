@@ -556,10 +556,20 @@ fn new_ui(
     bl: Backlight,
     t: Instant,
 ) -> &'static mut Ui {
-    let shell = Shell::<AppScreen, Fw>::with_root(fw, screens::HOME, Arg(0), t);
+    // Not entered here: this frame holds the whole `Ui` as a temporary
+    // (4.8 KB), and the root screen's `enter` (any screen's, as far as
+    // the call graph knows) would run below it. `enter_root` does that
+    // once the shell is in its static (VER-10).
+    let shell = Shell::<AppScreen, Fw>::unentered(fw, screens::HOME, Arg(0), t);
     let ui = Ui { fw, shell, mapper: KeyMapper::new(), disp, bl, screen_on: true, store, sound: None };
     // SAFETY: called once; the UI task is the only user.
     unsafe { (*(&raw mut UI_CELL)).write(ui) }
+}
+
+/// Enter the root screen of the shell [`new_ui`] built, in place.
+#[inline(never)]
+fn enter_root(ui: &mut Ui) {
+    ui.shell.enter_root(ui.fw);
 }
 
 #[embassy_executor::task]
@@ -624,6 +634,7 @@ pub async fn ui() {
     fw.radio_boot();
     fw.auth_boot(now().0);
     let ui = new_ui(fw, store, disp, bl, now());
+    enter_root(ui);
     ui.shell.invalidate();
     let fb = fb.as_mut_slice();
     ui.draw(fb).await;

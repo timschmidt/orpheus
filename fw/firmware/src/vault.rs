@@ -415,16 +415,14 @@ impl Fw {
         if matches!(current(), Level::Low | Level::Base | Level::Mid) {
             set_level(Level::High);
         }
-        let job = match work {
-            VaultWork::Unlock => block_on(self.auth.unlock(pin.as_bytes(), now_ms)),
-            VaultWork::Create => self.auth.create(pin.as_bytes(), now_ms),
-            VaultWork::ChangePin => self.auth.change_pin(pin.as_bytes(), now_ms),
-        };
-        let ev = match job {
-            Ok(job) => block_on(self.auth.finish(job, now_ms, scratch)),
+        // Started and finished in frames of their own: inlined here, the
+        // start's futures and temporaries stayed in this frame (4.2 KB) under
+        // the finish's sealing and hashing (VER-10).
+        let ev = match self.derive_start(work, pin, now_ms) {
+            Some(job) => self.derive_finish(job, now_ms, scratch),
             // Refused (back-off): as a wrong PIN, the pad shows the wait.
-            Err(_) if work == VaultWork::Unlock => AuthEvent::WrongPin,
-            Err(_) => AuthEvent::Failed,
+            None if work == VaultWork::Unlock => AuthEvent::WrongPin,
+            None => AuthEvent::Failed,
         };
         match ev {
             AuthEvent::WrongPin => self.auth_event(auth_event::WRONG_PIN),
@@ -433,6 +431,21 @@ impl Fw {
             _ => {}
         }
         self.auth_event(auth_event::STATE);
+    }
+
+    #[inline(never)]
+    fn derive_start(&mut self, work: VaultWork, pin: &Pin, now_ms: u64) -> Option<service::Job> {
+        match work {
+            VaultWork::Unlock => block_on(self.auth.unlock(pin.as_bytes(), now_ms)),
+            VaultWork::Create => self.auth.create(pin.as_bytes(), now_ms),
+            VaultWork::ChangePin => self.auth.change_pin(pin.as_bytes(), now_ms),
+        }
+        .ok()
+    }
+
+    #[inline(never)]
+    fn derive_finish(&mut self, job: service::Job, now_ms: u64, scratch: &mut [u8]) -> AuthEvent {
+        block_on(self.auth.finish(job, now_ms, scratch))
     }
 
     /// Type the current code of entry `i` on the USB keyboard.

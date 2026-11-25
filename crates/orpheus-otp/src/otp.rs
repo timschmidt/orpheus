@@ -49,6 +49,10 @@ pub const MAX_DIGITS: u8 = 8;
 
 const POW10: [u32; 9] = [1, 10, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000];
 
+/// Not inlined: inlined, the three HMAC states of [`hotp`] took room at
+/// once (a 1.6 KB frame on the firmware's UI task, above the SHA-512
+/// compression; VER-10). One at a time, the deepest is the SHA-512 one.
+#[inline(never)]
 fn mac<M: Mac + KeyInit>(secret: &[u8], msg: &[u8], out: &mut [u8; 64]) -> usize {
     // `new_from_slice` accepts keys of any length for HMAC.
     let Ok(mut m) = <M as KeyInit>::new_from_slice(secret) else { return 0 };

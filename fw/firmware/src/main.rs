@@ -26,6 +26,7 @@ mod bt;
 mod drain;
 mod drive;
 mod fm;
+mod frame;
 mod kbd;
 mod library;
 mod media;

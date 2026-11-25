@@ -51,6 +51,8 @@ use orpheus_player::image::StoreImage;
 use orpheus_player::{Action, Actions, Bookmark, Command, Config, Event, Player, Repeat, State, TrackRef};
 use orpheus_ui::event::Source;
 
+use crate::frame::Own;
+
 /// Rows per listing window.
 pub const WINDOW: u32 = 32;
 /// Bytes kept of a name (cut at a character boundary).
@@ -749,14 +751,25 @@ pub fn index_scratch(buf: &mut [u8]) -> &mut [u8] {
 /// the file-system calls spin with its context. Files are closed after.
 pub async fn with_io<R>(vol: &mut Vol, mode: Mode, f: impl FnOnce(&Io<'_, '_>) -> R) -> R {
     let mut f = Some(f);
-    poll_fn(|cx| {
-        let mut h = Handles::new();
-        let io = CardIo::new(vol, cx, &mut h, mode);
-        let r = f.take().map(|f| f(&io));
-        let _ = io.close_all();
-        r.map_or(Poll::Pending, Poll::Ready)
-    })
-    .await
+    poll_fn(|cx| io_session(vol, cx, mode, &mut f)).await
+}
+
+/// The session of [`with_io`], in a frame of its own: inlined into the
+/// awaiting future's poll, every `with_io` of a function kept its handle
+/// table, its `CardIo` and its closure's temporaries in that frame at once,
+/// above the deepest of their card calls (VER-10).
+#[inline(never)]
+fn io_session<R>(
+    vol: &mut Vol,
+    cx: &mut core::task::Context<'_>,
+    mode: Mode,
+    f: &mut Option<impl FnOnce(&Io<'_, '_>) -> R>,
+) -> Poll<R> {
+    let mut h = Handles::new();
+    let io = CardIo::new(vol, cx, &mut h, mode);
+    let r = f.take().map(|f| f(&io));
+    let _ = io.close_all();
+    r.map_or(Poll::Pending, Poll::Ready)
 }
 
 const ROW0: orpheus_index::Row = orpheus_index::Row {
@@ -920,24 +933,24 @@ impl Server {
     pub async fn serve(&mut self, vol: &mut Vol, r: Req, scratch: &mut [u8], idle: bool) -> bool {
         match r {
             Req::Browse { dir, entry, filter } => {
-                self.browse(vol, dir, entry, filter, idle.then_some(scratch)).await;
+                Own(self.browse(vol, dir, entry, filter, idle.then_some(scratch))).await;
                 true
             }
             Req::Want { first } if self.lib.list.is_some() => {
-                crate::library::window(vol, self, first).await;
+                Own(crate::library::window(vol, self, first)).await;
                 true
             }
             Req::Want { first } => {
                 if idle {
-                    self.window(vol, first).await;
+                    Own(self.window(vol, first)).await;
                 } else {
-                    self.window_playing(vol, first).await;
+                    Own(self.window_playing(vol, first)).await;
                 }
                 true
             }
             Req::LibList { list } => {
                 self.job = None;
-                crate::library::open_list(vol, self, list).await;
+                Own(crate::library::open_list(vol, self, list)).await;
                 true
             }
             Req::Rebuild => {
@@ -946,27 +959,27 @@ impl Server {
             }
             Req::Drain => {
                 if idle {
-                    crate::audio::drain_flush(vol, scratch).await;
+                    Own(crate::audio::drain_flush(vol, scratch)).await;
                 } else {
-                    crate::audio::drain_prepare(vol).await;
+                    Own(crate::audio::drain_prepare(vol)).await;
                 }
                 true
             }
             Req::Sensor => {
                 if idle {
-                    crate::audio::sensor_flush(vol, scratch, false).await;
+                    Own(crate::audio::sensor_flush(vol, scratch, false)).await;
                 } else {
-                    crate::audio::trace_prepare(vol).await;
+                    Own(crate::audio::trace_prepare(vol)).await;
                 }
                 true
             }
             Req::Alert => true,
             Req::Otp(j) => {
-                crate::audio::otp_file(vol, &j).await;
+                Own(crate::audio::otp_file(vol, &j)).await;
                 true
             }
             Req::Delete(f) => {
-                crate::rec::delete(vol, f).await;
+                Own(crate::rec::delete(vol, f)).await;
                 true
             }
             Req::Update(op) => {
@@ -974,15 +987,15 @@ impl Server {
                     self.pending = Some(r);
                     return false;
                 }
-                crate::update::card_op(vol, op, scratch).await;
+                Own(crate::update::card_op(vol, op, scratch)).await;
                 true
             }
             Req::Text { file, offset } => {
-                self.text(vol, file, offset, scratch).await;
+                Own(self.text(vol, file, offset, scratch)).await;
                 true
             }
             Req::QueueWin { first } if idle => {
-                self.queue_win(vol, first).await;
+                Own(self.queue_win(vol, first)).await;
                 true
             }
             Req::QueueWin { first } => {
@@ -997,7 +1010,7 @@ impl Server {
             // While a track is loaded (the idle loop serves pictures with
             // the whole arena itself): album art from the cache only.
             Req::Picture(j) => {
-                crate::pictures::serve_playing(vol, self, &j).await;
+                Own(crate::pictures::serve_playing(vol, self, &j)).await;
                 true
             }
         }

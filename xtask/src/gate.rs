@@ -60,6 +60,10 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     step("build --release", crate::build::cmd_build(&mut Args::from_vec(vec![])));
     step("size --check", crate::size::cmd(&mut Args::from_vec(vec!["--check".into()])));
     step("check-resident", crate::resident::cmd(&mut Args::from_vec(vec![])));
+    step(
+        "stack --check",
+        crate::stack::cmd(&mut Args::from_vec(vec!["--check".into(), "--top".into(), "0".into()])),
+    );
     if coverage {
         step("coverage", crate::cover::gate_step(m11));
     }

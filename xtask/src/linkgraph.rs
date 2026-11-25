@@ -62,6 +62,10 @@ pub struct Graph {
     pub kinds: Vec<Kind>,
     /// Outgoing edges per node, sorted, without duplicates or self-edges.
     pub edges: Vec<Vec<usize>>,
+    /// Direct branches between code nodes: `(callee, tail)` per node; tail
+    /// for `B`/`B<cond>` (a tail call: the caller's frame is gone), not for
+    /// `BL`/`BLX`. Sorted; self-calls kept (recursion).
+    pub calls: Vec<Vec<(usize, bool)>>,
     /// Node indices sorted by address (for lookups).
     by_addr: Vec<usize>,
     /// Allocated section contents of the ELF: (address, bytes).
@@ -116,6 +120,7 @@ impl Graph {
         mapping.sort_unstable();
         let mut g = Self {
             edges: vec![Vec::new(); nodes.len()],
+            calls: vec![Vec::new(); nodes.len()],
             nodes,
             kinds,
             by_addr,
@@ -145,6 +150,7 @@ impl Graph {
         Self {
             nodes,
             kinds,
+            calls: e.iter().map(|v| v.iter().map(|&t| (t, false)).collect()).collect(),
             edges: e,
             by_addr,
             image: Vec::new(),
@@ -188,6 +194,7 @@ impl Graph {
 
     fn load_edges(&mut self, file: &object::File<'_>) -> Result<()> {
         let mut edges: Vec<(usize, usize)> = Vec::new();
+        let mut calls: Vec<(usize, usize, bool)> = Vec::new();
         let mut movs: Vec<MovHalf> = Vec::new();
         for sec in file.sections() {
             let alloc =
@@ -248,6 +255,17 @@ impl Graph {
                     Some(t) => {
                         if let Some(to) = self.target_node(t) {
                             edges.push((from, to));
+                            let branch = matches!(
+                                r_type,
+                                rel::THM_CALL
+                                    | rel::THM_JUMP24
+                                    | rel::THM_JUMP19
+                                    | rel::THM_JUMP11
+                                    | rel::THM_JUMP8
+                            );
+                            if branch && self.kinds[from] == Kind::Code && self.kinds[to] == Kind::Code {
+                                calls.push((from, to, r_type != rel::THM_CALL));
+                            }
                         }
                     }
                     None => self.unresolved.push(format!("type {r_type} at {place:#x}")),
@@ -281,6 +299,13 @@ impl Graph {
                 }
                 _ => self.unresolved.push(format!("unpaired movw at {:#x}", m.place)),
             }
+        }
+        for (from, to, tail) in calls {
+            self.calls[from].push((to, tail));
+        }
+        for c in &mut self.calls {
+            c.sort_unstable();
+            c.dedup();
         }
         for (from, to) in edges {
             if from != to {

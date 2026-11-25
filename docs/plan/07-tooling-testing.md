@@ -444,11 +444,71 @@ line, comma-separated, text fields quoted when they may contain commas):
   `slot_bytes` (key: layout) and 40 × `stack_frame` (key: demangled
   function, value: bytes its prologue reserves — `push`/`push.w`/`stmdb
   sp!` 4 B per register, `vpush` 4 B per `s` and 8 B per `d` register, plus
-  `sub sp, #imm` in the first 16 instructions, from `llvm-objdump -d`).
-  `build_id` is the layout's, `-` without a layout.
+  `sub sp, #imm` in the first 16 instructions, from `llvm-objdump -d`),
+  and `stack_static` (key: each `stack.toml` context, `nested`, `usable`:
+  the static worst case of `xtask stack`, below; needs the link map next
+  to the ELF). `build_id` is the layout's, `-` without a layout.
 
 Dynamic metrics (HIL, fuzz sessions, benchmarks) get their own files under
 `metrics/` with their packages (VER-10 device side).
+
+#### Static worst-case stack depth (`xtask stack`, VER-10, as built)
+
+`cargo xtask stack [--check] [--top N] [--root PATTERN] [--elf PATH]
+[--map PATH]` (`xtask/src/stack.rs`, configuration in `stack.toml`):
+
+* **Graph**: the final link's reference graph (`linkgraph`, as for
+  `check-resident`), restricted to direct branches between code sections.
+  `BL`/`BLX` relocations are calls (the caller's frame stays live), `B`/
+  `B<cond>` to another section are tail calls (frame popped first; the
+  callee's depth replaces the caller's). A `bl` to the function's own
+  start (no relocation within a section) is direct recursion.
+* **Frames**: per function, the deepest its own SP adjustments go in
+  address order (`metrics::parse_functions`: `push`, `str rX, [sp,
+  #-4]!`, `vpush`, `sub sp` down; `pop`, `vpop`, `add sp`, `ldm sp!`,
+  `ldr rX, [sp], #4` up; `add r7, sp, #n` / `sub sp, r7, #n` tracked so
+  epilogues restore exactly). This catches shrink-wrapped prologues and
+  second prologue copies the 16-instruction `stack_frame` metric misses.
+  The DWARF CFI is no help: after the prologue it follows `r7`.
+* **Contexts** (`stack.toml [[context]]`): where the stack is entered and
+  at which priority — thread mode (`MainExecutor::run` with `main`'s frame
+  below it; `main` before it starts the executors is the separate `init`
+  phase), NVIC level 3 (USB), 2 (the RT executor and its tasks), 1 (time
+  driver, DMA completions), 0 (the pager's MemManage handler; the T2
+  profiler), and the fault shim, which continues on the 512 B emergency
+  stack (checked against that size; the main stack takes its frame only).
+* **Indirect calls** (`blx rN`, `bx rN`, `ldr pc`): targets per calling
+  function (`[[indirect]]`, global or per context: the executors' task
+  polls, `irq_dispatch`'s bound handlers, waker vtable slots, `dyn
+  ByteSource`/`SeekSource`/`RowSink`/`ListSource`/`Handler`/
+  `RequestHandler`, `fn` comparators), or a byte bound with a reason (and
+  `absent` patterns that must stay unmatched). An unresolved site is
+  listed with the instruction that loaded its register and makes every
+  depth through it a lower bound (`>=`).
+* **Recursion**: cycles are reported; `[[recursion]]` marks a cycle known
+  to be bounded, counted as one more pass, otherwise a lower bound.
+* **Nesting**, per phase: the deepest context of each priority stacked on
+  the ones below, plus 108 B per exception (the eagerly stacked FPU frame,
+  26 words, + 4 B alignment), plus one more frame for a fault. Compared
+  with the stack above the MPU guard (`__stack_top` − (`__stack_bottom`
+  rounded up to 256) − 256: what `rt::stack_unused` measures from).
+* `--check` fails when the margin is below `budgets.toml [firmware]
+  stack_static_margin_bytes`, a `stack.toml` pattern matches nothing, a
+  task poll is in no context, an indirect site is unresolved, a cycle is
+  unbounded, or the emergency stack overflows. It is a gate step (§6).
+* `--root PATTERN`: the depth, the worst chain and the deepest callees of
+  any function (for finding what to cut).
+* Host tests: synthetic graphs (calls vs tail calls, resolved, bounded and
+  unresolved indirect sites, recursion, nesting) and an objdump listing
+  (shrink-wrapping, second prologue, frame-pointer epilogue, self-calls).
+
+Findings and the numbers per context: `docs/STATUS.md` (2026-11-25,
+VER-10). The ways to cut depth that worked: a non-inlined function for
+what builds a large temporary next to a deep call (`Shell::unentered` +
+`enter_root`, `Shell::replace_top`, `spin_in`, `io_session`,
+`derive_start`/`derive_finish`, HMAC per algorithm, the Vorbis set-up and
+audio packet), a future polled in its own frame (`firmware::frame::Own`),
+and a panic handler that cannot panic.
 
 ## 5. On-device testing (hardware in the loop)
 
@@ -1231,6 +1291,7 @@ xtask site --check             # site builds; internal links, screenshots, page 
 xtask build --release          # both layouts once the full layout exists
 xtask size --check
 xtask check-resident
+xtask stack --check            # static worst-case stack depth with nesting (§4.4)
 xtask dev hil smoke            # plus the suites named by the work package
 ```
 
