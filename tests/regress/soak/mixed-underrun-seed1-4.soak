@@ -1,4 +1,4 @@
-# soak scenario=mixed seed=1 oracle=underrun: 2 underruns outside seeks (serve=2) on `The Fearless Flyers - ` q=1/256; over the 21.7 s since the sample in action #5
+# soak scenario=mixed seed=1 oracle=underrun: 2 underruns outside seeks (serve=2) on `Alvvays - Full Performan` q=1/256; over the 22.7 s since the sample in action #5
 # 7 actions before the finding
 # replay: cargo xtask dev soak --replay <this file> [--sim]
 # minimised to 4 actions (8 replays)

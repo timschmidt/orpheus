@@ -315,7 +315,9 @@ const SEED_US: [u32; KINDS] = [
     // log, step log
     12_000, 10_000, 6_000, 15_000, 20_000, 20_000,
     // listing pieces: count, index open, focus, rows, unsorted window, title
-    8_000, 25_000, 15_000, 8_000, 8_000, 8_000,
+    // (count and rows as measured on the player, 2026-11-25: one directory
+    // read up to 21 ms, row pieces 15–18 ms)
+    20_000, 25_000, 15_000, 16_000, 8_000, 8_000,
     // requests: browse, want, text, queue-win, release, image, picture,
     // lib-list, rebuild, drain, sensor, alert, otp, delete, update
     10_000, 15_000, 15_000, 2_000, 1_000, 1_000, 30_000, 20_000, 1_000, 15_000, 15_000, 1_000, 25_000, 30_000,
@@ -3366,6 +3368,10 @@ async fn start() -> Option<(Volume<'static, Card>, &'static mut [u8], &'static m
     let srv = SERVER.take();
     atj2157_hal::log::line(b"audio: mounted, loading state");
     load_state(&mut vol, arena, srv).await;
+    // The listings' index folder into the walk cache while nothing plays:
+    // otherwise the first listing searches the card's root for it during
+    // playback (59 ms on the owner's card, 2026-11-25).
+    let _ = vol.warm_walk(orpheus_index::card::INDEX_DIR).await;
     crate::rec::find_dir(&mut vol).await;
     crate::drive::find_dirs(&mut vol).await;
     atj2157_hal::log::line(b"audio: state loaded");

@@ -100,6 +100,17 @@ impl WalkCache {
         hits: 0,
     };
 
+    /// Count `key` (a cached directory, as walked) as much used, so it
+    /// outlives the walks through other folders for a long while (the
+    /// firmware's index folder, resolved at mount while nothing plays).
+    pub fn boost(&mut self, key: &[u8]) {
+        for s in &mut self.slots {
+            if s.klen > 0 && s.key.get(..usize::from(s.klen)) == Some(key) {
+                s.set_uses(63);
+            }
+        }
+    }
+
     pub(crate) fn clear(&mut self) {
         for s in &mut self.slots {
             s.klen = 0;
@@ -144,7 +155,9 @@ impl WalkCache {
         let start = usize::from(self.next) % WALK_SLOTS;
         let i = (0..WALK_SLOTS)
             .map(|d| (start + d) % WALK_SLOTS)
-            .min_by_key(|&j| self.slots.get(j).map_or(0, |s| if s.klen == 0 { 0 } else { 1 + u16::from(s.uses()) }))
+            .min_by_key(|&j| {
+                self.slots.get(j).map_or(0, |s| if s.klen == 0 { 0 } else { 1 + u16::from(s.uses()) })
+            })
             .unwrap_or(start);
         self.next = self.next.wrapping_add(1);
         if self.next % 8 == 0 {
@@ -1294,6 +1307,35 @@ impl<'c, D: BlockDevice> Volume<'c, D> {
     }
 
     /// Resolve a path: parent directory, last component and its entry.
+    /// Resolve the directory `path` into the walk cache now and count it
+    /// as much used ([`WalkCache::boost`]): later walks below it skip the
+    /// directories above, even after many walks elsewhere. Without a lent
+    /// cache, nothing happens. Found 2026-11-25: the first listing after a
+    /// start searched the card's root for `/.orpheus/index` (59 ms) while
+    /// music played.
+    pub async fn warm_walk(&mut self, path: &str) -> Result<(), D::Error> {
+        if self.walks.is_none() {
+            return Ok(());
+        }
+        let p = path.trim_end_matches('/');
+        // Walking to an entry inside `p` caches `p` itself (directories are
+        // cached as the walk passes through them).
+        let mut probe = [0u8; 96];
+        let probe_len = p.len() + 2;
+        let Some(dst) = probe.get_mut(..probe_len) else { return Ok(()) };
+        dst[..p.len()].copy_from_slice(p.as_bytes());
+        dst[p.len()..].copy_from_slice(b"/~");
+        let probe = core::str::from_utf8(dst).unwrap_or("");
+        match self.walk(probe).await {
+            Ok(_) | Err(Error::NotFound) => {}
+            Err(e) => return Err(e),
+        }
+        if let Some(w) = self.walks.as_deref_mut() {
+            w.boost(p.as_bytes());
+        }
+        Ok(())
+    }
+
     pub(crate) async fn walk<'p>(&mut self, path: &'p str) -> Result<Walk<'p>, D::Error> {
         if components(path).count() > MAX_DEPTH {
             return Err(Error::NameTooLong);
@@ -1937,13 +1979,30 @@ mod tests {
         w.insert(b"/.orpheus/index", spec(11));
         for round in 0..50u32 {
             // A listing: the index folder is found in the cache.
-            assert!(w.lookup("/.orpheus/index/3").is_some_and(|(s, n)| s.first == 11 && n == 15), "round {round}");
+            assert!(
+                w.lookup("/.orpheus/index/3").is_some_and(|(s, n)| s.first == 11 && n == 15),
+                "round {round}"
+            );
             // Art and library walks through other folders.
             for k in 0..4u32 {
                 let key = [b'/', b'M', b'0' + (k as u8), b'/', b'a' + (round % 26) as u8];
                 w.insert(&key, spec(100 + k));
             }
         }
+    }
+
+    /// A boosted entry outlives a long run of other walks.
+    #[test]
+    fn a_boosted_entry_outlives_many_walks() {
+        let spec = |f| DirSpec { first: f, contig: false, len: 4096, self_loc: EntryLoc::NONE };
+        let mut w = WalkCache::EMPTY;
+        w.insert(b"/.orpheus/index", spec(11));
+        w.boost(b"/.orpheus/index");
+        for k in 0..200u32 {
+            let key = [b'/', b'A' + (k % 26) as u8, b'0' + (k % 10) as u8];
+            w.insert(&key, spec(100 + k));
+        }
+        assert!(w.lookup("/.orpheus/index/3").is_some_and(|(s, _)| s.first == 11));
     }
     use super::*;
 
