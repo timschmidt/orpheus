@@ -147,6 +147,7 @@ impl BlockDevice for Card {
 
     async fn read(&mut self, lba: u32, buf: &mut [[u8; 512]]) -> Result<(), Error> {
         pace().await;
+        self.sd.set_no_sleep(orpheus_fs::SyncPoll::active());
         count_io();
         let flat = buf.as_flattened_mut();
         if dma_ok(flat.as_ptr(), flat.len()) {
@@ -162,6 +163,7 @@ impl BlockDevice for Card {
 
     async fn write(&mut self, lba: u32, buf: &[[u8; 512]]) -> Result<(), Error> {
         pace().await;
+        self.sd.set_no_sleep(orpheus_fs::SyncPoll::active());
         count_io();
         let flat = buf.as_flattened();
         if dma_ok(flat.as_ptr(), flat.len()) {

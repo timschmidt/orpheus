@@ -65,6 +65,27 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-25 — fix: SD waits slept inside synchronous sessions (watchdog reset) (lead)
+
+* The first soak on `13b0ce70` (index places) lost the player at the start:
+  a watchdog reset, last interrupt sample in `atj2157_hal::sd::Sd::wait_ts`.
+  A transfer that outlasts the driver's short spin sleeps on an Embassy
+  timer; inside a synchronous card session (`orpheus_index::card::spin`,
+  used more now that listing pieces read through one session) that timer
+  never fires — the same trap the card pacing hit.
+* Fix: `Sd` waits are a `nap!` macro — a timer sleep normally, a spin on
+  the timer counter (`delay::wait_us`, bounded) when the card driver marks
+  the call as inside a synchronous poller (`Sd::set_no_sleep`, from
+  `orpheus_fs::SyncPoll::active()`; the flag shares a byte with the
+  high-capacity bit). On-device regression: the 30-min soak (seed 1).
+* Stack: a first version cost two 256 B steps (a static, then larger task
+  futures through an extra `async fn`) and moved `spin` out of `spin_in`,
+  copying the file-open future twice (+1.5 KB on the RT chain); now
+  `spin_pinned` polls in place. Result: 21,804 of 22,016 B, margin 212 B.
+  **`__stack_bottom` is exactly on a 256 B step (0x131D00): any further
+  static byte costs 256 B of stack** — the next feature needs a stack
+  reduction first.
+
 ### 2026-11-25 — AU-PERF: listing pieces reopen the index file from its entry (worker, no hardware)
 
 From the lead's soak (`chore: job:rows 37/36 ms u31`, 11 underruns): each

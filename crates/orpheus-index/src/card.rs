@@ -46,9 +46,18 @@ const OPEN: usize = 3;
 const PATH: usize = 40;
 
 /// Run `f` to completion, polling it with `cx` in a loop.
+#[inline(always)]
 pub fn spin<F: Future>(cx: &mut Context<'_>, f: F) -> F::Output {
-    let _sync = orpheus_fs::SyncPoll::enter();
     let mut f = pin!(f);
+    spin_pinned(cx, f.as_mut())
+}
+
+/// [`spin`] over a future already pinned in the caller's frame: the
+/// future is not moved into another frame (2026-11-25: once `spin` stopped
+/// being inlined into [`spin_in`], the file-open future sat in both frames,
+/// +1.5 KB on the RT task's deepest chain).
+pub fn spin_pinned<F: Future>(cx: &mut Context<'_>, mut f: core::pin::Pin<&mut F>) -> F::Output {
+    let _sync = orpheus_fs::SyncPoll::enter();
     loop {
         if let Poll::Ready(v) = f.as_mut().poll(cx) {
             return v;
@@ -62,7 +71,8 @@ pub fn spin<F: Future>(cx: &mut Context<'_>, f: F) -> F::Output {
 /// them (`Inner::slot`: 2.5 KB of the RT task's stack, VER-10).
 #[inline(never)]
 pub fn spin_in<F: Future>(cx: &mut Context<'_>, make: impl FnOnce() -> F) -> F::Output {
-    spin(cx, make())
+    let f = pin!(make());
+    spin_pinned(cx, f)
 }
 
 /// Files opened by a [`CardIo`] (plain values, about 250 bytes). Keep the

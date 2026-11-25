@@ -11,6 +11,20 @@
 
 use atj2157_pac::{cmu, dma as pdma, gpio, rmu, sd};
 use embassy_time::{Duration, Instant, Timer};
+
+/// Wait `$us` µs in an `Sd` method: an Embassy timer sleep, or with
+/// [`NO_SLEEP`] a spin on the timer counter. A macro, not an `async fn`:
+/// an extra future in the driver's state machines grew two task pools by
+/// 16 B each (one 256 B stack step).
+macro_rules! nap {
+    ($self:ident, $us:expr) => {
+        if $self.flags & NO_SLEEP != 0 {
+            crate::delay::wait_us($us);
+        } else {
+            Timer::after_micros($us).await;
+        }
+    };
+}
 use orpheus_sdcard::{self as card, Cid, Csd, Ocr, R128, Status, cmd};
 
 use crate::dma::Channel;
@@ -63,9 +77,22 @@ pub struct Sd {
     pub csd: Option<Csd>,
     pub cid: Option<Cid>,
     pub ocr: Ocr,
-    high_capacity: bool,
+    /// [`HIGH_CAPACITY`] and [`NO_SLEEP`] (one byte: the struct has no
+    /// padding left, and a byte more cost a 256 B step of the stack).
+    flags: u8,
     pub stats: Stats,
 }
+
+/// `Sd::flags`: the card addresses blocks, not bytes (SDHC/SDXC).
+const HIGH_CAPACITY: u8 = 1;
+/// `Sd::flags`: card work polled in a loop without an executor (a
+/// synchronous session, `orpheus_index::card::spin`; set per call with
+/// [`Sd::set_no_sleep`]): the waits spin on the timer counter instead of
+/// sleeping on an Embassy timer, which never fires there. Found
+/// 2026-11-25: a transfer that outlasted the short spin slept inside an
+/// index session and the watchdog reset the player (last PC in
+/// `Sd::wait_ts`).
+const NO_SLEEP: u8 = 2;
 
 /// Identification clock and fast clock words of `CMU_SD0CLK` [HW].
 pub const CLK_IDENT: u32 = 0x41;
@@ -87,15 +114,7 @@ impl Sd {
         cmu::SD0CLK.write(CLK_IDENT);
         sd::EN.write(sd::VENDOR_EN_INIT);
         dma.enable_irq();
-        let s = Self {
-            dma,
-            rca: 0,
-            csd: None,
-            cid: None,
-            ocr: Ocr(0),
-            high_capacity: false,
-            stats: Stats::default(),
-        };
+        let s = Self { dma, rca: 0, csd: None, cid: None, ocr: Ocr(0), flags: 0, stats: Stats::default() };
         sd::CTL.write(sd::VENDOR_CTL_INIT);
         s.wait_ts_blocking();
         s
@@ -122,7 +141,7 @@ impl Sd {
             if sd::CTL.read() & sd::ctl::TS == 0 {
                 return true;
             }
-            Timer::after_micros(50).await;
+            nap!(self, 50);
         }
         false
     }
@@ -182,7 +201,7 @@ impl Sd {
         self.check_state(resp)?;
         if resp == Resp::R1b {
             // Give the card time to release DAT0, then confirm via CMD13.
-            Timer::after_micros(500).await;
+            nap!(self, 500);
         }
         Ok(if resp == Resp::None { 0 } else { Self::short_resp() })
     }
@@ -201,12 +220,12 @@ impl Sd {
         let mut if_cond = Err(Error::Timeout);
         for _ in 0..4 {
             self.command(cmd::GO_IDLE, 0, Resp::None).await?;
-            Timer::after_millis(2).await;
+            nap!(self, 2_000);
             if_cond = self.command(cmd::SEND_IF_COND, card::IF_COND_ARG, Resp::R1).await;
             if if_cond.is_ok() {
                 break;
             }
-            Timer::after_millis(10).await;
+            nap!(self, 10_000);
         }
         let v2 = match if_cond {
             Ok(r) if r & 0xFFF == card::IF_COND_ARG => true,
@@ -224,13 +243,13 @@ impl Sd {
             };
             if ocr.ready() {
                 self.ocr = ocr;
-                self.high_capacity = ocr.high_capacity();
+                self.set_flag(HIGH_CAPACITY, ocr.high_capacity());
                 break;
             }
             if Instant::now() > end {
                 return Err(Error::Timeout);
             }
-            Timer::after_millis(10).await;
+            nap!(self, 10_000);
         }
         self.command(cmd::ALL_SEND_CID, 0, Resp::R2).await?;
         self.cid = Some(Cid::parse(&Self::long_resp()));
@@ -242,7 +261,7 @@ impl Sd {
         self.wait_ready().await?;
         self.app_command(cmd::ACMD_SET_BUS_WIDTH, 2, Resp::R1).await?;
         sd::EN.modify(|v| sd::en::DATAWID.set(v, sd::en::DATAWID_4BIT));
-        if !self.high_capacity {
+        if self.flags & HIGH_CAPACITY == 0 {
             self.command(cmd::SET_BLOCKLEN, 512, Resp::R1).await?;
         }
         cmu::SD0CLK.write(CLK_FAST);
@@ -264,12 +283,12 @@ impl Sd {
             if Instant::now() > end {
                 return Err(Error::Timeout);
             }
-            Timer::after_micros(200).await;
+            nap!(self, 200);
         }
     }
 
     fn addr(&self, lba: u32) -> u32 {
-        if self.high_capacity { lba } else { lba.wrapping_mul(512) }
+        if self.flags & HIGH_CAPACITY != 0 { lba } else { lba.wrapping_mul(512) }
     }
 
     async fn data_command(
@@ -309,13 +328,23 @@ impl Sd {
                 self.dma.abort();
                 return Err(Error::Dma);
             }
-            Timer::after_micros(20).await;
+            nap!(self, 20);
         }
         r
     }
 
     /// Read `buf.len() / 512` blocks starting at `lba`. `buf` must be word
     /// aligned and in DMA-reachable RAM.
+    fn set_flag(&mut self, f: u8, on: bool) {
+        self.flags = if on { self.flags | f } else { self.flags & !f };
+    }
+
+    /// Whether the next transfers run inside a synchronous poller
+    /// ([`NO_SLEEP`]).
+    pub fn set_no_sleep(&mut self, on: bool) {
+        self.set_flag(NO_SLEEP, on);
+    }
+
     pub async fn read(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), Error> {
         let mut done = 0u32;
         let total = (buf.len() / 512) as u32;
