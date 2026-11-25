@@ -14,7 +14,14 @@
 #                        services where the player is
 #   dev: …               player only (a longer wait for the card)
 #   cmd: TEXT [~ REGEX]  player only: firmware test command; the reply must
-#                        match REGEX within 5 s
+#                        match REGEX within 5 s, else the journey stops
+#                        (later steps rely on it)
+#
+# A journey's `variants` are states of the player it accepts, each as
+# simulator commands run before it (expected frames `<shot>.<variant>.png`;
+# a shot passes if it matches one): the owner's vault, the card's folders
+# and the clock are never changed to suit a test. A shot that does not
+# match at once is read again for up to 6 s (list marquees, the 1 s loop).
 #
 # Nothing here writes to the card outside /.orpheus/ (rule 5), switches
 # the Bluetooth module (rule 6), records, or changes a setting: journeys
@@ -22,8 +29,11 @@
 #
 # The player must be in Dark, Blue, English (the simulator's defaults),
 # with all Home apps shown and nothing playing (the suite sends `stop`).
+# `ui test-look on` gives the look; `appearance` gives the simulator the
+# player's fixed facts: the full-flash layout (D-2, no "Start original
+# firmware" in Settings › System).
 
-appearance = ""
+appearance = "set:dual=0"
 
 [[journey]]
 name = "home"
@@ -67,6 +77,10 @@ down*7 ok ok expect-screen:Info shot:card back back
 expect-screen:Settings
 """
 
+# A label is shortened to fit its value: the serial is the player's own.
+[journey.shot.about]
+rects = [{ x = 24, y = 71, w = 24, h = 19, why = "Serial number label (shortened to fit the player's serial)" }]
+
 [[journey]]
 name = "usb"
 about = "Settings › USB and the When-connected choice (the dialog itself needs a cable event)"
@@ -91,16 +105,19 @@ menu shot:files_menu back
 defaults = false
 rects = [
     { x = 0, y = 0, w = 128, h = 14, why = "status bar" },
-    { x = 0, y = 14, w = 128, h = 26, why = "card listing behind the sheet" },
+    { x = 0, y = 14, w = 128, h = 29, why = "card listing behind the sheet (its scroll bar beside the sheet's corners)" },
 ]
 
+# Music's rows depend on the player's history (Now playing, Resume, the
+# library being built): Folders is reached from the end (Up rolls round
+# to Bookmarks, then Folders).
 [[journey]]
 name = "music"
-about = "Music root and Folders (library state and listing masked)"
+about = "Music root and Folders (rows and listing masked)"
 card = true
 script = """
 ok expect-screen:Music wait:300 shot:music
-down*8 ok expect-screen:Folders wait:300 shot:folders back
+up*2 ok expect-screen:Folders wait:300 shot:folders back
 expect-screen:Music
 """
 
@@ -112,6 +129,8 @@ script = """
 cmd: playdir /.orpheus/test/suite/music ~ ^playdir ok
 sim: set:queue=takk
 dev: wait:1500
+# Playing, so Music's first row is Now playing (not Shuffle all).
+cmd: status ~ ^playing
 ok expect-screen:Music
 ok expect-screen:NowPlaying wait:300 shot:np
 cmd: status ~ ^playing .*underruns=0\\b
@@ -141,7 +160,7 @@ menu shot:pictures_menu back
 defaults = false
 rects = [
     { x = 0, y = 0, w = 128, h = 14, why = "status bar" },
-    { x = 0, y = 14, w = 128, h = 26, why = "card listing behind the sheet" },
+    { x = 0, y = 14, w = 128, h = 29, why = "card listing behind the sheet (its scroll bar beside the sheet's corners)" },
     { x = 88, y = 105, w = 40, h = 19, why = "Show hidden switch (a setting)" },
 ]
 
@@ -176,6 +195,12 @@ rects = [
 [[journey]]
 name = "steps"
 about = "Steps: Today, Week, menu (figures masked)"
+# The footer says "No clock: no history" while the clock is not set
+# (`xtask dev time --set`); the suite does not set it.
+variants = [
+    { name = "clock", sim = "" },
+    { name = "no-clock", sim = "set:clockvalid=0" },
+]
 script = """
 next*6 ok expect-screen:Steps shot:steps
 next shot:steps_week prev
@@ -226,17 +251,33 @@ rects = [
     { x = 88, y = 105, w = 40, h = 19, why = "Automatic gain switch (a setting)" },
 ]
 
+# The vault (NOR 0x7DE000) is the owner's: never set up, wiped or written
+# by a test. Whatever state it is in is accepted: locked (the PIN pad),
+# none (set up), or damaged (the sector holds no vault: on the first
+# full-layout player it still held the pre-switch bytes, STATUS).
 [[journey]]
 name = "authenticator"
-about = "Authenticator locked: the PIN pad only (no PIN entered, no secrets)"
+about = "Authenticator as the vault is: PIN pad, set-up or damaged (no PIN entered, no secrets)"
+variants = [
+    { name = "locked", sim = "set:vault=locked" },
+    { name = "none", sim = "set:vault=absent" },
+    { name = "damaged", sim = "set:vault=damaged" },
+]
 script = """
-sim: set:vault=locked
-next*8 ok wait:200 expect-screen:Authenticator shot:auth_locked
+next*8 ok wait:200 expect-screen:Authenticator shot:auth
 """
 
+# The rows follow the card: `/Images` (else "No Images folder…") and the
+# test images in `/.orpheus/images` (left by `usbimage-test`).
 [[journey]]
 name = "usbdrive"
 about = "USB Drive app: its home list (no image is presented)"
+variants = [
+    { name = "both", sim = "" },
+    { name = "test-only", sim = "set:driveimages=0" },
+    { name = "images-only", sim = "set:drivetest=0" },
+    { name = "neither", sim = "set:driveimages=0 set:drivetest=0" },
+]
 script = """
 next*9 ok expect-screen:UsbDrive shot:home back
 """

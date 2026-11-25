@@ -8,7 +8,10 @@
 //! the expected frame under the masks of `tests/suite/masks.toml`, and
 //! `cmd:` service checks. Every journey starts at Home (hold Back, Home's
 //! focus brought to the first app by matching the screenshot) and ends
-//! there. The run writes `target/orpheus/suite/<timestamp>/`.
+//! there. A journey may name variants: states of the player it accepts
+//! (the owner's vault, the card's folders, the clock are never changed to
+//! suit a test); a shot passes if it matches one variant's frame. The run
+//! writes `target/orpheus/suite/<timestamp>/`.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -32,8 +35,10 @@ pub const FIXTURES: &str = "/.orpheus/test/suite";
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SuiteFile {
-    /// Simulator commands run before every reference journey (the player's
-    /// appearance), e.g. `theme:light`. Empty: Dark, Blue, English.
+    /// Simulator commands run before every reference journey: the player's
+    /// appearance (e.g. `theme:light`; none: Dark, Blue, English, which
+    /// `ui test-look on` gives) and fixed facts of the player the simulator
+    /// does not share by default (`set:dual=0`: the full-flash layout).
     #[serde(default)]
     pub appearance: String,
     pub journey: Vec<Journey>,
@@ -51,9 +56,29 @@ pub struct Journey {
     #[serde(default)]
     pub setup: bool,
     pub script: String,
+    /// States of the player the journey accepts (the first is the one the
+    /// simulator dry run takes); none: the simulator's.
+    #[serde(default)]
+    pub variants: Vec<Variant>,
     /// Per-shot masks and tolerance, added to the screen's.
     #[serde(default)]
     pub shot: BTreeMap<String, ShotOpts>,
+}
+
+/// A state of the player a journey accepts: simulator commands (`set:…`)
+/// that put the simulator there before the journey starts.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Variant {
+    pub name: String,
+    pub sim: String,
+}
+
+impl Journey {
+    /// The variants to draw: one `None` for a journey without any.
+    fn variant_list(&self) -> Vec<Option<&Variant>> {
+        if self.variants.is_empty() { vec![None] } else { self.variants.iter().map(Some).collect() }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -110,13 +135,25 @@ pub fn load() -> Result<SuiteFile> {
                 bail!("journey `{}`: shot `{s}` twice", j.name);
             }
         }
+        let mut names = std::collections::BTreeSet::new();
+        for v in &j.variants {
+            let ok = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-';
+            if v.name.is_empty() || !v.name.bytes().all(ok) || !names.insert(v.name.as_str()) {
+                bail!("journey `{}`: variant name `{}` empty, twice, or not [a-z0-9-]", j.name, v.name);
+            }
+            if script::tokens(&v.sim).any(|t| t == "power" || t.contains(":power") || t.starts_with("power*"))
+            {
+                bail!("journey `{}`: variant `{}` presses Power", j.name, v.name);
+            }
+        }
     }
     Ok(f)
 }
 
-/// A frame the simulator gave for a shot.
+/// A frame the simulator gave for a shot (in one variant).
 pub struct RefShot {
     pub name: String,
+    pub variant: Option<String>,
     pub screen: String,
     pub fb: Vec<u16>,
 }
@@ -130,31 +167,63 @@ fn sim_with(appearance: &str) -> Result<AppSim> {
 }
 
 /// Run a journey in the simulator (the same prologue and epilogue as on
-/// the player): its shots, or the first command that failed.
+/// the player), once per variant: its shots, or the first command that
+/// failed.
 pub fn reference(appearance: &str, j: &Journey) -> Result<Vec<RefShot>> {
     let items = script::parse_journey(&j.script)?;
-    let mut sim = sim_with(appearance)?;
-    sim.run_script("hold:back expect-screen:Home")?;
     let mut shots = Vec::new();
-    for it in &items {
-        match it {
-            Item::Step(_, Step::Shot(n)) => {
-                sim.draw();
-                shots.push(RefShot { name: n.clone(), screen: sim.screen().to_string(), fb: sim.fb.clone() });
+    for v in j.variant_list() {
+        let what = match v {
+            Some(v) => format!("journey `{}` ({}) in the simulator", j.name, v.name),
+            None => format!("journey `{}` in the simulator", j.name),
+        };
+        let mut sim = sim_with(appearance)?;
+        if let Some(v) = v {
+            sim.run_script(&v.sim).with_context(|| what.clone())?;
+        }
+        sim.run_script("hold:back expect-screen:Home")?;
+        for it in &items {
+            match it {
+                Item::Step(_, Step::Shot(n)) => {
+                    sim.draw();
+                    shots.push(RefShot {
+                        name: n.clone(),
+                        variant: v.map(|v| v.name.clone()),
+                        screen: sim.screen().to_string(),
+                        fb: sim.fb.clone(),
+                    });
+                }
+                Item::Step(t, _) | Item::Sim(t) => {
+                    sim.run_script(t).with_context(|| what.clone())?;
+                }
+                Item::Dev(_) | Item::Cmd { .. } => {}
             }
-            Item::Step(t, _) | Item::Sim(t) => {
-                sim.run_script(t).with_context(|| format!("journey `{}` in the simulator", j.name))?;
+        }
+        // As on the player: a long Back, a short one first if a dialog
+        // stays open (the Authenticator's set-up note).
+        let mut home = false;
+        for _ in 0..3 {
+            sim.run_script("hold:back")?;
+            if sim.screen() == "Home" {
+                home = true;
+                break;
             }
-            Item::Dev(_) | Item::Cmd { .. } => {}
+            sim.run_script("back")?;
+        }
+        if !home {
+            bail!("{what}: does not end at Home after a long Back (top is {})", sim.screen());
         }
     }
-    sim.run_script("hold:back expect-screen:Home")
-        .with_context(|| format!("journey `{}` does not end at Home after a long Back", j.name))?;
     Ok(shots)
 }
 
-fn expected_path(journey: &str, shot: &str) -> PathBuf {
-    suite_dir().join("expected").join(journey).join(format!("{shot}.png"))
+/// `expected/<journey>/<shot>.png`, or `<shot>.<variant>.png`.
+fn expected_path(journey: &str, shot: &str, variant: Option<&str>) -> PathBuf {
+    let file = match variant {
+        Some(v) => format!("{shot}.{v}.png"),
+        None => format!("{shot}.png"),
+    };
+    suite_dir().join("expected").join(journey).join(file)
 }
 
 /// Rewrite `tests/suite/expected/` from the simulator; returns (written,
@@ -165,7 +234,7 @@ pub fn update_expected(f: &SuiteFile) -> Result<(usize, usize, usize)> {
     let (mut written, mut same) = (0, 0);
     for j in &f.journey {
         for s in reference(&f.appearance, j)? {
-            let p = expected_path(&j.name, &s.name);
+            let p = expected_path(&j.name, &s.name, s.variant.as_deref());
             keep.insert(p.clone());
             let png = mask::png_frame(&s.fb)?;
             if std::fs::read(&p).ok().as_deref() == Some(png.as_slice()) {
@@ -251,6 +320,8 @@ pub fn to_home(p: &mut dyn Player, homes: &[Vec<u16>], masks: &MaskFile) -> Resu
 #[derive(Debug, Default)]
 pub struct ShotResult {
     pub name: String,
+    /// The variant whose frame matched (or came closest).
+    pub variant: Option<String>,
     pub screen: String,
     pub player_screen: String,
     pub cmp: Compared,
@@ -280,9 +351,17 @@ impl JourneyResult {
     }
 }
 
-/// What a run compares against: the committed expected frames.
+/// One expected frame of a shot: its variant, screen name and pixels.
+pub struct ExpFrame {
+    pub variant: Option<String>,
+    pub screen: String,
+    pub fb: Vec<u16>,
+}
+
+/// What a run compares against: the committed expected frames (one per
+/// variant).
 pub struct Expected {
-    pub shots: BTreeMap<(String, String), (String, Vec<u16>)>,
+    pub shots: BTreeMap<(String, String), Vec<ExpFrame>>,
 }
 
 /// Load the expected frames and check them against the simulator (a stale
@@ -292,12 +371,16 @@ pub fn expected(f: &SuiteFile, js: &[&Journey]) -> Result<Expected> {
     let mut stale = Vec::new();
     for j in js {
         for s in reference(&f.appearance, j)? {
-            let p = expected_path(&j.name, &s.name);
+            let p = expected_path(&j.name, &s.name, s.variant.as_deref());
             match mask::read_frame(&p) {
                 Ok(fb) if fb == s.fb => {}
-                _ => stale.push(format!("{}/{}", j.name, s.name)),
+                _ => stale.push(match &s.variant {
+                    Some(v) => format!("{}/{}.{v}", j.name, s.name),
+                    None => format!("{}/{}", j.name, s.name),
+                }),
             }
-            shots.insert((j.name.clone(), s.name.clone()), (s.screen, s.fb));
+            let e = ExpFrame { variant: s.variant, screen: s.screen, fb: s.fb };
+            shots.entry((j.name.clone(), s.name.clone())).or_insert_with(Vec::new).push(e);
         }
     }
     if !stale.is_empty() {
@@ -308,6 +391,32 @@ pub fn expected(f: &SuiteFile, js: &[&Journey]) -> Result<Expected> {
         );
     }
     Ok(Expected { shots })
+}
+
+/// How long a shot that does not match yet is read again (ms): a list
+/// marquee rests 1 s in every cycle (it starts 800 ms after the focus
+/// moved, and the player takes longer than that from a key to the shot),
+/// and the UI redraws in its 1 s loop.
+pub const SHOT_RETRY_MS: u64 = 6000;
+
+/// The expected frame `fb` matches best: the first that passes, else the
+/// one with the fewest differing pixels; with the comparison and its diff.
+pub fn best_match<'a>(
+    fb: &[u16],
+    refs: &'a [ExpFrame],
+    masks: &dyn Fn(&str) -> Masks,
+) -> (&'a ExpFrame, Compared, Vec<u8>) {
+    let mut best: Option<(&ExpFrame, Compared, Vec<u8>)> = None;
+    for e in refs {
+        let (c, d) = mask::compare(fb, &e.fb, &masks(&e.screen));
+        if c.pass() {
+            return (e, c, d);
+        }
+        if best.as_ref().is_none_or(|b| c.differing < b.1.differing) {
+            best = Some((e, c, d));
+        }
+    }
+    best.unwrap_or_else(|| (&refs[0], Compared::default(), Vec::new()))
 }
 
 /// Run one journey on a player; frames go to `out/<journey>/`.
@@ -334,32 +443,55 @@ pub fn run_journey(
     let dir = out.join(&j.name);
     let _ = std::fs::create_dir_all(&dir);
     let body = (|| -> Result<()> {
-        for t in script::tokens(&f.appearance) {
+        // The simulator player takes the first variant's state (the real
+        // player is in one of them already).
+        let first = j.variants.first().map_or("", |v| v.sim.as_str());
+        for t in script::tokens(&f.appearance).chain(script::tokens(first)) {
             p.mirror(t)?;
         }
         to_home(p, homes, masks)?;
         for it in &items {
             match it {
                 Item::Step(_, Step::Shot(n)) => {
-                    let fb = player::settled_frame(p, 5)?;
-                    let top = player::top(p)?;
-                    let (screen, want) = exp
+                    let refs = exp
                         .shots
                         .get(&(j.name.clone(), n.clone()))
+                        .filter(|v| !v.is_empty())
                         .ok_or_else(|| anyhow!("no expected frame for {n}"))?;
                     let opts = j.shot.get(n);
-                    let m = masks.for_shot(
-                        screen,
-                        opts.map(ShotOpts::masks).as_ref(),
-                        opts.is_none_or(|o| o.defaults),
-                    );
-                    let (cmp, diff) = mask::compare(&fb, want, &m);
+                    let m = |screen: &str| {
+                        masks.for_shot(
+                            screen,
+                            opts.map(ShotOpts::masks).as_ref(),
+                            opts.is_none_or(|o| o.defaults),
+                        )
+                    };
+                    let mut fb = player::settled_frame(p, 5)?;
+                    let (mut e, mut cmp, mut diff) = best_match(&fb, refs, &m);
+                    // Not yet: read again for a while (a marquee, the 1 s
+                    // loop); `waited` is the simulator's clock.
+                    let t0 = Instant::now();
+                    let mut waited = 0;
+                    while !cmp.pass()
+                        && waited < SHOT_RETRY_MS
+                        && t0.elapsed().as_millis() < u128::from(SHOT_RETRY_MS)
+                    {
+                        p.sleep(150);
+                        waited += 150;
+                        let g = p.frame()?;
+                        let (e2, c2, d2) = best_match(&g, refs, &m);
+                        if c2.pass() || c2.differing < cmp.differing {
+                            (fb, e, cmp, diff) = (g, e2, c2, d2);
+                        }
+                    }
+                    let top = player::top(p)?;
                     std::fs::write(dir.join(format!("{n}.png")), mask::png_frame(&fb)?)?;
-                    std::fs::write(dir.join(format!("{n}.expected.png")), mask::png_frame(want)?)?;
+                    std::fs::write(dir.join(format!("{n}.expected.png")), mask::png_frame(&e.fb)?)?;
                     std::fs::write(dir.join(format!("{n}.diff.png")), mask::png_rgb(&diff)?)?;
                     r.shots.push(ShotResult {
                         name: n.clone(),
-                        screen: screen.clone(),
+                        variant: e.variant.clone(),
+                        screen: e.screen.clone(),
                         player_screen: top.name,
                         cmp,
                     });
@@ -372,7 +504,14 @@ pub fn run_journey(
                 Item::Cmd { text, want } => {
                     let re = want.as_deref().map(regex::Regex::new).transpose()?;
                     let res = player::command(p, text, re.as_ref(), 5000).map_err(|e| format!("{e:#}"));
+                    let failed = res.is_err();
                     r.cmds.push((text.clone(), res));
+                    // The steps after a command rely on its result (OK on
+                    // Music's first row is Shuffle all when nothing plays):
+                    // stop here.
+                    if failed {
+                        bail!("stopped after `{text}` failed");
+                    }
                 }
             }
         }
@@ -380,6 +519,9 @@ pub fn run_journey(
     })();
     if let Err(e) = body {
         r.error = Some(format!("{e:#}"));
+        // A journey cut short may leave something playing (`playdir`):
+        // the next one would find the mini-player on Home.
+        let _ = player::command(p, "stop", None, 0);
     }
     // Back to Home whatever happened (a dialog takes a short Back first).
     let back = (|| -> Result<()> {
@@ -401,11 +543,18 @@ pub fn run_journey(
     r
 }
 
-/// The `--setup` fixtures: two short tones (WAV, 44.1 kHz mono 16 bit).
+/// Length of each `--setup` tone (s): the queue must still play when the
+/// nowplaying journey checks `status` (the first run's 6 s + 3 s had ended:
+/// the journey took 23 s on the player).
+pub const FIXTURE_SECS: f32 = 30.0;
+
+/// The `--setup` fixtures: two tones (WAV, 44.1 kHz mono 16 bit, the rate
+/// the player plays most; 2.6 MB each, about 50 s each to upload at the
+/// developer channel's 50 KB/s), the same bytes on every run.
 pub fn fixtures() -> Vec<(String, Vec<u8>)> {
     vec![
-        (format!("{FIXTURES}/music/01 Tone 440.wav"), wav_tone(440.0, 6.0)),
-        (format!("{FIXTURES}/music/02 Tone 880.wav"), wav_tone(880.0, 3.0)),
+        (format!("{FIXTURES}/music/01 Tone 440.wav"), wav_tone(440.0, FIXTURE_SECS)),
+        (format!("{FIXTURES}/music/02 Tone 880.wav"), wav_tone(880.0, FIXTURE_SECS)),
     ]
 }
 
@@ -464,9 +613,10 @@ pub fn write_report(out: &Path, player: &str, results: &[JourneyResult], notes: 
         for s in &r.shots {
             let _ = write!(
                 t,
-                " {}{}:{}/{},{}",
+                " {}{}{}:{}/{},{}",
                 if s.pass() { "" } else { "!" },
                 s.name,
+                s.variant.as_deref().map(|v| format!("@{v}")).unwrap_or_default(),
                 s.cmp.differing,
                 s.cmp.allowed,
                 s.cmp.masked
@@ -506,6 +656,7 @@ pub fn write_report(out: &Path, player: &str, results: &[JourneyResult], notes: 
             "error": r.error,
             "shots": r.shots.iter().map(|s| serde_json::json!({
                 "name": s.name,
+                "variant": s.variant,
                 "pass": s.pass(),
                 "screen": s.screen,
                 "player_screen": s.player_screen,
@@ -784,6 +935,7 @@ mod tests {
             name: "x".into(),
             shots: vec![ShotResult {
                 name: "s".into(),
+                variant: Some("v".into()),
                 screen: "Home".into(),
                 player_screen: "Home".into(),
                 cmp: Compared { differing: 3, masked: 10, bbox: Some((1, 2, 3, 4)), allowed: 0 },
@@ -796,6 +948,7 @@ mod tests {
         std::fs::create_dir_all(&out).unwrap();
         let t = write_report(&out, "player", &[r], &[]).unwrap();
         assert!(t.contains("1 failed") && t.contains("3 pixels differ") && t.contains("FAILED: no match"));
+        assert!(t.contains("!s@v:3/0,10"), "{t}");
         let _ = std::fs::remove_dir_all(&out);
     }
 
@@ -811,8 +964,35 @@ mod tests {
         let w = wav_tone(440.0, 0.5);
         assert_eq!(&w[..4], b"RIFF");
         assert_eq!(w.len(), 44 + 22_050 * 2);
-        for (p, _) in fixtures() {
+        for (p, data) in fixtures() {
             assert!(p.starts_with("/.orpheus/test/suite/"));
+            // Long enough to still play at the journey's `status` check.
+            assert_eq!(data.len(), 44 + 44_100 * 30 * 2);
         }
+        assert_eq!(fixtures()[0].1, fixtures()[0].1, "deterministic");
+    }
+
+    /// A shot is compared with every variant's frame: the player's state
+    /// picks one (here the Authenticator with each vault state).
+    #[test]
+    fn a_shot_matches_the_variant_the_player_is_in() {
+        let f = load().unwrap();
+        let j = f.journey.iter().find(|j| j.name == "authenticator").unwrap();
+        assert!(j.variants.len() >= 3);
+        let masks = MaskFile::load(&suite_dir().join("masks.toml")).unwrap();
+        let shots = reference(&f.appearance, j).unwrap();
+        let refs: Vec<ExpFrame> = shots
+            .iter()
+            .map(|s| ExpFrame { variant: s.variant.clone(), screen: s.screen.clone(), fb: s.fb.clone() })
+            .collect();
+        let m = |screen: &str| masks.for_shot(screen, None, true);
+        for s in &shots {
+            let (e, c, _) = best_match(&s.fb, &refs, &m);
+            assert!(c.pass());
+            assert_eq!(e.variant, s.variant);
+        }
+        // A frame that is none of them is reported against the closest.
+        let (_, c, _) = best_match(&vec![0xFFFF; mask::W * mask::H], &refs, &m);
+        assert!(!c.pass() && c.differing > 0);
     }
 }

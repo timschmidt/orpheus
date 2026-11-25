@@ -197,12 +197,27 @@ macro_rules! each {
     };
 }
 
+/// One screen's event handler, never inlined into [`AppScreen`]'s
+/// dispatch: inlined, all 26 handlers shared one stack frame as large as
+/// their locals together (3,448 B on the player, VER-7 stack check
+/// 2026-11-25); apart, a key costs only the open screen's own frame.
+#[inline(never)]
+fn event_of<S: Services + ?Sized, T: Screen<S>>(s: &mut T, cx: &mut Cx<'_, S>, ev: &Event) -> Nav {
+    s.event(cx, ev)
+}
+
+/// As [`event_of`], for entering a screen.
+#[inline(never)]
+fn enter_of<S: Services + ?Sized, T: Screen<S>>(s: &mut T, cx: &mut Cx<'_, S>, arg: Arg) {
+    s.enter(cx, arg);
+}
+
 impl<S: Services + ?Sized> Screen<S> for AppScreen {
     fn enter(&mut self, cx: &mut Cx<'_, S>, arg: Arg) {
-        each!(self, s => s.enter(cx, arg));
+        each!(self, s => enter_of(s, cx, arg));
     }
     fn event(&mut self, cx: &mut Cx<'_, S>, ev: &Event) -> Nav {
-        each!(self, s => s.event(cx, ev))
+        each!(self, s => event_of(s, cx, ev))
     }
     fn draw(&mut self, cx: &Cx<'_, S>, g: &mut Gfx<'_>, dirty: Dirty) {
         each!(self, s => s.draw(cx, g, dirty));

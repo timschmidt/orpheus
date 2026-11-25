@@ -379,10 +379,18 @@ fn new_fw() -> &'static mut Fw {
     unsafe { (*(&raw mut FW_CELL)).write(Fw::new()) }
 }
 
-/// Once, from the UI task.
-fn store_slot() -> &'static mut Option<Store<NorRegion, 4>> {
+/// Once, from the UI task: the settings store mounted straight into its
+/// static. Not inlined, and not awaited in the task: the mount's result
+/// (an `Option<Store>` of 1 KB) passed through the UI task's poll frame
+/// three times, 3.2 KB of stack reserved on every poll under the RT
+/// executor's (VER-7 stack check, 2026-11-25). The NOR driver is blocking
+/// (an erase yields only to let others run), so `block_on` returns at once.
+#[inline(never)]
+fn mount_store() -> &'static mut Option<Store<NorRegion, 4>> {
     // SAFETY: called once; the UI task is the only user.
-    unsafe { &mut *(&raw mut STORE_CELL) }
+    let slot = unsafe { &mut *(&raw mut STORE_CELL) };
+    *slot = embassy_futures::block_on(Store::<NorRegion, 4>::mount(NorRegion::settings())).ok();
+    slot
 }
 
 /// Once, from the UI task.
@@ -413,8 +421,7 @@ pub async fn ui() {
     let fw = new_fw();
     crate::services::apply_volume(fw.volume);
     // Settings from NOR.
-    let store = store_slot();
-    *store = Store::<NorRegion, 4>::mount(NorRegion::settings()).await.ok();
+    let store = mount_store();
     let mut bt_last = None;
     if let Some(s) = store.as_mut() {
         // Every stored setting (65 since PWR-5) and the Bluetooth address:

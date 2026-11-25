@@ -57,6 +57,11 @@ pub struct SimDrive {
     pub read_back: Vec<u8>,
     /// Something changed for the UI.
     changed: bool,
+    /// `set:driveimages=0` / `set:drivetest=0`: the card has no `/Images`
+    /// (no `/.orpheus/images`), as on a card that never had them (the
+    /// on-device suite's variants).
+    pub hide_images: bool,
+    pub hide_test: bool,
 }
 
 impl Default for SimDrive {
@@ -73,6 +78,8 @@ impl Default for SimDrive {
             refused_writes: 0,
             read_back: Vec::new(),
             changed: false,
+            hide_images: false,
+            hide_test: false,
         }
     }
 }

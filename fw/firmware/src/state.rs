@@ -1,7 +1,7 @@
 //! State shared between tasks: small, copied out under a critical section.
 
 use core::cell::Cell;
-use core::sync::atomic::AtomicBool;
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32};
 
 use critical_section::Mutex;
 use orpheus_power::charger::ChargeState;
@@ -22,6 +22,16 @@ static STATE: Mutex<Cell<Snapshot>> = Mutex::new(Cell::new(Snapshot {
 }));
 
 pub static CARD_READY: AtomicBool = AtomicBool::new(false);
+/// Settings › Storage › Card info, from the card task: the volume's size
+/// (MiB) and file system (`CARD_FS_*`, 0 none) at mount, its free space
+/// once counted ([`FREE_UNKNOWN`] until then).
+pub static CARD_MIB: AtomicU32 = AtomicU32::new(0);
+pub static CARD_FREE_MIB: AtomicU32 = AtomicU32::new(FREE_UNKNOWN);
+pub static CARD_FS: AtomicU8 = AtomicU8::new(0);
+pub const FREE_UNKNOWN: u32 = u32::MAX;
+pub const CARD_FS_FAT32: u8 = 1;
+pub const CARD_FS_EXFAT: u8 = 2;
+pub const CARD_FS_OTHER: u8 = 3;
 /// Earphones plugged in (key ladder 1's idle level, debounced by the
 /// input task): the radio's antenna.
 pub static EARPHONES: AtomicBool = AtomicBool::new(false);

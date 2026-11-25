@@ -31,7 +31,7 @@ rects = [{ x = 0, y = 14, w = 128, h = 96, why = "card listing" }]
 rects = [{ x = 0, y = 14, w = 128, h = 96, why = "card listing" }]
 
 [screen.Music]
-rects = [{ x = 0, y = 52, w = 128, h = 58, why = "library state (building/ready)" }]
+rects = [{ x = 0, y = 33, w = 128, h = 77, why = "Now playing / Resume rows, library state (building/ready)" }]
 
 # Values that are the owner's settings or the player's own data.
 [screen.SettingsGroup]
