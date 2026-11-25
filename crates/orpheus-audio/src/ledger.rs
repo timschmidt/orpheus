@@ -55,6 +55,13 @@ impl<const N: usize> Ledger<N> {
         self.worst = None;
     }
 
+    /// The longest operation noted since the last half boundary (cause,
+    /// µs): what kept the writer away when it finds itself behind.
+    #[must_use]
+    pub fn worst(&self) -> Option<(usize, u32)> {
+        self.worst.map(|(c, us)| (usize::from(c), us))
+    }
+
     /// Start counting again (a new track).
     pub fn reset(&mut self) {
         *self = Self::new();

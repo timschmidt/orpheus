@@ -72,6 +72,9 @@ then passed with it).
 | Garbled marquee in screenshots (frame read while redrawing) | 11-24 | `cf426e32` | suite shots | device |
 | Shuffle-all walk starved the UI (1 ms per 16 entries) | 11-24 | `7caf4cf5` | superseded by the library sample (`regress_shuffle_all_…`) | covered |
 | Soak navigation to Now Playing opened Shuffle all (roll-around wrap) | 11-25 | `b7949dc9` + this backfill | `xtask` `dev::soak::tests::regress_soak_now_playing_does_not_open_shuffle_all` (simulator rig) | new, R (see below) |
+| Underruns inside a half not counted (soak: headroom −13 frames, `underruns=0`) | 11-25 | this commit | `orpheus-audio/tests/regress_pcm_headroom.rs::regress_overrun_inside_half_uncounted`; `tests/regress/soak/mixed-ring-seed1-7.soak` | new |
+| Headroom read one half low when the half interrupt fell between its two reads | 11-25 | this commit | `regress_pcm_headroom.rs::regress_headroom_irq_between_reads` | new, R |
+| Soak finding hid that a low-water covers the time since the previous sample (an earlier action) | 11-25 | this commit | `xtask` `dev::soak::tests::regress_ring_finding_names_the_span_it_covers` | new |
 
 ## Test-infrastructure fixes (no `regress_` test needed)
 

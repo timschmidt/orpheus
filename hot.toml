@@ -212,6 +212,11 @@ symbols = [
     "embassy_executor::raw::TaskStorage<firmware::audio::__audio_task::*>::poll",
     "firmware::audio::PcmOut>::push::*",
     "firmware::audio::PcmOut>::headroom",
+    # The look at the DMA before every block and at every half (VER-12).
+    "firmware::audio::PcmOut>::look",
+    "firmware::audio::PcmOut>::reading",
+    "firmware::audio::PcmOut>::account",
+    "orpheus_audio::pcm::Book>::look",
     "firmware::audio::note",
     "firmware::media::player_update::<firmware::audio::play_file::*",
     "firmware::media::Server>::feed",
