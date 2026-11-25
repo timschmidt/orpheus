@@ -434,6 +434,21 @@ and read-aloud (05 §7.14–7.15).
   durations and formant targets, prosody (declination,
   phrase-final lengthening, question rise, emphasis), two or three voices as
   parameter sets (pitch, formant scaling, breathiness).
+* **Speed** (owner, 2026-11-25): **0.25× to 10× in 0.25× steps** (39
+  values, default 1×), a setting of the screen reader and, separately, of
+  read-aloud. Implemented in the front end and the synthesiser, not by
+  resampling, so the pitch stays: phoneme durations scale with the speed,
+  with per-class minimum durations (stops and fricatives keep enough length
+  to be heard); pauses compress faster than speech above 2×; above 4× the
+  prosody flattens (fewer pitch movements) and vowel reduction applies, as
+  in fast human-like speech; below 1× vowels and pauses lengthen, not
+  stops. Synthesis cost scales with the audio produced, so 10× needs no
+  more CPU per second of output; the text front end must keep 10 ahead
+  (budget checked at 10× on the player). Tests: phoneme timing goldens at
+  0.25×, 1×, 4× and 10×; intelligibility (offline recogniser) at 1×, 2×
+  and 4× within budget, and measured, not gated, above; the speed setting
+  is in the VER-13 manifest (screen reader, read-aloud, every context
+  that speaks).
 * **Output**: a speech voice in the audio mixer next to the music path,
   with ducking or pausing of the music, its own volume and the DSP chain
   bypassed; works during playback, radio and with the screen off.

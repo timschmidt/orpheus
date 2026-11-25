@@ -873,7 +873,8 @@ to Player n" screen between turns) or computer.
   (04 §8): screen titles on entry, the focused row with its value and
   position ("Albums, 3 of 12"), changed values, dialogs, toasts, errors,
   the volume, track changes on request. Interruptible: a key stops the
-  current utterance. Verbosity (brief, normal, detailed), rate, pitch,
+  current utterance. Verbosity (brief, normal, detailed), **speed from
+  0.25× to 10× in 0.25× steps** (owner, 2026-11-25; default 1×), pitch,
   speech volume relative to music, music ducking or pausing while speaking,
   key echo, earcons for list ends and roll-around, "where am I" and "time
   and battery" on a hold combination, and a toggle reachable from any
@@ -907,7 +908,8 @@ to Player n" screen between turns) or computer.
   decompression.
 * **Read aloud** (BOOK-3): the TTS engine reads continuously from the
   position, highlighting the sentence and turning pages, with the screen
-  off, a sleep timer, rate and voice settings, and resume where speech
+  off, a sleep timer, speed (0.25×–10× in 0.25× steps, its own setting,
+  default from the screen reader's) and voice settings, and resume where speech
   stopped.
 
 ### 7.16 Sequencer (drum machine and synth; M17; owner's requirement 2026-11-25)
