@@ -322,7 +322,11 @@ impl<const N: usize> Costs<N> {
         if unit >= n {
             n = unit;
         } else {
-            n -= (n - unit) / 4;
+            // Slowly: one long card operation (a 21 ms directory read on
+            // the player) must not be forgotten after a few short pieces
+            // (2026-11-25: `chore: job:count 22/8 ms` after the need had
+            // decayed a quarter per piece).
+            n -= (n - unit) / 16;
         }
         if let Some(m) = self.need.get_mut(kind) {
             *m = n.div_ceil(COST_UNIT_US).clamp(1, u32::from(u16::MAX)) as u16;
@@ -450,6 +454,19 @@ mod tests {
         assert_eq!(p.end(6_000).unit, 3_000);
     }
 
+    /// Regression (2026-11-25): a kind whose first card operation can take
+    /// 21 ms was admitted at an 8 ms budget after a handful of short pieces
+    /// (`chore: job:count 22/8 ms`). Five short pieces keep most of it.
+    #[test]
+    fn regress_one_long_operation_is_not_forgotten_after_a_few_short_pieces() {
+        let mut c = Costs::<1>::new();
+        c.observe(0, 21_000, 8_000);
+        for _ in 0..5 {
+            c.observe(0, 3_000, 8_000);
+        }
+        assert!(c.need(0, 8_000) >= 15_000, "{}", c.need(0, 8_000));
+    }
+
     #[test]
     fn costs_rise_at_once_and_decay_slowly() {
         let mut c = Costs::<2>::new();
@@ -458,15 +475,16 @@ mod tests {
         c.observe(0, 40_000, 10_000);
         assert_eq!(c.need(0, 10_000), 40_000);
         c.observe(0, 8_000, 10_000);
-        assert_eq!(c.need(0, 10_000), 32_000);
-        for _ in 0..40 {
+        assert_eq!(c.need(0, 10_000), 38_000);
+        for _ in 0..160 {
             c.observe(0, 8_000, 10_000);
         }
-        assert!((8_000..8_100).contains(&c.need(0, 10_000)));
+        // Integer steps of 1/16 settle within 16 units of the target.
+        assert!((8_000..8_300).contains(&c.need(0, 10_000)), "{}", c.need(0, 10_000));
         // Measured below the seed: decays from the seed; rounded up to
         // 16 µs, at most ≈ 1 s.
         c.observe(1, 0, 4_000);
-        assert_eq!(c.need(1, 4_000), 3_008);
+        assert_eq!(c.need(1, 4_000), 3_760);
         c.observe(1, 5_000_000, 4_000);
         assert_eq!(c.need(1, 4_000), 65_535 * 16);
         // Out of range: the seed, nothing stored.
@@ -941,18 +959,15 @@ mod tests {
             cheap_us: 300,
             ..SOAK
         };
-        let mut old = 0;
+        // (Measured the old way this ran the ring dry on every seed with the
+        // quarter-step decay; the 1/16 decay since also prevents it, so only
+        // the fixed behaviour is asserted.)
         for seed in SEEDS {
             let f = model(&decide, c, seed);
             assert_eq!(f.chore_underruns + f.loop_underruns, 0, "seed {seed}: {f:?}");
             assert_eq!(f.exceeded, 0, "seed {seed}: {f:?}");
             assert!(f.answered > 300, "seed {seed}: {f:?}");
-            // Measured as before: the ring runs dry on every seed.
-            let f = model(&decide, Case { measure_all: true, ..c }, seed);
-            assert!(f.chore_underruns + f.loop_underruns >= 1, "seed {seed}: {f:?}");
-            old += f.chore_underruns + f.loop_underruns;
         }
-        assert!(old >= 5, "{old}");
         // The rule itself: no card work, shorter than the need: unchanged;
         // longer: raised; card work: measured as before.
         let mut k = Costs::<1>::new();
@@ -962,7 +977,7 @@ mod tests {
         k.observe_piece(0, 40_000, 8_000, false);
         assert_eq!(k.need(0, 8_000), 40_000);
         k.observe_piece(0, 8_000, 8_000, true);
-        assert_eq!(k.need(0, 8_000), 32_000);
+        assert_eq!(k.need(0, 8_000), 38_000);
         let p = Piece::new(0, 10_000, 0).with_io(0x1_FFFF);
         assert!(!p.worked(0x1_FFFF) && p.worked(0x2_0000));
         assert_eq!(core::mem::size_of::<Option<Piece>>(), 28);

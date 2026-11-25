@@ -44,14 +44,26 @@ struct WalkSlot {
     len: u32,
     loc_cluster: u32,
     loc_off: u32,
-    /// Bit 0: the directory is contiguous; bit 1: its entry's location is.
+    /// Bit 0: the directory is contiguous; bit 1: its entry's location is;
+    /// bits 2–7: uses ([`USE_SHIFT`]: +4 per hit, −1 every 8th insert).
     flags: u8,
     /// Key length; 0: an empty slot.
     klen: u8,
     key: [u8; WALK_KEY],
 }
 
+/// The use count in `WalkSlot::flags` (bits 2–7, saturating at 63).
+const USE_SHIFT: u8 = 2;
+
 impl WalkSlot {
+    fn uses(&self) -> u8 {
+        self.flags >> USE_SHIFT
+    }
+
+    fn set_uses(&mut self, n: u8) {
+        self.flags = (self.flags & 0b11) | (n.min(63) << USE_SHIFT);
+    }
+
     fn spec(&self) -> DirSpec {
         DirSpec {
             first: self.first,
@@ -96,17 +108,20 @@ impl WalkCache {
 
     /// The longest cached directory that `path` starts with, ending at a
     /// component boundary: its spec and where the rest of the path starts.
-    fn lookup(&self, path: &str) -> Option<(DirSpec, usize)> {
+    fn lookup(&mut self, path: &str) -> Option<(DirSpec, usize)> {
         let b = path.as_bytes();
-        let mut best: Option<(&WalkSlot, usize)> = None;
-        for s in self.slots.iter().filter(|s| s.klen > 0) {
+        let mut best: Option<(usize, usize)> = None;
+        for (i, s) in self.slots.iter().enumerate().filter(|(_, s)| s.klen > 0) {
             let n = usize::from(s.klen);
             let boundary = matches!(b.get(n), None | Some(b'/'));
             if boundary && b.get(..n) == s.key.get(..n) && best.is_none_or(|(_, m)| n > m) {
-                best = Some((s, n));
+                best = Some((i, n));
             }
         }
-        best.map(|(s, n)| (s.spec(), n))
+        let (i, n) = best?;
+        let s = self.slots.get_mut(i)?;
+        s.set_uses(s.uses().saturating_add(4));
+        Some((s.spec(), n))
     }
 
     fn insert(&mut self, key: &[u8], spec: DirSpec) {
@@ -121,8 +136,22 @@ impl WalkCache {
         if let Some(d) = k.get_mut(..key.len()) {
             d.copy_from_slice(key);
         }
-        let i = usize::from(self.next) % WALK_SLOTS;
+        // An empty slot, else the least used (from `next` round, so equal
+        // counts take turns): the firmware's own folders (`/.orpheus/index`,
+        // read by every listing) outlive the art and library walks that
+        // pass through. Round robin alone evicted them, and each listing
+        // then searched the card's root again (60 ms, 2026-11-25).
+        let start = usize::from(self.next) % WALK_SLOTS;
+        let i = (0..WALK_SLOTS)
+            .map(|d| (start + d) % WALK_SLOTS)
+            .min_by_key(|&j| self.slots.get(j).map_or(0, |s| if s.klen == 0 { 0 } else { 1 + u16::from(s.uses()) }))
+            .unwrap_or(start);
         self.next = self.next.wrapping_add(1);
+        if self.next % 8 == 0 {
+            for s in &mut self.slots {
+                s.set_uses(s.uses().saturating_sub(1));
+            }
+        }
         if let Some(slot) = self.slots.get_mut(i) {
             *slot = WalkSlot {
                 first: spec.first,
@@ -1895,6 +1924,27 @@ impl<'c, D: BlockDevice> Volume<'c, D> {
 
 #[cfg(test)]
 mod tests {
+
+    /// Regression (2026-11-25): with round-robin eviction the art and
+    /// library walks pushed `/.orpheus/index` out of the 3-slot cache and
+    /// every listing searched the card's root again (60 ms on the player).
+    /// A directory in use survives walks that pass through others.
+    #[test]
+    fn regress_a_walk_entry_in_use_survives_other_walks() {
+        let spec = |f| DirSpec { first: f, contig: false, len: 4096, self_loc: EntryLoc::NONE };
+        let mut w = WalkCache::EMPTY;
+        w.insert(b"/.orpheus", spec(10));
+        w.insert(b"/.orpheus/index", spec(11));
+        for round in 0..50u32 {
+            // A listing: the index folder is found in the cache.
+            assert!(w.lookup("/.orpheus/index/3").is_some_and(|(s, n)| s.first == 11 && n == 15), "round {round}");
+            // Art and library walks through other folders.
+            for k in 0..4u32 {
+                let key = [b'/', b'M', b'0' + (k as u8), b'/', b'a' + (round % 26) as u8];
+                w.insert(&key, spec(100 + k));
+            }
+        }
+    }
     use super::*;
 
     #[test]
