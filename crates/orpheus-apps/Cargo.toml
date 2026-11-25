@@ -15,6 +15,7 @@ orpheus-steps = { path = "../orpheus-steps" }
 orpheus-otp = { path = "../orpheus-otp" }
 zeroize = { version = "1.8", default-features = false }
 orpheus-rec = { path = "../orpheus-rec" }
+orpheus-usb = { path = "../orpheus-usb" }
 
 [lints]
 workspace = true

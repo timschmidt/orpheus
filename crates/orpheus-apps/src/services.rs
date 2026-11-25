@@ -980,6 +980,82 @@ pub fn push_left<const N: usize>(secs: u32, lang: Lang, out: &mut StrBuf<N>) {
     out.push_str(lang.get(crate::strings::Str::Mins));
 }
 
+// --------------------------------------------------------------- USB Drive
+
+pub use orpheus_usb::msc::image::{Medium as DriveMedium, Refusal as DriveRefusal};
+
+/// What the USB Drive export is doing (05 §7.10, 06 §3).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum DrivePhase {
+    /// Nothing presented.
+    #[default]
+    Off,
+    /// The file is being mapped; the card goes to USB.
+    Preparing,
+    /// The image is presented ([`DriveInfo::host`]: a computer uses it).
+    Attached,
+    /// Refused or failed ([`DriveInfo::refusal`] says why); the card
+    /// stayed with the player.
+    Failed,
+}
+
+impl DrivePhase {
+    /// The card is (or is about to be) with the computer.
+    #[must_use]
+    pub const fn is_active(self) -> bool {
+        matches!(self, DrivePhase::Preparing | DrivePhase::Attached)
+    }
+}
+
+/// The export, by value.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct DriveInfo {
+    pub phase: DrivePhase,
+    pub medium: DriveMedium,
+    pub read_only: bool,
+    /// The image file's size.
+    pub size: u64,
+    pub bytes_read: u64,
+    pub bytes_written: u64,
+    /// A computer has configured the device.
+    pub host: bool,
+    pub refusal: Option<DriveRefusal>,
+    /// Runs of the file on the card (diagnostics).
+    pub runs: u16,
+}
+
+/// An image to present: a file of the current listing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct DriveRequest {
+    pub file: FileRef,
+    pub medium: DriveMedium,
+    /// Let the computer write (honoured only for a disk image in the test
+    /// folder in test mode; the service checks again).
+    pub write: bool,
+}
+
+/// `ServiceEvent::Other { kind: other::USB_DRIVE, value }` values.
+pub mod drive_event {
+    /// [`super::DriveInfo`] changed (phase, host, counters).
+    pub const STATE: u32 = 1;
+}
+
+/// The USB Drive app's back end (firmware: card task + USB task).
+pub trait UsbDriveService {
+    /// `/Images` and `/.orpheus/images` (the test images), where present.
+    fn drive_dirs(&mut self) -> (Option<DirId>, Option<DirId>);
+    /// Test mode: a disk image in the test folder may be presented
+    /// writable (CLAUDE.md rule 5).
+    fn drive_test_mode(&self) -> bool;
+    /// Present the image; the card is the computer's until [`Self::drive_stop`].
+    fn drive_start(&mut self, req: DriveRequest, name: &str);
+    /// Detach and give the card back to the player.
+    fn drive_stop(&mut self);
+    fn drive(&self) -> DriveInfo;
+    /// The presented (or last) image's file name.
+    fn drive_name(&self) -> &str;
+}
+
 /// Everything the apps need. Implemented automatically for any type with
 /// all the parts; the toolkit's `System` (status bar, volume, mini-player)
 /// can be implemented with [`status`], [`mini_player`] and
@@ -1004,6 +1080,7 @@ pub trait Services:
     + ToolsService
     + AuthService
     + RecorderService
+    + UsbDriveService
 {
 }
 
@@ -1027,6 +1104,7 @@ impl<T> Services for T where
         + ToolsService
         + AuthService
         + RecorderService
+        + UsbDriveService
 {
 }
 
@@ -1132,6 +1210,8 @@ pub mod other {
     pub const AUTH: u16 = 6;
     /// Recorder: `value` is one of [`super::rec_event`].
     pub const RECORDER: u16 = 6;
+    /// USB Drive: `value` is one of [`super::drive_event`].
+    pub const USB_DRIVE: u16 = 7;
 }
 
 /// Browser order (Files menu › Sort).

@@ -26,9 +26,10 @@ Home shows the apps that work on the player:
 | Bluetooth | [bluetooth.md](bluetooth.md) | Send music to Bluetooth headphones or a speaker |
 | Settings | [settings.md](settings.md) | Sound, playback, display, language, storage, system |
 | Performance | [performance.md](performance.md) | Normal or Maximum processor speed |
+| USB Drive | [usb-drive.md](usb-drive.md) | **In progress**: start a computer from an ISO or disk image on the card |
 
-Radio, Recorder, Steps, Stopwatch, Authenticator, USB Drive and the
-Bluetooth presenter remote are planned; they are not on the player yet.
+Radio, Recorder, Steps, Stopwatch, Authenticator and the Bluetooth
+presenter remote are planned; they are not on the player yet.
 The screenshots come from the simulator, which shows every planned app on
 Home.
 

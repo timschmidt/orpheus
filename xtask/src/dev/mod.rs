@@ -9,6 +9,7 @@
 mod hil;
 mod ram;
 mod stage;
+mod usbimage;
 mod usbtest;
 
 use std::fs::File;
@@ -37,6 +38,9 @@ cargo xtask dev <subcommand>
                                 arm test mode and collect the results
   hil SUITE                     run an on-device suite (smoke)
   usbtest [--cycles N]          USB-1 acceptance: enumerate, control sizes, re-enumeration
+  usbimage-test [--img F] [--iso F] [--rw] [--qemu]
+                                USB-6: put images into /.orpheus/images/, present each,
+                                read the whole block device, compare hashes, detach
   stage IMAGE|NAME|FILE.yfw      write a YFW1 slot to slot A (0x762000)
   install-stage2                 replace stage 2 at 0x7DF400 (keeps the vendor record copy)
   keys 'ok wait:300 hold:menu'  inject keys into running orpheus
@@ -64,6 +68,46 @@ cargo xtask dev <subcommand>
                                 switch to the full layout (D-2): erases the stock firmware
   reset                         reset through ymon (the installed firmware boots)
 ";
+
+/// Upload `data` to `remote` (under `/.orpheus/` only) through the
+/// firmware's file system (`fcreate`, `PUT` chunks, `fclose`).
+pub(super) fn put(data: &[u8], remote: &str) -> Result<String> {
+    if !remote.starts_with("/.orpheus/") {
+        bail!("uploads go under /.orpheus/ only (CLAUDE.md rule 5)");
+    }
+    let d = orpheus_host::devchan::DevChannel::open(Duration::from_secs(3))?;
+    let reply = |d: &orpheus_host::devchan::DevChannel| -> Result<String> {
+        Ok(String::from_utf8_lossy(&d.control_in(orpheus_proto::devchan::REQ_TEST, 0, 0, 256)?).into_owned())
+    };
+    let wait_for = |d: &orpheus_host::devchan::DevChannel, want: &str| -> Result<()> {
+        let t0 = std::time::Instant::now();
+        loop {
+            let r = reply(d)?;
+            if r == want {
+                return Ok(());
+            }
+            if r.contains("failed") {
+                bail!("player: {r}");
+            }
+            if t0.elapsed() > Duration::from_secs(10) {
+                bail!("timed out waiting for `{want}` (last reply `{r}`)");
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    d.control_out(orpheus_proto::devchan::REQ_TEST, 0, 0, format!("fcreate {remote}").as_bytes())?;
+    wait_for(&d, "put 0")?;
+    let t0 = std::time::Instant::now();
+    let mut sent = 0usize;
+    for chunk in data.chunks(1024) {
+        d.control_out(orpheus_proto::devchan::REQ_PUT, 0, 0, chunk)?;
+        sent += chunk.len();
+        wait_for(&d, &format!("put {sent}"))?;
+    }
+    d.control_out(orpheus_proto::devchan::REQ_TEST, 0, 0, b"fclose")?;
+    wait_for(&d, &format!("closed {sent}"))?;
+    Ok(format!("{sent} bytes -> {remote} in {:.1} s", t0.elapsed().as_secs_f32()))
+}
 
 pub fn cmd(args: &mut Args) -> Result<String> {
     let sub = args.next_positional().unwrap_or_else(|| "help".into());
@@ -162,44 +206,9 @@ pub fn cmd(args: &mut Args) -> Result<String> {
         "put" => {
             let local = args.positional("LOCAL file")?;
             let remote = args.positional("REMOTE path under /.orpheus/")?;
-            if !remote.starts_with("/.orpheus/") {
-                bail!("uploads go under /.orpheus/ only (CLAUDE.md rule 5)");
-            }
-            let data = std::fs::read(&local)?;
-            let d = orpheus_host::devchan::DevChannel::open(Duration::from_secs(3))?;
-            let reply = |d: &orpheus_host::devchan::DevChannel| -> Result<String> {
-                Ok(String::from_utf8_lossy(&d.control_in(orpheus_proto::devchan::REQ_TEST, 0, 0, 256)?)
-                    .into_owned())
-            };
-            let wait_for = |d: &orpheus_host::devchan::DevChannel, want: &str| -> Result<()> {
-                let t0 = std::time::Instant::now();
-                loop {
-                    let r = reply(d)?;
-                    if r == want {
-                        return Ok(());
-                    }
-                    if r.contains("failed") {
-                        bail!("player: {r}");
-                    }
-                    if t0.elapsed() > Duration::from_secs(10) {
-                        bail!("timed out waiting for `{want}` (last reply `{r}`)");
-                    }
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-            };
-            d.control_out(orpheus_proto::devchan::REQ_TEST, 0, 0, format!("fcreate {remote}").as_bytes())?;
-            wait_for(&d, "put 0")?;
-            let t0 = std::time::Instant::now();
-            let mut sent = 0usize;
-            for chunk in data.chunks(1024) {
-                d.control_out(orpheus_proto::devchan::REQ_PUT, 0, 0, chunk)?;
-                sent += chunk.len();
-                wait_for(&d, &format!("put {sent}"))?;
-            }
-            d.control_out(orpheus_proto::devchan::REQ_TEST, 0, 0, b"fclose")?;
-            wait_for(&d, &format!("closed {sent}"))?;
-            Ok(format!("{sent} bytes -> {remote} in {:.1} s", t0.elapsed().as_secs_f32()))
+            put(&std::fs::read(&local)?, &remote)
         }
+        "usbimage-test" => usbimage::cmd(args),
         "otp-add" => {
             let uri = args.next_positional().context("otp-add needs an otpauth:// URI")?;
             if !uri.starts_with("otpauth://") || uri.len() > 1024 {

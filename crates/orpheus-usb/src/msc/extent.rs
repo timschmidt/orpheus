@@ -12,6 +12,7 @@ pub const SECTOR: u32 = 512;
 /// sectors `[lba, lba + count)`. 12 bytes, so the USB pool's 8 KiB table
 /// holds [`POOL_EXTENTS`] runs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
 pub struct Extent {
     pub file_sector: u32,
     pub lba: u32,
@@ -63,6 +64,34 @@ impl<'a> ExtentTable<'a> {
         Ok(())
     }
 
+    /// A table the caller filled earlier (the firmware maps the file in
+    /// the card task and serves it from the USB task): the first `len`
+    /// entries of `storage`. `None` unless the runs are non-empty and
+    /// follow each other in file order without gaps or overflow.
+    #[must_use]
+    pub fn from_raw(storage: &'a mut [Extent], len: usize) -> Option<Self> {
+        let mut sectors = 0u32;
+        for e in storage.get(..len)? {
+            if e.count == 0 || e.file_sector != sectors {
+                return None;
+            }
+            e.lba.checked_add(e.count)?;
+            sectors = sectors.checked_add(e.count)?;
+        }
+        Some(Self { runs: storage, len, sectors })
+    }
+
+    /// Runs in use.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     #[must_use]
     pub fn runs(&self) -> &[Extent] {
         &self.runs[..self.len]
@@ -97,17 +126,24 @@ pub enum ImageError<E> {
     OutOfRange,
     /// The table does not cover the file.
     NotCovered,
+    /// A write to an image exported read-only.
+    ReadOnly,
 }
 
 /// A [`BlockDevice`] over an image file: `block_size` (512 for disks, 2048
 /// for CD) logical blocks mapped through the extent table onto the card.
 /// Bytes past the end of the file read as zeros (an ISO whose size is not
 /// a multiple of 2048 is padded); writes there are refused.
+///
+/// Writes are refused unless [`ImageDevice::set_writable`] allowed them,
+/// and a write never reaches a card sector outside the table's runs: the
+/// SCSI layer's write protection is not the only guard (CLAUDE.md rule 5).
 pub struct ImageDevice<'t, D> {
     pub card: D,
     table: ExtentTable<'t>,
     file_bytes: u64,
     block_size: u32,
+    writable: bool,
 }
 
 impl<'t, D: BlockDevice> ImageDevice<'t, D> {
@@ -123,7 +159,19 @@ impl<'t, D: BlockDevice> ImageDevice<'t, D> {
         {
             return Err(ImageError::NotCovered);
         }
-        Ok(Self { card, table, file_bytes, block_size })
+        Ok(Self { card, table, file_bytes, block_size, writable: false })
+    }
+
+    /// Allow writes (a disk image the policy let through as read/write,
+    /// [`super::image::check`]). Off by default.
+    pub fn set_writable(&mut self, w: bool) {
+        self.writable = w;
+    }
+
+    /// Image bytes (the file's size).
+    #[must_use]
+    pub fn file_bytes(&self) -> u64 {
+        self.file_bytes
     }
 
     /// Blocks to report: whole blocks for a disk (the tail is not
@@ -182,6 +230,9 @@ impl<D: BlockDevice> BlockDevice for ImageDevice<'_, D> {
     }
 
     async fn write(&mut self, lba: u64, buf: &[u8]) -> Result<(), Self::Error> {
+        if !self.writable {
+            return Err(ImageError::ReadOnly);
+        }
         let first = self.check(lba, buf.len(), self.blocks(false))?;
         let total = (buf.len() / SECTOR as usize) as u64;
         let mut done = 0u64;
@@ -320,6 +371,8 @@ mod tests {
         }
         let mut img = ImageDevice::new(card, t, bytes as u64, 512).unwrap();
         assert_eq!(img.blocks(false), 128);
+        assert_eq!(block_on(img.write(0, &[0u8; 512])), Err(ImageError::ReadOnly));
+        img.set_writable(true);
         let data: Vec<u8> = (0..40 * 512).map(|i| (i % 253) as u8).collect();
         block_on(img.write(80, &data)).unwrap();
         file[80 * 512..120 * 512].copy_from_slice(&data);
@@ -340,6 +393,71 @@ mod tests {
         let mut t = ExtentTable::new(&mut st);
         t.push(0, 3).unwrap();
         assert!(matches!(ImageDevice::new(Card(Vec::new()), t, 4 * 512, 2048), Err(ImageError::NotCovered)));
+    }
+
+    /// A writable disk image: writes everywhere the host can address land
+    /// in the file's runs and nowhere else; writes past the image are
+    /// refused and change nothing.
+    #[test]
+    fn writes_never_leave_the_runs() {
+        let bytes = 96 * 1024 + 200;
+        let (card, _, runs) = scatter(bytes, 17, 11);
+        let before = card.0.clone();
+        let mut owned = std::vec![false; before.len() / 512];
+        for (lba, n) in &runs {
+            for s in *lba..*lba + *n {
+                owned[s as usize] = true;
+            }
+        }
+        let mut st = [Extent::default(); 32];
+        let mut t = ExtentTable::new(&mut st);
+        for (lba, n) in &runs {
+            t.push(*lba, *n).unwrap();
+        }
+        let mut img = ImageDevice::new(card, t, bytes as u64, 512).unwrap();
+        img.set_writable(true);
+        let blocks = img.blocks(false);
+        // Every addressable block, then attempts past the end.
+        for lba in 0..blocks {
+            block_on(img.write(lba, &[0xA5u8; 512])).unwrap();
+        }
+        for (lba, n) in [(blocks, 1u64), (blocks - 1, 2), (u64::MAX / 512, 1), (u64::MAX, 1)] {
+            let buf = std::vec![0x5Au8; n as usize * 512];
+            assert_eq!(block_on(img.write(lba, &buf)), Err(ImageError::OutOfRange), "lba {lba}");
+        }
+        // A misaligned length is refused too.
+        assert_eq!(block_on(img.write(0, &[0u8; 100])), Err(ImageError::OutOfRange));
+        let after = &img.card.0;
+        for (s, own) in owned.iter().enumerate() {
+            let (b, a) = (&before[s * 512..(s + 1) * 512], &after[s * 512..(s + 1) * 512]);
+            if !own {
+                assert_eq!(a, b, "card sector {s} outside the image changed");
+            }
+        }
+        // The partial last sector of the file (200 bytes) is not
+        // addressable, so it kept its contents.
+        let (last_lba, last_n) = *runs.last().unwrap();
+        let tail = (last_lba + last_n - 1) as usize * 512;
+        assert_eq!(&after[tail..tail + 512], &before[tail..tail + 512]);
+    }
+
+    #[test]
+    fn from_raw_checks_the_runs() {
+        let mut st = [Extent::default(); 4];
+        let mut t = ExtentTable::new(&mut st);
+        t.push(100, 8).unwrap();
+        t.push(50, 4).unwrap();
+        let len = t.len();
+        let t = ExtentTable::from_raw(&mut st, len).unwrap();
+        assert_eq!((t.sectors(), t.map(9)), (12, Some((51, 3))));
+        let mut bad =
+            [Extent { file_sector: 0, lba: 1, count: 4 }, Extent { file_sector: 5, lba: 9, count: 1 }];
+        assert!(ExtentTable::from_raw(&mut bad, 2).is_none(), "gap in file order");
+        assert!(ExtentTable::from_raw(&mut bad, 3).is_none(), "longer than the storage");
+        let mut zero = [Extent { file_sector: 0, lba: 1, count: 0 }];
+        assert!(ExtentTable::from_raw(&mut zero, 1).is_none());
+        let mut wrap = [Extent { file_sector: 0, lba: u32::MAX, count: 2 }];
+        assert!(ExtentTable::from_raw(&mut wrap, 1).is_none());
     }
 
     #[test]

@@ -123,6 +123,8 @@ impl Ui {
                 let p = match m {
                     orpheus_apps::services::UsbMode::FileTransfer => crate::usbdev::Personality::FileTransfer,
                     orpheus_apps::services::UsbMode::Keyboard => crate::usbdev::Personality::Keyboard,
+                    // USB Drive: the image is in `crate::drive` already.
+                    orpheus_apps::services::UsbMode::DiskImage => crate::usbdev::Personality::Image,
                     _ => crate::usbdev::Personality::Dev,
                 };
                 crate::usbdev::MSC_READ_ONLY.store(false, core::sync::atomic::Ordering::Relaxed);
@@ -443,6 +445,7 @@ pub async fn ui() {
         ui.fw.sync_bt();
         ui.fw.sync_radio(now().0);
         ui.fw.sync_rec();
+        ui.fw.sync_drive();
         // SENS-1 / UI-5c: the Steps app counts while it is open.
         let steps_open = ui.shell.top_id() == screens::STEPS;
         ui.fw.sync_steps(steps_open);

@@ -900,6 +900,7 @@ dependencies = [
  "orpheus-rec",
  "orpheus-steps",
  "orpheus-ui",
+ "orpheus-usb",
  "zeroize",
 ]
 
@@ -1153,6 +1154,7 @@ dependencies = [
  "orpheus-rec",
  "orpheus-steps",
  "orpheus-ui",
+ "orpheus-usb",
 ]
 
 [[package]]
@@ -1176,6 +1178,7 @@ dependencies = [
  "embassy-futures",
  "embassy-usb",
  "embassy-usb-driver",
+ "orpheus-fs",
  "orpheus-proto",
 ]
 

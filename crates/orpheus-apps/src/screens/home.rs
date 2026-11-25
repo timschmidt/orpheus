@@ -144,10 +144,13 @@ impl<S: Services + ?Sized> Screen<S> for HomeScreen {
                     match cx.svc.card() {
                         CardState::Absent => Notice::NoCard,
                         CardState::Unreadable => Notice::CardUnreadable,
+                        CardState::UsbOwned if app != App::UsbDrive => Notice::NoCard,
                         _ => match app {
                             App::Music => return Nav::Push(MUSIC, Arg(0)),
                             App::Files => return Nav::Push(FILES, Arg(0)),
                             App::Pictures => return Nav::Push(PICTURES, Arg(0)),
+                            // Also while the card is lent: the export's status.
+                            App::UsbDrive => return Nav::Push(super::USB_DRIVE, Arg(0)),
                             _ => Notice::NotYet(app),
                         },
                     }

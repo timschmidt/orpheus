@@ -116,7 +116,9 @@ fn media_cases(add: &mut dyn FnMut(String, String)) {
         ("files_props", "next ok down*2 ok down*{artist} ok ok wait:100 down*{track} menu down*4 ok"),
         ("files_delete", "next ok down*2 ok down*{artist} ok ok wait:100 down*{track} menu down*5 ok"),
         ("files_hidden", "next ok menu down*4 ok menu wait:100"),
-        ("files_notice", "next ok down ok wait:100 ok expect-screen:Notice"),
+        // A firmware file: not built yet (a disk image opens USB Drive since USB-6).
+        ("files_notice", "next ok wait:100 down*7 ok expect-screen:Notice"),
+        ("files_disk_image", "next ok down ok wait:100 ok expect-screen:DriveOptions"),
         ("text", "next ok ok wait:100 down*{book} ok wait:200 expect-screen:TextViewer"),
         ("text_page", "next ok ok wait:100 down*{book} ok wait:200 next wait:200 next wait:200"),
         ("music", "ok wait:100 expect-screen:Music"),
@@ -164,6 +166,48 @@ fn media_cases(add: &mut dyn FnMut(String, String)) {
     steps_cases(add);
     tools_cases(add);
     auth_cases(add);
+    drive_cases(add);
+}
+
+/// USB-6 / UI-6: USB Drive over the simulator's export (`sim/src/drive.rs`:
+/// the firmware's checks, the file mapped on the simulated card, a fake
+/// computer reading at 512 KiB/s). Home grid: the tenth app. The card has
+/// `/Images/boot.img`, `/Images/rescue.iso` and the test images
+/// `/.orpheus/images/scattered.img` (700 runs: too fragmented) and
+/// `test.img` (1 MiB). Options open on Connect (Mode is two rows up).
+fn drive_cases(add: &mut dyn FnMut(String, String)) {
+    let app = "down*2 next ok wait:100 expect-screen:UsbDrive";
+    let iso = format!("{app} ok wait:100 down ok expect-screen:DriveOptions");
+    let test = format!("set:developer=1 {app} down ok wait:100 down ok expect-screen:DriveOptions");
+    let ro_test = format!("{app} down ok wait:100 down ok expect-screen:DriveOptions");
+    let journeys: &[(&str, String)] = &[
+        ("home", app.into()),
+        ("images", format!("{app} ok wait:100 expect-screen:DriveFiles")),
+        ("test_images", format!("{app} down ok wait:100 expect-screen:DriveFiles")),
+        ("choose", format!("{app} down*2 ok wait:100 down*6")),
+        ("empty", format!("{app} down*2 ok wait:100 down*4 ok wait:100")),
+        ("options_cd", iso.clone()),
+        ("options_disk", format!("{iso} up*2 ok")),
+        ("options_forced_ro", format!("{ro_test} up ok wait:100")),
+        ("options_rw", format!("{test} up ok")),
+        ("waiting", format!("{iso} ok wait:500 expect-screen:DriveStatus")),
+        ("reading", format!("set:drivehost=1 {ro_test} ok wait:1300")),
+        ("connected", format!("set:drivehost=1 {ro_test} ok wait:4500")),
+        ("writing", format!("set:drivehost=1 set:drivewrite=8 {test} up ok down ok wait:3000")),
+        ("stop_ask", format!("set:drivehost=1 set:drivewrite=8 {test} up ok down ok wait:3000 back")),
+        ("fragmented", format!("{app} down ok wait:100 ok ok wait:100")),
+    ];
+    for t in ["dark", "light"] {
+        for l in ["latin", "cyrillic", "cjk"] {
+            for (name, script) in journeys {
+                add(format!("drive_{name}_{t}_{l}"), format!("@apps theme:{t} lang:{l} {script}"));
+            }
+        }
+    }
+    add("drive_home_amber".into(), format!("@apps theme:amber {app}"));
+    add("drive_options_amber".into(), format!("@apps theme:amber {iso}"));
+    add("drive_connected_amber".into(), format!("@apps theme:amber set:drivehost=1 {ro_test} ok wait:4500"));
+    add("drive_fragmented_amber".into(), format!("@apps theme:amber {app} down ok wait:100 ok ok wait:100"));
 }
 
 /// OTP-2 / USB-5: the Authenticator over the vault service and the fake
@@ -505,8 +549,9 @@ fn app_cases(add: &mut dyn FnMut(String, String)) {
         ("quick", "set:playing=1 set:bt=connected hold:menu expect-screen:QuickPanel down*3 next"),
         ("lock", "set:playing=1 power down expect-screen:Lock"),
         ("no_card", "set:card=absent ok expect-screen:Notice"),
-        // The Authenticator (the Recorder opens since UI-5b).
-        ("not_yet", "down*2 next ok expect-screen:Notice"),
+        // Every app opens since USB-6 (USB Drive was the last): a
+        // playlist (Files › Music › Mix.m3u8) is what is not built yet.
+        ("not_yet", "next ok wait:100 down*2 ok wait:100 down*5 ok expect-screen:Notice"),
         ("battery_low", "set:battery=5 expect-screen:Notice"),
         ("charging", "set:charge=charging set:battery=64 goto:Charging expect-screen:Charging"),
         ("usb", "set:usb=host expect-screen:UsbConnect"),

@@ -847,6 +847,7 @@ dependencies = [
  "orpheus-rec",
  "orpheus-steps",
  "orpheus-ui",
+ "orpheus-usb",
  "zeroize",
 ]
 
@@ -1053,6 +1054,7 @@ version = "0.1.0"
 dependencies = [
  "embassy-usb",
  "embassy-usb-driver",
+ "orpheus-fs",
  "orpheus-proto",
 ]
 

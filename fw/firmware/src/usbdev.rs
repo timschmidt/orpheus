@@ -148,6 +148,13 @@ impl Target for Fw {
             MODE.signal(Personality::Dev);
             return true;
         }
+        // USB-6: `usb image <path> [cd|disk|fixed] [ro|rw]`, `usb image status`.
+        if let Some(rest) = data.strip_prefix(b"usb image ") {
+            if crate::drive::test_command(rest) {
+                MODE.signal(Personality::Image);
+            }
+            return true;
+        }
         if data == b"usb kbd" {
             MODE.signal(Personality::Keyboard);
             return true;
@@ -319,7 +326,8 @@ static mut MSC_CLASS: MscClass = MscClass;
 static mut HID_STATE: embassy_usb::class::hid::State<'static> = embassy_usb::class::hid::State::new();
 static mut KBD_REQUESTS: crate::kbd::Requests = crate::kbd::Requests;
 static mut KBD_BUS: crate::kbd::Bus = crate::kbd::Bus;
-/// The personality presented (INFO): 0 developer, 1 card reader, 2 keyboard.
+/// The personality presented (INFO): 0 developer, 1 card reader, 2
+/// keyboard, 3 disk image.
 pub static CURRENT: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 pub const CURRENT_CARD_READER: u8 = 1;
 
@@ -345,6 +353,9 @@ pub enum Personality {
     FileTransfer,
     /// HID boot keyboard (+ developer channel): USB-5.
     Keyboard,
+    /// An image file as a disk or CD-ROM (+ developer channel): USB-6,
+    /// `crate::drive`.
+    Image,
 }
 
 /// Class requests of the mass-storage interface: GET MAX LUN = 0, reset.
@@ -499,6 +510,127 @@ async fn run_msc() -> Personality {
     next
 }
 
+/// USB Drive (USB-6): the card task maps the wanted image (`crate::drive`)
+/// and hands the card over as for the card reader; the image is served
+/// through its extent table, then the card goes back re-initialised.
+async fn run_image() -> Personality {
+    use orpheus_apps::services::DrivePhase;
+    use orpheus_usb::msc::extent::{ExtentTable, ImageDevice};
+    // No mounted card: the card task would never answer. (Straight after
+    // the card reader the card is being mounted again: wait for it.)
+    for _ in 0..30 {
+        if crate::state::CARD_READY.load(Ordering::Relaxed) {
+            break;
+        }
+        Timer::after_millis(100).await;
+    }
+    if !crate::state::CARD_READY.load(Ordering::Relaxed) {
+        crate::drive::update(|i| {
+            i.phase = DrivePhase::Failed;
+            i.refusal = Some(orpheus_apps::services::DriveRefusal::Io);
+        });
+        return Personality::Dev;
+    }
+    CARD_WITH_USB.store(true, Ordering::Relaxed);
+    crate::drive::MAPPED.reset();
+    crate::media::REQS.send(crate::media::Req::Image).await;
+    let mapped = match crate::drive::MAPPED.wait().await {
+        Ok(m) => m,
+        Err(r) => {
+            CARD_WITH_USB.store(false, Ordering::Relaxed);
+            crate::drive::update(|i| {
+                i.phase = DrivePhase::Failed;
+                i.refusal = Some(r);
+            });
+            atj2157_hal::log::line(b"usb: image refused");
+            return Personality::Dev;
+        }
+    };
+    let mut card = crate::audio::CARD_OUT.receive().await;
+    let e = mapped.export;
+    crate::drive::update(|i| {
+        i.phase = DrivePhase::Attached;
+        i.medium = e.medium;
+        i.read_only = e.read_only;
+        i.size = e.bytes;
+        i.runs = mapped.runs as u16;
+    });
+    atj2157_hal::log::line(b"usb: image on");
+    let next = {
+        let mut b = builder("YM03 USB Drive");
+        // SAFETY: as in `builder`.
+        b.handler(unsafe { &mut *(&raw mut MSC_CLASS) });
+        let mut func = b.function(0x08, 0x06, 0x50);
+        let mut iface = func.interface();
+        let mut alt = iface.alt_setting(0x08, 0x06, 0x50, None);
+        let ep_in = alt.endpoint_bulk_in(None, 512);
+        let ep_out = alt.endpoint_bulk_out(None, 512);
+        drop(func);
+        let mut dev = b.build();
+        // SAFETY: the card is with this task until `CARD_BACK.send` below,
+        // after this scope (and these borrows) end; the card task filled
+        // the extents before handing the card over.
+        let (buf, area) = unsafe { (crate::audio::usb_buffer(), crate::audio::usb_extents()) };
+        let table = ExtentTable::from_raw(crate::drive::as_extents(area), mapped.runs);
+        let image =
+            table.and_then(|t| ImageDevice::new(CardDev(&mut card), t, e.bytes, e.medium.block_size()).ok());
+        match image {
+            None => {
+                crate::drive::update(|i| {
+                    i.phase = DrivePhase::Failed;
+                    i.refusal = Some(orpheus_apps::services::DriveRefusal::Io);
+                });
+                Personality::Dev
+            }
+            Some(mut image) => {
+                image.set_writable(!e.read_only);
+                let mut bot = orpheus_usb::msc::bot::Bot::new(ep_in, ep_out, image, e.unit(), buf);
+                bot.scsi.medium_changed();
+                let pump = async {
+                    loop {
+                        embassy_usb_driver::Endpoint::wait_enabled(&mut bot.ep_in).await;
+                        crate::drive::update(|i| i.host = true);
+                        while bot.serve_one().await.is_ok() {
+                            let st = bot.stats;
+                            crate::drive::update(|i| {
+                                i.bytes_read = st.bytes_read;
+                                i.bytes_written = st.bytes_written;
+                            });
+                            if bot.scsi.events.eject {
+                                // Ejected on the computer: as the card
+                                // reader, the card comes back.
+                                return Personality::Dev;
+                            }
+                        }
+                        crate::drive::update(|i| i.host = false);
+                    }
+                };
+                let r = embassy_futures::select::select3(dev.run(), pump, MODE.wait()).await;
+                usb::set_attached(false);
+                match r {
+                    embassy_futures::select::Either3::Second(p)
+                    | embassy_futures::select::Either3::Third(p) => p,
+                    embassy_futures::select::Either3::First(_) => Personality::Dev,
+                }
+            }
+        }
+    };
+    // As the card reader: reset the controller and the card first.
+    if card.reinit().await.is_err() {
+        atj2157_hal::log::line(b"usb: card re-init failed");
+    }
+    crate::audio::CARD_BACK.send(card).await;
+    CARD_WITH_USB.store(false, Ordering::Relaxed);
+    crate::drive::update(|i| {
+        if i.phase != DrivePhase::Failed {
+            i.phase = DrivePhase::Off;
+        }
+        i.host = false;
+    });
+    atj2157_hal::log::line(b"usb: card returned");
+    next
+}
+
 /// The keyboard personality: the developer channel's interface and a HID
 /// boot keyboard (1 interrupt IN endpoint, 8-byte reports, 4 ms interval:
 /// bInterval 4 is 4 ms at full speed and 2^3 microframes = 1 ms at high
@@ -548,6 +680,7 @@ pub async fn usb() {
                 Personality::Dev => 0,
                 Personality::FileTransfer => 1,
                 Personality::Keyboard => 2,
+                Personality::Image => 3,
             },
             Ordering::Relaxed,
         );
@@ -555,6 +688,7 @@ pub async fn usb() {
             Personality::Dev => run_dev().await,
             Personality::FileTransfer => run_msc().await,
             Personality::Keyboard => run_kbd().await,
+            Personality::Image => run_image().await,
         };
         usb::shutdown();
         Timer::after_millis(200).await;
