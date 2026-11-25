@@ -1,4 +1,4 @@
-//! A game on screen (05 §7.13, M14): Blocks and 4096.
+//! A game on screen (05 §7.13, M14): Blocks, 4096 and Solitaire.
 //!
 //! The game itself is in the service (`GamesService::games`); this screen
 //! maps keys to game inputs, runs the fixed logic steps from its ticks
@@ -16,10 +16,19 @@
 //! 4096 shows the status bar and uses the strip: score and best over a
 //! square board of 98 px. Up/Down/Prev/Next slide (with a 4-frame slide
 //! animation unless turned off), OK takes back a slide, Back pauses.
+//!
+//! Solitaire is full screen (`super::solitaire`): Prev/Next move between
+//! the piles, Up/Down choose depth, OK picks up and puts down, Menu sends
+//! cards to the foundations, hold OK undoes, Back puts held cards back or
+//! pauses.
+//!
+//! A save file a firmware's card task reads later (`GamesService`'s
+//! `Open` answered late, the hub's `opening`): the screen shows "Loading…"
+//! until the hub has the game.
 
 use orpheus_games::blocks::{self, ATTACK_STEPS, Blocks, HIDDEN, LINES_GOAL, Piece, ROWS, W};
 use orpheus_games::tiles::{self, Moved, Tiles, TilesOut};
-use orpheus_games::{Advance, Button, Input, STEP_HZ, Session, StepClock};
+use orpheus_games::{Advance, Button, Input, STEP_HZ, Session, StepClock, solitaire::SolOut};
 use orpheus_ui::color::{Color, blend, channels};
 use orpheus_ui::event::{Event, Instant, Key, KeyPhase};
 use orpheus_ui::font::FontId;
@@ -30,19 +39,24 @@ use orpheus_ui::text::StrBuf;
 use orpheus_ui::theme::Role;
 
 use super::games::{push_points, push_time};
-use super::{GAME_BLOCKS, GAME_PAUSE, GAME_TILES};
+use super::solitaire::SolitaireView;
+use super::{GAME_BLOCKS, GAME_PAUSE, GAME_SOLITAIRE, GAME_TILES};
 use crate::games::{self, Game, GamesRequest};
 use crate::services::Services;
+use crate::services::other;
 use crate::strings::{Lang, Str};
+use orpheus_ui::event::ServiceEvent;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
-enum View {
+pub(super) enum View {
     Playing,
     /// Waiting for OK (a new game, or after an interruption).
     Paused,
     /// The game ended; OK starts a new one.
     Ended,
+    /// The save file is being read (the hub's `opening`).
+    Loading,
 }
 
 /// Frames of 4096's slide animation (one per tick, about 33 ms each).
@@ -60,6 +74,13 @@ pub struct GameScreen {
     anim: Option<(Moved, u8)>,
     /// What was drawn: the whole, the well (Blocks), the panel (Blocks).
     drawn: Option<(u32, u32, u32)>,
+    /// Solitaire: what each pile and the info line looked like when drawn.
+    sol_drawn: Option<[u32; 15]>,
+    /// The cards held could not go there: the target flashes.
+    refused: u8,
+    /// The OK press was the screen's (resume, new game): its release is
+    /// not a game input.
+    eat_release: bool,
 }
 
 impl GameScreen {
@@ -73,6 +94,9 @@ impl GameScreen {
             new_best: false,
             anim: None,
             drawn: None,
+            sol_drawn: None,
+            refused: 0,
+            eat_release: false,
         }
     }
 
@@ -81,6 +105,7 @@ impl GameScreen {
         match self.game {
             Game::Blocks => GAME_BLOCKS,
             Game::Tiles => GAME_TILES,
+            Game::Solitaire => GAME_SOLITAIRE,
         }
     }
 
@@ -89,7 +114,14 @@ impl GameScreen {
         match self.game {
             Game::Blocks => "Blocks",
             Game::Tiles => "Game4096",
+            Game::Solitaire => "Solitaire",
         }
+    }
+
+    /// Real-time games run logic steps from the ticks (Solitaire: its
+    /// timer and auto-complete).
+    fn stepped(&self) -> bool {
+        matches!(self.game, Game::Blocks | Game::Solitaire)
     }
 
     fn pause<S: Services + ?Sized>(&mut self, svc: &mut S) {
@@ -97,8 +129,12 @@ impl GameScreen {
             self.view = View::Paused;
         }
         self.clock.reset();
-        if let Session::Blocks(b) = &mut svc.games_mut().session {
-            b.release_all();
+        match &mut svc.games_mut().session {
+            Session::Blocks(b) => b.release_all(),
+            Session::Solitaire(s) => {
+                s.drop_held();
+            }
+            _ => {}
         }
     }
 
@@ -111,16 +147,45 @@ impl GameScreen {
     fn fresh_view(&self) -> View {
         match self.game {
             Game::Blocks => View::Paused,
-            Game::Tiles => View::Playing,
+            Game::Tiles | Game::Solitaire => View::Playing,
         }
+    }
+
+    /// The hub has this game (or none, and the save file is not being
+    /// read): a new game if there is none, the handling settings, the view.
+    fn ready<S: Services + ?Sized>(&mut self, cx: &mut Cx<'_, S>) {
+        if !self.game.is(&cx.svc.games().session) {
+            games::new_game(cx.svc, self.game);
+        }
+        let (das, arr) = games::blocks_handling(cx.svc);
+        let sol = games::solitaire_config(cx.svc);
+        match &mut cx.svc.games_mut().session {
+            Session::Blocks(b) => {
+                b.set_handling(das, arr);
+                b.release_all();
+            }
+            Session::Solitaire(s) => {
+                s.set_assists(sol.auto_move, sol.auto_complete);
+                s.drop_held();
+            }
+            _ => {}
+        }
+        self.view = if cx.svc.games().session.in_progress() { self.fresh_view() } else { View::Ended };
+        self.clock.reset();
+        self.anim = None;
+        self.drawn = None;
+        self.sol_drawn = None;
     }
 
     fn key<S: Services + ?Sized>(&mut self, cx: &mut Cx<'_, S>, i: Input) {
         match self.view {
+            View::Loading => {}
             View::Paused => {
                 if i == Input::Press(Button::Ok) {
                     self.view = View::Playing;
                     self.clock.reset();
+                    // Its release must not pick up a card.
+                    self.eat_release = true;
                 }
             }
             View::Ended => {
@@ -128,10 +193,15 @@ impl GameScreen {
                     games::new_game(cx.svc, self.game);
                     self.new_best = false;
                     self.anim = None;
+                    self.sol_drawn = None;
                     self.view = self.fresh_view();
+                    self.eat_release = true;
                 }
             }
             View::Playing => {
+                if i == Input::Release(Button::Ok) && core::mem::take(&mut self.eat_release) {
+                    return;
+                }
                 let animate = games::tiles_animations(cx.svc);
                 let ended = match &mut cx.svc.games_mut().session {
                     Session::Blocks(b) => b.input(i).ended,
@@ -143,12 +213,23 @@ impl GameScreen {
                         }
                         t.over()
                     }
+                    Session::Solitaire(s) => {
+                        self.refused = if s.input(i) == SolOut::Refused { 6 } else { 0 };
+                        s.ended()
+                    }
                     Session::None => false,
                 };
                 if ended {
                     self.end(cx.svc);
                 }
             }
+        }
+    }
+
+    /// The save file arrived (or will not): the game is ready.
+    fn poll_loading<S: Services + ?Sized>(&mut self, cx: &mut Cx<'_, S>) {
+        if self.view == View::Loading && cx.svc.games().opening != Some(self.game.id()) {
+            self.ready(cx);
         }
     }
 
@@ -159,7 +240,9 @@ impl GameScreen {
                 self.anim = None;
             }
         }
-        if self.game != Game::Blocks || self.view != View::Playing {
+        self.refused = self.refused.saturating_sub(1);
+        self.poll_loading(cx);
+        if !self.stepped() || self.view != View::Playing {
             return;
         }
         if !cx.svc.display_on() {
@@ -174,17 +257,34 @@ impl GameScreen {
             Advance::Steps(n) => n.min(MAX_STEPS_PER_TICK),
         };
         let mut ended = false;
-        if let Session::Blocks(b) = &mut cx.svc.games_mut().session {
-            for _ in 0..n {
-                if b.step().ended {
-                    ended = true;
-                    break;
+        match &mut cx.svc.games_mut().session {
+            Session::Blocks(b) => {
+                for _ in 0..n {
+                    if b.step().ended {
+                        ended = true;
+                        break;
+                    }
                 }
             }
+            Session::Solitaire(s) => {
+                for _ in 0..n {
+                    s.step();
+                }
+                ended = s.ended();
+            }
+            _ => {}
         }
         if ended {
             self.end(cx.svc);
         }
+    }
+}
+
+/// Solitaire moves the cursor on key repeats too.
+fn sol_input_of(k: Key, p: KeyPhase) -> Option<Input> {
+    match (k, p) {
+        (Key::Up | Key::Down | Key::Prev | Key::Next, KeyPhase::Repeat) => input_of(k, KeyPhase::Down),
+        _ => input_of(k, p),
     }
 }
 
@@ -209,40 +309,63 @@ fn input_of(k: Key, p: KeyPhase) -> Option<Input> {
 impl<S: Services + ?Sized> Screen<S> for GameScreen {
     fn enter(&mut self, cx: &mut Cx<'_, S>, _arg: Arg) {
         self.lang = cx.svc.lang();
+        self.eat_release = false;
+        self.refused = 0;
         cx.svc.games_request(GamesRequest::Open(self.game.id()));
-        if !self.game.is(&cx.svc.games().session) {
-            games::new_game(cx.svc, self.game);
+        if cx.svc.games().opening == Some(self.game.id()) {
+            self.view = View::Loading;
+            self.drawn = None;
+            self.sol_drawn = None;
+            return;
         }
-        let (das, arr) = games::blocks_handling(cx.svc);
-        if let Session::Blocks(b) = &mut cx.svc.games_mut().session {
-            b.set_handling(das, arr);
-            b.release_all();
-        }
-        self.view = if cx.svc.games().session.in_progress() { self.fresh_view() } else { View::Ended };
-        self.clock.reset();
-        self.anim = None;
-        self.drawn = None;
+        self.ready(cx);
     }
 
     fn event(&mut self, cx: &mut Cx<'_, S>, ev: &Event) -> Nav {
         match *ev {
             Event::Key(Key::Back, KeyPhase::Up { held: false }) => {
+                // Solitaire: Back first puts held cards back.
+                if self.view == View::Playing
+                    && let Session::Solitaire(s) = &mut cx.svc.games_mut().session
+                    && s.drop_held()
+                {
+                    return Nav::Stay;
+                }
+                if self.view == View::Loading {
+                    return Nav::Pop;
+                }
                 self.pause(cx.svc);
                 cx.svc.games_request(GamesRequest::Save);
                 return Nav::Push(GAME_PAUSE, Arg(u32::from(self.game.id())));
             }
             Event::Key(k, p) => {
-                if let Some(i) = input_of(k, p) {
+                let i = if self.game == Game::Solitaire { sol_input_of(k, p) } else { input_of(k, p) };
+                if let Some(i) = i {
                     self.key(cx, i);
                 }
             }
             Event::Tick(now) => self.tick(cx, now),
+            Event::Service(ServiceEvent::Other { kind: other::GAMES, .. }) => self.poll_loading(cx),
             _ => {}
         }
         Nav::Stay
     }
 
     fn draw(&mut self, cx: &Cx<'_, S>, g: &mut Gfx<'_>, dirty: Dirty) {
+        if self.view == View::Loading {
+            if dirty == Dirty::All || self.drawn.is_none() {
+                g.clear(Role::Bg);
+                let (w, h) = g.size();
+                let dim = g.c(Role::TextDim);
+                g.text_in(0, h / 2 + 4, w, self.lang.get(Str::PicLoading), FontId::Ui, dim, Align::Center);
+                self.drawn = Some((0, 0, 0));
+            }
+            return;
+        }
+        if !self.game.is(&cx.svc.games().session) {
+            g.clear(Role::Bg);
+            return;
+        }
         match &cx.svc.games().session {
             Session::Blocks(b) => {
                 let (ghost, previews) = games::blocks_view(cx.svc);
@@ -260,6 +383,17 @@ impl<S: Services + ?Sized> Screen<S> for GameScreen {
                 draw_tiles(g, self.lang, t, anim, best, self.view, self.new_best);
                 self.drawn = Some((key, 0, 0));
             }
+            Session::Solitaire(s) => {
+                let v = SolitaireView {
+                    s,
+                    view: self.view,
+                    new_best: self.new_best,
+                    timer: games::solitaire_timer(cx.svc),
+                    bank: games::casino_bank(cx.svc),
+                    refused: self.refused > 0,
+                };
+                self.sol_drawn = Some(v.draw(g, self.lang, dirty, self.sol_drawn));
+            }
             Session::None => g.clear(Role::Bg),
         }
     }
@@ -268,15 +402,25 @@ impl<S: Services + ?Sized> Screen<S> for GameScreen {
         let title = Some(self.lang.get(self.game.label()));
         match self.game {
             Game::Blocks => Wants {
-                ticks: self.view == View::Playing,
+                ticks: matches!(self.view, View::Playing | View::Loading),
                 full_screen: true,
                 menu_key: true,
                 title,
                 ..Wants::default()
             },
-            Game::Tiles => {
-                Wants { ticks: self.anim.is_some(), strip: StripUse::Content, title, ..Wants::default() }
-            }
+            Game::Tiles => Wants {
+                ticks: self.anim.is_some() || self.view == View::Loading,
+                strip: StripUse::Content,
+                title,
+                ..Wants::default()
+            },
+            Game::Solitaire => Wants {
+                ticks: matches!(self.view, View::Playing | View::Loading) || self.refused > 0,
+                full_screen: true,
+                menu_key: true,
+                title,
+                ..Wants::default()
+            },
         }
     }
 
@@ -295,11 +439,11 @@ impl<S: Services + ?Sized> Screen<S> for GameScreen {
 
 // ------------------------------------------------------------------ drawing
 
-fn fnv(h: u32, b: u8) -> u32 {
+pub(super) fn fnv(h: u32, b: u8) -> u32 {
     (h ^ u32::from(b)).wrapping_mul(0x0100_0193)
 }
 
-fn fnv_u32(h: u32, v: u32) -> u32 {
+pub(super) fn fnv_u32(h: u32, v: u32) -> u32 {
     v.to_le_bytes().iter().fold(h, |h, &b| fnv(h, b))
 }
 
@@ -327,7 +471,7 @@ fn block(g: &mut Gfx<'_>, x: i16, y: i16, size: i16, c: Color) {
     }
 }
 
-fn banner(g: &mut Gfx<'_>, r: Rect, lines: &[(&str, FontId, Role)]) {
+pub(super) fn banner(g: &mut Gfx<'_>, r: Rect, lines: &[(&str, FontId, Role)]) {
     let surface = g.c(Role::Surface);
     let edge = g.pal.mix(Role::Surface, Role::TextDim, 110);
     g.fill_round(r, 4, surface);
@@ -594,7 +738,7 @@ impl BlocksView<'_> {
                     &[(title, FontId::UiBold, Role::Text), (v.as_str(), FontId::Ui, Role::Text), last],
                 );
             }
-            View::Playing => {}
+            View::Playing | View::Loading => {}
         }
     }
 }

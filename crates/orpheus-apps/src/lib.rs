@@ -34,8 +34,8 @@ pub fn strings_fit(g: &mut orpheus_ui::Gfx<'_>, word: &str, font: orpheus_ui::Fo
 }
 
 /// The apps on Home, in grid order (05 §6.2): eleven, and Games (M14) as
-/// the twelfth with the `games` feature (not on the player's Home yet:
-/// [`App::on_player`]).
+/// the twelfth with the `games` feature (the firmware has it since
+/// GAME-2's integration).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum App {
@@ -51,9 +51,7 @@ pub enum App {
     UsbDrive,
     Settings,
     /// M14 (05 §7.13). After Settings so that the other apps keep their
-    /// Home-screen bits; its bit (11) is off in the default mask, as the
-    /// player's Home has no Games yet (the simulator's `set:games=on`
-    /// turns it on).
+    /// Home-screen bits; its bit (11) is on in the default mask.
     #[cfg(feature = "games")]
     Games,
 }
@@ -157,10 +155,9 @@ impl App {
             | App::Authenticator
             | App::UsbDrive
             | App::Settings => true,
-            // Not until the firmware has the stack for it (M14 package
-            // note in docs/STATUS.md).
+            // On the player with GAME-2's integration (2026-11-25).
             #[cfg(feature = "games")]
-            App::Games => false,
+            App::Games => true,
         }
     }
 
@@ -183,13 +180,8 @@ mod tests {
     /// when it was last edited. It now asks [`App::on_player`].
     #[test]
     fn regress_every_app_is_on_the_players_home() {
+        // Games too since GAME-2's integration (2026-11-25).
         for a in App::ALL {
-            #[cfg(feature = "games")]
-            if a == App::Games {
-                // M14: built on the host, not yet integrated.
-                assert!(!a.on_player());
-                continue;
-            }
             assert!(a.on_player(), "{a:?} missing from the player's Home");
         }
     }

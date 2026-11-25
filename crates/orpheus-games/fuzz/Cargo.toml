@@ -33,3 +33,10 @@ path = "fuzz_targets/tiles_keys.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "solitaire_keys"
+path = "fuzz_targets/solitaire_keys.rs"
+test = false
+doc = false
+bench = false

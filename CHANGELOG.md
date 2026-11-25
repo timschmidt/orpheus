@@ -38,6 +38,11 @@ replaced).
   directory index, letter jump, hidden files, text viewer.
 - **Pictures**: JPEG, PNG, BMP, GIF and QOI viewer with fit/fill,
   rotation and slideshow.
+- **Games**: a Games app on Home with Blocks (falling pieces), 4096
+  (sliding tiles) and Solitaire (Klondike: draw one or three, passes,
+  standard, casino or no scoring, auto-move, auto-complete, winnable
+  deals); games are saved on pause, power-off and before the card goes to
+  a computer, and continued later; best results per rule set.
 - **Bluetooth**: switch the transmitter module on and off, pair, connect,
   reconnect automatically, forget devices, send audio.
 - **System**: Home, Settings (sound, playback, display, power, date and

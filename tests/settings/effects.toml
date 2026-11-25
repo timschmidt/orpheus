@@ -175,3 +175,75 @@ default = 1
 contexts = ["Game4096"]
 oracle = "Game4096: the frame 33 ms after a slide shows tiles between cells (on) or the final board (off). At once. Independent of Settings › Display › Animations."
 tests = ["sim/tests/games.rs::settings_effects::tiles_animations"]
+
+# ---------------------------------------------------------------- Solitaire
+
+[[setting]]
+id = "0x0E41"
+name = "Games › Solitaire › Settings › Draw"
+scope = "local"
+values = ["One card", "Three cards"]
+default = 0
+contexts = ["Solitaire", "Games", "GamePause"]
+oracle = "Solitaire: OK on the stock turns one card or three (the waste fans the top three); score table variant (best shown in Games/GamePause). Applies from the next game."
+tests = ["sim/tests/games.rs::settings_effects::solitaire_draw"]
+
+[[setting]]
+id = "0x0E42"
+name = "Games › Solitaire › Settings › Passes"
+scope = "local"
+values = ["Unlimited", "3", "1"]
+default = 0
+contexts = ["Solitaire", "Games", "GamePause"]
+oracle = "Solitaire: OK on the empty stock takes the waste back (unlimited, up to two times with 3) or does nothing (1); the stock's empty mark (ring or cross); score table variant. Applies from the next game."
+tests = ["sim/tests/games.rs::settings_effects::solitaire_passes"]
+
+[[setting]]
+id = "0x0E43"
+name = "Games › Solitaire › Settings › Scoring"
+scope = "local"
+values = ["Standard", "Casino", "None"]
+default = 0
+contexts = ["Solitaire", "Games", "GamePause"]
+oracle = "Solitaire info line: Score (standard points), Bank (casino: −52 per deal, +5 per card up, carried in scores.bin) or Moves (none, best = time of a won game); score table variant. Applies from the next game."
+tests = ["sim/tests/games.rs::settings_effects::solitaire_scoring", "sim/tests/games.rs::casino_bank_carries_over"]
+
+[[setting]]
+id = "0x0E44"
+name = "Games › Solitaire › Settings › Auto-move"
+scope = "local"
+values = ["off", "on"]
+default = 1
+contexts = ["Solitaire"]
+oracle = "Solitaire: safe cards (aces, twos, cards whose lower other-colour cards are up) go to the foundations by themselves after each move and at the deal. At once."
+tests = ["sim/tests/games.rs::settings_effects::solitaire_auto_move"]
+
+[[setting]]
+id = "0x0E45"
+name = "Games › Solitaire › Settings › Auto-complete"
+scope = "local"
+values = ["off", "on"]
+default = 1
+contexts = ["Solitaire"]
+oracle = "Solitaire: with the stock and waste empty and every card face up the game plays itself out (a card every 4 steps) and is won. At once."
+tests = ["sim/tests/games.rs::settings_effects::solitaire_auto_complete"]
+
+[[setting]]
+id = "0x0E46"
+name = "Games › Solitaire › Settings › Show timer"
+scope = "local"
+values = ["off", "on"]
+default = 1
+contexts = ["Solitaire"]
+oracle = "Solitaire info line: m:ss at the right (on) or nothing; the game (its time counted either way) is the same. At once."
+tests = ["sim/tests/games.rs::settings_effects::solitaire_timer"]
+
+[[setting]]
+id = "0x0E47"
+name = "Games › Solitaire › Settings › Winnable only"
+scope = "local"
+values = ["off", "on"]
+default = 1
+contexts = ["Solitaire", "Games", "GamePause"]
+oracle = "Solitaire: the deal of a seed, or (on) the first of up to 24 deals from it that the deal check wins (best effort; the game's `checked` flag); score table variant. Applies from the next game."
+tests = ["sim/tests/games.rs::settings_effects::solitaire_winnable"]

@@ -133,6 +133,15 @@ impl Ui {
         }
         while let Some(a) = self.fw.actions.pop() {
             if let Action::Usb(m) = a {
+                // The card goes to the computer: the game in progress is
+                // saved first (its file is written before the hand-over).
+                if matches!(
+                    m,
+                    orpheus_apps::services::UsbMode::FileTransfer
+                        | orpheus_apps::services::UsbMode::DiskImage
+                ) {
+                    self.save_games(1000).await;
+                }
                 let p = match m {
                     orpheus_apps::services::UsbMode::FileTransfer => crate::usbdev::Personality::FileTransfer,
                     orpheus_apps::services::UsbMode::Keyboard => crate::usbdev::Personality::Keyboard,
@@ -210,6 +219,8 @@ impl Ui {
         }
         // A recording is stopped and saved first (AU-13).
         crate::rec::stop_for_power_off().await;
+        // The game in progress goes to its save file (05 §7.13).
+        self.save_games(1500).await;
         // The battery log's last row goes out with the card task's flush.
         crate::drain::power_off();
         crate::media::SHUT_DOWN.store(false, core::sync::atomic::Ordering::Release);
@@ -231,6 +242,21 @@ impl Ui {
         // An armed RTC alarm wakes the player only once PWR-3c has shown it
         // works (`services::ALARM_WAKE_FROM_OFF`, off).
         atj2157_hal::pmu::power_off(crate::services::ALARM_WAKE_FROM_OFF && self.fw.rtc_alarm.is_some())
+    }
+
+    /// Save the game in progress and wait (at most `max_ms`) until the
+    /// card task has written it (power-off, USB hand-over).
+    async fn save_games(&mut self, max_ms: u64) {
+        use orpheus_apps::games::GamesService;
+        if !self.fw.games().session.in_progress() && !self.fw.games_busy() {
+            return;
+        }
+        self.fw.games_request(orpheus_apps::games::GamesRequest::Save);
+        let t0 = now().0;
+        while self.fw.games_busy() && now().0.saturating_sub(t0) < max_ms {
+            Timer::after_millis(10).await;
+            self.fw.games_poll(now().0);
+        }
     }
 
     async fn draw(&mut self, fb: &mut [u16]) {
@@ -786,6 +812,8 @@ pub async fn ui() {
         }
         let t = now();
         ui.fw.poll_picture(t.0);
+        // Games: answers of the card task, the next card operation.
+        ui.fw.games_poll(t.0);
         while let Some((k, p)) = ui.mapper.poll(t) {
             let r = ui.shell.key(&mut *ui.fw, k, p, t);
             ui.handle(r);

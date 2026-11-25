@@ -162,6 +162,11 @@ pub enum App {
     Pictures,
     Settings,
     NowPlaying,
+    /// The Games list (M14): random keys open and play the games (Blocks
+    /// runs its 30 frames/s loop over the music); Back pauses and saves to
+    /// `/.orpheus/games/`. Only as an explicit `browse games` step: the
+    /// random scenarios' picks are unchanged (their seeds replay as before).
+    Games,
 }
 
 impl App {
@@ -172,20 +177,24 @@ impl App {
             App::Pictures => "pictures",
             App::Settings => "settings",
             App::NowPlaying => "nowplaying",
+            App::Games => "games",
         }
     }
     fn parse(s: &str) -> Option<Self> {
-        [App::Files, App::Library, App::Pictures, App::Settings, App::NowPlaying]
+        [App::Files, App::Library, App::Pictures, App::Settings, App::NowPlaying, App::Games]
             .into_iter()
             .find(|a| a.name() == s)
     }
-    /// Home position (the simulator's grid with all apps) and screen name.
+    /// Home position (the simulator's grid with all apps: `App::GRID`,
+    /// Games before Settings since GAME-2) and screen name.
     fn home(self) -> (usize, &'static str) {
+        let at = |a: orpheus_apps::App| orpheus_apps::App::GRID.iter().position(|&g| g == a).unwrap_or(0);
         match self {
-            App::Files => (1, "Files"),
-            App::Library | App::NowPlaying => (0, "Music"),
-            App::Pictures => (5, "Pictures"),
-            App::Settings => (10, "Settings"),
+            App::Files => (at(orpheus_apps::App::Files), "Files"),
+            App::Library | App::NowPlaying => (at(orpheus_apps::App::Music), "Music"),
+            App::Pictures => (at(orpheus_apps::App::Pictures), "Pictures"),
+            App::Settings => (at(orpheus_apps::App::Settings), "Settings"),
+            App::Games => (at(orpheus_apps::App::Games), "Games"),
         }
     }
 }
@@ -3633,6 +3642,18 @@ mod tests {
         assert_eq!(b.stack_free_min, 2048);
         assert!(b.loads_per_s_mean_max >= 3200.0, "measured ≈ 3,200 loads/s during 48 kHz MP3");
         assert!(b.loads_per_s_max > b.loads_per_s_mean_max);
+    }
+
+    /// Home positions follow the grid (Games before Settings since GAME-2:
+    /// Settings moved from 10 to 11); `browse games` parses.
+    #[test]
+    fn browse_targets_on_home() {
+        assert_eq!(App::Settings.home(), (11, "Settings"));
+        assert_eq!(App::Games.home(), (10, "Games"));
+        assert_eq!(App::Pictures.home().0, 5);
+        let a = Action::parse("browse games 20 3").unwrap();
+        assert_eq!(a, Action::Browse { app: App::Games, steps: 20, seed: 3 });
+        assert_eq!(a.text(), "browse games 20 3");
     }
 
     #[test]

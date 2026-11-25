@@ -1372,6 +1372,9 @@ pub mod other {
     pub const RECORDER: u16 = 8;
     /// USB Drive: `value` is one of [`super::drive_event`].
     pub const USB_DRIVE: u16 = 7;
+    /// Games: a card operation was answered (the hub changed: a save file
+    /// was read, the scores arrived).
+    pub const GAMES: u16 = 9;
 }
 
 /// Browser order (Files menu › Sort).

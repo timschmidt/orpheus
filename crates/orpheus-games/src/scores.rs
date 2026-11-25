@@ -53,11 +53,60 @@ pub struct Scores {
 
 impl Default for Scores {
     fn default() -> Self {
-        Scores { recs: [Record::default(); CAPACITY], n: 0 }
+        Scores::new()
     }
 }
 
+/// The variant of a game's cumulative bank (Solitaire's casino scoring):
+/// `best` holds the bank as an `i32`, `played` the games it counts.
+pub const BANK: u16 = 0xFFFF;
+
+const EMPTY: Record = Record { game: 0, variant: 0, best: 0, best_detail: 0, played: 0, won: 0 };
+
 impl Scores {
+    #[must_use]
+    pub const fn new() -> Scores {
+        Scores { recs: [EMPTY; CAPACITY], n: 0 }
+    }
+
+    /// The cumulative bank of `game` (0 if none yet).
+    #[must_use]
+    pub fn bank(&self, game: u8) -> i32 {
+        self.get(game, BANK).map_or(0, |r| r.best as i32)
+    }
+
+    /// Add `delta` to the bank of `game`; `game_played` counts a game.
+    pub fn add_to_bank(&mut self, game: u8, delta: i32, game_played: bool) {
+        let i = match self.records().iter().position(|r| r.game == game && r.variant == BANK) {
+            Some(i) => i,
+            None => self.slot(game, BANK),
+        };
+        let r = &mut self.recs[i];
+        r.best = (r.best as i32).saturating_add(delta) as u32;
+        if game_played {
+            r.played = r.played.saturating_add(1);
+        }
+    }
+
+    /// A new record for `game`/`variant`: a free one, or the least played.
+    fn slot(&mut self, game: u8, variant: u16) -> usize {
+        let i = if usize::from(self.n) < CAPACITY {
+            self.n += 1;
+            usize::from(self.n) - 1
+        } else {
+            // The least played record (the first of equals).
+            let mut j = 0;
+            for (k, r) in self.recs.iter().enumerate() {
+                if r.played < self.recs[j].played {
+                    j = k;
+                }
+            }
+            j
+        };
+        self.recs[i] = Record { game, variant, ..Record::default() };
+        i
+    }
+
     #[must_use]
     pub fn records(&self) -> &[Record] {
         &self.recs[..usize::from(self.n)]
@@ -72,23 +121,7 @@ impl Scores {
     pub fn record(&mut self, game: u8, variant: u16, o: Outcome) -> bool {
         let i = match self.records().iter().position(|r| r.game == game && r.variant == variant) {
             Some(i) => i,
-            None => {
-                let i = if usize::from(self.n) < CAPACITY {
-                    self.n += 1;
-                    usize::from(self.n) - 1
-                } else {
-                    // The least played record (the first of equals).
-                    let mut j = 0;
-                    for (k, r) in self.recs.iter().enumerate() {
-                        if r.played < self.recs[j].played {
-                            j = k;
-                        }
-                    }
-                    j
-                };
-                self.recs[i] = Record { game, variant, ..Record::default() };
-                i
-            }
+            None => self.slot(game, variant),
         };
         let r = &mut self.recs[i];
         r.played = r.played.saturating_add(1);
@@ -186,6 +219,19 @@ mod tests {
         assert!(s.get(1, 5).is_none());
         assert_eq!(s.get(2, 0).map(|r| r.best), Some(7));
         assert_eq!(s.records().len(), CAPACITY);
+    }
+
+    #[test]
+    fn bank_carries_and_goes_negative() {
+        let mut s = Scores::new();
+        assert_eq!(s.bank(3), 0);
+        s.add_to_bank(3, -52, true);
+        s.add_to_bank(3, 35, false);
+        assert_eq!(s.bank(3), -17);
+        assert_eq!(s.get(3, BANK).map(|r| r.played), Some(1));
+        let mut buf = [0u8; MAX_BYTES];
+        let n = s.encode(&mut buf).unwrap();
+        assert_eq!(Scores::decode(&buf[..n]).unwrap().bank(3), -17);
     }
 
     #[test]

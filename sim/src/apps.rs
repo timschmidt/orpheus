@@ -116,9 +116,8 @@ pub struct HostServices {
     pub update: crate::update::SimUpdate,
     /// The Games app (M14): the game in RAM, files under /.orpheus/games.
     pub games: SimGames,
-    /// `set:games=on`: Games on Home (the cell before Settings). Off by
-    /// default, as on the player, whose Home the device suite compares
-    /// with the simulator's.
+    /// Games on Home (the cell before Settings): on, as on the player
+    /// since GAME-2's integration; `set:games=off` takes it off.
     pub games_on_home: bool,
 }
 
@@ -173,7 +172,7 @@ impl HostServices {
             drive: SimDrive::default(),
             update: crate::update::SimUpdate::default(),
             games: SimGames::default(),
-            games_on_home: false,
+            games_on_home: true,
         }
     }
 }
@@ -598,7 +597,7 @@ impl SystemService for HostServices {
     }
 
     fn app_available(&self, app: App) -> bool {
-        // As the player: Games only after `set:games=on` (M14).
+        // As the player (M14); `set:games=off` takes it away.
         app != App::Games || self.games_on_home
     }
 
@@ -925,9 +924,12 @@ impl Host for HostServices {
                 self.set_setting(id::HOME_APPS, if on { mask | bit } else { mask & !bit });
             }
             _ if {
-                let (t, b) =
-                    (orpheus_apps::games::tiles_config(self), orpheus_apps::games::blocks_config(self));
-                self.games.set(k, v, t, b)?
+                let (t, b, so) = (
+                    orpheus_apps::games::tiles_config(self),
+                    orpheus_apps::games::blocks_config(self),
+                    orpheus_apps::games::solitaire_config(self),
+                );
+                self.games.set(k, v, t, b, so)?
             } => {}
             _ => {
                 // `set:0x0304=1`: any setting by key.
@@ -971,6 +973,7 @@ impl Host for HostServices {
             "Games" => screens::GAMES,
             "Blocks" => screens::GAME_BLOCKS,
             "Game4096" => screens::GAME_TILES,
+            "Solitaire" => screens::GAME_SOLITAIRE,
             _ => return None,
         })
     }
@@ -1000,6 +1003,14 @@ impl Host for HostServices {
         }
         self.locked = gate.locked;
         self.games.display_on = gate.screen_on;
+        // Deferred games storage (`set:gamesio=on`): one card operation
+        // per step, answered as the firmware's card task would.
+        if self.games.pump(&mut self.media) {
+            self.events.push(Event::Service(orpheus_ui::event::ServiceEvent::Other {
+                kind: orpheus_apps::services::other::GAMES,
+                value: 0,
+            }));
+        }
         // The vault locks when the screen goes off (05 §7.9).
         if !gate.screen_on {
             self.auth.screen_off();

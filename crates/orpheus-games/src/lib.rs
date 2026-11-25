@@ -16,6 +16,7 @@
 //!   (the combination of rule settings).
 //! * [`tiles`]: 4096 (GAME-3), sliding number tiles on 4 × 4 … 6 × 6.
 //! * [`blocks`]: Blocks (GAME-1), the falling-tetromino game.
+//! * [`solitaire`]: Solitaire (GAME-2), Klondike.
 //! * [`Session`] and [`Hub`]: the one game in RAM, the scores, and which
 //!   games have a save file; what the app's `GamesService` keeps.
 //!
@@ -29,12 +30,14 @@ pub mod blocks;
 pub mod rng;
 pub mod save;
 pub mod scores;
+pub mod solitaire;
 pub mod tiles;
 
 pub use rng::Rng;
 pub use scores::{Outcome, Record, Scores};
 
 use blocks::Blocks;
+use solitaire::Solitaire;
 use tiles::Tiles;
 
 /// Logic steps per second of the real-time games.
@@ -45,8 +48,8 @@ pub const STEP_HZ: u32 = 60;
 pub mod id {
     pub const BLOCKS: u8 = 1;
     pub const TILES: u8 = 2;
-    /// Reserved: Solitaire (GAME-2) and the artillery game (GAME-4/5).
     pub const SOLITAIRE: u8 = 3;
+    /// Reserved: the artillery game (GAME-4/5).
     pub const SALVO: u8 = 4;
     /// Bit per game in [`super::Hub::saved`]: ids are below 8.
     pub const MAX: u8 = 7;
@@ -180,6 +183,7 @@ pub enum Session {
     None,
     Blocks(Blocks),
     Tiles(Tiles),
+    Solitaire(Solitaire),
 }
 
 /// Largest encoded save file ([`Session::encode`]).
@@ -193,6 +197,7 @@ impl Session {
             Session::None => None,
             Session::Blocks(_) => Some(id::BLOCKS),
             Session::Tiles(_) => Some(id::TILES),
+            Session::Solitaire(_) => Some(id::SOLITAIRE),
         }
     }
 
@@ -203,6 +208,7 @@ impl Session {
             Session::None => false,
             Session::Blocks(b) => !b.ended(),
             Session::Tiles(t) => !t.over(),
+            Session::Solitaire(s) => !s.ended(),
         }
     }
 
@@ -213,6 +219,7 @@ impl Session {
             Session::None => None,
             Session::Blocks(b) => save::seal(buf, id::BLOCKS, blocks::VERSION, |w| b.encode(w)),
             Session::Tiles(t) => save::seal(buf, id::TILES, tiles::VERSION, |w| t.encode(w)),
+            Session::Solitaire(s) => save::seal(buf, id::SOLITAIRE, solitaire::VERSION, |w| s.encode(w)),
         }
     }
 
@@ -228,6 +235,7 @@ impl Session {
         let s = match (kind, version) {
             (id::BLOCKS, blocks::VERSION) => Session::Blocks(Blocks::decode(&mut r)?),
             (id::TILES, tiles::VERSION) => Session::Tiles(Tiles::decode(&mut r)?),
+            (id::SOLITAIRE, solitaire::VERSION) => Session::Solitaire(Solitaire::decode(&mut r)?),
             _ => return None,
         };
         r.done().then_some(s)
@@ -249,9 +257,26 @@ pub struct Hub {
     /// back playing. A game screen rebuilt without it was covered by
     /// something else (an interruption) and comes back paused.
     pub resume: bool,
+    /// The game whose save file is being read (a service whose card is
+    /// another task's answers `Open` later): the session is not this
+    /// game's yet; the game screen waits.
+    pub opening: Option<u8>,
 }
 
 impl Hub {
+    /// No game, no scores (a `const` for a firmware static).
+    #[must_use]
+    pub const fn new() -> Hub {
+        Hub {
+            session: Session::None,
+            scores: Scores::new(),
+            saved: 0,
+            loaded: false,
+            resume: false,
+            opening: None,
+        }
+    }
+
     /// A save file for `game` exists.
     #[must_use]
     pub fn has_save(&self, game: u8) -> bool {
@@ -323,6 +348,7 @@ mod tests {
         use core::mem::size_of;
         assert!(size_of::<Blocks>() <= 344, "Blocks {}", size_of::<Blocks>());
         assert!(size_of::<Tiles>() <= 248, "Tiles {}", size_of::<Tiles>());
+        assert!(size_of::<Solitaire>() <= 344, "Solitaire {}", size_of::<Solitaire>());
         assert!(size_of::<Session>() <= 352, "Session {}", size_of::<Session>());
         assert!(size_of::<Scores>() <= 488, "Scores {}", size_of::<Scores>());
         assert!(size_of::<Hub>() <= 848, "Hub {}", size_of::<Hub>());

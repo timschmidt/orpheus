@@ -185,10 +185,13 @@ pub enum Req {
     /// change list (also while playing), install one (idle only: playback
     /// stops first).
     Update(crate::update::Op),
+    /// A Games card operation (`crate::games`: a save file, the score
+    /// table): small, a chore of its own while playing.
+    Games(crate::games::GamesJob),
 }
 
 /// Request kinds ([`Req::kind`]) and their names for the log.
-pub const REQ_KINDS: usize = 15;
+pub const REQ_KINDS: usize = 16;
 pub const REQ_NAMES: [&str; REQ_KINDS] = [
     "browse",
     "want",
@@ -205,6 +208,7 @@ pub const REQ_NAMES: [&str; REQ_KINDS] = [
     "otp",
     "delete",
     "update",
+    "games",
 ];
 
 impl Req {
@@ -228,6 +232,7 @@ impl Req {
             Req::Otp(_) => 12,
             Req::Delete(_) => 13,
             Req::Update(_) => 14,
+            Req::Games(_) => 15,
         }
     }
 
@@ -1080,6 +1085,10 @@ impl Server {
                     return false;
                 }
                 Own(crate::update::card_op(vol, op, scratch)).await;
+                true
+            }
+            Req::Games(j) => {
+                Own(crate::games::card_op(vol, &j)).await;
                 true
             }
             Req::Text { file, offset } => {

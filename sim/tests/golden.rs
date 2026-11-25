@@ -170,13 +170,14 @@ fn media_cases(add: &mut dyn FnMut(String, String)) {
     games_cases(add);
 }
 
-/// M14 (GAME-0/1/3): the Games app over the simulator's games back end
-/// (`sim/src/games.rs`). Home (with `set:games=on`): Games is the cell
-/// before Settings (the Home goldens stay the player's eleven apps). New
-/// games take the scripted seed (`set:gameseed=`); `set:tiles=` and
-/// `set:blocksrows=` put a prepared game in RAM. Game strings are English
-/// in every language until the packs have them, so Dark and Light in
-/// English, and two in Amber.
+/// M14 (GAME-0/1/2/3): the Games app over the simulator's games back end
+/// (`sim/src/games.rs`). Home: Games is the cell before Settings (on the
+/// player's Home since GAME-2's integration, so every Home golden has it).
+/// New games take the scripted seed (`set:gameseed=`); `set:tiles=`,
+/// `set:blocksrows=`, `set:solnear=`, `set:solplay=`, `set:sollong=` and
+/// `set:solstuck=` put a prepared game in RAM. Game strings are English in
+/// every language until the packs have them, so Dark and Light in
+/// English, and three in Amber (Solitaire's suits by shape alone).
 fn games_cases(add: &mut dyn FnMut(String, String)) {
     let list = "set:games=on set:gameseed=7 prev*2 ok wait:100 expect-screen:Games";
     let blocks = format!("{list} ok wait:100 expect-screen:Blocks");
@@ -187,6 +188,8 @@ fn games_cases(add: &mut dyn FnMut(String, String)) {
         format!("{stack} hold:down hold:down hold:down hold:down hold:down hold:down hold:down wait:300");
     let stuck = "set:tiles=1.2.1.2.2.1.2.1.1.2.1.2.2.1.2.1 goto:Game4096 wait:100";
     let ramp = "set:0x0e22=3 set:tiles=1.2.3.4.5.6.7.8.9.10.11.12.13.14.15.0 goto:Game4096 wait:100";
+    let sol = format!("{list} down*2 ok wait:100 expect-screen:Solitaire");
+    let mid = format!("{sol} set:solplay=40 wait:100");
     let journeys: &[(&str, String)] = &[
         ("list", list.into()),
         ("list_continue", format!("{blocks} ok wait:500 back up ok wait:100 expect-screen:Games")),
@@ -223,6 +226,23 @@ fn games_cases(add: &mut dyn FnMut(String, String)) {
         ("tiles_pause", format!("{tiles} right back expect-screen:GamePause")),
         ("tiles_settings", format!("{tiles} back down*2 ok expect-screen:GameSettings")),
         ("tiles_help", format!("{tiles} back down*3 ok expect-screen:GameHelp")),
+        // GAME-2 Solitaire.
+        ("sol_new", sol.clone()),
+        ("sol_mid", mid.clone()),
+        ("sol_depth", format!("{mid} up*3")),
+        ("sol_held", format!("{mid} up ok next*3")),
+        ("sol_refused", format!("{mid} next*4 ok next press:ok release:ok")),
+        ("sol_draw3", format!("set:0x0e41=1 {sol} up ok ok ok next")),
+        ("sol_long", "set:sollong=1 goto:Solitaire wait:100".into()),
+        ("sol_completing", "set:solnear=4 goto:Solitaire wait:200".into()),
+        ("sol_won", "set:solnear=4 goto:Solitaire wait:1500".into()),
+        ("sol_stuck", "set:solstuck=1 goto:Solitaire wait:100 menu".into()),
+        ("sol_casino", format!("set:0x0e43=1 {sol} wait:100")),
+        ("sol_noscore", format!("set:0x0e43=2 set:0x0e46=0 {sol} wait:100")),
+        ("sol_pause", format!("{mid} back expect-screen:GamePause")),
+        ("sol_settings", format!("{mid} back down*2 ok expect-screen:GameSettings")),
+        ("sol_settings_end", format!("{mid} back down*2 ok up")),
+        ("sol_help", format!("{mid} back down*3 ok expect-screen:GameHelp")),
     ];
     for t in ["dark", "light"] {
         for (name, script) in journeys {
@@ -236,6 +256,8 @@ fn games_cases(add: &mut dyn FnMut(String, String)) {
     }
     add("games_blocks_play_amber".into(), format!("@apps theme:amber {play}"));
     add("games_tiles_ramp_amber".into(), format!("@apps theme:amber {ramp}"));
+    // Suits without colour: shapes only.
+    add("games_sol_mid_amber".into(), format!("@apps theme:amber {mid}"));
 }
 
 /// USB-6 / UI-6: USB Drive over the simulator's export (`sim/src/drive.rs`:
