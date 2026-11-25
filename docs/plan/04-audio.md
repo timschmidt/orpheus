@@ -434,8 +434,9 @@ and read-aloud (05 §7.14–7.15).
   durations and formant targets, prosody (declination,
   phrase-final lengthening, question rise, emphasis), two or three voices as
   parameter sets (pitch, formant scaling, breathiness).
-* **Speed** (owner, 2026-11-25): **0.25× to 10× in 0.25× steps** (39
-  values, default 1×), a setting of the screen reader and, separately, of
+* **Speed** (owner, 2026-11-25): **0.25× to 10× in 0.25× steps** (40
+  values; an earlier "39" was a miscount; default 1×), a setting of the
+  screen reader and, separately, of
   read-aloud. Implemented in the front end and the synthesiser, not by
   resampling, so the pitch stays: phoneme durations scale with the speed,
   with per-class minimum durations (stops and fricatives keep enough length
@@ -462,6 +463,126 @@ and read-aloud (05 §7.14–7.15).
   host by running the synthesised audio through an offline speech
   recogniser (word error rate below a budget on a fixed sentence set);
   device output checked through the M13 capture path.
+
+**As built (TTS-1, 2026-11-25): the front end, host side.**
+`crates/orpheus-tts` (`no_std`, no `alloc`, `#![forbid(unsafe_code)]`, no
+dependencies; feature `build` adds the std lexicon tool). Module docs are
+the reference; in short:
+
+* **API.** `Converter::new(Options { spell, lines }, Speed)`;
+  `feed(&[u8]) -> usize` (takes what fits, pieces may split UTF-8),
+  `space()`, `finish()`, `next_token() -> Option<Token>` (`None`: feed more,
+  or done), `is_done()`, `reset()`, `set_speed`, `set_options`,
+  `word_text()` (the normalised word just started), `convert(text, f)`.
+  `Token::Word(Word { pos, phrase_final, spelled })` (`pos`: byte offset of
+  the source chunk in the fed text — for highlighting and resume),
+  `Token::Phone(Seg { phone: Phone { ph, stress }, ms })`,
+  `Token::Break(Pause { kind, contour, ms })`. Phonemes: CMUdict's 39
+  ARPAbet phonemes (`Ph`), stress 0/1/2 on vowels (`AH` unstressed is the
+  schwa), classes (`Class`: vowel, diphthong, stop, fricative, affricate,
+  nasal, liquid, glide, aspirate). Breaks: group, quote, paren open/close,
+  comma, dash, colon, semicolon, line, period, question, exclamation,
+  ellipsis, paragraph; contours level, continue, fall, rise, exclaim (a
+  question rises, or falls when the sentence began with a wh-word). The
+  output does not depend on how the text is cut into feeds (property test).
+* **RAM**: one `Converter` is 1,408 B on the host (input 256 B, normaliser
+  queue 768 B, one word's phones 48 × 4 B; slightly less on the player with
+  4-byte pointers); nothing grows with the text. **Code/data** (thumbv7em,
+  opt "s", no LTO, whole crate): text 31.5 KB, read-only data 50.2 KB of
+  which the lexicon is 32,766 B and the rule table 3.4 KB — 49 KB without
+  the lexicon (paged as data), inside the 64 KiB budget; TTS-2 adds the
+  synthesiser. Host speed: 4.4 µs per word (≈ 100,000× real time at 1×);
+  the player's figure is TTS-2's to measure.
+* **Normaliser** (`normalise`, tests `tests/normalise.rs`): the text is cut
+  at white space into chunks of ≤ 48 B, each read with two chunks of
+  look-ahead. Numbers (cardinals to 15 digits, ordinals, decimals, signs,
+  comma groups, versions, IP addresses, years 1100–2099, decades,
+  fractions, ranges, phone/serial numbers and long digit strings digit by
+  digit), times, dates (ISO, M/D/Y and D/M/Y by value, "25 Nov 2026",
+  "November 25th, 2026"), currency ($ € £ ¥ ¢, before or after, with
+  k/M/bn), percent, 51 units, 60 abbreviations (titles never end a
+  sentence; "St." is Saint before a capital, else Street; "No." only before
+  a number), initials and dotted acronyms, Roman numerals after title
+  words (cardinal) and capitalised names (regnal ordinal), file names (44
+  extensions dropped; `_`, `-`, `.` and camelCase split), URLs and e-mail
+  ("dot", "slash", "at", short TLDs spelled), all-capitals words of ≤ 3
+  letters spelled unless common, unpronounceable strings spelled, accented
+  Latin folded, Greek letters and symbols by name, other scripts and emoji
+  skipped, `Options::spell` spells everything ("capital" before capitals),
+  `Options::lines` makes a line end a pause (menus, lists).
+* **Letter-to-sound**: the NRL rule set (Elovitz et al. 1976; 305 rules in
+  `rules::TABLE`, written from the report's description, US-government
+  public domain), a primary-stress heuristic (neutral and stress-taking
+  endings, endings that stress the syllable before them, unstressed
+  prefixes, else the first full vowel), regular endings on lexicon stems
+  (`-s -'s -es -ies -ed -ing -ly -er -est`), and the exception lexicon.
+* **Lexicon** (`cargo xtask tts-lexicon [--check]`, `lexgen`): CMUdict
+  (pinned commit, SHA-256) ranked by word counts over 57 public-domain
+  Gutenberg books (6.8 M tokens; 97.7 % of them are CMUdict words), plus
+  forced vocabularies at the weight of the 300th word: every word the
+  normaliser says (331) and the interface's strings (748 words from
+  `orpheus-apps`/`orpheus-ui`); 30 normaliser words CMUdict lacks have
+  hand-written entries. Greedy in weight order: a word gets an entry only
+  if the rules + heuristic + stems get it wrong (a 4-bit stress-only entry
+  when only the stress is wrong); entries made redundant by later stems
+  are pruned; the largest prefix within the budget is kept. Format: sorted
+  words, front-coded in blocks of 32, canonical Huffman codes for letters
+  and phones, a binary search over the blocks. **Shipped: 4,487 entries
+  (4,148 full, 339 stress-only) in 32,766 B.**
+* **Accuracy against CMUdict** (right = phonemes equal to a CMUdict
+  variant and primary stress on the same vowel), all 38,010 CMUdict words of
+  the corpus: **rules alone 39.3 % of words (phonemes; 35.6 % with
+  stress), 79.8 % of tokens (78.5 %)**; top 1,000 words 66.9 %. **Rules +
+  lexicon: 98.1 % of tokens** (top 5,000 words 99.8 %; forced vocabulary
+  100 %); words outside the lexicon stay at the rules' level (all words
+  55.4 %). Curve (tokens right, phonemes + stress): 0 B 78.5 %, 2 KB
+  84.4 %, 7 KB 91.6 %, 14 KB 95.1 %, 21 KB 96.7 %, 27 KB 97.6 %, **32 KB
+  98.1 %**, 42 KB 98.6 %, 56 KB 99.1 %, 111 KB 99.6 %
+  (`crates/orpheus-tts/data/lexicon-report.txt`). The selection and the
+  measurement use the same corpus; the fixture `data/eval.tsv` (top 1,500,
+  every 20th word to rank 40,000, the forced vocabulary) carries the
+  `tests/accuracy.rs` thresholds (rules > 36 % of words, > 78 % of tokens;
+  with the lexicon > 97.5 % of tokens, > 99.5 % of the top 1,500, 100 % of
+  the forced vocabulary).
+* **Duration model** (`duration`; the inputs TTS-2 uses): `Speed` in
+  quarters (1–40, 0.25×–10×); per phoneme inherent/minimum durations after
+  the MITalk table of Klatt's rules, Klatt-style percentage rules
+  (phrase-final ×1.4, non-final ×0.6, non-word-final ×0.85, polysyllabic
+  ×0.8, unstressed ×0.5, following-consonant effects, non-initial and
+  cluster consonants); faster: the compressible part scales 1/s, the
+  minimum 1/s for vowels/sonorants but 2/(1+s) for obstruents, class floors
+  (stops 22, affricates 30, fricatives 25, vowels 15, diphthongs 25 ms …)
+  up to 4×, lowered by up to 37 % at 10×; slower: vowels ×1/s, sonorants
+  ×(1+(1/s−1)/2), obstruents ×(1+(1/s−1)/4); pauses 1/s up to 2×, 2/s²
+  above, sentence ends ≥ 30 ms; above 4× unstressed vowels reduce to
+  schwa/`IH` and `pitch_depth_pct` falls from 100 to 40 % at 10×. Integer
+  arithmetic only. Goldens at 0.25×/1×/4×/10×
+  (`tests/goldens/durations.txt`). A test utterance lasts 12.7 / 6.9 /
+  4.0 / 2.1 / 1.0 / 0.51 s at 0.25/0.5/1/2/4/10×: **the 10× setting is
+  ≈ 7.7× faster in practice** (the floors).
+* **Tests**: unit tests per module; `tests/normalise.rs` (166 written
+  forms); `tests/goldens.rs` (phoneme strings of 143 inputs: common words,
+  numbers, dates, currency, names, file names, sentences; duration
+  tables; `ORPHEUS_WRITE_GOLDENS=1` rewrites); `tests/accuracy.rs`;
+  `tests/properties.rs` (feed-size independence over 300 random texts at
+  every speed, arbitrary bytes and UTF-8, pathological inputs, ≤ 24 tokens
+  per input byte, well-formed tokens, monotonic durations, floors,
+  0.25× ratios, pause compression, reduction, RAM); fuzz targets
+  `tts_text` and `tts_lexicon` (`crates/orpheus-tts/fuzz`; 9 committed
+  seeds replayed by `tests/fuzz_corpus.rs`). The fuzz seeds found an endless
+  loop in the lexicon decoder on truncated data (fixed: decoding stops at
+  the end of the data).
+* **For TTS-2**: the synthesiser consumes `Token`s; it needs (1) a look-ahead
+  of at least the current word to put the contour of the following
+  `Break` on the last stressed syllable (`Word::phrase_final` marks the
+  word; the break follows its phones directly), declination reset after
+  `kind.ends_sentence()`, asides lower/faster between paren breaks;
+  (2) formant targets per `Ph` and voice; (3) `duration::pitch_depth_pct`
+  for flattening above 4×; (4) the CPU check at 10× on the player and the
+  intelligibility test (offline recogniser) at 1×/2×/4×; (5) the lexicon
+  paged as data (it is one `&'static [u8]`; `Converter::with_lexicon`
+  takes another). Not done here: function-word de-accenting, emphasis
+  marks, homograph choice (the lexicon keeps CMUdict's first variant).
 
 ## 9. Synthesis and MIDI (M17; owner's requirement 2026-11-25)
 

@@ -1241,7 +1241,7 @@ fn fuzz_seeds() -> Result<String> {
         }
     }
     // The other targets' seeds come from their crates' tests.
-    let tests: [(&str, &str); 14] = [
+    let tests: [(&str, &str); 15] = [
         ("orpheus-otp", "fuzz_corpus"),
         ("orpheus-bt", "fuzz_corpus"),
         ("orpheus-usb", "fuzz_corpus"),
@@ -1256,6 +1256,7 @@ fn fuzz_seeds() -> Result<String> {
         ("orpheus-img", "fuzz_corpus"),
         ("orpheus-fs", "fuzz_smoke"),
         ("orpheus-sim", "fuzz_corpus"),
+        ("orpheus-tts", "fuzz_corpus"),
     ];
     for (pkg, test) in tests {
         run(cargo()

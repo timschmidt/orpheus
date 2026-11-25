@@ -1,0 +1,143 @@
+the	DH AH0
+a	AH0
+and	AE1 N D
+of	AH0 V
+to	T UW1
+in	IH1 N
+is	IH1 Z
+you	Y UW1
+that	DH AE1 T
+it	IH1 T
+he	HH IY1
+was	W AA1 Z
+for	F AO1 R
+on	AA1 N
+are	AA1 R
+with	W IH1 TH
+they	DH EY1
+be	B IY1
+at	AE1 T
+one	W AH1 N
+have	HH AE1 V
+this	DH IH1 S
+from	F R AH1 M
+word	W ER1 D
+but	B AH1 T
+what	W AH1 T
+some	S AH1 M
+we	W IY1
+can	K AE1 N
+out	AW1 T
+other	AH1 DH ER0
+were	W ER1
+all	AO1 L
+there	DH EH1 R
+when	W EH1 N
+up	AH1 P
+use	Y UW1 Z
+your	Y AO1 R
+how	HH AW1
+said	S EH1 D
+each	IY1 CH
+she	SH IY1
+which	W IH1 CH
+people	P IY1 P AH0 L
+water	W AO1 T ER0
+through	TH R UW1
+thought	TH AO1 T
+though	DH OW1
+enough	IH0 N AH1 F
+laughed	L AE1 F T
+women	W IH1 M AH0 N
+island	AY1 L AH0 N D
+colonel	K ER1 N AH0 L
+music	M Y UW1 Z IH0 K
+player	P L EY1 ER0
+battery	B AE1 T ER0 IY0
+settings	S EH1 T IH0 NG Z
+volume	V AA1 L Y UW0 M
+playlist	P L EY1 L IH0 S T
+shuffle	SH AH1 F AH0 L
+repeat	R IY0 P IY1 T
+album	AE1 L B AH0 M
+artist	AA1 R T IH0 S T
+bluetooth	B L UW1 T UW2 TH
+headphones	HH EH1 D F OW0 N Z
+recording	R AH0 K AO1 R D IH0 NG
+radio	R EY1 D IY0 OW2
+library	L AY1 B R EH0 R IY2
+favourites	F EY1 V ER0 IH0 T S
+brightness	B R AY1 T N AH0 S
+language	L AE1 NG G W IH0 JH
+information	IH0 N F AO1 R M EY0 SH AH0 N
+photograph	F OW1 T AH0 G R AE2 F
+photography	F AA0 T AA1 G R AE0 F IY0
+nation	N EY1 SH AH0 N
+national	N AE1 SH AH0 N AH0 L
+record	R AH0 K AO1 R D
+present	P R IY0 Z EH1 N T
+beautiful	B Y UW1 T AH0 F AH0 L
+unbelievable	AH1 N B EH0 L IY0 EH0 V AH0 B AH0 L
+walked	W AO1 K T
+walking	W AO1 K IH0 NG
+dogs	D AO1 G Z
+cats	K AE1 T S
+churches	CH ER1 CH IH0 Z
+wanted	W AO1 N T IH0 D
+happily	HH AE1 P AH0 L IY0
+biggest	B IH1 G EH0 S T
+0	Z IH1 R OW0
+13	TH ER1 T IY0 N
+42	F AO1 R T IY0 / T UW1
+100	W AH1 N / HH AH1 N D R AH0 D
+1,234	W AH1 N / TH AW1 Z AH0 N D / T UW1 / HH AH1 N D R AH0 D / TH ER1 T IY0 / F AO1 R
+1,000,000	W AH1 N / M IH1 L Y AH0 N
+3.14	TH R IY1 / P OY1 N T / W AH1 N / F AO1 R
+-7	M AY1 N AH0 S / S EH1 V AH0 N
+21st	T W EH1 N T IY0 / F ER1 S T
+1984	N AY1 N T IY1 N / EY1 T IY0 / F AO1 R
+2026	T W EH1 N T IY0 / T W EH1 N T IY0 / S IH1 K S
+1/2	W AH1 N / HH AE1 F
+50%	F IH1 F T IY0 / P ER0 S EH1 N T
+2026-11-25	N OW0 V EH1 M B ER0 / T W EH1 N T IY0 / F IH1 F TH / T W EH1 N T IY0 / T W EH1 N T IY0 / S IH1 K S
+25 Nov 2026	DH AH0 / T W EH1 N T IY0 / F IH1 F TH / AH0 V / N OW0 V EH1 M B ER0 / T W EH1 N T IY0 / T W EH1 N T IY0 / S IH1 K S
+November 25th	N OW0 V EH1 M B ER0 / T W EH1 N T IY0 / F IH1 F TH
+12:30	T W EH1 L V / TH ER1 T IY0
+7:05pm	S EH1 V AH0 N / OW1 / F AY1 V / P IY1 / EH1 M
+$3.50	TH R IY1 / D AA1 L ER0 Z / AE1 N D / F IH1 F T IY0 / S EH1 N T S
+€20	T W EH1 N T IY0 / Y UW1 R OW2 Z
+44.1 kHz	F AO1 R T IY0 / F AO1 R / P OY1 N T / W AH1 N / K IH1 L AH0 HH ER2 T S
+320kbps	TH R IY1 / HH AH1 N D R AH0 D / T W EH1 N T IY0 / K IH1 L AH0 B IH0 T S / P ER1 / S EH1 K AH0 N D
+5 MB	F AY1 V / M EH1 G AH0 B AY2 T S
+-3 dB	M AY1 N AH0 S / TH R IY1 / D EH1 S AH0 B AH0 L Z
+Orpheus	AO1 R F IY0 AH0 S
+Eurydice	Y UW1 R IH0 D IH0 S
+Beethoven	B IY1 TH AH0 V EH0 N
+Mozart	M AA1 Z AA0 R T
+Tchaikovsky	T CH EY1 K AH0 V S K IY0
+Beyoncé	B IH0 IH1 AH0 N S
+Björk	B JH AO1 R K
+Smith	S M IH1 TH
+Jones	JH OW1 N Z
+Elizabeth	IH0 L IH1 Z AH0 B AH0 TH
+Henry VIII	HH EH1 N R IY0 / DH AH0 / EY1 TH
+Chapter IV	CH AE1 P T ER0 / F AO1 R
+Mr. Smith	M IH1 S T ER0 / S M IH1 TH
+Dr. Jones	D AA1 K T ER0 / JH OW1 N Z
+J. R. R. Tolkien	JH EY1 / AA1 R / AA1 R / T AA1 L K IY0 EH0 N
+01 - Artist - Title.mp3	W AH1 N - / AA1 R T IH0 S T - / T AY1 T AH0 L
+02_Some_Song.flac	T UW1 / S AH1 M / S AO1 NG
+track01.ogg	T R AE1 K / W AH1 N
+myFileName.txt	M AY1 / F AY1 L / N EY1 M
+USB	Y UW1 / EH1 S / B IY1
+MP3	EH1 M / P IY1 / TH R IY1
+NASA	N EY1 S AH0
+https://example.com	IH0 G Z AE1 M P AH0 L / D AA1 T / K AA1 M
+tim@example.com	T IH1 M / AE1 T / IH0 G Z AE1 M P AH0 L / D AA1 T / K AA1 M
+Hello, world.	HH EH0 L OW1 , / W ER1 L D .
+Where are you going?	W EH1 R / AA1 R / Y UW1 / G OW1 IH0 NG ?\
+Is it ready?	IH1 Z / IH1 T / R EH1 D IY0 ?/
+Stop!	S T AA1 P !
+Albums, 3 of 12.	AE1 L B AH0 M Z , / TH R IY1 / AH0 V / T W EH1 L V .
+Battery low: 15%.	B AE1 T ER0 IY0 / L OW1 : / F IH1 F T IY0 N / P ER0 S EH1 N T .
+Now playing: Moonlight Sonata (1st movement) by Beethoven.	N AW1 / P L EY1 IH0 NG : / M UW1 N L AY0 T / S AH1 N AE0 T AH0 ( / F ER1 S T / M UW1 V M AH0 N T ) / B AY1 / B IY1 TH AH0 V EH0 N .
