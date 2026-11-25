@@ -61,9 +61,100 @@ of every session. Newest entries first in §3.
 | UI-5b | **built (host + firmware), not yet run on the player** | Recorder app (meters, timer, pause/mark/stop question, gain, menu with source/format/quality/AGC/VOX/split/monitor/low-cut), Recordings… (newest first, play, delete with question); simulator back end over the same session and a fake ADC; 122 goldens, 10 behaviour tests |
 | UI-8 | **done (host); not yet on the player** | List roll-around in every list (`ListView` + `ListView::step_plain`), Settings › Display › List roll-around (`0x030C`, on by default), held keys stop at the end; Up next/Details keep their view change. User check 26; the on-device journey belongs to VER-7 |
 | USB-W1 (bug) | **fixed and self-recovering (host-tested, built); not yet run on the player** | Root cause: the SETUP read was not cancel-safe (embassy-usb drops it on bus events; the interrupt stayed masked for good) and late stages landed on the next transfer. Drop-safe driver, liveness recovery, watchdog only when recovery cannot help, counters in `STATS` 24–30, soak logs self-recoveries, `xtask dev usb-cancel`. 06 §2.6; user check 28 |
-| VER-10 (static stack) | **tool done (host-tested), gate step; firmware cut from ≥ 30,232 to 22,900 B nested worst case (built, not yet run on the player)** | `cargo xtask stack [--check] [--root P]`, `stack.toml`, `budgets.toml stack_static_margin_bytes` (−1,536 B: a ratchet, the static worst case still exceeds the 22,016 B stack by 884 B; the rest is the audio task's own frames, AU-PERF). Lead: `fuzz-ui --replay` of the VER-8 stack sequence, suite stack line (session entry 2026-11-25 "VER-10") |
+| VER-10 (static stack) | **tool done (host-tested), gate step; firmware cut from ≥ 30,232 to 22,900 B, then to 16,188 B nested worst case of 22,528 B usable: margin 6,340 B, goal ≥ 4 KiB met (built, not yet run on the player)** | `cargo xtask stack [--check] [--root P]`, `stack.toml`, `budgets.toml stack_static_margin_bytes` = 6,084 B (the measured margin less one 256 B step: a ratchet). Second round: the card task's poll frames (the volume and the decoder no longer move by value; `idle`'s and start-up's children are futures of their own), .bss −512 B. Lead: soak, a Vorbis seek, the Authenticator, card hand-over to USB (session entry 2026-11-25 "VER-10: card task frames") |
 
 ## 3. Session log
+
+### 2026-11-25 — VER-10: card task frames, static stack margin 204 → 6,340 B (worker, no hardware)
+
+Trigger: margin 204 B (21,812 B nested of 22,016 B usable) with
+`__stack_bottom` on a 256 B step; the goal from VER-10 is ≥ 4 KiB.
+
+**Static worst case** (`cargo xtask stack`, base `182b087d` → this commit):
+
+| Context | Prio | Before | After | Deepest chain after |
+|---|---|---|---|---|
+| init | thread | 12,368 | 12,368 | `init_chain` 11,192 B frame (RT and USB do not exist yet; nested 13,240 B) |
+| thread | thread | 6,876 | 6,876 | UI task → `Fw::derive` → `derive_finish` 4,008 → seal → `Pool::fill` → SHA-256 |
+| irq-normal (USB) | L3 | 80 | 80 | |
+| rt (card task) | L2 | 13,768 | **8,144** | task poll 120 → `Apart<idle>` 424 → `Apart<play_path>` 200 → `play_file` 344 → `play_block` 208 → `chores` 208 → `Server::step` 744 → `io_session` 408 → `fill_some` 984 → `Index::rows` 584 → `Inner::slot` 344 → `spin_in`(open) 1,504 → `Volume::open` 488 → `walk` 560 → … SD → time driver → panic tail |
+| deadline, pager, prof, fault | L1, L0 | 312, 236, 80, 32 | unchanged | |
+| **nested, run** | | **21,812 of 22,016** | **16,188 of 22,528** | margin **204 → 6,340 B** |
+
+Next RT chains (from the task poll down, 144 B above): `idle` → `play_path`
+8,000; `player_request` → `run_player` → … → `play_file` (the same
+`fill_some` chain) 8,000; `idle` → `library::slot` → `library::step`
+7,928; `release` → `mount` 7,880; `start` → `open_card` → `mount` 6,920;
+the Vorbis seek (`play_file` → `seek_to` 1,488 → set-up 2,576) 7,768.
+They are within ~250 B of each other: one more cut there buys little.
+
+**What made the frames** (`llvm-objdump`: the `subw sp` and the
+`__aeabi_memcpy` sizes around the calls; future sizes from the DWARF):
+values moved by value through the async functions, each copied through the
+poll function's frame (often twice), and that frame is under every chain
+of the function.
+
+* **Audio task poll 2,328 → 120 B**: the volume (736 B) came out of
+  `start`'s output, went into `release`'s future and came back out of it.
+  Now `vol: Option<Volume>` lives in the task's future; `start(&mut vol)`
+  and `release(&mut vol)` fill the slot, the loop borrows it.
+* **`idle` 2,064 → 424 B** (`Apart<idle>::poll`, the closure is inlined
+  into it now): every child it awaits (`step`, `serve`, the logs, the
+  alert, `build_slot`, `count_free`, the library, pictures, hand-over,
+  drive map, recorder, `resolve_dir`, `ls`, `play_path`, `create_dir`,
+  `upload`) is behind `Apart`, so its temporaries are in a frame of its
+  own (the deepest was the developer `play PATH`: `idle`'s frame sat above
+  `play_file`).
+* **`play_file` 2,320 → 344 B**: the decoder (976 B with its stream
+  information) was moved out of `orpheus_codecs::open`'s `Result` twice.
+  Now `let mut opened = open(…); let Ok((dec, info)) = &mut opened`: it
+  stays where `open` wrote it (in the future) and is used by reference.
+* **`start` 2,392 → 56 B** (it became the deepest after the above): the
+  card (608 B) and the volume (744 B) came out of `Card::open` and `mount`
+  by value; that is `open_card(&mut vol)` now (2,728 B, on a 6,920 B
+  chain), and `start`'s and `load_state`'s other awaits are behind `Apart`.
+* `stack.toml`: `firmware::audio::idle::{closure#0}` removed (inlined into
+  `Apart<idle>`, covered by `<firmware::audio::Apart<*`).
+
+Behaviour: unchanged (the same calls in the same order; `Apart` only gives
+a future's poll its own function). No logic moved, so no new host tests;
+the regression guard is `stack --check` with the higher ratchet.
+
+**Static RAM**: the same moves shrink the futures — the audio task's pool
+7,336 → 6,824 B (its future 7,296 → 6,784: `start` 5,856 → 5,144,
+`release` 5,848 → 5,112), so `.bss` 123,920 → 123,408 B, `__bss_end`
+0x131B00 → 0x131900, `__stack_bottom` 0x131D00 → **0x131B00** (usable
+22,016 → 22,528 B). The bottom is again exactly on a 256 B step: the next
+static byte moves the guard up 256 B (usable 22,272 B, margin 6,084 B =
+the new budget, still passes). Resident 80,108 B unchanged; paged code 108
+pages; `play-block` cluster 15,056 → 14,834 B (15 lines).
+
+**Not done**: the thread side. `derive_finish` (4,008 B: the 1,800 B
+`Authenticator::finish` future under `block_on` plus the job's moves) is
+the UI's deepest by only 548 B over `Ui::settle` (6,328) and
+`Shell::event` (6,232); cutting it means passing the key-derivation job by
+reference through `orpheus_otp` (vault API change) for ≤ 548 B.
+`init_chain`'s 11,192 B (init phase only) is not limiting.
+
+**Budget**: `stack_static_margin_bytes` 0 → **6,084** (measured 6,340 less
+one 256 B step).
+
+Gate: host fmt, clippy `-D warnings`, `cargo test --workspace` (1,130
+passed, 8 ignored); fw fmt, clippy `-D warnings`, `xtask build`,
+`check-resident` (57 sections from 19 roots, none paged), `size --check`
+(resident 80,107 B, bss 123,408 B), `stack --check` (margin 6,340 B,
+budget 6,084 B): pass. Not run: `xtask test all` beyond `cargo test
+--workspace`, brand/site checks, HIL (no hardware).
+
+**Lead, on the player**: the 30-minute `mixed` soak, seed 1 (expect stack
+free ≥ the 8,528 B of the last run; the task poll is in `play-block` and
+smaller); a Vorbis seek and a resume into a track (`play_file` →
+`seek_to` on the decoder kept in place); a gapless join MP3 → MP3 and a
+rate change (`End::Again`); a card hand-over to USB and back (Card reader
+or Drive: the volume leaves its slot and is remounted into it; a failed
+remount ends the task as before); the developer `play PATH` and `playdir`;
+the Authenticator (unlock, codes, change PIN: unchanged code, the thread
+side is the deepest context left).
 
 ### 2026-11-25 — **soak `mixed` seed 1 passes on the player** (lead)
 

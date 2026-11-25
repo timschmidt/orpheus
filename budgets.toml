@@ -29,15 +29,17 @@ mode_pool_bytes = 106496        # 104 KiB
 stack_bytes = 12288             # 12 KiB
 # Static worst case of the one MSP stack (`cargo xtask stack --check`,
 # stack.toml, 07 §4.4): usable stack (above the MPU guard) minus the nested
-# worst case must be at least this. The goal is +4096. 2026-11-25 (VER-10):
+# worst case must be at least this. The goal was +4096. 2026-11-25 (VER-10):
 # measured -884 B (22,900 B nested worst case of 22,016 B usable; it was
-# >= 30,232 B of 21,760 B before VER-10's fixes). Negative: a ratchet, not
-# a proof. The rest is the audio task's own poll frames (its closure
-# 5,840 B, `play_file` 2,296 B, `seek_to` 1,488 B: 9.6 KB of the RT
-# context's 14,856 B), left to the AU-PERF restructuring of audio.rs.
-# The usable size moves by up to 255 B with .bss (the guard is aligned to
-# 256 B), hence the slack below the measured -884 B.
-stack_static_margin_bytes = 0
+# >= 30,232 B of 21,760 B before VER-10's fixes); after AU-PERF 204 B
+# (21,812 of 22,016 B). 2026-11-25 (VER-10, card task frames): measured
+# 6,340 B (16,188 B nested worst case of 22,528 B usable: the volume and
+# the decoder no longer move by value through the card task's poll
+# frames, the idle loop's and start-up's children are futures of their
+# own; .bss -512 B, the audio task's future). A ratchet at the measured
+# margin less one 256 B step: the usable size moves by 256 B with .bss
+# (the guard is aligned to 256 B; `__stack_bottom` 0x131B00 is on a step).
+stack_static_margin_bytes = 6084
 # Firmware partition in the dual-boot layout (slot A): the whole "YFW1"
 # image (header sector, resident image, page store).
 slot_bytes_dual = 491520        # 480 KiB

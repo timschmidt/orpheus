@@ -2150,8 +2150,13 @@ async fn play_file(
     // The decoder's part of the arena, and the rest for file reads and
     // writes while it plays (text window, player state).
     let (dec_mem, spare) = arena.split_at_mut(plan.arena);
-    let (mut dec, info) =
-        orpheus_codecs::open(format, ring, dec_mem, &hint).map_err(|_| &b"open decoder failed"[..])?;
+    // The decoder stays where `open` returned it, in this future, and is
+    // used by reference: moved out of the `Result` by value it took two
+    // copies (976 B each) in this poll function's frame, above the playback
+    // loop's deepest chains (VER-10).
+    let mut opened = orpheus_codecs::open(format, ring, dec_mem, &hint);
+    let Ok((dec, info)) = &mut opened else { return Err(b"open decoder failed") };
+    let info: &orpheus_audio::StreamInfo = info;
     if info.channels == 0 || info.channels > 2 {
         return Err(b"channels not supported");
     }
@@ -2175,7 +2180,7 @@ async fn play_file(
     // Start inside the track (resume, bookmark): before any output.
     let mut pos = 0u64;
     if st.frame > 0 {
-        match seek_to(&mut dec, ring, vol, st.frame).await {
+        match seek_to(dec, ring, vol, st.frame).await {
             Some(at) => pos = at,
             None => {
                 CODEC_FLOOR.store(0, Ordering::Relaxed);
@@ -2229,7 +2234,7 @@ async fn play_file(
     let t0 = time::now_us();
     let mut b = Blk {
         st,
-        info,
+        info: *info,
         show,
         rate,
         ch: if stereo { 2 } else { 1 },
@@ -2265,7 +2270,7 @@ async fn play_file(
                     Either3::Second(r) => Some(Err(r)),
                     Either3::Third(()) => None,
                 };
-            if let Some(e) = Apart(head(&mut b, got, &mut dec, ring, vol, srv, out, spare)).await {
+            if let Some(e) = Apart(head(&mut b, got, dec, ring, vol, srv, out, spare)).await {
                 break 'play e;
             }
             if b.paused {
@@ -2276,7 +2281,7 @@ async fn play_file(
         } else {
             true
         };
-        match Apart(play_block(&mut b, polled, &mut dec, ring, vol, srv, out, chain, spare)).await {
+        match Apart(play_block(&mut b, polled, dec, ring, vol, srv, out, chain, spare)).await {
             Went::On => {}
             Went::Pause => Apart(pause(&mut b, vol, srv, out, spare)).await,
             Went::End(e) => break 'play e,
@@ -2441,24 +2446,24 @@ async fn ls(vol: &mut Volume<'static, Card>, path: &str) {
     });
 }
 
-/// Hand the card to the USB task and wait for it to come back; `None` if
-/// the remount failed.
-async fn release(vol: Volume<'static, Card>) -> Option<Volume<'static, Card>> {
+/// Hand the card (the volume in `slot`) to the USB task and wait for it to
+/// come back, remounted into `slot` (`None` there if the remount failed).
+async fn release(slot: &mut Option<Volume<'static, Card>>) {
+    let Some(vol) = slot.take() else { return };
     crate::state::CARD_READY.store(false, Ordering::Relaxed);
     media::player_update(|p| p.source = Source::Idle);
     let (card, _) = vol.unmount().await;
     CARD_OUT.send(card).await;
     // The USB task re-initialised the card before handing it back.
     let card = CARD_BACK.receive().await;
-    let v = mount(card).await;
-    if v.is_some() {
+    *slot = Apart(mount(card)).await;
+    if slot.is_some() {
         crate::state::CARD_READY.store(true, Ordering::Relaxed);
     } else {
         reply(|w| {
             w.s(b"card: remount failed");
         });
     }
-    v
 }
 
 /// Frames the DSP processes per piece, and the piece buffer: one buffer
@@ -2942,9 +2947,9 @@ async fn load_state(vol: &mut Volume<'static, Card>, arena: &mut [u8], srv: &mut
         n = vol.read_exact_or_eof(&mut f, &mut arena[..IMAGE_LEN]).await.unwrap_or(0);
     }
     srv.init_player(&arena[..n]);
-    steps_load(vol, arena).await;
-    srv.load_titles(vol).await;
-    crate::library::mounted(vol, srv).await;
+    Apart(steps_load(vol, arena)).await;
+    Apart(srv.load_titles(vol)).await;
+    Apart(crate::library::mounted(vol, srv)).await;
 }
 
 /// Before the card goes to the USB task: the player stops (the card is
@@ -3296,7 +3301,12 @@ enum Idle {
 /// per-block wake-up touches few of its lines (packed in `play-block`).
 #[embassy_executor::task]
 pub async fn audio() {
-    let Some((mut vol, arena, srv)) = Apart(start()).await else { return };
+    // The volume (736 B) lives here, in the task's future, and is only
+    // reached by reference: moved by value (out of `start`, into and out of
+    // `release`) its copies made this poll function's frame 2,328 B, under
+    // every chain of the card task (VER-10).
+    let mut vol: Option<Volume<'static, Card>> = None;
+    let Some((arena, srv)) = Apart(start(&mut vol)).await else { return };
     // Built here, not in `start`: held across its awaits it would take room
     // in that future as well as in this one.
     let mut ring = Ring {
@@ -3308,16 +3318,15 @@ pub async fn audio() {
         prepared: None,
     };
     loop {
-        match Apart(idle(&mut vol, &mut ring, arena, srv)).await {
-            Idle::Play(p) => Apart(player_request(&mut vol, &mut ring, arena, srv, p)).await,
+        let Some(v) = vol.as_mut() else { return };
+        match Apart(idle(v, &mut ring, arena, srv)).await {
+            Idle::Play(p) => Apart(player_request(v, &mut ring, arena, srv, p)).await,
             Idle::Release { find_dirs } => {
-                // The volume moves into `release` and comes back from it
-                // (a future that also held it would take its room twice).
-                match Apart(release(vol)).await {
-                    Some(v) => vol = v,
-                    None => return,
-                }
-                Apart(card_back(&mut vol, srv, find_dirs)).await;
+                // The volume leaves its slot for `release` and comes back
+                // to it (`None` there: the remount failed).
+                Apart(release(&mut vol)).await;
+                let Some(v) = vol.as_mut() else { return };
+                Apart(card_back(v, srv, find_dirs)).await;
             }
         }
     }
@@ -3332,31 +3341,41 @@ async fn card_back(vol: &mut Volume<'static, Card>, srv: &mut Server, find_dirs:
     }
 }
 
-/// DAC up, the card opened and mounted, the state loaded.
-async fn start() -> Option<(Volume<'static, Card>, &'static mut [u8], &'static mut Server)> {
-    // SAFETY: DMA channel 5 is the DAC's.
-    unsafe { DmaCh::steal(DAC_CH) }.enable_irq_with(on_dac_dma, Level::Deadline);
-    dac::power_up(44100, dac::VOL_0DB - 40);
-    atj2157_hal::log::line(b"audio: dac up");
+/// The card opened and mounted into `slot`; `false` (replied) if either
+/// failed. A future of its own: the card (608 B) and the volume (744 B)
+/// come out of their futures by value, and those copies are in this poll
+/// function's frame, not in `start`'s above the state loading (VER-10).
+async fn open_card(slot: &mut Option<Volume<'static, Card>>) -> bool {
     let card = match Card::open().await {
         Ok(c) => c,
         Err(_) => {
             reply(|w| {
                 w.s(b"card: init failed");
             });
-            return None;
+            return false;
         }
     };
     atj2157_hal::log::line(b"audio: card open");
-    let mut vol = match mount(card).await {
-        Some(v) => v,
-        None => {
-            reply(|w| {
-                w.s(b"card: mount failed");
-            });
-            return None;
-        }
-    };
+    *slot = mount(card).await;
+    if slot.is_none() {
+        reply(|w| {
+            w.s(b"card: mount failed");
+        });
+        return false;
+    }
+    true
+}
+
+/// DAC up, the card opened and mounted into `slot`, the state loaded.
+async fn start(slot: &mut Option<Volume<'static, Card>>) -> Option<(&'static mut [u8], &'static mut Server)> {
+    // SAFETY: DMA channel 5 is the DAC's.
+    unsafe { DmaCh::steal(DAC_CH) }.enable_irq_with(on_dac_dma, Level::Deadline);
+    dac::power_up(44100, dac::VOL_0DB - 40);
+    atj2157_hal::log::line(b"audio: dac up");
+    if !Apart(open_card(slot)).await {
+        return None;
+    }
+    let vol = slot.as_mut()?;
     crate::state::CARD_READY.store(true, Ordering::Relaxed);
     reply(|w| {
         w.s(b"card: mounted");
@@ -3369,15 +3388,15 @@ async fn start() -> Option<(Volume<'static, Card>, &'static mut [u8], &'static m
     crate::library::init(lib_state);
     let srv = SERVER.take();
     atj2157_hal::log::line(b"audio: mounted, loading state");
-    load_state(&mut vol, arena, srv).await;
+    Apart(load_state(vol, arena, srv)).await;
     // The listings' index folder into the walk cache while nothing plays:
     // otherwise the first listing searches the card's root for it during
     // playback (59 ms on the owner's card, 2026-11-25).
-    let _ = vol.warm_walk(orpheus_index::card::INDEX_DIR).await;
-    crate::rec::find_dir(&mut vol).await;
-    crate::drive::find_dirs(&mut vol).await;
+    let _ = Apart(vol.warm_walk(orpheus_index::card::INDEX_DIR)).await;
+    Apart(crate::rec::find_dir(vol)).await;
+    Apart(crate::drive::find_dirs(vol)).await;
     atj2157_hal::log::line(b"audio: state loaded");
-    Some((vol, arena, srv))
+    Some((arena, srv))
 }
 
 /// The idle loop: requests, developer commands and background work until a
@@ -3393,30 +3412,30 @@ async fn idle(vol: &mut Volume<'static, Card>, ring: &mut Ring, arena: &mut [u8]
         } else {
             // A listing left in pieces by playback: finished now.
             while srv.has_job() && !work_waiting() {
-                srv.step(vol).await;
+                Apart(srv.step(vol)).await;
             }
             // The battery log (PWR-5) first: a minute's rows are small;
             // then the step counter's (SENS-1); an alert sounds (UI-5d).
             if crate::drain::due() && !work_waiting() {
-                drain_flush(vol, arena).await;
+                Apart(drain_flush(vol, arena)).await;
             }
             if crate::sensor::card_due() && !work_waiting() {
-                sensor_flush(vol, arena, false).await;
+                Apart(sensor_flush(vol, arena, false)).await;
             }
             if ALERT.load(Ordering::Relaxed) && !work_waiting() {
                 let mut out = PcmOut::new();
-                alert_tone(&mut out).await;
+                Apart(alert_tone(&mut out)).await;
             }
             if srv.wants_build() && !work_waiting() {
-                build_slot(vol, srv, arena).await;
+                Apart(build_slot(vol, srv, arena)).await;
             }
             // Card info's free space (counted once, then the volume's own).
             if !work_waiting() {
-                count_free(vol).await;
+                Apart(count_free(vol)).await;
             }
             // The music library builds when it is due and nothing else waits.
             if crate::library::wait_ms(srv) == Some(0) && !srv.wants_build() && !work_waiting() {
-                crate::library::slot(vol, srv, arena).await;
+                Apart(crate::library::slot(vol, srv, arena)).await;
             }
             // Player requests and the recorder's (AU-13) share the third
             // arm.
@@ -3437,25 +3456,25 @@ async fn idle(vol: &mut Volume<'static, Card>, ring: &mut Ring, arena: &mut [u8]
             Either3::First(c) => c,
             Either3::Second(Req::Picture(j)) => {
                 // No track loaded: the whole arena for the picture.
-                crate::pictures::serve_idle(vol, ring, arena, srv, &j).await;
+                Apart(crate::pictures::serve_idle(vol, ring, arena, srv, &j)).await;
                 continue;
             }
             Either3::Second(r) => {
-                if srv.serve(vol, r, arena, true).await {
+                if Apart(srv.serve(vol, r, arena, true)).await {
                     continue;
                 }
                 match srv.pending.take() {
                     Some(Req::Release) => {
-                        hand_over(vol, srv, arena).await;
+                        Apart(hand_over(vol, srv, arena)).await;
                         return Idle::Release { find_dirs: true };
                     }
                     Some(Req::Image) => {
                         // USB Drive: the file's runs into the arena's
                         // extent area, then the card goes as for the card
                         // reader; a refusal keeps it here.
-                        hand_over(vol, srv, arena).await;
+                        Apart(hand_over(vol, srv, arena)).await;
                         let ext = crate::drive::as_extents(extent_area(arena));
-                        let m = crate::drive::map(vol, ext).await;
+                        let m = Apart(crate::drive::map(vol, ext)).await;
                         let ok = m.is_ok();
                         crate::drive::MAPPED.signal(m);
                         if ok {
@@ -3470,18 +3489,18 @@ async fn idle(vol: &mut Volume<'static, Card>, ring: &mut Ring, arena: &mut [u8]
             Either3::Third(Either::Second(c)) => {
                 // Recording (AU-13): the arena is the recorder's until it
                 // is done.
-                crate::rec::run(vol, arena, c).await;
+                Apart(crate::rec::run(vol, arena, c)).await;
                 continue;
             }
         };
         let text = core::str::from_utf8(&cmd.text[..cmd.len]).unwrap_or("");
         if text == "release" {
-            hand_over(vol, srv, arena).await;
+            Apart(hand_over(vol, srv, arena)).await;
             return Idle::Release { find_dirs: false };
         } else if let Some(arg) = text.strip_prefix("playdir ") {
             // The player's queue on a folder, as Files → OK (in folder
             // order: shuffle off, for repeatable tests).
-            match resolve_dir(vol, arg.trim()).await {
+            match Apart(resolve_dir(vol, arg.trim())).await {
                 Some((entry, start)) => {
                     reply(|w| {
                         w.s(t!(b"playdir ok"));
@@ -3493,14 +3512,15 @@ async fn idle(vol: &mut Volume<'static, Card>, ring: &mut Ring, arena: &mut [u8]
                 }),
             }
         } else if let Some(p) = text.strip_prefix("ls ") {
-            ls(vol, p.trim()).await;
+            Apart(ls(vol, p.trim())).await;
         } else if let Some(p) = text.strip_prefix("play ") {
             for s in
                 [&FRAMES, &UNDERRUNS, &SLOW_UNDERRUNS, &CORRUPT, &DEC_N, &DEC_US, &DEC_MAX_US, &DEC_LOADS]
             {
                 s.store(0, Ordering::Relaxed);
             }
-            let r = select(play_path(vol, ring, arena, p.trim(), srv), core::future::pending::<()>()).await;
+            let r = select(Apart(play_path(vol, ring, arena, p.trim(), srv)), core::future::pending::<()>())
+                .await;
             match r {
                 Either::First(Ok(_)) => reply(|w| {
                     w.s(b"played frames=")
@@ -3568,9 +3588,9 @@ async fn idle(vol: &mut Volume<'static, Card>, ring: &mut Ring, arena: &mut [u8]
             let path = core::str::from_utf8(&pb[..p.len()]).unwrap_or("");
             // Parents one by one (only `/.orpheus/…` is writable).
             for (i, _) in path.match_indices('/').skip(1) {
-                let _ = vol.create_dir(&path[..i]).await;
+                let _ = Apart(vol.create_dir(&path[..i])).await;
             }
-            upload(vol, arena, path).await;
+            Apart(upload(vol, arena, path)).await;
         } else if text == "fp" {
             // Test: f32 work through paged helpers inside the RT executor.
             let t0 = time::now_us();

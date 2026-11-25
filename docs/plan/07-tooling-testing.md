@@ -510,6 +510,29 @@ what builds a large temporary next to a deep call (`Shell::unentered` +
 audio packet), a future polled in its own frame (`firmware::frame::Own`),
 and a panic handler that cannot panic.
 
+The second round (2026-11-25, nested worst case 21,812 → 16,188 B,
+margin 204 → 6,340 B) found what made the card task's poll frames large:
+**values that move by value through an `async fn`**. A large value
+returned from an awaited future (the poll's `Poll<T>` output), passed by
+value into a child future, or moved out of a `Result` is copied through
+the poll function's frame, often twice, and that frame is static under
+every chain of the function. The volume (736 B: out of `start`, into and
+out of `release`) made the task's poll 2,328 B; the opened decoder
+(976 B, out of `orpheus_codecs::open`'s `Result`) made `play_file`'s
+2,320 B; the card (608 B) and volume made `start`'s 2,392 B. The fixes:
+keep the value where it was created and use it by reference (`vol` an
+`Option<Volume>` in the task's future, `start`/`release`/`open_card`
+filling the slot; `let mut opened = open(…); let Ok((dec, info)) = &mut
+opened`), and put each child of a loop that awaits many different
+children (`idle`, `start`, `load_state`) behind `Apart` so its poll's
+temporaries are in a frame of its own. Where a moved value cannot be
+avoided, it goes in a future that is not above the deep chains
+(`open_card`). Finding them: the `subw sp` of the poll and the
+`__aeabi_memcpy` sizes around its calls in `llvm-objdump -d`; future
+sizes come from the DWARF (`{async_fn_env#0}` structure sizes). The
+same moves shrink the futures: the audio task's pool went 7,336 →
+6,824 B.
+
 ## 5. On-device testing (hardware in the loop)
 
 ### 5.1 Transport and control without keys
