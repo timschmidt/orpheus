@@ -167,6 +167,75 @@ fn media_cases(add: &mut dyn FnMut(String, String)) {
     tools_cases(add);
     auth_cases(add);
     drive_cases(add);
+    games_cases(add);
+}
+
+/// M14 (GAME-0/1/3): the Games app over the simulator's games back end
+/// (`sim/src/games.rs`). Home (with `set:games=on`): Games is the cell
+/// before Settings (the Home goldens stay the player's eleven apps). New
+/// games take the scripted seed (`set:gameseed=`); `set:tiles=` and
+/// `set:blocksrows=` put a prepared game in RAM. Game strings are English
+/// in every language until the packs have them, so Dark and Light in
+/// English, and two in Amber.
+fn games_cases(add: &mut dyn FnMut(String, String)) {
+    let list = "set:games=on set:gameseed=7 prev*2 ok wait:100 expect-screen:Games";
+    let blocks = format!("{list} ok wait:100 expect-screen:Blocks");
+    let tiles = format!("{list} down ok wait:100 expect-screen:Game4096");
+    let play = format!("{blocks} ok wait:1500 next next up wait:200");
+    let stack = "set:gameseed=7 set:blocksrows=16 goto:Blocks ok";
+    let over =
+        format!("{stack} hold:down hold:down hold:down hold:down hold:down hold:down hold:down wait:300");
+    let stuck = "set:tiles=1.2.1.2.2.1.2.1.1.2.1.2.2.1.2.1 goto:Game4096 wait:100";
+    let ramp = "set:0x0e22=3 set:tiles=1.2.3.4.5.6.7.8.9.10.11.12.13.14.15.0 goto:Game4096 wait:100";
+    let journeys: &[(&str, String)] = &[
+        ("list", list.into()),
+        ("list_continue", format!("{blocks} ok wait:500 back up ok wait:100 expect-screen:Games")),
+        ("blocks_ready", blocks.clone()),
+        ("blocks_play", play.clone()),
+        ("blocks_drop", format!("{play} hold:down wait:100")),
+        ("blocks_hold", format!("{play} menu wait:100")),
+        ("blocks_stack", format!("{stack} wait:500")),
+        ("blocks_over", over.clone()),
+        ("blocks_lines40", format!("set:0x0e01=1 {play} wait:2000")),
+        ("blocks_attack", format!("set:0x0e01=2 {play} wait:2000")),
+        ("blocks_plain", format!("set:0x0e04=0 set:0x0e05=0 set:0x0e06=0 {play}")),
+        ("blocks_previews1", format!("set:0x0e05=1 {play}")),
+        ("blocks_pause", format!("{play} back expect-screen:GamePause")),
+        ("blocks_pause_over", format!("{over} back expect-screen:GamePause")),
+        ("blocks_new_dialog", format!("{play} back down ok")),
+        ("blocks_settings", format!("{play} back down*2 ok expect-screen:GameSettings")),
+        ("blocks_settings_end", format!("{play} back down*2 ok up")),
+        ("blocks_mode", format!("{play} back down*2 ok ok expect-screen:Choice")),
+        ("blocks_help", format!("{play} back down*3 ok expect-screen:GameHelp")),
+        ("blocks_help_end", format!("{play} back down*3 ok down*40")),
+        ("tiles_new", tiles.clone()),
+        ("tiles_moves", format!("{tiles} right down left down")),
+        ("tiles_slide", format!("{tiles} right down left press:down wait:45")),
+        ("tiles_ramp", ramp.into()),
+        ("tiles_won", "set:tiles=11.11 goto:Game4096 wait:100 left wait:200".into()),
+        ("tiles_over", stuck.into()),
+        ("tiles_5x5", format!("set:0x0e21=1 {tiles} right down")),
+        (
+            "tiles_6x6",
+            "set:0x0e22=3 set:tiles6=1.2.3.4.5.6.7.8.9.10.11.12.13.14.15.16.17.0 goto:Game4096 wait:100"
+                .into(),
+        ),
+        ("tiles_pause", format!("{tiles} right back expect-screen:GamePause")),
+        ("tiles_settings", format!("{tiles} back down*2 ok expect-screen:GameSettings")),
+        ("tiles_help", format!("{tiles} back down*3 ok expect-screen:GameHelp")),
+    ];
+    for t in ["dark", "light"] {
+        for (name, script) in journeys {
+            add(format!("games_{name}_{t}"), format!("@apps theme:{t} {script}"));
+        }
+        add(format!("games_home_{t}"), format!("@apps theme:{t} set:games=on prev*2"));
+        add(
+            format!("games_home_apps_{t}"),
+            format!("@apps theme:{t} set:games=on prev ok down*2 ok down*11 ok up"),
+        );
+    }
+    add("games_blocks_play_amber".into(), format!("@apps theme:amber {play}"));
+    add("games_tiles_ramp_amber".into(), format!("@apps theme:amber {ramp}"));
 }
 
 /// USB-6 / UI-6: USB Drive over the simulator's export (`sim/src/drive.rs`:

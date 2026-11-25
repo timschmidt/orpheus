@@ -38,6 +38,7 @@ use orpheus_ui::widgets::bars::{MiniPlayer, Status};
 use crate::auth::SimAuth;
 use crate::bt::FakeBt;
 use crate::drive::SimDrive;
+use crate::games::SimGames;
 use crate::media::Media;
 use crate::radio::SimRadio;
 use crate::recorder::SimRecorder;
@@ -113,6 +114,12 @@ pub struct HostServices {
     pub drive: SimDrive,
     /// Firmware update (UPD-1): the real installer over a simulated NOR.
     pub update: crate::update::SimUpdate,
+    /// The Games app (M14): the game in RAM, files under /.orpheus/games.
+    pub games: SimGames,
+    /// `set:games=on`: Games on Home (the cell before Settings). Off by
+    /// default, as on the player, whose Home the device suite compares
+    /// with the simulator's.
+    pub games_on_home: bool,
 }
 
 impl Default for HostServices {
@@ -165,7 +172,31 @@ impl HostServices {
             auth: SimAuth::default(),
             drive: SimDrive::default(),
             update: crate::update::SimUpdate::default(),
+            games: SimGames::default(),
+            games_on_home: false,
         }
+    }
+}
+
+impl orpheus_apps::games::GamesService for HostServices {
+    fn games(&self) -> &orpheus_games::Hub {
+        &self.games.hub
+    }
+
+    fn games_mut(&mut self) -> &mut orpheus_games::Hub {
+        &mut self.games.hub
+    }
+
+    fn games_request(&mut self, r: orpheus_apps::games::GamesRequest) {
+        self.games.request(r, &mut self.media);
+    }
+
+    fn game_seed(&mut self) -> u64 {
+        self.games.seed()
+    }
+
+    fn display_on(&self) -> bool {
+        self.games.display_on
     }
 }
 
@@ -566,8 +597,9 @@ impl SystemService for HostServices {
         orpheus_apps::services::PLAYER_HARDWARE
     }
 
-    fn app_available(&self, _app: App) -> bool {
-        true
+    fn app_available(&self, app: App) -> bool {
+        // As the player: Games only after `set:games=on` (M14).
+        app != App::Games || self.games_on_home
     }
 
     fn dual_boot(&self) -> bool {
@@ -886,6 +918,17 @@ impl Host for HostServices {
             "provision" => self.auth.set_provision(),
             "wrongpin" => self.auth.wrong_pins(v.parse()?),
             "volume" => self.volume = v.parse()?,
+            "games" => {
+                self.games_on_home = on;
+                let mask = self.settings.get(id::HOME_APPS);
+                let bit = 1 << (App::Games as u8);
+                self.set_setting(id::HOME_APPS, if on { mask | bit } else { mask & !bit });
+            }
+            _ if {
+                let (t, b) =
+                    (orpheus_apps::games::tiles_config(self), orpheus_apps::games::blocks_config(self));
+                self.games.set(k, v, t, b)?
+            } => {}
             _ => {
                 // `set:0x0304=1`: any setting by key.
                 let key = k.strip_prefix("0x").map(|h| u16::from_str_radix(h, 16));
@@ -925,6 +968,9 @@ impl Host for HostServices {
             "Stopwatch" => screens::STOPWATCH,
             "Authenticator" => screens::AUTHENTICATOR,
             "UsbDrive" => screens::USB_DRIVE,
+            "Games" => screens::GAMES,
+            "Blocks" => screens::GAME_BLOCKS,
+            "Game4096" => screens::GAME_TILES,
             _ => return None,
         })
     }
@@ -953,6 +999,7 @@ impl Host for HostServices {
             gate.screen_on = true;
         }
         self.locked = gate.locked;
+        self.games.display_on = gate.screen_on;
         // The vault locks when the screen goes off (05 §7.9).
         if !gate.screen_on {
             self.auth.screen_off();

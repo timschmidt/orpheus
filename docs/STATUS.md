@@ -185,6 +185,104 @@ or Drive: the volume leaves its slot and is remounted into it; a failed
 remount ends the task as before); the developer `play PATH` and `playdir`;
 the Authenticator (unlock, codes, change PIN: unchanged code, the thread
 side is the deepest context left).
+| VER-10 (static stack) | **tool done (host-tested), gate step; firmware cut from ≥ 30,232 to 22,900 B nested worst case (built, not yet run on the player)** | `cargo xtask stack [--check] [--root P]`, `stack.toml`, `budgets.toml stack_static_margin_bytes` (−1,536 B: a ratchet, the static worst case still exceeds the 22,016 B stack by 884 B; the rest is the audio task's own frames, AU-PERF). Lead: `fuzz-ui --replay` of the VER-8 stack sequence, suite stack line (session entry 2026-11-25 "VER-10") |
+| GAME-0, GAME-1, GAME-3 (M14) | **built (host + simulator); not in the firmware** | `orpheus-games` (fixed-step framework, SplitMix64, `OGS1` save envelope with CRC-32, score table, Blocks, 4096), `orpheus-apps` feature `games` (Games list, Blocks, 4096, pause menu, settings, How to play; `GamesService`), simulator back end with files under `/.orpheus/games/` (`set:games=on` puts Games on Home), 68 goldens, fuzz targets `blocks_keys`/`tiles_keys`, `tests/settings/effects.toml` (created with the 15 game settings). Firmware integration waits for stack headroom: session entry 2026-11-25 "GAME-0/1/3" |
+
+## 3. Session log
+
+### 2026-11-25 — GAME-0/1/3: Games framework, Blocks and 4096 (host and simulator) (worker, no hardware)
+
+Package M14 GAME-0 (framework), GAME-1 (Blocks), GAME-3 (4096), host side.
+05 §7.13 has an "As built" note with the rules, keys, files and settings.
+
+* **`crates/orpheus-games`** (new; no_std, no alloc, no floats,
+  `forbid(unsafe_code)`): SplitMix64 `Rng` (saved with the game);
+  `StepClock` (UI ticks → whole 60 Hz steps; a gap over 250 ms pauses);
+  `Input` (press, release, long of six game buttons); save envelope
+  `"OGS1" | kind | version | len | payload | CRC-32` with validating
+  decoders; `Scores` (24 records game × variant: best, detail, played,
+  won); `Session`/`Hub`. **4096**: 4–6 boards, goal 2048/4096/8192/endless,
+  odds of a 4, 0–3 undo steps (generator restored), keep going.
+  **Blocks**: 10 × 20 + 2 hidden rows, bag of 7 or random, own box
+  rotation with a kick list (on/off), hold, 3 previews, ghost, lock delay
+  with 15 resets, DAS/ARR on logic steps, hold-Down hard drop of the
+  piece it was pressed on, levels 1–20 (own gravity table), own scoring
+  (100/250/450/800 × level, combo, soft 1 / hard 2 per row), 12-step row
+  flash, modes endless / 40 lines / 2 minutes. RAM: `Hub` ≤ 848 B
+  (`Session` ≤ 352, `Scores` ≤ 488; size test in `lib.rs`).
+* **Tests**: 30 unit tests; `tests/tiles.rs` (300 random games and every
+  configuration through the fuzz body: slide = an independent reference
+  slide, sum grows by the new tile only, one merge per tile, over exactly
+  when no slide changes the board, undo restores; save/continue seamless;
+  deterministic replay seed `0x4096` → score 2,436, 211 moves, largest
+  tile 128); `tests/blocks.rs` (150 random games, every configuration, a
+  greedy player's games in all modes: no overlap, never outside the well,
+  no full row left, level follows lines, lines and score = an independent
+  reference replay of the locked pieces; deterministic replay seed
+  `0xB10C` → 300 pieces, 118 lines, 104,018 points); fuzz targets
+  `blocks_keys`, `tiles_keys` (`crates/orpheus-games/fuzz`, same bodies,
+  each input run twice for determinism), seeds in
+  `tests/fuzz-corpus/{blocks,tiles}_keys/`, replayed by
+  `tests/fuzz_corpus.rs`.
+* **App** (`orpheus-apps` feature **`games`**, off in the firmware; the
+  simulator, browser build and UI fuzzer have it): Games list, Blocks
+  (full screen), 4096, pause menu (Resume, New game with a question while
+  a game runs, Settings, How to play, Best, Quit), settings, How to play.
+  15 settings `0x0E01–0x0E0A` (Blocks), `0x0E21–0x0E25` (4096) in
+  `games::SETTINGS` (part of `settings::all()` with the feature;
+  `STORED` 98 → 113). Game strings are at the end of `Str` behind the
+  feature (the `strings!` macro takes `#[cfg]`); new non-game strings go
+  above them while the firmware lacks the feature. `App::Games` (bit 11;
+  not in the default Home mask, `App::on_player` false) and `App::GRID`
+  (Home order, Settings last). `GamesService` (hub, requests Load / Open /
+  Save / Discard / SaveScores, seed, `display_on`). Toolkit:
+  `Wants::menu_key` (Blocks' Menu = hold), honoured by the shell only
+  with `orpheus-ui` feature `menu-key` (it cost the firmware's key
+  handler 8 B of stack: margin 204 → 196 B; gated, back to 204 B).
+* **Simulator**: `sim/src/games.rs` (files `/.orpheus/games/blocks.sav`,
+  `4096.sav`, `scores.bin` on the simulated card through `orpheus-fs`;
+  `set:games=on` puts Games on Home — off by default, as on the player, so
+  the device suite's Home frames stay the player's; `set:gameseed=`,
+  `set:tiles=`, `set:tiles6=`, `set:blocksrows=`). Keyboard:
+  `cargo run -p orpheus-sim --features window -- --window --script
+  "set:games=on"` (arrows, Enter = OK/turn anticlockwise, Esc = Back/pause,
+  M = Menu/hold). `sim/tests/games.rs`: saved, quit, continued and read
+  back after a restart; game over → `scores.bin`, save removed; Menu holds
+  and opens no menu; screen off, a notice and the pause menu (only Resume
+  plays on); New game asks; and the **differential tests of all 15
+  settings** (own game changes, the other game and Home do not).
+* **Goldens**: 68 new `sim/golden/games_*.png` (list, continue, Home with
+  Games, Home-screen list, Blocks ready/play/drop/hold/stack/over/40
+  lines/2 minutes/plain/1 preview, pause, pause after game over, New-game
+  question, settings top and end, mode choice, How to play top and end;
+  4096 new/moves/mid-slide/ramp/goal/over/5 × 5/6 × 6, pause, settings,
+  How to play; Dark and Light, two in Amber). No existing golden changed.
+* **`tests/settings/effects.toml`** did not exist: **created** with the 15
+  game settings in the 07 §5.12 shape (id, name, scope, values, default,
+  contexts, oracle, tests); `games::tests::settings_table` checks each game
+  setting has an entry. VER-13 adds the rest and the matrix gate.
+* **Gate**: host `cargo fmt --check`, `clippy --workspace --all-targets -D
+  warnings` (also `orpheus-apps`/`orpheus-ui` without features), `cargo
+  test --workspace`, golden tests: pass. Firmware: `fmt`, `clippy -D
+  warnings`, `cargo xtask build` (resident 80,108 B), `size --check`
+  (resident 80,107 B, bss 123,920 B: unchanged), `check-resident`, `stack
+  --check` (21,812 of 22,016 B, margin 204 B: unchanged): pass. `cargo
+  fuzz` (nightly-2026-11-05): `tiles_keys` 90 s (976 runs), `blocks_keys`
+  120 s (1,692 runs), no finding; the bodies are slow (≈ 10–15 runs/s:
+  every key checked against the references, each input run twice), a
+  lighter fuzz-only mode is an open item. HIL: not run (no hardware in
+  this package).
+* **For the lead (firmware integration, after the stack-headroom
+  package)**: enable `orpheus-apps/games` in `fw/firmware`; implement
+  `GamesService` (a static `Hub` ≈ 848 B; requests answered by the card
+  task: the three files under `/.orpheus/games/`; seed from uptime and the
+  RTC; `display_on` from the power task), save the game on power-off and
+  USB hand-over (`GamesRequest::Save`), `App::Games.on_player()` → true
+  and the Games bit in the default Home mask (then the device suite's
+  Home frames change), the settings store's key list grows by 15
+  (`STORED` 113 ≤ 128). Not built: effects synthesiser and ducking,
+  player names, Solitaire (GAME-2), artillery (GAME-4/5). User check
+  (when on the player): play a game of each.
 
 ### 2026-11-25 — **soak `mixed` seed 1 passes on the player** (lead)
 

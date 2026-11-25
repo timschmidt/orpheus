@@ -17,6 +17,15 @@ zeroize = { version = "1.8", default-features = false }
 orpheus-rec = { path = "../orpheus-rec" }
 orpheus-usb = { path = "../orpheus-usb" }
 orpheus-update = { path = "../orpheus-update" }
+orpheus-games = { path = "../orpheus-games", optional = true }
+
+[features]
+# M14 Games (GAME-0/1/3, 05 §7.13): the Games app, its screens, settings,
+# strings and `GamesService`. Off in the firmware until a stack-headroom
+# package makes room (the firmware's static stack margin is a few hundred
+# bytes and any static or resident growth costs 256 B of it); the
+# simulator, the browser build and the UI fuzzer turn it on.
+games = ["dep:orpheus-games", "orpheus-ui/menu-key"]
 
 [lints]
 workspace = true

@@ -21,7 +21,7 @@ const CELL: i16 = 32;
 
 #[derive(Default)]
 pub struct HomeScreen {
-    apps: [u8; 11],
+    apps: [u8; App::COUNT],
     n: u8,
     focus: u8,
     drawn_focus: Option<u8>,
@@ -33,10 +33,10 @@ impl HomeScreen {
         self.lang = svc.lang();
         let mask = svc.setting(id::HOME_APPS);
         self.n = 0;
-        for (i, app) in App::ALL.iter().enumerate() {
-            let shown = *app == App::Settings || mask & (1 << i) != 0;
-            if shown && svc.app_available(*app) {
-                self.apps[usize::from(self.n)] = *app as u8;
+        for app in App::GRID {
+            let shown = app == App::Settings || mask & (1 << app as u8) != 0;
+            if shown && svc.app_available(app) {
+                self.apps[usize::from(self.n)] = app as u8;
                 self.n += 1;
             }
         }
@@ -136,6 +136,10 @@ impl<S: Services + ?Sized> Screen<S> for HomeScreen {
                 }
                 if app == App::Authenticator {
                     return Nav::Push(super::AUTHENTICATOR, Arg(0));
+                }
+                #[cfg(feature = "games")]
+                if app == App::Games {
+                    return Nav::Push(super::GAMES, Arg(0));
                 }
                 if app == App::Recorder && cx.svc.card() == CardState::Ready {
                     return Nav::Push(super::RECORDER, Arg(0));

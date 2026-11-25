@@ -297,7 +297,6 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
         }
         if k == Key::Menu {
             match p {
-                KeyPhase::Up { held: false } => self.open_menu(svc, now),
                 KeyPhase::Hold => {
                     if let Some(q) = T::QUICK_PANEL
                         && self.top.id() != q
@@ -305,6 +304,10 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
                         self.apply_nav(svc, Nav::Push(q, Arg(0)), now);
                     }
                 }
+                // A screen that takes Menu itself gets every other phase.
+                #[cfg(feature = "menu-key")]
+                _ if self.top.wants().menu_key => self.deliver(svc, ev, now),
+                KeyPhase::Up { held: false } => self.open_menu(svc, now),
                 _ => {}
             }
             return;

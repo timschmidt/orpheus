@@ -182,6 +182,20 @@ def settings():
     return im
 
 
+def games():
+    """A hand-held game pad: rounded body, cross keys left, two buttons
+    right."""
+    im, d = canvas()
+    rrect(d, 1.5, 5, 22.5, 19.5, 6)
+    # Cross keys.
+    line(d, [(7.5, 9), (7.5, 15.5)], w=S * 2)
+    line(d, [(4.3, 12.25), (10.7, 12.25)], w=S * 2)
+    # Buttons.
+    circle(d, 15.2, 14.3, 1.9, fill=True)
+    circle(d, 18.4, 10.4, 1.9, fill=True)
+    return im
+
+
 def warning():
     im, d = canvas()
     d.polygon([p(12, 2), p(22.5, 21), p(1.5, 21)], fill=255)
@@ -237,6 +251,7 @@ ICONS = [
     ("AUTHENTICATOR", authenticator),
     ("USB_DRIVE", usb_drive),
     ("SETTINGS", settings),
+    ("GAMES", games),
     ("WARNING", warning),
     ("CARD", card),
     ("USB", usb_plug),

@@ -7,6 +7,10 @@ mod clocks;
 mod drive;
 mod edit;
 mod files;
+#[cfg(feature = "games")]
+mod game;
+#[cfg(feature = "games")]
+mod games;
 mod home;
 mod library;
 mod lists;
@@ -29,6 +33,10 @@ pub use clocks::{
 pub use drive::{DriveView, UsbDriveScreen, medium_label, refusal_text};
 pub use edit::{PickerScreen, SliderScreen};
 pub use files::{BrowseMode, FilesScreen, kind_icon, kind_label, push_size};
+#[cfg(feature = "games")]
+pub use game::GameScreen;
+#[cfg(feature = "games")]
+pub use games::{GameHelpScreen, GameList, GameListScreen, game_screen, push_time};
 pub use home::HomeScreen;
 pub use library::LibraryScreen;
 pub use lists::{ListKind, ListScreen};
@@ -129,6 +137,23 @@ pub const DRIVE_OPTIONS: ScreenId = ScreenId(44);
 pub const DRIVE_STATUS: ScreenId = ScreenId(45);
 /// Settings › System › Update firmware (UPD-1).
 pub const UPDATE: ScreenId = ScreenId(46);
+/// The Games app (05 §7.13, M14; feature `games`): the list of games.
+#[cfg(feature = "games")]
+pub const GAMES: ScreenId = ScreenId(47);
+/// Blocks and 4096 being played.
+#[cfg(feature = "games")]
+pub const GAME_BLOCKS: ScreenId = ScreenId(48);
+#[cfg(feature = "games")]
+pub const GAME_TILES: ScreenId = ScreenId(49);
+/// A game's pause menu. Arg: the game's engine id.
+#[cfg(feature = "games")]
+pub const GAME_PAUSE: ScreenId = ScreenId(50);
+/// A game's settings. Arg: the game's engine id.
+#[cfg(feature = "games")]
+pub const GAME_SETTINGS: ScreenId = ScreenId(51);
+/// How to play. Arg: the game's engine id.
+#[cfg(feature = "games")]
+pub const GAME_HELP: ScreenId = ScreenId(52);
 
 /// One variant per screen. Only the top screen exists, so the enum's size
 /// (its largest variant, the list screen) is the UI's screen RAM.
@@ -161,6 +186,12 @@ pub enum AppScreen {
     Recorder(RecorderScreen),
     Drive(UsbDriveScreen),
     Update(UpdateScreen),
+    #[cfg(feature = "games")]
+    GameList(GameListScreen),
+    #[cfg(feature = "games")]
+    Game(GameScreen),
+    #[cfg(feature = "games")]
+    GameHelp(GameHelpScreen),
 }
 
 macro_rules! each {
@@ -193,6 +224,12 @@ macro_rules! each {
             AppScreen::Recorder($s) => $e,
             AppScreen::Drive($s) => $e,
             AppScreen::Update($s) => $e,
+            #[cfg(feature = "games")]
+            AppScreen::GameList($s) => $e,
+            #[cfg(feature = "games")]
+            AppScreen::Game($s) => $e,
+            #[cfg(feature = "games")]
+            AppScreen::GameHelp($s) => $e,
         }
     };
 }
@@ -289,6 +326,22 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             DRIVE_OPTIONS => AppScreen::Drive(UsbDriveScreen::new(DriveView::Options)),
             DRIVE_STATUS => AppScreen::Drive(UsbDriveScreen::new(DriveView::Status)),
             UPDATE => AppScreen::Update(UpdateScreen::default()),
+            #[cfg(feature = "games")]
+            GAMES => AppScreen::GameList(GameListScreen::new(GameList::Games)),
+            #[cfg(feature = "games")]
+            GAME_BLOCKS => AppScreen::Game(GameScreen::new(crate::games::Game::Blocks)),
+            #[cfg(feature = "games")]
+            GAME_TILES => AppScreen::Game(GameScreen::new(crate::games::Game::Tiles)),
+            #[cfg(feature = "games")]
+            GAME_PAUSE => {
+                AppScreen::GameList(GameListScreen::new(GameList::Pause(crate::games::Game::Blocks)))
+            }
+            #[cfg(feature = "games")]
+            GAME_SETTINGS => {
+                AppScreen::GameList(GameListScreen::new(GameList::Settings(crate::games::Game::Blocks)))
+            }
+            #[cfg(feature = "games")]
+            GAME_HELP => AppScreen::GameHelp(GameHelpScreen::default()),
             _ => AppScreen::Home(HomeScreen::default()),
         }
     }
@@ -328,6 +381,12 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             AppScreen::Recorder(_) => RECORDER,
             AppScreen::Drive(d) => d.screen_id(),
             AppScreen::Update(_) => UPDATE,
+            #[cfg(feature = "games")]
+            AppScreen::GameList(l) => l.screen_id(),
+            #[cfg(feature = "games")]
+            AppScreen::Game(g) => g.screen_id(),
+            #[cfg(feature = "games")]
+            AppScreen::GameHelp(_) => GAME_HELP,
         }
     }
 
@@ -366,6 +425,12 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             AppScreen::Recorder(_) => "Recorder",
             AppScreen::Drive(d) => d.name(),
             AppScreen::Update(_) => "UpdateFirmware",
+            #[cfg(feature = "games")]
+            AppScreen::GameList(l) => l.name(),
+            #[cfg(feature = "games")]
+            AppScreen::Game(g) => g.name(),
+            #[cfg(feature = "games")]
+            AppScreen::GameHelp(_) => "GameHelp",
         }
     }
 

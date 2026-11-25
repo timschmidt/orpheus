@@ -1,0 +1,177 @@
+# Setting → effect manifest (07 §5.12, VER-13; CLAUDE.md "every setting has an
+# entry"). One `[[setting]]` per stored setting of the settings tree in
+# `crates/orpheus-apps` (the tree is the source of truth):
+#
+#   id        store key, "0x" and four upper-case hex digits
+#   name      where it is in the UI
+#   scope     "global" (every context) or "local" (its app and every other
+#             context that uses it)
+#   values    the choices, or for a range its boundary and representative
+#             values
+#   default   the default value (index for choices)
+#   contexts  the screens (simulator screen names) and other contexts where
+#             the setting shows an effect
+#   oracle    what shows the effect in each context
+#   tests     the differential tests (file::test[::case]): the same journey
+#             with the value under test and with the reference value; the
+#             oracle must differ as declared, every other one stay equal
+#
+# Created by the M14 package (GAME-0/1/3, 2026-11-25) with the games'
+# settings only. VER-13 adds every other setting of the tree and the
+# `cargo xtask settings-matrix --check` gate that reads this file; until
+# then `orpheus-apps`' `games::tests::settings_table` checks that each game
+# setting has an entry here.
+
+# ---------------------------------------------------------------- Blocks
+
+[[setting]]
+id = "0x0E01"
+name = "Games › Blocks › Settings › Mode"
+scope = "local"
+values = ["Endless", "40 lines", "2 minutes"]
+default = 0
+contexts = ["Blocks", "Games", "GamePause"]
+oracle = "Blocks panel: Lines shows n/40 (40 lines), Time counts up (40 lines) or down from 2:00 (2 minutes), Best (endless); the game ends at 40 lines / 2:00 (engine phase Done). Games and GamePause: the best result shown is the mode's (score or time). Applies from the next game."
+tests = ["sim/tests/games.rs::settings_effects::blocks_mode"]
+
+[[setting]]
+id = "0x0E02"
+name = "Games › Blocks › Settings › Start level"
+scope = "local"
+values = [1, 2, 8, 15]
+default = 1
+contexts = ["Blocks"]
+oracle = "Blocks panel Level value; gravity (rows fallen after a fixed time). Applies from the next game."
+tests = ["sim/tests/games.rs::settings_effects::blocks_start_level"]
+
+[[setting]]
+id = "0x0E03"
+name = "Games › Blocks › Settings › Pieces"
+scope = "local"
+values = ["Bag of seven", "Random"]
+default = 0
+contexts = ["Blocks", "Games", "GamePause"]
+oracle = "Piece sequence of a fixed seed differs (Next previews); score table variant (best shown in Games/GamePause). Applies from the next game."
+tests = ["sim/tests/games.rs::settings_effects::blocks_pieces"]
+
+[[setting]]
+id = "0x0E04"
+name = "Games › Blocks › Settings › Ghost piece"
+scope = "local"
+values = ["off", "on"]
+default = 1
+contexts = ["Blocks"]
+oracle = "Blocks well: the outline where the piece would land is drawn (on) or not (off). At once."
+tests = ["sim/tests/games.rs::settings_effects::blocks_ghost"]
+
+[[setting]]
+id = "0x0E05"
+name = "Games › Blocks › Settings › Previews"
+scope = "local"
+values = ["0", "1", "2", "3"]
+default = 3
+contexts = ["Blocks"]
+oracle = "Blocks panel: Next label and 0–3 small pieces. At once."
+tests = ["sim/tests/games.rs::settings_effects::blocks_previews"]
+
+[[setting]]
+id = "0x0E06"
+name = "Games › Blocks › Settings › Hold piece"
+scope = "local"
+values = ["off", "on"]
+default = 1
+contexts = ["Blocks", "Games", "GamePause"]
+oracle = "Blocks panel: Hold label and slot shown (on) or not (off); Menu swaps the piece (on) or does nothing (off); score table variant. Applies from the next game."
+tests = ["sim/tests/games.rs::settings_effects::blocks_hold"]
+
+[[setting]]
+id = "0x0E07"
+name = "Games › Blocks › Settings › Lock delay"
+scope = "local"
+values = ["0.25 s", "0.5 s", "0.75 s", "1 s"]
+default = 1
+contexts = ["Blocks"]
+oracle = "Steps from landing to lock (engine: pieces locked after a fixed wait with the piece resting). Applies from the next game."
+tests = ["sim/tests/games.rs::settings_effects::blocks_lock_delay"]
+
+[[setting]]
+id = "0x0E08"
+name = "Games › Blocks › Settings › Shift (auto-shift delay)"
+scope = "local"
+values = ["100 ms", "133 ms", "167 ms", "200 ms", "267 ms"]
+default = 2
+contexts = ["Blocks"]
+oracle = "Cells moved while Next is held for a fixed time (piece column). At once (on resume)."
+tests = ["sim/tests/games.rs::settings_effects::blocks_auto_shift"]
+
+[[setting]]
+id = "0x0E09"
+name = "Games › Blocks › Settings › Repeat (auto-repeat interval)"
+scope = "local"
+values = ["0 ms", "17 ms", "33 ms", "50 ms", "83 ms"]
+default = 2
+contexts = ["Blocks"]
+oracle = "Cells moved while Next is held for a fixed time (piece column; 0 ms goes to the wall). At once (on resume)."
+tests = ["sim/tests/games.rs::settings_effects::blocks_repeat"]
+
+[[setting]]
+id = "0x0E0A"
+name = "Games › Blocks › Settings › Wall kicks"
+scope = "local"
+values = ["off", "on"]
+default = 1
+contexts = ["Blocks", "Games", "GamePause"]
+oracle = "A turn against the wall happens (on) or not (off): piece cells after Up at the wall; score table variant. Applies from the next game."
+tests = ["sim/tests/games.rs::settings_effects::blocks_kicks"]
+
+# ---------------------------------------------------------------- 4096
+
+[[setting]]
+id = "0x0E21"
+name = "Games › 4096 › Settings › Board"
+scope = "local"
+values = ["4 × 4", "5 × 5", "6 × 6"]
+default = 0
+contexts = ["Game4096", "Games", "GamePause"]
+oracle = "Game4096: board of 4, 5 or 6 cells a side (screenshot); score table variant. Applies from the next game."
+tests = ["sim/tests/games.rs::settings_effects::tiles_board"]
+
+[[setting]]
+id = "0x0E22"
+name = "Games › 4096 › Settings › Goal tile"
+scope = "local"
+values = ["2048", "4096", "8192", "Endless"]
+default = 1
+contexts = ["Game4096", "Games", "GamePause"]
+oracle = "Game4096: the Goal reached banner appears when the goal tile is made (never for Endless); score table variant. Applies from the next game."
+tests = ["sim/tests/games.rs::settings_effects::tiles_goal"]
+
+[[setting]]
+id = "0x0E23"
+name = "Games › 4096 › Settings › Chance of a 4"
+scope = "local"
+values = ["0 %", "10 %", "25 %", "50 %"]
+default = 1
+contexts = ["Game4096", "Games", "GamePause"]
+oracle = "New tiles of a fixed seed: share of 4s (0 %: none); score table variant. Applies from the next game."
+tests = ["sim/tests/games.rs::settings_effects::tiles_four"]
+
+[[setting]]
+id = "0x0E24"
+name = "Games › 4096 › Settings › Undo steps"
+scope = "local"
+values = ["0", "1", "2", "3"]
+default = 1
+contexts = ["Game4096", "Games", "GamePause"]
+oracle = "Slides OK takes back (board after slides and OK presses); score table variant. Applies from the next game."
+tests = ["sim/tests/games.rs::settings_effects::tiles_undo"]
+
+[[setting]]
+id = "0x0E25"
+name = "Games › 4096 › Settings › Animations"
+scope = "local"
+values = ["off", "on"]
+default = 1
+contexts = ["Game4096"]
+oracle = "Game4096: the frame 33 ms after a slide shows tiles between cells (on) or the final board (off). At once. Independent of Settings › Display › Animations."
+tests = ["sim/tests/games.rs::settings_effects::tiles_animations"]

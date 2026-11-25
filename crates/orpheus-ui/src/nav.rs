@@ -56,11 +56,22 @@ pub struct Wants {
     pub title: Option<&'static str>,
     /// This screen is the player of the current source (no mini-player).
     pub is_player: bool,
+    /// The screen takes the Menu key itself (games: Menu is a game key);
+    /// no context menu opens. Holding Menu still opens the quick panel.
+    /// Honoured with the `menu-key` feature (the Games app turns it on).
+    pub menu_key: bool,
 }
 
 impl Default for Wants {
     fn default() -> Self {
-        Wants { ticks: false, full_screen: false, strip: StripUse::Auto, title: None, is_player: false }
+        Wants {
+            ticks: false,
+            full_screen: false,
+            strip: StripUse::Auto,
+            title: None,
+            is_player: false,
+            menu_key: false,
+        }
     }
 }
 
