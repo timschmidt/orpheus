@@ -1000,8 +1000,11 @@ stereo pin (node 0x19), capture 16/20/24-bit at 44.1–192 kHz, **mic bias on
 Before measuring, the bias is switched off (pin control `VREF_HIZ`, e.g.
 `hda-verb /dev/snd/hwC2D0 0x19 SET_PIN_WIDGET_CONTROL 0x20`, needs root;
 or a DC-blocking adapter), boost stays 0 and the PipeWire source runs in
-pro-audio mode at 96 or 192 kHz/24-bit. The rear blue line input (node
-0x1a, already `VREF_HIZ`) is the cleaner alternative if it can be reached.
+pro-audio mode at 96 or 192 kHz/24-bit. **Chosen (owner, 2026-11-25): the
+rear blue line input** (node 0x1a, `Line In at Ext Rear`, already
+`VREF_HIZ`: no bias, line level, `Line Boost` 0; ALSA `Input Source` set to
+`Line` for the capture), so no root command is needed; the front mic input
+stays the fallback.
 
 **Run engine (MEAS-2, firmware).** A plan compiled by `xtask meas` into a
 small binary file under `/.orpheus/meas/` (uploaded with `dev put`) and armed
