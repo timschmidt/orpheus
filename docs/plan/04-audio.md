@@ -453,8 +453,12 @@ and read-aloud (05 §7.14–7.15).
 * **Output**: a speech voice in the audio mixer next to the music path,
   with ducking or pausing of the music, its own volume and the DSP chain
   bypassed; works during playback, radio and with the screen off.
-* **Budgets**: ≤ 64 KiB paged code and tables (lexicons paged as data),
-  ≤ 8 KiB RAM, ≤ 20 % CPU at the Base clock level, first sound ≤ 150 ms
+* **Budgets** (revised 2026-11-25 from TTS-2's measurements: ≈ 70 KB of
+  code and tables, 22 % of Base at 48 kHz output): ≤ 80 KiB paged code and
+  tables (lexicons paged as data; flash-paged, not RAM), ≤ 8 KiB RAM; while
+  speech plays the governor's clock floor is Mid (96 MHz; speech ≈ 11 % of
+  it at 48 kHz), and speech alone (nothing else playing) may run the DAC at
+  16 kHz; first sound ≤ 150 ms
   after a request; numbers in `budgets.toml`.
 * **Not used**: eSpeak NG (GPL) and SAM (no licence) — licence D-1. Flite
   (BSD-style) may be studied for its data only if the sizes fit.
