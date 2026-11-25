@@ -448,7 +448,53 @@ and read-aloud (05 §7.14–7.15).
   recogniser (word error rate below a budget on a fixed sentence set);
   device output checked through the M13 capture path.
 
-## 9. Work packages
+## 9. Synthesis and MIDI (M17; owner's requirement 2026-11-25)
+
+One synthesis crate, `orpheus-synth` (no_std, no alloc, host-tested, in
+the simulator and on the website), shared by MIDI playback, the Sequencer
+app (05 §7.16), the games' sound effects (M14) and the speech engine's
+resonators (M15).
+
+* **Voices**: band-limited oscillators (saw, square/pulse with width,
+  triangle via PolyBLEP; sine; small wavetables; noise), 2–4 operator FM,
+  sample playback (one-shot and looped, from WAV files on the card, streamed
+  through a small cache), drum models (kick, snare, hats, clap, toms,
+  cymbal, percussion: oscillators, noise and envelopes), per voice: pitch
+  and amplitude envelopes (ADSR), a state-variable filter (low/band/high
+  pass, resonance, envelope amount), LFOs, velocity, pan.
+* **Engine**: up to 16 voices at 44.1/48 kHz at the Base clock as the
+  target (the number is measured and becomes a budget; voice stealing by
+  age and level), events scheduled at sample offsets inside a block (no
+  timing jitter from the UI), per-channel mixing, send effects (delay,
+  chorus, a small reverb), a soft limiter; f32 without fused multiply-add
+  so the host and the player render the same samples; denormals flushed.
+* **Output**: rendered blocks go to the DAC ring like a decoder's (the
+  DSP chain and volume apply; Bluetooth follows); the synth takes the
+  decoder arena while it plays, so music playback and the synth do not run
+  at once; the governor raises the clock floor by the voice count.
+* **MIDI playback**: Standard MIDI Files type 0 and 1 (`.mid`, `.midi`,
+  `.kar` with lyrics shown), running status, tempo and time-signature
+  changes, all channel messages, pitch bend, the common controllers (volume,
+  expression, pan, sustain, modulation, RPN bend range), program changes
+  and drum channel 10 mapped to an **own General MIDI sound set** of
+  synthesised patches (no copied sound banks); optional user SoundFont
+  (SF2) samples from the card for better instruments, streamed with a
+  sample cache sized to the free RAM (stretch). Played from Files and the
+  Music app like other tracks: seek, pause, gapless next file, ReplayGain
+  not applicable; a channel mute/solo and transpose/tempo view in Now
+  Playing.
+* **Licences**: synthesis is written from published descriptions; no GPL
+  synthesiser code (TinySoundFont is MIT and may be studied); patches and
+  drum kits are our own data files.
+* **Tests**: golden renders (hash of the samples) for every patch, drum
+  voice and a set of MIDI files on host and player (bit-identical by the
+  f32 rule); band-limiting checked by spectrum (aliasing below a budget);
+  the MIDI parser fuzzed and adversarial (truncated tracks, huge deltas,
+  bad running status, 0-length meta events); a scheduling test that every
+  event lands on its sample; CPU per voice per clock level into VER-10;
+  M13 measures the rendered output.
+
+## 10. Work packages
 
 * **WP-AU-1 Pipeline core**: rings, pool leases, `ByteSource`, `Decoder`
   trait, reader/decode/sink tasks, WAV family, host simulation of timing,

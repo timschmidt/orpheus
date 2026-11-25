@@ -2872,6 +2872,17 @@ Finding: 30-minute `mixed` soak, seed 1, 10.4 min, read in `radio-keys 8
   off: the disk is full); fw fmt, clippy, `xtask build`, `check-resident`,
   `size --check`: pass. Not run: `xtask dev …` (no player), brand/site.
 
+### 2026-11-25 — plan: M17 synth engine, MIDI and Sequencer (owner's request)
+
+* New milestone M17 (08; spec 04 §9 and 05 §7.16; PLAN item 16):
+  `orpheus-synth` (PolyBLEP oscillators, FM, samples, drum models, SVF,
+  envelopes, LFOs, 16-voice target, sample-accurate events, effects,
+  limiter; bit-identical host/player renders), MIDI file playback (SMF 0/1,
+  own GM sound set, SF2 stretch), Sequencer app (16 patterns × 8 drum + 2
+  synth tracks, steps with velocity/probability/ratchet/locks, songs,
+  WAV/MIDI export, optional USB MIDI clock with M16). WPs SYN-1…3, MIDI-1,
+  SEQ-1/2. 04 §9 Work packages renumbered to §10.
+
 ### 2026-11-25 — first full soak pass on the player (lead)
 
 * `dev soak mixed --minutes 30 --seed 2` (before the headroom fix):

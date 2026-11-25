@@ -46,6 +46,7 @@ Two tracks run side by side from the start:
 | M14 | **Games** | Games app with Blocks, Solitaire (Klondike), 4096 and an artillery duel (generated terrain, wind, gravity, drag; against the computer or passing the player), each with settings, saved games and scores | After M10; before M13 and M11 |
 | M15 | **Speech, accessibility and books** | Tiny text-to-speech engine, screen reader and vision/motor settings, book reader (TXT, Markdown, FB2, EPUB) with read-aloud | After M10; before M13 and M11 |
 | M16 | **USB sound card** | The player as a USB audio interface: host audio out to the headphone jack and Bluetooth, the microphone in to the host; UAC2 (UAC1 option), asynchronous with feedback, volume and mute both ways, level meters | After M9/M10; before M13 and M11; supersedes USB-7 |
+| M17 | **Synth engine, MIDI and Sequencer** | Shared synthesis crate (oscillators, FM, samples, drum models, filters, effects), MIDI file playback with an own General MIDI sound set, and a step-sequencer drum machine / synth app with songs and WAV/MIDI export | After M10; before M13 and M11 |
 | M13 | **Unplugged measurement and optimisation** | Audio quality, battery life, power and performance measured with USB disconnected (on battery, analogue output into the workstation's input, optional Bluetooth status channel), then optimised from the numbers; battery indicator calibrated; budgets for audio figures and runtime per scenario | After the features it measures (M7–M9), before M11's final verification; supersedes PWR-4 |
 | M11 | **Verification** (last stage) | 100 % coverage of the project's own source by unit, adversarial-input and fuzz tests under sanitizers; every on-device function and every screen/app interaction exercised in fuzzed sequences on the player; memory use and performance tracked as thoroughly as coverage; every fuzz finding kept as a regression test | Release only after M11 is green |
 
@@ -264,13 +265,29 @@ M9/M10; M13 measures it, M11 verifies it.
 | UAC-4 | Personality and UI: composite with the developer channel and HID consumer control, USB dialog and Settings › USB entry, sound-card screen (format, meters, route, source, monitor), first-use safety notice, screen-off operation | 06 §2.7, 05 §6.5 | H+D | M | — |
 | UAC-5 | Verification: ALSA HIL (enumeration, every format, an hour without xruns, playback via the Bluetooth capture, capture via loopback), `usb-audio` soak scenario, suspend/resume and re-plug; Windows and macOS user check | 06 §2.7, 07 §5 | H+D | M | Try it on Windows and macOS |
 
+### M17 — Synth engine, MIDI and Sequencer (owner's requirement 2026-11-25)
+
+Spec: [04 §9](04-audio.md) (engine, MIDI), [05 §7.16](05-ui-apps.md)
+(Sequencer). The synthesis crate is also used by the games' effects (M14)
+and the speech resonators (M15); whichever comes first builds its core.
+After M10; M13 measures it, M11 verifies it.
+
+| WP | Content | Spec | Dev | Size | User |
+|---|---|---|---|---|---|
+| SYN-1 | `orpheus-synth` core: band-limited oscillators, FM, noise, envelopes, state-variable filter, LFOs, voice allocation and stealing, sample-accurate events, mixing, limiter; golden renders, aliasing and scheduling tests | 04 §9 | H | L | — |
+| SYN-2 | Drum models, sample playback from the card (cache), send effects (delay, chorus, reverb); presets and kits as data | 04 §9 | H | M | Listen to the kits |
+| SYN-3 | Synth on the player: render into the DAC ring, arena use, clock floor by voices, CPU per voice measured into budgets, Bluetooth output | 04 §9 | D | M | — |
+| MIDI-1 | Standard MIDI File parser (fuzzed, adversarial), sequencer of events, General MIDI mapping to an own sound set, playback from Files and Music with seek, pause, channel mute/solo, lyrics for `.kar`; SF2 samples as a stretch | 04 §9 | H+D | L | Play a few MIDI files |
+| SEQ-1 | Sequencer app: project model (patterns, tracks, songs) as a host crate with save/load, grid and transport screens, step editing, mute/solo, screen-off playing | 05 §7.16 | H+D | L | Make a beat |
+| SEQ-2 | Sound screens and parameter locks, synth tracks with note entry, scale lock, live record, song mode, WAV and MIDI export, USB MIDI clock (with M16, optional) | 05 §7.16 | H+D | M | Make a song and export it |
+
 ### M13 — Unplugged measurement and optimisation (owner's requirement 2026-11-25)
 
 Spec: [07 §5.11](07-tooling-testing.md). On battery with USB disconnected,
 the analogue output recorded by the workstation's microphone or line input,
 a status channel over Bluetooth where it helps, the full log on the card.
 Supersedes PWR-4 and the device half of PWR-5 (user check 19 is automated
-here). Runs after the features it measures (including M14, M15 and M16); M11
+here). Runs after the features it measures (including M14–M17); M11
 (verification) and the release follow it. Every fix it leads to follows the regression-test rule
 (CLAUDE.md). Needs D-12 (rig) before MEAS-1's hardware part; D-13 only for
 runs below the 3.55 V floor.

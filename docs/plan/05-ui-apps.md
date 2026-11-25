@@ -910,6 +910,43 @@ to Player n" screen between turns) or computer.
   off, a sleep timer, rate and voice settings, and resume where speech
   stopped.
 
+### 7.16 Sequencer (drum machine and synth; M17; owner's requirement 2026-11-25)
+
+A step sequencer on `orpheus-synth` (04 §9): drum and synth tracks in
+patterns, chained into songs.
+
+* **Project**: 16 patterns; each pattern 1–64 steps (16 per page) at
+  1/16 notes; 8 drum tracks plus 2 synth tracks (bass and lead, monophonic
+  or 4-voice chords); tempo 40–240 BPM, swing, tap tempo; song mode chains
+  patterns with repeats. Saved as small files in `/Sequencer/` (or a
+  folder the owner picks), autosaved; export of the song to WAV (rendered
+  offline, faster than real time where the CPU allows) and to a Standard
+  MIDI File.
+* **Grid screen**: 16 steps × 8 tracks of 7 × 12 px cells on 128 × 128
+  with the playhead, the current track's sound and the pattern number.
+  Keys: Prev/Next move along the steps (hold: page), Up/Down change track,
+  OK toggles a step, hold OK edits the step (velocity, probability,
+  ratchet 1–4, micro-timing, accent, note for synth tracks), Menu the
+  pattern and track menu, the transport on a long Menu or from the quick
+  panel; Vol± volume as everywhere.
+* **Sound screen** per track: drum voice parameters (tune, decay, tone,
+  snap/noise, level, pan, send) or synth patch (oscillators, filter, the
+  two envelopes, LFO, glide), with presets of our own; per-step parameter
+  locks for a few parameters.
+* **Synth tracks**: note entry on a one-octave strip with octave shift and
+  a scale lock (major, minor, modes, pentatonic, chromatic), live record
+  from the keys while playing (quantised), transpose per pattern.
+* **Playing**: mute/solo per track, pattern switch at the pattern end,
+  fill pattern while a key is held, keeps playing with the screen off; the
+  playhead and the audio come from the same sample clock.
+* **Settings**: kit and pattern defaults, swing amount, metronome, count-in,
+  step length, MIDI clock out over USB MIDI (with M16's USB audio
+  personality, optional), key click off while playing.
+* **Tests**: golden images per screen; key-sequence fuzzing with
+  invariants (steps stay within the pattern, saving and loading reproduce
+  the project exactly, render of a saved song is bit-identical); a long
+  soak scenario playing a song while editing.
+
 ## 8. Non-goals for v1 (recorded so nobody builds them by accident)
 
 Video playback; third-party plugins (games are M14, owner 2026-11-25); touch or pointer UI on the player itself; a

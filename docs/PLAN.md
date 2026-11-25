@@ -46,6 +46,7 @@ identity throughout.
 | Games: blocks, solitaire, 4096, and an artillery duel against the computer or passing the player, with generated terrain, realistic wind and gravity, and useful settings for each (owner, 2026-11-25) | 05 §7.13, 08 M14 | Original implementations of the genres (own names, art, sounds) |
 | Tiny text-to-speech engine, accessible UI and a book reader with read-aloud (owner, 2026-11-25) | 04 §8, 05 §7.14–7.15, 08 M15 | English only (D-14) |
 | USB sound card: the player as a USB audio interface, microphone to the host, host audio to the headphone (TRS) and Bluetooth outputs (owner, 2026-11-25) | 06 §2.7, 08 M16 | UAC2 with feedback; isochronous endpoints still to be proven (U-USB-12) |
+| Synth engine, MIDI playback, and a step-sequencer drum machine / synth app (owner, 2026-11-25) | 04 §9, 05 §7.16, 08 M17 | Own sound set and patches; no GPL synth code |
 | Audio quality, battery, power and performance measured and optimised with USB disconnected: output into the workstation's input, battery discharging, status over Bluetooth where possible (owner, 2026-11-25) | 07 §5.11, 08 M13 | Rig decision D-12; deeper discharge D-13 |
 | Bluetooth presentation remote; IMU (tilt) mouse only over Bluetooth | 05 §7.12, 06 §4.3 | **Remote in scope (owner, 2026-11-24)** over the module's HID service (keyboard + consumer reports, read 2026-11-24); BT-3 finds the command that feeds it, BT-4 builds the transport, UI-6b the app. **Tilt pointer conditional (D-10):** built only if BT-3 finds a Bluetooth transport for mouse data, otherwise dropped |
 | Bluetooth audio receiver | — | **Removed from scope by the owner on 2026-11-23** (the module cannot receive audio) |
@@ -165,6 +166,14 @@ Written up in `docs/hw/` (four reverse-engineering reports),
     its own clock; volume and mute agree both ways. The isochronous
     endpoints and full duplex are proven on the hardware first (UAC-0).
     After M9/M10, before M13 and M11.
+
+16. **Synth engine, MIDI and Sequencer (M17, owner's requirement
+    2026-11-25).** A shared synthesis crate (band-limited oscillators, FM,
+    samples, drum models, filters, effects; host and player render the same
+    samples), MIDI file playback with our own General MIDI sound set, and a
+    Sequencer app (patterns of drum and synth tracks, songs, export to WAV
+    and MIDI). The games' effects and the speech resonators use the same
+    crate. After M10, before M13 and M11.
 
 ## 5. Decisions that are the user's
 
