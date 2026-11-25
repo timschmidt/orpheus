@@ -1,0 +1,5 @@
+# fuzz-ui seed=8 oracle=underrun: 18 underruns while playing: playing frames=1232687 rate=48000 underruns=18 corrupt=0 where=3 written=805 played=803 walk=0/0 d0 pos=25680 q=1/256 shuf=1 title=Mucca Pazza： NPR Music join#0: head=0 open_us=0 loads=0 u=0 lib_us=0 art_us=0 u_meta=0 pf_us=0 prep_us=0 prep_loads=0 dec: n=1072 us=6043135 max_us=7448 loads=8642 ub: join=0 fill=0 serve=18 pf=0 prep=0 lib=0 art=0 dec=0
+# 685 steps sent before the finding
+# replay: cargo xtask dev fuzz-ui --replay <this file>
+# minimised to 1 steps (6 replays)
+hold:back:1276
