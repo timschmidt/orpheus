@@ -68,6 +68,39 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-25 — UI-PERF: idle Home thrashed the code cache; games during music on the player (lead)
+
+* **Regression found on the player** after merging the in-place saves
+  (`f3f39b9d`, no firmware file changed): idle Home took **1.7 s per UI
+  loop**, 2,939 line loads/s, each key 3.3 s, and game switches during
+  music ended in watchdog resets. A/B through `dev update`: `6a5a7f8e`
+  idle Home ≈ 730 loads/s, 45 ms per loop, keys 0.2 s each.
+* Fault profile (`dev prof --faults 15`, idle Home): 86 % of faults on
+  `orpheus_apps::settings::index` and the closure `Iterator::position`
+  called out of line for every item — the two shared a code-cache line in
+  that layout (it moved by 32 B of resident code), ~260 line loads per
+  lookup of ~130 items.
+* **Fix** (`ad1bbd16`): `settings::def` and `settings::index` as plain
+  loops over the tables (one function each: 158 B and 218 B, no closure).
+  On the player: idle Home 760 loads/s, 47 ms per loop, 5 keys in 1.1 s.
+  Tests: `regress_settings_lookup_loops_match_the_iterator_form`
+  (orpheus-apps, with and without `games`); the suite now samples the
+  pager over 5 s of idle Home and fails above 1,500 line loads/s
+  (`regress_idle_home_thrash_fails_the_suite` with the measured figures):
+  a layout collision on the idle path cannot be caught on the host.
+* **Games during music** (five game switches with an MP3 playing, on
+  `ad1bbd16`): **1 underrun** (was 12 on `6a5a7f8e`, 8 before the pieces),
+  no reset; music kept playing throughout. Remaining: some games pieces
+  take 33–40 ms (`serve: games 38 ms while playing`) against the worker's
+  estimate of a few sector I/Os — most likely paging of the save path's
+  code (no hot cluster). Open: a fault capture of a game switch during
+  music (`dev prof --faults --during …`) and a `games-io` cluster or
+  smaller pieces.
+* Tooling note: with the player running from slot B (after `dev update`),
+  `dev stage` refused ("slot image 1175552 bytes > slot A 491520 bytes"):
+  nothing was written; `dev update` with the build's `.ofw` worked. Open:
+  make `stage` read the full layout's slot sizes from either slot.
+
 ### 2026-11-25 — AU-PERF: games saves in place; the allocation search in steps (worker, no hardware)
 
 Lead's measurement (owner's card, MP3 playing, games switched): every
