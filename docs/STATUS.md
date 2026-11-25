@@ -65,6 +65,21 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-25 — stack: static analysis merged, worst case 21,740 of 22,016 B (lead)
+
+* Merged VER-10 `f6fcc23e` (`cargo xtask stack`: static worst-case depth
+  per context with nesting, indirect calls resolved through `stack.toml`;
+  cuts in the UI start-up, HMAC, index/media frames, Vorbis, a
+  non-recursive panic handler). Together with AU-PERF's smaller audio
+  frames: nested run-phase worst case **21,740 B of 22,016 B usable**
+  (276 B margin; RT 13,696 B through idle → `play_file` → `seek_to` →
+  Vorbis setup; thread 6,876 B). Budget ratcheted to margin ≥ 0; the goal
+  remains ≥ 4 KiB (next: the audio task poll 2,328 B, `idle` 2,032 B,
+  `play_file` 2,320 B frames).
+* On the player: `fuzz-ui --replay tests/regress/ui-device/stack-seed8-340.keys`
+  → **no finding** (was stack free 1,912 B). Full 30-min settings fuzz
+  rerunning.
+
 ### 2026-11-25 — AU-PERF on the player; Up next window found blocking playback (lead)
 
 * Merged AU-PERF (`0a02b8b6`): per-block path out of the async closures,
