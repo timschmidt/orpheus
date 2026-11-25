@@ -187,6 +187,9 @@ pub struct Volume<'c, D: BlockDevice> {
     pub(crate) upcase_len: u32,
     /// Directories resolved lately, when lent (`Volume::set_walk_cache`).
     pub(crate) walks: Option<&'c mut crate::dir::WalkCache>,
+    /// Host builds: directory slot steps taken so far ([`Volume::dir_steps`]).
+    #[cfg(feature = "std")]
+    pub(crate) steps: u32,
 }
 
 pub(crate) fn le16(b: &[u8], o: usize) -> u16 {
@@ -311,6 +314,8 @@ impl<'c, D: BlockDevice> Volume<'c, D> {
             upcase_cluster: 0,
             upcase_len: 0,
             walks: None,
+            #[cfg(feature = "std")]
+            steps: 0,
         };
         if looks_like_exfat(&bs) {
             vol.mount_exfat(&bs, len).await?;
@@ -588,6 +593,15 @@ impl<'c, D: BlockDevice> Volume<'c, D> {
     /// Metadata cache statistics: (sector reads, sector writes).
     pub fn cache_stats(&self) -> (u32, u32) {
         (self.cache.reads, self.cache.writes)
+    }
+    /// Host builds: directory positions stepped through one at a time so
+    /// far (every slot `read_dir` looks at, every cluster a seek crosses).
+    /// The cost bound of `open_locator` and `seek_dir` is tested with it;
+    /// the firmware build has no counter.
+    #[cfg(feature = "std")]
+    #[must_use]
+    pub fn dir_steps(&self) -> u32 {
+        self.steps
     }
     /// Cached sectors not yet written back.
     pub fn dirty_sectors(&self) -> usize {

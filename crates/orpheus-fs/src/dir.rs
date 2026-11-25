@@ -759,6 +759,10 @@ impl<'c, D: BlockDevice> Volume<'c, D> {
         if pos.cluster == END {
             return Ok(());
         }
+        #[cfg(feature = "std")]
+        {
+            self.steps = self.steps.wrapping_add(1);
+        }
         pos.index += 1;
         pos.off += 32;
         if u64::from(pos.index) * 32 >= spec.len {
@@ -1117,6 +1121,27 @@ impl<'c, D: BlockDevice> Volume<'c, D> {
         m.ok
     }
 
+    /// Whether a raw slot can be the first of an entry set: an exFAT file
+    /// entry; on FAT a long-name entry with the last-entry flag, or a short
+    /// entry that is not free, deleted, a volume label or a dot entry.
+    /// Looked at in the cached sector (no copy: this sits in
+    /// `open_locator`'s future).
+    async fn set_starts_at(&mut self, cluster: u32, off: u32) -> Result<bool, D::Error> {
+        let lba = self.pos_lba(cluster, off);
+        let i = self.cache.load(&mut self.dev, lba, Kind::Meta, false).await?;
+        let o = (off % 512) as usize;
+        let (b0, attr) = (self.cache.data(i)[o], self.cache.data(i)[o + 11]);
+        Ok(if self.g.is_exfat() {
+            b0 == 0x85
+        } else if b0 == 0 || b0 == 0xE5 {
+            false
+        } else if attr & 0x3F == 0x0F {
+            b0 & 0x40 != 0
+        } else {
+            attr & 0x08 == 0 && b0 != b'.'
+        })
+    }
+
     // -------------------------------------------------------- public API
 
     /// Read the next entry into `out`. Returns `false` at the end.
@@ -1136,21 +1161,33 @@ impl<'c, D: BlockDevice> Volume<'c, D> {
     }
 
     /// Move a cursor to entry index `index` (a value from
-    /// [`DirEntry::index`] or [`DirCursor::index`]).
+    /// [`DirEntry::index`] or [`DirCursor::index`]). Reads nothing but the
+    /// FAT for the clusters it crosses: inside a cluster (or the fixed
+    /// root) it moves in one step, so a seek costs one step per cluster,
+    /// not one per entry slot. It used to step slot by slot inside the
+    /// entry's cluster: up to 4,095 steps in a 128 KiB exFAT cluster, for
+    /// every Up next title (AU-PERF, 2026-11-25).
     pub async fn seek_dir(&mut self, cur: &mut DirCursor, index: u32) -> Result<(), D::Error> {
         if index < cur.pos.index || cur.pos.cluster == END {
             cur.pos = self.start_pos(&cur.spec);
         }
         let spec = cur.spec;
-        let cb = if cur.pos.cluster == 0 { u32::MAX } else { self.g.cluster_bytes() };
         while cur.pos.index < index && cur.pos.cluster != END {
-            // skip whole clusters where possible
-            let left_in_cluster = (cb.saturating_sub(cur.pos.off)) / 32;
-            if cur.pos.cluster != 0 && index - cur.pos.index >= left_in_cluster && left_in_cluster > 1 {
-                cur.pos.index += left_in_cluster - 1;
-                cur.pos.off = cb - 32;
+            let unit = if cur.pos.cluster == 0 { self.g.root_entries * 32 } else { self.g.cluster_bytes() };
+            // Slots from here to the end of the unit, this one included.
+            let left = unit.saturating_sub(cur.pos.off) / 32;
+            // To the entry if it is in this unit, else to the unit's last
+            // slot (`advance` then crosses into the next cluster).
+            let k = (index - cur.pos.index).min(left.saturating_sub(1));
+            cur.pos.index += k;
+            cur.pos.off += k * 32;
+            if u64::from(cur.pos.index) * 32 >= spec.len {
+                cur.pos.cluster = END;
+                break;
             }
-            self.advance(&spec, &mut cur.pos).await?;
+            if cur.pos.index < index {
+                self.advance(&spec, &mut cur.pos).await?;
+            }
         }
         Ok(())
     }
@@ -1171,6 +1208,15 @@ impl<'c, D: BlockDevice> Volume<'c, D> {
         };
         let mut cur = self.cursor_for(spec);
         self.seek_dir(&mut cur, index).await?;
+        // A set starts at `index`, or the entry is gone: `read_dir` would
+        // look on for the next set (through a run of deleted entries, or to
+        // the end of a directory that changed) only to fail.
+        if cur.pos.cluster == END || cur.pos.index != index {
+            return Err(Error::NotFound);
+        }
+        if !self.set_starts_at(cur.pos.cluster, cur.pos.off).await? {
+            return Err(Error::NotFound);
+        }
         if !self.read_dir(&mut cur, out).await? || out.info.index != index {
             return Err(Error::NotFound);
         }
