@@ -133,3 +133,23 @@ first_screen_ms = 2000
 frame_mean_ms = 4
 frame_worst_ms = 16
 audio_underruns = 0
+
+[tts]
+# Speech engine (04 §8, TTS-2, 2026-11-25). RAM: `Synth` (unit queue,
+# synthesiser, resampler) measured 1,936 B on the host, `Speaker`
+# (converter + synth) 3,352 B; `tests/speech.rs` asserts the plan's 8 KiB
+# for the speaker and 6 KiB for the synth.
+ram_bytes = 8192
+# Word error rate (%) of an offline recogniser on the 24 sentences of
+# `tests/intelligibility.rs` (runs when ORPHEUS_ASR_URL/ORPHEUS_ASR_CMD is
+# set, "not run" otherwise). Measured with whisper.cpp 1.9.4, ggml-base.en,
+# greedy: Neutral 13.9 / 30.5 / 93.0 % at 1x / 2x / 4x (run-to-run noise
+# about +-2 points while tuning); Low 13.4 / 31.6, Bright 7.5 / 27.8 % at
+# 1x / 2x. References on the same recogniser and sentences: espeak-ng
+# 5.9 / 63 / 89 %, flite 7.5 % at 1x. Budgets = measured + margin. The 4x
+# figure is the recogniser's limit, not the synthesiser's: our own 1x
+# audio time-compressed 4x by WSOLA (sox tempo) scores 96 % (3x: 86 %,
+# 2x: 41 %).
+wer_max_pct_1x = 18
+wer_max_pct_2x = 36
+wer_max_pct_4x = 97

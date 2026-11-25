@@ -28,6 +28,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "tts_synth"
+path = "fuzz_targets/tts_synth.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "tts_lexicon"
 path = "fuzz_targets/tts_lexicon.rs"
 test = false

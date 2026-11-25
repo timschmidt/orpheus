@@ -1207,6 +1207,9 @@ dependencies = [
 [[package]]
 name = "orpheus-tts"
 version = "0.1.0"
+dependencies = [
+ "orpheus-synth",
+]
 
 [[package]]
 name = "orpheus-ui"
