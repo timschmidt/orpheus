@@ -301,7 +301,9 @@ impl Library {
     pub(crate) fn slot(&self) -> u8 {
         self.slot
     }
-    pub(crate) fn file(&self) -> FileName {
+    /// The library's file (in [`crate::LIBRARY_DIR`]).
+    #[must_use]
+    pub fn file(&self) -> FileName {
         self.file
     }
     /// Offset and length of a section.

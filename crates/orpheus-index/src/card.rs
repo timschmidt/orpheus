@@ -88,6 +88,30 @@ impl Handles {
     }
 }
 
+/// Where a file was found ([`CardIo::place`]): its directory entry and
+/// the volume's serial number (12 bytes). A later session given it
+/// ([`CardIo::reuse`]) reopens the file from there with
+/// [`Volume::open_at`] (the entry read again and its name checked) instead
+/// of walking `/.orpheus/index/X/NAME` from the root: on a card with a
+/// large root folder that walk was tens to hundreds of sector reads
+/// whenever the path-walk cache had lost `/.orpheus` (AU-PERF,
+/// 2026-11-25: one 31-ms stretch in every listing piece). A place of
+/// another volume, or one whose entry is gone or holds another name, is
+/// not used: the file is looked for by path again.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Place {
+    loc: Locator,
+    serial: u32,
+}
+
+impl Place {
+    /// The file's directory entry.
+    #[must_use]
+    pub fn locator(&self) -> Locator {
+        self.loc
+    }
+}
+
 /// What a session may do.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
@@ -157,6 +181,9 @@ struct Inner<'a, 'v, 'c, D: BlockDevice> {
     h: &'a mut Handles,
     mode: Mode,
     base: Option<&'static str>,
+    /// The place of one file: given ([`CardIo::reuse`]), or where a
+    /// read-only session found it by path ([`CardIo::place`]).
+    kept: Option<(FileName, Place)>,
 }
 
 impl<'v, 'c, D: BlockDevice> Inner<'_, 'v, 'c, D> {
@@ -172,9 +199,13 @@ impl<'v, 'c, D: BlockDevice> Inner<'_, 'v, 'c, D> {
         };
         let mut pb = [0u8; PATH];
         let p = path(f, alt, self.base, &mut pb);
-        let file = match spin_in(self.cx, || {
-            self.vol.open(p, if write { OpenMode::ReadWrite } else { OpenMode::Read })
-        }) {
+        let file = match self.open_read(f, p) {
+            Some(r) => r,
+            None => spin_in(self.cx, || {
+                self.vol.open(p, if write { OpenMode::ReadWrite } else { OpenMode::Read })
+            }),
+        };
+        let file = match file {
             Ok(file) => file,
             Err(orpheus_fs::Error::NotFound) if create && write => {
                 // Parents one by one (`/.orpheus`, `/.orpheus/index`, the shard;
@@ -203,6 +234,33 @@ impl<'v, 'c, D: BlockDevice> Inner<'_, 'v, 'c, D> {
         Ok(Some(i))
     }
 
+    /// A read-only session opens `f` (at path `p`) from its kept place if
+    /// that is still good, else by path, keeping where it found it. `None`
+    /// in a writing session (it opens by path).
+    #[inline(never)]
+    fn open_read(&mut self, f: FileName, p: &str) -> Option<Result<File, FsError<D>>> {
+        if self.mode != Mode::Read {
+            return None;
+        }
+        let serial = self.vol.serial();
+        if let Some((k, at)) = self.kept
+            && k == f
+            && at.serial == serial
+        {
+            let name = p.rsplit('/').next().unwrap_or(p);
+            match spin_in(self.cx, || self.vol.open_at(at.loc, name)) {
+                Ok(file) => return Some(Ok(file)),
+                // Gone, or another file there: by path.
+                Err(orpheus_fs::Error::NotFound | orpheus_fs::Error::IsADirectory) => self.kept = None,
+                Err(e) => return Some(Err(e)),
+            }
+        }
+        Some(spin_in(self.cx, || self.vol.open_located(p)).map(|(file, loc)| {
+            self.kept = Some((f, Place { loc, serial }));
+            file
+        }))
+    }
+
     /// Run `op` on file `f` (opened as [`Inner::slot`] does); `None` if
     /// it does not exist.
     fn on<R>(
@@ -226,7 +284,7 @@ pub struct CardIo<'a, 'v, 'c, D: BlockDevice> {
 
 impl<'a, 'v, 'c, D: BlockDevice> CardIo<'a, 'v, 'c, D> {
     pub fn new(vol: &'a mut Volume<'v, D>, cx: &'a mut Context<'c>, h: &'a mut Handles, mode: Mode) -> Self {
-        CardIo { inner: RefCell::new(Inner { vol, cx, h, mode, base: None }) }
+        CardIo { inner: RefCell::new(Inner { vol, cx, h, mode, base: None, kept: None }) }
     }
 
     /// A session whose [`Storage`] files live flat in `dir` (at most 22
@@ -239,7 +297,27 @@ impl<'a, 'v, 'c, D: BlockDevice> CardIo<'a, 'v, 'c, D> {
         mode: Mode,
         dir: &'static str,
     ) -> Self {
-        CardIo { inner: RefCell::new(Inner { vol, cx, h, mode, base: Some(dir) }) }
+        CardIo { inner: RefCell::new(Inner { vol, cx, h, mode, base: Some(dir), kept: None }) }
+    }
+
+    /// Reopen `f` from `at` (where an earlier session found it,
+    /// [`CardIo::place`]) when this read-only session first needs it,
+    /// instead of walking its path; if `at` is not good any more (another
+    /// volume, the entry gone or renamed), by path as usual. Call it
+    /// before the session first uses `f`.
+    #[inline(never)]
+    pub fn reuse(&self, f: &FileName, at: Place) {
+        self.inner.borrow_mut().kept = Some((*f, at));
+    }
+
+    /// Where this read-only session found `f` (by path, or at the place
+    /// given to [`CardIo::reuse`]): keep it for the next session. The
+    /// place given if `f` was not opened; `None` if it was neither given
+    /// nor found.
+    #[must_use]
+    #[inline(never)]
+    pub fn place(&self, f: &FileName) -> Option<Place> {
+        self.inner.borrow().kept.as_ref().filter(|(k, _)| k == f).map(|&(_, at)| at)
     }
 
     /// The index files.
@@ -339,6 +417,9 @@ impl<D: BlockDevice> Storage for CardStore<'_, '_, '_, '_, D> {
         {
             // The entry must name its clusters before they can be freed.
             spin_in(io.cx, || io.vol.close(f))?;
+        }
+        if io.kept.is_some_and(|(k, _)| k == file) {
+            io.kept = None;
         }
         let alt = matches!(io.mode, Mode::Write { alt: true });
         let mut pb = [0u8; PATH];

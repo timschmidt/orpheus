@@ -752,7 +752,7 @@ use core::future::poll_fn;
 use core::task::Poll;
 
 use orpheus_fs::{DirCursor, DirEntry, Locator, Volume};
-use orpheus_index::card::{CardIo, Handles, Mode, is_dot, spin, src_entry};
+use orpheus_index::card::{CardIo, Handles, Mode, Place, is_dot, spin, src_entry};
 use orpheus_index::{Builder, FileName, Index, Progress, Signature, Spec, Storage, Suspended};
 use yoton_bsp::card::Card;
 
@@ -817,6 +817,29 @@ fn io_session<R>(
     r.map_or(Poll::Pending, Poll::Ready)
 }
 
+/// [`with_io`], read-only, on the index file `f` reopened at `at` (where
+/// the last session on it found it: no path walk, AU-PERF 2026-11-25);
+/// `at` becomes where this session found it, for the next one. (The
+/// place and the name by reference: by value they made the session's
+/// frame and `Server::step`'s, on the deepest card path, 64 B larger.)
+pub async fn with_index<R>(
+    vol: &mut Vol,
+    f: FileName,
+    at: &mut Option<Place>,
+    g: impl FnOnce(&Io<'_, '_>) -> R,
+) -> R {
+    let f = &f;
+    with_io(vol, Mode::Read, |io| {
+        if let Some(a) = *at {
+            io.reuse(f, a);
+        }
+        let r = g(io);
+        *at = io.place(f);
+        r
+    })
+    .await
+}
+
 const ROW0: orpheus_index::Row = orpheus_index::Row {
     loc: Locator { dir: 0, index: 0 },
     size: 0,
@@ -849,6 +872,13 @@ pub struct Server {
     dircl: u32,
     /// The current index of the listing, when it is served sorted.
     index: Option<Index>,
+    /// Where its file was found ([`with_index`]): the listing's pieces
+    /// and windows reopen it from there instead of walking
+    /// `/.orpheus/index/X/NAME` from the root (on the owner's card one
+    /// 31-ms stretch per piece, soak seed 1, 2026-11-25). Set and dropped
+    /// with `index` ([`Server::set_index`]); checked against the volume's
+    /// serial and the entry's name on every use.
+    index_at: Option<Place>,
     /// Listing generation ([`BrowseWin::lgen`]).
     lgen: u32,
     /// The background build.
@@ -913,6 +943,7 @@ impl Server {
             checkpoints: [0; CHECKPOINTS],
             dircl: u32::MAX,
             index: None,
+            index_at: None,
             lgen: 0,
             build: None,
             job: None,
@@ -1074,10 +1105,16 @@ impl Server {
         self.dir = dir;
         self.entry = None;
         self.count = 0;
-        self.index = None;
+        self.set_index(None);
         self.dircl = u32::MAX;
         self.lgen = self.lgen.wrapping_add(1);
         self.lgen
+    }
+
+    /// The listing's index (its file's place is not known yet).
+    fn set_index(&mut self, ix: Option<Index>) {
+        self.index = ix;
+        self.index_at = None;
     }
 
     /// The current listing's generation.
@@ -1116,7 +1153,7 @@ impl Server {
         self.entry = entry;
         self.filter = filter;
         self.count = 0;
-        self.index = None;
+        self.set_index(None);
         self.lib.list = None;
         self.lgen = self.lgen.wrapping_add(1);
         let lgen = self.lgen;
@@ -1184,8 +1221,10 @@ impl Server {
                     // build's start.
                     self.build = None;
                 }
-                self.index = Some(ix);
-                with_io(vol, Mode::Read, |io| self.publish_index(io, &ix, None, scan, e)).await;
+                self.set_index(Some(ix));
+                let mut at = None;
+                with_index(vol, ix.file(), &mut at, |io| self.publish_index(io, &ix, None, scan, e)).await;
+                self.index_at = at;
                 return;
             }
         }
@@ -1282,17 +1321,23 @@ impl Server {
                 let spec = Spec::from(self.filter);
                 if n >= 2 {
                     let dircl = self.dircl;
-                    let ix = with_io(vol, Mode::Read, |io| match Index::open(&mut io.store(), dircl, spec) {
-                        Ok(Some(ix)) if ix.is_current(&sig) => Some(ix),
-                        _ => None,
-                    })
-                    .await;
+                    // The one path walk of the listing: its pieces reopen
+                    // the file from where this found it.
+                    let f = FileName::index(dircl, spec);
+                    let mut at = None;
+                    let ix =
+                        with_index(vol, f, &mut at, |io| match Index::open(&mut io.store(), dircl, spec) {
+                            Ok(Some(ix)) if ix.is_current(&sig) => Some(ix),
+                            _ => None,
+                        })
+                        .await;
                     if let Some(ix) = ix {
                         self.claim(ix.file());
                         if self.build.is_some_and(|b| b.dircl == dircl && b.spec == spec) {
                             self.build = None;
                         }
-                        self.index = Some(ix);
+                        self.set_index(Some(ix));
+                        self.index_at = at;
                         self.job = Some(Job::Rows { ix, start: u32::MAX, n: 0, letters: true });
                         return;
                     }
@@ -1315,27 +1360,40 @@ impl Server {
             }
             Some(Job::Rows { ix, start: u32::MAX, n, letters }) => {
                 // The focused file first (a piece of its own).
-                let first = with_io(vol, Mode::Read, |io| self.focus_row(io, &ix, FOCUS_SCAN_PLAYING)).await;
+                let mut at = self.index_at;
+                let first =
+                    with_index(vol, ix.file(), &mut at, |io| self.focus_row(io, &ix, FOCUS_SCAN_PLAYING))
+                        .await;
+                self.index_at = at;
                 let start = first.unwrap_or(0).saturating_sub(WINDOW / 4).min(ix.count().saturating_sub(1));
                 self.job = Some(Job::Rows { ix, start, n, letters });
             }
             Some(Job::Rows { ix, start, n, letters }) => {
                 let mut e = DirEntry::new();
                 let e = &mut e;
-                let (n, done) = with_io(vol, Mode::Read, |io| Self::fill_some(io, &ix, start, n, e)).await;
-                if done && letters {
-                    with_io(vol, Mode::Read, |io| Self::load_letters(io, &ix, self.lgen)).await;
-                }
-                let (dir, lgen, count) = (self.dir, self.lgen, ix.count());
+                let lgen = self.lgen;
+                // One session, the file reopened where it was found; the
+                // letter table in it too when the window is whole and the
+                // budget lasts (else in the next piece).
+                let mut at = self.index_at;
+                let (n, done, letters) = with_index(vol, ix.file(), &mut at, |io| {
+                    let (n, done) = Self::fill_some(io, &ix, start, n, e);
+                    let letters =
+                        letters && !(done && crate::audio::piece_left() && Self::load_letters(io, &ix, lgen));
+                    (n, done, letters)
+                })
+                .await;
+                self.index_at = at;
+                let (dir, count) = (self.dir, ix.count());
                 critical_section::with(|cs| {
                     let mut w = BROWSE.borrow(cs).borrow_mut();
-                    w.listing = Listing { dir, count, sorted: true, complete: done };
+                    w.listing = Listing { dir, count, sorted: true, complete: done && !letters };
                     w.lgen = lgen;
                     w.first = start;
                     w.n = n;
                 });
                 ready(tag::BROWSE);
-                if !done {
+                if !done || letters {
                     self.job = Some(Job::Rows { ix, start, n, letters });
                 }
             }
@@ -1415,14 +1473,18 @@ impl Server {
     }
 
     /// Rows `start + n..` of `ix` into the window until it is full, the
-    /// chore's budget is used up (`audio::piece_left` before each row's
-    /// entry is read) or [`PIECE_ROWS`] are filled; returns the rows filled
-    /// and whether the window is complete.
+    /// chore's budget is used up (`audio::piece_left` before each card
+    /// operation: the rows read, the first of which opens the index file,
+    /// and each row's entry) or [`PIECE_ROWS`] are filled; returns the rows
+    /// filled and whether the window is complete.
     #[inline(never)]
     fn fill_some(io: &Io<'_, '_>, ix: &Index, start: u32, mut n: u32, e: &mut DirEntry) -> (u32, bool) {
         let mut rows = [ROW0; 4];
         let n0 = n;
         while n < WINDOW {
+            if n - n0 >= PIECE_ROWS || !crate::audio::piece_left() {
+                return (n, false);
+            }
             let want = ((WINDOW - n) as usize).min(rows.len());
             let got = match ix.rows(&mut io.store(), start + n, &mut rows[..want]) {
                 Ok(g) if g > 0 => g,
@@ -1500,14 +1562,16 @@ impl Server {
         ready(tag::BROWSE);
     }
 
-    /// The letter table of `ix` for listing generation `lgen`.
+    /// The letter table of `ix` for listing generation `lgen` (true: it
+    /// was looked at).
     #[inline(never)]
-    fn load_letters(io: &Io<'_, '_>, ix: &Index, lgen: u32) {
+    fn load_letters(io: &Io<'_, '_>, ix: &Index, lgen: u32) -> bool {
         let mut t = LetterTable::EMPTY;
         if t.load(ix, &mut io.store()).is_err() {
             t = LetterTable::EMPTY;
         }
         critical_section::with(|cs| *LETTERS.borrow(cs).borrow_mut() = (lgen, t));
+        true
     }
 
     /// Row of the focused file in `ix` (a pass over its rows; not for more
@@ -1639,7 +1703,7 @@ impl Server {
     pub fn build_done(&mut self, io: &Io<'_, '_>, ix: Index, e: &mut DirEntry) {
         let Some(b) = self.build.take() else { return };
         if b.dircl == self.dircl && b.spec == Spec::from(self.filter) && self.index.is_none() {
-            self.index = Some(ix);
+            self.set_index(Some(ix));
             self.publish_index(io, &ix, None, u32::MAX, e);
         }
     }
@@ -1652,7 +1716,7 @@ impl Server {
         // kept across the hand-over.
         self.titles_stale();
         self.job = None;
-        self.index = None;
+        self.set_index(None);
         // The host may change the folder's pictures.
         self.folder_art = None;
         self.dircl = u32::MAX;
@@ -1669,7 +1733,9 @@ impl Server {
         let mut e = DirEntry::new();
         if let Some(ix) = self.index {
             let e = &mut e;
-            with_io(vol, Mode::Read, |io| self.publish_index(io, &ix, Some(first), 0, e)).await;
+            let mut at = self.index_at;
+            with_index(vol, ix.file(), &mut at, |io| self.publish_index(io, &ix, Some(first), 0, e)).await;
+            self.index_at = at;
             return;
         }
         let start = first.saturating_sub(WINDOW / 4).min(self.count.saturating_sub(1));
@@ -1855,7 +1921,10 @@ impl Server {
             && entry == self.entry
         {
             let disk = self.qlen;
-            match with_io(vol, Mode::Read, |io| self.queue_from_index(io, &ix, start)).await {
+            let mut at = self.index_at;
+            let q = with_index(vol, ix.file(), &mut at, |io| self.queue_from_index(io, &ix, start)).await;
+            self.index_at = at;
+            match q {
                 Some((n, f)) if n == disk => found = f,
                 // The index and the folder disagree: on-disk order.
                 _ => found = self.queue_from_disk(vol, entry, start).await,

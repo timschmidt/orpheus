@@ -1192,8 +1192,8 @@ impl<'c, D: BlockDevice> Volume<'c, D> {
         Ok(())
     }
 
-    /// Re-read the entry a [`Locator`] points at.
-    pub async fn open_locator(&mut self, loc: Locator, out: &mut DirEntry) -> Result<(), D::Error> {
+    /// The directory a [`Locator`] names and its entry index.
+    fn locator_spec(&self, loc: Locator) -> (DirSpec, u32) {
         let contig = loc.index & (1 << 31) != 0;
         let index = loc.index & !(1 << 31);
         let spec = if loc.dir == self.spec_root().first {
@@ -1206,11 +1206,34 @@ impl<'c, D: BlockDevice> Volume<'c, D> {
                 self_loc: EntryLoc::NONE,
             }
         };
+        (spec, index)
+    }
+
+    /// A cursor on the set a [`Locator`] points at; `NotFound` if no set
+    /// starts there (the entry is gone: `read_dir` would look on for the
+    /// next set, through a run of deleted entries or to the end of a
+    /// directory that changed, only to fail).
+    async fn seek_locator(&mut self, loc: Locator) -> Result<(DirCursor, u32), D::Error> {
+        let (spec, index) = self.locator_spec(loc);
         let mut cur = self.cursor_for(spec);
         self.seek_dir(&mut cur, index).await?;
-        // A set starts at `index`, or the entry is gone: `read_dir` would
-        // look on for the next set (through a run of deleted entries, or to
-        // the end of a directory that changed) only to fail.
+        if cur.pos.cluster == END || cur.pos.index != index {
+            return Err(Error::NotFound);
+        }
+        if !self.set_starts_at(cur.pos.cluster, cur.pos.off).await? {
+            return Err(Error::NotFound);
+        }
+        Ok((cur, index))
+    }
+
+    /// Re-read the entry a [`Locator`] points at. (Written out, not on
+    /// [`Volume::seek_locator`]: its future is on the firmware's deepest
+    /// card path, every listing row and Up next title.)
+    pub async fn open_locator(&mut self, loc: Locator, out: &mut DirEntry) -> Result<(), D::Error> {
+        let (spec, index) = self.locator_spec(loc);
+        let mut cur = self.cursor_for(spec);
+        self.seek_dir(&mut cur, index).await?;
+        // As `seek_locator`.
         if cur.pos.cluster == END || cur.pos.index != index {
             return Err(Error::NotFound);
         }
@@ -1221,6 +1244,24 @@ impl<'c, D: BlockDevice> Volume<'c, D> {
             return Err(Error::NotFound);
         }
         Ok(())
+    }
+
+    /// The entry a [`Locator`] points at if it is still named `name`
+    /// (compared as a path walk compares: case-insensitive, or the 8.3
+    /// alias); `NotFound` otherwise. No name buffer (for
+    /// [`Volume::open_at`]).
+    pub(crate) async fn find_at(&mut self, loc: Locator, name: &str) -> Result<EntryInfo, D::Error> {
+        let (mut cur, index) = self.seek_locator(loc).await?;
+        let mut m = Matcher::new(name);
+        let spec = cur.spec;
+        let Some(info) = self.next_set(&spec, &mut cur.pos, &mut m, None).await? else {
+            return Err(Error::NotFound);
+        };
+        let named = m.ok || (info.has_lfn && !self.g.is_exfat() && self.sfn_matches(&info, name));
+        if info.index != index || !named {
+            return Err(Error::NotFound);
+        }
+        Ok(info)
     }
 
     /// Resolve a path: parent directory, last component and its entry.

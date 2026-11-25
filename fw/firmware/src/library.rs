@@ -42,8 +42,8 @@ use embassy_time::Timer;
 use orpheus_apps::browse::EntryKind;
 use orpheus_apps::services::{DirId, FileRef, LibKind, LibList, LibNow, LibraryState, Listing, RECENT_ROWS};
 use orpheus_fs::{DirEntry, Locator};
-use orpheus_index::LetterTable;
-use orpheus_index::card::{CardIo, Handles, Mode};
+use orpheus_index::card::{CardIo, Handles, Mode, Place};
+use orpheus_index::{FileName, LetterTable};
 use orpheus_library::card::{CardTags, TagState};
 use orpheus_library::{
     Config, FindStep, Item, ItemKind, LIBRARY_DIR, Library, List, Progress, SampleStep, Suspended,
@@ -157,6 +157,9 @@ impl LibState {
 
     fn opened(&mut self, l: Option<Library>) {
         self.lib = l;
+        if let Some(at) = place_ref() {
+            *at = None;
+        }
         self.miss_dir = None;
         self.generation = self.generation.wrapping_add(1);
         if l.is_none() {
@@ -177,11 +180,12 @@ impl Default for LibState {
 type Slot = Option<Suspended>;
 
 /// Bytes at the end of the decoder arena that hold the build's [`Slot`]
-/// (the arena the card task lends to everything else is shorter by this
-/// much). No playback uses that part: the largest decoder need (Opus,
-/// 60,008 B) plus the 2 KiB kept free while playing leave 3.4 KiB of the
-/// 64 KiB unused.
-pub const STATE: usize = (core::mem::size_of::<Slot>() + 7) & !7;
+/// and where the library file was found (`place_ref`; the arena the card
+/// task lends to everything else is shorter by this much). No playback
+/// uses that part: the largest decoder need (Opus, 60,008 B) plus the 2 KiB
+/// kept free while playing leave 3.4 KiB of the 64 KiB unused.
+pub const STATE: usize = SLOT_BYTES + ((core::mem::size_of::<Option<Place>>() + 7) & !7);
+const SLOT_BYTES: usize = (core::mem::size_of::<Slot>() + 7) & !7;
 
 /// Where the [`Slot`] is ([`init`]); only the card task touches it.
 static mut SLOT: *mut Slot = core::ptr::null_mut();
@@ -191,11 +195,14 @@ static mut SLOT: *mut Slot = core::ptr::null_mut();
 /// to anything else).
 pub fn init(mem: &'static mut [u8]) {
     let p = mem.as_mut_ptr().cast::<Slot>();
-    if mem.len() >= core::mem::size_of::<Slot>() && p.align_offset(core::mem::align_of::<Slot>()) == 0 {
-        // SAFETY: `mem` is large and aligned enough, and from now on used
-        // only through `SLOT` (by the card task).
+    const { assert!(core::mem::align_of::<Option<Place>>() <= 8) };
+    if mem.len() >= STATE && p.align_offset(8) == 0 {
+        // SAFETY: `mem` is large and aligned enough (8: the place after the
+        // slot is aligned too), and from now on used only through `SLOT`
+        // (by the card task).
         unsafe {
             p.write(None);
+            p.cast::<u8>().add(SLOT_BYTES).cast::<Option<Place>>().write(None);
             *(&raw mut SLOT) = p;
         }
     }
@@ -207,13 +214,43 @@ fn slot_ref() -> Option<&'static mut Slot> {
     unsafe { (*(&raw const SLOT)).as_mut() }
 }
 
+/// Where the library file was found by the last read session on it
+/// (`orpheus_index::card::Place`: the next one reopens it from its entry
+/// instead of walking `/.orpheus/library/NAME`, AU-PERF 2026-11-25), in the
+/// arena after the [`Slot`] (no static: the stack is 16 B from its next
+/// 256-B step). `None` before [`init`].
+fn place_ref() -> Option<&'static mut Option<Place>> {
+    // SAFETY: as `slot_ref`; `init` wrote an `Option<Place>` there, inside
+    // the `STATE` bytes it was given.
+    unsafe {
+        let p = *(&raw const SLOT);
+        if p.is_null() { None } else { p.cast::<u8>().add(SLOT_BYTES).cast::<Option<Place>>().as_mut() }
+    }
+}
+
 /// One session on the library's files (closed after). Not inlined: the
 /// open-file table is in this frame, not in the card task's poll frame.
+/// `lib`: a read session on that file, reopened where the last one found
+/// it (`place_ref`).
 #[inline(never)]
-fn session<R>(vol: &mut Vol, cx: &mut Context<'_>, mode: Mode, f: impl FnOnce(&Io<'_, '_>) -> R) -> R {
+fn session<R>(
+    vol: &mut Vol,
+    cx: &mut Context<'_>,
+    mode: Mode,
+    lib: Option<FileName>,
+    f: impl FnOnce(&Io<'_, '_>) -> R,
+) -> R {
     let mut h = Handles::new();
     let io = CardIo::new_in(vol, cx, &mut h, mode, LIBRARY_DIR);
+    if let Some(file) = lib
+        && let Some(Some(at)) = place_ref().map(|p| *p)
+    {
+        io.reuse(&file, at);
+    }
     let r = f(&io);
+    if let (Some(file), Some(at)) = (lib, place_ref()) {
+        *at = io.place(&file);
+    }
     let _ = io.close_all();
     r
 }
@@ -223,7 +260,19 @@ fn session<R>(vol: &mut Vol, cx: &mut Context<'_>, mode: Mode, f: impl FnOnce(&I
 pub async fn with_lib_io<R>(vol: &mut Vol, mode: Mode, f: impl FnOnce(&Io<'_, '_>) -> R) -> R {
     let mut f = Some(f);
     poll_fn(|cx| match f.take() {
-        Some(f) => Poll::Ready(session(vol, cx, mode, f)),
+        Some(f) => Poll::Ready(session(vol, cx, mode, None, f)),
+        None => Poll::Pending,
+    })
+    .await
+}
+
+/// [`with_lib_io`], read-only, on the library `lib` (its file reopened
+/// where the last session found it).
+pub async fn with_lib<R>(vol: &mut Vol, lib: &Library, f: impl FnOnce(&Io<'_, '_>) -> R) -> R {
+    let file = Some(lib.file());
+    let mut f = Some(f);
+    poll_fn(|cx| match f.take() {
+        Some(f) => Poll::Ready(session(vol, cx, Mode::Read, file, f)),
         None => Poll::Pending,
     })
     .await
@@ -249,6 +298,9 @@ pub async fn mounted(vol: &mut Vol, srv: &mut Server) {
 pub fn card_leaving(srv: &mut Server) {
     if let Some(s) = slot_ref() {
         *s = None;
+    }
+    if let Some(at) = place_ref() {
+        *at = None;
     }
     srv.lib.list = None;
     srv.lib.due = None;
@@ -519,14 +571,14 @@ pub async fn open_list(vol: &mut Vol, srv: &mut Server, list: LibList) {
         media::ready(media::tag::LIBRARY);
         return;
     };
-    with_lib_io(vol, Mode::Read, |io| publish_list(io, lib, list, dir, lgen, None)).await;
+    with_lib(vol, lib, |io| publish_list(io, lib, list, dir, lgen, None)).await;
 }
 
 /// The window of the library listing from near `first` (`Req::Want`).
 pub async fn window(vol: &mut Vol, srv: &Server, first: u32) {
     let (Some(lib), Some(list)) = (srv.lib.lib.as_ref(), srv.lib.list) else { return };
     let (dir, lgen) = (list_dir(list), srv.listing_gen());
-    with_lib_io(vol, Mode::Read, |io| publish_list(io, lib, list, dir, lgen, Some(first))).await;
+    with_lib(vol, lib, |io| publish_list(io, lib, list, dir, lgen, Some(first))).await;
 }
 
 /// The tracks of a list into the play queue: up to [`QUEUE`] around row
@@ -563,7 +615,7 @@ fn fill_queue(
 pub async fn queue(vol: &mut Vol, srv: &mut Server, list: LibList, start: Option<u32>) -> Option<u32> {
     let lib = srv.lib.lib.as_ref()?;
     let q = &mut srv.queue;
-    let (n, at) = with_lib_io(vol, Mode::Read, |io| fill_queue(io, lib, list, start, q)).await;
+    let (n, at) = with_lib(vol, lib, |io| fill_queue(io, lib, list, start, q)).await;
     srv.set_queue_len(vol.serial(), n);
     at
 }
@@ -602,7 +654,7 @@ pub async fn sample(vol: &mut Vol, srv: &mut Server, seed: u32) -> bool {
         let t0 = embassy_time::Instant::now();
         let Some(lib) = srv.lib.lib.as_ref() else { break };
         let q = &mut srv.queue;
-        if with_lib_io(vol, Mode::Read, |io| fill_sample(io, lib, &mut st, q, &mut k)).await {
+        if with_lib(vol, lib, |io| fill_sample(io, lib, &mut st, q, &mut k)).await {
             break;
         }
         // At most half the CPU, as the card walk (`build_all_queue`).
@@ -669,7 +721,7 @@ fn find_some(io: &Io<'_, '_>, lib: &Library, st: &mut FindStep) -> Option<bool> 
 /// when it is over.
 pub async fn find_more(vol: &mut Vol, srv: &mut Server, st: &mut FindStep, loc: Locator) -> bool {
     let Some(lib) = srv.lib.lib.as_ref() else { return true };
-    match with_lib_io(vol, Mode::Read, |io| find_some(io, lib, st)).await {
+    match with_lib(vol, lib, |io| find_some(io, lib, st)).await {
         None => false,
         Some(found) => {
             srv.lib.miss_dir = (!found).then_some(loc.dir);
@@ -694,6 +746,6 @@ fn find_all(io: &Io<'_, '_>, lib: &Library, mut st: FindStep) -> bool {
 pub async fn find_now(vol: &mut Vol, srv: &mut Server, loc: Locator) {
     let Some(st) = find_begin(srv, loc) else { return };
     let Some(lib) = srv.lib.lib.as_ref() else { return };
-    let found = with_lib_io(vol, Mode::Read, |io| find_all(io, lib, st)).await;
+    let found = with_lib(vol, lib, |io| find_all(io, lib, st)).await;
     srv.lib.miss_dir = (!found).then_some(loc.dir);
 }

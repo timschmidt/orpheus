@@ -34,7 +34,9 @@
 //! **Pieces** ([`Piece`]): a splittable chore asks [`Piece::left`] before
 //! each card operation and stops (to resume in its next chore) when the
 //! next one might not fit the budget. The largest gap between two asks is
-//! the chore's measured need ([`Costs::observe`]).
+//! the chore's measured need ([`Costs::observe`]); the first ask always
+//! says yes, so everything up to the second ask (work before the first
+//! ask, such as opening a session, and the first operation) is one gap.
 //!
 //! **Bounded answers** (the host model in the tests). The decoder needs
 //! less than real time (else the too-slow abort ends the track), and while
@@ -197,11 +199,19 @@ impl Piece {
     /// (the chore was admitted for it, and something must progress); a later
     /// one when the time spent plus the longest operation known (the need,
     /// or a longer one seen in this piece) fits the budget.
+    ///
+    /// The gaps: from the start to the second ask is one (nothing in it
+    /// could be refused: work done before the first ask, such as opening
+    /// a session, and the operation after it); then from ask to ask. A
+    /// listing piece that read its first rows before its first ask counted
+    /// the session's open (31 ms) and its first row (5 ms) as two gaps,
+    /// was admitted at a 36-ms budget and took 37 ms (soak seed 1,
+    /// 2026-11-25).
     pub fn left(&mut self, now: u32) -> bool {
-        let gap = now.wrapping_sub(self.last);
-        self.gap = self.gap.max(gap);
-        self.last = now;
         self.asks = self.asks.saturating_add(1);
+        let from = if self.asks == 2 { self.start } else { self.last };
+        self.gap = self.gap.max(now.wrapping_sub(from));
+        self.last = now;
         if self.budget == u32::MAX || self.asks == 1 {
             return true;
         }
@@ -213,7 +223,8 @@ impl Piece {
     #[must_use]
     pub fn end(&self, now: u32) -> Spent {
         let took = now.wrapping_sub(self.start);
-        let unit = self.gap.max(now.wrapping_sub(self.last));
+        // Fewer than two asks: none of it could be refused.
+        let unit = if self.asks < 2 { took } else { self.gap.max(now.wrapping_sub(self.last)) };
         Spent {
             took,
             unit,
@@ -366,6 +377,37 @@ mod tests {
         // Unlimited: always.
         let mut p = Piece::UNLIMITED;
         assert!(p.left(5) && p.left(1 << 31) && !p.end(7).over);
+    }
+
+    /// The soak's `job:rows 37/36 ms u31`: 31 ms of work before the first
+    /// ask (the session's open and the first rows read), 5 ms for the row
+    /// after it (the first ask cannot refuse it). Nothing before the
+    /// second ask could be refused, so it is one unit of 36 ms, and a
+    /// kind with that need is not admitted at less: the old gaps (31, 5)
+    /// made it 31 and the piece overran.
+    #[test]
+    fn regress_work_before_the_first_ask_is_one_unit_with_the_first_operation() {
+        let mut p = Piece::new(0, 36_000, 31_000);
+        assert!(p.left(31_000));
+        assert!(!p.left(36_000));
+        let s = p.end(37_000);
+        assert_eq!((s.took, s.unit, s.over), (37_000, 36_000, true));
+        let mut c = Costs::<1>::new();
+        c.observe(0, s.unit, 8_000);
+        let need = c.need(0, 8_000);
+        assert_eq!(need, 36_000);
+        let a = Ask { head: 2_208, rate: RATE, roomy: ROOMY, need_us: need, waited_us: 0, dec_us: 4_000 };
+        assert_eq!(budget_us(a.head, RATE, a.dec_us), 36_000);
+        assert_eq!(decide(&Ask { head: a.head - 48, ..a }), Verdict::Wait);
+        // One ask only (the piece ended after its first operation): all of
+        // it was one unit.
+        let mut p = Piece::new(0, 36_000, 1_000);
+        assert!(p.left(20_000));
+        assert_eq!(p.end(30_000).unit, 30_000);
+        // Asks from the start: as before, the gaps between them.
+        let mut p = Piece::new(0, 36_000, 1_000);
+        assert!(p.left(0) && p.left(3_000) && p.left(5_000));
+        assert_eq!(p.end(6_000).unit, 3_000);
     }
 
     #[test]

@@ -22,7 +22,7 @@ of every session. Newest entries first in §3.
 | T-3, PG-1 | done | pagelink, PagerCore, check-resident; demand paging on the player (8 KiB pages, 1 KiB lines) |
 | T-6 | started | Rust NOR payload `fw/payloads/norprog` (erase/program, full-layout guard); ymon and nordump still the reference repo's C payloads. **Stage 2 slot fallback built and host-tested, not yet installed** (`orpheus_proto::boot::decide`; 964 B; lead's `install-stage2` + crash test: session entry 2026-11-24 "T-6 (stage2)") |
 | T-8 | **built (host + firmware), not yet run on the player** | PC sampler (T2, level 0) and pager fault log into the 2 KiB profiler block at `0x307000` (SRAM3), `prof pc\|faults on\|burst`, `prof off\|status`; `cargo xtask dev prof --pc\|--faults S [--during "soak --replay F"] [--only TEXT] [--update-hot NAME]`, `cargo xtask prof DIR`; reports in `target/orpheus/prof/<stamp>/`. Resident +656 B. User/lead check: U-TMR-1 and the Pictures-while-playing profile (session entry 2026-11-25 "T-8") |
-| AU-PERF | **built (host + firmware), not yet run on the player** | Playback per block out of the large async functions (`play_block` + small named functions, `Apart` poll boundaries, `orpheus_audio::pcm::Feeder`), codecs' `decode` not inlined, DSP stage mask kept, clusters `mp3-frame` 11 + `play-block` 15 + `play-fill` 6 = 32 lines (no shared physical line; `fits_with` check), 53 % of the measured fault loads in that set or gone; stack on the playback wake-up 6.6 → 1.5 KB; soft I2C timed on T0 (true 100 kHz, was ≈ 30 kHz: sample ≈ 2.7 → 1.0 ms), `acc bus`. Lead: profiles and checks in the session entry 2026-11-25 "AU-PERF"; U-I2C-1. **Up next titles: `seek_dir` per cluster (3,507 → 7 steps per title on 128 KiB exFAT), window keeps its titles (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: Up next titles cheap". **Chore budgets: every chore runs only when the headroom less a decoder margin covers its measured need, splittable ones stop at the budget (`orpheus_audio::chore`, host model; built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: chore budgets" |
+| AU-PERF | **built (host + firmware), not yet run on the player** | Playback per block out of the large async functions (`play_block` + small named functions, `Apart` poll boundaries, `orpheus_audio::pcm::Feeder`), codecs' `decode` not inlined, DSP stage mask kept, clusters `mp3-frame` 11 + `play-block` 15 + `play-fill` 6 = 32 lines (no shared physical line; `fits_with` check), 53 % of the measured fault loads in that set or gone; stack on the playback wake-up 6.6 → 1.5 KB; soft I2C timed on T0 (true 100 kHz, was ≈ 30 kHz: sample ≈ 2.7 → 1.0 ms), `acc bus`. Lead: profiles and checks in the session entry 2026-11-25 "AU-PERF"; U-I2C-1. **Up next titles: `seek_dir` per cluster (3,507 → 7 steps per title on 128 KiB exFAT), window keeps its titles (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: Up next titles cheap". **Chore budgets: every chore runs only when the headroom less a decoder margin covers its measured need, splittable ones stop at the budget (`orpheus_audio::chore`, host model; built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: chore budgets". **Listing pieces reopen the index file from its entry (no path walk after `job:index`), the need counts a piece's fixed cost (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: listing pieces reopen the index file" |
 | LAY-1 | done (device) | Full layout installed (`xtask dev install-full --i-have-a-backup`), layout-aware `stage`, `restore vendor [--verify]`. Unifont pack in NOR not done (the UI's fonts are built in) |
 | LCD-1, INPUT-1, PWR-2, AU-0 | done pending user checks 7, 8, 9, 10 | |
 | SD-1, FM-0, USB-1, USB-3, PWR-1 | done | |
@@ -64,6 +64,82 @@ of every session. Newest entries first in §3.
 | VER-10 (static stack) | **tool done (host-tested), gate step; firmware cut from ≥ 30,232 to 22,900 B nested worst case (built, not yet run on the player)** | `cargo xtask stack [--check] [--root P]`, `stack.toml`, `budgets.toml stack_static_margin_bytes` (−1,536 B: a ratchet, the static worst case still exceeds the 22,016 B stack by 884 B; the rest is the audio task's own frames, AU-PERF). Lead: `fuzz-ui --replay` of the VER-8 stack sequence, suite stack line (session entry 2026-11-25 "VER-10") |
 
 ## 3. Session log
+
+### 2026-11-25 — AU-PERF: listing pieces reopen the index file from its entry (worker, no hardware)
+
+From the lead's soak (`chore: job:rows 37/36 ms u31`, 11 underruns): each
+piece opened a new session and found `/.orpheus/index/X/NAME` by path.
+
+* **The 31 ms was that path walk** (host count, `orpheus-index`
+  `tests/rows_piece.rs`, `measure_rows_piece`: a firmware-style piece on
+  FAT32 (512-B clusters) and exFAT (32 KiB) images with 50–1,000 long-named
+  folders in the root, `/.orpheus` made after them, 4–60 index files per
+  shard, the sector cache cold). The piece's first stretch (session open +
+  first rows read, before its first ask) by path: with the walk cache
+  holding `/.orpheus` 0–19 sector reads (15–206 directory steps; the shard
+  is searched), with it lost 22–24 reads for a 50-folder root, 132–150 for
+  400, 333–342 for 1,000 (2,042–5,202 steps). One row after it: 1–2 reads.
+  At 0.3–1 ms a read, 31 ms is a root search of a root of roughly
+  100–250 entries, or the shard plus pager loads of the walk code; nothing
+  else in that stretch is longer than one data sector. The last stretch of
+  a finished window had a second walk (`load_letters`' own session). The
+  three-slot walk cache loses `/.orpheus` to the art and library walks
+  (shown in the measurement).
+* **Places** (`orpheus_index::card::Place`, 12 B: the file's `Locator` +
+  the volume serial). A read-only `CardIo` records where it found a file
+  (`place`) and reopens it from a given place (`reuse`); new
+  `orpheus_fs::Volume::open_located` (walk, read-only, returns the
+  locator) and `Volume::open_at(loc, name)` (the entry read again: seek +
+  its sectors; refused unless a set starts there and has that name; a
+  file rewritten in place opens with its new clusters and size). Another
+  serial, a gone or renamed entry, or another file in the slot: by path
+  again. From a place the first operation costs 2–5 reads and 3–14 steps
+  on every image above, walk cache lost or not.
+* **Firmware.** `Server::index_at` (16 B, set and dropped with `index`):
+  `job:index` (the listing's one walk) keeps the place; `job:focus`,
+  `job:rows`, the window while idle (`Want`), the queue from the index use
+  it (`media::with_index`). `job:rows` is one session: `fill_some` asks
+  `piece_left` before the rows read too (it opens the file), and the letter
+  table is read in it when the budget lasts, else in the next piece (the
+  window is published `complete` after it). The library's read sessions
+  (`library::with_lib`: window, list, queue, sample, the gapless lookup
+  steps) keep the library file's place in the decoder arena after the
+  build slot (`library::STATE` +16 B, no static).
+* **The need counts the fixed cost** (`orpheus_audio::chore::Piece`): the
+  first ask always says yes, so the start → second ask is one gap. The
+  soak's piece (31 ms before the first ask + 5 ms row) now measures 36 ms,
+  not 31, so a 36-ms need is not admitted below a 36-ms budget. Pieces that
+  ask first (count, window, Up next, the model) measure as before.
+* **Tests**: `regress_later_rows_pieces_do_no_path_lookup` (400-folder
+  root, 60 files per shard, 5 later pieces with the art and library walks
+  and a cold sector cache between them, the walk cache dropped every other
+  piece: first operation ≤ 5 reads / 16 steps FAT32, ≤ 3 / 4 exFAT; fails
+  with places ignored: 19 / 206); `a_kept_place_is_revalidated` (another
+  serial: by path, the new place that card's; the index rebuilt in place
+  with 40 more rows: opened from the place with its new header and rows;
+  removed and its slot taken by another index file: not read, no index, no
+  place); `orpheus-fs` `tests/open_at.rs` (every format: case-insensitive
+  name, another name, directory, rewritten longer, renamed, removed,
+  slot reused; fsck clean);
+  `regress_work_before_the_first_ask_is_one_unit_with_the_first_operation`.
+* **RAM / stack** (`xtask build` in this worktree, base `d1c548eb`):
+  `.bss` 123,920 B unchanged, stack start (`xtask stack`) `0x131ce0` →
+  `0x131cf0` (+16 B, `Server::index_at`; **16 B left before the next 256-B
+  step**), usable stack 22,016 B unchanged. Nested worst case 21,740 →
+  21,772 B (margin 276 → 244 B): the deepest chain is now the listing
+  piece (`Server::step` 720 → 744 B, `io_session` 328 → 408 B: the
+  session's kept place, 36 B, and the closure), 13,728 B in RT, above
+  the Vorbis seek chain (13,696 B). Resident 80,076 → 80,092 B.
+* Gate: host fmt, clippy `-D warnings`, `cargo test --workspace`; fw fmt,
+  clippy, `xtask build`, `check-resident`, `size --check`, `stack --check`:
+  pass. Not run: anything on the player.
+* **Lead**: the 30-minute `mixed` soak, seed 1. Expected: no `job:rows`
+  line with `u` ≥ 10 ms after a listing's first piece; `job:rows` pieces
+  within their budget; the underruns from `serve:` gone (the 11 were all
+  `ub=serve:40ms`). `job:index` (the one walk per listing, own need) may
+  now be the longest `job:` line: its `u` is the root search on this card.
+  If it overruns, the next lever is keeping `/.orpheus/index` out of the
+  walk cache's round robin (or a place per shard).
 
 ### 2026-11-25 — chore budgets on the player (lead)
 

@@ -2,7 +2,7 @@
 
 use crate::block::BlockDevice;
 use crate::cache::Kind;
-use crate::dir::{ATTR_ARCHIVE, ATTR_RO, DirEntry, EntryInfo, EntryLoc, NewEntry};
+use crate::dir::{ATTR_ARCHIVE, ATTR_RO, DirEntry, EntryInfo, EntryLoc, Locator, NewEntry};
 use crate::volume::{Link, Volume, ZERO};
 use crate::{Error, Result};
 
@@ -205,6 +205,39 @@ impl<D: BlockDevice> Volume<'_, D> {
                 Ok(File::from_info(&info, cbits, exfat, true))
             }
         }
+    }
+
+    /// Open a file by path, read-only, and say where its entry is: a
+    /// [`Locator`] that [`Volume::open_at`] reopens it from later without
+    /// the path walk.
+    pub async fn open_located(&mut self, path: &str) -> Result<(File, Locator), D::Error> {
+        let w = self.walk(path).await?;
+        if w.name.is_empty() {
+            return Err(Error::IsADirectory);
+        }
+        let info = w.info.ok_or(Error::NotFound)?;
+        if info.is_dir() {
+            return Err(Error::IsADirectory);
+        }
+        let loc =
+            Locator { dir: w.parent.first, index: info.index | if w.parent.contig { 1 << 31 } else { 0 } };
+        Ok((File::from_info(&info, self.g.cbits(), self.g.is_exfat(), false), loc))
+    }
+
+    /// Open, read-only, the file whose entry `loc` points at, if it is
+    /// still there and still named `name` (compared as a path walk does);
+    /// `NotFound` otherwise (removed, renamed, its slot taken by another
+    /// file, another volume). The entry is read again, so a file rewritten
+    /// in place opens with its new clusters and size. Costs the seek to the
+    /// entry (one step per directory cluster) and its sectors, where a path
+    /// walk searches every directory on the way (a large root folder is
+    /// tens to hundreds of sector reads).
+    pub async fn open_at(&mut self, loc: Locator, name: &str) -> Result<File, D::Error> {
+        let info = self.find_at(loc, name).await?;
+        if info.is_dir() {
+            return Err(Error::IsADirectory);
+        }
+        Ok(File::from_info(&info, self.g.cbits(), self.g.is_exfat(), false))
     }
 
     /// Open a file found by `read_dir`/`stat`, read-only.
