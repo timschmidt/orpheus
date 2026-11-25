@@ -33,6 +33,17 @@ pub const REQ_PUT: u8 = 0x0C;
 /// sub-operations and the status are `orpheus_update::wire`).
 pub const REQ_UPDATE: u8 = 0x0D;
 
+/// Whether the firmware stops the playing track before it queues the test
+/// command `cmd` for the card task: the card task reads its command queue
+/// only between tracks, so `playdir` sent while a track played waited for
+/// the whole queue to end (AU-5 fix, 2026-11-24). The new queue starts
+/// when the command is served.
+#[inline(always)]
+#[must_use]
+pub fn stops_track_first(cmd: &[u8]) -> bool {
+    cmd.starts_with(b"playdir ")
+}
+
 /// WebUSB `bVendorCode`: the browser asks for the landing page with
 /// `GET_URL` (`bRequest` = this, `wIndex` = 2). Outside the request numbers
 /// above.
@@ -243,6 +254,17 @@ pub mod usb {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: `dev playdir` while a track played was ignored (AU-5,
+    /// 2026-11-24, found on the player: the card task reads commands only
+    /// between tracks, so the new folder never started).
+    #[test]
+    fn regress_playdir_during_playback_stops_the_track() {
+        assert!(stops_track_first(b"playdir /.orpheus/test/gapless-mp3"));
+        for other in [&b"status"[..], b"playdir", b"play /a.mp3", b"stop", b"fm on"] {
+            assert!(!stops_track_first(other), "{other:?}");
+        }
+    }
 
     #[test]
     fn info_roundtrip() {

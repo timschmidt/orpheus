@@ -415,8 +415,13 @@ fn before_w1_a_bus_event_during_the_setup_read_deafens_ep0_for_good() {
     assert_eq!(out.iter().filter(|o| matches!(o, Out::Done { .. })).count(), 1);
 }
 
+/// Regression: the USB stack went deaf until a restart (bug USB-W1,
+/// 2026-11-24, found by the first soak: "error -71" on set-address even
+/// after the cable went in again). A bus event during the SETUP read left
+/// its interrupt masked for good (the `Before` flavour:
+/// `before_w1_a_bus_event_during_the_setup_read_deafens_ep0_for_good`).
 #[test]
-fn after_w1_the_setup_read_is_drop_safe() {
+fn regress_usb_w1_setup_read_is_drop_safe() {
     run(Flavour::After, |hw, step| {
         assert!(info_answered(hw, step));
         event_during_setup_read(hw, step);
@@ -449,8 +454,11 @@ fn before_w1_a_late_status_lands_on_the_next_transfer() {
     assert!(out.iter().any(Out::misdirected), "{out:?}");
 }
 
+/// Regression: USB-W1 (2026-11-24): the soak's PEEK stalled after a
+/// cancelled TEST OUT, because the old transfer's status stage landed on
+/// the next one (`before_w1_a_late_status_lands_on_the_next_transfer`).
 #[test]
-fn after_w1_an_overtaken_transfer_is_given_up() {
+fn regress_usb_w1_overtaken_transfer_is_given_up() {
     let out = run(Flavour::After, |hw, step| {
         assert!(info_answered(hw, step));
         cancelled_out_then_in(hw, step);
@@ -462,8 +470,10 @@ fn after_w1_an_overtaken_transfer_is_given_up() {
     assert!(out.contains(&Out::Done { meant: host, host }), "{out:?}");
 }
 
+/// Regression: USB-W1 (2026-11-24): a bus reset (the cable out and in
+/// again) did not bring a deaf EP0 back.
 #[test]
-fn after_w1_a_bus_reset_re_arms_ep0() {
+fn regress_usb_w1_bus_reset_re_arms_ep0() {
     run(Flavour::After, |hw, step| {
         // Whatever left the interrupt masked, a reset clears it.
         hw.borrow_mut().masked = true;

@@ -208,8 +208,11 @@ mod tests {
         }
     }
 
+    /// Regression: `clock 288` with the governor on stayed at 288 MHz under
+    /// Normal (PWR-5, 2026-11-24): a Max level found under Normal now goes
+    /// to High at the next step.
     #[test]
-    fn max_found_under_normal_leaves_at_once() {
+    fn regress_max_found_under_normal_leaves_at_once() {
         let mut g = Governor::new();
         for idle in [0, 50, 100] {
             assert_eq!(g.step(input(idle, Level::Max, Performance::Normal)), Some(Level::High));

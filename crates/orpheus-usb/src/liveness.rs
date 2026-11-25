@@ -438,8 +438,11 @@ mod tests {
         assert!(!l.wedged());
     }
 
+    /// Regression: USB-W1 (2026-11-24, first soak): with the controller
+    /// deaf, nothing brought it back short of a restart; the incident's
+    /// sequence now ends in a recovery and a working channel, no reboot.
     #[test]
-    fn the_w1_sequence() {
+    fn regress_usb_w1_liveness_recovers_the_incident() {
         // The soak's failure (STATUS 2026-11-24): working channel, then a
         // SETUP latched and never read (the read future was dropped with the
         // interrupt masked), then re-plugs: resets, nothing answered.

@@ -197,14 +197,10 @@ pub fn start(input: Input, rate: u32, analog: u8, digital: u8, width: Width) {
     // Analogue front end for the microphone, left side (B1:0x0D82058C,
     // called with left = 1, right = 0): the left mic input on, single-ended
     // or differential; then in CTL the gain and the left FD buffer (6 kΩ).
+    // The values: `adc::mic_mix_for_mic`, `adc::ctl_for_mic` (host-tested).
     if let Input::Mic { differential } = input {
-        let se = if differential { 0 } else { adc::mic_mix_ctl::MIC_IN_MODE };
-        adc::MIC_MIX_CTL.modify(|v| (v & !adc::VENDOR_MIC_CLEAR) | adc::VENDOR_MIC_LEFT | se);
-        adc::CTL.modify(|v| {
-            (v & adc::VENDOR_CTL_MIC_KEEP)
-                | ctl::PREAM_PG.val(u32::from(analog.min(15)))
-                | adc::VENDOR_CTL_FDBUF_L
-        });
+        adc::MIC_MIX_CTL.modify(|v| adc::mic_mix_for_mic(v, differential));
+        adc::CTL.modify(|v| adc::ctl_for_mic(v, u32::from(analog)));
     }
     // VERBATIM end.
 }

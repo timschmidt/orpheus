@@ -726,6 +726,9 @@ mod tests {
         assert_eq!(format_row(&r, &mut small), 10);
     }
 
+    /// Regression: the battery logger "never wrote" while idle (PWR-5,
+    /// 2026-11-24, on the player): rows went out only every five; the first
+    /// row is now due after the first minute.
     #[test]
     fn log_header_name_and_rows() {
         let mut l = Log::new();

@@ -161,6 +161,36 @@ pub fn stale_test(test_mode: u32, boot_info: u32) -> bool {
     test_mode == TEST_MODE_MAGIC && BootInfo::from_word(boot_info).is_some_and(|b| b.path == PATH_FIRMWARE)
 }
 
+/// What a reboot does with the mailbox before the watchdog fires
+/// (`atj2157_hal::wdt`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Reboot {
+    /// Clear the boot counter ([`ADDR_BOOT_COUNT`]) first: the next start
+    /// is not a retry of a failed one.
+    pub clear_count: bool,
+    /// Ask stage 2 for USB recovery ([`ADDR_ADFU`]).
+    pub adfu: bool,
+}
+
+/// A deliberate reboot (power menu, update, `dev reset`, the end of a
+/// test): not a failed start, so the boot counter is cleared.
+#[inline(always)]
+#[must_use]
+pub const fn deliberate_reboot(adfu: bool) -> Reboot {
+    Reboot { clear_count: true, adfu }
+}
+
+/// The reboot after a fault record was written. It keeps the boot counter:
+/// a start that faults before it was confirmed healthy is a failed start,
+/// so stage 2 falls back to the next slot after [`BOOT_COUNT_LIMIT`] of
+/// them ([`crate::boot::decide`]). USB recovery only when a host test asked
+/// for it (test mode armed and [`FLAG_RETURN_ADFU`]).
+#[inline(always)]
+#[must_use]
+pub const fn fault_reboot(test_mode: u32, flags: u32) -> Reboot {
+    Reboot { clear_count: false, adfu: test_mode == TEST_MODE_MAGIC && flags & FLAG_RETURN_ADFU != 0 }
+}
+
 /// The crash test's decision for the firmware started from `running`. At
 /// most `args[1]` starts fail, so a test can never keep the player
 /// crashing: with [`BOOT_COUNT_LIMIT`] crashes, the next start is the
@@ -276,6 +306,33 @@ mod tests {
         assert!(!stale_test(armed.test_mode, adfu));
         // Not armed: nothing to clear.
         assert!(!stale_test(0, flash));
+    }
+
+    /// Regression: a fault reboot cleared the boot counter (T-6,
+    /// 2026-11-24): `wdt::reboot_after_fault` went through `reboot`, so a
+    /// firmware that faulted at every start never tripped its slot and
+    /// stage 2 never fell back; only hangs counted.
+    #[test]
+    fn regress_fault_reboot_keeps_the_boot_counter() {
+        for (mode, flags) in [(0, 0), (TEST_MODE_MAGIC, 0), (TEST_MODE_MAGIC, FLAG_RETURN_ADFU)] {
+            assert!(!fault_reboot(mode, flags).clear_count);
+        }
+        assert!(deliberate_reboot(false).clear_count && deliberate_reboot(true).clear_count);
+        // USB recovery only for a host test that asked for it.
+        assert!(!fault_reboot(0, FLAG_RETURN_ADFU).adfu);
+        assert!(!fault_reboot(TEST_MODE_MAGIC, 0).adfu);
+        assert!(fault_reboot(TEST_MODE_MAGIC, FLAG_RETURN_ADFU).adfu);
+        // Slots A and B valid; A faults at every start: after the limit,
+        // stage 2 starts B.
+        let mut count = 0;
+        let mut started = std::vec::Vec::new();
+        for _ in 0..=BOOT_COUNT_LIMIT {
+            let d = crate::boot::decide(count, |i, m| i < 2 && m == crate::slot::MAGIC);
+            started.push(d.slot);
+            let r = fault_reboot(0, 0);
+            count = if r.clear_count { 0 } else { d.count };
+        }
+        assert_eq!(started, [Some(0), Some(0), Some(0), Some(1)]);
     }
 
     #[test]

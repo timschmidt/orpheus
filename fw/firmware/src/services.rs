@@ -167,7 +167,7 @@ pub const ALARM_WAKE_FROM_OFF: bool = false;
 
 /// The volume sent to a connected sink (module scale 0–31): full scale,
 /// the player's volume is applied at the DAC (see `apply_dac`).
-const BT_SINK_LOCAL: u8 = 31;
+const BT_SINK_LOCAL: u8 = orpheus_bt::proto::SINK_VOLUME_SENT;
 /// "Reconnect automatically" (Settings › Bluetooth).
 const BT_RECONNECT: SettingId = id::BT_RECONNECT;
 /// DAC level (UI steps 0–30) while a Bluetooth sink with absolute
@@ -556,8 +556,8 @@ impl Fw {
     /// value back), so the fixed-reference scheme would leave the volume
     /// keys without effect on such sinks. Revisit with real headsets.
     fn apply_dac(&self) {
-        let _ = (self.bt_abs, BT_DAC_REF);
-        apply_volume(self.volume);
+        let _ = BT_DAC_REF;
+        apply_volume(orpheus_bt::proto::dac_level(self.volume, self.bt_abs));
     }
 
     /// Bluetooth settings go to the Bluetooth task when they change.
@@ -1741,7 +1741,7 @@ impl SystemService for Fw {
     fn hardware(&self) -> &str {
         // As the simulator (05 §7.11, System › About): the model fits the row; the
         // longer "Yoton YM03 (ATJ2157)" shortened both value and label.
-        "YM03"
+        services::PLAYER_HARDWARE
     }
     fn app_available(&self, app: App) -> bool {
         // The transmitter module is fitted on every YM03 (06 §4.1); a
@@ -1751,20 +1751,8 @@ impl SystemService for Fw {
         // Steps and Stopwatch: SENS-1, UI-5c, UI-5d (Steps says so when the
         // sensor does not answer). Recorder (AU-13) and USB Drive (USB-6)
         // are built and verified on the player (2026-11-24).
-        matches!(
-            app,
-            App::Settings
-                | App::Files
-                | App::Music
-                | App::Pictures
-                | App::Bluetooth
-                | App::Radio
-                | App::Steps
-                | App::Stopwatch
-                | App::Authenticator
-                | App::Recorder
-                | App::UsbDrive
-        )
+        // The list itself: `App::on_player` (host-tested).
+        app.on_player()
     }
     fn dual_boot(&self) -> bool {
         // "Start original firmware" only exists in the dual-boot layout; in

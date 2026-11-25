@@ -563,7 +563,7 @@ impl SystemService for HostServices {
     }
 
     fn hardware(&self) -> &str {
-        "YM03"
+        orpheus_apps::services::PLAYER_HARDWARE
     }
 
     fn app_available(&self, _app: App) -> bool {

@@ -313,6 +313,26 @@ impl<'a> Event<'a> {
     }
 }
 
+/// The volume the firmware sends a connected sink (command 0x26, module
+/// scale 0–31): full scale; the player's volume is applied at the DAC
+/// ([`dac_level`]; 06 §4.2 as built, 2026-11-24).
+pub const SINK_VOLUME_SENT: u8 = 31;
+
+/// The DAC level (UI steps 0–30) for the player's volume `player`, whether
+/// or not a sink has reported absolute volume (`sink_abs`): always the
+/// player's volume. Neither the module's acknowledgement of 0x26 nor its
+/// sink-volume reports (it echoes the value it was sent) show whether a
+/// sink scales, so holding the DAC at a fixed reference for such sinks left
+/// the volume keys without effect on a sink that does not (measured with a
+/// BlueZ sink: −26.5 dBFS at every volume). Sink reports do not move the
+/// player's volume either (following the echo would jump to full scale).
+#[inline(always)]
+#[must_use]
+pub const fn dac_level(player: u8, sink_abs: bool) -> u8 {
+    let _ = sink_abs;
+    player
+}
+
 /// Player volume (0–31) to the sink's absolute volume (0–127), as the
 /// vendor scales it (bluetooth.md §3.5).
 #[must_use]
@@ -412,6 +432,8 @@ mod tests {
         }
     }
 
+    /// Regression: Bluetooth addresses were shown byte-reversed (found with
+    /// a host A2DP sink, 2026-11-24; fixed in UI-6a): `Addr::to_text`.
     #[test]
     fn events() {
         let f = Frame::new(0x06, b"ATS2851\0");
@@ -443,6 +465,21 @@ mod tests {
         // Written most-significant byte first: the wire order reversed.
         assert_eq!(Addr([0xDE, 0xAD, 0, 1, 2, 0xFF]).to_text(), *b"FF:02:01:00:AD:DE");
         assert_eq!(Addr([0x1F, 0x1B, 0x32, 0x47, 0xAD, 0xE0]).to_text(), *b"E0:AD:47:32:1B:1F");
+    }
+
+    /// Regression: the volume keys had no effect with a Bluetooth sink
+    /// that does not scale (UI-6a, 2026-11-24, measured with a BlueZ sink:
+    /// −26.5 dBFS at every volume). The DAC was held at a fixed reference
+    /// whenever the module acknowledged 0x26, which it does for every sink.
+    #[test]
+    fn regress_bt_volume_keys_act_at_the_dac() {
+        for v in 0..=30 {
+            for sink_abs in [false, true] {
+                assert_eq!(dac_level(v, sink_abs), v);
+            }
+        }
+        // The sink is sent full scale, so the DAC alone sets the level.
+        assert_eq!(volume_to_sink(SINK_VOLUME_SENT), 127);
     }
 
     #[test]

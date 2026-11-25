@@ -549,9 +549,12 @@ mod tests {
 
     /// Bytes programmed after the end of the log (foreign data, bit rot)
     /// are not programmed over: the next value goes to a fresh sector and
-    /// reads back intact, before and after a remount (VER-4 F-SET-1).
+    /// reads back intact, before and after a remount.
+    ///
+    /// Regression: VER-4 finding F-SET-1 (2026-11-24, fuzzing): the next
+    /// record was programmed over them and read back corrupted.
     #[test]
-    fn garbage_after_the_log_end() {
+    fn regress_settings_garbage_after_the_log_end() {
         let mut s = block_on(S::mount(SimNor::new(4))).unwrap();
         block_on(s.set(1, b"kept")).unwrap();
         let mut nor = s.into_inner();

@@ -124,8 +124,11 @@ fn reassembles_across_pages_and_ring_wraps() {
 /// One-second pages of a 96–256 kbit/s Opus file are 10–28 KB: they play
 /// through a ring smaller than the page (the firmware's 16 KiB), read
 /// packet by packet, with `NeedData` never above `CHECKED_PAGE`.
+///
+/// Regression: `t_opus.opus` ended with "stream needs a larger ring" on the
+/// player (AU-8, 2026-11-24): every page had to fit the ring whole.
 #[test]
-fn pages_larger_than_the_ring() {
+fn regress_ogg_pages_larger_than_the_ring() {
     let lens: Vec<usize> = (0..120).map(|i| 200 + (i * 37) % 400).collect();
     let (file, packets) = mux(0x5151, &lens, 30_000);
     assert!(file.len() > 2 * 16 * 1024);

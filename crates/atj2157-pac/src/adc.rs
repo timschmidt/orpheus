@@ -367,6 +367,26 @@ pub const VENDOR_MIC_LEFT: u32 = mic_mix_ctl::MICGRSEL | (3 << 2);
 pub const VENDOR_MIC_RIGHT: u32 = mic_mix_ctl::MICGRSEL | 3;
 pub const VENDOR_CTL_FM: u32 = 0x770C0;
 pub const VENDOR_CTL_LINEIN: u32 = 0x66000;
+
+/// `MIC_MIX_CTL` for the mono microphone from its value `v`: the left mic
+/// input on, differential or single-ended. VERBATIM vendor
+/// B1:0x0D82058C–0x5BC with (left = 1, right = 0) \[code\].
+#[inline(always)]
+#[must_use]
+pub const fn mic_mix_for_mic(v: u32, differential: bool) -> u32 {
+    let se = if differential { 0 } else { mic_mix_ctl::MIC_IN_MODE };
+    (v & !VENDOR_MIC_CLEAR) | VENDOR_MIC_LEFT | se
+}
+
+/// `CTL` for the mono microphone from its value `v`: the analogue gain
+/// (`PREAM_PG`, 0–15) and the left FD buffer (6 kΩ). VERBATIM vendor
+/// B1:0x0D8205C0–0x5D4 \[code\].
+#[inline(always)]
+#[must_use]
+pub const fn ctl_for_mic(v: u32, analog: u32) -> u32 {
+    let g = if analog > 15 { 15 } else { analog };
+    (v & VENDOR_CTL_MIC_KEEP) | ctl::PREAM_PG.val(g) | VENDOR_CTL_FDBUF_L
+}
 /// ADC bias words OR-ed in at capture start. VERBATIM vendor B1:0x0D8207CA
 /// (audio.md §3.4) \[code\].
 pub const VENDOR_BIAS0_SET: u32 = 0x8411_A293;
@@ -433,6 +453,26 @@ mod tests {
         assert_eq!(MIC_MIX_CTL.addr(), 0xC018_103C);
         assert_eq!(AEC_CTL.addr(), 0xC018_1040);
         assert_eq!(VMIC_CTL.addr(), 0xC018_1054);
+    }
+
+    /// Regression: the recorder captured silence (AU-13, 2026-11-24, first
+    /// device run: `level=-60` while someone spoke). audio.md had the
+    /// vendor's front-end arguments swapped, so the right mic input was on
+    /// (`MIC_MIX_CTL` 0x103) and no FD buffer (`CTL` 0x04000D2A) while the
+    /// left converter captured. The registers the fixed build read on the
+    /// player (recording at −27 dB): 0x10C and 0x4070DAA.
+    #[test]
+    fn regress_mic_front_end_is_the_left_side() {
+        let m = mic_mix_for_mic(0x103, true);
+        assert_eq!(m, 0x10C);
+        assert_ne!(m & mic_mix_ctl::MICL_EN.mask(), 0);
+        assert_eq!(m & 3, 0, "right mic input off");
+        assert_eq!(mic_mix_for_mic(0, false), 0x11C);
+        let c = ctl_for_mic(0x0400_0D2A, VENDOR_PG_MIC);
+        assert_eq!(c, 0x0407_0DAA);
+        assert_eq!(c & VENDOR_CTL_FDBUF_L, VENDOR_CTL_FDBUF_L);
+        assert_eq!(c & ctl::FDBUFR_EN, 0);
+        assert_eq!(ctl_for_mic(0, 99) & ctl::PREAM_PG.mask(), ctl::PREAM_PG.val(15));
     }
 
     #[test]

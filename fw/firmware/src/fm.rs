@@ -72,7 +72,7 @@ pub struct FmRam {
 /// SRAM3 after the step counter's state (`sensor::SHARED_END`, which
 /// follows the battery logger's), below the card I/O counter
 /// (`yoton_bsp::card::IO_ADDR`): plain RAM, outside SRAM0 (02 §1).
-pub const FM_ADDR: usize = (crate::sensor::SHARED_END + 7) & !7;
+pub const FM_ADDR: usize = orpheus_proto::mem::sram3_next(crate::sensor::SHARED_END);
 
 /// End of [`FmRam`] (the recorder's state follows, `rec::SHARED_ADDR`).
 pub const FM_END: usize = FM_ADDR + core::mem::size_of::<FmRam>();

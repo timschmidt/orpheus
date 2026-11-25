@@ -120,7 +120,7 @@ pub struct Shared {
 }
 
 /// SRAM3 after the radio's RAM, below the card I/O counter.
-pub const SHARED_ADDR: usize = (crate::fm::FM_END + 7) & !7;
+pub const SHARED_ADDR: usize = orpheus_proto::mem::sram3_next(crate::fm::FM_END);
 const _: () = assert!(SHARED_ADDR + core::mem::size_of::<Shared>() <= yoton_bsp::card::IO_ADDR);
 const _: () = assert!(SHARED_ADDR % core::mem::align_of::<Shared>() == 0);
 
