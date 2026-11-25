@@ -63,6 +63,13 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-25 — on-device UI fuzzing (VER-8, lead)
+
+* `cargo xtask dev fuzz-ui --seed 7 --minutes 30 --play`: **no finding**
+  — 2,720 key steps (ui_keys grammar, no Power) over all screens with music
+  playing, 136 oracle checks (fault record, resets, stack, underruns,
+  card writes, UI state).
+
 ### 2026-11-25 — T-8 on the player: Pictures-while-playing profiled (lead)
 
 * Merged T-8 (`dda322b6`); the profiler is behind the HAL feature `prof`
