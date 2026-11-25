@@ -11,22 +11,28 @@
 //! pause and quit) and the scores to `/.orpheus/games/scores.bin`.
 
 pub use orpheus_games as engine;
+#[cfg(feature = "salvo")]
+use orpheus_games::salvo;
 use orpheus_games::{Hub, Outcome, Rng, Session, blocks, id as gid, solitaire, tiles};
 
 use crate::services::SettingsService;
 use crate::settings::{Choice, Setting, SettingId, Unit, c, r, t};
 use crate::strings::Str;
 
-/// The games of the app, in list order. The artillery game (GAME-4/5)
-/// is not listed until it is built.
+/// The games of the app, in list order.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Game {
     Blocks,
     Tiles,
     Solitaire,
+    #[cfg(feature = "salvo")]
+    Salvo,
 }
 
 impl Game {
+    #[cfg(feature = "salvo")]
+    pub const ALL: [Game; 4] = [Game::Blocks, Game::Tiles, Game::Solitaire, Game::Salvo];
+    #[cfg(not(feature = "salvo"))]
     pub const ALL: [Game; 3] = [Game::Blocks, Game::Tiles, Game::Solitaire];
 
     /// The engine's id (save files, scores).
@@ -36,6 +42,8 @@ impl Game {
             Game::Blocks => gid::BLOCKS,
             Game::Tiles => gid::TILES,
             Game::Solitaire => gid::SOLITAIRE,
+            #[cfg(feature = "salvo")]
+            Game::Salvo => gid::SALVO,
         }
     }
 
@@ -50,6 +58,8 @@ impl Game {
             Game::Blocks => Str::GameBlocks,
             Game::Tiles => Str::Game4096,
             Game::Solitaire => Str::GameSolitaire,
+            #[cfg(feature = "salvo")]
+            Game::Salvo => Str::GameSalvo,
         }
     }
 
@@ -68,6 +78,10 @@ impl Game {
                 Str::HelpSolitaire4,
                 Str::HelpSolitaire5,
             ],
+            #[cfg(feature = "salvo")]
+            Game::Salvo => {
+                &[Str::HelpSalvo, Str::HelpSalvo2, Str::HelpSalvo3, Str::HelpSalvo4, Str::HelpSalvo5]
+            }
         }
     }
 
@@ -78,6 +92,8 @@ impl Game {
             Game::Blocks => "blocks.sav",
             Game::Tiles => "4096.sav",
             Game::Solitaire => "solitaire.sav",
+            #[cfg(feature = "salvo")]
+            Game::Salvo => "salvo.sav",
         }
     }
 
@@ -88,17 +104,38 @@ impl Game {
             Game::Blocks => "/.orpheus/games/blocks.sav",
             Game::Tiles => "/.orpheus/games/4096.sav",
             Game::Solitaire => "/.orpheus/games/solitaire.sav",
+            #[cfg(feature = "salvo")]
+            Game::Salvo => "/.orpheus/games/salvo.sav",
         }
     }
 
-    /// Its settings, in pause-menu order.
+    /// Its settings, in pause-menu order (Salvo's: [`Game::groups`]).
     #[must_use]
     pub fn settings(self) -> &'static [Setting] {
         match self {
             Game::Blocks => &SETTINGS[..BLOCKS_SETTINGS],
             Game::Tiles => &SETTINGS[BLOCKS_SETTINGS..SOLITAIRE_FROM],
-            Game::Solitaire => &SETTINGS[SOLITAIRE_FROM..],
+            Game::Solitaire => &SETTINGS[SOLITAIRE_FROM..SALVO_FROM],
+            #[cfg(feature = "salvo")]
+            Game::Salvo => &SETTINGS[SALVO_FROM..SALVO_WORDS],
         }
+    }
+
+    /// Its settings in groups, each a row of the pause menu's Settings
+    /// that opens a list of its own (a game with many settings; one group
+    /// for the others).
+    #[must_use]
+    pub fn groups(self) -> &'static [(Str, &'static [Setting])] {
+        #[cfg(feature = "salvo")]
+        if self == Game::Salvo {
+            const SALVO_GROUPS: [(Str, &[Setting]); 3] = [
+                (Str::GamePlayers, &SETTINGS_SALVO_PLAYERS),
+                (Str::World, &SETTINGS_SALVO_WORLD),
+                (Str::GameRules, &SETTINGS_SALVO_RULES),
+            ];
+            return &SALVO_GROUPS;
+        }
+        &[]
     }
 
     /// The session holds a game of this kind.
@@ -141,6 +178,28 @@ pub mod id {
     pub const SOL_AUTO_COMPLETE: SettingId = SettingId(0x0E45);
     pub const SOL_TIMER: SettingId = SettingId(0x0E46);
     pub const SOL_WINNABLE: SettingId = SettingId(0x0E47);
+    pub const SALVO_PLAYERS: SettingId = SettingId(0x0E61);
+    /// Player 1 … 4: human or a computer's difficulty (0x0E62 …).
+    pub const SALVO_PLAYER1: SettingId = SettingId(0x0E62);
+    pub const SALVO_ROUNDS: SettingId = SettingId(0x0E66);
+    pub const SALVO_TIMER: SettingId = SettingId(0x0E67);
+    pub const SALVO_TERRAIN: SettingId = SettingId(0x0E68);
+    pub const SALVO_ROUGHNESS: SettingId = SettingId(0x0E69);
+    pub const SALVO_RELIEF: SettingId = SettingId(0x0E6A);
+    pub const SALVO_SEED: SettingId = SettingId(0x0E6B);
+    pub const SALVO_WIDTH: SettingId = SettingId(0x0E6C);
+    pub const SALVO_GRAVITY: SettingId = SettingId(0x0E6D);
+    pub const SALVO_WIND: SettingId = SettingId(0x0E6E);
+    pub const SALVO_CUSTOM_WIND: SettingId = SettingId(0x0E6F);
+    pub const SALVO_GUSTS: SettingId = SettingId(0x0E70);
+    pub const SALVO_DRAG: SettingId = SettingId(0x0E71);
+    pub const SALVO_HEALTH: SettingId = SettingId(0x0E72);
+    pub const SALVO_FALL: SettingId = SettingId(0x0E73);
+    pub const SALVO_WEAPONS: SettingId = SettingId(0x0E74);
+    pub const SALVO_SHOP: SettingId = SettingId(0x0E75);
+    pub const SALVO_GUIDE: SettingId = SettingId(0x0E76);
+    /// The four stored words Salvo's settings are packed into.
+    pub const SALVO_WORD0: SettingId = SettingId(0x0E80);
 }
 
 /// Lock delay, auto-shift delay and repeat interval choices (ms).
@@ -184,11 +243,184 @@ pub const PASS_LIMITS: [u8; 3] = [0, 3, 1];
 
 const BLOCKS_SETTINGS: usize = 10;
 const SOLITAIRE_FROM: usize = 15;
+const SALVO_FROM: usize = 22;
+#[cfg(feature = "salvo")]
+const SALVO_WORDS: usize = SALVO_FROM + 22;
+/// Game settings with a value of their own in the settings cache: all
+/// but Salvo's packed ones (its four words are).
+#[cfg(feature = "salvo")]
+pub const STORED_SETTINGS: usize = SALVO_FROM + 4;
+#[cfg(not(feature = "salvo"))]
+pub const STORED_SETTINGS: usize = SALVO_FROM;
 
-/// Every game setting (Blocks', 4096's, Solitaire's), each with the
-/// default that suits a first game. Stored like the apps' settings; edited
-/// in the pause menu's Settings.
-pub const SETTINGS: [Setting; 22] = [
+/// Salvo's settings (feature `salvo`): its choices, groups, and the four
+/// words they are packed into.
+#[cfg(feature = "salvo")]
+mod salvo_defs {
+    use super::*;
+
+    pub const PLAYER_COUNTS: &[Choice] = &[Choice::Lit("2"), Choice::Lit("3"), Choice::Lit("4")];
+    pub const KINDS: &[Choice] = &[
+        Choice::S(Str::GameHuman),
+        Choice::S(Str::GameNovice),
+        Choice::S(Str::GameEasy),
+        Choice::S(Str::GameHard),
+        Choice::S(Str::GameExpert),
+    ];
+    pub const ROUNDS: &[Choice] = &[Choice::Lit("1"), Choice::Lit("3"), Choice::Lit("5"), Choice::Lit("10")];
+    /// Rounds of each choice of `ROUNDS`.
+    pub const ROUND_COUNTS: [u8; 4] = [1, 3, 5, 10];
+    pub const TIMERS: &[Choice] =
+        &[Choice::S(Str::Off), Choice::Secs(15), Choice::Secs(30), Choice::Secs(60)];
+    /// Seconds per turn of each choice of `TIMERS` (0 = none).
+    pub const TIMER_SECS: [u8; 4] = [0, 15, 30, 60];
+    pub const TERRAINS: &[Choice] = &[
+        Choice::S(Str::GameHills),
+        Choice::S(Str::GameMountains),
+        Choice::S(Str::GameCanyon),
+        Choice::S(Str::GameIslands),
+        Choice::S(Str::GamePlateaus),
+        Choice::S(Str::GameMixed),
+    ];
+    pub const LEVELS: &[Choice] = &[Choice::S(Str::Low), Choice::S(Str::Medium), Choice::S(Str::High)];
+    pub const WIDTHS: &[Choice] =
+        &[Choice::Lit("128 px"), Choice::Lit("192 px"), Choice::Lit("256 px"), Choice::Lit("384 px")];
+    pub const GRAVITIES: &[Choice] = &[
+        Choice::S(Str::GameMoon),
+        Choice::S(Str::GameMars),
+        Choice::S(Str::GameEarth),
+        Choice::S(Str::GameJupiter),
+    ];
+    pub const WINDS: &[Choice] = &[
+        Choice::S(Str::GameNoScore),
+        Choice::S(Str::GameLight),
+        Choice::S(Str::GameStrong),
+        Choice::S(Str::GameCustom),
+    ];
+    /// Largest wind (m/s) of the first three choices of `WINDS`.
+    pub const WIND_MAX: [u8; 3] = [0, 4, 12];
+    pub const DRAGS: &[Choice] =
+        &[Choice::S(Str::Off), Choice::S(Str::GameRealistic), Choice::S(Str::GameHeavy)];
+    pub const HEALTHS: &[Choice] =
+        &[Choice::Lit("50"), Choice::Lit("100"), Choice::Lit("150"), Choice::Lit("200")];
+    /// Tank health of each choice of `HEALTHS`.
+    pub const HEALTH_POINTS: [u8; 4] = [50, 100, 150, 200];
+    pub const WEAPON_SETS: &[Choice] = &[Choice::S(Str::GameShellsOnly), Choice::S(Str::GameAllWeapons)];
+    pub const GUIDES: &[Choice] =
+        &[Choice::S(Str::GameNoScore), Choice::S(Str::GameLastShot), Choice::S(Str::GamePreview)];
+
+    pub const W0: u16 = 0x0E80;
+    pub const W1: u16 = 0x0E81;
+    pub const W2: u16 = 0x0E82;
+    pub const W3: u16 = 0x0E83;
+
+    /// Salvo's settings by group (players, world, rules), packed into the four
+    /// stored words `0x0E80 …` (bit fields; see `Setting::pack`).
+    pub const SETTINGS_SALVO_PLAYERS: [Setting; 7] = [
+        c(0x0E61, Str::GamePlayers, PLAYER_COUNTS, 0).packed(W0, 0, 2),
+        c(0x0E62, Str::GamePlayer1, KINDS, 0).packed(W0, 2, 3),
+        c(0x0E63, Str::GamePlayer2, KINDS, 2).packed(W0, 5, 3),
+        c(0x0E64, Str::GamePlayer3, KINDS, 2).packed(W0, 8, 3),
+        c(0x0E65, Str::GamePlayer4, KINDS, 2).packed(W0, 11, 3),
+        c(0x0E66, Str::GameRounds, ROUNDS, 1).packed(W0, 14, 2),
+        c(0x0E67, Str::GameTurnTimer, TIMERS, 0).packed(W1, 0, 2),
+    ];
+    pub const SETTINGS_SALVO_WORLD: [Setting; 10] = [
+        c(0x0E68, Str::GameTerrain, TERRAINS, 0).packed(W1, 2, 3),
+        c(0x0E69, Str::GameRoughness, LEVELS, 1).packed(W1, 5, 2),
+        c(0x0E6A, Str::GameRelief, LEVELS, 1).packed(W1, 7, 2),
+        r(0x0E6B, Str::GameTerrainSeed, 0, 99, 1, Unit::None, 0).packed(W1, 9, 7),
+        c(0x0E6C, Str::GameWorldWidth, WIDTHS, 2).packed(W2, 0, 2),
+        c(0x0E6D, Str::GameGravity, GRAVITIES, 2).packed(W2, 2, 2),
+        c(0x0E6E, Str::GameWind, WINDS, 1).packed(W2, 4, 2),
+        r(0x0E6F, Str::GameCustomWind, 1, 30, 1, Unit::MetresPerSecond, 8).packed(W2, 6, 5),
+        t(0x0E70, Str::GameGusts, 0).packed(W2, 11, 1),
+        c(0x0E71, Str::GameDrag, DRAGS, 1).packed(W2, 12, 2),
+    ];
+    pub const SETTINGS_SALVO_RULES: [Setting; 5] = [
+        c(0x0E72, Str::GameTankHealth, HEALTHS, 1).packed(W3, 0, 2),
+        t(0x0E73, Str::GameFallDamage, 1).packed(W3, 2, 1),
+        c(0x0E74, Str::GameWeapons, WEAPON_SETS, 1).packed(W3, 3, 1),
+        t(0x0E75, Str::GameShop, 1).packed(W3, 4, 1),
+        c(0x0E76, Str::GameAimGuide, GUIDES, 1).packed(W3, 5, 2),
+    ];
+
+    /// The default of a word: its settings' defaults in their bits.
+    pub const fn word_default(word: u16) -> i16 {
+        let groups: [&[Setting]; 3] = [&SETTINGS_SALVO_PLAYERS, &SETTINGS_SALVO_WORLD, &SETTINGS_SALVO_RULES];
+        let mut v: u16 = 0;
+        let mut g = 0;
+        while g < groups.len() {
+            let mut i = 0;
+            while i < groups[g].len() {
+                let s = &groups[g][i];
+                if let Some((w, shift, _)) = s.pack
+                    && w.0 == word
+                {
+                    v |= (s.default as u16) << shift;
+                }
+                i += 1;
+            }
+            g += 1;
+        }
+        v as i16
+    }
+
+    /// A stored word of packed settings (never shown).
+    pub const fn word(id: u16) -> Setting {
+        r(id, Str::GameSalvo, i16::MIN, i16::MAX, 1, Unit::None, word_default(id))
+    }
+
+    pub const fn salvo_settings() -> [Setting; 26] {
+        let mut out = [word(W0); 26];
+        let mut k = 0;
+        let groups: [&[Setting]; 3] = [&SETTINGS_SALVO_PLAYERS, &SETTINGS_SALVO_WORLD, &SETTINGS_SALVO_RULES];
+        let mut g = 0;
+        while g < groups.len() {
+            let mut i = 0;
+            while i < groups[g].len() {
+                out[k] = groups[g][i];
+                k += 1;
+                i += 1;
+            }
+            g += 1;
+        }
+        out[k] = word(W0);
+        out[k + 1] = word(W1);
+        out[k + 2] = word(W2);
+        out[k + 3] = word(W3);
+        out
+    }
+
+    pub const SALVO: [Setting; 26] = salvo_settings();
+}
+
+#[cfg(feature = "salvo")]
+pub use salvo_defs::{HEALTH_POINTS, ROUND_COUNTS, TIMER_SECS, WIND_MAX};
+#[cfg(feature = "salvo")]
+use salvo_defs::{SALVO, SETTINGS_SALVO_PLAYERS, SETTINGS_SALVO_RULES, SETTINGS_SALVO_WORLD, W0, word};
+
+/// Every game setting (Blocks', 4096's, Solitaire's, Salvo's and its
+/// words), each with the default that suits a first game. Stored like the
+/// apps' settings; edited in the pause menu's Settings.
+#[cfg(not(feature = "salvo"))]
+pub const SETTINGS: [Setting; 22] = FIRST;
+#[cfg(feature = "salvo")]
+pub const SETTINGS: [Setting; 48] = {
+    let mut out = [word(W0); 48];
+    let mut i = 0;
+    while i < SALVO_FROM {
+        out[i] = FIRST[i];
+        i += 1;
+    }
+    while i < 48 {
+        out[i] = SALVO[i - SALVO_FROM];
+        i += 1;
+    }
+    out
+};
+
+const FIRST: [Setting; 22] = [
     c(0x0E01, Str::GameMode, MODES, 0),
     r(0x0E02, Str::GameStartLevel, 1, 15, 1, Unit::None, 1),
     c(0x0E03, Str::GamePieces, PIECES, 0),
@@ -215,7 +447,7 @@ pub const SETTINGS: [Setting; 22] = [
 
 /// Settings that change the rules apply from the next game; the others
 /// (ghost, previews, animations, auto-shift and repeat, Solitaire's
-/// assists and timer) at once.
+/// assists and timer, Salvo's aim guide) at once.
 #[must_use]
 pub fn applies_next_game(sid: SettingId) -> bool {
     ![
@@ -227,6 +459,7 @@ pub fn applies_next_game(sid: SettingId) -> bool {
         id::SOL_AUTO_MOVE,
         id::SOL_AUTO_COMPLETE,
         id::SOL_TIMER,
+        id::SALVO_GUIDE,
     ]
     .contains(&sid)
 }
@@ -294,6 +527,46 @@ pub fn solitaire_config<S: SettingsService + ?Sized>(s: &S) -> solitaire::Config
 /// Solitaire's timer is shown.
 pub fn solitaire_timer<S: SettingsService + ?Sized>(s: &S) -> bool {
     s.setting(id::SOL_TIMER) != 0
+}
+
+/// The Salvo rules from the settings.
+#[cfg(feature = "salvo")]
+pub fn salvo_config<S: SettingsService + ?Sized>(s: &S) -> salvo::Config {
+    let v = |sid: SettingId| u8::try_from(s.setting(sid)).unwrap_or(0);
+    let mut kinds = [salvo::Kind::Human; 4];
+    for (i, k) in kinds.iter_mut().enumerate() {
+        *k = salvo::Kind::from_u8(v(SettingId(id::SALVO_PLAYER1.0 + i as u16))).unwrap_or_default();
+    }
+    let wind = match v(id::SALVO_WIND) {
+        w @ 0..=2 => WIND_MAX[usize::from(w)],
+        _ => v(id::SALVO_CUSTOM_WIND).clamp(1, 30),
+    };
+    salvo::Config {
+        players: 2 + v(id::SALVO_PLAYERS).min(2),
+        kinds,
+        rounds: pick(&ROUND_COUNTS, s.setting(id::SALVO_ROUNDS), 3),
+        gravity: v(id::SALVO_GRAVITY).min(3),
+        wind,
+        gusts: v(id::SALVO_GUSTS) != 0,
+        drag: v(id::SALVO_DRAG).min(2),
+        style: salvo::Style::from_u8(v(id::SALVO_TERRAIN)).unwrap_or_default(),
+        rough: v(id::SALVO_ROUGHNESS).min(2),
+        relief: v(id::SALVO_RELIEF).min(2),
+        terrain_seed: u16::from(v(id::SALVO_SEED)),
+        width: v(id::SALVO_WIDTH).min(3),
+        health: pick(&HEALTH_POINTS, s.setting(id::SALVO_HEALTH), 100),
+        fall_damage: v(id::SALVO_FALL) != 0,
+        full_set: v(id::SALVO_WEAPONS) != 0,
+        shop: v(id::SALVO_SHOP) != 0,
+        timer: pick(&TIMER_SECS, s.setting(id::SALVO_TIMER), 0),
+    }
+    .sanitised()
+}
+
+/// Salvo's aim guide: 0 none, 1 the last shot's trace, 2 a short preview.
+#[cfg(feature = "salvo")]
+pub fn salvo_guide<S: SettingsService + ?Sized>(s: &S) -> u8 {
+    u8::try_from(s.setting(id::SALVO_GUIDE)).unwrap_or(0).min(2)
 }
 
 /// What the screens ask of the service's storage side.
@@ -521,11 +794,9 @@ impl GamesIo {
                     return false;
                 }
                 hub.opening = None;
-                hub.session = if a.ok {
-                    Session::decode(data, Some(g)).unwrap_or(Session::None)
-                } else {
-                    Session::None
-                };
+                if !(a.ok && hub.session.decode_into(data, Some(g))) {
+                    hub.session = Session::None;
+                }
                 true
             }
             CardOp::Write(g) => {
@@ -744,20 +1015,36 @@ impl CardRun {
 pub fn new_game<S: SettingsService + GamesService + ?Sized>(svc: &mut S, game: Game) {
     let seed = svc.game_seed();
     let banked = settle_casino(svc);
+    let charge = start_session(svc, game, seed);
+    if charge {
+        svc.games_mut().scores.add_to_bank(gid::SOLITAIRE, -solitaire::CASINO_DEAL, true);
+    }
+    // A request may apply an answer of the card side at once (the
+    // firmware): the new game is built by then, in a frame of its own.
+    if banked || charge {
+        svc.games_request(GamesRequest::SaveScores);
+    }
+}
+
+/// The new game into the session; true for a casino deal (charged).
+/// Salvo's is built in place (680 bytes: no copy on the stack).
+#[inline(never)]
+fn start_session<S: SettingsService + GamesService + ?Sized>(svc: &mut S, game: Game, seed: u64) -> bool {
     let session = match game {
         Game::Blocks => Session::Blocks(blocks::Blocks::new(blocks_config(svc), seed)),
         Game::Tiles => Session::Tiles(tiles::Tiles::new(tiles_config(svc), seed)),
         Game::Solitaire => Session::Solitaire(solitaire::Solitaire::new(solitaire_config(svc), seed)),
+        #[cfg(feature = "salvo")]
+        Game::Salvo => {
+            let cfg = salvo_config(svc);
+            svc.games_mut().session.start_salvo(cfg, seed);
+            return false;
+        }
     };
     let charge =
         matches!(&session, Session::Solitaire(s) if s.config().scoring == solitaire::Scoring::Casino);
-    if charge {
-        svc.games_mut().scores.add_to_bank(gid::SOLITAIRE, -solitaire::CASINO_DEAL, true);
-    }
     svc.games_mut().session = session;
-    if banked || charge {
-        svc.games_request(GamesRequest::SaveScores);
-    }
+    charge
 }
 
 /// What a casino game earned so far: 5 per card on the foundations.
@@ -855,6 +1142,24 @@ pub fn outcome(s: &Session) -> Option<(u8, u16, Outcome)> {
             };
             Some((gid::SOLITAIRE, g.config().variant(), o))
         }
+        #[cfg(feature = "salvo")]
+        Session::Salvo(g) if g.ended() => {
+            // The best human's points; won when a human leads. A game of
+            // computers only is not ranked.
+            let (best, lead) = g.human_result().unwrap_or((0, false));
+            let ranked = g.config().humans() > 0;
+            Some((
+                gid::SALVO,
+                g.config().variant(),
+                Outcome {
+                    result: u32::try_from(best).unwrap_or(0),
+                    detail: u32::from(g.config().rounds),
+                    lower_is_better: false,
+                    ranked,
+                    won: lead,
+                },
+            ))
+        }
         _ => None,
     }
 }
@@ -879,6 +1184,8 @@ pub fn best<S: SettingsService + GamesService + ?Sized>(svc: &S, game: Game) -> 
         Game::Blocks => blocks_config(svc).variant(),
         Game::Tiles => tiles_config(svc).variant(),
         Game::Solitaire => solitaire_config(svc).variant(),
+        #[cfg(feature = "salvo")]
+        Game::Salvo => salvo_config(svc).variant(),
     };
     svc.games().scores.get(game.id(), variant).map(|r| r.best).filter(|&b| b > 0)
 }
@@ -889,6 +1196,8 @@ pub fn best_is_time<S: SettingsService + ?Sized>(svc: &S, game: Game) -> bool {
         Game::Blocks => blocks_config(svc).mode == blocks::Mode::Lines40,
         Game::Solitaire => solitaire_config(svc).scoring == solitaire::Scoring::None,
         Game::Tiles => false,
+        #[cfg(feature = "salvo")]
+        Game::Salvo => false,
     }
 }
 
@@ -931,11 +1240,19 @@ mod tests {
             let key = std::format!("id = \"{:#06X}\"", s.id.0).replace("0X", "0x");
             assert!(manifest.contains(&key), "{key} missing from tests/settings/effects.toml");
         }
-        assert_eq!(
-            Game::Blocks.settings().len() + Game::Tiles.settings().len() + Game::Solitaire.settings().len(),
-            SETTINGS.len()
-        );
-        assert!(Game::Solitaire.settings().iter().all(|s| s.id.0 >= 0x0E41));
+        // Every setting in its game's list, Salvo's four words besides.
+        let words = if cfg!(feature = "salvo") { 4 } else { 0 };
+        assert_eq!(Game::ALL.iter().map(|g| g.settings().len()).sum::<usize>() + words, SETTINGS.len());
+        assert!(Game::Solitaire.settings().iter().all(|s| (0x0E41..0x0E61).contains(&s.id.0)));
+        #[cfg(feature = "salvo")]
+        {
+            assert!(
+                Game::Salvo.settings().iter().all(|s| (0x0E61..0x0E80).contains(&s.id.0) && s.pack.is_some())
+            );
+            let grouped: usize = Game::Salvo.groups().iter().map(|(_, l)| l.len()).sum();
+            assert_eq!(grouped, Game::Salvo.settings().len(), "every Salvo setting in a group");
+        }
+        assert_eq!(SETTINGS.iter().filter(|s| s.stored()).count(), STORED_SETTINGS);
         assert!(Game::Tiles.settings().iter().all(|s| (0x0E21..0x0E41).contains(&s.id.0)));
         assert!(matches!(def(id::BLOCKS_MODE).map(|d| d.kind), Some(Kind::Choice(_))));
     }

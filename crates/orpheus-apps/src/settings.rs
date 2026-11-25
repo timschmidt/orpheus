@@ -45,6 +45,8 @@ pub enum Unit {
     Cm,
     /// Kilograms (weight).
     Kg,
+    /// Metres per second (wind).
+    MetresPerSecond,
 }
 
 /// Things a row does instead of holding a value.
@@ -99,13 +101,25 @@ pub struct Setting {
     pub label: Str,
     pub kind: Kind,
     pub default: i16,
+    /// A small setting kept in bits of another stored item (a "word"):
+    /// `(word key, first bit, bits)`; `None`: stored on its own. Packing
+    /// keeps the settings cache within its 128 slots and its RAM (the
+    /// artillery game's 21 settings take four words, GAME-4/5).
+    pub pack: Option<(SettingId, u8, u8)>,
 }
 
 impl Setting {
-    /// Whether this item stores a value.
+    /// Whether this item stores a value of its own (packed items live in
+    /// their word's).
     #[must_use]
     pub const fn stored(&self) -> bool {
-        !matches!(self.kind, Kind::Action(_) | Kind::Info(_))
+        !matches!(self.kind, Kind::Action(_) | Kind::Info(_)) && self.pack.is_none()
+    }
+
+    /// The same item kept in bits `shift .. shift + bits` of `word`.
+    #[must_use]
+    pub const fn packed(self, word: u16, shift: u8, bits: u8) -> Setting {
+        Setting { pack: Some((SettingId(word), shift, bits)), ..self }
     }
 
     /// `v` if valid for this item, else the default.
@@ -114,7 +128,9 @@ impl Setting {
         let ok = match self.kind {
             Kind::Toggle => v == 0 || v == 1,
             Kind::Choice(c) => usize::try_from(v).is_ok_and(|i| i < c.len()),
-            Kind::Range { min, max, step, .. } => v >= min && v <= max && (v - min) % step.max(1) == 0,
+            Kind::Range { min, max, step, .. } => {
+                v >= min && v <= max && (i32::from(v) - i32::from(min)) % i32::from(step.max(1)) == 0
+            }
             Kind::HomeApps => (0..1 << crate::App::ALL.len()).contains(&i32::from(v)),
             Kind::Language => true,
             Kind::Action(_) | Kind::Info(_) => false,
@@ -145,10 +161,10 @@ macro_rules! ch {
 use Choice::{Lit, Mins, S, Secs, Speed};
 
 pub(crate) const fn t(id: u16, label: Str, default: i16) -> Setting {
-    Setting { id: SettingId(id), label, kind: Kind::Toggle, default }
+    Setting { id: SettingId(id), label, kind: Kind::Toggle, default, pack: None }
 }
 pub(crate) const fn c(id: u16, label: Str, choices: &'static [Choice], default: i16) -> Setting {
-    Setting { id: SettingId(id), label, kind: Kind::Choice(choices), default }
+    Setting { id: SettingId(id), label, kind: Kind::Choice(choices), default, pack: None }
 }
 pub(crate) const fn r(
     id: u16,
@@ -159,13 +175,13 @@ pub(crate) const fn r(
     unit: Unit,
     default: i16,
 ) -> Setting {
-    Setting { id: SettingId(id), label, kind: Kind::Range { min, max, step, unit }, default }
+    Setting { id: SettingId(id), label, kind: Kind::Range { min, max, step, unit }, default, pack: None }
 }
 const fn a(id: u16, label: Str, act: Action) -> Setting {
-    Setting { id: SettingId(id), label, kind: Kind::Action(act), default: 0 }
+    Setting { id: SettingId(id), label, kind: Kind::Action(act), default: 0, pack: None }
 }
 const fn i(id: u16, label: Str, info: Info) -> Setting {
-    Setting { id: SettingId(id), label, kind: Kind::Info(info), default: 0 }
+    Setting { id: SettingId(id), label, kind: Kind::Info(info), default: 0, pack: None }
 }
 
 pub const EQ_PRESETS: &[Choice] = ch![
@@ -330,7 +346,13 @@ const DISPLAY: &[Setting] = &[
     t(0x030C, Str::ListRollAround, 1),
     // Every app (Games, bit 11, with the `games` feature: on the player since
     // GAME-2's integration).
-    Setting { id: SettingId(0x030B), label: Str::HomeScreen, kind: Kind::HomeApps, default: HOME_ALL },
+    Setting {
+        id: SettingId(0x030B),
+        label: Str::HomeScreen,
+        kind: Kind::HomeApps,
+        default: HOME_ALL,
+        pack: None,
+    },
 ];
 
 const POWER: &[Setting] = &[
@@ -400,7 +422,7 @@ const USB: &[Setting] = &[
 ];
 
 const LANGUAGE: &[Setting] =
-    &[Setting { id: SettingId(0x0A01), label: Str::GLanguage, kind: Kind::Language, default: 0 }];
+    &[Setting { id: SettingId(0x0A01), label: Str::GLanguage, kind: Kind::Language, default: 0, pack: None }];
 
 const STORAGE: &[Setting] = &[
     i(0x0B01, Str::CardInfo, Info::CardInfo),
@@ -563,7 +585,7 @@ pub fn def(id: SettingId) -> Option<&'static Setting> {
 #[cfg(not(feature = "games"))]
 pub const STORED: usize = 98;
 #[cfg(feature = "games")]
-pub const STORED: usize = 98 + crate::games::SETTINGS.len();
+pub const STORED: usize = 98 + crate::games::STORED_SETTINGS;
 
 /// Position among stored items (cache index).
 #[must_use]
@@ -646,6 +668,10 @@ pub fn format_value<const N: usize>(s: &Setting, v: i16, lang: Lang, out: &mut S
                 out.push(' ');
                 out.push_str(lang.get(if unit == Unit::Cm { Str::Cm } else { Str::Kg }));
             }
+            Unit::MetresPerSecond => {
+                out.push_i32(i32::from(v));
+                out.push_str(" m/s");
+            }
         },
         _ => {}
     }
@@ -727,6 +753,12 @@ impl SettingsCache {
 
     #[must_use]
     pub fn get(&self, id: SettingId) -> i16 {
+        if let Some(d) = def(id)
+            && let Some((word, shift, bits)) = d.pack
+        {
+            let w = self.get(word) as u16;
+            return d.validate(((w >> shift) & ((1u16 << bits) - 1)) as i16);
+        }
         match index(id).and_then(|i| self.vals.get(i)) {
             Some(v) => *v,
             None => def(id).map_or(0, |d| d.default),
@@ -735,6 +767,14 @@ impl SettingsCache {
 
     /// Set a value (validated); returns true if it changed.
     pub fn set(&mut self, id: SettingId, v: i16) -> bool {
+        if let Some(d) = def(id)
+            && let Some((word, shift, bits)) = d.pack
+        {
+            let mask = ((1u16 << bits) - 1) << shift;
+            let w = self.get(word) as u16;
+            let nw = (w & !mask) | (((d.validate(v) as u16) << shift) & mask);
+            return self.set(word, nw as i16);
+        }
         let (Some(i), Some(d)) = (index(id), def(id)) else { return false };
         let v = d.validate(v);
         match self.vals.get_mut(i) {
@@ -790,6 +830,66 @@ mod tests {
         }
         assert_eq!(all().filter(|s| s.stored()).count(), STORED);
         const { assert!(STORED <= 128) };
+    }
+
+    /// Salvo's settings live in bits of four stored words (GAME-4/5): each
+    /// reads and writes under its own key, validated, without touching the
+    /// others; the words' defaults hold every default; fields never
+    /// overlap.
+    #[cfg(feature = "salvo")]
+    #[test]
+    fn packed_settings() {
+        let mut c = SettingsCache::new();
+        let packed: Vec<&Setting> = all().filter(|s| s.pack.is_some()).collect();
+        assert_eq!(packed.len(), 22);
+        let mut used = std::collections::BTreeMap::<u16, u16>::new();
+        for s in &packed {
+            let (w, shift, bits) = s.pack.unwrap();
+            assert!(def(w).is_some_and(Setting::stored), "{:#06x}: its word is stored", s.id.0);
+            assert!(u32::from(shift) + u32::from(bits) <= 16);
+            let mask = (((1u32 << bits) - 1) << shift) as u16;
+            let u = used.entry(w.0).or_default();
+            assert_eq!(*u & mask, 0, "{:#06x} overlaps", s.id.0);
+            *u |= mask;
+            assert_eq!(c.get(s.id), s.default, "{:#06x} default", s.id.0);
+            // Every valid value fits its bits.
+            let max = match s.kind {
+                Kind::Toggle => 1,
+                Kind::Choice(ch) => ch.len() as i32 - 1,
+                Kind::Range { max, .. } => i32::from(max),
+                _ => 0,
+            };
+            assert!(max < 1 << bits, "{:#06x} does not fit {bits} bits", s.id.0);
+        }
+        assert_eq!(
+            [0x0E80, 0x0E81, 0x0E82, 0x0E83].map(|w| c.get(SettingId(w))),
+            [21056, 160, 4634, 61],
+            "the manifest's defaults"
+        );
+        let before: Vec<i16> = packed.iter().map(|s| c.get(s.id)).collect();
+        let gravity = SettingId(0x0E6D);
+        assert!(c.set(gravity, 3));
+        assert_eq!(c.get(gravity), 3);
+        assert!(!c.set(gravity, 3), "unchanged");
+        assert!(c.set(gravity, 9), "invalid: the default");
+        assert_eq!(c.get(gravity), 2);
+        assert!(c.set(gravity, 3));
+        for (s, b) in packed.iter().zip(&before) {
+            if s.id != gravity {
+                assert_eq!(c.get(s.id), *b, "{:#06x} untouched", s.id.0);
+            }
+        }
+        let w: Vec<_> = c.take_dirty().collect();
+        assert_eq!(w.len(), 1, "one word written");
+        assert_eq!(w[0].0, 0x0E82);
+        // A word read from the store gives its fields.
+        let mut d = SettingsCache::new();
+        d.load(w[0].0, &w[0].1);
+        assert_eq!(d.get(gravity), 3);
+        let seed = SettingId(0x0E6B);
+        assert!(c.set(seed, 99));
+        assert_eq!(c.get(seed), 99);
+        assert_eq!(c.get(SettingId(0x0E6C)), 2, "the next field is intact");
     }
 
     #[test]

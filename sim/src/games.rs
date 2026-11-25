@@ -19,7 +19,10 @@
 //! game); `solplay=N` plays the first `N` moves of the deal check's line in
 //! the Solitaire game in RAM; `sollong=1` a column of six face-down cards
 //! and a king-to-ace run; `solstuck=1` a game with no move left (one
-//! pass); `gamesio=on|off` the deferred mode.
+//! pass); `gamesio=on|off` the deferred mode. Salvo (the game in RAM):
+//! `salvoturn=P`, `salvoaim=P.A.W` (angle °, power ‰), `salvowind=T`
+//! (tenths of m/s), `salvohealth=P.H`, `salvoflat=H`, `salvoplace=P.X`,
+//! `salvoblast=X.Y.W` (weapon W's blast at X, Y px).
 
 use anyhow::{Result, bail};
 use orpheus_apps::games::{self as app, CardOp, CardRun, Game, GamesIo, GamesRequest};
@@ -349,6 +352,33 @@ impl SimGames {
                     g.input(orpheus_games::Input::Press(orpheus_games::Button::Right));
                 }
                 self.hub.session = Session::Solitaire(g);
+            }
+            k if k.starts_with("salvo") => {
+                let Session::Salvo(g) = &mut self.hub.session else { bail!("{k}: no Salvo game") };
+                let nums: Vec<i32> = v.split('.').map(str::parse).collect::<Result<_, _>>()?;
+                let n = |i: usize| nums.get(i).copied().unwrap_or(0);
+                match k {
+                    // `salvoturn=P`: player P's turn now (no pass screen).
+                    "salvoturn" => g.force_turn(u8::try_from(n(0))?),
+                    // `salvoaim=P.A.W`: player P's barrel at A°, power W‰.
+                    "salvoaim" => {
+                        g.set_aim(usize::try_from(n(0))?, u8::try_from(n(1))?, u16::try_from(n(2))?);
+                    }
+                    // `salvowind=T`: this turn's wind in tenths of m/s.
+                    "salvowind" => g.set_wind(i16::try_from(n(0))?),
+                    // `salvohealth=P.H`.
+                    "salvohealth" => g.set_health(usize::try_from(n(0))?, u8::try_from(n(1))?),
+                    // `salvoflat=H`: flat ground H px high everywhere.
+                    "salvoflat" => {
+                        let h = vec![u8::try_from(n(0))?; usize::from(g.width())];
+                        g.set_heights(&h);
+                    }
+                    // `salvoplace=P.X`: tank P at column X.
+                    "salvoplace" => g.place(usize::try_from(n(0))?, i16::try_from(n(1))?),
+                    // `salvoblast=X.Y.W`: weapon W's blast at (X, Y) px.
+                    "salvoblast" => g.explode_at(n(0), n(1), u8::try_from(n(2))?),
+                    _ => bail!("unknown {k}"),
+                }
             }
             _ => return Ok(false),
         }

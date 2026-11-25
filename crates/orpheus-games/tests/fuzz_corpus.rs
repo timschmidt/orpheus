@@ -21,6 +21,12 @@ fn solitaire_keys_corpus() {
     assert!(replay::replay("solitaire_keys", bodies::solitaire_keys) > 0, "no corpus");
 }
 
+#[cfg(feature = "salvo")]
+#[test]
+fn salvo_keys_corpus() {
+    assert!(replay::replay("salvo_keys", bodies::salvo_keys) > 0, "no corpus");
+}
+
 #[test]
 fn blocks_keys_corpus() {
     assert!(replay::replay("blocks_keys", bodies::blocks_keys) > 0, "no corpus");
@@ -190,10 +196,62 @@ fn solitaire_seeds() -> Vec<(String, Vec<u8>)> {
     out
 }
 
+/// Salvo journeys: a human aims and fires against computers of each
+/// difficulty, in each terrain and gravity, with the weapon list, the
+/// overview, fast flights, a pass screen and the shop between rounds.
+#[cfg(feature = "salvo")]
+fn salvo_seeds() -> Vec<(String, Vec<u8>)> {
+    let mut out = Vec::new();
+    // players | kinds 1-2 | kinds 3-4 | rounds | gravity | wind | drag |
+    // style/rough/relief | seed/width/health | flags
+    let cfgs: [(&str, [u8; 10]); 6] = [
+        ("duel-easy-hills", [0, 2 << 3, 2 | 2 << 3, 0, 2, 1, 1, 1 << 3 | 1 << 5, 2 << 2 | 1 << 4, 0]),
+        ("three-mountains-gusts", [1, 3 << 3, 1 | 4 << 3, 1, 2, 2, 1, 1 | 2 << 3 | 2 << 5, 3 << 2, 1]),
+        ("four-islands-moon", [2, 4 << 3, 2 | 3 << 3, 1, 0, 1, 2, 3 | 1 << 3, 1 << 2 | 2 << 4, 4]),
+        ("two-humans-canyon-shop", [0, 0, 0, 1, 3, 3, 0, 2 | 2 << 5, 0, 16]),
+        ("computers-plateaus", [2, 1 | 4 << 3, 2 | 3 << 3, 2, 1, 2, 1, 4 | 1 << 3, 3 << 2, 2]),
+        ("mixed-fixed-seed-jupiter", [0, 4 << 3, 0, 0, 3, 3, 2, 5 | 2 << 3, 1 | 1 << 2, 1 | 8]),
+    ];
+    let keys = [
+        press(Button::Up),
+        release(Button::Up),
+        press(Button::Right),
+        release(Button::Right),
+        press(Button::Menu),
+        press(Button::Down),
+        press(Button::Ok),
+        press(Button::Ok),
+        release(Button::Ok),
+    ];
+    for (k, (name, cfg)) in cfgs.iter().enumerate() {
+        let mut d = cfg.to_vec();
+        d.extend((0x5A1_7000u64 + k as u64).to_le_bytes());
+        for r in 0..40 {
+            d.extend(&keys[..(r % keys.len()) + 1]);
+            d.extend(steps(if r % 3 == 0 { 400 } else { 120 }));
+            if r % 7 == 0 {
+                d.push(press(Button::Ok));
+                d.push(long(Button::Ok));
+                d.push(release(Button::Ok));
+            }
+        }
+        out.push((name.to_string(), d));
+    }
+    out
+}
+
 /// The seeds run through the bodies (and are written with
 /// `ORPHEUS_WRITE_SEEDS=1`).
 #[test]
 fn seeds() {
+    #[cfg(feature = "salvo")]
+    {
+        let v = salvo_seeds();
+        for (_, d) in &v {
+            bodies::salvo_keys(d);
+        }
+        replay::write_seeds("salvo_keys", &v);
+    }
     let t = tiles_seeds();
     let b = blocks_seeds();
     let s = solitaire_seeds();

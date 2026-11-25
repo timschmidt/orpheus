@@ -13,13 +13,15 @@ use orpheus_ui::theme::Role;
 use orpheus_ui::widgets::dialog::DialogSpec;
 use orpheus_ui::widgets::list::{Accessory, ListAction, ListView, draw_scrollbar};
 
+#[cfg(feature = "salvo")]
+use super::GAME_SALVO;
 use super::rows::Rows;
 use super::{
     CHOICE, GAME_BLOCKS, GAME_HELP, GAME_PAUSE, GAME_SETTINGS, GAME_SOLITAIRE, GAME_TILES, GAMES, SLIDER,
 };
 use crate::games::{self, Game, GamesRequest};
 use crate::services::Services;
-use crate::settings::{Kind, SettingId, format_value};
+use crate::settings::{Kind, Setting, SettingId, format_value};
 use crate::strings::{Lang, Str};
 
 /// Which list.
@@ -37,6 +39,8 @@ const T_HELP: u16 = 4;
 const T_QUIT: u16 = 5;
 const T_BEST: u16 = 6;
 const DLG_NEW: u16 = 0x500;
+/// Settings rows that open a group of a game's settings (+ index).
+const T_GROUP: u16 = 0x100;
 
 /// The screen a game opens in.
 #[must_use]
@@ -45,6 +49,8 @@ pub const fn game_screen(g: Game) -> ScreenId {
         Game::Blocks => GAME_BLOCKS,
         Game::Tiles => GAME_TILES,
         Game::Solitaire => GAME_SOLITAIRE,
+        #[cfg(feature = "salvo")]
+        Game::Salvo => GAME_SALVO,
     }
 }
 
@@ -76,6 +82,8 @@ fn push_best<S: Services + ?Sized, const N: usize>(svc: &S, g: Game, b: &mut Str
 
 pub struct GameListScreen {
     kind: GameList,
+    /// Settings of a game with groups: 0 the groups, `k` group `k - 1`.
+    group: u8,
     list: ListView,
     rows: Rows,
     lang: Lang,
@@ -84,7 +92,15 @@ pub struct GameListScreen {
 impl GameListScreen {
     #[must_use]
     pub fn new(kind: GameList) -> GameListScreen {
-        GameListScreen { kind, list: ListView::new(), rows: Rows::default(), lang: Lang::ENGLISH }
+        GameListScreen { kind, group: 0, list: ListView::new(), rows: Rows::default(), lang: Lang::ENGLISH }
+    }
+
+    /// The settings this list shows (Settings of a game).
+    fn shown_settings(&self, g: Game) -> &'static [Setting] {
+        match g.groups().get(usize::from(self.group).wrapping_sub(1)) {
+            Some((_, list)) => list,
+            None => g.settings(),
+        }
     }
 
     #[must_use]
@@ -113,6 +129,11 @@ impl GameListScreen {
     }
 
     fn title(&self) -> &'static str {
+        if let GameList::Settings(g) = self.kind
+            && let Some((label, _)) = g.groups().get(usize::from(self.group).wrapping_sub(1))
+        {
+            return self.lang.get(*label);
+        }
         self.lang.get(self.game().map_or(Str::AppGames, Game::label))
     }
 
@@ -160,11 +181,21 @@ impl GameListScreen {
                 }
                 rows.push(l.get(Str::GameQuit), T_QUIT);
             }
+            GameList::Settings(g) if self.group == 0 && !g.groups().is_empty() => {
+                if let Some(h) = rows.push(l.get(Str::AppSettings), 0) {
+                    h.header = true;
+                }
+                for (k, (label, _)) in g.groups().iter().enumerate() {
+                    if let Some(r) = rows.push(l.get(*label), T_GROUP + k as u16) {
+                        r.acc = Accessory::Chevron;
+                    }
+                }
+            }
             GameList::Settings(g) => {
                 if let Some(h) = rows.push(l.get(Str::AppSettings), 0) {
                     h.header = true;
                 }
-                for s in g.settings() {
+                for s in self.shown_settings(g) {
                     let v = svc.setting(s.id);
                     let Some(r) = rows.push(l.get(s.label), s.id.0) else { break };
                     match s.kind {
@@ -235,6 +266,10 @@ impl GameListScreen {
                 }
                 _ => Nav::Stay,
             },
+            GameList::Settings(g) if (T_GROUP..T_GROUP + 0x10).contains(&tag) => {
+                let group = u32::from(tag - T_GROUP) + 1;
+                Nav::Push(GAME_SETTINGS, Arg(u32::from(g.id()) | group << 8))
+            }
             GameList::Settings(g) => {
                 let sid = SettingId(tag);
                 let Some(d) = g.settings().iter().find(|s| s.id == sid) else { return Nav::Stay };
@@ -263,7 +298,7 @@ impl GameListScreen {
 }
 
 fn kind_for(kind: GameList, arg: Arg) -> GameList {
-    let g = Game::from_id(u8::try_from(arg.0).unwrap_or(0)).unwrap_or(Game::Blocks);
+    let g = Game::from_id(u8::try_from(arg.0 & 0xFF).unwrap_or(0)).unwrap_or(Game::Blocks);
     match kind {
         GameList::Games => GameList::Games,
         GameList::Pause(_) => GameList::Pause(g),
@@ -277,6 +312,7 @@ const VISIBLE: u32 = 5;
 impl<S: Services + ?Sized> Screen<S> for GameListScreen {
     fn enter(&mut self, cx: &mut Cx<'_, S>, arg: Arg) {
         self.kind = kind_for(self.kind, arg);
+        self.group = u8::try_from((arg.0 >> 8) & 0xFF).unwrap_or(0);
         if self.kind == GameList::Games {
             cx.svc.games_request(GamesRequest::Load);
         }

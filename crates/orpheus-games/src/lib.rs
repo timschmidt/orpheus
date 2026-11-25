@@ -1,6 +1,8 @@
 //! orpheus-games: the logic of the Games app (05 §7.13, M14).
 //!
-//! `no_std`, no allocator, no hardware, no floating point. Every game is a
+//! `no_std`, no allocator, no hardware; no floating point but Salvo's
+//! physics (`f32`, only `+ − × ÷` and a Newton square root: the same bits
+//! on every target). Every game is a
 //! pure state machine that the app drives with [`Input`]s (key edges from
 //! the key mapper, already turned into game buttons) and, for real-time
 //! games, fixed logic steps at [`STEP_HZ`] counted by a [`StepClock`] from
@@ -17,6 +19,7 @@
 //! * [`tiles`]: 4096 (GAME-3), sliding number tiles on 4 × 4 … 6 × 6.
 //! * [`blocks`]: Blocks (GAME-1), the falling-tetromino game.
 //! * [`solitaire`]: Solitaire (GAME-2), Klondike.
+//! * `salvo` (feature `salvo`): Salvo (GAME-4/5), the artillery duel.
 //! * [`Session`] and [`Hub`]: the one game in RAM, the scores, and which
 //!   games have a save file; what the app's `GamesService` keeps.
 //!
@@ -28,6 +31,8 @@
 
 pub mod blocks;
 pub mod rng;
+#[cfg(feature = "salvo")]
+pub mod salvo;
 pub mod save;
 pub mod scores;
 pub mod solitaire;
@@ -37,6 +42,8 @@ pub use rng::Rng;
 pub use scores::{Outcome, Record, Scores};
 
 use blocks::Blocks;
+#[cfg(feature = "salvo")]
+use salvo::Salvo;
 use solitaire::Solitaire;
 use tiles::Tiles;
 
@@ -49,7 +56,7 @@ pub mod id {
     pub const BLOCKS: u8 = 1;
     pub const TILES: u8 = 2;
     pub const SOLITAIRE: u8 = 3;
-    /// Reserved: the artillery game (GAME-4/5).
+    /// The artillery game (GAME-4/5).
     pub const SALVO: u8 = 4;
     /// Bit per game in [`super::Hub::saved`]: ids are below 8.
     pub const MAX: u8 = 7;
@@ -184,6 +191,8 @@ pub enum Session {
     Blocks(Blocks),
     Tiles(Tiles),
     Solitaire(Solitaire),
+    #[cfg(feature = "salvo")]
+    Salvo(Salvo),
 }
 
 /// Largest encoded save file ([`Session::encode`]).
@@ -198,6 +207,8 @@ impl Session {
             Session::Blocks(_) => Some(id::BLOCKS),
             Session::Tiles(_) => Some(id::TILES),
             Session::Solitaire(_) => Some(id::SOLITAIRE),
+            #[cfg(feature = "salvo")]
+            Session::Salvo(_) => Some(id::SALVO),
         }
     }
 
@@ -209,6 +220,8 @@ impl Session {
             Session::Blocks(b) => !b.ended(),
             Session::Tiles(t) => !t.over(),
             Session::Solitaire(s) => !s.ended(),
+            #[cfg(feature = "salvo")]
+            Session::Salvo(s) => !s.ended(),
         }
     }
 
@@ -220,6 +233,8 @@ impl Session {
             Session::Blocks(b) => save::seal(buf, id::BLOCKS, blocks::VERSION, |w| b.encode(w)),
             Session::Tiles(t) => save::seal(buf, id::TILES, tiles::VERSION, |w| t.encode(w)),
             Session::Solitaire(s) => save::seal(buf, id::SOLITAIRE, solitaire::VERSION, |w| s.encode(w)),
+            #[cfg(feature = "salvo")]
+            Session::Salvo(s) => save::seal(buf, id::SALVO, salvo::VERSION, |w| s.encode(w)),
         }
     }
 
@@ -227,18 +242,65 @@ impl Session {
     /// another game than `expect` (when given).
     #[must_use]
     pub fn decode(data: &[u8], expect: Option<u8>) -> Option<Session> {
+        let mut s = Session::None;
+        s.decode_into(data, expect).then_some(s)
+    }
+
+    /// [`Session::decode`] into this session, in place: Salvo's 680 bytes
+    /// are never copied through the stack (the firmware's UI task reads a
+    /// save file on a deep path). False, and no game, if damaged.
+    pub fn decode_into(&mut self, data: &[u8], expect: Option<u8>) -> bool {
+        let ok = self.decode_inner(data, expect).is_some();
+        if !ok {
+            *self = Session::None;
+        }
+        ok
+    }
+
+    #[inline(never)]
+    fn decode_inner(&mut self, data: &[u8], expect: Option<u8>) -> Option<()> {
         let (kind, version, payload) = save::open(data)?;
         if expect.is_some_and(|e| e != kind) {
             return None;
         }
         let mut r = save::Reader::new(payload);
-        let s = match (kind, version) {
-            (id::BLOCKS, blocks::VERSION) => Session::Blocks(Blocks::decode(&mut r)?),
-            (id::TILES, tiles::VERSION) => Session::Tiles(Tiles::decode(&mut r)?),
-            (id::SOLITAIRE, solitaire::VERSION) => Session::Solitaire(Solitaire::decode(&mut r)?),
+        #[cfg(feature = "salvo")]
+        if (kind, version) == (id::SALVO, salvo::VERSION) {
+            self.make_salvo();
+            let Session::Salvo(g) = self else { return None };
+            g.decode_from(&mut r)?;
+            return r.done().then_some(());
+        }
+        *self = Session::decode_small(kind, version, &mut r)?;
+        r.done().then_some(())
+    }
+
+    #[inline(never)]
+    fn decode_small(kind: u8, version: u8, r: &mut save::Reader<'_>) -> Option<Session> {
+        Some(match (kind, version) {
+            (id::BLOCKS, blocks::VERSION) => Session::Blocks(Blocks::decode(r)?),
+            (id::TILES, tiles::VERSION) => Session::Tiles(Tiles::decode(r)?),
+            (id::SOLITAIRE, solitaire::VERSION) => Session::Solitaire(Solitaire::decode(r)?),
             _ => return None,
-        };
-        r.done().then_some(s)
+        })
+    }
+
+    /// Make the session a (blank) Salvo game, in place if it is one.
+    #[cfg(feature = "salvo")]
+    #[inline(never)]
+    fn make_salvo(&mut self) {
+        if !matches!(self, Session::Salvo(_)) {
+            *self = Session::Salvo(Salvo::blank(salvo::Config::DEFAULT, 0));
+        }
+    }
+
+    /// A new Salvo game in the session, built in place.
+    #[cfg(feature = "salvo")]
+    pub fn start_salvo(&mut self, cfg: salvo::Config, seed: u64) {
+        self.make_salvo();
+        if let Session::Salvo(g) = self {
+            g.restart(cfg, seed);
+        }
     }
 }
 
@@ -342,16 +404,27 @@ mod tests {
     }
 
     /// RAM of the games on the player (the firmware keeps one `Hub` in a
-    /// static): recorded 2026-11-25, raise only with a reason.
+    /// static): recorded 2026-11-25, raise only with a reason. Salvo
+    /// (GAME-4/5) is the largest: 384 columns of terrain, four tanks,
+    /// three shells; it took the session from 352 to 680 bytes.
     #[test]
     fn sizes() {
         use core::mem::size_of;
         assert!(size_of::<Blocks>() <= 344, "Blocks {}", size_of::<Blocks>());
         assert!(size_of::<Tiles>() <= 248, "Tiles {}", size_of::<Tiles>());
         assert!(size_of::<Solitaire>() <= 344, "Solitaire {}", size_of::<Solitaire>());
-        assert!(size_of::<Session>() <= 352, "Session {}", size_of::<Session>());
         assert!(size_of::<Scores>() <= 488, "Scores {}", size_of::<Scores>());
-        assert!(size_of::<Hub>() <= 848, "Hub {}", size_of::<Hub>());
+        #[cfg(feature = "salvo")]
+        {
+            assert!(size_of::<Salvo>() <= 680, "Salvo {}", size_of::<Salvo>());
+            assert!(size_of::<Session>() <= 680, "Session {}", size_of::<Session>());
+            assert!(size_of::<Hub>() <= 1176, "Hub {}", size_of::<Hub>());
+        }
+        #[cfg(not(feature = "salvo"))]
+        {
+            assert!(size_of::<Session>() <= 352, "Session {}", size_of::<Session>());
+            assert!(size_of::<Hub>() <= 848, "Hub {}", size_of::<Hub>());
+        }
     }
 
     #[test]

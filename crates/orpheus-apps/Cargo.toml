@@ -30,6 +30,10 @@ orpheus-fs = { path = "../orpheus-fs", features = ["std"] }
 # bytes and any static or resident growth costs 256 B of it); the
 # simulator, the browser build and the UI fuzzer turn it on.
 games = ["dep:orpheus-games", "dep:orpheus-fs", "orpheus-ui/menu-key"]
+# Salvo, the artillery game (GAME-4/5): on in the simulator, the browser
+# build and the UI fuzzer; off in the firmware until there is static RAM
+# and stack for it (docs/STATUS.md, GAME-4/5).
+salvo = ["games", "orpheus-games/salvo"]
 
 [lints]
 workspace = true
