@@ -2872,6 +2872,21 @@ Finding: 30-minute `mixed` soak, seed 1, 10.4 min, read in `radio-keys 8
   off: the disk is full); fw fmt, clippy, `xtask build`, `check-resident`,
   `size --check`: pass. Not run: `xtask dev …` (no player), brand/site.
 
+### 2026-11-25 — soak seed 1 on the current build (lead)
+
+* `dev soak mixed --minutes 30 --seed 1`: no reset, no fault; stopped
+  at 16.9 min on (a) the known Pictures-while-playing starvation (a
+  screenshot chunk unanswered 2 s; 1–2 underruns from `serve` during the
+  finding's replays) and (b) "uptime +1,613 ppm against the host clock" —
+  **an oracle artefact**: the sample was stamped before the fault-record
+  and uptime requests, and the starved player answered ~1.6 s late. Fix:
+  the uptime is stamped at the middle of its own request and replies
+  slower than 200 ms are left out of the clock oracle
+  (`regress_late_reply_is_not_clock_drift`). Stack free ≥ 6,392 B, line
+  loads/s mean 1,736, headroom ≥ 931 frames over the run.
+* The Pictures-while-playing starvation waits for the T-8 profiler
+  (worker running).
+
 ### 2026-11-25 — plan: setting → effect coverage (VER-13, owner's request)
 
 * M11 gains VER-13 (07 §5.12): every setting × value × context proven by a

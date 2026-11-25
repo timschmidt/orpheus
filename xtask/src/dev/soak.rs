@@ -958,11 +958,20 @@ impl Counters {
 }
 
 /// One oracle reading.
+/// Longest round trip of an uptime read used by the clock oracle (ms).
+const UPTIME_RTT_MAX_MS: u32 = 200;
+
 #[derive(Clone, Debug, Default)]
 pub struct Sample {
     /// Host time (ms since the run started).
     pub t_ms: u64,
     pub uptime_ms: u32,
+    /// Host time at the middle of the request that read `uptime_ms`, and
+    /// that request's round trip (0, 0: use `t_ms`). A slow reply is left
+    /// out of the clock oracle: stamped before the request, a 1.6 s late
+    /// answer read as +1,613 ppm (soak, 2026-11-25).
+    pub t_up_ms: u64,
+    pub up_rtt_ms: u32,
     pub stack_free: u32,
     pub fault: Option<(u32, String)>,
     pub c: Counters,
@@ -1176,9 +1185,11 @@ impl Oracles {
                 Some(self.stats.battery_mv_min.map_or(s.c.battery_mv, |m| m.min(s.c.battery_mv)));
         }
         let disrupted = s.t_ms <= self.disrupt_until;
-        let first = *self.first.get_or_insert((s.t_ms, s.uptime_ms));
-        let span = s.t_ms.saturating_sub(first.0);
-        if span >= 60_000 && s.uptime_ms >= first.1 {
+        let t_up = if s.up_rtt_ms == 0 && s.t_up_ms == 0 { s.t_ms } else { s.t_up_ms };
+        let timely = s.up_rtt_ms <= UPTIME_RTT_MAX_MS;
+        let first = if timely { *self.first.get_or_insert((t_up, s.uptime_ms)) } else { (u64::MAX, 0) };
+        let span = t_up.saturating_sub(first.0);
+        if timely && first.0 != u64::MAX && span >= 60_000 && s.uptime_ms >= first.1 {
             let dev = f64::from(s.uptime_ms - first.1);
             let ppm = (dev - span as f64) / span as f64 * 1e6;
             self.stats.clock_ppm = Some(ppm);
@@ -2323,13 +2334,17 @@ fn take_sample(rig: &mut dyn Rig, ctx: &mut Ctx) -> Result<Sample> {
         let kind = f.kind().map_or_else(|| format!("kind {:#x}", f.kind), |k| k.name().to_string());
         (f.count, format!("{kind} pc={:#010x} lr={:#010x} {}", f.pc, f.lr, f.text_str()))
     });
+    let t_h0 = rig.wall_ms();
     let h = rig.health()?;
+    let t_h1 = rig.wall_ms();
     let c = rig.counters()?;
     let st = ctx.status(rig);
     let screen = player::top(rig).map(|t| t.name).unwrap_or_default();
     Ok(Sample {
         t_ms,
         uptime_ms: h.uptime_ms,
+        t_up_ms: t_h0 + (t_h1 - t_h0) / 2,
+        up_rtt_ms: u32::try_from(t_h1 - t_h0).unwrap_or(u32::MAX),
         stack_free: h.stack_free,
         fault,
         c,
@@ -3732,6 +3747,24 @@ mod tests {
 
     fn run(o: &mut Oracles, v: &[Sample]) -> Vec<Finding> {
         v.iter().flat_map(|s| o.check(s, 0)).collect()
+    }
+
+    /// Regression (2026-11-25): a sample stamped before a request the
+    /// starved player answered 1.6 s late read as +1,613 ppm. The uptime
+    /// is stamped at the request's middle and slow replies are left out.
+    #[test]
+    fn regress_late_reply_is_not_clock_drift() {
+        let mut o = Oracles::new(budget(), 10_000, None);
+        let mut v: Vec<Sample> = (0..100).map(|i| good(i * 10)).collect();
+        // A starved reply: the player answered 1.6 s after the stamp.
+        let mut late = good(1000);
+        late.uptime_ms += 1600;
+        late.t_up_ms = 1000 * 1000 + 800;
+        late.up_rtt_ms = 1600;
+        v.push(late);
+        let f = run(&mut o, &v);
+        assert!(!f.iter().any(|f| f.kind == Kind::Clock), "{f:?}");
+        assert!(o.stats.clock_ppm.is_some_and(|p| p.abs() < 50.0));
     }
 
     #[test]
