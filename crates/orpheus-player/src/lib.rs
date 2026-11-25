@@ -548,6 +548,23 @@ impl Player {
         self.cur.map_or(0, |c| ms * u64::from(c.rate) / 1000)
     }
 
+    /// [`Event::Position`] (what `handle` does with it): the decoder's
+    /// position; at the end of an A–B loop a seek back to A. A function of
+    /// its own: the playback loop calls it for every block (AU-PERF), and
+    /// on the player only this much code is then touched per block, not
+    /// `handle`'s.
+    #[inline(never)]
+    pub fn position(&mut self, frame: u64, out: &mut Actions) {
+        let Some(c) = &mut self.cur else { return };
+        c.frame = frame;
+        if let (Some(a), Some(b)) = self.ab
+            && frame >= b
+        {
+            c.frame = a;
+            out.push(Action::Seek { frame: a });
+        }
+    }
+
     /// Handle one event; the actions to carry out (in order) are appended
     /// to `out`.
     pub fn handle(&mut self, ev: Event, store: &mut dyn PlayerStore, out: &mut Actions) {
@@ -576,16 +593,7 @@ impl Player {
                     self.advance(true, store, out);
                 }
             }
-            Event::Position { frame } => {
-                let Some(c) = &mut self.cur else { return };
-                c.frame = frame;
-                if let (Some(a), Some(b)) = self.ab
-                    && frame >= b
-                {
-                    c.frame = a;
-                    out.push(Action::Seek { frame: a });
-                }
-            }
+            Event::Position { frame } => self.position(frame, out),
             Event::ReaderAtEnd => {
                 if self.prefetch.is_none()
                     && matches!(self.state, State::Playing | State::Paused)

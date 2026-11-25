@@ -37,7 +37,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use object::{Object, ObjectSection, SectionKind};
 use orpheus_pager::{
-    LINE_SIZE, MAX_CODE_PAGES, MAX_RO_PAGES, PAGE_SIZE, RO_GROUP_SIZE, code_page_va, ro_page_va,
+    ALIAS_BLOCK, CODE_WIN, LINE_SIZE, MAX_CODE_PAGES, MAX_RO_PAGES, PAGE_SIZE, RO_GROUP_SIZE, code_page_va,
+    ro_page_va,
 };
 use orpheus_proto::hash::{crc32, sum32};
 use orpheus_proto::slot::{LAYOUT_DUAL, LAYOUT_FULL, SlotHeader};
@@ -366,6 +367,59 @@ impl Plan {
     }
 }
 
+/// Physical lines of the code cache: it is direct-mapped, a line's place is
+/// its offset in the code window modulo one alias block (02 §3.1).
+const PHYS_LINES: u32 = ALIAS_BLOCK / LINE_SIZE;
+
+/// The physical lines a placed cluster occupies, in order (a cluster longer
+/// than the cache repeats some).
+fn phys_lines(c: &ClusterInfo) -> Vec<u32> {
+    let first = (c.va - CODE_WIN) / LINE_SIZE;
+    let last = (c.va + c.bytes.max(1) - 1 - CODE_WIN) / LINE_SIZE;
+    (first..=last).map(|l| l % PHYS_LINES).collect()
+}
+
+/// `fits_with` (hot.toml): a cluster and the clusters it runs with must
+/// not share a physical line (AU-PERF: lines that share one evict each
+/// other on every pass). One warning per offending pair or cluster.
+pub fn fit_warnings(hot: &[Cluster], placed: &[ClusterInfo]) -> Vec<String> {
+    let by_name = |n: &str| placed.iter().find(|c| c.name == n);
+    let mut out = Vec::new();
+    for h in hot.iter().filter(|h| !h.fits_with.is_empty()) {
+        let Some(me) = by_name(&h.name) else { continue };
+        let mut group = vec![me];
+        for n in &h.fits_with {
+            match by_name(n) {
+                Some(c) => group.push(c),
+                None => out.push(format!("cluster {}: fits_with `{n}` is not a placed cluster", h.name)),
+            }
+        }
+        for (i, a) in group.iter().enumerate() {
+            let la = phys_lines(a);
+            let mut uniq = la.clone();
+            uniq.sort_unstable();
+            uniq.dedup();
+            if i == 0 && uniq.len() < la.len() {
+                out.push(format!(
+                    "cluster {}: {} lines, more than the {PHYS_LINES} of the cache",
+                    a.name,
+                    la.len()
+                ));
+            }
+            for b in &group[i + 1..] {
+                let shared = phys_lines(b).iter().filter(|l| la.contains(l)).count();
+                if shared > 0 {
+                    out.push(format!(
+                        "clusters {} and {} share {shared} physical line(s) of the code cache ({}: fits_with)",
+                        a.name, b.name, h.name
+                    ));
+                }
+            }
+        }
+    }
+    out
+}
+
 fn align_up(v: u32, a: u32) -> u32 {
     let a = a.max(1);
     v.div_ceil(a) * a
@@ -654,6 +708,7 @@ pub fn run(o: &Options) -> Result<Layout> {
     }
     let crates1 = crates(&g1);
     let plan = pack(&g1, &places, &hot, &crates1)?;
+    warnings.extend(fit_warnings(&hot, &plan.clusters));
 
     // Pass 2.
     std::fs::write(&a.script, script(&g1, &plan, &script_dir, &o.bin))?;
@@ -946,6 +1001,46 @@ symbols = ["*planted"]
         assert_eq!(w.len(), 2, "{w:?}");
     }
 
+    /// `fits_with`: clusters that run together must not share a physical
+    /// line of the direct-mapped code cache (AU-PERF: the old `play-block`
+    /// was 77 lines, and its hot lines 32 KiB apart evicted each other).
+    #[test]
+    fn regress_clusters_that_run_together_share_no_cache_line() {
+        let ci = |name: &str, line: u32, lines: u32| ClusterInfo {
+            name: name.into(),
+            sections: 1,
+            va: CODE_WIN + line * LINE_SIZE,
+            bytes: lines * LINE_SIZE - 10,
+        };
+        let cl = |name: &str, with: &[&str]| Cluster {
+            name: name.into(),
+            bins: vec![],
+            symbols: vec![],
+            sections: vec![],
+            fits_with: with.iter().map(|s| (*s).to_string()).collect(),
+        };
+        let hot = [
+            cl("dec", &["block", "fill"]),
+            cl("block", &[]),
+            cl("fill", &[]),
+            cl("other", &["block", "fill"]),
+        ];
+        // 11 + 15 + 6 = 32 lines from line 71: every physical line once;
+        // `other` 32 lines on lands on `dec`'s lines only.
+        let ok = [ci("dec", 71, 11), ci("block", 82, 15), ci("fill", 97, 6), ci("other", 103, 11)];
+        assert_eq!(fit_warnings(&hot, &ok), Vec::<String>::new());
+        // One line more in `block` pushes `fill` onto `dec`'s first line,
+        // and `other` onto `block`'s.
+        let bad = [ci("dec", 71, 11), ci("block", 82, 16), ci("fill", 98, 6), ci("other", 104, 11)];
+        let w = fit_warnings(&hot, &bad);
+        assert_eq!(w.len(), 2, "{w:?}");
+        assert!(w[0].contains("dec and fill share 1"), "{w:?}");
+        assert!(w[1].contains("other and block share 1"), "{w:?}");
+        // A cluster longer than the cache, and a name that is not placed.
+        let w = fit_warnings(&[cl("big", &["gone"])], &[ci("big", 0, 40)]);
+        assert_eq!(w.len(), 2, "{w:?}");
+    }
+
     #[test]
     fn packing_and_script() {
         let g = sample();
@@ -957,6 +1052,7 @@ symbols = ["*planted"]
             bins: vec![],
             symbols: vec!["app::hot_a".into(), "app::hot_b".into()],
             sections: vec![],
+            fits_with: vec![],
         }];
         let crates = crates(&g);
         let plan = pack(&g, &p, &hot, &crates).unwrap();

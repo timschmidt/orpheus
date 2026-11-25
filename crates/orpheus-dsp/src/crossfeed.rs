@@ -123,6 +123,12 @@ impl Crossfeed {
         self.ramp.ramping() || self.ramp.cur[0] != 0
     }
 
+    /// No ramp moves: [`Self::is_active`] stays as it is until a setter.
+    #[must_use]
+    pub fn settled(&self) -> bool {
+        !self.ramp.ramping()
+    }
+
     /// Stereo only (`buf` interleaved L, R).
     pub fn process(&mut self, buf: &mut [i32]) {
         let (mut s1, mut y1) = (self.s1, self.y1);

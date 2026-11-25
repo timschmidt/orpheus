@@ -75,6 +75,8 @@ then passed with it).
 | Underruns inside a half not counted (soak: headroom −13 frames, `underruns=0`) | 11-25 | this commit | `orpheus-audio/tests/regress_pcm_headroom.rs::regress_overrun_inside_half_uncounted`; `tests/regress/soak/mixed-ring-seed1-7.soak` | new |
 | Headroom read one half low when the half interrupt fell between its two reads | 11-25 | this commit | `regress_pcm_headroom.rs::regress_headroom_irq_between_reads` | new, R |
 | Soak finding hid that a low-water covers the time since the previous sample (an earlier action) | 11-25 | this commit | `xtask` `dev::soak::tests::regress_ring_finding_names_the_span_it_covers` | new |
+| AU-PERF: playback's per-block lines evicted each other (77-line `play-block`; hot lines 32 KiB apart share a line of the direct-mapped cache): ~3,000 line loads/s with Pictures open | 11-25 | AU-PERF | `xtask` `pagelink::tests::regress_clusters_that_run_together_share_no_cache_line` (the `fits_with` check `pagelink` runs on every build); `dev prof --faults … --only "browse pictures"` | new (device numbers: lead) |
+| AU-PERF: the software I2C's "100 kHz" ran at ≈ 30 kHz (`spin_us` spins ≈ 3× as long), the step counter's samples ≈ 8 % of the CPU | 11-25 | AU-PERF | `steps status` `bus_us_avg` ≈ 1,000 µs with nothing playing (was ≈ 3,000); U-I2C-1 | device (HAL timing) |
 
 ## Test-infrastructure fixes (no `regress_` test needed)
 

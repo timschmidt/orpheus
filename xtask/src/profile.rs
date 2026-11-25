@@ -1110,6 +1110,7 @@ mod tests {
             bins: vec![],
             symbols: vec!["orpheus_codec_opus::celt::*".into()],
             sections: vec![],
+            fits_with: vec![],
         };
         t.assign_owners(&[c]);
         t
@@ -1293,12 +1294,14 @@ mod tests {
             bins: vec!["firmware".into()],
             symbols: vec!["firmware::ui::row".into()],
             sections: vec![],
+            fits_with: vec![],
         };
         let celt = Cluster {
             name: "opus-celt".into(),
             bins: vec![],
             symbols: vec!["orpheus_codec_opus::celt::*".into()],
             sections: vec![],
+            fits_with: vec![],
         };
         t.assign_owners(&[celt, mine]);
         let p = fault_prof(&t);

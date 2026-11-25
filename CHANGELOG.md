@@ -83,7 +83,9 @@ replaced).
 - Music › Shuffle all restarted the player on a large library (the
   watchdog); USB could go deaf until a restart (USB-W1); a test request
   left in memory could make later starts return to USB recovery after
-  five minutes.
+  five minutes; playback spent most of the processor on reloading its own
+  code from flash while the interface was busy (e.g. browsing Pictures),
+  and the step counter's sensor bus ran at a third of its intended speed.
 
 ### Known issues
 

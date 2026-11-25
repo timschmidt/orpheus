@@ -7,7 +7,10 @@
 # boundary. A cluster that fits the cache (24 lines or less, leaving 8 for
 # everything else) runs fault-free after warm-up. Everything not in a
 # cluster follows, grouped by crate in link order. `bins` limits a cluster
-# to some binaries (all when absent). The fault profiler (WP-T-8,
+# to some binaries (all when absent). The cache is direct-mapped (a line's
+# place is its address modulo 32 KiB, 02 §3.1): `fits_with` names clusters
+# that run with this one, and pagelink warns when any two of them share a
+# physical line. The fault profiler (WP-T-8,
 # `xtask dev prof --update-hot`) will regenerate the firmware clusters.
 #
 # [[cluster]]
@@ -30,7 +33,12 @@ symbols = [
     "firmware::audio::prepare::*",
     "firmware::audio::inspect_head",
     "orpheus_codecs::inspect",
-    "*orpheus_audio::probe::*",
+    # The probe, but not the MPEG header parse: that runs for every MP3
+    # frame (`Mp3Decoder::find`) and is in `mp3-frame`.
+    "orpheus_audio::probe::probe",
+    "*orpheus_audio::probe::probe::*",
+    "orpheus_audio::probe::find_mpeg_sync",
+    "orpheus_audio::probe::id3v2_len",
     "orpheus_codec_mp3::parse_head",
     "orpheus_codec_mp3::parse_vbr_tag",
     "orpheus_codec_flac::parse_head",
@@ -176,60 +184,35 @@ symbols = [
     "orpheus_codec_opus::silk::*",
 ]
 
-# The per-block path of playback through the player (MP3 measured on
-# `2e9bf3a4`: about 2,700 line loads/s, 18 loads per decode call, close to
-# the edge). Packed here so that its place no longer moves with unrelated
-# code: on `33b9db6e` (PWR-5, ~8 KiB of new code before them in link
-# order) `play_file` and `AnyDecoder::decode` moved by 8-13 KiB and
-# `playdir` of a 48 kHz MP3 thrashed into the watchdog with the logger off
-# (2026-11-24). `AnyDecoder::decode` holds the MP3 frame code inlined
-# (about 8 lines per frame, paged although `orpheus_codec_mp3::*` is
-# resident). The order of the five groups was chosen offline from the
-# call sites into the per-block targets (decoder, PCM push, player
-# update, refill, card read): about 40 hot lines for 32 physical ones,
-# 8 sharing a line in this order (11 with the small functions first;
-# about 27 on `2e9bf3a4` and 30 on `33b9db6e`, unpacked). `play_file`,
-# edited most often, is last: its changes move nothing else here.
-[[cluster]]
-name = "play-block"
-bins = ["firmware"]
-symbols = [
-    "orpheus_codecs::AnyDecoder>::decode",
-    "firmware::audio::__audio_task::__audio_task_inner_function::{closure#0}",
-    # A ring refill: the card read path.
-    "firmware::audio::Ring>::fill_in::*",
-    "orpheus_fs::volume::Volume<yoton_bsp::card::Card>>::read::*",
-    "orpheus_fs::volume::Volume<yoton_bsp::card::Card>>::cluster_at::*",
-    "orpheus_fs::volume::Volume<yoton_bsp::card::Card>>::fat_get::*",
-    "orpheus_fs::cache::Cache>::load::<yoton_bsp::card::Card>::*",
-    "yoton_bsp::card::Card as orpheus_fs::block::BlockDevice>::read::*",
-    "atj2157_hal::sd::Sd>::read::*",
-    "atj2157_hal::sd::Sd>::data_command::*",
-    "atj2157_hal::sd::Sd>::command::*",
-    "atj2157_hal::sd::Sd>::wait_ts::*",
-    "atj2157_hal::sd::Sd>::check_state",
-    # Every DAC half and every block.
-    "embassy_executor::raw::TaskStorage<firmware::audio::__audio_task::*>::poll",
-    "firmware::audio::PcmOut>::push::*",
-    "firmware::audio::PcmOut>::headroom",
-    # The look at the DMA before every block and at every half (VER-12).
-    "firmware::audio::PcmOut>::look",
-    "firmware::audio::PcmOut>::reading",
-    "firmware::audio::PcmOut>::account",
-    "orpheus_audio::pcm::Book>::look",
-    "firmware::audio::note",
-    "firmware::media::player_update::<firmware::audio::play_file::*",
-    "firmware::media::Server>::feed",
-    "orpheus_player::Player>::handle",
-    "firmware::audio::play_file::{closure#0}",
-]
+# Playback, every block (AU-PERF, 2026-11-25). Measured before on the
+# player (T-8 profiler, MP3 48 kHz + Pictures browsing, soak
+# `mixed-ring-seed1-7` "browse pictures"): ~3,000 line loads/s, 0 % idle;
+# the old `play-block` cluster was 77 lines (the audio task's and
+# `play_file`'s 37 KB and 12 KB state machines, `AnyDecoder::decode` with
+# every codec's frame code inlined), and the per-block lines evicted each
+# other: the code cache is direct-mapped (a line's place is VA bits 10-14,
+# 02 §3.1), so hot lines 32 KiB apart share one physical line.
+#
+# Now the block path is small named functions (fw/firmware/src/audio.rs
+# "the block path") and each codec's `decode` is a function of its own.
+# Four clusters in this order, consecutive (after `steps-sample`):
+# `mp3-frame` + `play-block` + `play-fill` fit the 32 physical lines
+# together (no two of their lines share one: 11 + 15 + 6 as built);
+# `flac-frame` follows and lands on `mp3-frame`'s physical lines (only one
+# decoder runs), clear of `play-block` and `play-fill` while it is no
+# longer than 32 - (play-block + play-fill) lines. `fits_with` makes
+# `pagelink` warn when an edit breaks that (`cargo xtask build` prints the
+# warning and each cluster's lines).
 
 # Step counting (SENS-1): the code that runs 25 times a second while steps
 # are counted, also during playback: the sensor task's poll, the sample
 # (one I2C burst read into the batch and the trace ring). Packed so that
 # it takes one or two lines of the cache instead of touching scattered
 # lines of the task, the BSP and the HAL; the detector and the day history
-# run once a second (`firmware::sensor::batch`, not here).
+# run once a second (`firmware::sensor::batch`, not here). Placed right
+# before `mp3-frame` (AU-PERF): its lines then share physical lines with
+# the end of `play-fill` (32 lines on), the playback code that runs least
+# often, instead of with the per-block code.
 [[cluster]]
 name = "steps-sample"
 bins = ["firmware"]
@@ -241,6 +224,92 @@ symbols = [
     "yoton_bsp::accel::Accel>::read",
     "yoton_bsp::accel::Accel>::regs",
     "atj2157_hal::i2c_soft::SoftI2c>::*",
+]
+
+# The MP3 decoder per frame: the frame code (paged, resident.toml), the
+# sync search and header parse, the stream reads (through `dyn
+# ByteSource`).
+[[cluster]]
+name = "mp3-frame"
+bins = ["firmware"]
+fits_with = ["play-block", "play-fill"]
+symbols = [
+    "<orpheus_codec_mp3::Mp3Decoder as orpheus_audio::decoder::Decoder>::decode",
+    "orpheus_codec_mp3::Mp3Decoder>::find",
+    "orpheus_audio::probe::MpegHeader>::parse",
+    "orpheus_audio::probe::MpegHeader>::frame_len",
+    "<orpheus_audio::ring::StreamRing as orpheus_audio::source::ByteSource>::*",
+    "<firmware::audio::Ring as orpheus_audio::source::ByteSource>::*",
+]
+
+# Every block and every DAC half: the task's wake-up through the player's
+# futures (each a small poll function of its own, `Apart`), the block
+# (`play_block`: decode, DSP and PCM ring, the looks at the DMA, the
+# position, the refill and chores checks), the wait for room at a half.
+# The dispatcher `AnyDecoder::decode` is inlined into `decode_timed`. The
+# two largest state machines (`run_player`, `play_file`), of which only
+# the resumption runs per wake-up, come last.
+[[cluster]]
+name = "play-block"
+bins = ["firmware"]
+symbols = [
+    "embassy_executor::raw::TaskStorage<firmware::audio::__audio_task::*>::poll",
+    "firmware::audio::Apart<firmware::audio::player_request::*>::poll",
+    "firmware::audio::Apart<firmware::audio::play_block::*>::poll",
+    "firmware::audio::decode_timed",
+    "orpheus_codecs::AnyDecoder>::decode",
+    "firmware::audio::begin_block",
+    "firmware::audio::after_block",
+    "firmware::audio::chore_due",
+    "firmware::audio::reader_check",
+    "firmware::audio::Room as *>::poll",
+    "embassy_sync::waitqueue::atomic_waker::AtomicWaker>::register",
+    "firmware::audio::PcmOut>::wrote_half",
+    "firmware::audio::PcmOut>::after_half",
+    "firmware::audio::PcmOut>::look",
+    "firmware::audio::PcmOut>::headroom",
+    "firmware::audio::PcmOut>::reading",
+    "firmware::audio::PcmOut>::account",
+    "orpheus_audio::pcm::Book>::*",
+    "firmware::audio::note",
+    "firmware::media::Server>::position",
+    "orpheus_player::Player>::position",
+    "firmware::media::Flow>::merge",
+    "firmware::media::player_update::<firmware::audio::*",
+    "firmware::audio::Apart<firmware::audio::run_player::*>::poll",
+    "firmware::audio::Apart<firmware::audio::play_file::*>::poll",
+    "firmware::audio::play_file::{closure#0}",
+]
+
+# A stream ring refill (a few times a second for MP3, about every other
+# half for FLAC): the card read path.
+[[cluster]]
+name = "play-fill"
+bins = ["firmware"]
+symbols = [
+    "firmware::audio::Ring>::fill_in::*",
+    "orpheus_fs::volume::Volume<yoton_bsp::card::Card>>::read::*",
+    "orpheus_fs::volume::Volume<yoton_bsp::card::Card>>::cluster_at::*",
+    "orpheus_fs::volume::Volume<yoton_bsp::card::Card>>::fat_get::*",
+    "orpheus_fs::cache::Cache>::load::<yoton_bsp::card::Card>::*",
+    "orpheus_fs::cache::Cache>::touch",
+    "yoton_bsp::card::Card as orpheus_fs::block::BlockDevice>::read::*",
+    "atj2157_hal::sd::Sd>::read::*",
+    "atj2157_hal::sd::Sd>::data_command::*",
+    "atj2157_hal::sd::Sd>::command::*",
+    "atj2157_hal::sd::Sd>::wait_ts::*",
+    "atj2157_hal::sd::Sd>::check_state",
+]
+
+# The FLAC decoder per frame (see above: on `mp3-frame`'s physical lines).
+[[cluster]]
+name = "flac-frame"
+bins = ["firmware"]
+fits_with = ["play-block", "play-fill"]
+symbols = [
+    "<orpheus_codec_flac::FlacDecoder as orpheus_audio::decoder::Decoder>::decode",
+    "orpheus_codec_flac::FlacDecoder>::sync",
+    "orpheus_codec_flac::frame::*",
 ]
 
 # The paged toy: three functions spread over the generated code, packed

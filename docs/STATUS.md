@@ -22,6 +22,7 @@ of every session. Newest entries first in §3.
 | T-3, PG-1 | done | pagelink, PagerCore, check-resident; demand paging on the player (8 KiB pages, 1 KiB lines) |
 | T-6 | started | Rust NOR payload `fw/payloads/norprog` (erase/program, full-layout guard); ymon and nordump still the reference repo's C payloads. **Stage 2 slot fallback built and host-tested, not yet installed** (`orpheus_proto::boot::decide`; 964 B; lead's `install-stage2` + crash test: session entry 2026-11-24 "T-6 (stage2)") |
 | T-8 | **built (host + firmware), not yet run on the player** | PC sampler (T2, level 0) and pager fault log into the 2 KiB profiler block at `0x307000` (SRAM3), `prof pc\|faults on\|burst`, `prof off\|status`; `cargo xtask dev prof --pc\|--faults S [--during "soak --replay F"] [--only TEXT] [--update-hot NAME]`, `cargo xtask prof DIR`; reports in `target/orpheus/prof/<stamp>/`. Resident +656 B. User/lead check: U-TMR-1 and the Pictures-while-playing profile (session entry 2026-11-25 "T-8") |
+| AU-PERF | **built (host + firmware), not yet run on the player** | Playback per block out of the large async functions (`play_block` + small named functions, `Apart` poll boundaries, `orpheus_audio::pcm::Feeder`), codecs' `decode` not inlined, DSP stage mask kept, clusters `mp3-frame` 11 + `play-block` 15 + `play-fill` 6 = 32 lines (no shared physical line; `fits_with` check), 53 % of the measured fault loads in that set or gone; stack on the playback wake-up 6.6 → 1.5 KB; soft I2C timed on T0 (true 100 kHz, was ≈ 30 kHz: sample ≈ 2.7 → 1.0 ms), `acc bus`. Lead: profiles and checks in the session entry 2026-11-25 "AU-PERF"; U-I2C-1 |
 | LAY-1 | done (device) | Full layout installed (`xtask dev install-full --i-have-a-backup`), layout-aware `stage`, `restore vendor [--verify]`. Unifont pack in NOR not done (the UI's fonts are built in) |
 | LCD-1, INPUT-1, PWR-2, AU-0 | done pending user checks 7, 8, 9, 10 | |
 | SD-1, FM-0, USB-1, USB-3, PWR-1 | done | |
@@ -62,6 +63,138 @@ of every session. Newest entries first in §3.
 | USB-W1 (bug) | **fixed and self-recovering (host-tested, built); not yet run on the player** | Root cause: the SETUP read was not cancel-safe (embassy-usb drops it on bus events; the interrupt stayed masked for good) and late stages landed on the next transfer. Drop-safe driver, liveness recovery, watchdog only when recovery cannot help, counters in `STATS` 24–30, soak logs self-recoveries, `xtask dev usb-cancel`. 06 §2.6; user check 28 |
 
 ## 3. Session log
+
+### 2026-11-25 — AU-PERF: compact playback block path, I2C bus timing (worker, no hardware)
+
+Problem (lead, T-8 profiles on the player, MP3 48 kHz from a shuffled
+queue while Pictures is browsed, soak `mixed-ring-seed1-7` "browse
+pictures"): ~3,000 NOR line loads/s, 0 % idle, thread mode starved,
+underruns from slow refills; faults dominated by the playback path; the
+`play-block` cluster 77 lines; 7.9 % of the time in `SoftI2c`.
+
+* **Why it thrashed** (from the capture's own ELF, build `d857bbc5`, fault
+  addresses through `llvm-symbolizer --inlining`): the code cache is
+  **direct-mapped** (a line's place is its VA modulo 32 KiB, 02 §3.1). The
+  card task's 37 KB state machine resumed every DAC half through five of
+  its lines, two of them 32 KiB apart (the same physical line);
+  `play_file`'s per-frame push loop (inlined `PcmOut::push`, 12 KB
+  function) shared physical lines with the MP3 frame code inlined in
+  `AnyDecoder::decode`; `Chain::active` (656 B, paged, 2 lines) was
+  reloaded on every 256-frame DSP piece (≈ 375 loads/s alone). Also
+  found: the card task's poll function had a **5,840 B stack frame**,
+  taken on every wake-up.
+* **Block path** (`fw/firmware/src/audio.rs` "the block path"):
+  `play_block` (one pass: request poll, decode, DSP + PCM ring, refill,
+  chores, logs) and the rare paths `head`, `pause`, `chores` are futures
+  polled through `Apart` (a wrapper whose `poll` is `#[inline(never)]`,
+  so each state machine is a function of its own); per-block work is in
+  non-async functions with stable names: `decode_timed`, `begin_block`,
+  `after_block`, `chore_due`, `reader_check`, `PcmOut::{put, wrote_half,
+  after_half}` and `Room` (the wait for a half). The per-frame push is no
+  longer async: `orpheus_audio::pcm::Feeder` (host crate) writes a block
+  piece by piece and stops after a frame that finished a half; the loop
+  awaits only there. The task is `audio` → `Apart(start)`, then
+  `Apart(idle)` / `Apart(player_request)` in turn (the idle loop moved
+  out unchanged: player requests and card hand-overs return to the task);
+  `player_request` → `Apart(request_flow)`, `Apart(run_player)`;
+  `play_item`'s rare awaits apart. Order of every step kept (two
+  equivalences checked by host tests below; the rest by reading).
+* **Codecs**: every `Decoder::decode` (MP3, FLAC, WAV, Speex, Vorbis) is
+  `#[inline(never)]`: `AnyDecoder::decode` is a dispatcher (inlined into
+  `decode_timed`). The MP3 one (8,722 B) is excluded from residency
+  (`resident.toml`: it was paged inside `AnyDecoder::decode` before).
+* **DSP**: `Chain` keeps the stage mask while nothing can change it but a
+  setter (no ramp moves, the limiter's bit not decided by its envelope);
+  every setter clears it; `debug_assert` in `run` compares it with
+  `active()` on every block of every host test. The firmware calls the
+  resident `Chain::process` again (`process_i16` had been inlined into
+  paged code).
+* **Player**: `Player::position` (the `Position` arm of `handle`, now
+  called by it) and `Server::position` (firmware): the per-block position
+  without `feed`'s sleep-timer checks and `Flow::of`.
+* **hot.toml**: `steps-sample` (4 lines), `mp3-frame` (11: MP3 decode,
+  `find`, `MpegHeader::parse`/`frame_len`, the ring's `ByteSource`),
+  `play-block` (15: the wake-up's poll functions and the block path),
+  `play-fill` (6: the card read path), `flac-frame` (9). `mp3-frame` +
+  `play-block` + `play-fill` = 32 lines, each physical line once;
+  `flac-frame` lands on `mp3-frame`'s lines, `steps-sample` on the end of
+  `play-fill` (the least frequent). New cluster key `fits_with`: pagelink
+  warns when clusters that run together share a physical line (host test
+  `regress_clusters_that_run_together_share_no_cache_line`). The probe
+  patterns of `gapless-join` no longer take `MpegHeader::parse`.
+* **Predicted cost per block** (MP3, from the layout): a DAC half (32 ms,
+  1.33 MP3 frames) touches at most the 11 + 15 lines of `mp3-frame` and
+  `play-block`, plus `play-fill`'s 6 on a refill (one half in six at
+  320 kbit/s), all on distinct physical lines: no self-eviction. Worst
+  case (the UI evicted everything between halves) ≤ 26 loads per half ≈
+  810 loads/s + ≈ 30/s for refills; best case ~0. **Coverage of the
+  measured fault set** (`20261125-092936`, 130 logged faults, 109 loads,
+  mapped by function and inlined source line onto the new code): 11.9 %
+  of the loads gone (`Chain::active`; `Flow::of` re-maps), 15.6 % now in
+  `mp3-frame`, 23.9 % in `play-block`, 0.9 % `play-fill`, 0.9 %
+  `steps-sample`: **53 % of the loads are now in the conflict-free set or
+  eliminated**; 4.6 % `View` (still in `opus-frame`), 42 % other (UI
+  tasks, the card task's pictures/library code for the Pictures app,
+  settings lookups, USB, Bluetooth). Note: `cargo xtask prof DIR`
+  symbolises a saved capture against the *current* `layout.json`; after a
+  rebuild the old addresses land on unrelated code, so the coverage above
+  was computed against the capture's own ELF (main checkout
+  `target/orpheus/firmware.elf`, scratch script, not committed).
+* **I2C** (`atj2157_hal::i2c_soft`, `delay`): who — the `sensor` task's
+  25 Hz sample (Count in background "While on" is the default), one
+  `write_read` of 1 + 6 bytes = 181 half periods (81 SCL clocks) =
+  4,525 half periods/s. Why 8 %: each half was `delay::spin_us(5)`, and
+  `spin_us` spins about **3× as long** as asked (`cortex_m::asm::delay(n)`
+  0.7.10 runs `n` loops of 3–4 cycles; it is given `core_hz / 1 MHz × us`):
+  ≈ 15 µs a half, ≈ 2.7 ms of bus per sample, ≈ 68 ms/s ≈ 7 % plus the
+  GPIO overhead — the PC profile's 7.9 %. The "100 kHz" bus ran at ≈ 30 kHz
+  (01 §9 corrected). Now each half is timed on T0 (`delay::wait_us`: at
+  least `half_us`, bounded so a stopped counter cannot hang; interrupt
+  time counts towards it) and the clock-stretch limit is 1 ms on T0:
+  ≈ 0.9–1.0 ms a sample, ≈ 2.5 % (predicted). The accelerometer has no
+  known FIFO (U-ACC-1), the step detector needs its 25 Hz, so neither the
+  rate nor bursts change. `acc bus <µs>` sets the half period until reboot
+  (`acc bus 15` ≈ the old timing, `acc bus 2` ≈ 1.1 %: both chips are
+  400 kHz parts and the stock firmware drives the accelerometer faster,
+  fm-i2c-imu.md §1.3); `steps status` reports `bus_us_avg`, `bus_us_max`,
+  `bus_load_cpct` (counters in SRAM0: the SRAM3 blocks are full). The
+  tuner's bus (same driver, `fm`) also runs at a true 100 kHz now.
+  `spin_us` itself is unchanged (its callers were proven with the longer
+  waits); its doc says what it does. New unknown U-I2C-1.
+* **Host tests** (4 new): `orpheus_audio::pcm` feeder = the straight loop
+  for any wait pattern, piece size, channels, decimation, odd lengths;
+  `orpheus_dsp` `settled_stage_mask_follows_every_change` (1,500 random
+  setter/process steps; each setter's invalidation removed in turn was
+  caught, except `set_format`/`reset` whose clearing is implied); `Player`
+  `position_is_what_handle_does_with_a_position` (A–B included); xtask
+  `regress_clusters_that_run_together_share_no_cache_line`.
+* **Numbers**: resident 80,012 → 80,068 B (+56: `Chain::process` +40 for
+  the kept mask, `.rodata.cst16` +16); `.bss` 124,040 → 123,808 B (card
+  task future 7,592 → 7,312 B; +12 B bus counters); paged code 857,962 →
+  857,864 B, 106 code + 18 rodata pages, slot 1,101,824 B (unchanged).
+  **Stack on the playback wake-up** (prologue frames, RT on top of thread
+  mode): 6,620 B (task 40 + card task 5,840 + `play_file` 36 +
+  `AnyDecoder::decode` 704) → about 1,500 B (36 + 128 + 376 + 8 + 36 + 200
+  + 56 + MP3 decode 664); the idle loop's frame is 2,032 B.
+* **Gate**: host `fmt --check`, `clippy --workspace --all-targets -D
+  warnings`, `cargo test --workspace`; fw `fmt --check`, `clippy
+  --workspace -D warnings`; `xtask build` (payloads too), `check-resident`,
+  `size --check`: pass (`cargo test --workspace`: 1,097 passed). Not run:
+  any `cargo xtask dev …` (the lead owns the player), HIL.
+* **For the lead (player)**, after staging this build:
+  1. `cargo xtask dev prof --faults 120 --during "soak --replay tests/regress/soak/mixed-ring-seed1-7.soak" --only "browse pictures"`:
+     line loads/s well below 2,981 (expected ≈ 1,300–2,000: the playback
+     part ≤ ~800, the UI's unchanged), no `Chain::active`, `mp3-frame`/
+     `play-block`/`play-fill` within budget in the cluster report.
+  2. The same with `--pc 120`: idle above 0 %, handler-mode share below
+     the 62 % (expected ≈ 35–45 %), `SoftI2c` from 7.9 % to ≈ 2–3 %,
+     no `pcm: head … ub=fill` lines in `log.txt`.
+  3. With nothing playing: `dev cmd 'steps status'` → `bus_us_avg` ≈
+     1,000–1,100, `i2c_errors` unchanged; `dev cmd 'acc read'` ≈ 1,000 mg
+     at rest. Optional (U-I2C-1): `acc bus 15` (≈ 3,000 µs, the old cost),
+     `acc bus 2` (≈ 500 µs; then watch `i2c_errors` for a minute).
+  4. `playdir` of an MP3 and a FLAC folder: `status` underruns 0, `dec:`
+     line loads per track lower; the radio once (`fm`), its bus is faster.
 
 ### 2026-11-25 — plan: M18 jack tools (owner's request)
 

@@ -469,6 +469,10 @@ impl<'a> Decoder<'a> for Mp3Decoder<'a> {
         Ok((d, h.info))
     }
 
+    // A function of its own, not inlined into `AnyDecoder::decode`: on the
+    // player its code is then one contiguous run that `hot.toml` packs
+    // (AU-PERF; inlined, the codecs' frame code was interleaved there).
+    #[inline(never)]
     fn decode(&mut self, src: &mut dyn ByteSource) -> Result<Step<'_>, DecodeError> {
         loop {
             if self.out.0 < self.out.1 {

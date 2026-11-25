@@ -127,6 +127,11 @@ pub struct Cluster {
     pub symbols: Vec<String>,
     #[serde(default)]
     pub sections: Vec<String>,
+    /// Clusters that run together with this one (the same wake-up): none
+    /// of them may share a physical line of the direct-mapped code cache
+    /// with this one or with each other (`pagelink` warns).
+    #[serde(default)]
+    pub fits_with: Vec<String>,
 }
 
 impl Cluster {
@@ -275,6 +280,7 @@ symbols = ["*planted*"]
             bins: vec![],
             symbols: vec!["a::second".into(), "a::first*".into()],
             sections: vec![".text.zero".into()],
+            fits_with: vec![],
         };
         assert_eq!(c.rank(&sec(".text.zero", "f", &[])), Some(0));
         assert_eq!(c.rank(&sec(".text.q", "f", &["a::second"])), Some(1));

@@ -70,6 +70,13 @@ exclude = [
     # MP3 code that runs once per open or seek, not per frame: paged
     # (it gives ~2.5 KiB of RAM back to the stack).
     "orpheus_codec_mp3::Mp3Decoder>::find*",
+    # The MP3 frame code (the decoder's `decode` with the side info,
+    # scale factors, Huffman and the stereo steps inlined, 8.7 KB): paged as
+    # it always was (it used to be inlined into the paged
+    # `AnyDecoder::decode`), now one contiguous section packed with `find`
+    # in the `mp3-frame` cluster (hot.toml, AU-PERF). Its leaf kernels
+    # (synthesis, IMDCT, bit reader) stay resident.
+    "orpheus_codec_mp3::Mp3Decoder as orpheus_audio::decoder::Decoder>::decode*",
     "orpheus_codec_mp3::parse_head*",
     "orpheus_codec_mp3::parse_vbr_tag*",
     "embassy_executor::raw::util::UninitCell<*",

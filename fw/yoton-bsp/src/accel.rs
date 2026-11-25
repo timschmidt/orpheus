@@ -33,6 +33,15 @@ pub const CHIP_ID: u8 = 0x13;
 pub const ODR_COUNTING: u8 = 0x06;
 /// Counts per g at ± 2 g (12 bits, right-aligned).
 pub const COUNTS_PER_G: i16 = 1024;
+/// Half clock period of the bus, µs: 100 kHz, timed on the time base
+/// (`atj2157_hal::i2c_soft`). Until AU-PERF (2026-11-25) the same setting
+/// gave about 30 kHz (the spin loop ran three times as long), which is the
+/// rate this part was used at before; the stock firmware drives it faster
+/// still (fm-i2c-imu.md §1.3: delay count 5 against the tuner's 20), and
+/// both chips are 400 kHz parts. `acc bus <µs>` changes it until reboot.
+pub const HALF_US: u32 = 5;
+/// Half periods of one sample (`read`): 181.
+pub const SAMPLE_HALVES: u32 = atj2157_hal::i2c_soft::write_read_halves(1, 6);
 
 /// Registers used (names of the DA213 map, fm-i2c-imu.md §3.2).
 pub mod reg {
@@ -73,10 +82,20 @@ impl Default for Accel {
 
 impl Accel {
     /// Configure the bus pins (released, pull-ups on); nothing is sent.
-    /// 100 kHz, the rate the bus was proven at (U-FM-1 part).
+    /// 100 kHz ([`HALF_US`]).
     #[must_use]
     pub fn new() -> Accel {
-        Accel { bus: SoftI2c::new(pins::I2C_SCL, pins::I2C_SDA, 5) }
+        Accel { bus: SoftI2c::new(pins::I2C_SCL, pins::I2C_SDA, HALF_US) }
+    }
+
+    /// The bus's half clock period, µs (developer `acc bus`).
+    pub fn set_bus_half_us(&mut self, us: u32) {
+        self.bus.set_half_us(us);
+    }
+
+    #[must_use]
+    pub fn bus_half_us(&self) -> u32 {
+        self.bus.half_us()
     }
 
     /// Read a register.

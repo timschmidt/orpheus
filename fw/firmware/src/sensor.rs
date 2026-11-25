@@ -32,7 +32,7 @@
 //! <secs>`, `acc trace stop`, `steps status`.
 
 use core::cell::RefCell;
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
 use critical_section::Mutex;
 use embassy_futures::select::{Either, select};
@@ -146,9 +146,19 @@ const _: () = assert!(SHARED_ADDR % core::mem::align_of::<Shared>() == 0);
 pub enum Cmd {
     Read,
     Regs,
+    /// The bus's half clock period, µs (`acc bus <µs>`).
+    Bus(u32),
 }
 
 static CMD: Signal<CriticalSectionRawMutex, Cmd> = Signal::new();
+
+/// Bus time of the samples since start-up or the last `acc bus` (µs, wall
+/// time: an interrupt during a read adds to it; the sum wraps after about
+/// 40 hours at 1 ms a sample), their count and the longest (`steps
+/// status`). In SRAM0: the SRAM3 blocks are full.
+static BUS_US: AtomicU32 = AtomicU32::new(0);
+static BUS_N: AtomicU32 = AtomicU32::new(0);
+static BUS_MAX_US: AtomicU32 = AtomicU32::new(0);
 
 /// Once, before the tasks start (from `audio::init_chain`).
 #[inline(never)]
@@ -233,7 +243,7 @@ fn wanted() -> bool {
 
 #[embassy_executor::task]
 pub async fn sensor() {
-    let acc = Accel::new();
+    let mut acc = Accel::new();
     let id = acc.id();
     let present = id == Ok(accel::CHIP_ID);
     with(|s| {
@@ -246,7 +256,7 @@ pub async fn sensor() {
     let mut ticker = Ticker::every(Duration::from_millis(1000 / u64::from(RATE)));
     loop {
         if let Some(c) = CMD.try_take() {
-            command(&acc, c, on).await;
+            take(&mut acc, c, on).await;
         }
         let want = present && wanted();
         if want != on {
@@ -260,12 +270,29 @@ pub async fn sensor() {
         if !on {
             // Nothing counts: look again in a second (or at a command).
             if let Either::First(c) = select(CMD.wait(), Timer::after_secs(1)).await {
-                command(&acc, c, on).await;
+                take(&mut acc, c, on).await;
             }
             continue;
         }
         ticker.next().await;
         sample(&acc);
+    }
+}
+
+/// A command: the bus setting here (it needs the bus mutably), the rest in
+/// [`command`].
+async fn take(acc: &mut Accel, c: Cmd, on: bool) {
+    if let Cmd::Bus(us) = c {
+        acc.set_bus_half_us(us);
+        for a in [&BUS_US, &BUS_N, &BUS_MAX_US] {
+            a.store(0, Ordering::Relaxed);
+        }
+        let half = acc.bus_half_us();
+        crate::audio::reply(|w| {
+            w.s(t!(b"acc bus half_us=")).u(u64::from(half));
+        });
+    } else {
+        command(acc, c, on).await;
     }
 }
 
@@ -289,7 +316,14 @@ async fn start(acc: &Accel) -> bool {
 /// detector when full. The per-sample path: kept small (`hot.toml`).
 #[inline(never)]
 fn sample(acc: &Accel) {
+    let t0 = atj2157_hal::time::now_us_raw();
     let r = acc.read();
+    let us = atj2157_hal::time::now_us_raw().wrapping_sub(t0);
+    if r.is_ok() {
+        BUS_US.fetch_add(us, Ordering::Relaxed);
+        BUS_N.fetch_add(1, Ordering::Relaxed);
+        BUS_MAX_US.fetch_max(us, Ordering::Relaxed);
+    }
     let (full, ended) = with(|s| {
         let was = s.trace.ending;
         match r {
@@ -550,7 +584,10 @@ pub fn begin_trace_write(buf: &mut [u8], path: &mut [u8; 48]) -> Option<(usize, 
 
 /// `acc read`, `acc regs`, `acc trace <secs>`, `acc trace stop`.
 pub fn acc_command(rest: &[u8]) -> bool {
-    if matches!(rest, [b'r', b'e', b'a', b'd']) {
+    if let Some(n) = rest.strip_prefix(t!(b"bus ")) {
+        let Some(us) = parse_u32(n).filter(|&u| (1..=1000).contains(&u)) else { return false };
+        CMD.signal(Cmd::Bus(us));
+    } else if matches!(rest, [b'r', b'e', b'a', b'd']) {
         CMD.signal(Cmd::Read);
     } else if matches!(rest, [b'r', b'e', b'g', b's']) {
         CMD.signal(Cmd::Regs);
@@ -682,6 +719,8 @@ async fn command(acc: &Accel, c: Cmd, on: bool) {
                 }
             });
         }
+        // Taken by `take`.
+        Cmd::Bus(_) => {}
     }
     if woke {
         let _ = acc.suspend();
@@ -692,6 +731,8 @@ async fn command(acc: &Accel, c: Cmd, on: bool) {
 pub fn steps_status() {
     let (present, counting, dated, loaded, total, samples, errors, saves) =
         with(|s| (s.present, s.counting, s.dated, s.loaded, s.detector.total, s.samples, s.errors, s.saves));
+    let (bus_us, bus_n, bus_max) =
+        (BUS_US.load(Ordering::Relaxed), BUS_N.load(Ordering::Relaxed), BUS_MAX_US.load(Ordering::Relaxed));
     let days: [u32; 7] = core::array::from_fn(|k| day(k as u8));
     let sh = shared();
     crate::audio::reply(|w| {
@@ -708,5 +749,10 @@ pub fn steps_status() {
         w.s(t!(b" dated=")).u(u64::from(dated)).s(t!(b" file_loaded=")).u(u64::from(loaded));
         w.s(t!(b" detected=")).u(u64::from(total)).s(t!(b" samples=")).u(u64::from(samples));
         w.s(t!(b" i2c_errors=")).u(u64::from(errors)).s(t!(b" saves=")).u(u64::from(saves));
+        // The bus time per sample (wall time, µs) and the CPU share of
+        // the samples at the counting rate, in 0.01 %.
+        let avg = u64::from(bus_us.checked_div(bus_n).unwrap_or(0));
+        w.s(t!(b" bus_us_avg=")).u(avg).s(t!(b" bus_us_max=")).u(u64::from(bus_max));
+        w.s(t!(b" bus_load_cpct=")).u(avg * u64::from(RATE) / 100);
     });
 }
