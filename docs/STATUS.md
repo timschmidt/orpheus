@@ -2736,6 +2736,20 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-25 — USB-W1 fix verified on the player (lead)
+
+* Merged `c7b46d7c` (drop-safe EP0 SETUP read, abandoned-transfer
+  handling, controller re-init on VBUS loss, liveness-driven recovery,
+  guarded watchdog, USB counters). Resident 79,052 B; bss 123,988 B.
+* `cargo xtask dev usb-cancel --rounds 3` (the incident's sequence: a TEST
+  OUT held 2.5 s at setup, data and status stage, each followed at once by a
+  PEEK, plus 40 transfers cut after 1 ms per round): **PASS**, INFO answered
+  after every provoked failure (worst 0.0 s), 7 transfers given up, 10
+  `CX_COMABT` seen and cleared (so the bit is real on this chip, U-USB-14),
+  0 recoveries needed, 0 stalls.
+* `usb recover`: the player re-enumerated within seconds (re-inits 1,
+  inits 2).
+
 ### 2026-11-24 — first soak: USB wedges during use (lead) — open bug USB-W1
 
 * Merged VER-12 (soak tooling). First run `dev soak mixed --minutes 30
