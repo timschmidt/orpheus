@@ -466,6 +466,8 @@ pub fn valid_values(id: u16) -> Vec<i16> {
 const SOUND_IDS: [u16; 6] = [0x0101, 0x0102, 0x0103, 0x0104, 0x0105, 0x0106];
 const PLAYBACK_IDS: [u16; 4] = [0x0201, 0x0202, 0x0203, 0x0205];
 const DISPLAY_IDS: [u16; 3] = [0x0301, 0x0308, 0x030A];
+/// Settings › Display › List roll-around (UI-8).
+const LIST_ROLL: u16 = 0x030C;
 /// Theme, accent, language, list roll-around, clock in the bar.
 const LOOK_IDS: [u16; 5] = [0x0304, 0x0305, 0x0A01, 0x030C, 0x030A];
 
@@ -1678,6 +1680,9 @@ pub struct Ctx {
     homes: Vec<Vec<u16>>,
     pub stress: bool,
     look_on: bool,
+    /// List roll-around is off for this session (`goto` holds Up to reach
+    /// a list's first row, which only stops there when the ends clamp).
+    lists_clamped: bool,
     pub radio_on: bool,
     pub recordings: u32,
     clock_pinned: bool,
@@ -1737,6 +1742,7 @@ impl Ctx {
             homes,
             stress: false,
             look_on: true,
+            lists_clamped: false,
             radio_on: false,
             recordings: 0,
             clock_pinned: false,
@@ -1830,6 +1836,16 @@ impl Ctx {
         Ok(self.exec.sent[before..].iter().any(|s| matches!(s, Step::Tap(Key::Ok, _))))
     }
 
+    /// Turn list roll-around off for the session (UI-8 made a held Up wrap
+    /// past the first row, so `goto` opened Music's Shuffle all instead of
+    /// Now Playing); `false` without a test session.
+    fn clamp_lists(&mut self, rig: &mut dyn Rig) -> Result<bool> {
+        if !self.lists_clamped {
+            self.lists_clamped = self.set(rig, LIST_ROLL, 0)?;
+        }
+        Ok(self.lists_clamped)
+    }
+
     fn look(&mut self, rig: &mut dyn Rig, on: bool) -> Result<()> {
         if self.look_on != on {
             player::test_look(rig, on)?;
@@ -1877,6 +1893,9 @@ impl Ctx {
         let (want, name) = app.home();
         if app == App::NowPlaying && top.name == "NowPlaying" {
             return Ok(true);
+        }
+        if app == App::NowPlaying && !self.clamp_lists(rig)? {
+            return Ok(false);
         }
         let Some(k) = self.home(rig)? else {
             if self.nav_fail >= 5 {
@@ -2167,6 +2186,9 @@ impl Ctx {
                     }
                     self.wait(rig, secs * 1000)?;
                     self.look(rig, true)?;
+                    if values.iter().any(|(id, _)| *id == LIST_ROLL) {
+                        self.lists_clamped = false;
+                    }
                 } else {
                     self.skip("no test session");
                 }

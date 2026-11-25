@@ -22,6 +22,33 @@ pub struct FindStep {
     hi: u32,
 }
 
+/// A Shuffle-all sample in progress ([`Library::sample_begin`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct SampleStep {
+    s: u64,
+    i: u32,
+    picked: u32,
+    want: u32,
+    stopped: bool,
+}
+
+impl SampleStep {
+    /// Tracks picked so far.
+    #[must_use]
+    pub fn picked(&self) -> u32 {
+        self.picked
+    }
+
+    /// splitmix64.
+    fn next(&mut self) -> u64 {
+        self.s = self.s.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.s;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+}
+
 /// An open, complete library (about 230 bytes; no file handle is kept).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Library {
@@ -765,7 +792,9 @@ impl Library {
     /// A uniform random sample of `n` distinct tracks (all if there are
     /// fewer) for Shuffle all, handed to `sink` in library order — play
     /// it shuffled. One sequential pass over the track table (selection
-    /// sampling); returns how many.
+    /// sampling); returns how many. In one go: the firmware uses
+    /// [`Self::sample_begin`] and [`Self::sample_step`] instead, so a large
+    /// library cannot hold the CPU long enough for the watchdog.
     pub fn sample<S: Storage>(
         &self,
         store: &mut S,
@@ -773,39 +802,58 @@ impl Library {
         n: u32,
         mut sink: impl FnMut(TrackRef) -> bool,
     ) -> Result<u32, Error<S::Error>> {
+        let mut st = self.sample_begin(seed, n);
+        while !self.sample_step(store, &mut st, u32::MAX, &mut sink)? {}
+        Ok(st.picked)
+    }
+
+    /// Start a [`Self::sample`] to be done in steps.
+    #[must_use]
+    pub fn sample_begin(&self, seed: u64, n: u32) -> SampleStep {
+        SampleStep {
+            s: seed ^ 0x9E37_79B9_7F4A_7C15,
+            i: 0,
+            picked: 0,
+            want: n.min(self.tracks),
+            stopped: false,
+        }
+    }
+
+    /// Look at up to `max_rows` more rows of the track table (rounded up
+    /// to whole reads of 8); true when the sample is complete (or `sink`
+    /// asked to stop). The same picks as [`Self::sample`] in one go,
+    /// however the rows are split into steps.
+    pub fn sample_step<S: Storage>(
+        &self,
+        store: &mut S,
+        st: &mut SampleStep,
+        max_rows: u32,
+        mut sink: impl FnMut(TrackRef) -> bool,
+    ) -> Result<bool, Error<S::Error>> {
         let total = self.tracks;
-        let want = n.min(total);
-        let mut s = seed ^ 0x9E37_79B9_7F4A_7C15;
-        let mut next = || {
-            // splitmix64
-            s = s.wrapping_add(0x9E37_79B9_7F4A_7C15);
-            let mut z = s;
-            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-            z ^ (z >> 31)
-        };
         let mut b = [0u8; 8 * TRK_ROW];
-        let mut picked = 0u32;
-        let mut i = 0u32;
-        while i < total && picked < want {
-            let m = ((total - i) as usize).min(8);
-            self.read(store, Sec::Trk, at(i, TRK_ROW), &mut b[..m * TRK_ROW])?;
+        let mut looked = 0u32;
+        while !st.stopped && st.i < total && st.picked < st.want && looked < max_rows {
+            let m = ((total - st.i) as usize).min(8);
+            self.read(store, Sec::Trk, at(st.i, TRK_ROW), &mut b[..m * TRK_ROW])?;
             for k in 0..m {
-                let left = u64::from(total - i);
+                let left = u64::from(total - st.i);
                 // Pick with probability (want - picked) / left.
-                if ((u128::from(next()) * u128::from(left)) >> 64) < u128::from(want - picked) {
-                    picked += 1;
+                if ((u128::from(st.next()) * u128::from(left)) >> 64) < u128::from(st.want - st.picked) {
+                    st.picked += 1;
                     if !sink(self.track_ref(&b[k * TRK_ROW..])) {
-                        return Ok(picked);
+                        st.stopped = true;
+                        return Ok(true);
                     }
                 }
-                i += 1;
-                if picked == want {
+                st.i += 1;
+                if st.picked == st.want {
                     break;
                 }
             }
+            looked = looked.saturating_add(m as u32);
         }
-        Ok(picked)
+        Ok(st.stopped || st.i >= total || st.picked >= st.want)
     }
 
     fn letter_run<S: Storage>(&self, store: &mut S, s: Sec, j: u32) -> Result<(u32, u32), Error<S::Error>> {

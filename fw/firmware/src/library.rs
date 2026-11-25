@@ -45,7 +45,9 @@ use orpheus_fs::{DirEntry, Locator};
 use orpheus_index::LetterTable;
 use orpheus_index::card::{CardIo, Handles, Mode};
 use orpheus_library::card::{CardTags, TagState};
-use orpheus_library::{Config, FindStep, Item, ItemKind, LIBRARY_DIR, Library, List, Progress, Suspended};
+use orpheus_library::{
+    Config, FindStep, Item, ItemKind, LIBRARY_DIR, Library, List, Progress, SampleStep, Suspended,
+};
 
 use crate::media::{self, Io, QUEUE, Server, Vol, WINDOW};
 
@@ -566,27 +568,51 @@ pub async fn queue(vol: &mut Vol, srv: &mut Server, list: LibList, start: Option
     at
 }
 
+/// Rows of the track table per Shuffle-all session: 32 reads of 8 rows,
+/// a few tens of milliseconds. The whole table in one session held the RT
+/// executor for seconds on a large library and the watchdog reset the
+/// player (found by the first soak, 2026-11-25).
+const SAMPLE_ROWS: u32 = 256;
+
 #[inline(never)]
-fn fill_sample(io: &Io<'_, '_>, lib: &Library, seed: u64, queue: &mut [Locator; QUEUE]) -> u32 {
-    let mut k = 0usize;
-    let _ = lib.sample(&mut io.store(), seed, QUEUE as u32, |t| {
-        queue[k] = t.locator();
-        k += 1;
-        k < QUEUE
-    });
-    k as u32
+fn fill_sample(
+    io: &Io<'_, '_>,
+    lib: &Library,
+    st: &mut SampleStep,
+    queue: &mut [Locator; QUEUE],
+    k: &mut usize,
+) -> bool {
+    lib.sample_step(&mut io.store(), st, SAMPLE_ROWS, |t| {
+        queue[*k] = t.locator();
+        *k += 1;
+        *k < QUEUE
+    })
+    .unwrap_or(true)
 }
 
-/// Shuffle all from the library (a uniform sample of [`QUEUE`] tracks);
-/// false without a library (the caller walks the card instead).
+/// Shuffle all from the library (a uniform sample of [`QUEUE`] tracks),
+/// in steps with the CPU given back between them; false without a library
+/// (the caller walks the card instead).
 pub async fn sample(vol: &mut Vol, srv: &mut Server, seed: u32) -> bool {
-    let Some(lib) = srv.lib.lib.as_ref() else { return false };
-    let q = &mut srv.queue;
-    let n = with_lib_io(vol, Mode::Read, |io| fill_sample(io, lib, u64::from(seed), q)).await;
-    if n == 0 {
+    let Some(mut st) = srv.lib.lib.as_ref().map(|l| l.sample_begin(u64::from(seed), QUEUE as u32)) else {
+        return false;
+    };
+    let mut k = 0usize;
+    loop {
+        let t0 = embassy_time::Instant::now();
+        let Some(lib) = srv.lib.lib.as_ref() else { break };
+        let q = &mut srv.queue;
+        if with_lib_io(vol, Mode::Read, |io| fill_sample(io, lib, &mut st, q, &mut k)).await {
+            break;
+        }
+        // At most half the CPU, as the card walk (`build_all_queue`).
+        let took = embassy_time::Instant::now().saturating_duration_since(t0);
+        embassy_time::Timer::after(took.max(embassy_time::Duration::from_millis(2))).await;
+    }
+    if k == 0 {
         return false;
     }
-    srv.set_queue_len(vol.serial(), n);
+    srv.set_queue_len(vol.serial(), k as u32);
     true
 }
 

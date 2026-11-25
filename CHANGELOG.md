@@ -78,6 +78,13 @@ replaced).
   in the browser, saved settings and resume point, and a developer panel
   with a key recorder in the fuzz-corpus format.
 
+### Fixed
+
+- Music › Shuffle all restarted the player on a large library (the
+  watchdog); USB could go deaf until a restart (USB-W1); a test request
+  left in memory could make later starts return to USB recovery after
+  five minutes.
+
 ### Known issues
 
 - The first FLAC gapless join after a queue starts can tick (3–4

@@ -2736,6 +2736,25 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-25 — fix: Music › Shuffle all reset the player (lead, found by the soak)
+
+* Third soak (seed 1): a watchdog reset (no fault record) reproduced and
+  minimised by the tool. Cause found by hand on the player: **Music ›
+  Shuffle all** sampled the whole library's track table (8 rows per card
+  read) in one synchronous library session on the RT executor, holding the
+  CPU past the 5.6-s watchdog on the owner's library. The soak reached it
+  because UI-8's roll-around made its "hold Up to Music's first row (Now
+  Playing)" wrap and land on Shuffle all.
+* Fix: `Library::sample_begin`/`sample_step` (resumable selection
+  sampling; `sample` is now a wrapper; host test: the same picks for steps
+  of 1, 8, 13, 64 and 1,000 rows, and a stopping sink ends it); the
+  firmware samples 256 rows per session and sleeps as long as each step
+  took (≥ 2 ms), as the card walk already does. On the player: Shuffle all
+  → playing a 256-track shuffled queue, 0 underruns, no reset.
+* Soak: the session turns list roll-around off before navigating to Now
+  Playing (again after a `look` action that changed it), and skips that
+  navigation without a test session. Simulator `mixed` seed 1: PASS.
+
 ### 2026-11-25 — fix: a stale test request survived warm reboots (lead)
 
 * The second 30-min soak (after USB-W1) ended at minute 5 with the player
