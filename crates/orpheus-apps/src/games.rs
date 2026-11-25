@@ -813,14 +813,33 @@ impl GamesIo {
     }
 }
 
+/// Allocation sectors (exFAT bitmap or FAT) one [`Stage::Space`] step
+/// reads at most: well under a millisecond of card reads on the player.
+const SPACE_SECTORS: u32 = 8;
+
+/// [`Stage::Space`] steps before the allocation searches the rest itself
+/// (only a nearly full card: 2,040 sectors are 1 TB of exFAT bitmap at
+/// 128 KiB clusters).
+const SPACE_STEPS: u8 = 255;
+
 /// Where a [`CardRun`] is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Stage {
-    /// Open the file and read it (`Load`: the score table), or open it
-    /// truncated, write the bytes and its directory entry (`Write`).
+    /// Open the file and read it (`Load`: the score table), or (`Write`)
+    /// rewrite it in place when it exists and its cluster holds the bytes
+    /// (`Volume::rewrite`: nothing freed or allocated), its entry into
+    /// the sector cache.
     Open,
-    /// `Write`: the file could not be opened; make `/.orpheus` (0) and
-    /// [`DIR`] (1), then [`Stage::Open`] again (2).
+    /// `Write`: the file is missing (or its clusters do not fit): the
+    /// volume's next-free hint moved to a free cluster, [`SPACE_SECTORS`]
+    /// allocation sectors per step (`Volume::find_free_step`; `k` steps so
+    /// far, after [`SPACE_STEPS`] the allocation searches the rest).
+    Space(u8),
+    /// `Write`: open truncated (creating the file), write the bytes and
+    /// the entry into the sector cache; `true` once the folders were made.
+    Alloc(bool),
+    /// `Write`: the file could not be created; make `/.orpheus` (0) and
+    /// [`DIR`] (1), then [`Stage::Alloc`] again.
     MakeDir(u8),
     /// `Load`: does the save file of `Game::ALL[k]` exist? `Remove`: does
     /// the file exist (`k` 0)?
@@ -841,6 +860,13 @@ enum Stage {
 /// [`GamesIo::next`]'s buffer; the answer is [`GamesIo::done`]'s. Only
 /// files under [`DIR`] (CLAUDE.md rule 5). No file handle is kept between
 /// steps (a few bytes of state in the card task).
+///
+/// A save that exists is rewritten in place (its one cluster holds any
+/// save): a truncating open freed its cluster and the write allocated one,
+/// on the owner's card (exFAT keeps no next-free hint) a search of 452
+/// bitmap sectors in the first step after every start, one 41 ms stretch
+/// (2026-11-25). A new file's allocation is prepared in bounded steps
+/// ([`Stage::Space`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct CardRun {
     op: CardOp,
@@ -907,9 +933,10 @@ impl CardRun {
     ) -> Option<CardAnswer> {
         let Some(path) = self.path() else { return self.fail() };
         match self.stage {
-            Stage::Open | Stage::MakeDir(2..) => {
+            Stage::Open => {
                 if matches!(self.op, CardOp::Write(_) | CardOp::WriteScores) {
-                    return self.open_write(vol, path, buf).await;
+                    self.rewrite(vol, path, buf).await;
+                    return None;
                 }
                 let read = Self::read(vol, path, buf).await;
                 match (read, self.op) {
@@ -926,9 +953,16 @@ impl CardRun {
                     (None, _) => return self.fail(),
                 }
             }
+            Stage::Space(k) => {
+                self.stage = match vol.find_free_step(SPACE_SECTORS).await {
+                    Ok(false) if k < SPACE_STEPS => Stage::Space(k + 1),
+                    _ => Stage::Alloc(false),
+                };
+            }
+            Stage::Alloc(made) => return self.open_write(vol, path, buf, made).await,
             Stage::MakeDir(k) => {
                 let _ = vol.create_dir(if k == 0 { "/.orpheus" } else { DIR }).await;
-                self.stage = Stage::MakeDir(k + 1);
+                self.stage = if k == 0 { Stage::MakeDir(1) } else { Stage::Alloc(true) };
             }
             Stage::Exists(k) => {
                 if let CardOp::Remove(_) = self.op {
@@ -977,17 +1011,55 @@ impl CardRun {
         u16::try_from(n).ok()
     }
 
+    /// The bytes over the file's own cluster and its directory entry (into
+    /// the sector cache; [`Stage::Flush`] writes them back), or, if the
+    /// file is missing or its clusters do not fit, on to
+    /// [`Stage::Space`].
+    ///
+    /// Power cut: the data sector reaches the card before the entry (the
+    /// cache's order), so a cut leaves the old file, the new bytes with
+    /// the old length, or the new file; the volume never needs repair (no
+    /// cluster changes hands). A save is framed with its length and a CRC
+    /// (`orpheus_games::save::open`): new bytes under an old length of
+    /// another size read as no save, as the truncated empty file a cut
+    /// left before.
+    async fn rewrite<D: orpheus_fs::BlockDevice>(
+        &mut self,
+        vol: &mut orpheus_fs::Volume<'_, D>,
+        path: &str,
+        buf: &[u8],
+    ) {
+        let data = buf.get(..usize::from(self.len)).unwrap_or(&[]);
+        self.stage = Stage::Space(0);
+        if let Ok(mut f) = vol.open(path, orpheus_fs::OpenMode::ReadWrite).await {
+            match vol.rewrite(&mut f, data).await {
+                Ok(false) => {}
+                Ok(true) => {
+                    self.answer.ok = vol.write_entry(&mut f).await.is_ok();
+                    self.stage = Stage::Flush;
+                }
+                // What was done is still written back.
+                Err(_) => {
+                    self.answer.ok = false;
+                    self.stage = Stage::Flush;
+                }
+            }
+        }
+    }
+
     /// Open truncated, write the bytes and the directory entry (into the
-    /// sector cache; [`Stage::Flush`] writes them back).
+    /// sector cache; [`Stage::Flush`] writes them back). `made`: the
+    /// folders were made already.
     async fn open_write<D: orpheus_fs::BlockDevice>(
         &mut self,
         vol: &mut orpheus_fs::Volume<'_, D>,
         path: &str,
         buf: &[u8],
+        made: bool,
     ) -> Option<CardAnswer> {
         let mut f = match vol.open(path, orpheus_fs::OpenMode::Truncate).await {
             Ok(f) => f,
-            Err(_) if self.stage == Stage::Open => {
+            Err(_) if !made => {
                 self.stage = Stage::MakeDir(0);
                 return None;
             }
@@ -1453,7 +1525,7 @@ mod tests {
                         most = (most.0.max(r), most.1.max(w));
                         // Making the games folder zeroes its cluster
                         // (once in a card's life): not bounded here.
-                        let made_dir = matches!(run.stage, Stage::MakeDir(1 | 2));
+                        let made_dir = matches!(run.stage, Stage::MakeDir(1) | Stage::Alloc(true));
                         if one_step && !made_dir {
                             // FAT32's truncating open: the dirty flag in
                             // both FATs and the freed chain's FAT sector.
@@ -1545,5 +1617,231 @@ mod tests {
         assert!(!best_is_time(&g, Game::Solitaire));
         g.set_setting(id::SOL_SCORING, 2);
         assert!(best_is_time(&g, Game::Solitaire));
+    }
+
+    /// A block device that counts sector I/O. While `build`, writes of
+    /// all-zero sectors are dropped: the images are sparse and read as
+    /// zeros wherever nothing was written (filling a card image with music
+    /// would otherwise write gigabytes of zeros).
+    struct Counted<D> {
+        inner: D,
+        reads: u64,
+        writes: u64,
+        build: bool,
+    }
+
+    impl<D: orpheus_fs::BlockDevice> orpheus_fs::BlockDevice for Counted<D> {
+        type Error = D::Error;
+        async fn read(&mut self, lba: u32, buf: &mut [orpheus_fs::Sector]) -> Result<(), D::Error> {
+            self.reads += buf.len() as u64;
+            self.inner.read(lba, buf).await
+        }
+        async fn write(&mut self, lba: u32, buf: &[orpheus_fs::Sector]) -> Result<(), D::Error> {
+            if self.build && buf.iter().all(|s| *s == [0u8; orpheus_fs::SECTOR_SIZE]) {
+                return Ok(());
+            }
+            self.writes += buf.len() as u64;
+            self.inner.write(lba, buf).await
+        }
+        async fn sync(&mut self) -> Result<(), D::Error> {
+            self.inner.sync().await
+        }
+        fn sector_count(&self) -> u32 {
+            self.inner.sector_count()
+        }
+    }
+
+    type OwnerVol<'c> = orpheus_fs::Volume<'c, Counted<orpheus_fs::host::FileDisk>>;
+
+    /// Mount an owner-like image as the firmware does: 8 cache slots, a
+    /// walk cache with `/.orpheus` warmed.
+    fn owner_mount<'c>(
+        path: &std::path::Path,
+        cache: &'c mut [orpheus_fs::CacheSlot],
+        walks: &'c mut orpheus_fs::WalkCache,
+        build: bool,
+    ) -> OwnerVol<'c> {
+        use orpheus_fs::host::{FileDisk, block_on};
+        let disk = Counted { inner: FileDisk::open(path).unwrap(), reads: 0, writes: 0, build };
+        let opts = orpheus_fs::MountOptions { read_only: false, write_prefix: None, partition: None };
+        let mut vol = block_on(orpheus_fs::Volume::mount(disk, cache, opts)).expect("mount");
+        vol.set_walk_cache(walks);
+        if !build {
+            block_on(vol.warm_walk("/.orpheus")).unwrap();
+        }
+        vol
+    }
+
+    /// The owner's card where it matters (2026-11-25: a games save's first
+    /// piece was one 41 ms stretch while music played): a sparse image of
+    /// exFAT with 128 KiB clusters over 238 GiB (an allocation bitmap of
+    /// 476 sectors) or FAT32 with 32 KiB clusters over 8 GiB (a FAT of
+    /// 2,048 sectors), 300 folders in the root, music filling 95 % of the
+    /// clusters from the start, then `/.orpheus/games` with saves of two
+    /// games and the score table. `None` if `mkfs` is missing.
+    fn owner_card(exfat: bool) -> Option<std::path::PathBuf> {
+        use orpheus_fs::host::block_on;
+        use orpheus_fs::{CacheSlot, OpenMode, WalkCache};
+        use orpheus_games::{SAVE_MAX, tiles::Tiles};
+        use std::process::Command;
+        let tool = if exfat { "mkfs.exfat" } else { "mkfs.fat" };
+        let dir = std::env::temp_dir().join("orpheus-apps-games-owner");
+        std::fs::create_dir_all(&dir).ok()?;
+        let p = dir.join(std::format!("{tool}-{}-{exfat}.img", std::process::id()));
+        let f = std::fs::File::create(&p).ok()?;
+        f.set_len(if exfat { 238 << 30 } else { 8 << 30 }).ok()?;
+        drop(f);
+        let mut c = Command::new(tool);
+        if exfat {
+            c.args(["-q", "-c", "131072"]);
+        } else {
+            c.args(["-F", "32", "-s", "64"]);
+        }
+        if !c.arg(&p).output().is_ok_and(|o| o.status.success()) {
+            std::eprintln!("{tool} missing: skipped");
+            let _ = std::fs::remove_file(&p);
+            return None;
+        }
+        let mut cache = std::vec![CacheSlot::EMPTY; 8];
+        let mut walks = WalkCache::EMPTY;
+        let mut vol = owner_mount(&p, &mut cache, &mut walks, true);
+        block_on(async {
+            for k in 0..300 {
+                vol.create_dir(&std::format!("/Album {k:03}")).await.unwrap();
+            }
+            // In files of at most 2 GiB (FAT's limit is 4 GiB).
+            let mut music = u64::from(vol.cluster_count()) * 95 / 100 * u64::from(vol.cluster_size());
+            let mut k = 0;
+            while music > 0 {
+                let len = music.min(2 << 30);
+                let mut f = vol.open(&std::format!("/music{k}.bin"), OpenMode::Create).await.unwrap();
+                vol.set_len(&mut f, len).await.unwrap();
+                vol.close(f).await.unwrap();
+                music -= len;
+                k += 1;
+            }
+        });
+        let mut buf = [0u8; SAVE_MAX];
+        let n = Session::Tiles(Tiles::new(tiles::Config::DEFAULT, 4)).encode(&mut buf).unwrap();
+        for op in [CardOp::Write(gid::TILES), CardOp::Write(gid::BLOCKS), CardOp::WriteScores] {
+            let mut run = CardRun::new(op, n);
+            let a = block_on(run.piece(&mut vol, &mut buf, || true)).unwrap();
+            assert!(a.ok);
+        }
+        let (_, r) = block_on(vol.unmount());
+        r.unwrap();
+        Some(p)
+    }
+
+    /// FAT32: the FSINFO next-free hint set to "unknown" (0xFFFFFFFF), as
+    /// a card last written by a system that does not keep it is.
+    fn forget_fsinfo_hint(p: &std::path::Path) {
+        use std::io::{Read, Seek, SeekFrom, Write};
+        let mut f = std::fs::OpenOptions::new().read(true).write(true).open(p).unwrap();
+        let mut bs = [0u8; 512];
+        f.read_exact(&mut bs).unwrap();
+        let fsi = u64::from(u16::from_le_bytes([bs[48], bs[49]]));
+        f.seek(SeekFrom::Start(fsi * 512 + 492)).unwrap();
+        f.write_all(&[0xFF; 4]).unwrap();
+    }
+
+    fn io_of(vol: &mut OwnerVol<'_>) -> (u64, u64) {
+        let d = vol.device();
+        (d.reads, d.writes)
+    }
+
+    /// Player, 2026-11-25, music playing, games switched: the first piece
+    /// of every save was one 41 ms stretch (`chore: starved serve:games
+    /// 43/26 ms`, 12 underruns a minute): the truncating open freed the
+    /// save's cluster and the write allocated one, and exFAT keeps no
+    /// next-free hint, so the allocation searched the bitmap from its start
+    /// (on this image 452 sector reads in one step; FAT32 with an unknown
+    /// FSINFO hint, 1,946). Now a save that exists is rewritten in its own
+    /// cluster and a new file's allocation is searched for in steps of
+    /// [`SPACE_SECTORS`]: every piece of a budget of one step is a few
+    /// sector I/Os, and the images stay fsck-clean.
+    #[test]
+    fn regress_games_save_first_piece_owner_card() {
+        use orpheus_fs::host::block_on;
+        use orpheus_fs::{CacheSlot, WalkCache};
+        use orpheus_games::{SAVE_MAX, tiles::Tiles};
+        for exfat in [true, false] {
+            let Some(p) = owner_card(exfat) else { continue };
+            if !exfat {
+                forget_fsinfo_hint(&p);
+            }
+            let save = Session::Tiles(Tiles::new(tiles::Config { size: 5, ..tiles::Config::DEFAULT }, 7));
+            let mut file = [0u8; SAVE_MAX];
+            let n = save.encode(&mut file).unwrap();
+            let mut cache = std::vec![CacheSlot::EMPTY; 8];
+            let mut walks = WalkCache::EMPTY;
+            // As after a start: a cold sector cache, `/.orpheus` warmed.
+            let mut vol = owner_mount(&p, &mut cache, &mut walks, false);
+            let ops = [
+                // Saves that exist: in place.
+                CardOp::Write(gid::TILES),
+                CardOp::WriteScores,
+                // A new file: the allocation searched for in steps.
+                CardOp::Write(gid::SOLITAIRE),
+                // Removed and written again: the freed cluster at once.
+                CardOp::Remove(gid::BLOCKS),
+                CardOp::Write(gid::BLOCKS),
+                CardOp::Load,
+                CardOp::Read(gid::TILES),
+            ];
+            for op in ops {
+                let mut buf = file;
+                let mut run = CardRun::new(op, n);
+                let mut steps = std::vec::Vec::new();
+                let a = loop {
+                    let (r0, w0) = io_of(&mut vol);
+                    let mut first = true;
+                    let a = block_on(run.piece(&mut vol, &mut buf, || core::mem::take(&mut first)));
+                    let (r, w) = io_of(&mut vol);
+                    steps.push((r - r0, w - w0));
+                    if let Some(a) = a {
+                        break a;
+                    }
+                    assert!(steps.len() < 300, "{op:?} never ends");
+                };
+                std::eprintln!("exFAT {exfat}: {op:?}: {} pieces, (reads, writes) {steps:?}", steps.len());
+                assert!(a.ok, "exFAT {exfat}: {op:?} failed");
+                for (k, &(r, w)) in steps.iter().enumerate() {
+                    // The search: SPACE_SECTORS reads. Otherwise a walk, the
+                    // dirty flag (FAT: both FATs), one sector back.
+                    let most = if matches!(op, CardOp::Write(_)) { u64::from(SPACE_SECTORS) + 2 } else { 4 };
+                    assert!(r + w <= most, "exFAT {exfat}: {op:?} piece {k}: {r} reads, {w} writes");
+                }
+                if op == CardOp::Write(gid::TILES) {
+                    // The save's first piece: the old code's 452 (1,946) reads.
+                    let (r, w) = steps[0];
+                    assert!(r + w <= 4, "exFAT {exfat}: first piece of a save: {r} reads, {w} writes");
+                    assert!(steps.iter().map(|s| s.0).sum::<u64>() <= 4, "a save read {steps:?}");
+                }
+                if op == CardOp::Read(gid::TILES) {
+                    assert_eq!(
+                        Session::decode(&buf[..usize::from(a.len)], Some(gid::TILES)),
+                        Some(save.clone())
+                    );
+                }
+                if op == CardOp::Load {
+                    let all = 1 << gid::TILES | 1 << gid::BLOCKS | 1 << gid::SOLITAIRE;
+                    assert_eq!(a.saved, all);
+                }
+            }
+            let (_, r) = block_on(vol.unmount());
+            r.unwrap();
+            let fsck = if exfat { "fsck.exfat" } else { "fsck.fat" };
+            match std::process::Command::new(fsck).arg("-n").arg(&p).output() {
+                Ok(o) => assert!(
+                    o.status.success(),
+                    "{fsck}: {}{}",
+                    std::string::String::from_utf8_lossy(&o.stdout),
+                    std::string::String::from_utf8_lossy(&o.stderr)
+                ),
+                Err(_) => std::eprintln!("{fsck} missing: not checked"),
+            }
+            let _ = std::fs::remove_file(&p);
+        }
     }
 }

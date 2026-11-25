@@ -22,7 +22,7 @@ of every session. Newest entries first in §3.
 | T-3, PG-1 | done | pagelink, PagerCore, check-resident; demand paging on the player (8 KiB pages, 1 KiB lines) |
 | T-6 | started | Rust NOR payload `fw/payloads/norprog` (erase/program, full-layout guard); ymon and nordump still the reference repo's C payloads. **Stage 2 slot fallback built and host-tested, not yet installed** (`orpheus_proto::boot::decide`; 964 B; lead's `install-stage2` + crash test: session entry 2026-11-24 "T-6 (stage2)") |
 | T-8 | **built (host + firmware), not yet run on the player** | PC sampler (T2, level 0) and pager fault log into the 2 KiB profiler block at `0x307000` (SRAM3), `prof pc\|faults on\|burst`, `prof off\|status`; `cargo xtask dev prof --pc\|--faults S [--during "soak --replay F"] [--only TEXT] [--update-hot NAME]`, `cargo xtask prof DIR`; reports in `target/orpheus/prof/<stamp>/`. Resident +656 B. User/lead check: U-TMR-1 and the Pictures-while-playing profile (session entry 2026-11-25 "T-8") |
-| AU-PERF | **built (host + firmware), not yet run on the player** | Playback per block out of the large async functions (`play_block` + small named functions, `Apart` poll boundaries, `orpheus_audio::pcm::Feeder`), codecs' `decode` not inlined, DSP stage mask kept, clusters `mp3-frame` 11 + `play-block` 15 + `play-fill` 6 = 32 lines (no shared physical line; `fits_with` check), 53 % of the measured fault loads in that set or gone; stack on the playback wake-up 6.6 → 1.5 KB; soft I2C timed on T0 (true 100 kHz, was ≈ 30 kHz: sample ≈ 2.7 → 1.0 ms), `acc bus`. Lead: profiles and checks in the session entry 2026-11-25 "AU-PERF"; U-I2C-1. **Up next titles: `seek_dir` per cluster (3,507 → 7 steps per title on 128 KiB exFAT), window keeps its titles (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: Up next titles cheap". **Chore budgets: every chore runs only when the headroom less a decoder margin covers its measured need, splittable ones stop at the budget (`orpheus_audio::chore`, host model; built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: chore budgets". **Listing pieces reopen the index file from its entry (no path walk after `job:index`), the need counts a piece's fixed cost (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: listing pieces reopen the index file" **The 55 ms `serve` block: precise `ub=` labels (`ub=serve:picture`, `job:rows`, `req:skip`, …), DAC start forgets the candidate, large overruns always logged, RAM-only pieces do not lower a need, soak reads at every action's end (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: the 55 ms `serve` block". **`job:index` in stretches of 16 entry sets (`Volume::walk_step`, `CardIo::find_index`); removing a file no longer empties the walk cache (index builds did, and the next lookup searched the root: 52–60 ms) (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: `job:index` in stretches" |
+| AU-PERF | **built (host + firmware), not yet run on the player** | Playback per block out of the large async functions (`play_block` + small named functions, `Apart` poll boundaries, `orpheus_audio::pcm::Feeder`), codecs' `decode` not inlined, DSP stage mask kept, clusters `mp3-frame` 11 + `play-block` 15 + `play-fill` 6 = 32 lines (no shared physical line; `fits_with` check), 53 % of the measured fault loads in that set or gone; stack on the playback wake-up 6.6 → 1.5 KB; soft I2C timed on T0 (true 100 kHz, was ≈ 30 kHz: sample ≈ 2.7 → 1.0 ms), `acc bus`. Lead: profiles and checks in the session entry 2026-11-25 "AU-PERF"; U-I2C-1. **Up next titles: `seek_dir` per cluster (3,507 → 7 steps per title on 128 KiB exFAT), window keeps its titles (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: Up next titles cheap". **Chore budgets: every chore runs only when the headroom less a decoder margin covers its measured need, splittable ones stop at the budget (`orpheus_audio::chore`, host model; built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: chore budgets". **Listing pieces reopen the index file from its entry (no path walk after `job:index`), the need counts a piece's fixed cost (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: listing pieces reopen the index file" **The 55 ms `serve` block: precise `ub=` labels (`ub=serve:picture`, `job:rows`, `req:skip`, …), DAC start forgets the candidate, large overruns always logged, RAM-only pieces do not lower a need, soak reads at every action's end (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: the 55 ms `serve` block". **`job:index` in stretches of 16 entry sets (`Volume::walk_step`, `CardIo::find_index`); removing a file no longer empties the walk cache (index builds did, and the next lookup searched the root: 52–60 ms) (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: `job:index` in stretches" **Games saves rewritten in place, a new file's allocation searched in steps of 8 sectors (the 41 ms first piece of every save: 452 bitmap reads from the start; built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: games saves in place" |
 | LAY-1 | done (device) | Full layout installed (`xtask dev install-full --i-have-a-backup`), layout-aware `stage`, `restore vendor [--verify]`. Unifont pack in NOR not done (the UI's fonts are built in) |
 | LCD-1, INPUT-1, PWR-2, AU-0 | done pending user checks 7, 8, 9, 10 | |
 | SD-1, FM-0, USB-1, USB-3, PWR-1 | done | |
@@ -67,6 +67,81 @@ of every session. Newest entries first in §3.
 | TTS-2 | **done (host)**; not in the firmware, simulator or apps (A11Y-1, BOOK-3, firmware integration) | `orpheus-tts`: cascade/parallel formant synthesiser after Klatt 1980 (KLGLOTT88-like source with polyBLEP, F1–F6 cascade, nasal pole/zero, parallel frication/bursts), phoneme targets and loci from the phonetics literature, intonation (declination, accents, 5 contours, asides), voices Neutral/Low/Bright, exact TTS-1 durations at 0.25×–10×, resampler to 8–48 kHz, `Synth` (1,936 B) and `Speaker` (3,352 B with the converter), events and stop; WER (whisper base.en) 13.9 / 30.5 / 93 % at 1/2/4× (espeak-ng 5.9 / 63 / 89 %); player estimate ≈ 22 % of Base at 48 kHz (over the 20 % budget), code ≈ 70 KB without the lexicon (over 64 KiB) (session entry 2026-11-25 "TTS-2") |
 
 ## 3. Session log
+
+### 2026-11-25 — AU-PERF: games saves in place; the allocation search in steps (worker, no hardware)
+
+Lead's measurement (owner's card, MP3 playing, games switched): every
+save's first piece one 41 ms stretch, `chore: starved serve:games 43/26
+ms u41`, 12 underruns a minute.
+
+* **Found on the host** (`regress_games_save_first_piece_owner_card`'s
+  image: sparse 238 GiB exFAT, 128 KiB clusters, a 476-sector bitmap, 300
+  root folders, music in 95 % of the clusters from the start, then
+  `/.orpheus/games` with saves; 8 cache slots, `/.orpheus` warmed, cold
+  cache as after a start). A save of an existing file, broken down: walk 1
+  read; truncating open 2 reads, 2 writes (dirty flag, entry flushed,
+  cluster freed); **write 452 reads** (the allocation: exFAT keeps no
+  next-free hint, so after mounting it is cluster 2 and the bitmap is
+  searched from its start); entry 1 read; then 3 + 1 one-write steps.
+  `CardRun` steps: (456 r, 2 w), (0, 1) ×3, (1, 1). The first save after
+  every start pays it; later ones depend on the holes behind the hint (on
+  the owner's scattered card, often again). FAT32 (8 GiB, 32 KiB clusters,
+  2,048 FAT sectors) with a good FSINFO hint: (3, 3) first step; with the
+  hint unknown (0xFFFFFFFF): **1,946 reads** in that step.
+* **Fix (a), in place**: `orpheus_fs::Volume::rewrite(&mut File, data)`:
+  the whole content replaced in the file's own clusters when they are as
+  many as the data needs (a save, ≤ 512 B, always: one cluster): nothing
+  freed or allocated, no data sector read (fresh), size and exFAT valid
+  length set; otherwise `false`, untouched. `CardRun` `Write`/`WriteScores`
+  try it first (`Stage::Open`: open read-write, rewrite, entry into the
+  cache), then flush in steps as before.
+  **Power cut**: the cache writes data before directory sectors, so a cut
+  leaves the old save, the new one, or the new bytes under the old entry
+  (old length); no cluster changes hands, so the volume never needs
+  repair (fsck finds only the dirty flag, or FAT copies differing in the
+  dirty bit itself). A save is framed with its length and a CRC
+  (`orpheus_games::save::open`), so new bytes under an old length of
+  another size read as no save; the old path's cut left an empty file (no
+  save) too, and in addition freed/allocated clusters. Tested: a cut after
+  every write count on FAT16, FAT32, exFAT (`tests/rewrite.rs`
+  `rewrite_power_cut`: all three outcomes seen, fsck as stated).
+* **Fix (b), hints**: freeing a chain (truncate, remove, rename over a
+  file; each has the old entry on the card first) leaves the next-free
+  hint on the chain's first cluster (FAT32: written to FSINFO), so the
+  next allocation takes it without a search (a save written again after
+  Remove: 0 reads). `Volume::find_free_step(sectors)`: the search in
+  stretches; `CardRun`'s new `Stage::Space` runs it 8 sectors per step
+  (255 steps at most, then the allocation searches the rest itself: only
+  a nearly full card) before a new file is made (`Stage::Alloc`).
+  No new statics; the hint is the existing `Volume::next_free`.
+* **After** (same images, one step per piece): existing save (exFAT)
+  (2 r, 1 w), (0, 1) ×3; FAT32 (2, 2), (0, 1), (0, 1), (0, 2); score table
+  (0, 1) ×4. New file on exFAT: 57 steps of 8 bitmap reads, then (2, 1),
+  (0, 1) ×4; FAT32 with an unknown hint 244 steps of ≤ 8. Remove + write
+  again: (0, 0) ×2 then one or two writes per piece. No piece above 10
+  sector I/Os.
+* Tests: `regress_games_save_first_piece_owner_card` (`orpheus-apps`,
+  games; both images; the first piece of a save ≤ 4 I/Os, a save ≤ 4
+  reads in all, every piece ≤ 10, answers and contents right, `fsck -n`
+  clean after; the old code fails it with 456 reads);
+  `orpheus-fs/tests/rewrite.rs`: in place (same cluster, ≤ 1 read, refused
+  untouched when the cluster count changes), freed clusters taken first,
+  `find_free_step` bounded (FAT32 190 steps, exFAT 3, of ≤ 4 reads) with
+  the allocation after it ≤ 2 reads, power cuts; all fsck-clean on FAT16,
+  FAT32, exFAT. `regress_games_card_ops_in_pieces` green (Write 4 pieces
+  of ≤ 1 write on exFAT, was 5 of ≤ 2).
+* **Expected on the player** (lead to measure): a save of a game played
+  before: the first piece ≈ 2 sector reads and the dirty flag's write
+  (≈ 2–5 ms), then one sector written back per piece and the sync; no
+  `starved serve:games`, no `ub=serve:games`. A game's first save after a
+  start: ≈ 57 `job:games` steps of 8 bitmap reads (< 1 ms each at the
+  ≈ 0.09 ms per read the 41 ms implies), spread over chores.
+* Firmware: resident 80,747 → 80,779 B (+32), .bss 124,864 B unchanged,
+  stack 16,108 B nested worst case of 20,224 B, margin 4,116 B (budget
+  4,096) unchanged.
+* Not changed: other writers that allocate after a start (index files,
+  album art, recordings) still search from cluster 2 on exFAT on their
+  first allocation; they could call `find_free_step` the same way.
 
 ### 2026-11-25 — games on the player (hands-on); a 100 ms games chore; plan: brick breaker (lead)
 

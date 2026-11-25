@@ -910,6 +910,43 @@ impl<'c, D: BlockDevice> Volume<'c, D> {
         Ok(c)
     }
 
+    /// One stretch of the search an allocation would make: the next-free
+    /// hint moves forward over at most `sectors` sectors of the allocation
+    /// bitmap (exFAT) or the FAT. `Ok(true)` once the hint is a free
+    /// cluster (the next allocation takes it at once, from a sector the
+    /// cache holds), `Ok(false)` while the search goes on (call again; at
+    /// the end of the volume it starts over at the first cluster, so on a
+    /// full volume it never ends: bound the calls).
+    ///
+    /// For callers that must not block for a whole search (the player's
+    /// card task while music plays): exFAT keeps no next-free hint on the
+    /// card, so the first allocation after mounting searched the bitmap
+    /// from its start, on the owner's 238 GB card 452 sector reads in one
+    /// stretch (a games save, 2026-11-25); a FAT32 card whose FSINFO hint
+    /// is unknown, the FAT from its start.
+    pub async fn find_free_step(&mut self, sectors: u32) -> Result<bool, D::Error> {
+        let end = self.g.cluster_count + 2;
+        let c = if self.g.valid_cluster(self.next_free) { self.next_free } else { 2 };
+        // Clusters per sector, and the cluster that starts sector 0.
+        let (per, base) = match self.g.kind {
+            FsKind::ExFat => (4096, 2),
+            FsKind::Fat32 => (128, 0),
+            FsKind::Fat16 => (256, 0),
+            FsKind::Fat12 => (341, 0),
+        };
+        let stop = (c - (c - base) % per).saturating_add(sectors.max(1).saturating_mul(per)).min(end);
+        match self.scan_free(c, stop).await? {
+            Some(f) => {
+                self.next_free = f;
+                Ok(true)
+            }
+            None => {
+                self.next_free = if stop >= end { 2 } else { stop };
+                Ok(false)
+            }
+        }
+    }
+
     /// Release one cluster.
     pub(crate) async fn release_cluster(&mut self, c: u32) -> Result<(), D::Error> {
         if self.g.is_exfat() {
@@ -926,10 +963,24 @@ impl<'c, D: BlockDevice> Volume<'c, D> {
 
     /// Free a chain starting at `first`. `contig_len`: exFAT NoFatChain run
     /// length; otherwise the FAT chain is followed.
+    ///
+    /// The next-free hint then points at `first`, a cluster known to be
+    /// free, so the next allocation takes it without a search (a file
+    /// truncated and written again, a save replaced after a removal).
+    /// Every caller has the entry that owned the chain on the card before
+    /// it frees the chain (`set_len`, `remove`, `rename`), so reusing the
+    /// clusters at once cannot cross-link files after a power cut.
     pub(crate) async fn free_chain(&mut self, first: u32, contig_len: Option<u32>) -> Result<(), D::Error> {
         if !self.g.valid_cluster(first) {
             return Ok(());
         }
+        let r = self.free_chain_inner(first, contig_len).await;
+        self.next_free = first;
+        self.fsinfo_dirty = true;
+        r
+    }
+
+    async fn free_chain_inner(&mut self, first: u32, contig_len: Option<u32>) -> Result<(), D::Error> {
         if let Some(n) = contig_len {
             for k in 0..n {
                 let c = first.wrapping_add(k);

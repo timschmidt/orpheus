@@ -509,6 +509,42 @@ impl<D: BlockDevice> Volume<'_, D> {
         Ok(buf.len())
     }
 
+    /// Replace the whole content of `f` with `data` inside the clusters it
+    /// has, when they are as many as `data` needs (at least one): nothing
+    /// is freed or allocated, no data sector is read (the old content is
+    /// not kept), the size (exFAT: and the valid-data length) becomes
+    /// `data.len()`. The entry changes in `f` only: [`Volume::write_entry`]
+    /// or [`Volume::close`] after it. `Ok(false)`, with nothing changed,
+    /// when the clusters do not fit `data` (truncate and write instead).
+    ///
+    /// Where truncating and writing frees the old clusters and allocates
+    /// new ones (on a large, full card a search of the allocation table:
+    /// a games save was 452 bitmap reads on the owner's card, 2026-11-25),
+    /// this costs the data sectors and the entry. A power cut leaves the
+    /// old entry (size and time) with some or all of the new data sectors
+    /// (data reach the card before the entry): no cluster is ever in
+    /// question, the volume needs no repair; the file reads as the new
+    /// content cut or padded to the old size.
+    pub async fn rewrite(&mut self, f: &mut File, data: &[u8]) -> Result<bool, D::Error> {
+        if f.flags & WRITE == 0 {
+            return Err(Error::ReadOnly);
+        }
+        let need = (data.len() as u64).div_ceil(u64::from(self.g.cluster_bytes()));
+        if data.is_empty() || f.first == 0 || u64::from(f.clusters) != need {
+            return Ok(false);
+        }
+        self.begin_write().await?;
+        f.pos = 0;
+        // Nothing of the old content is valid any more: every sector the
+        // write touches is fresh (filled, not read).
+        f.valid = 0;
+        let r = self.write_data(f, Some(data), data.len() as u64).await;
+        f.size = f.pos;
+        f.valid = f.pos;
+        f.flags |= DIRTY | MODIFIED;
+        r.map(|()| true)
+    }
+
     /// Truncate or extend. exFAT extends by allocation only (the new range
     /// reads as zeros through the valid-data length); FAT zero-fills.
     pub async fn set_len(&mut self, f: &mut File, len: u64) -> Result<(), D::Error> {

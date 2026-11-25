@@ -59,6 +59,9 @@ pub trait BlockDevice {                    // 512-byte sectors, absolute LBAs
 | `read`, `read_exact_or_eof`, `write`, `File::seek/set_position` | Seek is free (no I/O); writing past the end zero-fills the gap |
 | `set_len` | FAT: zero-fills; exFAT: allocates only (valid-data length unchanged, reads as zeros) |
 | `mark_valid` | exFAT: valid length := size (raw-LBA scratch files) |
+| `rewrite(&mut File, data) -> bool` | Whole content replaced inside the file's own clusters when they are as many as `data` needs: nothing freed or allocated, no data sector read; `false` (untouched) otherwise |
+| `write_entry` + `flush_step` | `close` in steps: the entry into the cache, then one dirty sector (or the sync and clean flag) per call |
+| `find_free_step(sectors)` | The allocation search in stretches of at most `sectors` FAT/bitmap sectors: the next-free hint moves to a free cluster |
 | `flush_file` / `close` | Writes the entry (size, first cluster, time, exFAT checksum), then `flush()` — fsync semantics |
 | `flush` | All dirty sectors, FSINFO, clears the volume dirty flag, `sync()` |
 | `create_dir`, `remove` (file or empty dir), `rename` (also moves; replaces an existing file) | |
@@ -93,6 +96,14 @@ read-only. Raw-LBA writes through `device()` are outside this check.
   directory sector, lowest LBA first; FAT copies are written together.
 * Allocation: cluster marked used → data written → directory entry updated.
   Freeing (truncate, delete): entry written and flushed → clusters freed.
+  The next-free hint then points at the freed chain's first cluster (the
+  next allocation takes it without a search; FAT32 keeps the hint in
+  FSINFO, exFAT only in RAM, so the first search after mounting starts at
+  cluster 2 unless `find_free_step` or a free moved it).
+* `rewrite`: data sectors (whole ones at once, the partial last one through
+  the cache) before the entry; a cut leaves the old file, the new one, or
+  new data under the old entry (its length), never a volume needing repair
+  (`tests/rewrite.rs`, a cut after every write on FAT16, FAT32 and exFAT).
 * `rename` removes the old entry (flushed) before writing the new one: a cut
   in between loses the name, the clusters leak (fsck recovers them); it never
   leaves two entries sharing clusters. A failed rename restores the old entry.
