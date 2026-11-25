@@ -320,7 +320,8 @@ impl UsbDriveService for HostServices {
     fn drive_dirs(&mut self) -> (Option<DirId>, Option<DirId>) {
         use orpheus_usb::msc::image::{TEST_DIR, USER_DIR};
         self.media.learn(TEST_DIR);
-        (self.media.dir_id(USER_DIR), self.media.dir_id(TEST_DIR))
+        let user = self.media.dir_id(USER_DIR).filter(|_| !self.drive.hide_images);
+        (user, self.media.dir_id(TEST_DIR).filter(|_| !self.drive.hide_test))
     }
 
     fn drive_test_mode(&self) -> bool {
@@ -686,6 +687,8 @@ impl Host for HostServices {
             "developer" => self.developer = on,
             "drivehost" => self.drive.host_present = on,
             "drivewrite" => self.drive.write_blocks = v.parse()?,
+            "driveimages" => self.drive.hide_images = !on,
+            "drivetest" => self.drive.hide_test = !on,
             // Radio (UI-5a): `radio=off`, `radio=101900` (playing there),
             // `presets=demo|none`, `antenna=0`, `tuner=absent`.
             "radio" => {

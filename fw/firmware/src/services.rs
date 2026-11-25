@@ -360,6 +360,7 @@ impl Fw {
     /// is done (its data-ready tag may have been lost in a full channel);
     /// take it back if it has waited 3 s without starting (the card task is
     /// busy elsewhere, e.g. the card is with USB).
+    #[inline(never)]
     pub fn poll_picture(&mut self, now_ms: u64) {
         let Some(seq) = self.pic_lent else { return };
         let slot = media::PIC_SLOT.load(Ordering::Acquire);
@@ -446,6 +447,7 @@ impl Fw {
 
     /// Copy the player snapshot (every UI loop), and the windows that
     /// follow it.
+    #[inline(never)]
     pub fn sync_player(&mut self) {
         self.player = critical_section::with(|cs| *media::PLAYER.borrow(cs).borrow());
         let p = self.player;
@@ -499,6 +501,7 @@ impl Fw {
 
     /// Copy the Bluetooth task's snapshot (every UI loop); changes become
     /// service events, the sink's volume takes over the volume keys.
+    #[inline(never)]
     pub fn sync_bt(&mut self) {
         use orpheus_apps::services::bt_event;
         let n = critical_section::with(|cs| *crate::bt::SNAP.borrow(cs).borrow());
@@ -628,6 +631,7 @@ impl Fw {
 
     /// Copy the recorder's state (every UI loop): changes become service
     /// events; a recording that ended says how.
+    #[inline(never)]
     pub fn sync_rec(&mut self) {
         use orpheus_apps::services::rec_event;
         let seq = crate::rec::view().seq;
@@ -654,6 +658,7 @@ impl Fw {
     }
 
     /// USB Drive: an event when the export's phase or host changed.
+    #[inline(never)]
     pub fn sync_drive(&mut self) {
         let g = crate::drive::GEN.load(Ordering::Relaxed);
         if g != self.drive_gen {

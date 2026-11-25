@@ -59,6 +59,82 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-25 — VER-7: the first full suite run on the player triaged; Card info; UI stack (worker, no hardware)
+
+The lead's run `target/orpheus/suite/20261125-031534/` (5 of 15 journeys
+passed, `stack free 2352 of 24232 B`). Each failure, its cause and the fix
+(re-judged offline against the player's PNGs from that run with the new
+expected frames and masks: every suite-side failure now passes; the
+firmware ones need the new build):
+
+| Shot | Cause | Kind | Fix |
+|---|---|---|---|
+| settings/usb, usb/usb_group | the focused label's marquee: it starts 800 ms after the focus moves; the player took longer from the key to the shot (the frame was in the end pause, "…en connected") | suite (timing) | a shot that does not match is read again for up to 6 s (the marquee rests at 0 for 1 s every cycle, with the ellipsis the simulator draws) |
+| settings/system | the player runs the full layout: no "Start original firmware" (UI-2, D-2); the simulator's default is the dual layout | suite (precondition) | `appearance = "set:dual=0"` |
+| system/about | labels are shortened to fit their values: the firmware's hardware string "Yoton YM03 (ATJ2157)" shortened "Hardware" to "Har…" (the simulator says "YM03"); the serial is the player's own | both | firmware hardware string "YM03" (as the simulator); the Serial label masked for this shot |
+| system/card | `Fw::card_info` returned `None`: Card info always said "No card" | **firmware bug** | Card info: size and file system published at every mount (`audio::publish_card`), free space counted once in the card task's idle loop (`count_free`: exFAT bitmap ≈ 240 KB on the owner's 238 GB card; FAT32 FSINFO, else one FAT scan) then kept by the volume; `state::CARD_*` atomics; 0 free shown for the moment it is being counted |
+| files/files_menu, pictures/pictures_menu (4 px) | the listing's scroll thumb shows beside the sheet's rounded top corners (y 40–42) | suite (mask) | the "listing behind the sheet" mask covers y 14–42 |
+| music | the Music root's rows depend on the player (library ready: no "Building library…" row; Now playing / Resume after any playback): `down*8` landed on Bookmarks | suite | Folders reached from the end (`up*2`, the list rolls round); Music's rows masked from y 33 |
+| nowplaying/np, `status` | the fixtures (6 s + 3 s) had ended: the journey took 23 s; Now Playing said "Nothing playing" (the 40 px are the play icon missing) | suite (fixture) | fixtures 30 s each (44.1 kHz mono, deterministic, ≈ 100 s to upload); `cmd: status ~ ^playing` before OK on Music (else OK would start Shuffle all); a failed `cmd:` now stops the journey, and a journey stopped early sends `stop` |
+| steps (468 px) | footer "No clock: no history": the player's clock is not set | suite (state) | variants `clock` / `no-clock` (`set:clockvalid=0`); the suite does not set the clock |
+| authenticator (7425 px) | **"Vault damaged"**: the vault sector 0x7DE000 holds no vault but the bytes that were there before the full-layout switch (`local/nor-before-full.bin`: 3,320 non-0xFF bytes in 0x7DE000–0x7DF3FF; the stock dump has 0xFF there), so the header has no magic → `Status::Damaged` | state (not touched) | variants `locked` / `none` (set-up note) / `damaged`; the shot is `auth`; the vault is never written by a test. User decision below |
+| usbdrive/home (354 px) | the owner's card has no `/Images` (dim row + "No Images folder…"); `/.orpheus/images` exists (USB-6 test) | suite (card) | variants `both` / `test-only` / `images-only` / `neither`; simulator `set:driveimages=0`, `set:drivetest=0` |
+
+* **Suite** (`xtask/src/dev/suite.rs`): `variants = [{ name, sim }]` per
+  journey (expected `<shot>.<variant>.png`, best match reported as
+  `shot@variant`, `variant` in `summary.json`); shot re-reads
+  (`SHOT_RETRY_MS` 6 s, wall clock on the player, simulated time in the
+  dry run); the reference epilogue as the player's (long Back, a short one
+  first if a dialog stays open: the set-up note); `FIXTURE_SECS` 30. Tests:
+  `a_shot_matches_the_variant_the_player_is_in`, report shows the variant,
+  fixture length and determinism.
+* **Stack** (static, direct calls from `llvm-objdump`, one-time start-up
+  and panic paths left out; the audio task runs on the RT executor at
+  interrupt level 2, so its depth adds to whatever the UI task is doing):
+  * UI task worst path **13,640 → 7,608 B**. (1) The settings-store mount
+    moved into `ui::mount_store` (not inlined, `block_on`: the NOR driver
+    blocks): its 1 KB `Option<Store>` passed through the UI task's poll
+    frame three times; poll frame 4,776 + 40 → 904 B (`mount_store` 3,712 B
+    once at boot). (2) `AppScreen::event` (3,448 B: all 26 screens' handlers
+    inlined into one frame) and `enter` now call `event_of`/`enter_of`, one
+    non-inlined function per screen: largest Auth 488 B (its path with HOTP
+    5,296 B), Now Playing 968 B, lists 648 B. (3) `Fw::auth_step` (4,264 B)
+    split: `derive` 4,240 B, `auth_run` 1,232 B, `import_read` apart;
+    `sync_player`/`sync_bt`/`sync_rec`/`sync_drive`/`poll_picture` not
+    inlined (no change measured; they keep the loop's frame small as they
+    grow).
+  * The UI future shrank too: `.bss` 124,152 → 123,352 B, so the stack
+    (the rest of SRAM0) grows by 800 B to ≈ 25,032 B.
+  * Audio (card) task worst path unchanged, **16,980 B**: task closure
+    5,832 B (five ≈ 740 B temporaries: many requests' code inlined) →
+    `play_file` 2,296 → `Server::serve` 1,976 → `resolve` 792 →
+    `Builder::step` 936 → `CardStore::write_at` 660 →
+    `orpheus_index::card::Inner::slot` 2,536 → `Volume::open`/`walk` (≈ 1 KB)
+    → SD. Next step (not done: RT-level code, resident/hot placement): the
+    same non-inlined split for the idle loop's request handlers and for
+    `Inner::slot`.
+  * Largest frames now: `audio::init_chain` 11,192 (once, before the
+    executors), audio task 5,832, `Fw::derive` 4,240, `mount_store` 3,712
+    (once), `release` 2,760, `mount` 2,624, Vorbis `setup` 2,576,
+    `Inner::slot` 2,536, `play_file` 2,296, `init_player` 2,232,
+    `rec::record` 2,216.
+  * The measured 2,352 B free is the high-water mark since boot (the
+    player had not been rebooted between the earlier USB-6/recorder
+    sessions and the suite), not necessarily the suite's.
+* **Numbers**: resident 77,916 → 77,924 B (+8: the card-info atomics in
+  `.data`), `.bss` 124,152 → 123,352 B, 101 code + 18 rodata pages, slot
+  1,060,864 B.
+* **Gate**: host fmt, clippy (`--all-targets -D warnings`), `cargo test
+  --workspace` (963 passed), `xtask test golden`; fw fmt, clippy; `xtask
+  build`, `check-resident`, `size --check`; `cargo xtask dev suite --sim`:
+  15 journeys, 48 shots pass (56 expected frames with the variants). Not
+  run: the suite on the player, `brand`/`site --check`, `hil smoke`.
+* **For the lead**: install the new firmware (`xtask dev stage`), then
+  `cargo xtask dev suite --setup` once (uploads the 30 s fixtures), then
+  `cargo xtask dev suite`; report the `stack free` line. Expected: all 15
+  pass with `auth@damaged`, `home@test-only`, `steps@no-clock` while the
+  vault, `/Images` and the clock are as they are now.
+
 ### 2026-11-24 — UI-8: list roll-around (worker, no hardware)
 
 * **Toolkit** (`orpheus-ui`): `ListView::handle` takes a `ListCx { now,
@@ -134,7 +210,7 @@ of every session. Newest entries first in §3.
 * **User**: check 26 (roll-around on the player, and whether on is the
   right default). Open: the Up next/Details exception above; VER-7's
   on-device journey for roll-around.
-| VER-7 | **tooling built (host + `ui top`, `ui test-look`); first player run failed at Home (owner's accent) → session-only test look added** | `cargo xtask dev suite`: 15 journeys (`tests/suite/journeys.toml`) in the simulator's script language, run in the simulator (expected frames `tests/suite/expected/`, 48 shots) and on the player (keys, `ui top`, screenshots under `tests/suite/masks.toml`, `cmd:` reply checks), report in `target/orpheus/suite/<ts>/`, `--setup` fixtures in `/.orpheus/test/suite/`, `--sim` dry run, ends in a reboot. 07 §5.7 "As built". Not done: every interaction of every screen (VER-7 proper), audio CRC and card-image oracles |
+| VER-7 | **tooling built (host + `ui top`, `ui test-look`); first full player run 2026-11-25: 5 of 15 pass → every failure triaged and fixed (suite: variants, shot re-reads, masks, 30 s fixtures; firmware: Card info, About hardware, UI stack −6 KB); not yet re-run on the player** | `cargo xtask dev suite`: 15 journeys (`tests/suite/journeys.toml`) in the simulator's script language, run in the simulator (expected frames `tests/suite/expected/`, 48 shots) and on the player (keys, `ui top`, screenshots under `tests/suite/masks.toml`, `cmd:` reply checks), report in `target/orpheus/suite/<ts>/`, `--setup` fixtures in `/.orpheus/test/suite/`, `--sim` dry run, ends in a reboot. 07 §5.7 "As built". Not done: every interaction of every screen (VER-7 proper), audio CRC and card-image oracles |
 | VER-8 | **groundwork built, not yet run on the player** | `cargo xtask dev fuzz-ui --seed N --minutes M`: `ui_keys` grammar without Power, a `ui top` guard before every key (dialogs, Bluetooth, USB, Recorder, vault, settings), oracles every K keys (fault record, uptime, stack ≥ `[hil] stack_free_min_bytes`, underruns), card root listing before/after, replay + ddmin into `tests/regress/ui-device/`, `--replay`. Not done: model-guided sequences, injected events, simulator divergence |
 
 ## 3. Session log
@@ -3029,6 +3105,8 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 | 2026-11-24 | Committed fuzz corpora | 30 targets, 13.5 k files, 15 MB | `du --apparent-size tests/fuzz-corpus` |
 | 2026-11-24 | Firmware with `ui top` (VER-7), worker worktree build | resident 77,500 B (`size --check`: 77,495), bss 123,664 B (+8: `TOP`, `TOP_NAME`), 99 code + 18 rodata pages, slot 1,040,384 B | `xtask build`, `xtask size --check` |
 | 2026-11-24 | Firmware with `ui test-look` (VER-7), worker worktree build | resident 77,532 B (was 77,500), bss 123,672 B (was 123,664: +8, `TEST_LOOK` aligned), 99 code + 18 rodata pages | `xtask build`, `xtask size --check` |
+| 2026-11-25 | Firmware after the VER-7 triage (Card info, UI stack), worker worktree build | resident 77,924 B (was 77,916; `size --check` 77,919), bss 123,352 B (was 124,152: the UI future without the store mount), 101 code + 18 rodata pages, slot 1,060,864 B | `xtask build`, `xtask size --check` |
+| 2026-11-25 | Static worst stack paths (direct calls; start-up and panic paths left out) | UI task 13,640 → 7,608 B; audio task (RT executor) 16,980 B unchanged; `AppScreen::event` 3,448 B → one frame per screen (Now Playing 968, lists 648, Authenticator 488 B); UI poll frame 4,816 → 904 B | `llvm-objdump` call graph (worker script) |
 | 2026-11-24 | On-device suite estimate (VER-7) | 15 journeys, 48 shots, ≈ 106 s + reboot; expected frames 256 KiB | `cargo test -p xtask list_estimates`, `du` |
 | 2026-11-24 | Firmware with SENS-1, UI-5c, UI-5d, worker worktree build | resident 83,316 → 83,484 B; `__stack_bottom` 0x132238 → 0x132498 (+608 B); 75 → 79 code pages (+16 rodata), slot 835,584 → 868,352 B; cluster `steps-sample` 3,648 B (4 lines) at 0x222000; sensor task poll frame 68 B, audio task poll 4,992 B (unchanged) | `xtask build`, `llvm-nm`, `llvm-objdump` `sub sp` |
 | 2026-11-24 | Step detector on synthetic traces (25 Hz, 8 seeds × walk/slow/brisk/pocket 120 s, run 90 s) | all within ± 5 %; 0 steps: table 10 min, handling, bus 10 min, shaking 3.8–8 Hz | `cargo test -p orpheus-steps` |
@@ -3038,6 +3116,14 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 | 2026-11-24 | Browser build in headless Chromium 155 / Firefox 157 (localhost) | first screen 155–220 ms; per-frame simulation + draw 0.08–0.11 ms mean, ≤ 1 ms worst; 230 frames in 4 s; 4.0 s of Lyre Study played with 0 dropouts (also with Chromium's fake sink); wasm memory 80 MiB with the 36 MiB card | `xtask wasm --test`, `tests/web/try.mjs --browser firefox` |
 
 ## 5. Open questions for the user
+
+* VER-7 (2026-11-25): the Authenticator says **"Vault damaged"**. The vault
+  sector (NOR 0x7DE000) was never set up: it still holds the bytes that
+  were there before the full-layout switch. Wiping it in the app
+  (Authenticator, Menu › Wipe vault…, then a PIN) makes it a real vault;
+  nothing is lost. The suite accepts every state and never writes it.
+  Also: the player's clock is not set (Steps says "No clock: no history";
+  `cargo xtask dev time --set` sets it).
 
 * SENS-1/UI-5d (2026-11-24): user checks 20 (200 steps twice, 10 min on a
   table) and 21 (stopwatch against a phone, timer and alarm alerts while

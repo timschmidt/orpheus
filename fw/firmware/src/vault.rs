@@ -321,6 +321,7 @@ impl Fw {
         used
     }
 
+    #[inline(never)]
     fn import_read(&mut self, fb: &mut [u16], r: i32, now_ms: u64) {
         let Ok(n) = usize::try_from(r) else {
             self.auth_out(match r {
@@ -356,6 +357,7 @@ impl Fw {
     }
 
     /// Run `op` with the frame buffer as scratch; true if it was used.
+    #[inline(never)]
     fn auth_run(&mut self, op: AuthOp, fb: &mut [u16], now_ms: u64) -> bool {
         if op == AuthOp::Import {
             if !crate::state::CARD_READY.load(Ordering::Relaxed) {
@@ -407,6 +409,7 @@ impl Fw {
 
     /// Run a key derivation to the end (about a second at 48 MHz, a third
     /// at 144 MHz: the clock is raised for it; the governor lowers it again).
+    #[inline(never)]
     fn derive(&mut self, work: VaultWork, pin: &Pin, scratch: &mut [u8], now_ms: u64) {
         use atj2157_hal::clock::{Level, current, set_level};
         if matches!(current(), Level::Low | Level::Base | Level::Mid) {
