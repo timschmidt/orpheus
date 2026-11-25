@@ -65,6 +65,31 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-25 — **soak `mixed` seed 1 passes on the player** (lead)
+
+* Merged `a31ad6f3` (the 52–60 ms `job:index` was a root search after
+  every index build: deleting a file emptied the whole walk cache; now it
+  keeps it; the index lookup runs in resumable stretches of ≤ 3 reads) and
+  added the `dir-walk` page cluster (11 lines: a 3-read stretch had taken
+  33 ms of paging). Static stack 21,812 of 22,016 B.
+* `cargo xtask dev soak mixed --minutes 30 --seed 1`: **PASS** — 35.6 min,
+  27 actions (browse ×6 incl. Pictures and the library while playing,
+  radio on/seek/keys, playdir, seek, set ×4, DSP, a USB personality switch,
+  idle, long listens), 187 samples; stack free ≥ 8,528 B; 0 underruns
+  outside disruption windows (3 inside, allowed); uptime drift −20 ppm;
+  DAC +1,049 ppm against the workstation (budget ±2,500).
+* Left for later (not failures): an `art` chore of 79 ms (unsplittable
+  folder-art lookup, `chore: art 79/23 ms u79`) underran inside a
+  disruption window — split it; evictions/s max 16,443 in one sample.
+* Today's chain of soak findings, each with a regression test: USB-W1,
+  stale test request, Shuffle-all watchdog, card loops never yielding,
+  the log ring wipe, the check-resident hole, the headroom read race and
+  uncounted underruns, paced refills, playback-path paging (AU-PERF),
+  soft-I²C at a third of its speed, Up next titles (O(n) seek in a
+  cluster), forced chores beyond the headroom, the index path lookup per
+  piece, SD sleeps inside synchronous sessions, the chore margin, the walk
+  cache wipe on delete.
+
 ### 2026-11-25 — AU-PERF: `job:index` in stretches; file removals keep the walk cache (worker, no hardware)
 
 From the lead's soak (`chore: job:index 52/26 ms u52`, `pcm: head -621
