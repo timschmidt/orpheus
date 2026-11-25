@@ -495,7 +495,8 @@ Dynamic metrics (HIL, fuzz sessions, benchmarks) get their own files under
 * `--check` fails when the margin is below `budgets.toml [firmware]
   stack_static_margin_bytes`, a `stack.toml` pattern matches nothing, a
   task poll is in no context, an indirect site is unresolved, a cycle is
-  unbounded, or the emergency stack overflows. It is a gate step (§6).
+  unbounded, the emergency stack overflows, or a `hot.toml` cluster with
+  `from` outgrows its `budget_lines` (§5.6). It is a gate step (§6).
 * `--root PATTERN`: the depth, the worst chain and the deepest callees of
   any function (for finding what to cut).
 * Host tests: synthetic graphs (calls vs tail calls, resolved, bounded and
@@ -716,6 +717,38 @@ driver exists because it is much faster than reboot cycles.
   shared with them; hottest first. Replaces the `[[cluster]]` of that name
   in `hot.toml` (comments of other clusters kept) or appends it; also
   `hot-NAME.toml` in the report directory.
+* **Clusters from the static call graph** (`cargo xtask hot`, AU-PERF
+  2026-11-25; no player): for code whose faults a capture cannot single
+  out (a chore while music plays: a game switch's capture is dominated by
+  playback and UI faults). `hot [--name NAME] [--from PATTERN]… [--stop
+  PATTERN]… [--lines N] [--fits-with A,B] [--top N] [--write]`: the call
+  graph of `xtask stack` (direct branches, `stack.toml`'s global indirect
+  targets), breadth-first from the `--from` globs, not entering `--stop`
+  functions or the panic paths; reports the reachable functions, paged and
+  resident bytes, paged bytes by crate and by owning cluster, the largest
+  paged functions with their distance from a root; then picks the
+  reachable paged functions closest to the roots first (ties: more
+  callers among the reached), as literal name patterns, within `--lines`
+  (default 8), skipping functions another cluster owns and names shared
+  with one. `--write` replaces or appends the cluster in `hot.toml` with
+  its `from`, `stop`, `budget_lines` (and `fits_with`, `starts_over`
+  kept); without `--from` the stored roots are used, so a rebuild's
+  cluster is regenerated with `hot --name NAME --write`.
+* **Line budget check** (`xtask stack`, and `--check` fails on it): for
+  each cluster with `from`, the reachable paged code (not entering
+  `stop`) that is neither in the cluster nor in a `fits_with` cluster
+  costs at least one line per started KiB of each function; the
+  cluster's lines plus those must stay within `budget_lines`. A new
+  function on the path, a cluster pattern that no longer matches or an
+  inlining change that moves code out shows up as a build-gate failure
+  instead of as `pl=` on the player.
+* **`starts_over = "NAME"`** (pagelink): a cluster starts on the physical
+  line NAME starts on, the code window before it left empty (reported by
+  `cargo xtask build`; 7 KiB for `flac-frame` after `games-io` and
+  `dir-walk`). The three playback clusters take all 32 physical lines,
+  so a chore's cluster that runs with `play-fill` goes between
+  `play-fill` and `flac-frame`, and `flac-frame` returns to `mp3-frame`'s
+  lines this way.
 * **What it cannot measure**: the profile is a sample (500 PCs / 250
   faults per capture: a function under ~1 % of the time or faults may not
   appear; distinct-line counts of a thinned capture are lower bounds, take

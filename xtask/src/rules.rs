@@ -116,7 +116,7 @@ impl Rules {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Cluster {
     pub name: String,
@@ -132,6 +132,22 @@ pub struct Cluster {
     /// with this one or with each other (`pagelink` warns).
     #[serde(default)]
     pub fits_with: Vec<String>,
+    /// Start on the physical code-cache line the named cluster (placed
+    /// before this one) starts on: `pagelink` leaves the code window empty
+    /// up to there (at most 31 lines). For a cluster that must share
+    /// lines with that one only (one decoder's frame code over another's).
+    #[serde(default)]
+    pub starts_over: Option<String>,
+    /// Entry points of the code the cluster is for (`xtask hot`, symbol
+    /// patterns): with them, `xtask stack --check` checks that the paged
+    /// code reachable from them (not entering `stop`) and not in a
+    /// `fits_with` cluster stays within `budget_lines`.
+    #[serde(default)]
+    pub from: Vec<String>,
+    #[serde(default)]
+    pub stop: Vec<String>,
+    #[serde(default)]
+    pub budget_lines: Option<u32>,
 }
 
 impl Cluster {
@@ -280,7 +296,7 @@ symbols = ["*planted*"]
             bins: vec![],
             symbols: vec!["a::second".into(), "a::first*".into()],
             sections: vec![".text.zero".into()],
-            fits_with: vec![],
+            ..Cluster::default()
         };
         assert_eq!(c.rank(&sec(".text.zero", "f", &[])), Some(0));
         assert_eq!(c.rank(&sec(".text.q", "f", &["a::second"])), Some(1));

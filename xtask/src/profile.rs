@@ -850,7 +850,7 @@ pub struct Generated {
 /// Bytes a section takes in a cluster: its size plus up to 3 bytes of
 /// alignment padding (pagelink aligns each section; code is 2- or 4-byte
 /// aligned).
-fn packed(size: u32) -> u32 {
+pub(crate) fn packed(size: u32) -> u32 {
     size + 3
 }
 
@@ -994,7 +994,7 @@ impl Generated {
     }
 }
 
-fn toml_str(s: &str) -> String {
+pub(crate) fn toml_str(s: &str) -> String {
     let mut o = String::from("\"");
     for c in s.chars() {
         match c {
@@ -1111,6 +1111,7 @@ mod tests {
             symbols: vec!["orpheus_codec_opus::celt::*".into()],
             sections: vec![],
             fits_with: vec![],
+            ..Cluster::default()
         };
         t.assign_owners(&[c]);
         t
@@ -1295,6 +1296,7 @@ mod tests {
             symbols: vec!["firmware::ui::row".into()],
             sections: vec![],
             fits_with: vec![],
+            ..Cluster::default()
         };
         let celt = Cluster {
             name: "opus-celt".into(),
@@ -1302,6 +1304,7 @@ mod tests {
             symbols: vec!["orpheus_codec_opus::celt::*".into()],
             sections: vec![],
             fits_with: vec![],
+            ..Cluster::default()
         };
         t.assign_owners(&[celt, mine]);
         let p = fault_prof(&t);

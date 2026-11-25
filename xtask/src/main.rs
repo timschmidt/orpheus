@@ -11,6 +11,7 @@ mod cover;
 mod dev;
 mod drain;
 mod gate;
+mod hot;
 mod linkgraph;
 mod linkmap;
 mod metrics;
@@ -51,7 +52,13 @@ usage: cargo xtask <command> [options]
   stack [--check] [--top N] [--root PATTERN] [--elf PATH]
                                    static worst-case MSP depth per task, handler and
                                    in total with interrupt nesting (stack.toml);
-                                   --check enforces budgets.toml's margin
+                                   --check enforces budgets.toml's margin and the
+                                   line budgets of hot.toml clusters with `from`
+  hot [--name NAME] [--from PATTERN]… [--stop PATTERN]… [--lines N] [--fits-with A,B]
+      [--top N] [--write]          the paged code reachable from PATTERN (static call
+                                   graph): size by crate and cluster, the largest
+                                   functions, a cluster of it within N lines (default
+                                   8); --write puts it in hot.toml (07 §5.6)
   test [host|golden|pagelink|codecs|fuzz-smoke|codec-size|all]
                                    host test suites (pagelink: the paged toy end to end)
   test fuzz-seeds                  rewrite the committed seed inputs of every fuzz
@@ -108,6 +115,7 @@ fn main() -> ExitCode {
         "check-resident" => resident::cmd(&mut args),
         "size" => size::cmd(&mut args),
         "stack" => stack::cmd(&mut args),
+        "hot" => hot::cmd(&mut args),
         "test" => test::cmd(&mut args),
         "gate" => gate::cmd(&mut args),
         "cover" => cover::cmd(&mut args),

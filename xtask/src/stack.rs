@@ -47,7 +47,7 @@ use serde::Deserialize;
 
 use crate::args::Args;
 use crate::linkgraph::{Graph, Kind, demangle};
-use crate::linkmap;
+use crate::linkmap::{self, InputSection};
 use crate::pagelink::artefacts;
 use crate::rules::symbol_matches;
 use crate::util::{log, root};
@@ -352,17 +352,20 @@ pub fn nest(rows: &[(u8, String, u32)], frame: u32, faults: u32) -> (u32, Vec<(u
 // ---------------------------------------------------------------------------
 // The firmware.
 
-struct Analysis {
-    cg: CallGraph,
+pub(crate) struct Analysis {
+    pub cg: CallGraph,
     /// Demangled symbols per node (pattern lookups).
     labels: Vec<Vec<String>>,
     /// Instruction text by address (site context).
     insn: BTreeMap<u32, String>,
     /// Stack region: (bottom, top).
     stack: (u32, u32),
+    /// The input sections (`xtask hot`: sizes, placement, cluster owners).
+    pub secs: Vec<InputSection>,
+    pub kinds: Vec<Kind>,
 }
 
-fn load(elf: &Path, map: &Path) -> Result<Analysis> {
+pub(crate) fn load(elf: &Path, map: &Path) -> Result<Analysis> {
     let m =
         linkmap::parse(&std::fs::read_to_string(map).with_context(|| format!("read {}", map.display()))?)?;
     let g = Graph::load(elf, m)?;
@@ -415,11 +418,11 @@ fn load(elf: &Path, map: &Path) -> Result<Analysis> {
         _ => bail!("{}: no __stack_bottom/__stack_top", elf.display()),
     };
     let cg = CallGraph { names, frame, calls, sites, bounded_cycle: vec![false; n] };
-    Ok(Analysis { cg, labels, insn, stack })
+    Ok(Analysis { cg, labels, insn, stack, secs: g.nodes, kinds: g.kinds })
 }
 
 impl Analysis {
-    fn find(&self, pat: &str) -> Vec<usize> {
+    pub(crate) fn find(&self, pat: &str) -> Vec<usize> {
         (0..self.cg.names.len())
             .filter(|&i| self.labels[i].iter().any(|l| l == pat || symbol_matches(pat, l)))
             .collect()
@@ -440,7 +443,7 @@ impl Analysis {
 
     /// Resolver from `[[indirect]]` entries and the targets they name;
     /// patterns that match nothing go to `missing`.
-    fn resolver(
+    pub(crate) fn resolver(
         &self,
         entries: &[&IndirectCfg],
         missing: &mut Vec<String>,
@@ -560,7 +563,7 @@ impl Report {
 }
 
 /// Load `stack.toml`, mark its bounded cycles; the global indirect entries.
-fn prepare(an: &mut Analysis, cfg: &Config, missing: &mut Vec<String>) {
+pub(crate) fn prepare(an: &mut Analysis, cfg: &Config, missing: &mut Vec<String>) {
     for r in &cfg.recursion {
         let v = an.find(&r.through);
         if v.is_empty() {
@@ -732,7 +735,7 @@ fn analyse(an: &mut Analysis, cfg: &Config) -> Report {
     }
 }
 
-fn artefact_paths(args: &mut Args) -> Result<(std::path::PathBuf, std::path::PathBuf)> {
+pub(crate) fn artefact_paths(args: &mut Args) -> Result<(std::path::PathBuf, std::path::PathBuf)> {
     let a = artefacts("firmware");
     let elf = args.value("elf").map_or(a.elf, Into::into);
     let map = args.value("map").map_or(a.map, Into::into);
@@ -895,6 +898,12 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     let verdict =
         format!("{}{} B nested worst case of {} B usable, margin {margin} B", ge(r.lower), r.total, r.usable);
     let mut errors = r.errors;
+    // The line budgets of `hot.toml` clusters with roots (`xtask hot`).
+    let (hot_lines, hot_errors) = crate::hot::check_all(&mut an, &cfg)?;
+    for l in &hot_lines {
+        log(&format!("  {l}"));
+    }
+    errors.extend(hot_errors);
     if check {
         let b: toml::Table = toml::from_str(&std::fs::read_to_string(root().join("budgets.toml"))?)?;
         let need = b
