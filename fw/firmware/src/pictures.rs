@@ -667,10 +667,16 @@ async fn find_cover(vol: &mut Vol, l: Locator, e: &mut DirEntry) -> bool {
         return false;
     }
     let mut best: Option<(u8, Locator)> = None;
-    // Large folders: the first 4096 entries (a cover is usually early).
+    let t0 = time::now_us();
+    let mut seen = 0u32;
+    // Large folders: the first 4096 entries and at most 250 ms (a cover is
+    // usually early; the search runs while a track opens).
     for _ in 0..4096 {
+        if time::now_us() - t0 >= COVER_SEARCH_US {
+            break;
+        }
         match vol.read_dir(&mut cur, e).await {
-            Ok(true) => {}
+            Ok(true) => seen += 1,
             _ => break,
         }
         if e.is_dir() {
@@ -685,11 +691,24 @@ async fn find_cover(vol: &mut Vol, l: Locator, e: &mut DirEntry) -> bool {
             }
         }
     }
+    let took = time::now_us() - t0;
+    if took >= 100_000 {
+        let mut l = atj2157_hal::log::LineBuf::new();
+        l.push_str("art: cover search ")
+            .push_u32((took / 1000) as u32)
+            .push_str(" ms, ")
+            .push_u32(seen)
+            .push_str(" entries");
+        l.emit();
+    }
     match best {
         Some((_, at)) if !player_waiting() => vol.open_locator(at, e).await.is_ok(),
         _ => false,
     }
 }
+
+/// Longest search for a folder's cover picture (µs).
+const COVER_SEARCH_US: u64 = 250_000;
 
 /// Decode the picture of `e` (embedded at `at`, else the whole file) into
 /// the small and, if the arena allows, the big album art, and store them

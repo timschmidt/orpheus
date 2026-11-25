@@ -35,7 +35,7 @@ mod volume;
 #[cfg(feature = "std")]
 pub mod host;
 
-pub use block::{BlockDevice, SECTOR_SIZE, Sector};
+pub use block::{BlockDevice, SECTOR_SIZE, Sector, SyncPoll};
 pub use cache::CacheSlot;
 pub use dir::{DirCursor, DirEntry, Locator, MAX_NAME_UTF8, WalkCache};
 pub use file::{Extent, ExtentIter, File, OpenMode, SeekFrom};

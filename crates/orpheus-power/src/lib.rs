@@ -13,3 +13,4 @@ pub mod charger;
 pub mod drain;
 pub mod gauge;
 pub mod governor;
+pub mod pace;

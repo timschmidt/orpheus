@@ -94,10 +94,32 @@ impl Card {
     }
 }
 
+/// End of the card task's last rest ([`pace`]), µs counter.
+static LAST_REST: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// On the real-time executor, rest [`orpheus_power::pace::REST_US`] after
+/// every [`orpheus_power::pace::RUN_US`] of card work: the SD driver spins
+/// for its transfers, so card loops never yield otherwise and starve thread
+/// mode into the watchdog. Thread-mode users (the USB card reader) keep
+/// full speed.
+async fn pace() {
+    use core::sync::atomic::Ordering::Relaxed;
+    // Thread mode needs no pacing; inside a synchronous poller a timer
+    // would never fire (`orpheus_fs::SyncPoll`).
+    if !atj2157_hal::rt::in_handler_mode() || orpheus_fs::SyncPoll::active() {
+        return;
+    }
+    if orpheus_power::pace::due(atj2157_hal::time::now_us() as u32, LAST_REST.load(Relaxed)) {
+        embassy_time::Timer::after_micros(u64::from(orpheus_power::pace::REST_US)).await;
+        LAST_REST.store(atj2157_hal::time::now_us() as u32, Relaxed);
+    }
+}
+
 impl BlockDevice for Card {
     type Error = Error;
 
     async fn read(&mut self, lba: u32, buf: &mut [[u8; 512]]) -> Result<(), Error> {
+        pace().await;
         count_io();
         let flat = buf.as_flattened_mut();
         if dma_ok(flat.as_ptr(), flat.len()) {
@@ -112,6 +134,7 @@ impl BlockDevice for Card {
     }
 
     async fn write(&mut self, lba: u32, buf: &[[u8; 512]]) -> Result<(), Error> {
+        pace().await;
         count_io();
         let flat = buf.as_flattened();
         if dma_ok(flat.as_ptr(), flat.len()) {

@@ -6,6 +6,38 @@ pub const SECTOR_SIZE: usize = 512;
 /// One sector.
 pub type Sector = [u8; SECTOR_SIZE];
 
+/// Synchronous pollers running now (a future polled in a loop with
+/// whatever context the caller has, e.g. `orpheus_index::card::spin`).
+/// While one runs, a block device must not wait for time to pass (a timer
+/// polled in such a loop may never fire, and nothing else runs meanwhile):
+/// rests and pacing are skipped. Found 2026-11-25: the card's pacing sleep
+/// inside a synchronous library session hung the player until the watchdog.
+pub static SYNC_POLLERS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// Marks a synchronous poller for its lifetime ([`SYNC_POLLERS`]).
+pub struct SyncPoll(());
+
+impl SyncPoll {
+    /// Start marking; the mark ends when the value is dropped.
+    #[must_use]
+    pub fn enter() -> Self {
+        SYNC_POLLERS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        Self(())
+    }
+
+    /// Whether any synchronous poller is running.
+    #[must_use]
+    pub fn active() -> bool {
+        SYNC_POLLERS.load(core::sync::atomic::Ordering::Relaxed) != 0
+    }
+}
+
+impl Drop for SyncPoll {
+    fn drop(&mut self) {
+        SYNC_POLLERS.fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// An async block device with 512-byte sectors.
 ///
 /// `lba` is relative to the start of the device (the file system adds the

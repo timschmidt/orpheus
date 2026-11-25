@@ -2794,6 +2794,30 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-25 — soak reset found: card loops never yielded (lead)
+
+* With the surviving log and the new post-reset PC report, the soak's
+  saved finding `tests/regress/soak/mixed-reset-seed1-4.soak` (browse
+  Files → a track opens; then Pictures) showed the RT executor stuck in
+  `pictures::find_cover` (album art for the opening track: a folder scan
+  of up to 4,096 entries) — the screen being Pictures was incidental.
+* Cause, general: the SD driver spins for its microsecond transfers, so a
+  loop of card reads on the RT executor never yields; thread mode (UI,
+  USB, the watchdog task) starves and a long loop ends in a watchdog
+  reset (also behind the Shuffle-all reset and the old card-walk fix).
+* Fix: the card's read/write rest 4 ms after every 8 ms of card work on
+  the RT executor (`orpheus_power::pace`, `regress_card_work_rests_every_8_ms`);
+  not inside synchronous pollers (`orpheus_fs::SyncPoll`, set by
+  `orpheus_index::card::spin`: a first version slept there, a timer that
+  never fires, and hung — `regress_spin_marks_a_synchronous_poller`);
+  thread-mode users (USB card reader) unpaced. The cover search is capped
+  at 250 ms and logs its cost.
+* Replay on the player: **no reset any more**. Measured: the cover search
+  read **37 entries in 253 ms (~7 ms per entry)** — directory reads are
+  far too slow there (open; host investigation next). A screenshot
+  request during the Pictures step still times out once (USB data-timeout,
+  the player stays up) — open.
+
 ### 2026-11-25 — a start-up fault in slot A caught by the fallback; check-resident hole closed (lead)
 
 * Chasing the Pictures stall (soak seed 1, step 5 `browse pictures`: the

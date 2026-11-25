@@ -283,6 +283,17 @@ unsafe extern "C" fn irq_entry() {
     )
 }
 
+/// Whether the CPU runs an exception handler (the interrupt-level
+/// executor, an interrupt) rather than thread mode.
+#[inline]
+#[must_use]
+pub fn in_handler_mode() -> bool {
+    let ipsr: u32;
+    // SAFETY: reading IPSR has no side effects.
+    unsafe { core::arch::asm!("mrs {}, IPSR", out(reg) ipsr, options(nomem, nostack, preserves_flags)) };
+    ipsr & 0x1FF != 0
+}
+
 /// Persistent words sampled on every interrupt taken from handler mode: the
 /// interrupted PC and exception number. After a watchdog reset they show
 /// where a handler-mode loop (the RT executor) was spinning.

@@ -47,6 +47,7 @@ const PATH: usize = 40;
 
 /// Run `f` to completion, polling it with `cx` in a loop.
 pub fn spin<F: Future>(cx: &mut Context<'_>, f: F) -> F::Output {
+    let _sync = orpheus_fs::SyncPoll::enter();
     let mut f = pin!(f);
     loop {
         if let Poll::Ready(v) = f.as_mut().poll(cx) {
