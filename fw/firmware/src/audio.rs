@@ -49,6 +49,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::waitqueue::AtomicWaker;
 use embassy_time::Timer;
+use orpheus_audio::pcm::{self, Book, Look, Reading};
 use orpheus_audio::ring::{Space, Target as Part};
 use orpheus_audio::{
     ByteSource, ContainerInfo, OpenError, PcmBlock, Probe, SeekSource, SeekStep, SourceError, Step,
@@ -232,6 +233,8 @@ static DEC_N: AtomicU32 = AtomicU32::new(0);
 static DEC_US: AtomicU32 = AtomicU32::new(0);
 static DEC_MAX_US: AtomicU32 = AtomicU32::new(0);
 static DEC_LOADS: AtomicU32 = AtomicU32::new(0);
+/// The last decoder call (µs; the `pcm: head` log line).
+static LAST_DEC_US: AtomicU32 = AtomicU32::new(0);
 /// The last gapless track change (`status`, µs and counts): PCM frames
 /// queued when the decoder ended (the headroom), time from there to the
 /// next track's first block, pager line loads in that time, underruns of
@@ -505,8 +508,10 @@ const HALF: usize = PCM_FRAMES / 2;
 const DAC_CH: usize = 5;
 
 static PLAYED: AtomicU32 = AtomicU32::new(0);
-/// The DAC's lowest headroom (frames) seen by the playback loop since the
-/// last read (VER-12 soak: STATS group 0 word 21; `i32::MAX`: not playing).
+/// The DAC's lowest headroom (frames) seen since the last read (VER-12
+/// soak: STATS group 0 word 21; `i32::MAX`: not playing). Every look at the
+/// DMA feeds it: before each block's pushes (where a stall leaves the writer
+/// furthest behind), at half boundaries and at the loop's chore checks.
 static HEAD_MIN: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(i32::MAX);
 
 /// Take the headroom low-water mark (reset to "none").
@@ -528,21 +533,131 @@ fn on_dac_dma() {
     PCM_WAKER.wake();
 }
 
+/// Where a look at the DMA was taken (the `pcm: head` log line's `by`).
+#[derive(Clone, Copy)]
+enum By {
+    /// Before a block's pushes.
+    Block,
+    /// At a half boundary.
+    Half,
+    /// The playback loop's `headroom` (chores, refills, joins).
+    Loop,
+}
+
+/// When the last `pcm: head` line was logged (ms, 0: never) and the looks
+/// with negative headroom since that were not.
+static HEAD_LOG_MS: AtomicU32 = AtomicU32::new(0);
+static HEAD_QUIET: AtomicU32 = AtomicU32::new(0);
+
+/// The DAC fetched frames the writer had not written (VER-12, 2026-11-25:
+/// the soak saw -13 frames with no underrun counted). At most one line a
+/// second: the headroom, where the look was, the writer's half and fill,
+/// the DMA's half and frame, halves newly counted, the last decoder call,
+/// the loop's breadcrumb ([`mark`]), the longest operation since the last
+/// half boundary (the ledger's candidate cause) and the looks with negative
+/// headroom not logged since the last line.
+#[inline(never)]
+fn head_log(l: Look, r: Reading, b: &Book, by: By) {
+    let now = ((time::now_us() / 1000) as u32).max(1);
+    let last = HEAD_LOG_MS.load(Ordering::Relaxed);
+    if last != 0 && now.wrapping_sub(last) < 1000 {
+        HEAD_QUIET.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+    HEAD_LOG_MS.store(now, Ordering::Relaxed);
+    let worst = critical_section::with(|cs| LEDGER.borrow(cs).borrow().worst());
+    let mut s = atj2157_hal::log::LineBuf::new();
+    s.push_str(if l.head < 0 { "pcm: head -" } else { "pcm: head " })
+        .push_u32(l.head.unsigned_abs())
+        .push_str(match by {
+            By::Block => " blk w=",
+            By::Half => " half w=",
+            By::Loop => " loop w=",
+        })
+        .push_u32(b.written)
+        .push_str(" f=")
+        .push_u32(b.fill)
+        .push_str(" p=")
+        .push_u32(r.played)
+        .push_str(" at=")
+        .push_u32(r.at)
+        .push_str(" n=")
+        .push_u32(l.stale)
+        .push_str(" dec=")
+        .push_u32(LAST_DEC_US.load(Ordering::Relaxed) / 1000)
+        .push_str("ms mk=")
+        .push_u32(WHERE.load(Ordering::Relaxed));
+    match worst {
+        Some((c, us)) => {
+            s.push_str(" ub=")
+                .push_str(match c {
+                    UB_JOIN => "join",
+                    UB_FILL => "fill",
+                    UB_SERVE => "serve",
+                    UB_PREFETCH => "pf",
+                    UB_PREPARE => "prep",
+                    UB_LIB => "lib",
+                    UB_ART => "art",
+                    _ => "dec",
+                })
+                .push_str(":")
+                .push_u32(us / 1000)
+                .push_str("ms");
+        }
+        None => {
+            s.push_str(" ub=-");
+        }
+    }
+    s.push_str(" +").push_u32(HEAD_QUIET.swap(0, Ordering::Relaxed));
+    s.emit();
+}
+
+/// The PCM ring's writer; the accounting is `orpheus_audio::pcm::Book`
+/// (host-tested).
 struct PcmOut {
-    written: u32,
-    fill: usize,
+    book: Book,
     running: bool,
     crc: u32,
 }
 
 impl PcmOut {
     fn new() -> Self {
-        Self { written: 0, fill: 0, running: false, crc: 0xFFFF_FFFF }
+        Self { book: Book::new(HALF as u32), running: false, crc: 0xFFFF_FFFF }
     }
 
     fn slot(&self) -> *mut u32 {
-        let half = (self.written % 2) as usize;
-        (PCM_ADDR as *mut u32).wrapping_add(half * HALF + self.fill)
+        let half = (self.book.written % 2) as usize;
+        (PCM_ADDR as *mut u32).wrapping_add(half * HALF + self.book.fill as usize)
+    }
+
+    /// The DMA's half count and position, from the same half.
+    fn reading() -> Reading {
+        const BYTES: u32 = (PCM_FRAMES * 4) as u32;
+        pcm::read(
+            || PLAYED.load(Ordering::Acquire),
+            || {
+                // SAFETY: channel 5 belongs to this module; a register read.
+                let rem = unsafe { DmaCh::steal(DAC_CH) }.remaining().min(BYTES);
+                ((BYTES - rem) / 4) % HALF as u32
+            },
+        )
+    }
+
+    /// Count what a look found (underruns: halves the DAC fetched stale
+    /// frames from, each once). At a half boundary a clean look clears the
+    /// ledger's candidate operation.
+    fn account(&self, l: Look, r: Reading, by: By) -> i32 {
+        HEAD_MIN.fetch_min(l.head, Ordering::Relaxed);
+        if l.head < 0 {
+            head_log(l, r, &self.book, by);
+        }
+        if l.stale > 0 {
+            critical_section::with(|cs| LEDGER.borrow(cs).borrow_mut().missed(l.stale, UB_DECODER));
+            UNDERRUNS.fetch_add(l.stale, Ordering::Relaxed);
+        } else if matches!(by, By::Half) {
+            critical_section::with(|cs| LEDGER.borrow(cs).borrow_mut().kept_up());
+        }
+        l.head
     }
 
     async fn push(&mut self, frame: u32) {
@@ -551,68 +666,66 @@ impl PcmOut {
         if CRC_ON.load(Ordering::Relaxed) {
             self.crc = crc32_update(self.crc, &frame.to_le_bytes());
         }
-        self.fill += 1;
-        if self.fill == HALF {
-            self.fill = 0;
-            self.written += 1;
-            if !self.running && self.written == 2 {
-                self.start();
-            }
-            // Wait while both halves hold unplayed data.
-            WRITTEN.store(self.written, Ordering::Relaxed);
-            if self.running {
-                mark(3);
-                core::future::poll_fn(|cx| {
-                    PCM_WAKER.register(cx.waker());
-                    let played = PLAYED.load(Ordering::Acquire);
-                    // Signed: after an underrun `played` is ahead of
-                    // `written`, which must count as room (it is accounted
-                    // for below), not as a wrapped huge backlog.
-                    if (self.written.wrapping_sub(played) as i32) < 2 || STOP.load(Ordering::Relaxed) {
-                        core::task::Poll::Ready(())
-                    } else {
-                        core::task::Poll::Pending
-                    }
-                })
-                .await;
-                let played = PLAYED.load(Ordering::Acquire);
-                let lost = played.saturating_sub(self.written);
-                critical_section::with(|cs| {
-                    let mut l = LEDGER.borrow(cs).borrow_mut();
-                    if lost > 0 { l.missed(lost, UB_DECODER) } else { l.kept_up() }
-                });
-                if played > self.written {
-                    UNDERRUNS.fetch_add(played - self.written, Ordering::Relaxed);
-                    let now = (time::now_us() / 1000) as u32;
-                    if now.wrapping_sub(LAST_SERVE_MS.load(Ordering::Relaxed)) > 500 {
-                        SLOW_UNDERRUNS.fetch_add(played - self.written, Ordering::Relaxed);
-                    }
-                    // Re-sync one half ahead of the DMA: the next push then
-                    // waits for a DMA interrupt, so a decoder that cannot
-                    // keep up still yields (otherwise the RT executor never
-                    // returns, thread mode starves and the watchdog fires).
-                    self.written = played + 1;
+        if !self.book.wrote() {
+            return;
+        }
+        if !self.running && self.book.written == 2 {
+            self.start();
+        }
+        // Wait while both halves hold unplayed data.
+        WRITTEN.store(self.book.written, Ordering::Relaxed);
+        if self.running {
+            mark(3);
+            core::future::poll_fn(|cx| {
+                PCM_WAKER.register(cx.waker());
+                if !self.book.full(PLAYED.load(Ordering::Acquire)) || STOP.load(Ordering::Relaxed) {
+                    core::task::Poll::Ready(())
+                } else {
+                    core::task::Poll::Pending
+                }
+            })
+            .await;
+            let r = Self::reading();
+            // The too-slow abort counts whole halves the DMA finished past
+            // the writer, as before VER-12's finer count.
+            let lost = r.played.wrapping_sub(self.book.written) as i32;
+            if lost > 0 {
+                let now = (time::now_us() / 1000) as u32;
+                if now.wrapping_sub(LAST_SERVE_MS.load(Ordering::Relaxed)) > 500 {
+                    SLOW_UNDERRUNS.fetch_add(lost as u32, Ordering::Relaxed);
                 }
             }
+            // Past the DMA the writer re-syncs one half ahead of it: the
+            // next push then waits for a DMA interrupt, so a decoder that
+            // cannot keep up still yields (otherwise the RT executor never
+            // returns, thread mode starves and the watchdog fires).
+            let l = self.book.boundary(r);
+            self.account(l, r, By::Half);
+        }
+    }
+
+    /// Look at the DMA before a block's pushes: after the decoder or a chore
+    /// the writer is furthest behind here (pushing only gains on the DAC).
+    fn look(&mut self) {
+        if self.running {
+            let r = Self::reading();
+            let l = self.book.look(r);
+            self.account(l, r, By::Block);
         }
     }
 
     /// Frames the DAC has ahead of it: the written halves it has not
-    /// finished, less what it has played of the current one (its DMA
-    /// position), plus the half being filled. `i32::MAX` while it is not
-    /// running (nothing has a deadline then); ≤ 0: it is playing stale data.
-    fn headroom(&self) -> i32 {
+    /// finished, less what it has fetched of the current one (its DMA
+    /// position), plus the half being filled (`orpheus_audio::pcm`).
+    /// `i32::MAX` while it is not running (nothing has a deadline then);
+    /// < 0: it is fetching stale frames (counted as underruns).
+    fn headroom(&mut self) -> i32 {
         if !self.running {
             return i32::MAX;
         }
-        const BYTES: u32 = (PCM_FRAMES * 4) as u32;
-        // SAFETY: channel 5 belongs to this module; a register read.
-        let rem = unsafe { DmaCh::steal(DAC_CH) }.remaining().min(BYTES);
-        let at = ((BYTES - rem) / 4) as usize % HALF;
-        let halves = self.written.wrapping_sub(PLAYED.load(Ordering::Acquire)) as i32;
-        let h = halves * HALF as i32 + self.fill as i32 - at as i32;
-        HEAD_MIN.fetch_min(h, Ordering::Relaxed);
-        h
+        let r = Self::reading();
+        let l = self.book.look(r);
+        self.account(l, r, By::Loop)
     }
 
     fn start(&mut self) {
@@ -625,10 +738,10 @@ impl PcmOut {
 
     /// Pad the current half with silence, let everything play out, stop.
     async fn finish(&mut self) {
-        if !self.running && self.written == 0 && self.fill == 0 {
+        if !self.running && self.book.written == 0 && self.book.fill == 0 {
             return;
         }
-        while self.fill != 0 {
+        while self.book.fill != 0 {
             self.push(0).await;
         }
         for _ in 0..2 {
@@ -643,8 +756,7 @@ impl PcmOut {
         // SAFETY: channel 5 belongs to this module.
         unsafe { DmaCh::steal(DAC_CH) }.abort();
         self.running = false;
-        self.written = 0;
-        self.fill = 0;
+        self.book.reset();
     }
 }
 
@@ -880,7 +992,7 @@ async fn seek_to(
 
 /// The current track's decoder ended and the next one is handed over:
 /// the join's statistics start, and its underruns are no decoder's.
-fn handed_over(out: &PcmOut) {
+fn handed_over(out: &mut PcmOut) {
     // A new join: what it has not measured yet shows `-`, not the last
     // join's numbers (the read-ahead and preparation are this join's).
     for i in [J_OPEN_US, J_LOADS, J_UNDER, J_LIB_US, J_ART_US, J_UNDER_META] {
@@ -1292,6 +1404,7 @@ async fn play_file(
         DEC_N.fetch_add(1, Ordering::Relaxed);
         DEC_US.fetch_add(dt as u32, Ordering::Relaxed);
         DEC_MAX_US.fetch_max(dt as u32, Ordering::Relaxed);
+        LAST_DEC_US.store(dt as u32, Ordering::Relaxed);
         DEC_LOADS.fetch_add(pager_loads().wrapping_sub(l0), Ordering::Relaxed);
         match step {
             Ok(Step::Pcm(block)) => {
@@ -1322,6 +1435,7 @@ async fn play_file(
                             mark(5);
                             let n = if dsp { chain.process(&mut PcmBlock::I16(&mut *sc)) } else { sc.len() };
                             mark(0);
+                            out.look();
                             for fr in sc[..n.min(sc.len())].chunks_exact(ch) {
                                 let l = fr[0] as u16;
                                 let r = if stereo { fr[1] as u16 } else { l };
@@ -1338,6 +1452,7 @@ async fn play_file(
                             mark(5);
                             let n = if dsp { chain.process(&mut PcmBlock::I32(&mut *sc)) } else { sc.len() };
                             mark(0);
+                            out.look();
                             for fr in sc[..n.min(sc.len())].chunks_exact(ch) {
                                 let l = (fr[0] >> 16) as u16;
                                 let r = if stereo { (fr[1] >> 16) as u16 } else { l };

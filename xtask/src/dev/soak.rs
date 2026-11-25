@@ -1084,6 +1084,8 @@ pub struct Oracles {
     base_fault: Option<u32>,
     first: Option<(u64, u32)>,
     prev: Option<Sample>,
+    /// The action the previous sample was taken in.
+    prev_action: Option<usize>,
     disrupt_until: u64,
     /// Underruns allowed in the current disruption window, still left.
     window_left: u64,
@@ -1103,6 +1105,7 @@ impl Oracles {
             base_fault,
             first: None,
             prev: None,
+            prev_action: None,
             disrupt_until: 0,
             window_left: 0,
             thrash_run: 0,
@@ -1125,7 +1128,24 @@ impl Oracles {
         self.seg = None;
     }
 
+    /// What a counter read at `s` covers: the low-water and the underrun
+    /// count are over the whole time since the previous sample, which may
+    /// lie in an earlier action (the VER-12 finding of 2026-11-25 read a
+    /// low-water over 76 s that began in `browse pictures` and was reported
+    /// in `radio-keys`).
+    fn since(&self, s: &Sample, action: usize) -> String {
+        let secs = |p: &Sample| s.t_ms.saturating_sub(p.t_ms) as f64 / 1000.0;
+        match (&self.prev, self.prev_action) {
+            (Some(p), Some(a)) if a != action => {
+                format!("; over the {:.1} s since the sample in action #{a}", secs(p))
+            }
+            (Some(p), _) => format!("; over the {:.1} s since the last sample", secs(p)),
+            _ => String::new(),
+        }
+    }
+
     pub fn check(&mut self, s: &Sample, action: usize) -> Vec<Finding> {
+        let since = self.since(s, action);
         let mut out = Vec::new();
         let mut f = |kind: Kind, detail: String| out.push(Finding { kind, detail, t_ms: s.t_ms, action });
         if let Some((count, text)) = &s.fault
@@ -1237,7 +1257,7 @@ impl Oracles {
                         f(
                             Kind::Underrun,
                             format!(
-                                "{d} underruns {} ({}) on `{}` q={}/{}",
+                                "{d} underruns {} ({}) on `{}` q={}/{}{since}",
                                 if disrupted { "beyond the disruption allowance" } else { "outside seeks" },
                                 causes.join(" "),
                                 b.title,
@@ -1254,7 +1274,7 @@ impl Oracles {
             if i64::from(h) < self.b.head_min_frames && !disrupted {
                 f(
                     Kind::Ring,
-                    format!("DAC headroom fell to {h} frames (budget ≥ {})", self.b.head_min_frames),
+                    format!("DAC headroom fell to {h} frames (budget ≥ {}){since}", self.b.head_min_frames),
                 );
             }
         }
@@ -1265,6 +1285,7 @@ impl Oracles {
         }
         self.derived.push(derived);
         self.prev = Some(s.clone());
+        self.prev_action = Some(action);
         out
     }
 
@@ -3828,6 +3849,39 @@ mod tests {
         let mut s3 = good(300);
         s3.st.as_mut().unwrap().title = "b".into();
         assert!(o.check(&s3, 3).is_empty());
+    }
+
+    /// VER-12 finding, 2026-11-25 (`tests/regress/soak/mixed-ring-seed1-7.soak`):
+    /// the headroom low-water read in `radio-keys` covered the 76 s since
+    /// the last sample in `browse pictures`; the finding did not say so and
+    /// read as a dip inside the radio action. It names that span now. A dip
+    /// read inside a disruption window is allowed, outside one it is not
+    /// (the radio's hand-over stops the DAC first, so a dip while music
+    /// still plays is steady playback).
+    #[test]
+    fn regress_ring_finding_names_the_span_it_covers() {
+        let mut o = Oracles::new(budget(), 10_000, None);
+        for i in 0..5 {
+            assert!(o.check(&good(i * 10), 5).is_empty());
+        }
+        let mut s = good(116);
+        s.t_ms += 200;
+        s.c.head_min = Some(-13);
+        let f = o.check(&s, 6);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].kind, Kind::Ring);
+        assert!(f[0].detail.ends_with("; over the 76.2 s since the sample in action #5"), "{}", f[0].detail);
+        // In the same action the span is still named.
+        let mut s = good(126);
+        s.c.head_min = Some(-1);
+        let f = o.check(&s, 6);
+        assert!(f[0].detail.ends_with("; over the 9.8 s since the last sample"), "{}", f[0].detail);
+        // Inside a disruption window: allowed.
+        o.disrupt(127_000, 0);
+        let mut s = good(130);
+        s.c.head_min = Some(-200);
+        assert!(o.check(&s, 7).is_empty());
+        assert_eq!(o.stats.head_min, Some(-200));
     }
 
     #[test]

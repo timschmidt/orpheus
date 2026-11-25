@@ -16,6 +16,8 @@
 //! * [`rate`]: what the DAC path does with a stream's rate and word length.
 //! * [`ledger`]: [`Ledger`], underruns charged to the operation that caused
 //!   them.
+//! * [`pcm`]: the PCM ring's headroom and underrun accounting between the
+//!   writer and the DAC's DMA.
 //! * [`ring`]: [`StreamRing`], the stream ring with gapless read-ahead into
 //!   the next file (04 §2.2).
 //! * [`bits`], [`crc`]: bit reader over a ring view, the CRCs the formats use.
@@ -33,6 +35,7 @@ pub mod bits;
 pub mod crc;
 pub mod decoder;
 pub mod ledger;
+pub mod pcm;
 pub mod probe;
 pub mod rate;
 pub mod ring;

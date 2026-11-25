@@ -1,0 +1,11 @@
+# soak scenario=mixed seed=1 oracle=ring: DAC headroom fell to -13 frames (budget ≥ 1)
+# 7 actions before the finding
+# replay: cargo xtask dev soak --replay <this file> [--sim]
+# did not reproduce on replay: the whole session is kept
+volume 2
+listen 161
+browse files 37 1267047402
+seek-start
+volume 1
+browse pictures 23 1669336479
+radio-keys 8 2912082481

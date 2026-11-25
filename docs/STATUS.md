@@ -2794,6 +2794,84 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-25 — VER-12: the soak's "DAC headroom fell to -13 frames" with 0 underruns (worker, no hardware)
+
+Finding: 30-minute `mixed` soak, seed 1, 10.4 min, read in `radio-keys 8
+2912082481`; `underruns=0` all run; not reproduced on replay
+(`tests/regress/soak/mixed-ring-seed1-7.soak`, now committed).
+
+* **What -13 means.** `PcmOut::headroom` is `(written − played) · 1536 +
+  fill − at`: frames the DMA has ahead of it. −13: the DMA had fetched 13
+  frames of the half the writer was filling beyond the last one it had
+  written: 13 frames (0.27 ms at 48 kHz) of the ring's previous lap (64 ms
+  old PCM) went to the DAC instead, at least (the loop looked only now and
+  then, so the deepest point may have been lower). The writer then caught up
+  inside the half, which the underrun counter could not see.
+* **Why `underruns` stayed 0 (bug, fixed).** Underruns were only counted at
+  the writer's half boundaries, as halves the DMA had *finished* beyond the
+  writer (`played > written` after the increment). A DMA that overtook the
+  writer inside a half, or finished the writer's half but not the next one,
+  played stale frames with nothing counted. In a model of the ring (one
+  tick per DAC frame, every ring frame stamped) the old rule counts **0 for
+  any stall that leaves the DMA up to one half past the writer: stalls of
+  46–87 ms played 1–3 halves with stale frames and counted none**; longer
+  ones came 2 halves short. Fix: `orpheus_audio::pcm::Book` (host crate):
+  every look at the DMA counts the halves it fetched stale frames from, once
+  each (`stale_halves_are_counted_exactly_for_any_stall` checks the count
+  against the stamps for stalls up to 9,000 frames); the firmware looks
+  before every block's pushes (where a stall leaves the writer furthest
+  behind), at every half boundary and in the loop's chore checks. The
+  ledger's causes still add up to `underruns`; the too-slow abort keeps
+  counting whole halves only (unchanged behaviour). `regress_overrun_inside_half_uncounted`.
+* **A measurement race (bug, fixed).** `headroom` read the DMA's position,
+  then the half count: a half interrupt between the two reads (DAC DMA at
+  `Level::Deadline` preempts the RT executor) made the reading exactly one
+  half too low; with 1500 frames in the writer's half and the DMA 23 frames
+  before the crossing it gives exactly −13 for a true 1523. Now
+  `orpheus_audio::pcm::read`: count, position, count again, retried until
+  the counts agree. `regress_headroom_irq_between_reads`.
+* **Which one it was: not settled without the player; ranked.** (1) A real
+  shallow overrun: the samples before it in `browse pictures` (48 kHz,
+  CPU 0.1–0.6 % idle, 3,000 line loads/s) read low-waters of 227, 315 and
+  823 frames, and the −13 sample covered the **76 s since the previous
+  sample** (550.7 → 626.9 s; the soak took no sample in between), i.e. the
+  end of `browse pictures`, the way into Radio and the start of
+  `radio-keys`, with music playing until the radio stopped it. (2) The race:
+  needs the half interrupt inside a few instructions; the 102 samples of the
+  earlier run (055404) never read below 1200. Both are fixed; the new log
+  line tells them apart (a race cannot produce it any more).
+* **The oracle (not the cause).** Radio transitions cannot dip the
+  headroom: the radio's start stops the music (`PlayReq::Stop`, the DAC
+  aborted, `headroom` = none) before the bypass is switched, and every
+  stream (re)start fills two halves first; pause and seek stop the DAC too.
+  So a dip while music still plays is steady playback and is right to
+  flag; exempting `radio-keys` while it runs would hide it. What was wrong:
+  the low-water covers the whole time since the previous sample, which here
+  began in the previous action, and the finding did not say so (it read as
+  a dip "in radio-keys"; the action started at most 76 s before, not 5.5
+  min). Findings now end with `; over the 76.2 s since the sample in action
+  #5` (ring and underrun). `regress_ring_finding_names_the_span_it_covers`.
+* **Instrumentation.** Log line, at most once a second, when a look finds
+  negative headroom: `pcm: head -13 blk w=… f=… p=… at=… n=… dec=…ms mk=…
+  ub=serve:41ms +3` — the look (`blk` before a block, `half` at a boundary,
+  `loop` a chore check), writer half and fill, DMA half and frame, halves
+  newly counted, the last decoder call, the loop breadcrumb, the longest
+  operation since the last half boundary (the candidate cause) and the looks
+  not logged since the previous line. `hot.toml`: the look's functions in
+  `play-block`. Resident 79,364 B (unchanged), slot 1,093,632 B.
+* **On the player (lead):** replay `cargo xtask dev soak --replay
+  tests/regress/soak/mixed-ring-seed1-7.soak` and a 30-minute `mixed` run;
+  read the log ring after any `ring` or `underrun` finding: a `pcm: head`
+  line names where and after what the DAC ran past the writer. Expect
+  `underruns` to be non-zero now wherever the headroom went negative (the
+  underrun oracle fires with the ring oracle). If `ub=` names `fill` or
+  `serve` with tens of ms the card work in the loop is the cause (the 4-ms
+  rests of `66f1b467` double card time); `dec=` tens of ms with `ub=-`
+  means decoding under pager pressure from the Pictures UI.
+* Gate: host fmt, clippy `-D warnings`, `cargo test --workspace` (debuginfo
+  off: the disk is full); fw fmt, clippy, `xtask build`, `check-resident`,
+  `size --check`: pass. Not run: `xtask dev …` (no player), brand/site.
+
 ### 2026-11-25 — plan: factory-firmware reference player (owner)
 
 * The owner has a second, identical YM03 on the factory firmware for
