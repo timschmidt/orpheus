@@ -2457,6 +2457,19 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — VER-7: the on-device suite passes on the player (lead)
+
+* Merged the triage (`437c2d1c` UI-2: Card info and the About hardware
+  string; `6efb4131` VER-7: retries for marquee timing, the full layout,
+  30-s fixtures, journey variants for player state, the UI task's stack
+  path cut from 13,640 to 7,608 B). After a fresh boot:
+  `cargo xtask dev suite --setup` → **15 journeys, 48 shots, 0 failed**
+  (`auth@damaged`, `home@test-only`, `steps@no-clock`), **stack free ≥ 6,136
+  of 23,768 B** over the run (was 2,352 B before the stack work).
+* For the owner: the Authenticator vault sector still holds bytes from
+  before the full-layout switch and reads as "Vault damaged"; Menu › Wipe
+  vault… there loses nothing.
+
 ### 2026-11-24 — plan: long soaks (VER-12, owner's request); UPD-1/WEB-3 merged
 
 * Added VER-12 / 07 §5.10: several long soak scenarios with interactivity,
