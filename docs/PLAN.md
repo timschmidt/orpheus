@@ -43,6 +43,8 @@ identity throughout.
 | Stopwatch, pedometer, recorder, pictures, radio, Bluetooth, music, settings, folder browser | 05 §7 | Each specified with acceptance tests |
 | Boot a computer from an ISO/IMG on the card | 06 §3, 05 §7.10 | Disk and CD-ROM modes; automated boot test with QEMU |
 | 2FA token | 06 §5, 05 §7.9 | TOTP/HOTP, typed over USB; honest limit on at-rest secrecy |
+| Games: blocks, solitaire, 4096, and an artillery duel against the computer or passing the player, with generated terrain, realistic wind and gravity, and useful settings for each (owner, 2026-11-25) | 05 §7.13, 08 M14 | Original implementations of the genres (own names, art, sounds) |
+| Tiny text-to-speech engine, accessible UI and a book reader with read-aloud (owner, 2026-11-25) | 04 §8, 05 §7.14–7.15, 08 M15 | Languages beyond English: D-14 |
 | Audio quality, battery, power and performance measured and optimised with USB disconnected: output into the workstation's input, battery discharging, status over Bluetooth where possible (owner, 2026-11-25) | 07 §5.11, 08 M13 | Rig decision D-12; deeper discharge D-13 |
 | Bluetooth presentation remote; IMU (tilt) mouse only over Bluetooth | 05 §7.12, 06 §4.3 | **Remote in scope (owner, 2026-11-24)** over the module's HID service (keyboard + consumer reports, read 2026-11-24); BT-3 finds the command that feeds it, BT-4 builds the transport, UI-6b the app. **Tilt pointer conditional (D-10):** built only if BT-3 finds a Bluetooth transport for mouse data, otherwise dropped |
 | Bluetooth audio receiver | — | **Removed from scope by the owner on 2026-11-23** (the module cannot receive audio) |
@@ -142,6 +144,19 @@ Written up in `docs/hw/` (four reverse-engineering reports),
     Optimisations are made one at a time against those numbers; the results
     become budgets. Comes after the features it measures and before M11.
 
+13. **Games (M14, owner's requirement 2026-11-25).** A Games app with
+    Blocks, Solitaire (Klondike), 4096 and an artillery duel (generated
+    terrain, wind, gravity and air drag; against the computer or passing the
+    player), each with settings, saved games and scores; the logic is a
+    host-tested crate that also runs in the simulator and on the website.
+    Original implementations: no names, art or levels of existing games.
+14. **Speech, accessibility and books (M15, owner's requirement
+    2026-11-25).** Our own small formant text-to-speech engine (rules and
+    small lexicons, no GPL sources), a screen reader with which the player
+    is usable with the screen off, large-text, high-contrast and
+    reduced-motion settings, and a book reader (TXT, Markdown, FB2, EPUB)
+    that can read aloud. M14 and M15 come after M10 and before M13 and M11.
+
 ## 5. Decisions that are the user's
 
 Defaults are what workers assume until told otherwise.
@@ -161,6 +176,7 @@ Defaults are what workers assume until told otherwise.
 | D-11 | Public repository name, GitHub Pages address, publication | **Decided 2026-11-24 by the owner: published as `timschmidt/orpheus` on GitHub, public.** Pages address follows as `timschmidt.github.io/orpheus` unless a custom domain is chosen | The site and the browser installer are publication |
 | D-12 | Measurement rig for M13 | **Owner, 2026-11-25: manual cable swaps prompted by `xtask meas`; the per-port-switching hub is skipped for now** (a Genesys Logic hub is attached; whether it really cuts VBUS is untested). Capture through the workstation's rear line input (07 §5.11) | Options kept: an audio isolation transformer (ground-loop isolator) makes USB + jack safe and allows plugged/unplugged comparisons; a hub with per-port power switching (`uhubctl`) would allow unattended battery runs (audio capture then only with the transformer, since USB ground stays connected) |
 | D-13 | Depth of automated discharge | **Decided 2026-11-25 by the owner: go as low as needed** — runs may continue to the low-battery warning and the firmware's own low-battery switch-off (the one exception to rule 4, for M13 discharge runs only); the player is then recharged and started by the owner | Characterises the last part of the curve, the warning thresholds and the shutdown path |
+| D-14 | Speech languages (M15) | English first; Russian second; Japanese kana only (no kanji) | Each language needs rules, a lexicon and a native speaker's check; the UI already ships English, Russian and Japanese |
 
 Also needed from the user along the way: the checks in
 [USER-CHECKS.md](USER-CHECKS.md) (listening, looking, pressing keys,

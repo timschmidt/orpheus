@@ -2794,6 +2794,22 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-25 — plan: M14 games, M15 speech, accessibility and books (owner's request)
+
+* M14 (08; spec 05 §7.13; PLAN item 13): Games app with Blocks,
+  Solitaire (Klondike), 4096 and an artillery duel (working name "Salvo":
+  generated terrain, gravity presets, wind with gusts acting through
+  quadratic drag, computer players that aim by simulation, pass-the-player
+  turns), settings per game, saved games, scores, deterministic replays and
+  invariant fuzzing. Original implementations of the genres. WPs GAME-0…5.
+* M15 (08; spec 04 §8 and 05 §7.14–7.15; PLAN item 14): `orpheus-tts`
+  (normaliser, public-domain English rules + permissive lexicon, own
+  formant synthesiser, ≤ 64 KiB, mixed over music), screen reader and
+  vision/motor settings, Books app (TXT, Markdown, FB2, EPUB) with
+  read-aloud. WPs TTS-1…3, A11Y-1/2, BOOK-1…3. New decision D-14 (speech
+  languages). Both come after M10, before M13 and M11; the v1 non-goals in
+  05 §8 updated.
+
 ### 2026-11-25 — plan: M13 unplugged measurement and optimisation (owner's request)
 
 * New milestone M13 (08; spec 07 §5.11; PLAN item 12): audio quality,

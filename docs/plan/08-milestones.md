@@ -43,6 +43,8 @@ Two tracks run side by side from the start:
 | M9 | USB extras and authenticator | HID keyboard, authenticator, disk/CD emulation, (USB audio) | All requested extras that the hardware allows |
 | M10 | Polish and release | Battery-life tuning, self-update, full-flash layout option, languages, manual, release | 1.0 |
 | M12 | **Documentation, website and branding** | Concise, current documentation for users and developers; open-source project files; GitHub Pages site built from the repository with Orpheus running in the browser (WASM) and a browser installer (WebUSB where supported); shared Orpheus/lyre branding across firmware, docs and site (09) | Runs alongside M10–M11; release depends on it |
+| M14 | **Games** | Games app with Blocks, Solitaire (Klondike), 4096 and an artillery duel (generated terrain, wind, gravity, drag; against the computer or passing the player), each with settings, saved games and scores | After M10; before M13 and M11 |
+| M15 | **Speech, accessibility and books** | Tiny text-to-speech engine, screen reader and vision/motor settings, book reader (TXT, Markdown, FB2, EPUB) with read-aloud | After M10; before M13 and M11 |
 | M13 | **Unplugged measurement and optimisation** | Audio quality, battery life, power and performance measured with USB disconnected (on battery, analogue output into the workstation's input, optional Bluetooth status channel), then optimised from the numbers; battery indicator calibrated; budgets for audio figures and runtime per scenario | After the features it measures (M7–M9), before M11's final verification; supersedes PWR-4 |
 | M11 | **Verification** (last stage) | 100 % coverage of the project's own source by unit, adversarial-input and fuzz tests under sanitizers; every on-device function and every screen/app interaction exercised in fuzzed sequences on the player; memory use and performance tracked as thoroughly as coverage; every fuzz finding kept as a regression test | Release only after M11 is green |
 
@@ -211,14 +213,48 @@ D-11 for the site's address.
 | WEB-2 | Orpheus in the browser: `xtask wasm` (sim back ends, AudioWorklet, virtual card with CC0/CC-BY demo content, drag-and-drop files kept local, IndexedDB state, developer panel, key-sequence recorder compatible with the fuzz corpus); size and frame budgets; Playwright golden test | 09 §4 | H | L | Try it in three browsers |
 | WEB-3 | Browser installer: `orpheus-host` over a WebUSB transport in WASM; backup-first install, update via developer channel + UPD-1, restore stock, recovery; WebUSB/MS OS 2.0 descriptors in the firmware; mock-device suite and a Playwright HIL run on the reference player | 09 §5 | H+D | L | A first-time user installs and restores from the page alone |
 
+### M14 — Games (owner's requirement 2026-11-25)
+
+Spec: [05 §7.13](05-ui-apps.md). Original implementations of the genres
+(own names, art and sounds). Logic in a host crate first (`orpheus-games`),
+then the app on the player; each game also runs in the simulator and on
+the website. After M10; M13 measures their CPU and battery cost, M11
+verifies them.
+
+| WP | Content | Spec | Dev | Size | User |
+|---|---|---|---|---|---|
+| GAME-0 | Framework: Games app and list, game loop and fixed-step logic, pause menu and interruptions, saved games, scores and names, effects synthesiser mixed over music, per-game settings, seeds and deterministic replay, fuzz harness with per-game invariants | 05 §7.13 | H+D | M | — |
+| GAME-1 | Blocks: well, pieces, rotation with kicks, randomiser, modes, previews, hold, levels and scoring, settings | 05 §7.13 | H+D | M | Play a few games |
+| GAME-2 | Solitaire (Klondike): layout on 128 × 128, card faces, cursor model, draw one/three, passes, scoring modes, undo, auto-move and auto-complete, winnable deals | 05 §7.13 | H+D | M | Play a few games |
+| GAME-3 | 4096: boards 4–6, goals, spawn odds, undo, animations | 05 §7.13 | H+D | S | Play a game |
+| GAME-4 | Artillery world: terrain generator (styles, roughness, seed), destructible terrain and falling dirt, physics (gravity presets, wind and gusts, quadratic drag, fixed step, deterministic on host and player), weapons, camera and overview, rendering | 05 §7.13 | H+D | L | — |
+| GAME-5 | Artillery play: turns for 2–4 players, pass-the-player screens, computer players by simulated shots with difficulty, shop, rounds and scores, all settings | 05 §7.13 | H+D | M | Play against the computer and hot-seat |
+
+### M15 — Speech, accessibility and books (owner's requirement 2026-11-25)
+
+Spec: [04 §8](04-audio.md) (speech engine), [05 §7.14–7.15](05-ui-apps.md).
+Needs D-14 for the languages beyond English. After M10; M13 measures speech
+quality and reading battery life, M11 verifies.
+
+| WP | Content | Spec | Dev | Size | User |
+|---|---|---|---|---|---|
+| TTS-1 | `orpheus-tts` front end: normaliser, English letter-to-sound rules and exception lexicon, phoneme goldens, fuzzing | 04 §8 | H | M | — |
+| TTS-2 | Formant synthesiser, prosody, voices; speech voice in the mixer with ducking; budgets; host intelligibility test (offline recogniser) | 04 §8 | H+D | L | Listen and rate the voices |
+| TTS-3 | Russian (rules + stress dictionary) and Japanese kana | 04 §8 | H | M | A speaker of each checks samples (D-14) |
+| A11Y-1 | Screen reader: accessible labels and roles in the toolkit (lint test), spoken journeys as goldens, verbosity, interrupt, earcons, where-am-I, global toggle, screen-off operation | 05 §7.14 | H+D | L | Use the player with the screen off |
+| A11Y-2 | Large text, high-contrast themes, reduced motion, hold and repeat timing, key confirmation sound | 05 §7.14 | H+D | M | — |
+| BOOK-1 | Books app and reader core: TXT (encodings), Markdown, FB2; layout and page index cache, fonts and palettes, position, bookmarks, contents, go to percent | 05 §7.15 | H+D | L | Read a chapter |
+| BOOK-2 | EPUB: zip and deflate, OPF spine and table of contents, XHTML reduction, chapter cache extracted when idle | 05 §7.15 | H+D | M | Open a few EPUBs |
+| BOOK-3 | Read aloud: continuous TTS from the position, sentence highlight, page following, screen off, sleep timer, resume | 05 §7.15 | H+D | M | Listen to a chapter |
+
 ### M13 — Unplugged measurement and optimisation (owner's requirement 2026-11-25)
 
 Spec: [07 §5.11](07-tooling-testing.md). On battery with USB disconnected,
 the analogue output recorded by the workstation's microphone or line input,
 a status channel over Bluetooth where it helps, the full log on the card.
 Supersedes PWR-4 and the device half of PWR-5 (user check 19 is automated
-here). Runs after the features it measures; M11 (verification) and the
-release follow it. Every fix it leads to follows the regression-test rule
+here). Runs after the features it measures (including M14 and M15); M11
+(verification) and the release follow it. Every fix it leads to follows the regression-test rule
 (CLAUDE.md). Needs D-12 (rig) before MEAS-1's hardware part; D-13 only for
 runs below the 3.55 V floor.
 

@@ -779,12 +779,144 @@ state; the simulator back end shows what the computer receives (key
 names, pointer trail) so the app is testable without hardware; behaviour
 tests for each profile's key sequences; **[HIL]** as 06 §4.3.3.
 
+### 7.13 Games (M14; owner's requirement 2026-11-25)
+
+One **Games** app on Home lists four games. They are original
+implementations of well-known genres: own names, artwork, sounds and rule
+texts, no names, art, levels or look taken from any existing product.
+
+**Common to all games (GAME-0).**
+* Game loop on the UI task at up to 30 frames/s with partial screen
+  updates; fixed-step logic separate from drawing, so a game is a pure state
+  machine (`orpheus-games` crate, host-tested, simulator and WASM site too).
+* Back opens the pause menu (Resume, New game, Settings, How to play,
+  Quit); any interruption (screen off, power key, alarm, USB, low battery)
+  pauses. The game in progress is saved on exit and power-off and offered
+  again (`/.orpheus/games/<game>.sav`).
+* Best scores and statistics per game and per setting combination
+  (`/.orpheus/games/scores.bin`); a name entered once per player.
+* Sound effects from a tiny synthesiser (square/noise/sweep voices) mixed
+  over the music, which keeps playing (setting: effects on/off, volume,
+  music ducking during play).
+* Every game takes a seed: new games are random, replays and tests are
+  deterministic. Golden images per screen; key-sequence fuzzing per game
+  with invariants (below); `regress_` tests for every bug (CLAUDE.md).
+* Settings live in the game's pause menu, are remembered per game, and each
+  has a default that suits a first game.
+
+**Blocks (GAME-1)** — falling tetromino puzzle. Well 10 × 20 cells of 6 px
+(60 × 120) with next-piece preview, hold slot, level, lines and score
+beside it. Keys: Prev/Next move, Up rotates clockwise, OK rotates
+anticlockwise, Down soft drop, hold Down hard drop, Menu hold.
+Settings: mode (endless, 40 lines, 2-minute score attack), start level,
+piece randomiser (bag of seven / pure random), ghost piece, previews
+(0–3), hold on/off, lock delay, auto-shift delay and repeat rate, rotation
+with wall kicks on/off. Invariants: pieces never overlap the stack or
+leave the well; score and line counts match a reference replay.
+
+**Solitaire (GAME-2)** — Klondike. Seven tableau columns of 18 px on
+128 px: small card faces (rank + suit glyph, red/black, colour-blind
+friendly suit shapes), fanned columns that compress when long. Keys:
+Prev/Next move between piles, Up/Down choose depth in a fanned column,
+OK picks up and puts down, Menu auto-moves to the foundations, hold OK
+undo. Settings: draw one or three, passes through the stock (unlimited,
+three, one), scoring (standard, cumulative "casino", none), auto-move to
+foundations, auto-complete, timer shown, deal only winnable games (seeded
+from a solver check, best effort). Invariants: 52 distinct cards always;
+every move legal; undo restores the exact state.
+
+**4096 (GAME-3)** — sliding number tiles. Board 4 × 4 by default; the four
+direction keys (Up, Down, Prev, Next) slide, with short animations.
+Settings: board 4 × 4, 5 × 5 or 6 × 6; goal tile (2048, 4096, 8192,
+endless); chance of a 4 instead of a 2; undo steps (0–3); animations on/off.
+Invariants: the sum of tiles grows only by the spawned tile; merges at most
+once per tile per move; game over exactly when no move changes the board.
+
+**Artillery (GAME-4, GAME-5; working name "Salvo")** — turn-based artillery
+duel, 2–4 tanks, each human (taking turns passing the player, with a "pass
+to Player n" screen between turns) or computer.
+* **Terrain**: generated per round from the seed; styles rolling hills,
+  mountains, canyon, islands over water, plateaus; roughness and height
+  range settings; world 128–384 px wide with a camera that follows the
+  shell and an overview zoom. Destructible: craters, dirt falling into
+  holes, tanks sliding and taking fall damage.
+* **Physics** (fixed step, f32 without fused multiply-add so the host and
+  the player agree): gravity in m/s² with presets (Moon 1.62, Mars 3.71,
+  Earth 9.81, Jupiter 24.8) mapped to a world scale; wind as a horizontal
+  air velocity, re-drawn each turn within the set maximum, optionally with
+  gusts during flight; quadratic air drag on the shell relative to the air
+  (so wind acts through drag, as it does), shell mass per weapon; explosions
+  with radius and falloff; trajectories integrated (semi-implicit Euler at
+  ≥ 200 Hz) and checked against analytic solutions in host tests.
+* **Weapons** (own set): standard shell, heavy shell, cluster, roller,
+  digger, dirt bomb, smoke (wind indicator); optional between-round shop
+  with earned credits.
+* **Computer players**: aim by simulating candidate shots with the same
+  physics and a noisy estimate of the wind; bracket from their previous
+  shot; difficulty sets the noise, the search budget and whether they see
+  gusts (Novice … Expert). Never cheat by reading the exact gust sequence
+  at Novice–Hard.
+* **Keys**: Up/Down angle, Prev/Next power (hold accelerates), OK fire,
+  Menu weapon list, hold Next/Prev pans the view.
+* **Settings**: players (2–4, human or computer with difficulty), rounds,
+  gravity preset or value, wind (none, light, strong, custom maximum),
+  gusts on/off, air drag (off, realistic, heavy), terrain style, roughness
+  and seed, world width, tank health, fall damage, weapon set and shop,
+  aim guide (none / last shot trace / short preview), turn timer.
+* Invariants: no NaN or escape through the terrain at any step; energy
+  bounded without wind; terrain heights within the world; the same seed and
+  inputs give the same round on host and player.
+
+### 7.14 Accessibility and speech (M15; owner's requirement 2026-11-25)
+
+* **Screen reader** (A11Y-1): spoken output from the text-to-speech engine
+  (04 §8): screen titles on entry, the focused row with its value and
+  position ("Albums, 3 of 12"), changed values, dialogs, toasts, errors,
+  the volume, track changes on request. Interruptible: a key stops the
+  current utterance. Verbosity (brief, normal, detailed), rate, pitch,
+  speech volume relative to music, music ducking or pausing while speaking,
+  key echo, earcons for list ends and roll-around, "where am I" and "time
+  and battery" on a hold combination, and a toggle reachable from any
+  screen and from the first boot (hold Vol+ and Vol− together for 2 s).
+  Fully usable with the screen off.
+* **Toolkit support**: every widget carries an accessible label and role;
+  a host lint test fails for any focusable item without one; each journey
+  in the on-device suite also records its spoken sequence as a golden.
+* **Vision and motor settings** (A11Y-2): large text (UI font at twice the
+  size, lists with fewer rows), high-contrast themes (light and dark),
+  reduced motion (no marquee or animations; long names are spoken
+  instead), longer hold thresholds and slower repeat, key-press
+  confirmation sound.
+
+### 7.15 Books (reader; M15; owner's requirement 2026-11-25)
+
+* **Formats** (BOOK-1, BOOK-2): plain text (UTF-8, UTF-16 with BOM,
+  Windows-1251 and KOI8-R detected), Markdown, FB2, EPUB 2/3 (zip with
+  deflate, OPF spine, XHTML reduced to paragraphs, headings, emphasis and
+  lists; images skipped in v1). Books live anywhere; a **Books** app lists
+  the card's books (title and author from the file) with progress.
+* **Reading**: reflowed pages in the UI fonts (sizes small to extra large),
+  margins, line spacing, justification, light/dark/sepia palette; Next/Prev
+  turn pages, Up/Down scroll by lines, hold Next/Prev chapter, OK the
+  reader menu (table of contents, go to percent, bookmarks, font, read
+  aloud, auto page turn). Position saved per book; resume on open.
+* **Memory**: pages are laid out in a background pass into a page index in
+  `/.orpheus/cache/books/`; EPUB and FB2 chapters are extracted once to a
+  plain cached form on first open (when no track is loaded, as the inflate
+  window shares the decoder arena), so reading during music needs no
+  decompression.
+* **Read aloud** (BOOK-3): the TTS engine reads continuously from the
+  position, highlighting the sentence and turning pages, with the screen
+  off, a sleep timer, rate and voice settings, and resume where speech
+  stopped.
+
 ## 8. Non-goals for v1 (recorded so nobody builds them by accident)
 
-Video playback; games/plugins; touch or pointer UI on the player itself; a
+Video playback; third-party plugins (games are M14, owner 2026-11-25); touch or pointer UI on the player itself; a
 Bluetooth receiver mode; multi-language text shaping
 (Indic, Arabic joining); streaming/network features; user theming beyond
-palette + wallpaper; voice prompts. Each can be proposed after the release
+palette + wallpaper (speech and the screen reader are M15, owner
+2026-11-25). Each can be proposed after the release
 milestone.
 
 ## 9. UI work packages
