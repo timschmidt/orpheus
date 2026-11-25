@@ -315,6 +315,28 @@ symbols = [
     "orpheus_codec_flac::frame::*",
 ]
 
+# A directory walk while playing (`job:index` stretches, listings): one
+# stretch reads ≤ 3 sectors, yet took 33 ms on the player (2026-11-25,
+# `chore: job:index 34/16 ms u33`) — the walk code was cold and scattered.
+# Packed together it loads a few lines.
+[[cluster]]
+name = "dir-walk"
+bins = ["firmware"]
+symbols = [
+    "orpheus_fs::volume::Volume<yoton_bsp::card::Card>>::next_set::*",
+    "orpheus_fs::volume::Volume<yoton_bsp::card::Card>>::walk::*",
+    "orpheus_fs::volume::Volume<yoton_bsp::card::Card>>::walk_step::*",
+    "orpheus_fs::volume::Volume<yoton_bsp::card::Card>>::advance::*",
+    "orpheus_fs::volume::Volume<yoton_bsp::card::Card>>::fat_get::*",
+    "orpheus_fs::volume::Volume<yoton_bsp::card::Card>>::track_tail::*",
+    "orpheus_fs::volume::Volume<yoton_bsp::card::Card>>::find::*",
+    "orpheus_index::card::spin_in::<<orpheus_fs::volume::Volume<yoton_bsp::card::Card>>::walk_step*",
+    "orpheus_index::card::CardIo<yoton_bsp::card::Card>>::find_*",
+    "orpheus_index::query::Index>::open::*",
+    "orpheus_fs::dir::*",
+    "orpheus_fs::unicode::*",
+]
+
 # The paged toy: three functions spread over the generated code, packed
 # together (checked by `cargo xtask test pagelink`).
 [[cluster]]
