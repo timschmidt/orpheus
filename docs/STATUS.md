@@ -63,6 +63,7 @@ of every session. Newest entries first in §3.
 | USB-W1 (bug) | **fixed and self-recovering (host-tested, built); not yet run on the player** | Root cause: the SETUP read was not cancel-safe (embassy-usb drops it on bus events; the interrupt stayed masked for good) and late stages landed on the next transfer. Drop-safe driver, liveness recovery, watchdog only when recovery cannot help, counters in `STATS` 24–30, soak logs self-recoveries, `xtask dev usb-cancel`. 06 §2.6; user check 28 |
 | VER-10 (static stack) | **tool done (host-tested), gate step; firmware cut from ≥ 30,232 to 22,900 B, then to 16,188 B nested worst case of 22,528 B usable: margin 6,340 B, goal ≥ 4 KiB met (built, not yet run on the player)** | `cargo xtask stack [--check] [--root P]`, `stack.toml`, `budgets.toml stack_static_margin_bytes` = 6,084 B (the measured margin less one 256 B step: a ratchet). Second round: the card task's poll frames (the volume and the decoder no longer move by value; `idle`'s and start-up's children are futures of their own), .bss −512 B. Lead: soak, a Vorbis seek, the Authenticator, card hand-over to USB (session entry 2026-11-25 "VER-10: card task frames") |
 | SYN-1 | **done (host)**; not in the firmware (SYN-3) | `orpheus-synth`: band-limited oscillators (polyBLEP/BLAMP, sine, wavetables, white/pink noise), 2–4 operator FM (8 algorithms, feedback), ADSR (linear/exponential), pitch envelope, SVF LP/BP/HP, LFOs (Hz or tempo sync), 16 voices + 4 fade-out tails with stealing, mono legato glide, sample-accurate events, 6 drum voices, delay/chorus/reverb sends, soft limiter; 69,040 B engine; golden hashes equal at opt-level 1 and release; player estimate: 16 saw-lead voices ≈ 79 % of 144 MHz (session entry 2026-11-25 "SYN-1") |
+| TTS-1 | **done (host)**; not in the firmware, simulator or apps (TTS-2, A11Y-1, BOOK-3) | `orpheus-tts`: incremental converter (1,408 B, any feed sizes), English normaliser, NRL letter-to-sound rules + stress heuristic + stems, CMUdict exception lexicon (4,487 entries in 32,766 B; `cargo xtask tts-lexicon`), duration model for 0.25×–10×; rules alone 79.8 % of tokens, with the lexicon 98.1 % (session entry 2026-11-25 "TTS-1") |
 
 ## 3. Session log
 
@@ -87,6 +88,53 @@ of every session. Newest entries first in §3.
   35.3 min, 27 actions, **0 underruns** (none even in disruption windows),
   DAC headroom ≥ 571 frames, stack free ≥ 9,616 B (static worst case
   16,196 of 22,272 B), uptime drift −20 ppm.
+### 2026-11-25 — TTS-1: `orpheus-tts` front end (worker, no hardware)
+
+New crate `crates/orpheus-tts` (`no_std`, no `alloc`, `forbid(unsafe)`, no
+dependencies; "as built" in 04 §8). Not wired into the firmware, the
+simulator or `orpheus-apps`.
+
+* **API**: `Converter::new(Options { spell, lines }, Speed)`, `feed` /
+  `finish` / `next_token` → `Token::Word { pos, phrase_final, spelled }`,
+  `Token::Phone(Seg { phone, ms })`, `Token::Break(Pause { kind, contour,
+  ms })`; `word_text()`, `convert(text, f)`, `reset`, `set_speed`.
+* **Measured**: converter RAM 1,408 B (host); thumbv7em opt "s" text
+  31.5 KB + rodata 50.2 KB (lexicon 32,766 B, paged as data in TTS-2);
+  host 4.4 µs/word. Accuracy against CMUdict on 6.8 M Gutenberg tokens:
+  rules alone 39.3 % of words / 79.8 % of tokens (phonemes), 35.6 % /
+  78.5 % with primary stress; rules + lexicon 98.1 % of tokens, top 5,000
+  words 99.8 %, every normaliser and interface word right. Curve in
+  `crates/orpheus-tts/data/lexicon-report.txt`. 10× setting ≈ 7.7× faster
+  than 1× in practice (duration floors).
+* **Tool**: `cargo xtask tts-lexicon [--check] [--budget B]` downloads
+  CMUdict (pinned, SHA-256) and 57 Gutenberg books (from the
+  `aleph.pglaf.org` mirror: gutenberg.org answered 503) into
+  `target/orpheus/tts-data/`. The committed files were produced by the same
+  `orpheus_tts::lexgen::run` through a scratch driver; the xtask binary
+  itself was clippy-checked but not run (disk: see below) — **lead: run
+  `cargo xtask tts-lexicon --check` once**.
+* **Tests**: unit, `normalise` (166 forms), `goldens` (143 phoneme strings,
+  duration tables at 0.25/1/4/10×), `accuracy` (thresholds), `properties`
+  (feed-size independence, arbitrary UTF-8/bytes, ≤ 24 tokens per byte,
+  duration shape), fuzz targets `tts_text`, `tts_lexicon` with 9 seeds
+  (`tests/fuzz-corpus/tts_*`), added to `xtask test fuzz-seeds`. The fuzz
+  seeds found an endless loop in the lexicon decoder on truncated data
+  (fixed).
+* **Plan fix**: 04 §8 said the speed has 39 values; 0.25–10 in 0.25 steps
+  is 40.
+* **Licences**: CMUdict notice in `crates/orpheus-tts/data/LICENSE-CMUDICT`
+  and `THIRD-PARTY.md`; its clause 2 (binary redistribution reproduces the
+  notice) applies to firmware images once TTS ships — **lead: carry the
+  notice with release builds** (as for the other BSD parts).
+* **Gate**: `cargo fmt --check` (crate), `cargo clippy -D warnings` on
+  `orpheus-tts` (with and without `build`, all targets) and on `xtask`:
+  clean; `cargo test -p orpheus-tts` (all suites, with and without
+  `build`): pass; `cargo +nightly-2026-11-05 fuzz build` of both targets:
+  builds; `tts_text` fuzzed 60 s (15 k runs) and `tts_lexicon` 45 s
+  (1.46 M runs): no findings. **Not run**: workspace-wide clippy/test and
+  `xtask test all` — the disk had 0.9–2.6 GB free while other workers
+  built. Open: none for the owner; TTS-2 needs the items listed at the end
+  of 04 §8 "as built".
 
 ### 2026-11-25 — **`fuzz-ui --settings` changed the owner's stored settings** (lead) — fixed
 

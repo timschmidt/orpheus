@@ -33,6 +33,8 @@ orpheus-sim = { path = "../sim" }
 orpheus-apps = { path = "../crates/orpheus-apps" }
 orpheus-input = { path = "../crates/orpheus-input" }
 regex = { version = "1", default-features = false, features = ["std", "unicode-perl"] }
+# TTS-1: the speech engine's lexicon tool.
+orpheus-tts = { path = "../crates/orpheus-tts", features = ["build"] }
 
 [lints]
 workspace = true

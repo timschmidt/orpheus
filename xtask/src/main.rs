@@ -27,6 +27,7 @@ mod size;
 mod stack;
 mod test;
 mod thumb;
+mod tts;
 mod util;
 mod wasm;
 
@@ -87,6 +88,11 @@ usage: cargo xtask <command> [options]
                                    and wasm-opt), size budget; --demo regenerates
                                    sim/web/demo/ (ffmpeg), --record adds the sizes to
                                    metrics/static.csv, --test runs the page's self-test
+  tts-lexicon [--check] [--budget BYTES]
+                                   the speech engine's exception lexicon from CMUdict
+                                   and Gutenberg word counts (TTS-1): src/lexicon.bin,
+                                   data/eval.tsv, data/lexicon-report.txt in
+                                   crates/orpheus-tts; --check fails if not current
 ";
 
 fn main() -> ExitCode {
@@ -112,6 +118,7 @@ fn main() -> ExitCode {
         "brand" => brand::cmd(&mut args),
         "site" => site::cmd(&mut args),
         "wasm" => wasm::cmd(&mut args),
+        "tts-lexicon" => tts::cmd(&mut args),
         "help" | "-h" | "--help" => {
             print!("{USAGE}");
             return ExitCode::SUCCESS;

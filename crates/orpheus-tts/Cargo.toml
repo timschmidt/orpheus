@@ -1,0 +1,18 @@
+[package]
+name = "orpheus-tts"
+description = "Text-to-speech front end: English text normalisation, NRL letter-to-sound rules, CMUdict exception lexicon, stress, prosody marks and the duration model (04-audio §8, WP TTS-1)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+# The lexicon encoder and the evaluation helpers (std; `cargo xtask
+# tts-lexicon` and the accuracy tests use it). The firmware never enables it.
+build = []
+
+[dependencies]
+
+[lints]
+workspace = true
