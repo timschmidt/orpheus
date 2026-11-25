@@ -668,6 +668,7 @@ async fn find_cover(vol: &mut Vol, l: Locator, e: &mut DirEntry) -> bool {
     }
     let mut best: Option<(u8, Locator)> = None;
     let t0 = time::now_us();
+    let (io0, loads0) = (yoton_bsp::card::io_count(), atj2157_hal::pager::stats().loads);
     let mut seen = 0u32;
     // Large folders: the first 4096 entries and at most 250 ms (a cover is
     // usually early; the search runs while a track opens).
@@ -698,7 +699,11 @@ async fn find_cover(vol: &mut Vol, l: Locator, e: &mut DirEntry) -> bool {
             .push_u32((took / 1000) as u32)
             .push_str(" ms, ")
             .push_u32(seen)
-            .push_str(" entries");
+            .push_str(" entries, ")
+            .push_u32(yoton_bsp::card::io_count().wrapping_sub(io0))
+            .push_str(" card I/O, ")
+            .push_u32(atj2157_hal::pager::stats().loads.wrapping_sub(loads0))
+            .push_str(" line loads");
         l.emit();
     }
     match best {
