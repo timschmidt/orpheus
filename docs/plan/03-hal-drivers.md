@@ -486,6 +486,16 @@ Facts: fm-i2c-imu.md.
   follows, the three chained by asserts). Developer commands: `acc read`, `acc regs`,
   `acc trace <secs>` / `acc trace stop` (CSV to
   `/.orpheus/test/acc-<n>.csv`, `orpheus_steps::trace`), `steps status`.
+  **Bus timing (AU-PERF, 2026-11-25)**: the software master times each half
+  clock period on T0 (`delay::wait_us`, at least `half_us`; clock stretch
+  limit 1 ms on T0). Before, `delay::spin_us` made the "100 kHz" bus run at
+  about 30 kHz and the 25 Hz sample (181 half periods,
+  `i2c_soft::write_read_halves(1, 6)`) cost ≈ 7.9 % of the CPU (T-8 PC
+  profile); at a true 100 kHz it is ≈ 0.9 ms of bus a sample (≈ 2.3 %).
+  `acc bus <µs>` sets the accelerometer's half period until reboot (1–1000;
+  `acc bus 15` is about the old timing); `steps status` reports
+  `bus_us_avg`, `bus_us_max` (wall time per sample: an interrupt during a
+  read adds to it) and `bus_load_cpct` (avg × 25/s, in 0.01 %). U-I2C-1.
 * **Step detector** (`orpheus-apps::steps`, host-tested): magnitude of the
   3-axis vector, low-pass, adaptive threshold between running max and min,
   minimum 200 ms and maximum 2 s step interval, a "regularity" gate of four

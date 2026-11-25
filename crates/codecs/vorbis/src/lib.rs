@@ -446,6 +446,10 @@ impl<'a> Decoder<'a> for VorbisDecoder<'a> {
         Ok((d, info))
     }
 
+    // A function of its own, not inlined into `AnyDecoder::decode`: on the
+    // player its code is then one contiguous run that `hot.toml` packs
+    // (AU-PERF; inlined, the codecs' frame code was interleaved there).
+    #[inline(never)]
     fn decode(&mut self, src: &mut dyn ByteSource) -> Result<Step<'_>, DecodeError> {
         match self.step(src)? {
             Ok(n) => Ok(Step::Pcm(PcmBlock::I16(&mut self.out[..n]))),

@@ -150,11 +150,168 @@ impl Book {
     }
 }
 
+/// Where a [`Feeder`] stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fed {
+    /// The whole block went to the sink.
+    Done,
+    /// The sink finished a half and wants the writer to wait for room
+    /// before the next frame ([`Sink::frame`] returned true): call
+    /// [`Feeder::run`] again after the wait.
+    Wait,
+}
+
+/// The writer's side of one decoder block (`fw/firmware/src/audio.rs`
+/// `Out`): the DSP over a piece in place, then its frames one by one.
+pub trait Sink<S> {
+    /// Process a piece (interleaved samples) in place; returns the samples
+    /// now valid at its start (fewer after decimation).
+    fn piece(&mut self, s: &mut [S]) -> usize;
+    /// One frame (`channels` samples). True: a half is finished and the
+    /// writer must wait for room before the next frame.
+    fn frame(&mut self, f: &[S]) -> bool;
+}
+
+/// Feeds one decoder block to the PCM ring in pieces of the scratch
+/// buffer's size (AU-PERF): each piece is copied to the scratch (the
+/// decoder's buffer may be its state), processed there, and its whole
+/// frames are written one by one, a trailing partial frame dropped. The
+/// feed stops after a frame that finished a half ([`Fed::Wait`]) and goes
+/// on from there on the next call, so the playback loop awaits only at
+/// half boundaries and the per-frame work is not async code.
+///
+/// The scratch must keep its contents between the calls for one block.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Feeder {
+    /// Samples of the block taken into pieces so far.
+    next: usize,
+    /// Valid samples in the scratch, and how many of them are written.
+    have: usize,
+    at: usize,
+}
+
+impl Feeder {
+    /// At the start of a block.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { next: 0, have: 0, at: 0 }
+    }
+
+    /// Go on feeding `block` (interleaved, `channels` per frame) through
+    /// `scratch` into `sink`.
+    pub fn run<S: Copy>(
+        &mut self,
+        block: &[S],
+        scratch: &mut [S],
+        channels: usize,
+        sink: &mut impl Sink<S>,
+    ) -> Fed {
+        let ch = channels.max(1);
+        loop {
+            while self.at + ch <= self.have {
+                let Some(f) = scratch.get(self.at..self.at + ch) else { break };
+                self.at += ch;
+                if sink.frame(f) {
+                    return Fed::Wait;
+                }
+            }
+            let end = block.len().min(self.next.saturating_add(scratch.len()));
+            let Some(part) = block.get(self.next..end).filter(|p| !p.is_empty()) else { return Fed::Done };
+            let Some(sc) = scratch.get_mut(..part.len()) else { return Fed::Done };
+            sc.copy_from_slice(part);
+            self.next = end;
+            let n = sink.piece(sc);
+            self.have = n.min(sc.len());
+            self.at = 0;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::vec;
+    use std::vec::Vec;
+
     use super::*;
 
     const HALF: u32 = 1536;
+
+    /// A sink that records the frames and the pieces, wants a wait every
+    /// `every` frames and decimates by two when `halve`.
+    struct Rec {
+        frames: Vec<Vec<i16>>,
+        pieces: Vec<usize>,
+        every: usize,
+        n: usize,
+        halve: bool,
+    }
+
+    impl Sink<i16> for Rec {
+        fn piece(&mut self, s: &mut [i16]) -> usize {
+            self.pieces.push(s.len());
+            for x in s.iter_mut() {
+                *x = x.wrapping_add(1);
+            }
+            if self.halve { s.len() / 2 } else { s.len() }
+        }
+        fn frame(&mut self, f: &[i16]) -> bool {
+            self.frames.push(f.to_vec());
+            self.n += 1;
+            self.every != 0 && self.n.is_multiple_of(self.every)
+        }
+    }
+
+    /// The straight loop the feeder replaces (the playback loop before
+    /// AU-PERF): pieces through a copy, then their whole frames.
+    fn straight(block: &[i16], piece: usize, ch: usize, halve: bool) -> (Vec<Vec<i16>>, Vec<usize>) {
+        let mut r = Rec { frames: Vec::new(), pieces: Vec::new(), every: 0, n: 0, halve };
+        for part in block.chunks(piece) {
+            let mut sc = part.to_vec();
+            let n = r.piece(&mut sc);
+            for f in sc[..n.min(sc.len())].chunks_exact(ch) {
+                r.frame(f);
+            }
+        }
+        (r.frames, r.pieces)
+    }
+
+    #[test]
+    fn feeder_writes_what_the_straight_loop_wrote_whatever_the_waits() {
+        for (len, piece, ch, every, halve) in [
+            (2304, 512, 2, 1536, false),
+            (2304, 512, 2, 7, false),
+            (2304, 512, 2, 1, false),
+            (1152, 256, 1, 100, false),
+            (1001, 256, 1, 3, false),
+            // A trailing partial frame is dropped (odd sample count).
+            (1001, 256, 2, 5, false),
+            (4096, 512, 2, 333, true),
+            (4096, 512, 2, 0, true),
+            (0, 512, 2, 4, false),
+            (10, 512, 2, 4, false),
+        ] {
+            let block: Vec<i16> = (0..len).map(|i| (i * 7 % 1000) as i16).collect();
+            let (want, want_pieces) = straight(&block, piece, ch, halve);
+            let mut scratch = vec![0i16; piece];
+            let mut f = Feeder::new();
+            let mut r = Rec { frames: Vec::new(), pieces: Vec::new(), every, n: 0, halve };
+            let mut waits = 0;
+            while f.run(&block, &mut scratch, ch, &mut r) == Fed::Wait {
+                waits += 1;
+                assert!(waits <= len + 1, "no progress");
+            }
+            assert_eq!(r.frames, want, "{len} {piece} {ch} {every}");
+            assert_eq!(r.pieces, want_pieces);
+            assert_eq!(
+                waits,
+                want.len().checked_div(every).unwrap_or(0),
+                "a wait after every `every` frames"
+            );
+            // Done stays done.
+            assert_eq!(f.run(&block, &mut scratch, ch, &mut r), Fed::Done);
+            assert_eq!(r.frames.len(), want.len());
+        }
+    }
 
     fn at(played: u32, at: u32) -> Reading {
         Reading { played, at }

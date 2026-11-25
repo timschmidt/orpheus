@@ -550,3 +550,81 @@ fn ram_per_stage() {
     // Budget for the whole chain: 4.5 KiB.
     assert!(total <= 4608, "{total}");
 }
+
+/// The stage mask kept between blocks (AU-PERF) is always the one
+/// `active()` computes, through every kind of parameter change, ramps,
+/// fades, the limiter's release and format changes; with nothing moving it
+/// is kept (not recomputed per block). `process` also checks it on every
+/// block in debug builds.
+#[test]
+fn settled_stage_mask_follows_every_change() {
+    let mut c = Chain::default();
+    c.set_format(FMT16).unwrap();
+    let x = music16(4096, 7);
+    let mut seed = 0x1234_5678u32;
+    let mut rnd = move |n: u32| {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (seed >> 8) % n
+    };
+    let mut settled_blocks = 0;
+    for step in 0..1500 {
+        // Values from small sets that include the neutral one, so that
+        // stages go on and off (the mask changes) often.
+        let pick = |r: u32, v: &[i16]| v[r as usize % v.len()];
+        match rnd(16) {
+            0 => c.set_eq_preset(if rnd(2) == 0 { Preset::Rock } else { Preset::Flat }),
+            1 => c.set_eq_band(
+                rnd(5) as usize,
+                Band::peaking(EQ5_FREQS[rnd(5) as usize], 100, pick(rnd(9), &[0, 300, -400])),
+            ),
+            2 => c.set_bass(pick(rnd(9), &[0, 300, -300])),
+            3 => c.set_treble(pick(rnd(9), &[0, 200, -500])),
+            4 => c.set_crossfeed(if rnd(2) == 0 { None } else { Some(CrossfeedParams::DEFAULT) }),
+            5 => c.set_balance(pick(rnd(9), &[0, 40, -70]) as i8),
+            6 => c.set_channel_mode(if rnd(4) != 0 { ChannelMode::Stereo } else { ChannelMode::Mono }),
+            7 => c.set_limiter(rnd(2) == 0),
+            8 => c.fade_to(if rnd(2) == 0 { UNITY } else { UNITY / 4 }, 5 + rnd(40)),
+            9 => c.set_eq_preamp(if rnd(2) == 0 {
+                EqPreamp::Auto
+            } else {
+                EqPreamp::Manual(pick(rnd(9), &[0, 600, -300]).into())
+            }),
+            10 => c.set_meter(if rnd(2) == 0 { MeterMode::Off } else { MeterMode::Peak }),
+            11 => {
+                let _ = c.set_format(if rnd(2) == 0 { FMT16 } else { Format { channels: 1, ..FMT16 } });
+            }
+            12 => c.reset(),
+            _ => {}
+        }
+        // A few blocks after each change (ramps run to their end).
+        for _ in 0..1 + rnd(6) {
+            let ch = usize::from(c.format().channels);
+            let at = (rnd(3000) as usize) * 2;
+            let mut v: Vec<i16> = x[at..at + 512 * ch].to_vec();
+            c.process(&mut PcmBlock::I16(&mut v));
+            if let Some(m) = c.settled_mask() {
+                assert_eq!(m, c.active(), "step {step}: kept mask out of date");
+                settled_blocks += 1;
+            }
+        }
+    }
+    assert!(settled_blocks > 100, "the mask is kept once nothing moves ({settled_blocks} blocks)");
+    // Flat settings: kept from the first block on; a change clears it.
+    let mut c = Chain::default();
+    c.set_format(FMT16).unwrap();
+    let mut v = music16(256, 1);
+    c.process(&mut PcmBlock::I16(&mut v));
+    assert_eq!(c.settled_mask(), Some(c.active()));
+    c.set_bass(300);
+    assert_eq!(c.settled_mask(), None);
+    // While the shelf ramps the mask is recomputed; afterwards kept again.
+    let mut v = music16(256, 2);
+    c.process(&mut PcmBlock::I16(&mut v));
+    assert_eq!(c.settled_mask(), None);
+    for i in 0..40 {
+        let mut v = music16(256, 3 + i);
+        c.process(&mut PcmBlock::I16(&mut v));
+    }
+    assert_eq!(c.settled_mask(), Some(c.active()));
+    assert_ne!(c.active() & (1 << StageId::Tone as u16), 0);
+}

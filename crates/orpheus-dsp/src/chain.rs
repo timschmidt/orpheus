@@ -137,6 +137,12 @@ pub struct Chain<E: BiquadCascade = SoftCascade<MAX_BANDS>> {
     rg: RgSettings,
     tags: RgTags,
     preamp: EqPreamp,
+    /// The stage mask ([`Chain::active`]) while nothing can change it but a
+    /// setter: no ramp moves and the limiter's state does not decide its
+    /// bit. `run` uses it instead of recomputing per block (on the player
+    /// `active` is paged and was reloaded for every block, AU-PERF); every
+    /// method that changes a parameter clears it.
+    settled: Option<u16>,
 }
 
 impl Default for Chain<SoftCascade<MAX_BANDS>> {
@@ -178,6 +184,7 @@ impl<E: BiquadCascade> Chain<E> {
             rg: RgSettings::default(),
             tags: RgTags::default(),
             preamp: EqPreamp::Auto,
+            settled: None,
         };
         c.apply_rate();
         c
@@ -192,6 +199,7 @@ impl<E: BiquadCascade> Chain<E> {
     /// `Unsupported::Channels` for more than two channels,
     /// `Unsupported::Rate` for a rate the output path cannot play.
     pub fn set_format(&mut self, fmt: Format) -> Result<u32, Unsupported> {
+        self.settled = None;
         if !(1..=2).contains(&fmt.channels) {
             return Err(Unsupported::Channels(fmt.channels));
         }
@@ -244,6 +252,7 @@ impl<E: BiquadCascade> Chain<E> {
     /// Forget all signal history and finish all ramps (seek, flush). The
     /// pipeline fades around a seek (04 §2.2), so nothing is audible.
     pub fn reset(&mut self) {
+        self.settled = None;
         self.decim.reset();
         self.gain.reset();
         self.eq.reset();
@@ -258,12 +267,14 @@ impl<E: BiquadCascade> Chain<E> {
 
     /// ReplayGain settings (ramped).
     pub fn set_replaygain(&mut self, s: RgSettings) {
+        self.settled = None;
         self.rg = s;
         self.update_gain(false);
     }
 
     /// The current track's gain tags (ramped; call at the track boundary).
     pub fn set_track_gains(&mut self, t: RgTags) {
+        self.settled = None;
         self.tags = t;
         self.update_gain(false);
     }
@@ -271,12 +282,14 @@ impl<E: BiquadCascade> Chain<E> {
     /// The equaliser's bands (up to [`MAX_BANDS`]; fewer bands ramp the
     /// rest to flat).
     pub fn set_eq(&mut self, bands: &[Band]) {
+        self.settled = None;
         self.eq.set_bands(bands);
         self.update_gain(false);
     }
 
     /// One band of the equaliser.
     pub fn set_eq_band(&mut self, i: usize, band: Band) {
+        self.settled = None;
         self.eq.set_band(i, band);
         self.update_gain(false);
     }
@@ -287,43 +300,51 @@ impl<E: BiquadCascade> Chain<E> {
     }
 
     pub fn set_eq_preamp(&mut self, p: EqPreamp) {
+        self.settled = None;
         self.preamp = p;
         self.update_gain(false);
     }
 
     /// Bass shelf gain, mB.
     pub fn set_bass(&mut self, mb: i16) {
+        self.settled = None;
         self.tone.set_bass(mb);
         self.update_gain(false);
     }
 
     /// Treble shelf gain, mB.
     pub fn set_treble(&mut self, mb: i16) {
+        self.settled = None;
         self.tone.set_treble(mb);
         self.update_gain(false);
     }
 
     /// Crossfeed on (with these parameters) or off.
     pub fn set_crossfeed(&mut self, p: Option<CrossfeedParams>) {
+        self.settled = None;
         self.xfeed.set(p);
     }
 
     /// −100 (left only) … +100 (right only).
     pub fn set_balance(&mut self, b: i8) {
+        self.settled = None;
         self.matrix.set_balance(b);
     }
 
     pub fn set_channel_mode(&mut self, m: ChannelMode) {
+        self.settled = None;
         self.matrix.set_mode(m);
     }
 
     /// Allow the limiter (on by default). It engages only while a stage can
     /// raise the level.
     pub fn set_limiter(&mut self, on: bool) {
+        self.settled = None;
         self.limiter_on = on;
     }
 
     pub fn set_dither(&mut self, m: DitherMode) {
+        self.settled = None;
         self.dither.set(m, self.out_rate);
     }
 
@@ -333,6 +354,7 @@ impl<E: BiquadCascade> Chain<E> {
     }
 
     pub fn set_meter(&mut self, m: MeterMode) {
+        self.settled = None;
         self.meter.set_mode(m);
     }
 
@@ -343,14 +365,17 @@ impl<E: BiquadCascade> Chain<E> {
 
     /// Fade linearly to `level` (Q3.28; 0 silent, [`UNITY`] full) over `ms`.
     pub fn fade_to(&mut self, level: i32, ms: u32) {
+        self.settled = None;
         self.fade.to(level, ms);
     }
 
     pub fn fade_out(&mut self, ms: u32) {
+        self.settled = None;
         self.fade.to(0, ms);
     }
 
     pub fn fade_in(&mut self, ms: u32) {
+        self.settled = None;
         self.fade.to(UNITY, ms);
     }
 
@@ -426,13 +451,17 @@ impl<E: BiquadCascade> Chain<E> {
     // -------------------------------------------------------- processing
 
     fn limiter_active(&self) -> bool {
-        (self.limiter_on
+        self.limiter_boost() || !self.limiter.is_idle()
+    }
+
+    /// The limiter is on and a stage may raise the level.
+    fn limiter_boost(&self) -> bool {
+        self.limiter_on
             && (self.gain.may_boost()
                 || self.eq.may_boost()
                 || self.tone.may_boost()
                 || (self.fmt.channels == 2 && self.xfeed.is_active())
-                || self.decim.is_active()))
-            || !self.limiter.is_idle()
+                || self.decim.is_active())
     }
 
     /// Bit set of the stages that run on the next block (bit = [`StageId`]
@@ -457,6 +486,13 @@ impl<E: BiquadCascade> Chain<E> {
         set(&mut m, StageId::Output, processing || wide16);
         set(&mut m, StageId::Meter, self.meter.is_active());
         m
+    }
+
+    /// The mask `process` uses without recomputing it (`None`: it is
+    /// computed on the next block). For tests and diagnostics.
+    #[must_use]
+    pub fn settled_mask(&self) -> Option<u16> {
+        self.settled
     }
 
     /// Estimated cost of the next block, Cortex-M4 cycles per output frame
@@ -531,9 +567,38 @@ impl<E: BiquadCascade> Chain<E> {
         self.run(s)
     }
 
+    /// The stages that run on this block: the settled mask, else computed
+    /// (and kept when it cannot change by itself).
+    #[inline(never)]
+    fn refresh(&mut self) -> u16 {
+        let m = self.active();
+        if self.steady() {
+            self.settled = Some(m);
+        }
+        m
+    }
+
+    /// Processing cannot change [`Chain::active`]: no ramp moves (gain,
+    /// filters, crossfeed, matrix, fade), and the limiter's bit does not
+    /// depend on its envelope (set by a possible boost, or clear with the
+    /// envelope idle: the limiter does not run then).
+    fn steady(&self) -> bool {
+        self.gain.settled()
+            && self.eq.settled()
+            && self.tone.settled()
+            && self.xfeed.settled()
+            && self.matrix.settled()
+            && self.fade.done()
+            && (self.limiter_boost() || self.limiter.is_idle())
+    }
+
     fn run<S: Pcm>(&mut self, s: &mut [S]) -> usize {
         let ch = usize::from(self.fmt.channels.clamp(1, 2));
-        let act = self.active();
+        let act = match self.settled {
+            Some(m) => m,
+            None => self.refresh(),
+        };
+        debug_assert_eq!(act, self.active(), "settled stage mask out of date");
         let on = |id: StageId| act & (1 << id as u16) != 0;
         if !on(StageId::Output) {
             if self.meter.is_active() {

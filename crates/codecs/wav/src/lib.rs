@@ -498,6 +498,10 @@ impl<'a> Decoder<'a> for WavDecoder<'a> {
         Ok((d, info))
     }
 
+    // A function of its own, not inlined into `AnyDecoder::decode`: on the
+    // player its code is then one contiguous run that `hot.toml` packs
+    // (AU-PERF; inlined, the codecs' frame code was interleaved there).
+    #[inline(never)]
     fn decode(&mut self, src: &mut dyn ByteSource) -> Result<Step<'_>, DecodeError> {
         match self.fill(src) {
             Fill::Range(s, e) => Ok(Step::Pcm(if self.lay.enc.wide() {

@@ -511,7 +511,27 @@ adjacently (same group, same lines where possible): `mp3-frame`, `flac-frame`,
 second for each scenario and the gate has thresholds (steady-state playback
 with the screen off: < 5 faults/s).
 
-## 4. Tasks, priorities and time
+**The cache is direct-mapped.** A line's physical place is its offset in the
+code window modulo one 32 KiB alias block (§3.1: page `p` lives in slot
+`p & 3`), so two hot lines 32 KiB apart evict each other on every pass,
+however small the working set. A cluster of ≤ 32 lines never conflicts with
+itself; clusters that run in the same wake-up must together stay within 32
+consecutive lines, which `fits_with` in `hot.toml` declares and `pagelink`
+checks (warning).
+
+**As built (AU-PERF, 2026-11-25).** Playback per block is small named
+non-async functions plus small poll functions (`audio::Apart` wraps a
+future so that its state machine is a function of its own instead of being
+inlined into its caller's): the task's wake-up runs through
+`TaskStorage::poll` → `Apart<player_request>` → `Apart<run_player>` →
+`play_file` → `Apart<play_block>` → `Room`, each a few hundred bytes to a
+few KB, instead of the 37 KB card-task and 12 KB `play_file` state
+machines; every codec's `decode` is `#[inline(never)]` (no longer
+interleaved in `AnyDecoder::decode`). Clusters `mp3-frame` (11 lines) +
+`play-block` (15) + `play-fill` (6) take the 32 physical lines once each;
+`flac-frame` (9) lands on `mp3-frame`'s; `steps-sample` (4) on the end of
+`play-fill`. Before: `play-block` was 77 lines and its MP3 frame lines
+shared physical lines with the PCM push loop's.
 
 ### 4.1 Priority levels
 

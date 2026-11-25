@@ -122,6 +122,12 @@ impl Matrix {
         self.ramp.ramping() || self.ramp.cur != IDENT
     }
 
+    /// No ramp moves: [`Self::is_active`] stays as it is until a setter.
+    #[must_use]
+    pub fn settled(&self) -> bool {
+        !self.ramp.ramping()
+    }
+
     /// Stereo only (`buf` interleaved L, R).
     pub fn process(&mut self, buf: &mut [i32]) {
         let (frames, _) = buf.as_chunks_mut::<2>();

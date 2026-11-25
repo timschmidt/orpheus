@@ -1,4 +1,5 @@
-//! Busy-wait delays for start-up code that runs before the timers.
+//! Busy-wait delays: [`spin_us`] for start-up code that runs before the
+//! timers, [`wait_us`] on the time base once it runs.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -14,9 +15,31 @@ pub fn core_hz() -> u32 {
     CORE_HZ.load(Ordering::Relaxed)
 }
 
-/// Spin for at least `us` microseconds (loop of ~4 cycles per iteration;
-/// no flash wait states, code in SRAM).
+/// Spin for at least `us` microseconds, counting loop iterations.
+///
+/// **It spins about three times as long** (AU-PERF, 2026-11-25, from the
+/// code; not measured on the player): `cortex_m::asm::delay(n)` (0.7.10)
+/// runs `n` iterations of `subs`/`bne`, 3–4 cycles each on the Cortex-M4
+/// (01 §9), and is given `core_hz / 1 MHz × us` iterations. Left so: every
+/// caller's wait (PLL, DAC, card, USB, NOR, LCD start-up) was proven on the
+/// player with the longer time. New code with a time base uses
+/// [`wait_us`].
 pub fn spin_us(us: u32) {
     let iters = (core_hz() / 4_000_000).max(1) * us;
     cortex_m::asm::delay(iters * 4);
+}
+
+/// Busy-wait at least `us` µs on the time base (T0 at 1 MHz, running from
+/// `hal::init`): `us` to `us + 1` µs, whatever the core clock, and time
+/// spent in interrupts counts towards it. Bounded by an iteration count
+/// (256 per µs, far more than the loop can do at 288 MHz) so that a stopped
+/// counter cannot hang the caller.
+#[inline]
+pub fn wait_us(us: u32) {
+    let t0 = crate::time::now_us_raw();
+    for _ in 0..(us + 2).saturating_mul(256) {
+        if crate::time::now_us_raw().wrapping_sub(t0) > us {
+            return;
+        }
+    }
 }

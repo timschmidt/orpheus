@@ -257,6 +257,13 @@ impl<const N: usize, C: BiquadCascade> Equalizer<N, C> {
             || (0..self.n).any(|i| self.cascade.ramping(i))
     }
 
+    /// No band moves and no section ramps: [`Self::is_active`] and
+    /// [`Self::may_boost`] stay as they are until a setter.
+    #[must_use]
+    pub fn settled(&self) -> bool {
+        self.bands[..self.n].iter().all(|b| b.t >= b.len) && !(0..self.n).any(|i| self.cascade.ramping(i))
+    }
+
     /// Whether any band boosts (now or at its target).
     #[must_use]
     pub fn may_boost(&self) -> bool {
@@ -422,6 +429,12 @@ impl<C: BiquadCascade> Tone<C> {
     #[must_use]
     pub fn is_active(&self) -> bool {
         self.eq.is_active()
+    }
+
+    /// See [`Equalizer::settled`].
+    #[must_use]
+    pub fn settled(&self) -> bool {
+        self.eq.settled()
     }
 
     #[must_use]

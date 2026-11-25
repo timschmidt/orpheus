@@ -1791,6 +1791,22 @@ impl Server {
         Flow::of(&out)
     }
 
+    /// [`Server::feed`] of `Event::Position` for the playback loop's every
+    /// block (AU-PERF): the player's position step only. A position changes
+    /// neither the sleep timer nor what is published (`feed` skips the
+    /// publish for it), so nothing else of `feed` applies but the
+    /// `Draining` rule.
+    #[inline(never)]
+    pub fn position(&mut self, frame: u64) -> Flow {
+        let Some(pl) = self.player.as_mut() else { return Flow::default() };
+        let mut out = Actions::default();
+        pl.position(frame, &mut out);
+        if pl.state() == State::Draining {
+            self.can_resume = false;
+        }
+        if out.is_empty() { Flow::default() } else { Flow::of(&out) }
+    }
+
     /// Publish the player's state to the snapshot (not the position: the
     /// playback loop does that per block).
     pub fn publish(&self) {

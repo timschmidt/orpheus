@@ -125,6 +125,12 @@ impl Gain {
         self.ramp.ramping() || self.ramp.cur[0] != UNITY
     }
 
+    /// No ramp moves: [`Self::is_active`] stays as it is until a setter.
+    #[must_use]
+    pub fn settled(&self) -> bool {
+        !self.ramp.ramping()
+    }
+
     #[must_use]
     pub fn may_boost(&self) -> bool {
         self.ramp.cur[0] > UNITY || self.ramp.target[0] > UNITY

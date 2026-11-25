@@ -478,3 +478,39 @@ fn requeue_of_a_shuffled_queue_keeps_the_order() {
     let r = Player::new(Config::default(), &mut st).saved().unwrap();
     assert_eq!((r.queue_id, r.queue_len, r.shuffle), (3, 6, false));
 }
+
+/// `position` (the playback loop's per-block call, AU-PERF) does what
+/// `handle(Event::Position)` does: the frame, and at B of an A–B loop the
+/// seek back to A.
+#[test]
+fn position_is_what_handle_does_with_a_position() {
+    let lens = [10 * 44_100u64; 2];
+    let mk = || {
+        let (mut p, mut st, mut sim) = setup(&lens);
+        sim.run(&mut p, &mut st, cmd(Command::PlayQueue { id: 1, len: 2, start: 0 }));
+        sim.play(&mut p, &mut st, 44_100);
+        sim.run(&mut p, &mut st, Event::Position { frame: 44_100 });
+        sim.run(&mut p, &mut st, cmd(Command::AbPoint));
+        sim.play(&mut p, &mut st, 44_100);
+        sim.run(&mut p, &mut st, cmd(Command::AbPoint));
+        (p, st)
+    };
+    let (mut a, mut sa) = mk();
+    let (mut b, _) = mk();
+    assert_eq!(a.ab(), b.ab());
+    assert!(a.ab().1.is_some());
+    for f in [0, 1000, 2 * 44_100 - 1, 2 * 44_100, 3 * 44_100, 5] {
+        let (mut oa, mut ob) = (Actions::default(), Actions::default());
+        a.handle(Event::Position { frame: f }, &mut sa, &mut oa);
+        b.position(f, &mut ob);
+        assert_eq!(oa.as_slice(), ob.as_slice(), "frame {f}");
+        assert_eq!(a.current(), b.current(), "frame {f}");
+    }
+    // No track: nothing happens.
+    let (mut p, mut st, _) = setup(&lens);
+    let mut out = Actions::default();
+    p.position(1000, &mut out);
+    assert!(out.is_empty());
+    p.handle(Event::Position { frame: 1000 }, &mut st, &mut out);
+    assert!(out.is_empty() && p.current().is_none());
+}
