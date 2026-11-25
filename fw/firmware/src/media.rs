@@ -797,6 +797,12 @@ pub struct Server {
     build: Option<Build>,
     /// The listing being made in pieces while a track plays.
     job: Option<Job>,
+    /// The Up next window being filled while a track plays: (queue
+    /// generation, first position, titles done). One title per chore piece
+    /// (`step`): a whole window at once took 465 ms with a shuffled queue
+    /// (each title opens a track somewhere on the card) and emptied the DAC
+    /// ring (soak, 2026-11-25).
+    qjob: Option<(u32, u32, u32)>,
     /// The index file of an abandoned build, removed (with the scratch
     /// files) before the next build starts.
     orphan: Option<FileName>,
@@ -850,6 +856,7 @@ impl Server {
             lgen: 0,
             build: None,
             job: None,
+            qjob: None,
             orphan: None,
             queue: [Locator { dir: 0, index: 0 }; QUEUE],
             qlen: 0,
@@ -974,8 +981,13 @@ impl Server {
                 self.text(vol, file, offset, scratch).await;
                 true
             }
-            Req::QueueWin { first } => {
+            Req::QueueWin { first } if idle => {
                 self.queue_win(vol, first).await;
+                true
+            }
+            Req::QueueWin { first } => {
+                // While playing: in pieces (`step`).
+                self.qjob = Some((self.qgen, first, 0));
                 true
             }
             Req::Release | Req::Image => {
@@ -1130,7 +1142,7 @@ impl Server {
     /// A listing piece is waiting (while a track plays).
     #[must_use]
     pub fn has_job(&self) -> bool {
-        self.job.is_some()
+        self.job.is_some() || self.qjob.is_some()
     }
 
     /// One piece of the listing being made while a track plays: at most
@@ -1139,6 +1151,15 @@ impl Server {
     /// fills, with `complete: false` until it is whole (the UI asks for
     /// nothing meanwhile).
     pub async fn step(&mut self, vol: &mut Vol) {
+        if let Some((qgen, first, done)) = self.qjob.take() {
+            if qgen == self.qgen {
+                let done = self.queue_title(vol, first, done).await;
+                if let Some(done) = done {
+                    self.qjob = Some((qgen, first, done));
+                }
+            }
+            return;
+        }
         let t0 = atj2157_hal::time::now_us();
         let spent = move || (atj2157_hal::time::now_us() - t0) as u32;
         match self.job.take() {
@@ -1574,6 +1595,41 @@ impl Server {
     }
 
     /// Titles of the queue around `first` for Up next.
+    /// One more title of the Up next window from `first` (`done` filled so
+    /// far), published at once; `Some(done)` while more remain.
+    async fn queue_title(&mut self, vol: &mut Vol, first: u32, done: u32) -> Option<u32> {
+        let qgen = self.qgen;
+        let pos = first.saturating_add(done);
+        let more =
+            (done as usize) < QWIN && self.player.as_ref().is_some_and(|pl| pos < pl.len().min(self.qlen));
+        let n = if more {
+            let item = self.player.as_ref().map_or(0, |pl| pl.item_at(pos));
+            let title = match self.queue.get(item as usize) {
+                Some(&l) => {
+                    let mut e = DirEntry::new();
+                    if vol.open_locator(l, &mut e).await.is_ok() {
+                        Short::title(e.name())
+                    } else {
+                        Short::new("?")
+                    }
+                }
+                None => Short::new("?"),
+            };
+            critical_section::with(|cs| QWINDOW.borrow(cs).borrow_mut().titles[done as usize] = title);
+            done + 1
+        } else {
+            done
+        };
+        critical_section::with(|cs| {
+            let mut w = QWINDOW.borrow(cs).borrow_mut();
+            w.qgen = qgen;
+            w.first = first;
+            w.n = n;
+        });
+        ready(tag::QUEUE);
+        more.then_some(n)
+    }
+
     async fn queue_win(&mut self, vol: &mut Vol, first: u32) {
         let mut e = DirEntry::new();
         let qgen = self.qgen;

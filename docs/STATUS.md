@@ -64,6 +64,25 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-25 — AU-PERF on the player; Up next window found blocking playback (lead)
+
+* Merged AU-PERF (`0a02b8b6`): per-block path out of the async closures,
+  `play-block` 77 → 15 lines, clusters laid out for the direct-mapped
+  cache, `Chain::active` cached, every decoder's `decode` out of line, soft
+  I²C timed on T0. On the player: `steps status` bus 1.65 ms per sample
+  (`bus_load` 4.1 %, was ~7 %), `acc read` 1,000 mg, 0 I²C errors; the
+  cover search reads ~100 entries per 250 ms (was ~30).
+* Pictures replay still underran, cause `serve`: new log line names slow
+  requests — **`queue-win` 465 ms** (Now Playing's Up next window: each
+  title opens a track of the 256-track shuffled queue by locator). Now
+  filled one title per chore while playing (`Server::queue_title`); each
+  piece still takes 70–120 ms (`open_locator` scans the folder up to the
+  entry), more than the ~64 ms of DAC ring: 20 underruns remain on the
+  replay. Next: make titles cheap (library titles, a title cache, a
+  faster locator seek) — worker.
+* Line loads/s during the step stayed ~3,200/s (the step is dominated by
+  card-task work, not the playback loop now).
+
 ### 2026-11-25 — on-device UI fuzzing (VER-8, lead)
 
 * `fuzz-ui --seed 8 --minutes 30 --play --settings`: **stack finding** —
