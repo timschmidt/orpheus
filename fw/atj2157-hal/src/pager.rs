@@ -60,7 +60,9 @@ fn map(m: RegionMap) {
 
 /// First thing after reset in a paged image: deny the paging windows so an
 /// access to paged code or data before [`init`] faults (and is recorded)
-/// instead of executing whatever SRAM2/3 hold.
+/// instead of executing whatever SRAM2/3 hold. Never inlined: it is a
+/// `check-resident` root (`resident.toml`).
+#[inline(never)]
 pub fn arm_deny() {
     w(MPU_CTRL, mpu::CTRL_OFF);
     barrier();

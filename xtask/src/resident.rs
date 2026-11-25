@@ -43,16 +43,28 @@ pub struct Report {
     pub unresolved: usize,
 }
 
+/// The roots that match no symbol (each one is an error).
+fn unmatched_roots(roots: &[(String, Vec<usize>)]) -> Vec<&str> {
+    roots.iter().filter(|(_, v)| v.is_empty()).map(|(p, _)| p.as_str()).collect()
+}
+
 pub fn check(elf: &Path, map: &Path, bin: &str) -> Result<Report> {
     let m = linkmap::parse(&std::fs::read_to_string(map)?)?;
     let g = Graph::load(elf, m)?;
     let rules = Rules::load(&root().join("resident.toml"), bin)?;
     let roots = resolve_roots(&g, &rules);
     let root_nodes: Vec<usize> = roots.iter().flat_map(|(_, v)| v.iter().copied()).collect();
-    for (p, v) in &roots {
-        if v.is_empty() {
-            log(&format!("  warning: root `{p}` matches nothing in {}", elf.display()));
-        }
+    // A root that matches nothing proves nothing: an inlined root's callees
+    // go unchecked (2026-11-25: `log::init` was inlined into `main` and
+    // called paged code before the pager started; every start faulted and
+    // stage 2 fell back to the other slot).
+    let unmatched = unmatched_roots(&roots);
+    if !unmatched.is_empty() {
+        bail!(
+            "root(s) {} match nothing in {} (inlined? mark them #[inline(never)])",
+            unmatched.iter().map(|p| format!("`{p}`")).collect::<Vec<_>>().join(", "),
+            elf.display()
+        );
     }
     let parent = g.walk(&root_nodes);
     let mut r = Report {
@@ -133,5 +145,25 @@ pub fn print(r: &Report) {
     }
     if r.unresolved > 0 {
         log(&format!("  {} relocations not decoded", r.unresolved));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression (2026-11-25): `atj2157_hal::log::init` was inlined into
+    /// `main`, its root matched nothing, `check-resident` only warned, and
+    /// the firmware called paged `log::line` before the pager started — a
+    /// fault at every start, caught only by stage 2's slot fallback. An
+    /// unmatched root must be reported.
+    #[test]
+    fn regress_unmatched_resident_root_is_an_error() {
+        let roots = vec![
+            ("atj2157_hal::log::init".to_string(), vec![]),
+            ("firmware::start_pager".to_string(), vec![3]),
+        ];
+        assert_eq!(unmatched_roots(&roots), vec!["atj2157_hal::log::init"]);
+        assert!(unmatched_roots(&roots[1..]).is_empty());
     }
 }

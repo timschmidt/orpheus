@@ -18,7 +18,9 @@ fn rd(addr: u32) -> u32 {
 
 /// Start of an image: keep the ring a previous start left (its last lines
 /// say what happened before a reset) and mark the new start, or set up an
-/// empty one ([`logring::keep`]).
+/// empty one ([`logring::keep`]). Runs before the pager: never inlined, so
+/// `check-resident` proves everything it reaches resident.
+#[inline(never)]
 pub fn init() {
     let kept = logring::keep(
         rd(BASE + logring::OFF_MAGIC as u32),
