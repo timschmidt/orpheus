@@ -1755,6 +1755,11 @@ impl SystemService for Fw {
     fn keys_locked(&self) -> bool {
         self.locked
     }
+    fn boot_slot(&self) -> Option<orpheus_apps::services::BootSlot> {
+        // T-6: stage 2's boot-info word for this start.
+        let i = atj2157_hal::persist::boot_info()?;
+        Some(orpheus_apps::services::BootSlot { running: i.slot()?, failed: i.tripped() })
+    }
 }
 
 impl System for Fw {

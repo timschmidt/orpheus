@@ -50,7 +50,8 @@ cargo xtask dev <subcommand>
   stage IMAGE|NAME|FILE.yfw      write a YFW1 slot to slot A (0x762000)
   update FILE.ofw [--no-reboot]  firmware update through the running Orpheus
                                 (developer channel, inactive slot, no ADFU; UPD-1)
-  slots                          ADFU: what full slots A and B hold
+  slots                          ADFU: what full slots A and B hold, and which slot
+                                stage 2 started last (and after which failed, T-6)
   switch-slot                    ADFU: start the other slot next (recovery after an
                                 update that keeps failing to start)
   install-stage2                 replace stage 2 at 0x7DF400 (keeps the vendor record copy)

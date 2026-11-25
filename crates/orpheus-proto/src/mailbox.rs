@@ -12,7 +12,7 @@
 //! | `+0x0C..+0x30` | `args[9]` | test arguments |
 //! | `+0x30` | `test_mode` | `"YTST"` arms test mode (legacy word, `0x137FF0`) |
 //! | `+0x34` | `adfu` | `"ADFU"`: stage 2 enters USB recovery (legacy, `0x137FF4`) |
-//! | `+0x38` | `boot_count` | `"BMY" << 8 \| attempts` (legacy, `0x137FF8`) |
+//! | `+0x38` | `boot_count` | `"BMY" << 8 \| tripped << 4 \| tries` (legacy, `0x137FF8`; [`crate::boot`]) |
 //! | `+0x3C` | `boot_info` | written by stage 2: what it decided ([`BootInfo`]) |
 
 use crate::{magic, rd32, wr32};
@@ -39,7 +39,8 @@ pub const TEST_MODE_MAGIC: u32 = magic(b"YTST");
 pub const ADFU_MAGIC: u32 = magic(b"ADFU");
 /// Upper 24 bits of the boot counter word.
 pub const BOOT_COUNT_TAG: u32 = 0x0059_4D42;
-/// Failed starts in a row before stage 2 falls back to USB recovery.
+/// Failed starts in a row before stage 2 gives up on a slot and starts the
+/// next one ([`crate::boot`]; USB recovery when none is left).
 pub const BOOT_COUNT_LIMIT: u32 = 3;
 
 /// After the test, reboot into ADFU (so the host can read results) instead of
@@ -59,6 +60,9 @@ pub enum Request {
     Stock = magic(b"STOK"),
     /// Run the HIL test named by `test_id`.
     Test = magic(b"TEST"),
+    /// Stage 2 fallback test (`boot crash-test`): the firmware started
+    /// from slot `args[0]` fails its next `args[1]` starts ([`crash_step`]).
+    CrashTest = magic(b"CRSH"),
 }
 
 impl Request {
@@ -68,6 +72,7 @@ impl Request {
             x if x == Self::Adfu as u32 => Self::Adfu,
             x if x == Self::Stock as u32 => Self::Stock,
             x if x == Self::Test as u32 => Self::Test,
+            x if x == Self::CrashTest as u32 => Self::CrashTest,
             _ => Self::None,
         }
     }
@@ -75,6 +80,13 @@ impl Request {
 
 /// Stage 2's record of the boot decision (`boot_info` word):
 /// `magic "B" (0x42) << 24 | path << 16 | attempt << 8 | keys`.
+///
+/// Path 1 (firmware): `attempt` = `tripped << 4 | tries` (as the counter
+/// word, [`crate::boot`]), `keys` = index of the started slot in
+/// [`crate::layout::SLOTS`]. Paths 5/6: `attempt` = `tripped << 4`.
+/// Path 4 (mailbox): `attempt` and `keys` are carried over from the
+/// previous word, so the host still sees the last firmware start in USB
+/// recovery.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BootInfo {
     pub path: u8,
@@ -88,6 +100,7 @@ pub const PATH_ADFU_KEY: u8 = 3;
 pub const PATH_ADFU_MAILBOX: u8 = 4;
 pub const PATH_ADFU_COUNTER: u8 = 5;
 pub const PATH_ADFU_NOIMAGE: u8 = 6;
+pub const PATH_ADFU_PANIC: u8 = 7;
 
 impl BootInfo {
     #[must_use]
@@ -100,6 +113,57 @@ impl BootInfo {
             return None;
         }
         Some(Self { path: (w >> 16) as u8, attempt: (w >> 8) as u8, keys: w as u8 })
+    }
+    /// Starts of the current slot so far (path 1).
+    #[must_use]
+    pub const fn tries(self) -> u8 {
+        self.attempt & 0xF
+    }
+    /// Slots that tripped the counter (bit `i` = `SLOTS[i]`).
+    #[must_use]
+    pub const fn tripped(self) -> u8 {
+        (self.attempt >> 4) & 7
+    }
+    /// The slot this firmware was started from (path 1 only).
+    #[must_use]
+    pub const fn slot(self) -> Option<u8> {
+        if self.path == PATH_FIRMWARE { Some(self.keys) } else { None }
+    }
+    /// Started from a later slot because an earlier one kept failing.
+    #[must_use]
+    pub const fn fell_back(self) -> bool {
+        self.path == PATH_FIRMWARE && self.tripped() != 0
+    }
+}
+
+/// What the firmware does with a [`Request::CrashTest`] at start-up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CrashStep {
+    /// No crash test armed.
+    None,
+    /// Fail this start (reboot keeping the counter); write `left` to
+    /// `args[1]`, and clear the request when it is 0.
+    Fail { left: u32 },
+    /// Another slot started (the fallback worked) or no crash is left:
+    /// clear the request.
+    Disarm,
+}
+
+/// The crash test's decision for the firmware started from `running`. At
+/// most `args[1]` starts fail, so a test can never keep the player
+/// crashing: with [`BOOT_COUNT_LIMIT`] crashes, the next start is the
+/// fallback (or, with nothing to fall back to, one USB recovery, after
+/// which the slot starts normally).
+#[must_use]
+pub fn crash_step(request: u32, args: &[u32; N_ARGS], running: Option<u8>) -> CrashStep {
+    if Request::from_word(request) != Request::CrashTest {
+        return CrashStep::None;
+    }
+    match running {
+        Some(s) if u32::from(s) == args[0] && args[1] > 0 && args[1] <= BOOT_COUNT_LIMIT => {
+            CrashStep::Fail { left: args[1] - 1 }
+        }
+        _ => CrashStep::Disarm,
     }
 }
 
@@ -167,10 +231,17 @@ impl Mailbox {
         })
     }
 
-    /// Attempts recorded in the boot counter word (0 if the tag is absent).
+    /// Starts of the current slot recorded in the boot counter word (0 if
+    /// the tag is absent).
     #[must_use]
     pub fn boot_attempts(&self) -> u32 {
-        if self.boot_count >> 8 == BOOT_COUNT_TAG { self.boot_count & 0xFF } else { 0 }
+        u32::from(crate::boot::parse_count(self.boot_count).1)
+    }
+
+    /// Slots that tripped the counter (bit `i` = `SLOTS[i]`).
+    #[must_use]
+    pub fn boot_tripped(&self) -> u8 {
+        crate::boot::parse_count(self.boot_count).0
     }
 }
 
@@ -205,8 +276,47 @@ mod tests {
     #[test]
     fn attempts() {
         let m = Mailbox { boot_count: BOOT_COUNT_TAG << 8 | 2, ..Mailbox::default() };
-        assert_eq!(m.boot_attempts(), 2);
+        assert_eq!((m.boot_attempts(), m.boot_tripped()), (2, 0));
+        let m = Mailbox { boot_count: BOOT_COUNT_TAG << 8 | 0x21, ..Mailbox::default() };
+        assert_eq!((m.boot_attempts(), m.boot_tripped()), (1, 2));
         let m = Mailbox { boot_count: 0x1234_5602, ..Mailbox::default() };
         assert_eq!(m.boot_attempts(), 0);
+    }
+
+    #[test]
+    fn boot_info_fields() {
+        let i = BootInfo::from_word(0x4201_1201).unwrap();
+        assert_eq!((i.slot(), i.tries(), i.tripped(), i.fell_back()), (Some(1), 2, 1, true));
+        let i = BootInfo::from_word(0x4201_0100).unwrap();
+        assert_eq!((i.slot(), i.fell_back()), (Some(0), false));
+        let i = BootInfo::from_word(0x4205_3000).unwrap();
+        assert_eq!((i.slot(), i.tripped(), i.fell_back()), (None, 3, false));
+    }
+
+    #[test]
+    fn crash_test_steps() {
+        let req = Request::CrashTest as u32;
+        let mut args = [0u32; N_ARGS];
+        assert_eq!(Request::from_word(req), Request::CrashTest);
+        assert_eq!(crash_step(0, &args, Some(0)), CrashStep::None);
+        assert_eq!(crash_step(Request::Test as u32, &args, Some(0)), CrashStep::None);
+        // Slot A, three crashes.
+        args[0] = 0;
+        args[1] = BOOT_COUNT_LIMIT;
+        let mut left = BOOT_COUNT_LIMIT;
+        for want in [2, 1, 0] {
+            assert_eq!(crash_step(req, &args, Some(0)), CrashStep::Fail { left: want });
+            left -= 1;
+            args[1] = left;
+        }
+        // The request is cleared at 0; if it were not, nothing more fails.
+        assert_eq!(crash_step(req, &args, Some(0)), CrashStep::Disarm);
+        // B (the fallback) disarms; so does a start that is not a slot's.
+        args[1] = 2;
+        assert_eq!(crash_step(req, &args, Some(1)), CrashStep::Disarm);
+        assert_eq!(crash_step(req, &args, None), CrashStep::Disarm);
+        // A count above the limit (garbage) never crashes.
+        args[1] = 100;
+        assert_eq!(crash_step(req, &args, Some(0)), CrashStep::Disarm);
     }
 }

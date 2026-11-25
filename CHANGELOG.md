@@ -14,9 +14,11 @@ replaced).
 ### Added
 
 - **Boot and memory**: Rust boot stage 2 that starts the first valid
-  slot (an invalid image is skipped) and goes to USB recovery when the boot
-  counter trips (a valid image that keeps crashing is switched back from
-  the host: `xtask dev switch-slot` or the Install page); demand paging of code
+  slot (an invalid image is skipped) and, when a slot fails three starts in
+  a row, the next one — after an update also the old, superseded image —
+  with USB recovery only when nothing is left (Settings › System › About
+  shows the slot and which one failed; from the host also `xtask dev
+  switch-slot` or the Install page); demand paging of code
   and constants from SPI flash (1 KiB lines, 8 KiB pages) with a
   profile-guided page packer and a static proof of the resident set;
   watchdog fed only while both executors and the UI make progress; fault

@@ -429,6 +429,54 @@ mod tests {
         assert_eq!((nor.forbidden, nor.unerased), (0, 0));
     }
 
+    /// T-6: stage 2's fallback over real slot images. Boots `n` times
+    /// without a healthy start; returns the slots started.
+    fn crash_loop(nor: &SimNor, n: usize) -> Vec<Option<u8>> {
+        let mut w = 0;
+        let mut out = Vec::new();
+        for _ in 0..n {
+            let mut r = nor.reader();
+            let d = slots::stage2_decide(w, &mut r);
+            out.push(d.slot);
+            w = d.count;
+        }
+        out
+    }
+
+    #[test]
+    fn fallback_after_an_update_that_keeps_crashing() {
+        let old = image(1, 0x2345, 2);
+        let new = image(2, 0x3456, 3);
+        let mut nor = SimNor::new();
+        installed(&mut nor, full::SLOT_A, &old);
+        update(&mut nor, 0, &new, 1024).unwrap();
+        // A superseded, B new: B starts; if it never gets healthy, the old
+        // A starts after three tries, and the firmware finds its header.
+        assert_eq!(crash_loop(&nor, 7), [Some(1), Some(1), Some(1), Some(0), Some(0), Some(0), None]);
+        assert!(SlotHeader::from_bytes(&nor.data[0x1000..0x1080]).is_err());
+        let h = SlotHeader::from_bytes_or_superseded(&nor.data[0x1000..0x1080]).unwrap();
+        assert_eq!(h, SlotHeader::from_bytes(&old[..128]).unwrap());
+        // A healthy start of the fallback (counter 0): B is tried first again.
+        assert_eq!(crash_loop(&nor, 1), [Some(1)]);
+        // Running the fallback A, the next update writes B (over the
+        // crashing image) and A stays superseded.
+        let fixed = image(3, 0x1111, 1);
+        update(&mut nor, 0, &fixed, 4096).unwrap();
+        assert!(boots_ok(&nor, 1) && holds(&nor, 1, &fixed));
+        // Both valid (an update B → A): A new and crashing, B is next.
+        let mut nor = SimNor::new();
+        installed(&mut nor, full::SLOT_B, &old);
+        update(&mut nor, 1, &new, 1024).unwrap();
+        assert_eq!(crash_loop(&nor, 4), [Some(0), Some(0), Some(0), Some(1)]);
+        // A damaged superseded image (its resident sum fails) is never
+        // started.
+        let mut nor = SimNor::new();
+        installed(&mut nor, full::SLOT_A, &old);
+        update(&mut nor, 0, &new, 1024).unwrap();
+        nor.data[0x1000 + 0x1000 + 5] ^= 0x10;
+        assert_eq!(crash_loop(&nor, 4), [Some(1), Some(1), Some(1), None]);
+    }
+
     #[test]
     fn any_chunk_size_and_repeats() {
         let old = image(1, 0x2000, 1);

@@ -47,9 +47,48 @@ pub fn test_request() -> Option<(u32, mailbox::Mailbox)> {
         .then_some((m.test_id, m))
 }
 
-/// Mark this start as healthy (clears the boot-attempt counter).
+/// Mark this start as healthy (clears the boot-attempt counter, and with it
+/// stage 2's record of tripped slots: the next start tries the first slot
+/// again).
 pub fn clear_boot_counter() {
     wr(mailbox::ADDR_BOOT_COUNT, 0);
+}
+
+/// Stage 2's record of this start (`None` when not started by stage 2).
+#[must_use]
+pub fn boot_info() -> Option<mailbox::BootInfo> {
+    mailbox::BootInfo::from_word(rd(mailbox::BASE + mailbox::OFF_BOOT_INFO as u32))
+}
+
+/// `boot crash-test`: make the firmware in `slot` fail its next `n` starts
+/// (a reboot without the healthy-start mark), so stage 2's fallback can be
+/// tested without writing NOR ([`mailbox::crash_step`]).
+pub fn arm_crash_test(slot: u8, n: u32) {
+    wr(mailbox::BASE + mailbox::OFF_ARGS as u32, u32::from(slot));
+    wr(mailbox::BASE + mailbox::OFF_ARGS as u32 + 4, n);
+    wr(mailbox::BASE + mailbox::OFF_REQUEST as u32, mailbox::Request::CrashTest as u32);
+}
+
+/// At start-up: whether an armed crash test says this start must fail
+/// (the count is used up here; the request is cleared once spent, or when
+/// another slot started).
+pub fn take_crash_test() -> bool {
+    let m = mailbox();
+    let req = mailbox::BASE + mailbox::OFF_REQUEST as u32;
+    match mailbox::crash_step(m.request, &m.args, boot_info().and_then(mailbox::BootInfo::slot)) {
+        mailbox::CrashStep::None => false,
+        mailbox::CrashStep::Disarm => {
+            wr(req, 0);
+            false
+        }
+        mailbox::CrashStep::Fail { left } => {
+            wr(mailbox::BASE + mailbox::OFF_ARGS as u32 + 4, left);
+            if left == 0 {
+                wr(req, 0);
+            }
+            true
+        }
+    }
 }
 
 /// Writer for the result block.

@@ -17,6 +17,7 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod boot;
 pub mod devchan;
 pub mod fault;
 pub mod hash;

@@ -258,13 +258,57 @@ fn payloads_from_disk() -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
     Ok((ymon, nordump, norprog_payload()?))
 }
 
-/// `slots`: what full slots A and B hold (ADFU, reads only).
+/// `slots`: what full slots A and B hold, and stage 2's record of the last
+/// start (ADFU, reads only).
 pub fn cmd_slots() -> Result<String> {
     let (ymon, nordump, norprog) = payloads_from_disk()?;
     let p = nor_payloads(&ymon, &nordump, &norprog);
     let mut d = to_ymon()?;
+    let (_, _, mb) = super::read_persistent(&mut d)?;
+    log(&format!("stage 2: {}", describe_boot(&mb)));
     let s = orpheus_host::transport::block_on(orpheus_host::flows::slots(&mut d.link, &p))?;
     Ok(format!("slot A: {:?}; slot B: {:?}; switch possible: {}", s.a, s.b, s.can_switch))
+}
+
+/// Stage 2's boot-info and counter words in words (T-6): which slot the
+/// last firmware start used, after which slots failed.
+pub fn describe_boot(mb: &orpheus_proto::mailbox::Mailbox) -> String {
+    use orpheus_proto::boot::slot_name;
+    use orpheus_proto::mailbox::{self as m, BootInfo};
+    let names = |mask: u8| -> String {
+        (0..3u8).filter(|i| mask & 1 << i != 0).map(slot_name).collect::<Vec<_>>().join(", ")
+    };
+    let Some(i) = BootInfo::from_word(mb.boot_info) else {
+        return format!("no boot-info word ({:#010x})", mb.boot_info);
+    };
+    let start = |i: BootInfo| {
+        let mut s = format!("slot {}, start {} of {}", slot_name(i.keys), i.tries(), m::BOOT_COUNT_LIMIT);
+        if i.tripped() != 0 {
+            s.push_str(&format!(", fallback: {} failed {} starts", names(i.tripped()), m::BOOT_COUNT_LIMIT));
+        }
+        s
+    };
+    let what = match i.path {
+        m::PATH_FIRMWARE => format!("started firmware from {}", start(i)),
+        m::PATH_ADFU_MAILBOX if i.attempt != 0 => {
+            format!("USB recovery on request; the start before: {}", start(i))
+        }
+        m::PATH_ADFU_MAILBOX => "USB recovery on request".into(),
+        m::PATH_ADFU_KEY => "USB recovery (Next key)".into(),
+        m::PATH_ADFU_COUNTER => format!("USB recovery: every slot failed ({})", names(i.tripped())),
+        m::PATH_ADFU_NOIMAGE => "USB recovery: no valid slot".into(),
+        m::PATH_ADFU_PANIC => "USB recovery: stage 2 panicked".into(),
+        p => format!("path {p}"),
+    };
+    let (tripped, tries) = orpheus_proto::boot::parse_count(mb.boot_count);
+    if tripped != 0 || tries != 0 {
+        format!(
+            "{what}; counter now: {tries} tries, tripped {}",
+            if tripped == 0 { "-".into() } else { names(tripped) }
+        )
+    } else {
+        what
+    }
 }
 
 fn nor_payloads<'a>(ymon: &'a [u8], nordump: &'a [u8], norprog: &'a [u8]) -> orpheus_host::nor::Payloads<'a> {
@@ -349,4 +393,32 @@ pub fn cmd_stage2_ramtest(args: &mut Args) -> Result<String> {
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
     Ok(format!("final state: {}", last.name()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::describe_boot;
+    use orpheus_proto::boot::count_word;
+    use orpheus_proto::mailbox::{BootInfo, Mailbox};
+
+    fn mb(info: u32, count: u32) -> Mailbox {
+        Mailbox { boot_info: info, boot_count: count, ..Mailbox::default() }
+    }
+
+    #[test]
+    fn boot_descriptions() {
+        let b = |path, attempt, keys| BootInfo { path, attempt, keys }.to_word();
+        assert_eq!(describe_boot(&mb(b(1, 1, 0), 0)), "started firmware from slot A, start 1 of 3");
+        assert_eq!(
+            describe_boot(&mb(b(1, 0x11, 1), count_word(1, 1))),
+            "started firmware from slot B, start 1 of 3, fallback: A failed 3 starts; counter now: 1 tries, tripped A"
+        );
+        assert_eq!(
+            describe_boot(&mb(b(4, 0x11, 1), 0)),
+            "USB recovery on request; the start before: slot B, start 1 of 3, fallback: A failed 3 starts"
+        );
+        assert_eq!(describe_boot(&mb(b(4, 0, 0), 0)), "USB recovery on request");
+        assert_eq!(describe_boot(&mb(b(5, 0x30, 0), 0)), "USB recovery: every slot failed (A, B)");
+        assert_eq!(describe_boot(&mb(0, 0)), "no boot-info word (0x00000000)");
+    }
 }

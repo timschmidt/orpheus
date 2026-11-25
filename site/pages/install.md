@@ -43,8 +43,9 @@ does not start, the player can go back to the previous one (Recovery).</p>
 <p><label><input type="checkbox" id="inst-confirm0"> I agree that the next step rewrites the player's boot record.</label></p>
 <p><button type="button" id="inst-first" disabled>First install of Orpheus</button> <button type="button" id="inst-restore" disabled>Restore the original firmware</button></p>
 <h2>Recovery</h2>
-<p>After an update that does not start, the player ends up here by itself
-(after three failed starts). Start the other firmware slot, or put the
+<p>After an update that does not start, the player first starts the
+previous version by itself; when that fails too, it ends up here (after
+three failed starts of each). Start the other firmware slot, or put the
 release into slot A again.</p>
 <p><button type="button" id="inst-slots-read">Show the firmware slots</button> <button type="button" id="inst-switch" disabled>Start the other firmware</button> <button type="button" id="inst-reinstall">Reinstall Orpheus</button> <button type="button" id="inst-reset">Restart the player</button></p>
 <p id="inst-slots"></p>

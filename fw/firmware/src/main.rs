@@ -274,7 +274,8 @@ async fn health() {
 }
 
 /// The slot this firmware runs from: the one stage 2 recorded in the
-/// boot-info word (path 1, slot index in the low byte), otherwise (started
+/// boot-info word (path 1, slot index in the low byte; it may be a
+/// superseded slot stage 2 started as a fallback, T-6), otherwise (started
 /// from RAM by a test) the first slot holding a valid header.
 #[inline(never)]
 fn find_slot(h: &mut [u8; 128]) -> Option<(u32, SlotHeader)> {
@@ -285,8 +286,13 @@ fn find_slot(h: &mut [u8; 128]) -> Option<(u32, SlotHeader)> {
     while i < layout::SLOTS.len() {
         let idx = recorded.unwrap_or(i);
         let base = layout::SLOTS.get(idx).copied()?;
+        // Direct calls, no function pointer: no indirect branch in a root.
         if nor::read(base, h).is_ok()
-            && let Ok(hdr) = SlotHeader::from_bytes(h)
+            && let Ok(hdr) = if recorded.is_some() {
+                SlotHeader::from_bytes_or_superseded(h)
+            } else {
+                SlotHeader::from_bytes(h)
+            }
         {
             return Some((base, hdr));
         }
@@ -339,6 +345,13 @@ extern "C" fn main() -> ! {
     hal::init();
     clock::set_level(Level::Base);
     log::line(if paged { b"fw: start (paged)" } else { b"fw: start (no pages)" });
+    // T-6: `boot crash-test` armed a failing start for this slot (stage 2
+    // fallback test): reboot as a fault would, keeping the boot counter.
+    // Before any task runs, so nothing (no NOR write) is cut short.
+    if persist::take_crash_test() {
+        log::line(b"fw: crash test: this start fails");
+        wdt::reboot_after_fault();
+    }
     // Also the battery logger's shared state (`drain::init`): main is
     // resident, its callees here are not.
     audio::init_chain();
