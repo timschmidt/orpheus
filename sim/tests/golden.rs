@@ -319,6 +319,43 @@ fn recorder_cases(add: &mut dyn FnMut(String, String)) {
     add("recorder_list_amber".into(), format!("@apps theme:amber {list}"));
 }
 
+/// UPD-1: Settings › System › Update firmware over the simulator's update
+/// service (`sim/src/update.rs`: the real installer on a simulated NOR).
+/// The newer file is 72 KiB: checked in ~1.2 s, written in ~3.1 s, read
+/// back in ~0.8 s; "Update installed" shows 2 s before the restart.
+fn update_cases(add: &mut dyn FnMut(String, String)) {
+    let app = "prev ok down*11 ok down ok expect-screen:UpdateFirmware";
+    let install = format!("{app} wait:500 ok wait:100 ok ok");
+    let journeys: &[(&str, String)] = &[
+        ("searching", format!("{app} wait:100")),
+        ("list", format!("{app} wait:500")),
+        ("list_second", format!("{app} wait:500 down")),
+        ("none", format!("set:upd=none {app} wait:500")),
+        ("details", format!("{app} wait:500 ok wait:100")),
+        ("confirm", format!("{app} wait:500 ok wait:100 ok")),
+        ("battery", format!("set:battery=12 {app} wait:500 ok wait:100 ok wait:100")),
+        ("checking", format!("{install} wait:600")),
+        ("writing", format!("{install} wait:2700")),
+        ("keep_on", format!("{install} wait:2700 back wait:100")),
+        ("verifying", format!("{install} wait:4500")),
+        ("done", format!("{install} wait:5600")),
+        ("damaged", format!("set:upd=bad {install} wait:1400")),
+        ("wrong_layout", format!("set:upd=layout {install} wait:200")),
+    ];
+    for t in ["dark", "light"] {
+        for (name, script) in journeys {
+            add(format!("update_{name}_{t}_latin"), format!("@apps theme:{t} {script}"));
+        }
+    }
+    for l in ["cyrillic", "cjk"] {
+        for name in ["list", "writing"] {
+            let script = &journeys.iter().find(|j| j.0 == name).map(|j| j.1.clone()).unwrap_or_default();
+            add(format!("update_{name}_dark_{l}"), format!("@apps lang:{l} {script}"));
+        }
+    }
+    add("update_writing_amber".into(), format!("@apps theme:amber {install} wait:2700"));
+}
+
 /// UI-5c: Steps over the fake accelerometer (`sim/src/steps.rs`). Home
 /// grid: Steps is the seventh app (`next*6 ok`). The week: today (a
 /// Tuesday) first.
@@ -594,6 +631,7 @@ fn app_cases(add: &mut dyn FnMut(String, String)) {
         );
     }
     media_cases(add);
+    update_cases(add);
     add("app_amber_home".into(), "@apps theme:amber".into());
     add("app_amber_settings".into(), "@apps theme:amber prev ok".into());
     add("app_accent_red_home".into(), "@apps accent:red".into());

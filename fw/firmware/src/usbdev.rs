@@ -24,7 +24,9 @@ impl Target for Fw {
             uptime_ms: (time::now_us() / 1000) as u32,
             battery_mv: crate::state::snapshot().millivolts,
             flags: u16::from(usb::high_speed()),
-            build_id: *b"orpheus-fw\0\0\0\0\0\0",
+            // The running slot's build id (UPD-1: the host checks that an
+            // update started).
+            build_id: crate::update::running_build().unwrap_or(*b"orpheus-fw\0\0\0\0\0\0"),
             // Stack high-water: free bytes (low half) of the total (high).
             reserved: (atj2157_hal::rt::stack_unused().min(0xFFFF) as u32)
                 | ((atj2157_hal::rt::stack_size().min(0xFFFF) as u32) << 16),
@@ -290,6 +292,12 @@ impl Target for Fw {
     fn provision(&mut self, uri: &[u8]) -> bool {
         crate::vault::provision(uri)
     }
+    fn update(&mut self, op: u16, index: u16, data: &[u8]) -> bool {
+        crate::update::usb_out(op, index, data)
+    }
+    fn update_status(&mut self, buf: &mut [u8]) -> usize {
+        crate::update::usb_status(buf)
+    }
     fn test_reply(&mut self, buf: &mut [u8]) -> usize {
         critical_section::with(|cs| {
             let r = crate::audio::REPLY.borrow(cs).borrow();
@@ -303,6 +311,8 @@ impl Target for Fw {
 pub async fn supervisor() {
     loop {
         Timer::after_millis(20).await;
+        // A firmware update over the channel: read-back and slot switch.
+        crate::update::poll();
         let r = REBOOT.swap(0xFFFF, Ordering::AcqRel);
         match r {
             0xFFFF => {}
@@ -442,10 +452,9 @@ fn builder(product: &'static str) -> Builder<'static, usb::Driver> {
 
 async fn run_dev() -> Personality {
     let mut b = builder("YM03");
-    let mut func = b.function(0xFF, 0, 0);
-    let mut iface = func.interface();
-    let _alt = iface.alt_setting(0xFF, 0, 0, None);
-    drop(func);
+    // The developer interface with WebUSB and MS OS 2.0 descriptors (WEB-3):
+    // the browser installer opens it without a driver.
+    orpheus_usb::webusb::dev_interface(&mut b, true);
     let mut dev = b.build();
     let r = embassy_futures::select::select3(dev.run(), supervisor(), MODE.wait()).await;
     usb::set_attached(false);
@@ -648,10 +657,7 @@ async fn run_image() -> Personality {
 async fn run_kbd() -> Personality {
     use embassy_usb::class::hid::{Config as HidConfig, HidBootProtocol, HidSubclass, HidWriter};
     let mut b = builder("YM03 keyboard");
-    let mut func = b.function(0xFF, 0, 0);
-    let mut iface = func.interface();
-    let _alt = iface.alt_setting(0xFF, 0, 0, None);
-    drop(func);
+    orpheus_usb::webusb::dev_interface(&mut b, false);
     // SAFETY: as in `builder`: one device at a time; the previous one
     // (and its borrows of these statics) is gone.
     b.handler(unsafe { &mut *(&raw mut KBD_BUS) });

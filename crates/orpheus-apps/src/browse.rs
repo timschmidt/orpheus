@@ -82,7 +82,7 @@ pub fn kind_of(name: &str, is_dir: bool) -> EntryKind {
         EntryKind::Text
     } else if ext_is(name, &["iso", "img", "bin", "raw", "vhd"]) {
         EntryKind::DiskImage
-    } else if ext_is(name, &["yfw"]) {
+    } else if ext_is(name, &["yfw", "ofw"]) {
         EntryKind::Firmware
     } else {
         EntryKind::Other
@@ -177,6 +177,7 @@ mod tests {
         assert_eq!(kind_of("notes.txt", false), EntryKind::Text);
         assert_eq!(kind_of("x.iso", false), EntryKind::DiskImage);
         assert_eq!(kind_of("fw.yfw", false), EntryKind::Firmware);
+        assert_eq!(kind_of("orpheus-0.2.0.ofw", false), EntryKind::Firmware);
         assert_eq!(kind_of("noext", false), EntryKind::Other);
         assert_eq!(kind_of("dir.mp3", true), EntryKind::Dir);
     }

@@ -1,0 +1,18 @@
+[package]
+name = "orpheus-update"
+description = "Firmware update (UPD-1, 02 §2.5): the .ofw file format, slot choice, the power-loss-safe installer and the stage-2 model it is tested against"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+# The simulated NOR (`sim`): host tests here, the simulator's Update screen.
+std = []
+
+[dependencies]
+orpheus-proto.workspace = true
+sha2 = { version = "0.11", default-features = false }
+
+[lints]
+workspace = true

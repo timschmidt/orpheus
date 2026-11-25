@@ -9,12 +9,15 @@
 //! | STATS 0x05 | IN | group | counters (u32 LE) |
 //! | REBOOT 0x07 | OUT | target | — |
 //! | PEEK 0x0A | IN | address (wIndex:wValue) | memory bytes (development builds) |
+//! | UPDATE 0x0D | OUT | operation / chunk (`orpheus_update::wire`) | `.ofw` header, image bytes |
+//! | UPDATE 0x0D | IN | — | update status (16 bytes) |
+//! | WebUSB `GET_URL` | IN | 1 / 2 | the landing page ([`crate::webusb`]) |
 
 use embassy_usb::Handler;
 use embassy_usb::control::{InResponse, OutResponse, Recipient, Request, RequestType};
 use orpheus_proto::devchan::{
     self as dc, Info, REQ_FRAME, REQ_INFO, REQ_KEYS, REQ_LOG, REQ_PEEK, REQ_PROVISION, REQ_PUT, REQ_REBOOT,
-    REQ_STATS, REQ_TEST, REQ_TIME,
+    REQ_STATS, REQ_TEST, REQ_TIME, REQ_UPDATE, WEBUSB_VENDOR_CODE,
 };
 
 /// What the firmware provides to the channel.
@@ -62,6 +65,15 @@ pub trait Target {
     /// copy of the data once handled.
     fn provision(&mut self, _uri: &[u8]) -> bool {
         false
+    }
+    /// UPDATE OUT: operation `op` (`wValue`), chunk number `index`
+    /// (`wIndex`), data. Returns false if refused (the status says why).
+    fn update(&mut self, _op: u16, _index: u16, _data: &[u8]) -> bool {
+        false
+    }
+    /// UPDATE IN: the update status into `buf`; bytes written.
+    fn update_status(&mut self, _buf: &mut [u8]) -> usize {
+        0
     }
 }
 
@@ -113,6 +125,13 @@ impl<T: Target> Handler for DevChannel<T> {
                     OutResponse::Rejected
                 }
             }
+            REQ_UPDATE => {
+                if self.target.update(req.value, req.index, data) {
+                    OutResponse::Accepted
+                } else {
+                    OutResponse::Rejected
+                }
+            }
             REQ_PROVISION => {
                 if self.target.provision(data) {
                     OutResponse::Accepted
@@ -140,6 +159,14 @@ impl<T: Target> Handler for DevChannel<T> {
         }
         self.requests += 1;
         let want = usize::from(req.length).min(buf.len());
+        if req.request == WEBUSB_VENDOR_CODE {
+            // WebUSB GET_URL: only the landing page exists.
+            if req.index == crate::webusb::GET_URL && req.value == crate::webusb::LANDING_INDEX {
+                let n = crate::webusb::url_descriptor(buf).min(want);
+                return Some(InResponse::Accepted(&buf[..n]));
+            }
+            return Some(InResponse::Rejected);
+        }
         Some(match req.request {
             REQ_INFO => {
                 let b = self.target.info().to_bytes();
@@ -173,6 +200,10 @@ impl<T: Target> Handler for DevChannel<T> {
             },
             REQ_TEST => {
                 let n = self.target.test_reply(&mut buf[..want]);
+                InResponse::Accepted(&buf[..n])
+            }
+            REQ_UPDATE => {
+                let n = self.target.update_status(&mut buf[..want]);
                 InResponse::Accepted(&buf[..n])
             }
             REQ_PEEK if self.target.development() => {
@@ -301,6 +332,67 @@ mod tests {
             Some(InResponse::Accepted(b)) => assert_eq!(b, &[5, 0, 0, 0, 7, 0, 0, 0]),
             _ => panic!("stats"),
         }
+    }
+
+    #[test]
+    fn update_reaches_the_target_and_url_answers() {
+        #[derive(Default)]
+        struct Upd {
+            got: Vec<(u16, u16, usize)>,
+        }
+        impl Target for Upd {
+            fn info(&mut self) -> Info {
+                Info::default()
+            }
+            fn read_mem(&mut self, _a: u32, _b: &mut [u8]) -> bool {
+                false
+            }
+            fn read_frame(&mut self, _o: u32, _b: &mut [u8]) -> usize {
+                0
+            }
+            fn read_log(&mut self, _o: u32, _b: &mut [u8]) -> usize {
+                0
+            }
+            fn stats(&mut self, _g: u16, _o: &mut [u32]) -> usize {
+                0
+            }
+            fn keys(&mut self, _e: &[(u8, bool)]) {}
+            fn request_reboot(&mut self, _t: u16) {}
+            fn development(&self) -> bool {
+                false
+            }
+            fn update(&mut self, op: u16, index: u16, data: &[u8]) -> bool {
+                self.got.push((op, index, data.len()));
+                op != 9
+            }
+            fn update_status(&mut self, buf: &mut [u8]) -> usize {
+                let n = buf.len().min(16);
+                buf[..n].fill(7);
+                n
+            }
+        }
+        let mut d = DevChannel::new(Upd::default());
+        assert!(matches!(
+            d.control_out(req(false, REQ_UPDATE, 1, 42, 1024), &[0; 1024]),
+            Some(OutResponse::Accepted)
+        ));
+        assert!(matches!(d.control_out(req(false, REQ_UPDATE, 9, 0, 0), &[]), Some(OutResponse::Rejected)));
+        assert_eq!(d.target.got, [(1, 42, 1024), (9, 0, 0)]);
+        let mut buf = [0u8; 64];
+        match d.control_in(req(true, REQ_UPDATE, 0, 0, 16), &mut buf) {
+            Some(InResponse::Accepted(b)) => assert_eq!(b, &[7; 16]),
+            _ => panic!("status"),
+        }
+        let mut buf = [0u8; 256];
+        match d.control_in(req(true, WEBUSB_VENDOR_CODE, 1, 2, 255), &mut buf) {
+            Some(InResponse::Accepted(b)) => assert_eq!(b[1], 3),
+            _ => panic!("url"),
+        }
+        let mut buf = [0u8; 256];
+        assert!(matches!(
+            d.control_in(req(true, WEBUSB_VENDOR_CODE, 1, 1, 255), &mut buf),
+            Some(InResponse::Rejected)
+        ));
     }
 
     #[test]

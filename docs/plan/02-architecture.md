@@ -267,6 +267,66 @@ through ADFU).
   slot (full layout), or an invalid slot A that stage 2 skips in favour of the
   stock firmware, with ADFU as the last resort.
 
+**As built (UPD-1, WEB-3, 2026-11-24).** No RAM installer: in the full
+layout the update never writes the slot the firmware pages from, so the
+running firmware writes the inactive slot itself; the dual-boot layout
+refuses updates from the player (one slot; use `xtask dev stage`).
+
+* **File** `orpheus-<version>.ofw` (`crates/orpheus-update/src/ofw.rs`;
+  `cargo xtask build` writes it next to `firmware.yfw` for full-layout
+  builds): a 384-byte header — magic `"OFW1"`, version, target layout,
+  image length, version text, build id, SHA-256 of the image, a change
+  list of ≤ 256 bytes, CRC-32 — then the `"YFW1"` slot image. `ofw::check`
+  validates the header and the slot header inside against everything
+  stage 2 and the pager rely on (layout, build id, load address, resident
+  size and offset, Thumb entry, page store inside the image) before
+  anything is written.
+* **Which slot**: stage 2 records the slot it started in the boot-info
+  word. Running A → write B; running B (or the old dual slot) → write A
+  (`slots::choose`).
+* **Order** (`orpheus_update::install`, the same code on the player, in
+  the simulator and in the host tests): erase the target's header sector
+  (target invalid) → write the body, reading back each page → SHA-256 of
+  the received data and the resident sum checked → read the whole image
+  back and hash it → program the header without its magic word, then the
+  magic word alone → only when running A and writing B, clear A's magic
+  word (bits only, no erase: A becomes *superseded*, the rest of its
+  header intact). A torn 4-byte program is never `"YFW1"`, so at every
+  instant stage 2 finds the old image intact and first, or the new one
+  complete and verified first. `install::tests` cuts the power before
+  every erase and program (torn operations, three patterns each) for A→B,
+  B→A and from the dual slot, checks that stage 2 then starts the old or
+  the new image byte for byte, and that a second attempt completes.
+* **Guards**: every write is checked against the target
+  (`slots::Target::allows`: inside the inactive slot, or exactly the
+  running slot's magic word), then by the HAL's full-layout guard (never
+  sector 0, never `0x7E0000` and above). Tests try sector 0, the vendor
+  data, the settings and stage 2 and are refused.
+* **From the card**: Settings › System › Update firmware (also OK on an
+  `.ofw` in Files) lists `/orpheus-*.ofw` and `/.orpheus/update/*.ofw`
+  (version, size, "installed" when its build id is the running one), shows
+  a file's change list, asks, then checks the whole file's SHA-256 first
+  (nothing written yet), writes, verifies, switches and restarts. Needs
+  30 % battery or the cable. The card task does the work
+  (`fw/firmware/src/update.rs`); playback stops first.
+* **Over USB**: the developer channel's `UPDATE` request (0x0D,
+  `orpheus_update::wire`): `BEGIN` (header + slot header; checked, the
+  target's header sector erased), `DATA` chunk n (1 KiB, written inside
+  the request), `COMMIT` (the USB supervisor reads back 16 KiB per 20 ms
+  and switches), status IN; the host reboots. `cargo xtask dev update
+  FILE.ofw` and the browser installer's Update use it; afterwards `INFO`
+  reports the running slot's build id, so the host checks that the new
+  build started.
+* **Recovery** when a new image keeps failing to start: stage 2 as built
+  goes to USB recovery after three failed starts — it does **not** try the
+  other slot by itself. From there `cargo xtask dev switch-slot` or the
+  Install page's Recovery makes stage 2 start the other slot: restore the
+  superseded header (its CRC proves it is the old one) or supersede the
+  current one (`slots::switch`, at most two small writes, each leaving a
+  bootable image). Falling back without a host needs stage 2 to skip the
+  slot it started last once the counter trips: a change to stage 2 (an
+  `install-stage2` step for the lead), not made in UPD-1.
+
 ## 3. Demand paging
 
 ### 3.1 Mechanism (as proven by `pager-atj2157.c`)

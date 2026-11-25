@@ -52,12 +52,167 @@ of every session. Newest entries first in §3.
 | DOC-3 | done (host), except the clean-container CI run | `docs/dev/getting-started.md`, `architecture.md` (SVG diagrams in `docs/dev/img/`), `how-to/` (8 guides). `#![warn(missing_docs)]` on `orpheus-codecs`, the wav/mp3/flac/vorbis/speex codecs, `orpheus-fs`, `orpheus-settings` |
 | DOC-4 | done (host); workflows not run (no CI here) | CONTRIBUTING, CODE_OF_CONDUCT (Contributor Covenant 2.1), SECURITY, CHANGELOG, issue/PR templates, workflows `gate.yml`, `docs.yml`, `pages.yml` (actions pinned by SHA) |
 | WEB-2 | done (host); not yet on the live site (the lead pushes) | `cargo xtask wasm [--test] [--record] [--demo]` → `target/orpheus/site/try/pkg/`: `sim/web` (`orpheus-web`) = the `orpheus-apps` screens over the simulator's services, a FAT32 card built in the browser (synthesised demo set, the visitor's files, the saved library), the firmware's codecs + DSP chain into an AudioWorklet, key recorder/replayer in the `ui_keys` corpus format. Try-it page (`site/pages/try.md`, `site/try/`): SVG player with clickable keys, integer-scaled pixelated canvas, IndexedDB state and files, Factory reset, developer panel. Self-test `tests/web/try.mjs` passes in Chromium 155 and Firefox 157 (headless); in `pages.yml`. Safari not tested: user check 23 |
+| UPD-1 | **built (host + firmware), not yet run on the player** | `orpheus-update` (`.ofw` format, slot choice, power-loss-safe installer, recovery switch; power cut before every NOR operation tested), Settings › System › Update firmware (33 goldens), card and developer-channel (`UPDATE` 0x0D) paths, `xtask dev update/slots/switch-slot`, `.ofw` from `xtask build`. No RAM installer (full layout writes the inactive slot). Stage 2 unchanged: after three failed starts it goes to USB recovery, not to the other slot (switch from the host). User check 27 |
+| WEB-3 | **built (host); not yet run against the player** | `orpheus-host` over one async `Transport` (nusb / WebUSB / mock player), flows (backup ×2, first install, restore, recovery) with sector-0 permit and resumable writes, `orpheus-install-web` (wasm), Install page with demo mode, WebUSB + MS OS 2.0 descriptors on the developer interface; `tests/web/install.mjs` Node suite + `--page` pass, `--device` HIL not run. No release published (manifest, payload licences: lead) |
 | WEB-1 | done (host); not published | `cargo xtask site [--check]` → `target/orpheus/site/`; Home, Manual, Developers, Hardware, Changelog, FAQ, Try it and Install (placeholders for WEB-2/WEB-3). Deploy only with repository variable `PAGES_ENABLED=true`. User: review the site |
 | AU-13 | **built; first player run 2026-11-24: capture runs, microphone silent → front-end fix + `rec raw`/`rec width`/`rec mic` (not yet re-run)** | `orpheus-rec` (WAV PCM, IMA ADPCM, FLAC 0–2 encoders; low-cut, AGC, meter, voice activation; names; write-behind ring; the recording session), `atj2157_hal::adc` (vendor capture sequence VERBATIM, DMA ch 6), `firmware::rec` (recording mode of the card task, SRAM3 state after the radio's), developer `rec start/stop/status`. Not built: voice (Opus/Speex) encoders, mic monitoring, pre-record. User check 23 |
 | UI-5b | **built (host + firmware), not yet run on the player** | Recorder app (meters, timer, pause/mark/stop question, gain, menu with source/format/quality/AGC/VOX/split/monitor/low-cut), Recordings… (newest first, play, delete with question); simulator back end over the same session and a fake ADC; 122 goldens, 10 behaviour tests |
 | UI-8 | **done (host); not yet on the player** | List roll-around in every list (`ListView` + `ListView::step_plain`), Settings › Display › List roll-around (`0x030C`, on by default), held keys stop at the end; Up next/Details keep their view change. User check 26; the on-device journey belongs to VER-7 |
 
 ## 3. Session log
+
+### 2026-11-24 — UPD-1 (firmware update) and WEB-3 (browser installer) (worker, no hardware)
+
+* **`orpheus-update`** (new, `no_std`, host-tested, 31 tests): the update
+  file `orpheus-<version>.ofw` (384-byte header: `"OFW1"`, version text,
+  build id, SHA-256, layout, ≤ 256-byte change list, CRC; then the YFW1
+  slot image; `ofw::check` validates header + slot header against stage 2's
+  and the pager's limits before anything is written), slot choice (running
+  A → B and supersede A; running B or dual → A), the installer (erase target
+  header sector → body with per-page read-back → SHA-256 + resident sum →
+  whole read-back hashed → header without magic → magic → supersede old
+  magic, bits only), stage 2's slot check as a model, the recovery switch
+  (`slots::switch`), a simulated NOR with torn erase/program. Power cut
+  before **every** operation × 3 torn patterns × (A→B, B→A, dual→A): stage 2
+  always finds the old or the new image byte for byte, and a retry
+  completes. Guard tests: forged targets at 0, `0x7E0000`, settings; the
+  supersede word at sector 0 — all refused, nothing written. Design and
+  details: 02 §2.5 "As built".
+* **No RAM installer** (02 §2.5 planned one): in the full layout the update
+  never writes the slot the firmware pages from, so the running firmware
+  does it; the dual layout refuses (`NotFull`).
+* **Stage 2 not changed.** The slot order A, B, dual plus "supersede the
+  running slot's magic" switches slots without touching stage 2. But stage
+  2 as built goes to **USB recovery after three failed starts, it does not
+  try the other slot** (CHANGELOG's "falls back to the next slot" is not
+  what `fw/boot/stage2` does). A new image that is valid but crashes ends
+  in ADFU; `xtask dev switch-slot` or the Install page's Recovery switches
+  back. Automatic fallback = a stage-2 change (skip the last-started slot
+  once the counter trips) = an `install-stage2` step for the lead; not
+  done here.
+* **Player** (`fw/firmware/src/update.rs`): Settings › System › Update
+  firmware (and OK on an `.ofw` in Files) → `UpdateScreen`
+  (`orpheus-apps`, 33 goldens `update_*`, looked at): searching → files
+  (version, size, "installed" by build id) → change list → "Install this
+  version?" (≥ 30 % battery or cable) → checking (whole-file SHA-256,
+  nothing written) → writing → verifying (bar, "Do not switch off") →
+  "Update installed" → restart after 2 s; failures say why and "The
+  installed firmware is unchanged". The card task does the work
+  (`media::Req::Update`; Install waits for playback to stop), 4 KiB steps
+  with a 1 ms timer between them (it runs on the interrupt executor).
+  Reads for the installer go through 256-byte critical sections; erase and
+  program through the HAL's guarded driver. `INFO.build_id` now reports the
+  running slot's build id (`xtask dev info` prints it in hex).
+* **Developer channel `UPDATE` (0x0D)** (`orpheus_update::wire`):
+  `BEGIN`/`DATA` n/`COMMIT`/`ABORT` + 16-byte status; DATA is written
+  inside the request (≤ one erase + 4 programs), the USB supervisor reads
+  back 16 KiB per 20 ms after COMMIT. `cargo xtask dev update FILE.ofw
+  [--no-reboot]` (check file, send, wait, reboot, compare INFO build id),
+  `xtask dev slots`, `xtask dev switch-slot` (ADFU, after backup-verify).
+  `cargo xtask build` also writes `target/orpheus/orpheus-<version>.ofw`
+  (change list from `target/orpheus/changes.txt` if present).
+* **`orpheus-host` refactor (WEB-3)**: one `async` `Transport` trait; BOT,
+  ADFU/ymon (`adfu::Link`), NOR payloads (`nor`, payload bytes passed in),
+  developer channel + update (`devchan::Link`) written once over it.
+  Desktop: `native` (`nusb`, blocking front ends `Adfu`, `DevChannel`,
+  `native::nor` keep xtask's calls); browser: `orpheus-install-web`; tests:
+  `mock::MockPlayer` (ROM ADFU, ymon, nordump/norprog/norprog0 stand-ins,
+  the firmware's developer channel and update over a simulated NOR; counts
+  forbidden writes). Write guards: `write_full`/`erase_full`/`program_bits`
+  only `0x1000..0x7E0000`; sector 0 only via `write_sector0`, which needs a
+  `Sector0Permit` (whole-chip backup + confirmation); also the payload
+  refuses. `nor::write_*` now compare first and skip equal sectors
+  (resumable). `xtask dev restore vendor` passes its backup for the permit.
+* **Flows** (`orpheus_host::flows`, 8 host tests over the mock): backup
+  (whole chip read twice, JEDEC checked, mismatch refused), first install
+  (stage 2 sector → sector 0 = stage 1 + vendor bytes → slot A body then
+  header → erase the rest up to `0x7DF000`; refuses a non-stock backup and
+  bad release files; interrupted at 5 points and resumed = same chip),
+  restore (all differing sectors below `0x7E0000`, then sector 0, then the
+  stage-2 sector; verify; vendor data never written), recovery
+  (slots, switch, reinstall). Order of first install: boot record before
+  the stock firmware is overwritten, so the player always reaches stage 2
+  → Orpheus or USB recovery.
+* **WebUSB / MS OS 2.0** (`orpheus_usb::webusb`): the developer interface
+  carries the WebUSB platform capability (vendor code 0x57, landing page
+  `…/orpheus/install.html`) and an MS OS 2.0 set (WINUSB + interface GUID;
+  device level when alone, function subset in the keyboard personality);
+  `GET_URL` answered by `DevChannel`. Host test drives embassy-usb's real
+  control handling through a fake controller (BOS, URL, descriptor set,
+  bcdUSB 2.1). Not in the card-reader personality (no vendor interface
+  there). ADFU unchanged (vendor class 0xFF: WebUSB can claim it; Windows
+  needs WinUSB once, the page says so).
+* **Install page** (`site/pages/install.md`, `site/install/`: `app.js`,
+  `usb.js` = the WebUSB transport, `mockusb.js` = the simulated player in
+  WebUSB's shape, `install.css`): Update (release `.ofw` or a chosen file),
+  restart into recovery, backup (download + IndexedDB; a stock backup is
+  never replaced by a later non-stock one), first install and restore
+  (backup + "I saved it" + boot-record confirmation), recovery (slots,
+  start the other firmware, reinstall, restart), resume banner for an
+  interrupted job, release files checked against
+  `install/release/manifest.json` (`{version, files: {name: {sha256,
+  size}}}`; none published yet: the page says so). Chromium only;
+  elsewhere the command-line path. `install.html?demo` runs it all
+  against the simulated player. From the **stock** firmware the browser
+  cannot reach ADFU (the stock firmware is mass storage, a protected
+  class; ADFU entry is a SCSI command): the page says to run `cargo xtask
+  dev adfu` once.
+* **Tests**: `tests/web/install.mjs` (Node, 7 tests: update + recovery
+  switch, damaged file refused, backup + bad read, first install refused
+  unconfirmed / installed / refused on Orpheus, interrupted + resumed,
+  restore, transport stalls) passes; `--page` (headless Chromium 155, demo
+  update through the page's own buttons) passes; `--device` (HIL, visible
+  Chromium with a persistent profile `target/orpheus/install-hil-profile`;
+  the first run asks to pick the YM03 once) **not run** (no hardware).
+  `cargo xtask wasm` builds the installer into `site/install/pkg`
+  (`[web] install_gzip_bytes` 300 KB; module 205 KB) and `--test` runs the
+  Node suite. `xtask site` keeps `install/pkg` and `install/release`; the
+  link check ignores `?query`.
+* **Docs**: manual `docs/user/install.md` (page first, then tools), 02
+  §2.5 as built, user check 27 (a first-time user updates from the page;
+  then the on-player update).
+* **Numbers**: firmware resident 78,676 B, `.bss` 124,648 B (build on
+  `f484eeaa` + this work, before the rebase on `43903ea8`; slot 1,085,440 B, 104 + 18 pages). UPD-1's own
+  RAM, from the map: `INST` 360 B (`.data`: `Option<Installer>`), `FILES`
+  216 B, `CHANGES` 258 B, atomics 17 B = **851 B** (≤ 1 KiB); no other
+  static grew (the BOS/MS OS buffers existed). `__stack_bottom` =
+  `0x131A40`. Installer module 205 KB raw, 99 KB with the page gzip.
+* **Gate**: host fmt, clippy (`-D warnings`, all targets), `cargo test
+  --workspace` (rebased on `43903ea8`), golden images (33 new, looked at;
+  `files_notice` unchanged: `.yfw` still shows the notice, `.ofw` opens
+  Update), fw fmt, clippy; `xtask build`, `check-resident`, `site
+  --check`, `xtask wasm` pass; Node suite and `--page` pass. `size
+  --check`, HIL: not run.
+* **Lead's device steps** (in this order; one process at a time):
+  1. `cargo xtask build`; `cargo xtask dev backup-verify`; `cargo xtask dev
+     stage target/orpheus/firmware.yfw` (the new firmware into slot A the
+     usual way); `cargo xtask dev reset`; `cargo xtask dev info` → build id
+     in hex.
+  2. `cargo xtask dev update target/orpheus/orpheus-*.ofw` (same build
+     into slot B through the developer channel): expect "written and
+     verified into slot B", reboot, "running … from slot B". `xtask dev
+     slots` afterwards (switches to ADFU): A superseded, B valid.
+  3. `cargo xtask dev switch-slot` then `cargo xtask dev reset` → boots A
+     again; `switch-slot` + `reset` once more → B. Then an update from B
+     writes A.
+  4. On the player: copy the `.ofw` to the card's top folder, Settings ›
+     System › Update firmware → Install; watch the bar; it restarts.
+  5. WebUSB: `cargo xtask site && cargo xtask wasm`, then `node
+     tests/web/install.mjs --device --ofw target/orpheus/orpheus-*.ofw`
+     (Linux needs the udev rule for 1209:0001; first run: pick the YM03 in
+     the chooser). Check `lsusb -v -d 1209:0001` shows the BOS with the
+     WebUSB and MS OS 2.0 platform capabilities, and that Chrome shows the
+     landing-page notification.
+  6. Optional, read-only: in recovery mode `node tests/web/install.mjs
+     --device --backup` (backup through the browser; compare its SHA-256
+     with `xtask dev nordump 0 0x800000`).
+  Never run the page's first install or restore on the reference player
+  without the owner.
+* **Open**: automatic slot fallback (stage 2 change, above); a published
+  release (manifest + `ymon.bin`, `nordump.bin`, `norprog.bin`,
+  `norprog0.bin`, `stage1.bin`, `stage2.bin`, `firmware.ofw`: licences of
+  the companion repository's payloads, D-1/D-3); the Windows WinUSB step
+  for ADFU and the WebUSB permission pre-grant format are untested.
 
 ### 2026-11-24 — UI-8: list roll-around (worker, no hardware)
 

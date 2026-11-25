@@ -39,6 +39,7 @@ pub mod radio;
 pub mod recorder;
 pub mod steps;
 pub mod system;
+pub mod update;
 #[cfg(feature = "window")]
 pub mod window;
 

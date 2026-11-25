@@ -641,9 +641,7 @@ impl ListScreen {
                         cx.ui.toast(lang.get(Str::Started));
                         Nav::Stay
                     }
-                    Kind::Action(Action::UpdateFirmware) => {
-                        Nav::Push(NOTICE, Arg(Notice::NotYetSettings.arg()))
-                    }
+                    Kind::Action(Action::UpdateFirmware) => Nav::Push(super::UPDATE, Arg(0)),
                     Kind::Action(a) => {
                         if let Some(dl) = Self::confirm(lang, a) {
                             cx.ui.dialog(dl);

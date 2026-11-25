@@ -21,6 +21,7 @@ use orpheus_apps::services::{BtDevice, BtList, BtPhase, BtRequest, StepsInfo, St
 use orpheus_apps::services::{DriveInfo, DriveRequest, UsbDriveService};
 use orpheus_apps::services::{PresetOp, Presets, RadioInfo, RadioRequest, RadioService, Region};
 use orpheus_apps::services::{RecInfo, RecRequest, RecorderService, rec_settings};
+use orpheus_apps::services::{UpdateFile, UpdateInfo, UpdateRequest, UpdateService};
 use orpheus_apps::settings::{SettingId, SettingsCache, id, lang_code};
 use orpheus_apps::tools::{self, Tools};
 use orpheus_apps::{App, Lang};
@@ -108,6 +109,8 @@ pub struct HostServices {
     pub auth: SimAuth,
     /// USB Drive (USB-6): the export and the fake computer using it.
     pub drive: SimDrive,
+    /// Firmware update (UPD-1): the real installer over a simulated NOR.
+    pub update: crate::update::SimUpdate,
 }
 
 impl Default for HostServices {
@@ -158,6 +161,7 @@ impl HostServices {
             wake: false,
             auth: SimAuth::default(),
             drive: SimDrive::default(),
+            update: crate::update::SimUpdate::default(),
         }
     }
 }
@@ -395,6 +399,21 @@ impl RadioService for HostServices {
         let ok = self.radio.preset_op(op);
         self.radio_events();
         ok
+    }
+}
+
+impl UpdateService for HostServices {
+    fn update(&self) -> UpdateInfo {
+        self.update.info()
+    }
+    fn update_file(&self, i: usize) -> Option<UpdateFile<'_>> {
+        self.update.file(i)
+    }
+    fn update_changes(&self) -> &str {
+        self.update.changes()
+    }
+    fn update_request(&mut self, r: UpdateRequest) {
+        self.update.request(r);
     }
 }
 
@@ -728,6 +747,16 @@ impl Host for HostServices {
             }
             "recstall" => self.rec.stall_until = self.now_ms + v.parse::<u64>()?,
             "recline" => self.rec.line_in = on,
+            // Firmware update (UPD-1): which files the card holds.
+            "upd" => {
+                self.update.mode = match v {
+                    "none" => "none",
+                    "one" => "one",
+                    "bad" => "bad",
+                    "layout" => "layout",
+                    _ => "two",
+                };
+            }
             // A slow hardware seek (status reads it takes), for shots of it.
             "seekreads" => self.radio.chip.seek_reads = v.parse()?,
             "drain" => self.set_drain_log(on, self.drain.stay),
@@ -930,6 +959,7 @@ impl Host for HostServices {
         self.rec_events();
         self.drive.advance(ms, &mut self.media);
         self.drive_events();
+        self.update.advance(ms);
         self.now_ms += ms;
         if self.clock_run {
             self.tick_clock(ms);

@@ -21,6 +21,7 @@ use orpheus_apps::services::{BtDevice, BtList, BtPhase, BtRequest, StepsInfo, St
 use orpheus_apps::services::{DriveInfo, DriveRequest, UsbDriveService, drive_event};
 use orpheus_apps::services::{PresetOp, Presets, RadioInfo, RadioPhase, RadioRequest, RadioService, Region};
 use orpheus_apps::services::{RecInfo, RecRequest, RecorderService, rec_settings};
+use orpheus_apps::services::{UpdateFile, UpdateInfo, UpdateRequest, UpdateService};
 use orpheus_apps::settings::{SettingId, SettingsCache, id};
 use orpheus_apps::tools::Tools;
 use orpheus_apps::{App, Lang};
@@ -1374,6 +1375,22 @@ impl BluetoothService for Fw {
             BtRequest::Disconnect => Req::Disconnect,
             BtRequest::Forget(a) => Req::Forget(addr(a)),
         });
+    }
+}
+
+/// Settings › System › Update firmware (UPD-1): `crate::update`.
+impl UpdateService for Fw {
+    fn update(&self) -> UpdateInfo {
+        crate::update::info()
+    }
+    fn update_file(&self, i: usize) -> Option<UpdateFile<'_>> {
+        crate::update::file(i)
+    }
+    fn update_changes(&self) -> &str {
+        crate::update::changes()
+    }
+    fn update_request(&mut self, r: UpdateRequest) {
+        crate::update::request(r);
     }
 }
 

@@ -18,6 +18,7 @@ mod rows;
 mod steps;
 mod system;
 mod text;
+mod update;
 
 pub use auth::AuthScreen;
 pub use bluetooth::{BluetoothScreen, BtConnectScreen, BtView, bt_kind_icon, connect_arg, phase_label};
@@ -39,6 +40,7 @@ pub use rows::{MAX_ROWS, RowData, Rows};
 pub use steps::{DAY_SHORT, StepsScreen, push_distance, push_energy, push_grouped, steps_hint};
 pub use system::{BootScreen, ChargingScreen, GoodbyeScreen, LockScreen, Notice, NoticeScreen};
 pub use text::TextScreen;
+pub use update::{MIN_BATTERY as UPDATE_MIN_BATTERY, UpdateScreen};
 
 use orpheus_ui::event::{Event, ServiceEvent};
 use orpheus_ui::gfx::Gfx;
@@ -125,6 +127,8 @@ pub const DRIVE_FILES: ScreenId = ScreenId(43);
 pub const DRIVE_OPTIONS: ScreenId = ScreenId(44);
 /// The image presented to the computer.
 pub const DRIVE_STATUS: ScreenId = ScreenId(45);
+/// Settings › System › Update firmware (UPD-1).
+pub const UPDATE: ScreenId = ScreenId(46);
 
 /// One variant per screen. Only the top screen exists, so the enum's size
 /// (its largest variant, the list screen) is the UI's screen RAM.
@@ -156,6 +160,7 @@ pub enum AppScreen {
     Auth(AuthScreen),
     Recorder(RecorderScreen),
     Drive(UsbDriveScreen),
+    Update(UpdateScreen),
 }
 
 macro_rules! each {
@@ -187,6 +192,7 @@ macro_rules! each {
             AppScreen::Auth($s) => $e,
             AppScreen::Recorder($s) => $e,
             AppScreen::Drive($s) => $e,
+            AppScreen::Update($s) => $e,
         }
     };
 }
@@ -267,6 +273,7 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             DRIVE_FILES => AppScreen::Files(FilesScreen::new(BrowseMode::DiskImages)),
             DRIVE_OPTIONS => AppScreen::Drive(UsbDriveScreen::new(DriveView::Options)),
             DRIVE_STATUS => AppScreen::Drive(UsbDriveScreen::new(DriveView::Status)),
+            UPDATE => AppScreen::Update(UpdateScreen::default()),
             _ => AppScreen::Home(HomeScreen::default()),
         }
     }
@@ -305,6 +312,7 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             AppScreen::Auth(_) => AUTHENTICATOR,
             AppScreen::Recorder(_) => RECORDER,
             AppScreen::Drive(d) => d.screen_id(),
+            AppScreen::Update(_) => UPDATE,
         }
     }
 
@@ -342,6 +350,7 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             AppScreen::Auth(_) => "Authenticator",
             AppScreen::Recorder(_) => "Recorder",
             AppScreen::Drive(d) => d.name(),
+            AppScreen::Update(_) => "UpdateFirmware",
         }
     }
 

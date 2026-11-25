@@ -909,6 +909,7 @@ dependencies = [
  "orpheus-rec",
  "orpheus-steps",
  "orpheus-ui",
+ "orpheus-update",
  "orpheus-usb",
  "zeroize",
 ]
@@ -1031,6 +1032,7 @@ dependencies = [
  "libc",
  "nusb",
  "orpheus-proto",
+ "orpheus-update",
  "png",
 ]
 
@@ -1054,6 +1056,19 @@ dependencies = [
 [[package]]
 name = "orpheus-input"
 version = "0.1.0"
+
+[[package]]
+name = "orpheus-install-web"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "js-sys",
+ "orpheus-host",
+ "orpheus-proto",
+ "orpheus-update",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
 
 [[package]]
 name = "orpheus-library"
@@ -1160,9 +1175,11 @@ dependencies = [
  "orpheus-meta",
  "orpheus-otp",
  "orpheus-power",
+ "orpheus-proto",
  "orpheus-rec",
  "orpheus-steps",
  "orpheus-ui",
+ "orpheus-update",
  "orpheus-usb",
 ]
 
@@ -1178,6 +1195,14 @@ name = "orpheus-ui"
 version = "0.1.0"
 dependencies = [
  "embedded-graphics-core",
+]
+
+[[package]]
+name = "orpheus-update"
+version = "0.1.0"
+dependencies = [
+ "orpheus-proto",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1884,6 +1909,7 @@ dependencies = [
  "orpheus-proto",
  "orpheus-sim",
  "orpheus-ui",
+ "orpheus-update",
  "png",
  "pulldown-cmark",
  "regex",

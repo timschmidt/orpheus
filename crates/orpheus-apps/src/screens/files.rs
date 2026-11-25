@@ -267,6 +267,14 @@ impl FilesScreen {
             EntryKind::Playlist => notice(Notice::NotYet(App::Music)),
             EntryKind::Image => Nav::Push(PICTURE_VIEW, Arg(PictureScreen::arg(i, false))),
             EntryKind::OtpImport => Nav::Push(super::AUTHENTICATOR, Arg(0)),
+            // An update file opens Update firmware (UPD-1); a bare slot image
+            // (`.yfw`) is for the computer's tools.
+            EntryKind::Firmware
+                if e.name.len() > 4
+                    && e.name.as_bytes()[e.name.len() - 4..].eq_ignore_ascii_case(b".ofw") =>
+            {
+                Nav::Push(super::UPDATE, Arg(0))
+            }
             EntryKind::Firmware => notice(Notice::NotYetSettings),
             EntryKind::Other => notice(Notice::Unsupported),
         }

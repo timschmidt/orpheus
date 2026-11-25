@@ -666,6 +666,7 @@ dependencies = [
  "orpheus-settings",
  "orpheus-steps",
  "orpheus-ui",
+ "orpheus-update",
  "orpheus-usb",
  "static_cell",
  "yoton-bsp",
@@ -847,6 +848,7 @@ dependencies = [
  "orpheus-rec",
  "orpheus-steps",
  "orpheus-ui",
+ "orpheus-update",
  "orpheus-usb",
  "zeroize",
 ]
@@ -1046,6 +1048,14 @@ name = "orpheus-ui"
 version = "0.1.0"
 dependencies = [
  "embedded-graphics-core",
+]
+
+[[package]]
+name = "orpheus-update"
+version = "0.1.0"
+dependencies = [
+ "orpheus-proto",
+ "sha2",
 ]
 
 [[package]]

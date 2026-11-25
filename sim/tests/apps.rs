@@ -35,7 +35,9 @@ fn walk_every_settings_group() {
                         run(&mut s, "back");
                     }
                 }
-                "Choice" | "Slider" | "Picker" | "Info" | "HomeApps" | "Notice" => run(&mut s, "back"),
+                "Choice" | "Slider" | "Picker" | "Info" | "HomeApps" | "Notice" | "UpdateFirmware" => {
+                    run(&mut s, "back");
+                }
                 other => panic!("group {g} row {r}: unexpected screen {other}"),
             }
             run(&mut s, "expect-screen:SettingsGroup");

@@ -31,6 +31,7 @@ orpheus-meta = { path = "../../crates/orpheus-meta" }
 orpheus-steps = { path = "../../crates/orpheus-steps" }
 orpheus-hid = { path = "../../crates/orpheus-hid" }
 orpheus-otp = { path = "../../crates/orpheus-otp" }
+orpheus-update = { path = "../../crates/orpheus-update" }
 orpheus-rec = { path = "../../crates/orpheus-rec" }
 embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }
 embassy-time = "0.5"

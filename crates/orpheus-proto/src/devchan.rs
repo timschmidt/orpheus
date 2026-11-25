@@ -29,6 +29,21 @@ pub const REQ_PROVISION: u8 = 0x0B;
 /// OUT: append the data stage (≤ 4 KiB) to the file opened with the
 /// `fcreate` test command (only under `/.orpheus/`; development builds).
 pub const REQ_PUT: u8 = 0x0C;
+/// OUT/IN: firmware update through the running firmware (UPD-1; the
+/// sub-operations and the status are `orpheus_update::wire`).
+pub const REQ_UPDATE: u8 = 0x0D;
+
+/// WebUSB `bVendorCode`: the browser asks for the landing page with
+/// `GET_URL` (`bRequest` = this, `wIndex` = 2). Outside the request numbers
+/// above.
+pub const WEBUSB_VENDOR_CODE: u8 = 0x57;
+/// Microsoft OS 2.0 descriptor set (`bRequest` = this, `wIndex` = 7): makes
+/// Windows bind WinUSB to the developer interface without a driver.
+pub const MSOS_VENDOR_CODE: u8 = 0x4D;
+/// The WebUSB landing page (09 §5): the site's Install page.
+pub const LANDING_URL: &str = "https://timschmidt.github.io/orpheus/install.html";
+/// `DeviceInterfaceGUIDs` registry value the MS OS 2.0 descriptor sets.
+pub const DEVICE_INTERFACE_GUID: &str = "{6E9F3E35-2C1B-4F5A-9F0B-4F5250484555}";
 
 /// `REBOOT` targets (`wValue`).
 pub const REBOOT_NORMAL: u16 = 0;

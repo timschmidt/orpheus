@@ -35,6 +35,7 @@ mod sensor;
 mod services;
 mod state;
 mod ui;
+mod update;
 mod usbdev;
 mod vault;
 

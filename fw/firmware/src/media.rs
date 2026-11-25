@@ -154,6 +154,10 @@ pub enum Req {
     /// only files in `/Recordings`). In this queue so that the listing
     /// asked for after it already lacks the file.
     Delete(FileRef),
+    /// Firmware update (UPD-1, `crate::update`): list the files, read one's
+    /// change list (also while playing), install one (idle only: playback
+    /// stops first).
+    Update(crate::update::Op),
 }
 
 /// The Authenticator's import file `/.orpheus/otp-import.txt` (OTP-2, 06
@@ -932,6 +936,14 @@ impl Server {
             }
             Req::Delete(f) => {
                 crate::rec::delete(vol, f).await;
+                true
+            }
+            Req::Update(op) => {
+                if !idle && matches!(op, crate::update::Op::Install(_)) {
+                    self.pending = Some(r);
+                    return false;
+                }
+                crate::update::card_op(vol, op, scratch).await;
                 true
             }
             Req::Text { file, offset } => {

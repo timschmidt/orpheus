@@ -921,6 +921,113 @@ pub trait RecorderService {
     fn rec_has_line_in(&self) -> bool;
 }
 
+// ---------------------------------------------------------------- Update
+
+/// Where Settings › System › Update firmware stands (UPD-1, 02 §2.5).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum UpdPhase {
+    #[default]
+    Idle,
+    /// Looking for `.ofw` files on the card.
+    Searching,
+    /// The search ended; [`UpdateInfo::files`] were found.
+    Listed,
+    /// Reading the whole file to check its SHA-256 (nothing written yet).
+    Checking,
+    /// Writing the inactive firmware slot.
+    Writing,
+    /// Reading it back.
+    Verifying,
+    /// Installed: the player restarts into it.
+    Done,
+    /// Stopped ([`UpdateInfo::error`]); the installed firmware is unchanged.
+    Failed,
+}
+
+/// Why an update stopped, as the UI words it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum UpdError {
+    #[default]
+    None,
+    /// The file fails a check (header, SHA-256, sizes).
+    Damaged,
+    /// Built for another layout, or the player runs the dual-boot layout.
+    WrongPlayer,
+    /// Below 30 % without the cable.
+    Battery,
+    /// The card could not be read.
+    Card,
+    /// Erase, program or read-back failed.
+    Write,
+    /// An update over USB is running.
+    Busy,
+}
+
+impl From<orpheus_update::Error> for UpdError {
+    fn from(e: orpheus_update::Error) -> UpdError {
+        use orpheus_update::Error as E;
+        match e {
+            E::Layout | E::NotFull | E::NoSlot | E::Size => UpdError::WrongPlayer,
+            E::Battery => UpdError::Battery,
+            E::Busy => UpdError::Busy,
+            E::Refused | E::Flash | E::Verify => UpdError::Write,
+            E::Io => UpdError::Card,
+            _ => UpdError::Damaged,
+        }
+    }
+}
+
+/// The update service's state.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct UpdateInfo {
+    pub phase: UpdPhase,
+    /// Files found by the last search (at most [`UPDATE_FILES`]).
+    pub files: u8,
+    /// Progress of [`UpdPhase::Checking`], or of writing and verifying
+    /// together, in per mille.
+    pub permille: u16,
+    pub error: UpdError,
+    /// Bumped on every change (the screen redraws when it moves).
+    pub seq: u32,
+}
+
+/// Most update files a search lists.
+pub const UPDATE_FILES: usize = 3;
+
+/// One update file found on the card.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct UpdateFile<'a> {
+    /// File name (no folder).
+    pub name: &'a str,
+    pub version: &'a str,
+    /// Image bytes.
+    pub size: u32,
+    /// The running firmware is this build.
+    pub installed: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum UpdateRequest {
+    /// Look for `/orpheus-*.ofw` and `/.orpheus/update/*.ofw`.
+    Scan,
+    /// Load the change list of file `i`.
+    Details(u8),
+    /// Check, write and verify file `i`, then switch slots.
+    Install(u8),
+    /// Stop (only before writing starts; afterwards finishing is safer).
+    Cancel,
+}
+
+/// Settings › System › Update firmware.
+pub trait UpdateService {
+    fn update(&self) -> UpdateInfo;
+    fn update_file(&self, i: usize) -> Option<UpdateFile<'_>>;
+    /// The change list of the file last asked for with
+    /// [`UpdateRequest::Details`] (`""` until it arrived or if it has none).
+    fn update_changes(&self) -> &str;
+    fn update_request(&mut self, r: UpdateRequest);
+}
+
 /// Settings › Recording › Source as a source.
 #[must_use]
 pub const fn rec_source(v: i16) -> RecSource {
@@ -1081,6 +1188,7 @@ pub trait Services:
     + AuthService
     + RecorderService
     + UsbDriveService
+    + UpdateService
 {
 }
 
@@ -1105,6 +1213,7 @@ impl<T> Services for T where
         + AuthService
         + RecorderService
         + UsbDriveService
+        + UpdateService
 {
 }
 
