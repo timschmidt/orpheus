@@ -503,6 +503,7 @@ driver exists because it is much faster than reboot cycles.
 | `usb` | Enumerate each personality; MSC read/write speed and data integrity on the scratch area; CD-ROM image hash; HID reports captured on the host; suspend/resume; cable reconnect via soft detach | Hashes equal; no enumeration errors in the host's kernel log (`journalctl -k` snapshot before/after) |
 | `power` | Clock-level sweep with a CPU benchmark; idle statistics (time in WFI); battery ADC logging; charger state transitions | Benchmark scales with clock; WFI share ≥ 95 % at idle Home screen |
 | `soak` | 2 h playlist playback with periodic UI scripts and seeks | No fault, no underrun, no drift between played samples and wall clock beyond crystal tolerance |
+| `soak-*` (VER-12, §5.10) | Several long mixed-use soaks: interactive browsing while listening to music and the radio, seeking, changing settings, more listening | No fault, no reboot, stack high-water above budget, no underruns beyond limits, pager and buffer statistics within budget, state consistent afterwards |
 
 **Gapless join check** (part of `audio`, AU-5; runs without keys):
 
@@ -736,6 +737,55 @@ Device code is checked for memory errors where it can run on the host (logic
 behind the HAL seams, under ASan and Miri, §3.5); on the device the stack
 guard, the MPU deny regions, fault records and the per-session stack
 high-water play that role, and every fuzz session reports them.
+
+### 5.10 Long soaks (M11, VER-12; owner's requirement 2026-11-24)
+
+Several long soaks with real interactivity, designed to elicit stack
+exhaustion, buffer under/overruns, paging thrash, leaks of state and
+timing bugs that short tests never reach. They are part of the same
+verification infrastructure as the unit, adversarial, ASan and fuzz tests
+(§3.4–3.8) and the benchmarks (§4.4), and run on the reference player (and
+the scenario logic also in the simulator).
+
+* **Scenarios** (`cargo xtask dev soak <scenario> [--hours H] [--seed N]`),
+  each a scripted, seeded loop that mixes:
+  * `music`: album and shuffle playback across all codecs on the card,
+    gapless joins, seeks (forward, back, to start, near the end), pause /
+    resume, Next/Prev bursts, volume ramps, DSP on/off and EQ changes;
+  * `radio`: radio on, seek and scan, preset changes, mute, switching
+    between radio and music, recording from the radio;
+  * `browse-while-playing`: Files and library lists scrolled hard (held
+    keys, letter jumps, roll-around), pictures opened, Now Playing views,
+    menus and dialogs, all while music plays;
+  * `settings-churn`: settings changed while playing (theme, accent,
+    language, sound settings, Performance level, roll-around, Bluetooth on/
+    off), with listening periods in between;
+  * `mixed`: all of the above interleaved at random with long listening
+    stretches (minutes) and idle periods (screen off, auto-off suppressed),
+    plus card hand-over and USB personality switches;
+  * `stress`: the above at maximum key rate and with the clock at its lowest
+    allowed level, to push stack, pager and buffers to their limits.
+* **Durations**: 2 h each for `music`, `radio`, `browse-while-playing`,
+  `settings-churn`; 8 h and 24 h for `mixed`; 1 h for `stress`. Each runs
+  on the plugged-in player; one `mixed` run also unplugged (battery) with
+  the drain logger recording.
+* **Oracles, sampled every few seconds and at the end**: no fault record,
+  uptime monotonic (no watchdog reboot); main-stack high-water and task
+  frame budgets (`budgets.toml [hil]`); underruns per cause (`ub:`) within
+  limits and none outside seeks; pager loads/s and evictions within budget,
+  no thrash episodes (loads/s spikes); PCM/stream ring and spill high-water;
+  card I/O errors 0; settings store consistent and readable after the run;
+  queue / resume / library intact; played-samples vs wall-clock drift within
+  crystal tolerance; card root listing unchanged (writes only under
+  `/.orpheus/`); a screenshot per checkpoint compared with the simulator
+  where the state is deterministic.
+* **Metrics**: every soak writes a time series (stack high-water, loads/s,
+  underruns, ring fill, CPU idle, clock level, battery) into
+  `metrics/soak/*.csv` and the VER-10 history; regressions against the last
+  run fail the gate for release (REL-1: soak ×3).
+* **Findings**: any failure is reduced to a minimal reproducing sequence and
+  kept forever in `tests/regress/soak/` (replayed by the suite), like fuzz
+  findings (VER-9).
 
 ## 6. Milestone gate (run before declaring any work package done)
 

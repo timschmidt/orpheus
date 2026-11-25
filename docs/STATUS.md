@@ -2382,6 +2382,23 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — plan: long soaks (VER-12, owner's request); UPD-1/WEB-3 merged
+
+* Added VER-12 / 07 §5.10: several long soak scenarios with interactivity,
+  listening to music and the radio, seeking, settings changes and more
+  listening, with oracles for stack exhaustion, buffers and paging,
+  time-series metrics and regression sequences. PLAN.md item 11 extended.
+* Merged UPD-1 (`.ofw` update files, Settings › System › Update firmware,
+  developer-channel `UPDATE` request, `xtask dev update/slots/switch-slot`)
+  and WEB-3 (browser installer over WebUSB, Install page). On the player:
+  the build stages and boots; the developer interface carries the WebUSB
+  descriptor (landing page `…/orpheus/install.html`) and an MS OS 2.0
+  descriptor; `dev slots` reads A valid / B empty. **The update path
+  (`dev update`, on-player Update) is a new NOR writer not listed in
+  CLAUDE.md rule 1 — not run until the owner approves.** Stage 2 does not
+  yet fall back to the other slot when a valid image keeps crashing
+  (install-stage2 step; open).
+
 ### 2026-11-24 — USB-6: disk and CD images served to a computer (lead)
 
 * Merged USB-6 device + USB Drive app (`d6342f09`); fixed a service-kind
