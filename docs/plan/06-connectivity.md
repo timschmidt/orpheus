@@ -12,7 +12,7 @@ for USB; [docs/hw/bluetooth.md](../hw/bluetooth.md) for the Bluetooth module;
 | USB card reader, high speed | **Yes** | Proven by the Rockbox port (2.6 MB/s unoptimised) |
 | USB disk / CD-ROM emulation from a file | **Yes** | Same controller, more SCSI; needs the extent API of the file system |
 | USB keyboard (typing one-time codes) | **Yes** | Interrupt-IN endpoints; needs interrupt-type FIFO configuration to be tested (U-USB-11) |
-| USB audio device | **Probably** (stretch) | Needs isochronous FIFOs with the Actions DMA; untested (U-USB-12) |
+| USB audio device (sound card: playback and microphone) | **Probably** — milestone M16 (owner, 2026-11-25) | Needs isochronous FIFOs with the Actions DMA and an SOF/frame counter for rate feedback; untested (U-USB-12, U-USB-15) |
 | USB host / OTG | **No (not planned)** | The core is a dual-role Faraday design, but nothing in the vendor image uses host mode and there is no sign of a VBUS supply |
 | Bluetooth: send music to headphones/speakers | **Yes, cheap** | The board carries an autonomous transmitter module (self-reports "ATS2851") that runs its own stack and takes **analogue** audio from the DAC; the player only sends short UART commands |
 | Bluetooth: remote keys and volume from the headset; volume and track text to the headset | **Yes** | In the module's command set |
@@ -101,7 +101,7 @@ rebuilding the `embassy-usb` device and re-attaching.
 | **File transfer** | Mass storage (card) | bulk IN ×2 FIFOs (double-buffered), bulk OUT | Card unmounted from the firmware while exported |
 | **Disk image** | Mass storage (image file as disk or CD-ROM) | as above | §3 |
 | **Keyboard** | HID boot keyboard (8-byte report) | 1 interrupt IN | Authenticator typing (§5). Playback keeps running |
-| USB audio (stretch) | UAC1 speaker (+ HID consumer control) | iso OUT, iso feedback IN, interrupt IN | Player becomes a USB DAC |
+| **USB sound card** (M16, §2.7) | UAC2 (UAC1 for older hosts): speaker + microphone, HID consumer control | iso OUT, iso feedback IN, iso IN, interrupt IN | Host audio out to the jack and Bluetooth; microphone in to the host |
 | Recovery | — | — | "Recovery mode" reboots into the ROM's ADFU |
 
 Every personality also answers the **developer channel** on endpoint 0 (§2.5),
@@ -282,6 +282,64 @@ N]` holds a request 2.5 s at each stage, sends the PEEK the soak sent, cuts
 40 transfers after 1 ms, and requires INFO to answer again within 20 s
 each time. Firmware before USB-W1 has no `usb delay`; its `usb-cancel`
 rounds fail at the first held request, the 1 ms cuts still run.
+
+### 2.7 USB sound card (M16; owner's requirement 2026-11-25)
+
+The player presents a **USB audio interface**: the host's audio output
+plays through the player — to the headphone jack (TRS) and, when a
+Bluetooth device is connected, to Bluetooth (the module takes the DAC's
+analogue output, 06 §4.1, so both follow the same stream) — and the
+player's **microphone** appears to the host as an audio input.
+
+* **Class**: USB Audio Class 2.0 at high speed (built-in drivers on Linux,
+  macOS and Windows 10 1703+); a UAC1 full-speed variant as a setting for
+  older hosts. Composite with the developer channel (always) and a HID
+  consumer-control interface (the player's keys as play/pause, next,
+  previous, volume on the host). The card stays with the player (no mass
+  storage in this personality); music playback stops while the sound card
+  is active.
+* **Playback stream (host → player)**: stereo, 44.1 and 48 kHz (both PLL
+  families; 96 kHz if U-AUD-2 allows), 16- and 24-bit (24-bit dithered to
+  the DAC's width unless it takes 24 bits). **Asynchronous** endpoint with
+  an explicit feedback endpoint: the DAC keeps its own clock (measured
+  +1,500 ppm against the workstation, U-AUD-10) and the feedback value is
+  computed from the DAC DMA position against USB start-of-frame counts, so
+  nothing is resampled; an adaptive resampler (the DSP chain's) is the
+  fallback if the controller cannot give frame timing (U-USB-15).
+* **Capture stream (player → host)**: the microphone (AU-13 front end, the
+  left channel as found), mono or duplicated stereo, 16 and 48 kHz,
+  16/24-bit; packet sizes vary by one sample to follow the ADC's clock.
+  Setting for the source: microphone, FM radio, or a monitor of the
+  playback (loopback, for tests).
+* **Controls**: UAC feature units for playback volume and mute (mapped to
+  the DAC's hardware volume and the PA) and capture gain and mute (the ADC
+  gain, AGC off); the player's volume keys change the same values and the
+  host is told through the interrupt endpoint, so both sides agree.
+* **Full duplex**: DAC and ADC run at the same time at the same rate family
+  (to be confirmed on the hardware, U-AUD-14); buffers come from a
+  "USB audio" partition of the mode pool (02 §4), about 16 KiB, latency
+  ≤ 20 ms each way; DMA for both directions (no CPU copies on the audio
+  path beyond packet framing).
+* **UI**: the USB dialog and Settings › USB offer "Sound card"; its screen
+  shows the stream format, input and output level meters, the output route
+  (headphones, Bluetooth, both — the PA muted when only Bluetooth is
+  wanted), the input source and gain, a monitor (microphone to headphones)
+  switch, and works with the screen off; charging continues.
+* **Safety** (07 §7): with USB connected the jack must drive headphones or
+  equipment that does **not** share ground with the host (direct-drive
+  output, virtual-ground return); the manual and a first-use notice say
+  so; Bluetooth output has no such limit.
+* **Tests**: descriptors and class requests in `orpheus-usb` on the host
+  (golden descriptor bytes, every control request, the feedback
+  calculator against simulated clock offsets); on the player with the
+  workstation's ALSA (`aplay`/`arecord` on the device): enumeration,
+  every rate and width, feedback keeping the buffer centred over an hour
+  (no xruns, no underruns), playback checked through the Bluetooth A2DP
+  capture (null-sink method; the line input may not be used while USB is
+  connected), capture checked with a tone from the playback loopback and
+  the microphone's noise floor; a `usb-audio` soak scenario (full duplex,
+  volume and route changes, host suspend/resume, re-plug); Windows and
+  macOS by the owner (user check). M13 measures its audio quality.
 
 ## 3. Disk and CD emulation ("USB Drive" app)
 
@@ -643,7 +701,7 @@ release, not part of the committed scope.
   detection** (with the `power` task).
 * **WP-USB-5 HID keyboard**: interface, authenticator typing; U-USB-11.
 * **WP-USB-6 Disk and CD emulation** + QEMU boot test.
-* **WP-USB-7 USB audio** (stretch; U-USB-12).
+* **WP-USB-7 USB audio**: superseded by milestone M16 (§2.7).
 * **WP-BT-1 Link and protocol**: UART1 driver, pin test, codec, command layer,
   identity/settings; host replay tests.
 * **WP-BT-2 Transmitter role**: state machine, pairing UI, AVRCP bridge,

@@ -34,7 +34,7 @@ identity throughout.
 | PMU, power-saving and high-performance modes | 03 §2, §10; 02 §5 | Core supply 1.0 V instead of the 1.2 V default; levels 6–192 MHz; deep idle; documented S3 standby to be explored; charger with vendor values |
 | "IMU" | 03 §15, 05 §7.7 | The part is a 3-axis accelerometer (no gyroscope) |
 | Bluetooth | 06 §4, 05 §7.4 | Transmitter role fully; the module offers no other role (below) |
-| USB controller and its modes | 06 §2–3 | Card reader, disk/CD emulation, HID keyboard (code typing), developer channel, charge-only; USB audio as a stretch; host mode not planned |
+| USB controller and its modes | 06 §2–3 | Card reader, disk/CD emulation, HID keyboard (code typing), developer channel, charge-only; USB sound card (M16); host mode not planned |
 | Audio DAC and input | 03 §12–13, 04 | Hardware volume, native rates, ADC with microphone/FM/line |
 | FM radio | 03 §15, 05 §7.3 | RDA5807-family tuner, analogue bypass (no CPU while listening) |
 | RTC | 03 §11 | Clock, alarms, wake from off |
@@ -45,6 +45,7 @@ identity throughout.
 | 2FA token | 06 §5, 05 §7.9 | TOTP/HOTP, typed over USB; honest limit on at-rest secrecy |
 | Games: blocks, solitaire, 4096, and an artillery duel against the computer or passing the player, with generated terrain, realistic wind and gravity, and useful settings for each (owner, 2026-11-25) | 05 §7.13, 08 M14 | Original implementations of the genres (own names, art, sounds) |
 | Tiny text-to-speech engine, accessible UI and a book reader with read-aloud (owner, 2026-11-25) | 04 §8, 05 §7.14–7.15, 08 M15 | English only (D-14) |
+| USB sound card: the player as a USB audio interface, microphone to the host, host audio to the headphone (TRS) and Bluetooth outputs (owner, 2026-11-25) | 06 §2.7, 08 M16 | UAC2 with feedback; isochronous endpoints still to be proven (U-USB-12) |
 | Audio quality, battery, power and performance measured and optimised with USB disconnected: output into the workstation's input, battery discharging, status over Bluetooth where possible (owner, 2026-11-25) | 07 §5.11, 08 M13 | Rig decision D-12; deeper discharge D-13 |
 | Bluetooth presentation remote; IMU (tilt) mouse only over Bluetooth | 05 §7.12, 06 §4.3 | **Remote in scope (owner, 2026-11-24)** over the module's HID service (keyboard + consumer reports, read 2026-11-24); BT-3 finds the command that feeds it, BT-4 builds the transport, UI-6b the app. **Tilt pointer conditional (D-10):** built only if BT-3 finds a Bluetooth transport for mouse data, otherwise dropped |
 | Bluetooth audio receiver | — | **Removed from scope by the owner on 2026-11-23** (the module cannot receive audio) |
@@ -156,6 +157,14 @@ Written up in `docs/hw/` (four reverse-engineering reports),
     is usable with the screen off, large-text, high-contrast and
     reduced-motion settings, and a book reader (TXT, Markdown, FB2, EPUB)
     that can read aloud. M14 and M15 come after M10 and before M13 and M11.
+
+15. **USB sound card (M16, owner's requirement 2026-11-25).** The player
+    presents a USB Audio Class 2 interface (UAC1 as an option): the host's
+    output plays to the headphone jack and to Bluetooth, the microphone is
+    the host's input; asynchronous with a feedback endpoint so the DAC keeps
+    its own clock; volume and mute agree both ways. The isochronous
+    endpoints and full duplex are proven on the hardware first (UAC-0).
+    After M9/M10, before M13 and M11.
 
 ## 5. Decisions that are the user's
 

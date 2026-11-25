@@ -333,7 +333,9 @@ that. Added:
 | Id | Question | Test | WP |
 |---|---|---|---|
 | U-USB-11 | Interrupt-type endpoint/FIFO configuration (FIFO type field) and timing | HID keyboard enumerates and types on the host. USB-5 (2026-11-24) built the test: `kbd on`, `kbd type …`, `kbd status` (FIFO type 3, max packet 8, bInterval 4, one 8-byte DMA per report, 12 ms apart); **not yet run on the player** | USB-5 |
-| U-USB-12 | Isochronous FIFOs with the Actions DMA; feedback endpoint | UAC1 speaker plays a tone (stretch) | USB-7 |
+| U-USB-12 | Isochronous FIFOs with the Actions DMA; feedback endpoint | The sound card plays a tone and records the microphone | UAC-1 (M16) |
+| U-USB-15 | Start-of-frame interrupt or frame counter usable for the feedback value | Feedback computed from SOF counts keeps the buffer centred | UAC-2 (M16) |
+| U-AUD-14 | DAC and ADC running at once at the same rate family (full duplex) | Playback and microphone capture together without glitches | UAC-3 (M16) |
 
 ### Audio, radio, sensor, Bluetooth
 

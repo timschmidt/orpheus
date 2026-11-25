@@ -45,6 +45,7 @@ Two tracks run side by side from the start:
 | M12 | **Documentation, website and branding** | Concise, current documentation for users and developers; open-source project files; GitHub Pages site built from the repository with Orpheus running in the browser (WASM) and a browser installer (WebUSB where supported); shared Orpheus/lyre branding across firmware, docs and site (09) | Runs alongside M10–M11; release depends on it |
 | M14 | **Games** | Games app with Blocks, Solitaire (Klondike), 4096 and an artillery duel (generated terrain, wind, gravity, drag; against the computer or passing the player), each with settings, saved games and scores | After M10; before M13 and M11 |
 | M15 | **Speech, accessibility and books** | Tiny text-to-speech engine, screen reader and vision/motor settings, book reader (TXT, Markdown, FB2, EPUB) with read-aloud | After M10; before M13 and M11 |
+| M16 | **USB sound card** | The player as a USB audio interface: host audio out to the headphone jack and Bluetooth, the microphone in to the host; UAC2 (UAC1 option), asynchronous with feedback, volume and mute both ways, level meters | After M9/M10; before M13 and M11; supersedes USB-7 |
 | M13 | **Unplugged measurement and optimisation** | Audio quality, battery life, power and performance measured with USB disconnected (on battery, analogue output into the workstation's input, optional Bluetooth status channel), then optimised from the numbers; battery indicator calibrated; budgets for audio figures and runtime per scenario | After the features it measures (M7–M9), before M11's final verification; supersedes PWR-4 |
 | M11 | **Verification** (last stage) | 100 % coverage of the project's own source by unit, adversarial-input and fuzz tests under sanitizers; every on-device function and every screen/app interaction exercised in fuzzed sequences on the player; memory use and performance tracked as thoroughly as coverage; every fuzz finding kept as a regression test | Release only after M11 is green |
 
@@ -179,7 +180,7 @@ per codec: one listening pass with real files of that format.
 | OTP-1 | `orpheus-otp`, vault, PIN flow, time sync tool | 06 §5 | H+D | M | — |
 | OTP-2 | Authenticator app, typing, provisioning, `TextEntry`/PIN pad. **Built 2026-11-24, not yet run on the player** (PIN pad, list, big code, typing, import, PROVISION; not built: `TextEntry`/manual entry, rename, passphrase) | 05 §7.9 | H+D | M | Log in to a test account with a typed code (user check 23) |
 | USB-6 | Disk and CD emulation, USB Drive app, QEMU boot test | 06 §3, 05 §7.10 | H+D | L | Boot one real PC from an ISO (if no QEMU pass-through) |
-| USB-7 | USB audio (stretch; U-USB-12) | 06 §2.3 | D | M | Listen |
+| USB-7 | **Superseded by M16 (USB sound card, 2026-11-25).** USB audio (stretch; U-USB-12) | 06 §2.3 | D | M | Listen |
 
 ### M10 — Polish and release
 
@@ -246,13 +247,30 @@ quality and reading battery life, M11 verifies.
 | BOOK-2 | EPUB: zip and deflate, OPF spine and table of contents, XHTML reduction, chapter cache extracted when idle | 05 §7.15 | H+D | M | Open a few EPUBs |
 | BOOK-3 | Read aloud: continuous TTS from the position, sentence highlight, page following, screen off, sleep timer, resume | 05 §7.15 | H+D | M | Listen to a chapter |
 
+### M16 — USB sound card (owner's requirement 2026-11-25)
+
+Spec: [06 §2.7](06-connectivity.md). The player as a USB audio interface:
+host playback to the jack and Bluetooth, the microphone to the host.
+Supersedes USB-7. Needs U-USB-12 (isochronous endpoints), U-USB-15 (frame
+timing) and U-AUD-14 (full duplex) answered on the hardware first. After
+M9/M10; M13 measures it, M11 verifies it.
+
+| WP | Content | Spec | Dev | Size | User |
+|---|---|---|---|---|---|
+| UAC-0 | Hardware first: isochronous IN/OUT endpoints with the controller's FIFOs and DMA, SOF/frame counter, DAC and ADC at once; answers U-USB-12, U-USB-15, U-AUD-14 with a bring-up personality | 06 §2.7, 01 §9 | D | M | — |
+| UAC-1 | `orpheus-usb` UAC2 class (and UAC1 variant): descriptors, clock source/selector, feature units, class requests; host tests with golden descriptors | 06 §2.7 | H | M | — |
+| UAC-2 | Playback: isochronous OUT into the DAC ring by DMA, asynchronous feedback from the DAC position against SOF counts (host-tested calculator), rate and width switching, volume and mute both ways; resampler fallback | 06 §2.7, 04 §3 | H+D | L | Play music from the computer |
+| UAC-3 | Capture: microphone (and radio, loopback) through the ADC into isochronous IN, sample-accurate packet sizing, gain and mute | 06 §2.7, 04 §5.2 | H+D | M | Use it in a call |
+| UAC-4 | Personality and UI: composite with the developer channel and HID consumer control, USB dialog and Settings › USB entry, sound-card screen (format, meters, route, source, monitor), first-use safety notice, screen-off operation | 06 §2.7, 05 §6.5 | H+D | M | — |
+| UAC-5 | Verification: ALSA HIL (enumeration, every format, an hour without xruns, playback via the Bluetooth capture, capture via loopback), `usb-audio` soak scenario, suspend/resume and re-plug; Windows and macOS user check | 06 §2.7, 07 §5 | H+D | M | Try it on Windows and macOS |
+
 ### M13 — Unplugged measurement and optimisation (owner's requirement 2026-11-25)
 
 Spec: [07 §5.11](07-tooling-testing.md). On battery with USB disconnected,
 the analogue output recorded by the workstation's microphone or line input,
 a status channel over Bluetooth where it helps, the full log on the card.
 Supersedes PWR-4 and the device half of PWR-5 (user check 19 is automated
-here). Runs after the features it measures (including M14 and M15); M11
+here). Runs after the features it measures (including M14, M15 and M16); M11
 (verification) and the release follow it. Every fix it leads to follows the regression-test rule
 (CLAUDE.md). Needs D-12 (rig) before MEAS-1's hardware part; D-13 only for
 runs below the 3.55 V floor.

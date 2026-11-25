@@ -2872,6 +2872,17 @@ Finding: 30-minute `mixed` soak, seed 1, 10.4 min, read in `radio-keys 8
   off: the disk is full); fw fmt, clippy, `xtask build`, `check-resident`,
   `size --check`: pass. Not run: `xtask dev …` (no player), brand/site.
 
+### 2026-11-25 — plan: M16 USB sound card (owner's request)
+
+* New milestone M16 (08; spec 06 §2.7; PLAN item 15): the player as a USB
+  audio interface — UAC2 (UAC1 option) composite with the developer channel
+  and HID consumer control; host playback to the jack and Bluetooth,
+  microphone (or radio/loopback) to the host; asynchronous with feedback
+  from the DAC position against SOF counts; volume/mute both ways; meters,
+  route and monitor on a sound-card screen; safety notice for the jack
+  with USB connected. WPs UAC-0…5 (UAC-0 proves isochronous endpoints and
+  full duplex first; new unknowns U-USB-15, U-AUD-14). Supersedes USB-7.
+
 ### 2026-11-25 — plan: factory-firmware reference player (owner)
 
 * The owner has a second, identical YM03 on the factory firmware for
