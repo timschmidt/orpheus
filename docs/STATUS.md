@@ -2736,6 +2736,21 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-25 — fix: a stale test request survived warm reboots (lead)
+
+* The second 30-min soak (after USB-W1) ended at minute 5 with the player
+  in USB recovery: log "fw: test window over". Cause: the boot mailbox's
+  test request (`request` = Test, `test_mode` = YTST, from an earlier
+  `xtask dev ram --test fw --arg 300`) survives warm reboots and nothing
+  cleared it, so every later start from flash ran as a 300-s test and
+  quit to USB recovery (also why the stage 2 crash test detoured through
+  USB recovery). Fix: `mailbox::stale_test` (host-tested) — a start that
+  stage 2 recorded as a slot start from flash is never a test;
+  `persist::forget_stale_test` clears the words before anything reads them
+  and logs "fw: stale test request cleared". `dev ram` writes the whole
+  mailbox (boot info 0), so real tests are unaffected. Resident +96 B
+  (79,148 B). On the player: test-mode word 0 after a normal start.
+
 ### 2026-11-25 — USB-W1 fix verified on the player (lead)
 
 * Merged `c7b46d7c` (drop-safe EP0 SETUP read, abandoned-transfer

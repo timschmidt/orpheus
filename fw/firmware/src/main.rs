@@ -349,6 +349,11 @@ extern "C" fn main() -> ! {
     hal::init();
     clock::set_level(Level::Base);
     log::line(if paged { b"fw: start (paged)" } else { b"fw: start (no pages)" });
+    // A test request from an earlier `dev ram` start survives warm reboots;
+    // a start from flash is never a test.
+    if persist::forget_stale_test() {
+        log::line(b"fw: stale test request cleared");
+    }
     // T-6: `boot crash-test` armed a failing start for this slot (stage 2
     // fallback test): reboot as a fault would, keeping the boot counter.
     // Before any task runs, so nothing (no NOR write) is cut short.

@@ -149,6 +149,18 @@ pub enum CrashStep {
     Disarm,
 }
 
+/// Whether a test request in the mailbox is left over from an earlier start
+/// (bug found by the first soaks, 2026-11-25): the request words survive
+/// warm reboots, and only `xtask dev ram` arms a test, writing the whole
+/// mailbox, so the boot-info word is 0 then. A start that stage 2 recorded
+/// as a slot start from flash ([`PATH_FIRMWARE`]) is never a test; it must
+/// clear the words, or it would quit to USB recovery when the old test
+/// window runs out and send fault reboots to USB recovery as well.
+#[must_use]
+pub fn stale_test(test_mode: u32, boot_info: u32) -> bool {
+    test_mode == TEST_MODE_MAGIC && BootInfo::from_word(boot_info).is_some_and(|b| b.path == PATH_FIRMWARE)
+}
+
 /// The crash test's decision for the firmware started from `running`. At
 /// most `args[1]` starts fail, so a test can never keep the player
 /// crashing: with [`BOOT_COUNT_LIMIT`] crashes, the next start is the
@@ -248,6 +260,20 @@ impl Mailbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_test_only_on_a_flash_start() {
+        let armed = Mailbox::test(1, FLAG_RETURN_ADFU, &[300]);
+        // As `dev ram` leaves it: no boot info, a real test.
+        assert!(!stale_test(armed.test_mode, armed.boot_info));
+        let flash = BootInfo { path: PATH_FIRMWARE, attempt: 1, keys: 0 }.to_word();
+        assert!(stale_test(armed.test_mode, flash));
+        // Other stage 2 paths never start the firmware from flash.
+        let adfu = BootInfo { path: PATH_ADFU_MAILBOX, attempt: 1, keys: 0 }.to_word();
+        assert!(!stale_test(armed.test_mode, adfu));
+        // Not armed: nothing to clear.
+        assert!(!stale_test(0, flash));
+    }
 
     #[test]
     fn legacy_word_addresses() {

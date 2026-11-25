@@ -47,6 +47,22 @@ pub fn test_request() -> Option<(u32, mailbox::Mailbox)> {
         .then_some((m.test_id, m))
 }
 
+/// Clear a test request left over from an earlier start
+/// ([`mailbox::stale_test`]): call once at start, before
+/// [`test_request`] is read.
+pub fn forget_stale_test() -> bool {
+    let tm = mailbox::ADDR_TEST_MODE;
+    let stale = mailbox::stale_test(rd(tm), rd(mailbox::BASE + mailbox::OFF_BOOT_INFO as u32));
+    if stale {
+        let req = mailbox::BASE + mailbox::OFF_REQUEST as u32;
+        if mailbox::Request::from_word(rd(req)) == mailbox::Request::Test {
+            wr(req, 0);
+        }
+        wr(tm, 0);
+    }
+    stale
+}
+
 /// Mark this start as healthy (clears the boot-attempt counter, and with it
 /// stage 2's record of tripped slots: the next start tries the first slot
 /// again).
