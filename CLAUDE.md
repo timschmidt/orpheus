@@ -35,7 +35,9 @@ in `docs/PLAN.md`; start every session there and in `docs/STATUS.md`.
    Charge current never above the 200 mA code. The eFuse block
    (`0xC0020000`) is read-only.
 4. Never power the player off from an automated test; end every test in a
-   reboot. Never leave it needing a key press.
+   reboot. Never leave it needing a key press. Exception (D-13, owner 2026-11-25):
+   M13 discharge runs may run down to the firmware's own low-battery
+   switch-off.
 5. On the card, write only inside `/.orpheus/`. Never format, repartition or
    raw-write outside files the test created.
 6. Do not send Bluetooth module commands 0x20–0x24, 0x28, 0x2C or 0x7F outside

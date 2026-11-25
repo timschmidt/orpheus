@@ -993,6 +993,16 @@ adapter), sample rates, noise floor, clip level, frequency response
 when one is used); the result is a correction file every analysis applies,
 and no figure is reported better than the chain can resolve.
 
+*Reference workstation (owner, 2026-11-25):* ASRock Fatal1ty X370 Gaming K4,
+Realtek ALC1220 (ALSA card `Generic`), **front-panel microphone input**:
+stereo pin (node 0x19), capture 16/20/24-bit at 44.1–192 kHz, **mic bias on
+(`VREF_80`, about 4 V through the bias resistor)**, `Front Mic Boost` 0 of 3.
+Before measuring, the bias is switched off (pin control `VREF_HIZ`, e.g.
+`hda-verb /dev/snd/hwC2D0 0x19 SET_PIN_WIDGET_CONTROL 0x20`, needs root;
+or a DC-blocking adapter), boost stays 0 and the PipeWire source runs in
+pro-audio mode at 96 or 192 kHz/24-bit. The rear blue line input (node
+0x1a, already `VREF_HIZ`) is the cleaner alternative if it can be reached.
+
 **Run engine (MEAS-2, firmware).** A plan compiled by `xtask meas` into a
 small binary file under `/.orpheus/meas/` (uploaded with `dev put`) and armed
 over USB: steps such as play file/tone set at volume V, clock level or
