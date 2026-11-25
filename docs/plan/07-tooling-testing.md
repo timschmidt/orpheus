@@ -966,6 +966,107 @@ soak mixed --minutes 30 --setup --seed 1`; read `summary.txt` and
 `settings-churn` (2 h each), `stress` (1 h), `mixed` (8 h, then 24 h), one
 `mixed --battery`.
 
+### 5.11 Unplugged measurement: audio quality, battery, power, performance (M13; owner's requirement 2026-11-25)
+
+Everything before this measures the player **on USB**: charging, the host's
+ground on the board, the developer channel awake. M13 measures it as it is
+used — **on battery, USB disconnected** — with the analogue output recorded
+by the workstation's microphone (or line) input, and optimises from the
+numbers. Bluetooth may carry a low-rate status channel; the card carries
+the full record.
+
+**Rig and safety (MEAS-1).** The jack is direct drive (virtual-ground
+return, §7): it may be connected to the workstation **only while USB is
+disconnected** — then the player floats and the jack's sleeve is its only
+ground. Procedure per run: arm over USB → unplug USB → plug the jack →
+run → unplug the jack → plug USB. Firmware interlock while a run is armed:
+VBUS appearing powers the PA and its virtual-ground buffer down at once
+and ends the run (logged), so a cable mistake costs a run, not hardware.
+Rig options are decision D-12 (manual swaps; an audio isolation
+transformer, which makes USB + jack safe and also allows plugged/unplugged
+comparisons; plus optionally a hub with per-port power switching,
+`uhubctl`, so the host can cut VBUS itself for unattended runs). The
+capture chain is characterised first (`xtask meas rig-check`): mono or
+stereo input, plug-in-power bias (prefer a line input or a DC-blocking
+adapter), sample rates, noise floor, clip level, frequency response
+(workstation output → its own input loopback; through the transformer
+when one is used); the result is a correction file every analysis applies,
+and no figure is reported better than the chain can resolve.
+
+**Run engine (MEAS-2, firmware).** A plan compiled by `xtask meas` into a
+small binary file under `/.orpheus/meas/` (uploaded with `dev put`) and armed
+over USB: steps such as play file/tone set at volume V, clock level or
+governor, Performance setting, screen on/off and backlight level, Bluetooth
+on/off/streaming, radio, recording, pictures, idle, standby; each for a
+time, a number of loops or until a voltage. The run starts a set delay
+after VBUS goes (time to plug the jack), needs no keys, and stops at its
+end, at the **voltage floor** (default 3.55 V; deeper only by D-13), on a
+fault, or on a long Back press by the owner. Each step begins with an
+**audio marker** (short chirp + FSK code: run, step, time) so the recording
+aligns with the log without a shared clock. Logging extends the drain
+logger: one row per 10 s per step (battery mV, its slope, clock level,
+idle %, decode µs, pager loads, card I/O, underruns, DAC headroom,
+backlight, Bluetooth state, faults) to `/.orpheus/meas/run-<n>/`. The run
+ends idle with the output muted, screen off, waiting for USB; USB back
+means a reboot (rule 4: never powered off, never left needing a key).
+
+**Bluetooth status channel (MEAS-3, optional).** Within the commands this
+project already uses (rule 6; no module firmware, D-6): compact status
+lines (step, mV, underruns, faults) in the track-metadata fields of
+command 0x31, read on the workstation from BlueZ (AVRCP `Track`
+property), rate-limited after measuring what the module and BlueZ
+accept; the A2DP stream itself captured as a second audio path (null-sink
+method); the HID keyboard path only if BT-3 finds its feed. Bluetooth costs
+power, so status-channel runs are separate from "dark" runs (card log
+only), and its cost is itself a measured scenario.
+
+**Host side (MEAS-4).** `xtask meas run PLAN` arms the player, prompts the
+owner for each cable step (or switches the hub port, D-12), records the
+input (PipeWire, 48 kHz/24-bit or the best the input offers), follows the
+Bluetooth status, waits for USB, pulls the run directory, aligns by the
+markers and analyses; `xtask meas report` writes an HTML report (discharge
+curves, runtime per scenario, audio figures with plots) and appends
+`metrics/meas/*.csv` (history, as VER-10). Thresholds live in
+`budgets.toml` `[audio]` and `[battery]`; a regression against the last
+accepted run is a finding.
+
+**Audio figures (AQ-1).** From generated signal files on the card
+(`/.orpheus/meas/signals/`, 44.1 and 48 kHz, 16/24-bit): frequency
+response (log sweep), THD+N vs level and frequency (stepped sines, −1 to
+−60 dBFS), dynamic range (AES17 −60 dBFS method), noise floor and idle
+tones (digital silence, spectrum and a click detector — the periodic
+ticking AU-0b, correlated with card, NOR paging, backlight PWM, charger and
+display activity from the log), IMD (SMPTE, CCIF 19+20 kHz), crosstalk
+(one channel driven; needs a stereo input or two passes), channel balance,
+maximum level and clipping per volume step and PA gain, volume step
+accuracy, pops at power-on, play, pause, stop, track change and volume
+change, wow and flutter and clock drift (3,150 Hz tone; ppm against the
+workstation), resampler aliasing (44.1 kHz content at 48 kHz), and the
+DSP chain against its designed curves (EQ presets, bass, crossfeed,
+ReplayGain). Each figure per state where it matters: unplugged vs plugged
+(through the transformer or the A2DP path), screen on/off, clock level,
+Bluetooth on/off.
+
+**Battery and power (PWR-6, PWR-7).** Discharge curves from full to the
+floor under several constant loads give the voltage-to-capacity model
+(370 mAh cell) that the battery indicator and the low-battery warnings
+use; runtime and average current per scenario (idle screen on/off, music
+per codec with the screen off at listening level, radio, recording,
+Bluetooth streaming, pictures, standby, off); Normal vs Maximum (D-4,
+user check 19, automated here). Capacity cross-checked, if the owner has
+a USB power meter, by the charge put back in. Optimisation is one candidate
+at a time, the same plan before and after: deep idle and WFI, peripheral
+clock gating, governor thresholds per codec, read-ahead size and card idle,
+paging working set (NOR reads cost energy), screen-off rendering,
+backlight curve, DAC/PA power-down on pause and stop (pop-free), Bluetooth
+module and FM tuner off when unused, accelerometer low-power mode, polling
+intervals. Regulator and charger fields stay at vendor values (rule 3).
+
+**Performance on battery (PERF-1).** Decode headroom per codec and clock
+level, pager load rate, UI frame time and key latency, underruns — over a
+whole discharge, to catch behaviour that changes as the voltage falls
+(Maximum near the floor in particular); results join VER-10's history.
+
 ## 6. Milestone gate (run before declaring any work package done)
 
 ```
@@ -1001,7 +1102,10 @@ player is unplugged) is reported as **not run**, never as passed.
   shorts the virtual-ground amplifier and makes the player misbehave
   (observed 2026-11-24: card initialisation fails at every boot). Use an
   audio isolation transformer, or measure through the Bluetooth A2DP
-  capture (07 §5.5, null-sink method in STATUS 2026-11-24).
+  capture (07 §5.5, null-sink method in STATUS 2026-11-24). With **USB
+  disconnected** (the player on battery, nothing else attached) the jack
+  may go to the workstation's input directly: that is how M13 measures
+  (§5.11, procedure and interlock there).
 
 These are repeated in `CLAUDE.md`; they are here with their reasons.
 

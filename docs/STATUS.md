@@ -2736,6 +2736,21 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-25 — plan: M13 unplugged measurement and optimisation (owner's request)
+
+* New milestone M13 (08; spec 07 §5.11; PLAN item 12): audio quality,
+  battery, power and performance measured with USB disconnected — output
+  into the workstation's input, battery discharging, a firmware run engine
+  with audio markers and card logging, an optional Bluetooth status channel
+  (0x31 metadata via BlueZ) — then optimised one change at a time. WPs
+  MEAS-1…4, AQ-1/2, PWR-6/7, PERF-1; PWR-4 superseded. The jack rule in 07
+  §7 now allows the workstation input while USB is disconnected; an armed
+  run powers the PA and virtual ground down if VBUS appears. New user
+  decisions D-12 (rig: manual swaps by default; isolation transformer;
+  `uhubctl` hub) and D-13 (discharge below 3.55 V).
+* Also: owner's policy that every fixed bug gets a `regress_` test
+  (CLAUDE.md, 07 §3.1); backfill worker running.
+
 ### 2026-11-25 — fix: Music › Shuffle all reset the player (lead, found by the soak)
 
 * Third soak (seed 1): a watchdog reset (no fault record) reproduced and

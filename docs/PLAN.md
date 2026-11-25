@@ -43,6 +43,7 @@ identity throughout.
 | Stopwatch, pedometer, recorder, pictures, radio, Bluetooth, music, settings, folder browser | 05 §7 | Each specified with acceptance tests |
 | Boot a computer from an ISO/IMG on the card | 06 §3, 05 §7.10 | Disk and CD-ROM modes; automated boot test with QEMU |
 | 2FA token | 06 §5, 05 §7.9 | TOTP/HOTP, typed over USB; honest limit on at-rest secrecy |
+| Audio quality, battery, power and performance measured and optimised with USB disconnected: output into the workstation's input, battery discharging, status over Bluetooth where possible (owner, 2026-11-25) | 07 §5.11, 08 M13 | Rig decision D-12; deeper discharge D-13 |
 | Bluetooth presentation remote; IMU (tilt) mouse only over Bluetooth | 05 §7.12, 06 §4.3 | **Remote in scope (owner, 2026-11-24)** over the module's HID service (keyboard + consumer reports, read 2026-11-24); BT-3 finds the command that feeds it, BT-4 builds the transport, UI-6b the app. **Tilt pointer conditional (D-10):** built only if BT-3 finds a Bluetooth transport for mouse data, otherwise dropped |
 | Bluetooth audio receiver | — | **Removed from scope by the owner on 2026-11-23** (the module cannot receive audio) |
 | Documentation, website, in-browser Orpheus, browser installer, branding | 09, 08 M12 | Concise docs for users and developers, open-source project files, GitHub Pages site from the repository with a WASM build of the firmware's UI/app/codec code and a WebUSB installer where the browser supports it; one Orpheus/lyre brand for firmware, docs and site (owner, 2026-11-24) |
@@ -132,6 +133,15 @@ Written up in `docs/hw/` (four reverse-engineering reports),
     §4.4, §5.7–5.9). Exclusions from the 100 % are an owner-reviewed list
     of provably unreachable code only.
 
+12. **Unplugged measurement and optimisation (M13, owner's requirement
+    2026-11-25).** Audio quality, battery life, power and performance are
+    measured as the player is used — on battery, USB disconnected — with the
+    analogue output recorded by the workstation's input, a firmware run
+    engine that needs no keys and logs to the card, audio markers to align
+    the recording, and an optional status channel over Bluetooth (07 §5.11).
+    Optimisations are made one at a time against those numbers; the results
+    become budgets. Comes after the features it measures and before M11.
+
 ## 5. Decisions that are the user's
 
 Defaults are what workers assume until told otherwise.
@@ -149,6 +159,8 @@ Defaults are what workers assume until told otherwise.
 | D-9 | Coverage exclusions (M11) | None; each proposed exclusion (provably unreachable code only) is listed in `coverage-exclusions.toml` with its reason and needs the owner's approval | The 100 % coverage requirement is otherwise absolute |
 | D-10 | Remote transport and the tilt pointer | **Decided 2026-11-24 by the owner**: the presenter remote is a **Bluetooth** remote (keyboard and consumer reports through the module's HID service). The tilt (IMU) pointer is built **only if a Bluetooth transport can carry mouse data**; if BT-3 finds none (the module's descriptor read on 2026-11-24 has no mouse report), the pointer is dropped from the plan — no USB pointer, no module firmware work for it | Decides SENS-2 and the pointer parts of UI-6b |
 | D-11 | Public repository name, GitHub Pages address, publication | **Decided 2026-11-24 by the owner: published as `timschmidt/orpheus` on GitHub, public.** Pages address follows as `timschmidt.github.io/orpheus` unless a custom domain is chosen | The site and the browser installer are publication |
+| D-12 | Measurement rig for M13 | Manual cable swaps prompted by `xtask meas` (owner present at start and end of each run) | Options: an **audio isolation transformer** (ground-loop isolator) between jack and input makes USB + jack safe and allows plugged/unplugged comparisons; a **USB hub with per-port power switching** (`uhubctl`) lets the host cut VBUS for unattended runs (only with the transformer, since USB ground stays connected) |
+| D-13 | Depth of automated discharge | Runs stop at 3.55 V | Deeper runs (to the low-battery warning and switch-off) characterise the last part of the curve and the shutdown path, but end with the player off (rule 4) — only with the owner present |
 
 Also needed from the user along the way: the checks in
 [USER-CHECKS.md](USER-CHECKS.md) (listening, looking, pressing keys,

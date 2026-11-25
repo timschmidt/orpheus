@@ -43,6 +43,7 @@ Two tracks run side by side from the start:
 | M9 | USB extras and authenticator | HID keyboard, authenticator, disk/CD emulation, (USB audio) | All requested extras that the hardware allows |
 | M10 | Polish and release | Battery-life tuning, self-update, full-flash layout option, languages, manual, release | 1.0 |
 | M12 | **Documentation, website and branding** | Concise, current documentation for users and developers; open-source project files; GitHub Pages site built from the repository with Orpheus running in the browser (WASM) and a browser installer (WebUSB where supported); shared Orpheus/lyre branding across firmware, docs and site (09) | Runs alongside M10–M11; release depends on it |
+| M13 | **Unplugged measurement and optimisation** | Audio quality, battery life, power and performance measured with USB disconnected (on battery, analogue output into the workstation's input, optional Bluetooth status channel), then optimised from the numbers; battery indicator calibrated; budgets for audio figures and runtime per scenario | After the features it measures (M7–M9), before M11's final verification; supersedes PWR-4 |
 | M11 | **Verification** (last stage) | 100 % coverage of the project's own source by unit, adversarial-input and fuzz tests under sanitizers; every on-device function and every screen/app interaction exercised in fuzzed sequences on the player; memory use and performance tracked as thoroughly as coverage; every fuzz finding kept as a regression test | Release only after M11 is green |
 
 M5 is the first point where the user can live with the player. Everything
@@ -184,7 +185,7 @@ per codec: one listening pass with real files of that format.
 |---|---|---|---|---|
 | UI-7 | Icons/themes pass, animations, rotation, wallpaper, screen saver, language packs, on-device acceptance sweep with archived screenshots | 05 §9 | H+D | L |
 | UI-8 | **List roll-around** (owner's requirement 2026-11-24): `ListView` rolls round at both ends for every scrollable list (menus, settings, Files, library lists, Up next, presets, recordings, Authenticator, Bluetooth device lists, pickers, Home grid already wraps); auto-repeat stops at the end; Settings › Display › List roll-around on/off, persisted; host tests for every list screen and both settings; goldens; on-device journey in the VER-7 suite | 05 §3, §5.2, §7.11 | H+D | S |
-| PWR-4 | Battery-life campaign: scenario table (idle, MP3/FLAC screen off, radio, Bluetooth, recording), tuning of levels, gating, read-ahead; comparison with stock | 02 §5 | D | M |
+| PWR-4 | **Superseded by M13 (PWR-6/PWR-7, 2026-11-25).** Battery-life campaign: scenario table (idle, MP3/FLAC screen off, radio, Bluetooth, recording), tuning of levels, gating, read-ahead; comparison with stock | 02 §5 | D | M |
 | PWR-5 | **Max level (D-4)**: `Level::Max` 288 MHz / VDD `0x18` / `SYSCLK` bit 8 (vendor row, VERBATIM) / NOR ÷6 = 48 MHz; functional verification at Turbo and Max (level self-test, FPU and DSP benchmarks, decode CRC against references for every codec, pager stress, USB and card throughput, 30-min soak); battery-drain characterisation against High for the PWR-4 scenarios (energy per decoded hour and per UI hour); documented in 03 §2 and the manual; offered as a setting (Settings › System › Performance: Normal / Maximum), never chosen by the governor on its own. **Built (2026-11-24, host-tested, device run pending):** the Performance setting (key `0x0C07`, en/ru/ja, goldens); the governor's decision as a pure function (`orpheus_power::governor`: with Maximum the step above High is Max, same 25 %/70 %/3 s hysteresis; with Normal never Max, a Max found there drops to High at once); the battery logger (`orpheus_power::drain` + firmware `drain`: one CSV row per minute to `/.orpheus/test/drain-<n>-<label>.csv`, written by the card task after the first row, then every 5 rows, at stop and at power-off; state in SRAM3; `drain start [LABEL] [stay]` / `drain stop` / `drain status`; hidden Settings › System › Developer row, unlocked by five OK presses in About); `cargo xtask drain report` (per file and comparison table); manual page `docs/user/performance.md`; user check 19 (2 h at Normal and 2 h at Maximum, unplugged) | 03 §2.1 | D | M |
 | UPD-1 | Firmware file format, RAM installer, Update screen, slot handling | 02 §2.5 | D | M |
 | LAY-1 | Full-flash layout option, Unifont pack, `install-full`, `restore vendor` (decision D-2) | 02 §2.4 | D | M |
@@ -209,6 +210,29 @@ D-11 for the site's address.
 | WEB-1 | Site generator `xtask site`, page templates, Home/Install/Manual/Developers/Hardware/Changelog/FAQ, light/dark, accessibility; Pages deployment workflow and PR previews; link check, HTML validation, Lighthouse CI | 09 §3 | H | M | Review the site |
 | WEB-2 | Orpheus in the browser: `xtask wasm` (sim back ends, AudioWorklet, virtual card with CC0/CC-BY demo content, drag-and-drop files kept local, IndexedDB state, developer panel, key-sequence recorder compatible with the fuzz corpus); size and frame budgets; Playwright golden test | 09 §4 | H | L | Try it in three browsers |
 | WEB-3 | Browser installer: `orpheus-host` over a WebUSB transport in WASM; backup-first install, update via developer channel + UPD-1, restore stock, recovery; WebUSB/MS OS 2.0 descriptors in the firmware; mock-device suite and a Playwright HIL run on the reference player | 09 §5 | H+D | L | A first-time user installs and restores from the page alone |
+
+### M13 — Unplugged measurement and optimisation (owner's requirement 2026-11-25)
+
+Spec: [07 §5.11](07-tooling-testing.md). On battery with USB disconnected,
+the analogue output recorded by the workstation's microphone or line input,
+a status channel over Bluetooth where it helps, the full log on the card.
+Supersedes PWR-4 and the device half of PWR-5 (user check 19 is automated
+here). Runs after the features it measures; M11 (verification) and the
+release follow it. Every fix it leads to follows the regression-test rule
+(CLAUDE.md). Needs D-12 (rig) before MEAS-1's hardware part; D-13 only for
+runs below the 3.55 V floor.
+
+| WP | Content | Spec | Dev | Size | User |
+|---|---|---|---|---|---|
+| MEAS-1 | Rig and safety: cable procedure, firmware interlock (VBUS while armed → PA and virtual ground off, run ends), D-12 options built (prompted cable swaps; isolation transformer; `uhubctl` port switching); `xtask meas rig-check` characterises the capture chain (channels, bias, rates, noise floor, clip level, response) into a correction file | 07 §5.11, §7 | H+D | M | Decide D-12; connect the jack when prompted; say whether the workstation input is mic or line, mono or stereo |
+| MEAS-2 | Run engine in the firmware: plan file from `/.orpheus/meas/`, armed over USB, starts after VBUS goes, steps (playback, clock/Performance, screen/backlight, Bluetooth, radio, recording, pictures, idle, standby), voltage floor, audio markers, 10-s log rows to the card, ends muted and idle, reboots on USB | 07 §5.11 | H+D | M | — |
+| MEAS-3 | Bluetooth status channel (optional): status in 0x31 metadata read from BlueZ, rate and size limits measured; A2DP capture as a second audio path; HID keyboard path only if BT-3 finds its feed; cost of the channel measured; rule 6 and D-6 unchanged | 07 §5.11, 06 §4 | H+D | S | — |
+| MEAS-4 | Host side: `xtask meas run` (arm, prompts or port switching, capture, Bluetooth follow, pull, align by markers, analyse), `xtask meas report` (HTML), `metrics/meas/` history, `budgets.toml` `[audio]` and `[battery]` | 07 §5.11 | H | M | — |
+| AQ-1 | Audio characterisation: response, THD+N vs level/frequency, dynamic range, noise floor and idle tones/clicks (AU-0b correlated with card, paging, backlight, charger, display), IMD, crosstalk, balance, max level and clipping, volume steps, pops, wow/flutter and drift, resampler aliasing, DSP curves; per state (unplugged/plugged, screen, clock, Bluetooth) | 07 §5.11 | H+D | M | Listen to anything the figures flag |
+| AQ-2 | Audio optimisation from AQ-1: AU-0b root cause and fix, pops, gain staging (PA gain vs digital volume) for the best SNR within vendor DAC/PA values, dither; thresholds into `budgets.toml` | 04, 03 §8 | D | M | Listen before/after |
+| PWR-6 | Battery characterisation: discharge curves under several loads → voltage-to-capacity model for the indicator and warnings; runtime and mean current per scenario (idle, each codec screen off, radio, recording, Bluetooth, pictures, standby, off); Normal vs Maximum (D-4) | 07 §5.11 | D | M | Optional: charge-in reading from a USB power meter |
+| PWR-7 | Power optimisation, one candidate at a time with the same plan before/after: deep idle/WFI, clock gating, governor per codec, read-ahead and card idle, paging working set, screen-off rendering, backlight curve, DAC/PA power-down, Bluetooth and tuner off, accelerometer low power, polling; runtime budgets per scenario | 02 §5, 03 §2, §10 | D | L | — |
+| PERF-1 | Performance on battery over a full discharge: decode headroom per codec and level, pager loads, UI frame time and key latency, underruns; Maximum near the floor; into VER-10's history | 07 §5.11, §4.4 | D | S | — |
 
 ### M11 — Verification (the last stage; owner's requirement 2026-11-24)
 
