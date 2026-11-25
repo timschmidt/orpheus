@@ -661,6 +661,16 @@ impl<D: BlockDevice> Volume<'_, D> {
         Ok(())
     }
 
+    /// The file's directory entry written into the sector cache (size,
+    /// first cluster, time), without flushing the volume: with
+    /// [`Volume::flush_step`] after it, [`Volume::close`] in steps.
+    pub async fn write_entry(&mut self, f: &mut File) -> Result<(), D::Error> {
+        if f.flags & WRITE != 0 {
+            self.update_entry(f).await?;
+        }
+        Ok(())
+    }
+
     /// Flush and drop a file handle.
     pub async fn close(&mut self, mut f: File) -> Result<(), D::Error> {
         self.flush_file(&mut f).await

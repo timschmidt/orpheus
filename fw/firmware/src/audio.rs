@@ -320,12 +320,15 @@ const SEED_US: [u32; KINDS] = [
     // stretches of `media::FIND_SETS` entry sets, one to six sector reads
     // each, was one 52–60 ms piece)
     20_000, 15_000, 15_000, 16_000, 8_000, 8_000,
+    // games (`crate::games::piece`: an open with a read, or with a write
+    // into the sector cache; one sector written back with its FAT copy;
+    // the sync and the clean flag)
+    15_000,
     // requests: browse, want, text, queue-win, release, image, picture,
     // lib-list, rebuild, drain, sensor, alert, otp, delete, update, games
-    // (a save file or the score table: open, one write, close, flush; a
-    // guess like the import file's until measured)
+    // (its first piece, as `job:games`)
     10_000, 15_000, 15_000, 2_000, 1_000, 1_000, 30_000, 20_000, 1_000, 15_000, 15_000, 1_000, 25_000, 30_000,
-    30_000, 25_000,
+    30_000, 15_000,
 ];
 
 /// The chore kinds' measured needs (zeros: the seeds stand until measured;
@@ -3406,6 +3409,12 @@ async fn start(slot: &mut Option<Volume<'static, Card>>) -> Option<(&'static mut
 #[allow(clippy::too_many_lines)]
 async fn idle(vol: &mut Volume<'static, Card>, ring: &mut Ring, arena: &mut [u8], srv: &mut Server) -> Idle {
     loop {
+        // A games save or read left in pieces by playback: finished first
+        // (outside a chore all at once), so that a card hand-over or the
+        // power-off waiting in `pending` comes after it.
+        if srv.games_pending() {
+            Apart(srv.games_step(vol)).await;
+        }
         // A request left over from playback, else wait for one.
         let r = if let Some(p) = srv.pending_play.take() {
             Either3::Third(Either::First(p))

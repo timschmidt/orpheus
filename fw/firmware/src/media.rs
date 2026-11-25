@@ -107,8 +107,8 @@ pub const FIND_SETS: u32 = 16;
 /// need (`audio`'s chore costs): the count of a folder, the index file's
 /// open, the focused row's search, rows from the index, a window of an
 /// unsorted folder, an Up next title.
-pub const JOB_KINDS: usize = 6;
-pub const JOB_NAMES: [&str; JOB_KINDS] = ["count", "index", "focus", "rows", "win", "qtitle"];
+pub const JOB_KINDS: usize = 7;
+pub const JOB_NAMES: [&str; JOB_KINDS] = ["count", "index", "focus", "rows", "win", "qtitle", "games"];
 
 /// A listing being made while a track plays, one piece per chore.
 #[derive(Clone, Copy)]
@@ -910,6 +910,9 @@ pub struct Server {
     /// the same generation are kept (`keep_titles`): when a track ends the
     /// window moves on by one and one title is new.
     qjob: Option<(u32, u32, u32)>,
+    /// A games card operation left in pieces while a track plays
+    /// (`crate::games::piece`); before anything else when idle.
+    games: Option<(crate::games::GamesJob, orpheus_apps::games::CardRun)>,
     /// The index file of an abandoned build, removed (with the scratch
     /// files) before the next build starts.
     orphan: Option<FileName>,
@@ -965,6 +968,7 @@ impl Server {
             build: None,
             job: None,
             qjob: None,
+            games: None,
             orphan: None,
             queue: [Locator { dir: 0, index: 0 }; QUEUE],
             qlen: 0,
@@ -1088,7 +1092,16 @@ impl Server {
                 true
             }
             Req::Games(j) => {
-                Own(crate::games::card_op(vol, &j)).await;
+                // One at a time by the slot protocol; an earlier one would
+                // be finished first.
+                while self.games.is_some() {
+                    Own(self.games_step(vol)).await;
+                }
+                if let Some(run) = crate::games::begin(&j) {
+                    self.games = Some((j, run));
+                    // Idle: all of it; playing: a piece, the rest as jobs.
+                    Own(self.games_step(vol)).await;
+                }
                 true
             }
             Req::Text { file, offset } => {
@@ -1266,12 +1279,31 @@ impl Server {
     /// A listing piece is waiting (while a track plays).
     #[must_use]
     pub fn has_job(&self) -> bool {
-        self.job.is_some() || self.qjob.is_some()
+        self.job.is_some() || self.qjob.is_some() || self.games.is_some()
+    }
+
+    /// A games card operation is left in pieces.
+    #[must_use]
+    pub fn games_pending(&self) -> bool {
+        self.games.is_some()
+    }
+
+    /// One piece of the games card operation left (all of it outside a
+    /// chore).
+    pub async fn games_step(&mut self, vol: &mut Vol) {
+        if let Some((j, mut run)) = self.games.take()
+            && !crate::games::piece(vol, &j, &mut run).await
+        {
+            self.games = Some((j, run));
+        }
     }
 
     /// The kind of the next listing piece (`0..JOB_KINDS`, [`JOB_NAMES`]).
     #[must_use]
     pub fn job_kind(&self) -> usize {
+        if self.games.is_some() {
+            return 6;
+        }
         if self.qjob.is_some() {
             return 5;
         }
@@ -1291,6 +1323,10 @@ impl Server {
     /// published as it fills, with `complete: false` until it is whole (the
     /// UI asks for nothing meanwhile).
     pub async fn step(&mut self, vol: &mut Vol) {
+        if self.games.is_some() {
+            Own(self.games_step(vol)).await;
+            return;
+        }
         if let Some((qgen, first, mut mask)) = self.qjob.take() {
             if qgen == self.qgen {
                 let mut more = true;

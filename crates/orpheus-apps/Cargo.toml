@@ -18,6 +18,10 @@ orpheus-rec = { path = "../orpheus-rec" }
 orpheus-usb = { path = "../orpheus-usb" }
 orpheus-update = { path = "../orpheus-update" }
 orpheus-games = { path = "../orpheus-games", optional = true }
+orpheus-fs = { path = "../orpheus-fs", optional = true }
+
+[dev-dependencies]
+orpheus-fs = { path = "../orpheus-fs", features = ["std"] }
 
 [features]
 # M14 Games (GAME-0/1/3, 05 §7.13): the Games app, its screens, settings,
@@ -25,7 +29,7 @@ orpheus-games = { path = "../orpheus-games", optional = true }
 # package makes room (the firmware's static stack margin is a few hundred
 # bytes and any static or resident growth costs 256 B of it); the
 # simulator, the browser build and the UI fuzzer turn it on.
-games = ["dep:orpheus-games", "orpheus-ui/menu-key"]
+games = ["dep:orpheus-games", "dep:orpheus-fs", "orpheus-ui/menu-key"]
 
 [lints]
 workspace = true

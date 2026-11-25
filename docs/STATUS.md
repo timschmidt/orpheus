@@ -67,6 +67,51 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-25 — games card operations in pieces while music plays (worker, no hardware)
+
+Lead's measurement: with an MP3 playing, a game switch (a save written,
+then another game read) was one `serve:games` piece of 100 ms
+(`chore: starved serve:games 100/26 ms`, `ub=serve:games:100ms`, 8
+underruns): above every chore budget (≈ 42 ms), forced after the 2 s
+starvation bound.
+
+* `orpheus-fs`: `Volume::flush_step` (the FSINFO update and one dirty
+  sector written back with its FAT copies, or, when none is left, the sync
+  and the clean flag; the image after the steps equals `close`'s, fsck
+  clean: `tests/flush_step.rs` on FAT16, FAT32 and exFAT 128 KiB) and
+  `Volume::write_entry` (a file's entry into the sector cache).
+* `orpheus_apps::games::CardRun` (host-tested, 8 bytes, no file handle
+  kept between steps): every `CardOp` in steps of one path walk with a
+  read, or a truncating open with the write into the sector cache; one
+  sector written back; the sync. `piece(vol, buf, more)` runs steps while
+  `more()` allows (the firmware passes `audio::piece_left`).
+* Firmware: `Req::Games` starts the run and does its first piece in the
+  request's chore; the rest are listing-job pieces of a new kind
+  `job:games` (`media::JOB_KINDS` 6 → 7, seed need 15 ms; the request's
+  seed 25 → 15 ms), stepped ahead of other jobs. Idle (power-off, USB
+  hand-over, no music) a run finishes in one piece, and the idle loop
+  finishes a run left by playback **before** a pending card hand-over or
+  power-off. The UI's queue semantics are unchanged (one operation out; a
+  game in progress written before another is read).
+* Simulator: the deferred mode (`set:gamesio=on`) runs the same `CardRun`,
+  one step per simulator step.
+* `regress_games_card_ops_in_pieces` (`orpheus-apps`, games): every
+  operation on exFAT 128 KiB and FAT32 images with a budget of one step
+  per piece: at most 3 sector writes and 6 sector I/Os per piece (making
+  `/.orpheus/games` the first time zeroes its cluster: once per card),
+  the same answers and files as in one piece. Measured steps (exFAT, warm
+  sector cache): Load 4 pieces (with Salvo 5), Write 5 pieces of ≤ 2
+  sector writes, Read 1 piece (0–2 reads), Remove 4 pieces; FAT32 Write 6
+  pieces of ≤ 3 writes (its truncating open writes the dirty flag into
+  both FATs).
+* **Expected on the player** (lead to measure): `job:games` and
+  `serve:games` pieces of one sector write and a card busy wait each,
+  ≈ 3–15 ms, the last one (sync and clean flag) the longest; a game
+  switch ≈ 5 + 1 pieces spread over successive chores instead of one of
+  100 ms; no `starved serve:games`.
+* Firmware: resident 80,675 B, bss 124,864 B (+16 B: the run in the card
+  task's server), stack margin 4,268 B unchanged.
+
 ### 2026-11-25 — on-device suite on the games build: 16/16 (lead)
 
 * Build `40953ef7` (Games on Home, Solitaire, Recordings fix): 16 journeys

@@ -542,6 +542,200 @@ impl GamesIo {
     }
 }
 
+/// Where a [`CardRun`] is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Stage {
+    /// Open the file and read it (`Load`: the score table), or open it
+    /// truncated, write the bytes and its directory entry (`Write`).
+    Open,
+    /// `Write`: the file could not be opened; make `/.orpheus` (0) and
+    /// [`DIR`] (1), then [`Stage::Open`] again (2).
+    MakeDir(u8),
+    /// `Load`: does the save file of `Game::ALL[k]` exist? `Remove`: does
+    /// the file exist (`k` 0)?
+    Exists(u8),
+    /// `Remove`: remove the file.
+    Remove,
+    /// The volume's dirty sectors back to the card, one per step, then
+    /// the sync and the clean flag (`Volume::flush_step`).
+    Flush,
+}
+
+/// A [`CardOp`] carried out in steps (a path walk with a read, or with a
+/// write into the sector cache; one sector written back; the sync), so that
+/// the firmware's card task runs it in pieces between DAC ring refills
+/// while music plays: whole, a save written before another game is read
+/// was one 100 ms piece, beyond every chore budget (`serve:games`, 8
+/// underruns on the player, 2026-11-25). The bytes are those of
+/// [`GamesIo::next`]'s buffer; the answer is [`GamesIo::done`]'s. Only
+/// files under [`DIR`] (CLAUDE.md rule 5). No file handle is kept between
+/// steps (a few bytes of state in the card task).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CardRun {
+    op: CardOp,
+    stage: Stage,
+    /// Bytes to write.
+    len: u16,
+    answer: CardAnswer,
+}
+
+/// The save file of engine id `g`.
+fn save_path(g: u8) -> Option<&'static str> {
+    Game::from_id(g).map(Game::path)
+}
+
+impl CardRun {
+    /// `op` with `len` bytes to write (`GamesIo::next`'s answer).
+    #[must_use]
+    pub fn new(op: CardOp, len: usize) -> CardRun {
+        let stage = if matches!(op, CardOp::Remove(_)) { Stage::Exists(0) } else { Stage::Open };
+        CardRun {
+            op,
+            stage,
+            len: u16::try_from(len).unwrap_or(0),
+            answer: CardAnswer { ok: true, len: 0, saved: 0 },
+        }
+    }
+
+    #[must_use]
+    pub fn op(&self) -> CardOp {
+        self.op
+    }
+
+    /// The file the operation is on.
+    fn path(&self) -> Option<&'static str> {
+        match self.op {
+            CardOp::Load | CardOp::WriteScores => Some(SCORES_PATH),
+            CardOp::Read(g) | CardOp::Write(g) | CardOp::Remove(g) => save_path(g),
+        }
+    }
+
+    /// One piece: steps while `more` says another may start (the firmware's
+    /// `audio::piece_left`: always for the first, and always outside a
+    /// chore, so the idle card task finishes in one piece). `Some` with the
+    /// answer when the operation is done.
+    pub async fn piece<D: orpheus_fs::BlockDevice>(
+        &mut self,
+        vol: &mut orpheus_fs::Volume<'_, D>,
+        buf: &mut [u8],
+        mut more: impl FnMut() -> bool,
+    ) -> Option<CardAnswer> {
+        while more() {
+            if let Some(a) = self.step(vol, buf).await {
+                return Some(a);
+            }
+        }
+        None
+    }
+
+    /// One step. `Some` with the answer when done.
+    pub async fn step<D: orpheus_fs::BlockDevice>(
+        &mut self,
+        vol: &mut orpheus_fs::Volume<'_, D>,
+        buf: &mut [u8],
+    ) -> Option<CardAnswer> {
+        let Some(path) = self.path() else { return self.fail() };
+        match self.stage {
+            Stage::Open | Stage::MakeDir(2..) => {
+                if matches!(self.op, CardOp::Write(_) | CardOp::WriteScores) {
+                    return self.open_write(vol, path, buf).await;
+                }
+                let read = Self::read(vol, path, buf).await;
+                match (read, self.op) {
+                    (Some(n), CardOp::Load) => {
+                        self.answer.len = n;
+                        self.stage = Stage::Exists(0);
+                    }
+                    // No table yet (or a damaged one) is fine: an empty one.
+                    (None, CardOp::Load) => self.stage = Stage::Exists(0),
+                    (Some(n), _) => {
+                        self.answer.len = n;
+                        return Some(self.answer);
+                    }
+                    (None, _) => return self.fail(),
+                }
+            }
+            Stage::MakeDir(k) => {
+                let _ = vol.create_dir(if k == 0 { "/.orpheus" } else { DIR }).await;
+                self.stage = Stage::MakeDir(k + 1);
+            }
+            Stage::Exists(k) => {
+                if let CardOp::Remove(_) = self.op {
+                    if !vol.exists(path).await.unwrap_or(false) {
+                        return Some(self.answer);
+                    }
+                    self.stage = Stage::Remove;
+                } else {
+                    let Some(g) = Game::ALL.get(usize::from(k)) else { return Some(self.answer) };
+                    if vol.exists(g.path()).await.unwrap_or(false) {
+                        self.answer.saved |= 1 << g.id();
+                    }
+                    if usize::from(k) + 1 >= Game::ALL.len() {
+                        return Some(self.answer);
+                    }
+                    self.stage = Stage::Exists(k + 1);
+                }
+            }
+            Stage::Remove => {
+                if vol.remove(path).await.is_err() {
+                    self.answer.ok = false;
+                }
+                self.stage = Stage::Flush;
+            }
+            Stage::Flush => match vol.flush_step().await {
+                Ok(true) => return Some(self.answer),
+                Ok(false) => {}
+                Err(_) => return self.fail(),
+            },
+        }
+        None
+    }
+
+    /// A whole file of at most `buf.len()` bytes into `buf`.
+    async fn read<D: orpheus_fs::BlockDevice>(
+        vol: &mut orpheus_fs::Volume<'_, D>,
+        path: &str,
+        buf: &mut [u8],
+    ) -> Option<u16> {
+        let mut f = vol.open(path, orpheus_fs::OpenMode::Read).await.ok()?;
+        if f.size() > buf.len() as u64 {
+            return None;
+        }
+        // A file opened for reading needs no close.
+        let n = vol.read_exact_or_eof(&mut f, buf).await.ok()?;
+        u16::try_from(n).ok()
+    }
+
+    /// Open truncated, write the bytes and the directory entry (into the
+    /// sector cache; [`Stage::Flush`] writes them back).
+    async fn open_write<D: orpheus_fs::BlockDevice>(
+        &mut self,
+        vol: &mut orpheus_fs::Volume<'_, D>,
+        path: &str,
+        buf: &[u8],
+    ) -> Option<CardAnswer> {
+        let mut f = match vol.open(path, orpheus_fs::OpenMode::Truncate).await {
+            Ok(f) => f,
+            Err(_) if self.stage == Stage::Open => {
+                self.stage = Stage::MakeDir(0);
+                return None;
+            }
+            Err(_) => return self.fail(),
+        };
+        let data = buf.get(..usize::from(self.len)).unwrap_or(&[]);
+        let wrote = vol.write(&mut f, data).await.is_ok_and(|n| n == data.len());
+        // What was done is still written back.
+        self.answer.ok = wrote && vol.write_entry(&mut f).await.is_ok();
+        self.stage = Stage::Flush;
+        None
+    }
+
+    fn fail(&mut self) -> Option<CardAnswer> {
+        self.answer = CardAnswer::FAILED;
+        Some(self.answer)
+    }
+}
+
 /// Start a new game of `game` with the settings as they are now.
 ///
 /// Solitaire with casino scoring: the game it replaces pays out its
@@ -849,6 +1043,146 @@ mod tests {
         assert!(!hub.loaded);
         io.request(&mut hub, GamesRequest::SaveScores);
         assert_eq!(io.next(&hub, &mut buf).map(|j| j.0), Some(CardOp::Load));
+    }
+
+    /// A formatted card image (`mkfs`; `None` if the tool is missing):
+    /// exFAT with 128 KiB clusters (the owner's card) or FAT32 with
+    /// 512-byte clusters (two FAT copies, the most metadata per byte).
+    fn card_image(exfat: bool) -> Option<orpheus_fs::host::RamDisk> {
+        use std::process::Command;
+        let tool = if exfat { "mkfs.exfat" } else { "mkfs.fat" };
+        let dir = std::env::temp_dir().join("orpheus-apps-games-card");
+        std::fs::create_dir_all(&dir).ok()?;
+        let p = dir.join(std::format!("{tool}-{}.img", std::process::id()));
+        let f = std::fs::File::create(&p).ok()?;
+        f.set_len(if exfat { 192 << 20 } else { 64 << 20 }).ok()?;
+        drop(f);
+        let mut c = Command::new(tool);
+        if exfat {
+            c.args(["-q", "-c", "131072"]);
+        } else {
+            c.args(["-F", "32", "-s", "1"]);
+        }
+        let ok = c.arg(&p).output().is_ok_and(|o| o.status.success());
+        let disk = ok.then(|| orpheus_fs::host::RamDisk::load(&p).ok()).flatten();
+        let _ = std::fs::remove_file(&p);
+        if disk.is_none() {
+            std::eprintln!("{tool} missing: skipped");
+        }
+        disk
+    }
+
+    /// Player, 2026-11-25: with music playing, switching games (a save
+    /// written, then another read) was one `serve:games` piece of 100 ms,
+    /// above every chore budget (≈ 42 ms), forced after the starvation
+    /// bound: 8 underruns. Now every card operation runs in steps of at
+    /// most one path walk, file read or write, one sector written back or
+    /// the sync, and a piece whose budget allows one step does no more. The
+    /// result is the same as in one piece (the idle card task's case:
+    /// power-off, USB hand-over).
+    #[test]
+    fn regress_games_card_ops_in_pieces() {
+        use orpheus_fs::host::{RamDisk, block_on};
+        use orpheus_fs::{CacheSlot, MountOptions, Volume, WalkCache};
+        use orpheus_games::{SAVE_MAX, tiles::Tiles};
+        for exfat in [true, false] {
+            let Some(disk) = card_image(exfat) else { continue };
+            let mut results = std::vec::Vec::new();
+            for one_step in [true, false] {
+                let mut cache = std::vec![CacheSlot::EMPTY; 8];
+                let mut walks = WalkCache::EMPTY;
+                let opts = MountOptions { read_only: false, write_prefix: None, partition: None };
+                let mut vol: Volume<'_, RamDisk> =
+                    block_on(Volume::mount(disk.clone(), &mut cache, opts)).expect("mount");
+                vol.set_walk_cache(&mut walks);
+                block_on(vol.create_dir("/Music")).unwrap();
+                block_on(vol.flush()).unwrap();
+                let save = Session::Tiles(Tiles::new(tiles::Config::DEFAULT, 4));
+                let mut file = [0u8; SAVE_MAX];
+                let n = save.encode(&mut file).unwrap();
+                let scores = orpheus_games::Scores::new();
+                let mut table = [0u8; SAVE_MAX];
+                let tn = scores.encode(&mut table).unwrap();
+                let ops = [
+                    (CardOp::Load, 0),
+                    (CardOp::Write(gid::TILES), n),
+                    (CardOp::Write(gid::TILES), n),
+                    (CardOp::WriteScores, tn),
+                    (CardOp::Read(gid::TILES), 0),
+                    (CardOp::Load, 0),
+                    (CardOp::Remove(gid::TILES), 0),
+                    (CardOp::Read(gid::TILES), 0),
+                    (CardOp::Remove(gid::BLOCKS), 0),
+                    (CardOp::Load, 0),
+                ];
+                let mut answers = std::vec::Vec::new();
+                for (op, len) in ops {
+                    let mut buf = [0u8; SAVE_MAX];
+                    match op {
+                        CardOp::Write(_) => buf[..n].copy_from_slice(&file[..n]),
+                        CardOp::WriteScores => buf[..tn].copy_from_slice(&table[..tn]),
+                        _ => {}
+                    }
+                    let mut run = CardRun::new(op, len);
+                    let mut pieces = 0;
+                    let mut most = (0u64, 0u64);
+                    let a = loop {
+                        let (r0, w0) = (vol.device().reads, vol.device().writes);
+                        let mut first = true;
+                        let mut more = || core::mem::replace(&mut first, !one_step);
+                        let a = block_on(run.piece(&mut vol, &mut buf, &mut more));
+                        pieces += 1;
+                        let (r, w) = (vol.device().reads - r0, vol.device().writes - w0);
+                        most = (most.0.max(r), most.1.max(w));
+                        // Making the games folder zeroes its cluster
+                        // (once in a card's life): not bounded here.
+                        let made_dir = matches!(run.stage, Stage::MakeDir(1 | 2));
+                        if one_step && !made_dir {
+                            // FAT32's truncating open: the dirty flag in
+                            // both FATs and the freed chain's FAT sector.
+                            assert!(w <= 3, "{op:?} (exFAT {exfat}): a piece wrote {w} sectors");
+                            assert!(r + w <= 6, "{op:?} (exFAT {exfat}): a piece did {r} reads, {w} writes");
+                        }
+                        if let Some(a) = a {
+                            break a;
+                        }
+                        assert!(pieces < 40, "{op:?} never ends");
+                    };
+                    if !one_step {
+                        assert_eq!(pieces, 1, "{op:?}: one piece outside a chore");
+                    } else if matches!(op, CardOp::Write(_) | CardOp::WriteScores) {
+                        // Open and write, at least one sector back, the sync.
+                        assert!(pieces >= 3, "{op:?}: {pieces} pieces");
+                    }
+                    if one_step {
+                        std::eprintln!(
+                            "exFAT {exfat}: {op:?}: {pieces} pieces, ≤ {} reads, ≤ {} writes",
+                            most.0,
+                            most.1
+                        );
+                    }
+                    if op == CardOp::Read(gid::TILES) && a.ok {
+                        assert_eq!(
+                            Session::decode(&buf[..usize::from(a.len)], Some(gid::TILES)),
+                            Some(save.clone())
+                        );
+                    }
+                    answers.push(a);
+                }
+                assert_eq!(vol.dirty_sectors(), 0);
+                let (_, r) = block_on(vol.unmount());
+                r.unwrap();
+                results.push(answers);
+            }
+            let a = &results[0];
+            assert_eq!(a, &results[1], "pieces or not: the same answers");
+            assert!(a[0].ok && a[0].saved == 0 && a[0].len == 0, "no table, no saves");
+            assert!(a[1].ok && a[2].ok && a[3].ok, "writes");
+            assert!(a[4].ok && usize::from(a[4].len) > 0, "read back");
+            assert!(a[5].ok && a[5].saved == 1 << gid::TILES && a[5].len > 0, "table and a save");
+            assert!(a[6].ok && !a[7].ok && a[8].ok, "removed; read fails; nothing to remove");
+            assert_eq!(a[9].saved, 0);
+        }
     }
 
     /// Casino: the deal is charged, a game left pays its cards out.

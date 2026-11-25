@@ -22,7 +22,7 @@
 //! pass); `gamesio=on|off` the deferred mode.
 
 use anyhow::{Result, bail};
-use orpheus_apps::games::{self as app, CardAnswer, CardOp, Game, GamesIo, GamesRequest};
+use orpheus_apps::games::{self as app, CardOp, CardRun, Game, GamesIo, GamesRequest};
 use orpheus_fs::OpenMode;
 use orpheus_fs::host::block_on;
 use orpheus_games::blocks::{self, Blocks, W};
@@ -47,6 +47,8 @@ pub struct SimGames {
     buf: [u8; SAVE_MAX],
     /// Card operations carried out in the deferred mode (tests).
     pub ops: Vec<CardOp>,
+    /// The deferred mode's operation in steps.
+    run: Option<CardRun>,
 }
 
 impl Default for SimGames {
@@ -60,6 +62,7 @@ impl Default for SimGames {
             io: None,
             buf: [0; SAVE_MAX],
             ops: Vec::new(),
+            run: None,
         }
     }
 }
@@ -249,52 +252,23 @@ impl SimGames {
         }
     }
 
-    /// The deferred mode: carry out the next queued card operation, as the
-    /// firmware's card task does (`fw/firmware/src/games.rs`). True if the
-    /// hub changed.
+    /// The deferred mode: one step of the queued card operations, as the
+    /// firmware's card task makes them in pieces while music plays
+    /// (`orpheus_apps::games::CardRun`, `fw/firmware/src/games.rs`). True
+    /// if the hub changed.
     pub fn pump(&mut self, media: &mut Media) -> bool {
         let Some(io) = &mut self.io else { return false };
-        let Some((op, n)) = io.next(&self.hub, &mut self.buf) else { return false };
-        self.ops.push(op);
-        let file = |g: u8| Game::from_id(g).map(Game::path);
-        let a = match op {
-            CardOp::Load => {
-                let mut a = CardAnswer { ok: true, ..CardAnswer::default() };
-                if let Some(d) = read(media, app::SCORES_PATH).filter(|d| d.len() <= SAVE_MAX) {
-                    self.buf[..d.len()].copy_from_slice(&d);
-                    a.len = u16::try_from(d.len()).unwrap_or(0);
-                }
-                for g in Game::ALL {
-                    if exists(media, g.path()) {
-                        a.saved |= 1 << g.id();
-                    }
-                }
-                a
-            }
-            CardOp::Read(g) => match file(g).and_then(|p| read(media, p)).filter(|d| d.len() <= SAVE_MAX) {
-                Some(d) => {
-                    self.buf[..d.len()].copy_from_slice(&d);
-                    CardAnswer { ok: true, len: u16::try_from(d.len()).unwrap_or(0), saved: 0 }
-                }
-                None => CardAnswer::FAILED,
-            },
-            CardOp::Write(g) => {
+        if self.run.is_none() {
+            let Some((op, n)) = io.next(&self.hub, &mut self.buf) else { return false };
+            self.ops.push(op);
+            if matches!(op, CardOp::Write(_) | CardOp::WriteScores) {
                 self.writes += 1;
-                let ok = file(g).is_some_and(|p| write(media, p, &self.buf[..n]));
-                CardAnswer { ok, ..CardAnswer::default() }
             }
-            CardOp::Remove(g) => {
-                if let Some(p) = file(g) {
-                    remove(media, p);
-                }
-                CardAnswer { ok: true, ..CardAnswer::default() }
-            }
-            CardOp::WriteScores => {
-                self.writes += 1;
-                let ok = write(media, app::SCORES_PATH, &self.buf[..n]);
-                CardAnswer { ok, ..CardAnswer::default() }
-            }
-        };
+            self.run = Some(CardRun::new(op, n));
+        }
+        let Some(run) = &mut self.run else { return false };
+        let Some(a) = block_on(run.step(media.volume(), &mut self.buf)) else { return false };
+        self.run = None;
         let buf = self.buf;
         io.done(&mut self.hub, a, &buf)
     }

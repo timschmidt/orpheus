@@ -1044,6 +1044,37 @@ impl<'c, D: BlockDevice> Volume<'c, D> {
         Ok(())
     }
 
+    /// One step of [`Volume::flush`], for callers that must not block for
+    /// the whole of it (the player's card task while music plays): the
+    /// FSINFO update and one dirty sector written back (with its FAT
+    /// copies), or, once none is dirty, the sync and the clean flag. True
+    /// when the volume is clean; steps until then leave it consistent
+    /// (the on-disk dirty flag stays set until the last).
+    pub async fn flush_step(&mut self) -> Result<bool, D::Error> {
+        if self.read_only {
+            return Ok(true);
+        }
+        if self.fsinfo_dirty && self.g.fsinfo != 0 {
+            let lba = self.g.fsinfo;
+            let free = self.free;
+            let nf = self.next_free;
+            let i = self.cache.load(&mut self.dev, lba, Kind::Meta, false).await?;
+            let s = self.cache.data_mut(i);
+            s[488..492].copy_from_slice(&free.to_le_bytes());
+            s[492..496].copy_from_slice(&nf.to_le_bytes());
+        }
+        self.fsinfo_dirty = false;
+        if self.cache.flush_one(&mut self.dev).await? {
+            return Ok(false);
+        }
+        self.dev.sync().await.map_err(Error::Io)?;
+        if self.marked_dirty {
+            self.set_dirty_flag(false).await?;
+            self.marked_dirty = false;
+        }
+        Ok(true)
+    }
+
     /// Check the write prefix for a path.
     pub(crate) fn check_prefix(&self, path: &str) -> Result<(), D::Error> {
         if crate::dir::components(path).any(|c| c == "..") {
