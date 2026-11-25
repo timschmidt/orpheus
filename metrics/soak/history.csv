@@ -9,3 +9,4 @@ date,commit,scenario,seed,minutes,actions,samples,pass,findings,loads_per_s_mean
 20261125-141233,b68285756832-dirty,mixed,1,12.2,7,22,0,underrun+ring,1044,3108,3294,9360,2,0,-813,0,,-20,70.7
 20261125-145338,a2ec4766a5da-dirty,mixed,1,12.6,7,24,0,underrun+ring,1182,3222,3523,9352,2,0,-1049,0,,16,66.5
 20261125-151109,9b946f3184bf-dirty,mixed,1,12.1,7,24,0,underrun+ring,1182,3213,3594,9352,2,0,-1129,0,,108,66.6
+20261125-152748,7de45f12c7e0-dirty,mixed,1,12.1,7,24,0,underrun+ring,1186,3221,3576,9352,1,0,-581,0,,198,66.3

@@ -65,6 +65,24 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-25 — soak seed 1: one job:index underrun left; one stuck run (lead)
+
+* Builds `3fd9…` (walk cache least-used eviction, 1/16 need decay) and the
+  next (index folder warmed into the walk cache at mount; count/rows seeds
+  20/16 ms). `job:count` overruns are gone. Remaining: **`job:index`
+  52–60 ms**, one unsplittable piece above any budget (max ≈ 42 ms), so it
+  is forced and underruns once per first listing (`ub=job:index:52ms`).
+  The warmed walk cache did not remove it: the cost is not (only) the root
+  search. Next (worker): split the index open into resumable steps.
+* One soak run hung right after its start-up reboot: the player answered
+  INFO, then not the next requests for over an hour; the log of that boot
+  ends at "audio: state loaded" with **no "fw: healthy start"** (the
+  health task's 30 s timer never completed). Not reproduced on the rerun.
+  Open; recorded for the next occurrence (read `0x137FDC/E0` and the log
+  before any reboot).
+* Note: `pkill -f <pattern>` from the lead's shell matched its own command
+  line again; use exact PIDs.
+
 ### 2026-11-25 — AU-PERF: the 55 ms `serve` block; precise `ub=` labels (worker, no hardware)
 
 From the lead's soak (`mixed` seed 1, `pcm: head -817 … dec=6ms mk=0
