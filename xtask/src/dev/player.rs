@@ -184,6 +184,12 @@ pub fn key_step(p: &mut dyn Player, s: &Step) -> Result<()> {
     Ok(())
 }
 
+/// Real time allowed beyond a command's timeout (slow polls).
+#[cfg(not(test))]
+const GRACE_MS: u64 = 5_000;
+#[cfg(test)]
+const GRACE_MS: u64 = 200;
+
 /// Send a test command; with `want`, poll the reply (up to `timeout_ms`)
 /// until it matches. The reply mailbox is first primed with `ui top`
 /// (answered at once), so a stale reply of an earlier command never
@@ -207,12 +213,17 @@ pub fn command(
         return Ok(String::new());
     };
     let mut waited = 0;
+    // Real time too: a player that answers each poll slowly (a reply of
+    // ~2 s that does not fail) made `waited`, which counts only the sleeps,
+    // stretch a 15 s timeout into many minutes (soak start-up hung for
+    // over 28 min, 2026-11-25).
+    let t0 = std::time::Instant::now();
     loop {
         let r = p.reply()?;
         if Some(&r) != primed.as_ref() && re.is_match(&r) {
             return Ok(r);
         }
-        if waited >= timeout_ms {
+        if waited >= timeout_ms || t0.elapsed().as_millis() as u64 >= timeout_ms.saturating_add(GRACE_MS) {
             let last = if Some(&r) == primed.as_ref() { "no reply".to_string() } else { format!("`{r}`") };
             bail!("`{text}`: reply does not match /{re}/: {last}");
         }
@@ -475,6 +486,49 @@ impl Player for SimPlayer {
 
 #[cfg(test)]
 mod tests {
+    /// A player whose replies each take real time and never match.
+    struct Slow;
+    impl Player for Slow {
+        fn key(&mut self, _: Key, _: bool) -> Result<()> {
+            Ok(())
+        }
+        fn sleep(&mut self, _: u64) {}
+        fn send(&mut self, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn reply(&mut self) -> Result<String> {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            Ok("busy".into())
+        }
+        fn frame(&mut self) -> Result<Vec<u16>> {
+            Ok(Vec::new())
+        }
+        fn health(&mut self) -> Result<Health> {
+            anyhow::bail!("unused")
+        }
+        fn fault(&mut self) -> Result<Option<FaultRecord>> {
+            Ok(None)
+        }
+        fn reboot(&mut self) -> Result<()> {
+            Ok(())
+        }
+        fn reconnect(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Regression (2026-11-25): the timeout counted only the sleeps, so a
+    /// player answering each poll slowly kept a soak's start-up waiting
+    /// for many minutes. The wait is bounded in real time too.
+    #[test]
+    fn regress_command_timeout_is_bounded_in_real_time() {
+        let re = regex::Regex::new("^never$").unwrap();
+        let t0 = std::time::Instant::now();
+        // Counting only the 100 ms sleeps, 3 s took 30 polls of 0.3 s: 9 s.
+        assert!(command(&mut Slow, "ls /", Some(&re), 3_000).is_err());
+        assert!(t0.elapsed() < std::time::Duration::from_secs(5), "{:?}", t0.elapsed());
+    }
+
     use super::*;
 
     #[test]

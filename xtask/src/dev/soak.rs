@@ -2780,7 +2780,14 @@ pub fn discover(rig: &mut dyn Rig, max: usize, max_ls: usize) -> Result<Vec<Stri
             break;
         }
         listed += 1;
-        let Ok(r) = player::command(rig, &format!("ls {dir}"), Some(&re), 15_000) else { continue };
+        let t = rig.wall_ms();
+        let got = player::command(rig, &format!("ls {dir}"), Some(&re), 15_000);
+        let took = rig.wall_ms().saturating_sub(t);
+        if took > 3_000 || got.is_err() {
+            // Slow or failed listings are where a start-up hang would show.
+            log(&format!("   ls {dir}: {} after {took} ms", if got.is_ok() { "ok" } else { "no answer" }));
+        }
+        let Ok(r) = got else { continue };
         if !r.ends_with("entries)") {
             continue;
         }

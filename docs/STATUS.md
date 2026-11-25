@@ -66,6 +66,20 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-25 — soak start-up hang: the command timeout counted only sleeps (lead)
+
+* A second soak (seed 3) sat after "player back" for over 28 min, like
+  the earlier one; the player itself was healthy. `player::command`'s
+  timeout counted only its 100 ms sleeps, not the time each reply poll
+  took, so a player answering slowly stretched a 15 s listing wait into
+  minutes, over up to 40 listings. Now bounded in real time too
+  (`regress_command_timeout_is_bounded_in_real_time`); slow or failed
+  listings during folder discovery are logged.
+* `/Recordings/REC-0001.wav`, `REC-0002.wav` on the card are the lead's
+  recordings of 2026-11-24 (`rec start mic wav 10` on `d7f59d7c`, before
+  developer recordings went to `/.orpheus/test/rec/`) — outside
+  `/.orpheus/` (rule 5). Asked the owner about removing them.
+
 ### 2026-11-25 — soak seed 1 clean on the merged build (lead)
 
 * Build `ac68421b` (stack headroom, settings commands, games behind a
