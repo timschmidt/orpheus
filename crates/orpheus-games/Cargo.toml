@@ -7,5 +7,11 @@ license.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+# Salvo, the artillery game (GAME-4/5): its 680-byte session does not fit
+# the firmware's static RAM and stack budget yet (docs/STATUS.md, GAME-4/5);
+# on in the simulator, the browser build and the fuzz targets.
+salvo = []
+
 [lints]
 workspace = true

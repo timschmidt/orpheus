@@ -80,6 +80,10 @@ fn big_parts(v: i16, unit: Unit, lang: Lang) -> (StrBuf<12>, &'static str) {
             b.push_i32(i32::from(v));
             lang.get(Str::Kg)
         }
+        Unit::MetresPerSecond => {
+            b.push_i32(i32::from(v));
+            "m/s"
+        }
     };
     (b, u)
 }

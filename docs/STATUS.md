@@ -150,6 +150,149 @@ or `orpheus-apps`.
   example); (2) the Base CPU budget at 44.1/48 kHz (governor step or a
   shorter resampler kernel) and the 64 KiB code budget need a decision;
   (3) firmware integration items at the end of 04 §8 "as built (TTS-2)".
+### 2026-11-25 — GAME-4/5: Salvo, the artillery duel (host and simulator; worker, no hardware)
+
+Built on the host and in the simulator; **not in the firmware** (feature
+`salvo`, off there: it does not fit the stack budget, numbers below).
+Design, rules, keys, settings and numbers: 05 §7.13 "As built (GAME-4/5)".
+
+* **Engine** `orpheus_games::salvo` (feature `salvo`, 680 B): height-map
+  world 128–384 px of five terrain styles (+ mixed) with roughness, relief
+  and a terrain seed; craters whose earth above falls in, dirt mounds,
+  tanks that fall (fall damage), slide and sink; SI physics at 200 Hz
+  (semi-implicit Euler, 20 steps per 60 Hz step, game time 6×), gravity
+  presets, quadratic drag relative to the air (wind and gusts act through
+  it), mass and diameter per weapon; seven weapons of its own (shell,
+  heavy, cluster, roller, digger, dirt bomb, smoke) and a shop; 2–4
+  players, pass screens, rounds, scores and credits; computers of four
+  difficulties (wind noise and a per-round bias, bisection over angles
+  with the same physics, bracketing from the last miss, aim noise; Expert
+  sees the gusts by copying the generator, the others never). One
+  simulated shot per logic step, at most one per frame.
+* **Physics checks** (`crates/orpheus-games/tests/salvo.rs`): no drag
+  against the closed form (x exact to 1e-4; y with semi-implicit Euler's
+  `g·Δt·t/2` lag, within 0.1 m); drag without gravity against
+  `v₀/(1 + c·v₀·t)`, `ln(1 + c·v₀·t)/c`; drag without wind: the fall
+  `v_t·tanh`, `v_t²/g·ln cosh` and the shot straight up (apex time
+  `v_t/g·atan(v₀/v_t)`, height `v_t²/2g·ln(1 + v₀²/v_t²)`) within 0.3 %;
+  wind only through drag (no air: bit-identical in any wind); energy per kg
+  never grows without wind (300 random game shots, 1e-4); the top-speed
+  table reaches 1.25 widest worlds (and not 15 % more); the square root and
+  the sine table against f64. The thumbv7em build has no fused
+  multiply-add (0 `vfma`); a scripted three-computer game with gusts is
+  pinned by checksum (`deterministic_and_pinned`, 0xd5cb_f752).
+* **AI**: Expert hits a still target in calm air within two shots on every
+  gravity × air × width × style tried (144 cases, ≥ 90 % on the first);
+  average shots to hit in light wind: Novice > Easy ≥ Hard ≥ Expert
+  (`difficulty_orders_and_bracketing`); Expert hits within three shots in
+  strong gusts (it sees them); the search's simulation equals the flight.
+* **Invariants**: `Salvo::check` (no NaN, no flying shell in the ground,
+  heights within 0..=104 and zero beyond the world, tanks inside, health
+  within the setting, view inside) after every input and step of 60 random
+  games and in the fuzz target `salvo_keys` (also: health never rises in a
+  round, saves read back, determinism); 6 seeds in
+  `tests/fuzz-corpus/salvo_keys/`, replayed by `tests/fuzz_corpus.rs`;
+  `cargo fuzz` 122 s: 1,160 runs, no finding.
+* **App and simulator**: `Game::Salvo` (Games list fourth), screen `Salvo`
+  (`screens/salvo.rs`), settings in three groups (Players, World, Rules)
+  of the pause menu's Settings (`Game::groups`, `GameListScreen::group`);
+  21 settings `0x0E61–0x0E76` packed into four stored words
+  `0x0E80–0x0E83` (new `Setting::pack`: get/set per field, the cache's
+  `STORED` 120 → 124 stays within 128; `packed_settings` test), VER-13
+  manifest entries for all 25 keys, differential tests of every setting
+  (`sim/tests/games.rs::salvo_settings`), `salvo_saved_and_continued`;
+  simulator hooks `set:salvoturn|aim|wind|health|flat|place|blast`;
+  `goto:Salvo`. New `Unit::MetresPerSecond`.
+* **Goldens**: 53 new `games_salvo_*` (aim, menu, overview, flight, fast,
+  blast, crater, pass, thinking, round over, shop, game over, mountains,
+  canyon, islands, plateaus, 384-px overview with four tanks, smoke,
+  preview, timer, pause, settings groups and each group, help; dark and
+  light; four tanks in Amber) and the Games list (4 changed: the Salvo
+  row). Looked at all; fixed from looking: dim smoke and guide dots, the
+  shop's columns, arrows for tanks beyond the view.
+* **Suite**: the `games` journey's list shot masks the fourth row (Salvo is
+  in the simulator, not in the firmware); `expected/games/list.png`
+  re-made with `ORPHEUS_BLESS=1` through the test (not `xtask dev`).
+* **Measured** (host, release): a simulated shot ≤ 0.43 ms (Moon, 384 px),
+  a decision 0.4–2.0 ms, 25 ns per physics step, 1 µs per flight logic
+  step; game loop per frame: aiming 10.4 µs / 21 dirty rows, a flight
+  14.6 µs / 38 rows, four computers 27 µs / 89 rows. Player estimate: a
+  simulated shot ≤ 20–25 ms, one per frame (the UI never waits for more);
+  the aim guide's last-shot path is one simulation per redraw.
+* **Firmware RAM and stack** (`cargo xtask build`, `size`, `stack`):
+  - with Salvo: Session 352 → 680 B, hub 848 → 1,176 B, `.bss` +368 B,
+    resident +368 B (constant pools and string literals: mergeable
+    sections stay resident), the stack's start three 256-B steps up
+    (usable 20,480 → 19,712 B); the UI task's deepest path grew 516 B
+    (new game → an answer → decode, 680-B copies) and is back to 6,796 B
+    with the in-place construction and decoding: **margin 3,604 B, budget
+    4,096 B — does not fit.** It needs ≈ 490 B: a cut of the UI task's
+    deepest path (the Authenticator's `Fw::derive_finish`, a 4,008-B
+    future frame) or ≈ 460 B less static RAM (e.g. the 512-B card buffer
+    lent from elsewhere). Then `orpheus-apps/salvo` on in the firmware and
+    the suite's mask removed.
+  - as committed (no Salvo): resident 80,747 B, `.bss` 124,864 B, usable
+    stack 20,224 B (resident +72 B from shared code crossed a step),
+    thread context 6,900 → 6,796 B (the new-game and save-file paths no
+    longer copy a session through the UI task's frames): **margin 4,116 B
+    (budget 4,096)**; `check-resident` ok.
+* **Gate**: host `fmt --check`, `clippy --workspace --all-targets -D
+  warnings` (and `orpheus-apps` without features, with `games`, with
+  `salvo`; `orpheus-games` with and without `salvo`), `cargo test
+  --workspace` (1,358 passed, 9 ignored), goldens; fw `fmt --check`,
+  `clippy --workspace -D warnings`, `cargo xtask build`, `size --check`,
+  `check-resident`, `stack --check`: pass. Not run: `xtask test all`
+  beyond these, every `xtask dev` step (the lead owns the player).
+* **Lead, on the player**: nothing of Salvo yet. The games build changed
+  in two ways to check: the game-switch pieces (entry below) and the
+  in-place new game / save read (play each game, switch games during
+  music; Continue after a reboot). Decide how to make room for Salvo
+  (above).
+
+### 2026-11-25 — games card operations in pieces while music plays (worker, no hardware)
+
+Lead's measurement: with an MP3 playing, a game switch (a save written,
+then another game read) was one `serve:games` piece of 100 ms
+(`chore: starved serve:games 100/26 ms`, `ub=serve:games:100ms`, 8
+underruns): above every chore budget (≈ 42 ms), forced after the 2 s
+starvation bound.
+
+* `orpheus-fs`: `Volume::flush_step` (the FSINFO update and one dirty
+  sector written back with its FAT copies, or, when none is left, the sync
+  and the clean flag; the image after the steps equals `close`'s, fsck
+  clean: `tests/flush_step.rs` on FAT16, FAT32 and exFAT 128 KiB) and
+  `Volume::write_entry` (a file's entry into the sector cache).
+* `orpheus_apps::games::CardRun` (host-tested, 8 bytes, no file handle
+  kept between steps): every `CardOp` in steps of one path walk with a
+  read, or a truncating open with the write into the sector cache; one
+  sector written back; the sync. `piece(vol, buf, more)` runs steps while
+  `more()` allows (the firmware passes `audio::piece_left`).
+* Firmware: `Req::Games` starts the run and does its first piece in the
+  request's chore; the rest are listing-job pieces of a new kind
+  `job:games` (`media::JOB_KINDS` 6 → 7, seed need 15 ms; the request's
+  seed 25 → 15 ms), stepped ahead of other jobs. Idle (power-off, USB
+  hand-over, no music) a run finishes in one piece, and the idle loop
+  finishes a run left by playback **before** a pending card hand-over or
+  power-off. The UI's queue semantics are unchanged (one operation out; a
+  game in progress written before another is read).
+* Simulator: the deferred mode (`set:gamesio=on`) runs the same `CardRun`,
+  one step per simulator step.
+* `regress_games_card_ops_in_pieces` (`orpheus-apps`, games): every
+  operation on exFAT 128 KiB and FAT32 images with a budget of one step
+  per piece: at most 3 sector writes and 6 sector I/Os per piece (making
+  `/.orpheus/games` the first time zeroes its cluster: once per card),
+  the same answers and files as in one piece. Measured steps (exFAT, warm
+  sector cache): Load 4 pieces (with Salvo 5), Write 5 pieces of ≤ 2
+  sector writes, Read 1 piece (0–2 reads), Remove 4 pieces; FAT32 Write 6
+  pieces of ≤ 3 writes (its truncating open writes the dirty flag into
+  both FATs).
+* **Expected on the player** (lead to measure): `job:games` and
+  `serve:games` pieces of one sector write and a card busy wait each,
+  ≈ 3–15 ms, the last one (sync and clean flag) the longest; a game
+  switch ≈ 5 + 1 pieces spread over successive chores instead of one of
+  100 ms; no `starved serve:games`.
+* Firmware: resident 80,675 B, bss 124,864 B (+16 B: the run in the card
+  task's server), stack margin 4,268 B unchanged.
 
 ### 2026-11-25 — on-device suite on the games build: 16/16 (lead)
 
@@ -251,6 +394,7 @@ simulator or `orpheus-apps`.
   `xtask test all` — the disk had 0.9–2.6 GB free while other workers
   built. Open: none for the owner; TTS-2 needs the items listed at the end
   of 04 §8 "as built".
+| GAME-4/5 Salvo (M14) | **built (host + simulator); not in the firmware** (feature `salvo`: margin 3,604 B with it, budget 4,096) | Artillery duel: terrain styles, destructible ground, SI physics with drag and wind, seven weapons, shop, 2–4 players, computers of four difficulties; 21 settings packed into 4 words; 53 goldens; fuzz `salvo_keys`. Games card operations now in pieces while music plays (lead's 100 ms `serve:games`). Lead: session entries 2026-11-25 "GAME-4/5" and "games card operations in pieces" |
 | GAME-2 + Games on the player (M14) | **built (host + simulator + firmware), not yet run on the player** | Solitaire (Klondike: draw 1/3, passes, standard/casino/none, auto-move, auto-complete, exact undo, best-effort winnable deals; fuzz target `solitaire_keys`, 33 goldens, 7 settings `0x0E41–0x0E47` with differential tests); firmware `GamesService` (hub 872 B + 512 B buffer, card task `Req::Games` as a chore while playing, saves on pause, quit, power-off and USB hand-over), Games on Home (default mask 0x0FFF; the owner's stored mask needs the Games bit). Stack margin 4,268 B (budget 4,096). Lead: session entry 2026-11-25 "GAME-2" |
 
 ## 3. Session log

@@ -904,6 +904,7 @@ name = "orpheus-apps"
 version = "0.1.0"
 dependencies = [
  "orpheus-fm",
+ "orpheus-fs",
  "orpheus-games",
  "orpheus-otp",
  "orpheus-power",

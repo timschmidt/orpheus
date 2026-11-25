@@ -7,6 +7,7 @@
 
 use orpheus_apps::games::{self as app, GamesService};
 use orpheus_games::blocks::Blocks;
+use orpheus_games::salvo::{self, Phase as SalvoPhase, Salvo};
 use orpheus_games::scores::Scores;
 use orpheus_games::solitaire::{self, Solitaire};
 use orpheus_games::tiles::{Phase, Tiles};
@@ -45,6 +46,13 @@ fn sol(s: &AppSim) -> &Solitaire {
     }
 }
 
+fn salvo(s: &AppSim) -> &Salvo {
+    match &s.sys.games().session {
+        Session::Salvo(g) => g,
+        other => panic!("not Salvo: {other:?}"),
+    }
+}
+
 fn file(s: &mut AppSim, name: &str) -> Option<Vec<u8>> {
     read(&mut s.sys.media, &format!("{}/{name}", app::DIR))
 }
@@ -53,6 +61,7 @@ const LIST: &str = "set:games=on set:gameseed=7 prev*2 ok wait:100 expect-screen
 const BLOCKS: &str = "set:gameseed=7 goto:Blocks wait:100 expect-screen:Blocks";
 const TILES: &str = "set:gameseed=7 goto:Game4096 wait:100 expect-screen:Game4096";
 const SOL: &str = "set:gameseed=7 goto:Solitaire wait:100 expect-screen:Solitaire";
+const SALVO: &str = "set:gameseed=7 goto:Salvo wait:100 expect-screen:Salvo";
 
 /// Home › Games › 4096: a game played, paused (saved to the card), quit
 /// and continued, also after a restart of the player (the card's save
@@ -281,14 +290,14 @@ mod settings_effects {
     use super::*;
 
     /// The frame and the session after `script`, with `setting` set first.
-    fn after(setting: &str, script: &str) -> (Vec<u16>, AppSim) {
+    pub(super) fn after(setting: &str, script: &str) -> (Vec<u16>, AppSim) {
         let s = sim(&format!("{setting} {script}"));
         (s.fb.clone(), s)
     }
 
     /// `key=v` changes the frame of `own` against `key=reference`, and not
     /// the frames of the other contexts.
-    fn shows_only_in(key: u16, v: i16, reference: i16, own: &str) {
+    pub(super) fn shows_only_in(key: u16, v: i16, reference: i16, own: &str) {
         let set = |x: i16| format!("set:{key:#06x}={x}");
         let (a, _) = after(&set(v), own);
         let (b, _) = after(&set(reference), own);
@@ -301,8 +310,11 @@ mod settings_effects {
         if !(0x0E21..0x0E40).contains(&key) {
             others.push(format!("{TILES} right down"));
         }
-        if key < 0x0E40 {
+        if !(0x0E41..0x0E60).contains(&key) {
             others.push(format!("{SOL} up ok next ok"));
+        }
+        if !(0x0E61..0x0EA0).contains(&key) {
+            others.push(format!("{SALVO} up right press:ok release:ok wait:1000"));
         }
         for other in &others {
             assert_eq!(
@@ -575,6 +587,134 @@ mod settings_effects {
     }
 }
 
+/// Salvo (GAME-4/5): every setting shows in the game and nowhere else.
+mod salvo_settings {
+    use super::settings_effects::{after, shows_only_in};
+    use super::*;
+
+    /// Fire the aimed shot and watch it fly.
+    const FIRE: &str = "press:ok release:ok wait:1500";
+    /// Smoke (no damage), fired straight up and settled.
+    const SMOKE: &str = "menu down*6 ok set:salvoaim=0.90.150 press:ok release:ok wait:6000";
+
+    #[test]
+    fn players_and_who_plays() {
+        shows_only_in(0x0E61, 1, 0, SALVO);
+        let (_, three) = after("set:0x0e61=1", SALVO);
+        assert_eq!(salvo(&three).tanks().len(), 3);
+        // Player 1 a computer: it thinks at once.
+        shows_only_in(0x0E62, 4, 0, SALVO);
+        let (_, cpu) = after("set:0x0e62=4", SALVO);
+        assert!(matches!(salvo(&cpu).phase(), SalvoPhase::Think | SalvoPhase::Turn | SalvoPhase::Flight));
+        // Player 2 a human too: the pass screen.
+        shows_only_in(0x0E63, 0, 2, SALVO);
+        let (_, two) = after("set:0x0e63=0", SALVO);
+        assert_eq!(salvo(&two).phase(), SalvoPhase::Pass);
+        // Players 3 and 4 when they play.
+        shows_only_in(0x0E64, 0, 2, &format!("set:0x0e61=1 {SALVO}"));
+        shows_only_in(0x0E65, 0, 2, &format!("set:0x0e61=2 {SALVO}"));
+        let (_, four) = after("set:0x0e61=2 set:0x0e65=4", SALVO);
+        assert_eq!(salvo(&four).config().kinds[3], salvo::Kind::Expert);
+    }
+
+    #[test]
+    fn rounds_and_timer() {
+        shows_only_in(0x0E66, 0, 1, SALVO);
+        let (_, ten) = after("set:0x0e66=3", SALVO);
+        assert_eq!(salvo(&ten).config().rounds, 10);
+        shows_only_in(0x0E67, 1, 0, SALVO);
+        let (_, timed) = after("set:0x0e67=1", &format!("{SALVO} wait:16000"));
+        assert!(salvo(&timed).phase() != SalvoPhase::Aim || salvo(&timed).turn() != 0, "the timer fired");
+    }
+
+    #[test]
+    fn terrain() {
+        for (key, v, r) in [(0x0E68, 3, 0), (0x0E68, 2, 0), (0x0E69, 2, 1), (0x0E6A, 2, 1), (0x0E6B, 5, 0)] {
+            shows_only_in(key, v, r, SALVO);
+        }
+        // A terrain seed: the same ground in another game.
+        let a = after("set:0x0e6b=5 set:gameseed=1", "goto:Salvo wait:100").1;
+        let b = after("set:0x0e6b=5 set:gameseed=2", "goto:Salvo wait:100").1;
+        assert_eq!(salvo(&a).heights(), salvo(&b).heights());
+        let (_, isl) = after("set:0x0e68=3", SALVO);
+        assert!(salvo(&isl).water() > 0);
+    }
+
+    #[test]
+    fn world_width() {
+        shows_only_in(0x0E6C, 3, 2, SALVO);
+        shows_only_in(0x0E6C, 0, 2, SALVO);
+        let (_, w) = after("set:0x0e6c=3", SALVO);
+        assert_eq!(salvo(&w).width(), 384);
+    }
+
+    #[test]
+    fn gravity_drag_wind_gusts() {
+        let fire = format!("{SALVO} {FIRE}");
+        shows_only_in(0x0E6D, 0, 2, &fire);
+        shows_only_in(0x0E71, 0, 1, &fire);
+        shows_only_in(0x0E6E, 0, 1, SALVO);
+        shows_only_in(0x0E6F, 30, 8, &format!("set:0x0e6e=3 {SALVO}"));
+        let (_, calm) = after("set:0x0e6e=0", SALVO);
+        assert_eq!(salvo(&calm).wind_tenths(), 0);
+        let (_, custom) = after("set:0x0e6e=3 set:0x0e6f=30", SALVO);
+        assert_eq!(salvo(&custom).config().wind, 30);
+        shows_only_in(0x0E70, 1, 0, &format!("set:0x0e6e=2 {fire}"));
+        let (_, moon) = after("set:0x0e6d=0", SALVO);
+        assert_eq!(salvo(&moon).config().gravity, 0);
+    }
+
+    #[test]
+    fn health_fall_weapons_shop_guide() {
+        shows_only_in(0x0E72, 0, 1, &format!("{SALVO} set:salvohealth=0.40 wait:50"));
+        let (_, fifty) = after("set:0x0e72=0", SALVO);
+        assert!(salvo(&fifty).tanks().iter().all(|t| t.health == 50));
+        // A tank left floating falls 20 px when the shot settles.
+        let fall = format!(
+            "{SALVO} set:salvoflat=60 set:salvoplace=0.30 set:salvoplace=1.200 set:salvoflat=40 set:salvoplace=0.30 {SMOKE}"
+        );
+        shows_only_in(0x0E73, 0, 1, &fall);
+        let (_, hurt) = after("set:0x0e73=1", &fall);
+        let (_, safe) = after("set:0x0e73=0", &fall);
+        assert!(salvo(&hurt).tanks()[1].health < salvo(&safe).tanks()[1].health);
+        shows_only_in(0x0E74, 0, 1, &format!("{SALVO} menu"));
+        // The shop after the first round.
+        let won = format!("{SALVO} set:salvohealth=1.0 {SMOKE} ok wait:100");
+        shows_only_in(0x0E75, 0, 1, &won);
+        let (_, shop) = after("set:0x0e75=1", &won);
+        assert_eq!(salvo(&shop).phase(), SalvoPhase::Shop);
+        // The aim guide: a preview, the last shot, nothing.
+        shows_only_in(0x0E76, 2, 0, SALVO);
+        let (_, a) = after("set:0x0e76=2", SALVO);
+        let (_, b) = after("set:0x0e76=0", SALVO);
+        assert_eq!(salvo(&a), salvo(&b), "the game is the same");
+    }
+}
+
+/// Salvo in the app: a game saved on pause and continued, a computer's
+/// turn played out, the settings' groups.
+#[test]
+fn salvo_saved_and_continued() {
+    let mut s = sim(&format!("{LIST} down*3 ok wait:100 expect-screen:Salvo up up right"));
+    let angle = salvo(&s).tanks()[0].angle;
+    run(&mut s, "back expect-screen:GamePause");
+    let saved = file(&mut s, "salvo.sav").expect("saved on pause");
+    let Some(Session::Salvo(back)) = Session::decode(&saved, Some(id::SALVO)) else {
+        panic!("no Salvo save")
+    };
+    assert_eq!(back.tanks()[0].angle, angle);
+    assert_eq!(back.heights(), salvo(&s).heights());
+    run(&mut s, "ok wait:100 expect-screen:Salvo press:ok release:ok wait:30000");
+    assert!(salvo(&s).tanks().iter().any(|t| t.health < 100) || salvo(&s).turn() == 0, "shots were fired");
+    // Settings: three groups, each its own list.
+    run(
+        &mut s,
+        "back expect-screen:GamePause down*2 ok expect-screen:GameSettings down ok expect-screen:GameSettings",
+    );
+    run(&mut s, "back back down*2 ok expect-screen:Games");
+    assert!(s.sys.games().can_continue(id::SALVO));
+}
+
 /// The game loop's cost on the host (05 §7.13: up to 30 frames/s, partial
 /// redraw): per 33 ms frame, the logic steps and the drawing, and the
 /// panel rows a frame leaves to flush (the firmware flushes the band of
@@ -612,6 +752,9 @@ fn game_loop_cost() {
     let blocks = measure("blocks, falling", &format!("{BLOCKS} ok wait:100"), &["next", "prev", "up"]);
     let sol = measure("solitaire, cursor", &format!("{SOL} set:solplay=30"), &["next", "up", "prev", "down"]);
     let sol_idle = measure("solitaire, timer only", SOL, &[]);
+    let _ = measure("salvo, aiming", SALVO, &["up", "right", "down"]);
+    let _ = measure("salvo, a flight", &format!("{SALVO} set:salvoaim=0.70.900 press:ok release:ok"), &[]);
+    let _ = measure("salvo, computers", &format!("set:0x0e62=4 set:0x0e63=4 {SALVO}"), &[]);
     assert!(home < 1.0);
     assert!(blocks < 128.0 * 0.9, "Blocks redraws the whole screen every frame ({blocks:.1} rows)");
     assert!(sol < 128.0 * 0.6, "Solitaire redraws too much per frame ({sol:.1} rows)");

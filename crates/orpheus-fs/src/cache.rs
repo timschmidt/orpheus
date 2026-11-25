@@ -162,6 +162,28 @@ impl<'c> Cache<'c> {
         self.flush_kinds(dev, true).await
     }
 
+    /// Write back one dirty slot, in [`Cache::flush`]'s order (allocation
+    /// and data before metadata, lowest LBA first): one sector, or its FAT
+    /// copies. False if none was dirty.
+    pub async fn flush_one<D: BlockDevice>(&mut self, dev: &mut D) -> Result<bool, Error<D::Error>> {
+        for pass in [Kind::Alloc as u8, Kind::Data as u8, Kind::Meta as u8] {
+            let mut best: Option<usize> = None;
+            for (i, s) in self.slots.iter().enumerate() {
+                if s.dirty() && s.kind() == pass {
+                    match best {
+                        Some(b) if self.slots[b].lba <= s.lba => {}
+                        _ => best = Some(i),
+                    }
+                }
+            }
+            if let Some(b) = best {
+                self.write_slot(dev, b).await?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Choose a victim slot and make it clean.
     async fn evict<D: BlockDevice>(&mut self, dev: &mut D) -> Result<usize, Error<D::Error>> {
         if self.slots.is_empty() {

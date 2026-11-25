@@ -8,9 +8,13 @@
 //! time goes to the card task as `media::Req::Games` with the 512-byte
 //! buffer of [`GamesRam`] lent: the UI neither reads nor writes it until
 //! [`SLOT`] is 0 again (the Authenticator's import uses the same slot
-//! protocol). The card task carries it out in [`card_op`]: at once when
-//! idle, as a chore under the chore rule while music plays (its own
-//! measured need, `audio::SEED_US`). The answer comes back with the data
+//! protocol). The card task carries it out in steps ([`begin`], [`piece`]:
+//! `orpheus_apps::games::CardRun`, host-tested): all at once when idle
+//! (power-off, USB hand-over: the DAC is stopped); while music plays the
+//! request's chore runs the first piece and the rest are listing-job
+//! pieces of their own kind (`job:games`), each stopping at the chore's
+//! budget (`audio::piece_left`): in one piece a save and a read were
+//! 100 ms on the player (8 underruns, 2026-11-25). The answer comes back with the data
 //! tag [`TAG`]; the UI applies it (`GamesIo::done`) and the screens hear
 //! `other::GAMES`.
 //!
@@ -23,8 +27,8 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use critical_section::Mutex;
 use orpheus_apps::games::engine::{Hub, SAVE_MAX};
-use orpheus_apps::games::{CardAnswer, CardOp, DIR, Game, GamesIo, SCORES_PATH};
-use orpheus_fs::{OpenMode, Volume};
+use orpheus_apps::games::{CardAnswer, CardOp, CardRun, GamesIo};
+use orpheus_fs::Volume;
 use yoton_bsp::card::Card;
 
 use crate::media;
@@ -162,82 +166,26 @@ fn done(j: &GamesJob, a: CardAnswer) {
     media::ready(TAG);
 }
 
-fn path(g: u8) -> Option<&'static str> {
-    Game::from_id(g).map(Game::path)
+/// The card task took job `j` from its queue: its steps, unless the UI
+/// took it back.
+pub fn begin(j: &GamesJob) -> Option<CardRun> {
+    start(j).then(|| CardRun::new(j.op, usize::from(j.len)))
 }
 
-/// The card task: carry out a games operation (only under
-/// `/.orpheus/games/`, CLAUDE.md rule 5).
-pub async fn card_op(vol: &mut Volume<'static, Card>, j: &GamesJob) {
-    if !start(j) {
-        return;
-    }
+/// The card task: one piece of job `j` (only under `/.orpheus/games/`,
+/// CLAUDE.md rule 5): its steps while `audio::piece_left` allows (while
+/// music plays a chore's budget, `job:games`; idle, all of them). True
+/// when it is done and answered.
+pub async fn piece(vol: &mut Volume<'static, Card>, j: &GamesJob, run: &mut CardRun) -> bool {
     // SAFETY: the UI lent `buf..buf + SAVE_MAX` (`BUF`, a static) for this
     // job and neither reads nor writes it until `SLOT` is 0 again (`done`);
-    // `start` made this task its only user.
+    // `start` made this task its only user, until then, across pieces.
     let buf = unsafe { core::slice::from_raw_parts_mut(j.buf as *mut u8, SAVE_MAX) };
-    let a = match j.op {
-        CardOp::Load => {
-            let mut a = read(vol, SCORES_PATH, buf).await;
-            // No table yet is fine: an empty one.
-            a.ok = true;
-            for g in Game::ALL {
-                if vol.exists(g.path()).await.unwrap_or(false) {
-                    a.saved |= 1 << g.id();
-                }
-            }
-            a
+    match run.piece(vol, buf, crate::audio::piece_left).await {
+        Some(a) => {
+            done(j, a);
+            true
         }
-        CardOp::Read(g) => match path(g) {
-            Some(p) => read(vol, p, buf).await,
-            None => CardAnswer::FAILED,
-        },
-        CardOp::Write(g) => match path(g) {
-            Some(p) => write(vol, p, buf.get(..usize::from(j.len)).unwrap_or(&[])).await,
-            None => CardAnswer::FAILED,
-        },
-        CardOp::Remove(g) => {
-            let ok = match path(g) {
-                Some(p) if vol.exists(p).await.unwrap_or(false) => {
-                    vol.remove(p).await.is_ok() && vol.flush().await.is_ok()
-                }
-                Some(_) => true,
-                None => false,
-            };
-            CardAnswer { ok, ..CardAnswer::default() }
-        }
-        CardOp::WriteScores => write(vol, SCORES_PATH, buf.get(..usize::from(j.len)).unwrap_or(&[])).await,
-    };
-    done(j, a);
-}
-
-/// A file of at most `SAVE_MAX` bytes into `buf`.
-async fn read(vol: &mut Volume<'static, Card>, p: &str, buf: &mut [u8]) -> CardAnswer {
-    let Ok(mut f) = vol.open(p, OpenMode::Read).await else { return CardAnswer::FAILED };
-    if f.size() > SAVE_MAX as u64 {
-        let _ = vol.close(f).await;
-        return CardAnswer::FAILED;
+        None => false,
     }
-    let n = vol.read_exact_or_eof(&mut f, buf).await;
-    let _ = vol.close(f).await;
-    match n {
-        Ok(n) => CardAnswer { ok: true, len: u16::try_from(n).unwrap_or(0), saved: 0 },
-        Err(_) => CardAnswer::FAILED,
-    }
-}
-
-/// Write a whole file (truncated), creating `/.orpheus/games` if needed.
-async fn write(vol: &mut Volume<'static, Card>, p: &str, data: &[u8]) -> CardAnswer {
-    let f = match vol.open(p, OpenMode::Truncate).await {
-        Ok(f) => Some(f),
-        Err(_) => {
-            let _ = vol.create_dir("/.orpheus").await;
-            let _ = vol.create_dir(DIR).await;
-            vol.open(p, OpenMode::Truncate).await.ok()
-        }
-    };
-    let Some(mut f) = f else { return CardAnswer::FAILED };
-    let wrote = vol.write(&mut f, data).await.is_ok_and(|n| n == data.len());
-    let ok = vol.close(f).await.is_ok() && wrote && vol.flush().await.is_ok();
-    CardAnswer { ok, ..CardAnswer::default() }
 }

@@ -190,6 +190,12 @@ fn games_cases(add: &mut dyn FnMut(String, String)) {
     let ramp = "set:0x0e22=3 set:tiles=1.2.3.4.5.6.7.8.9.10.11.12.13.14.15.0 goto:Game4096 wait:100";
     let sol = format!("{list} down*2 ok wait:100 expect-screen:Solitaire");
     let mid = format!("{sol} set:solplay=40 wait:100");
+    let salvo = format!("{list} down*3 ok wait:100 expect-screen:Salvo");
+    let flat = "set:salvoflat=40 set:salvoplace=0.60 set:salvoplace=1.200";
+    // Player 2 gone, player 1's smoke settles: the round is over.
+    let round = format!(
+        "{salvo} set:salvohealth=1.0 menu down*6 ok set:salvoaim=0.90.150 press:ok release:ok wait:6000"
+    );
     let journeys: &[(&str, String)] = &[
         ("list", list.into()),
         ("list_continue", format!("{blocks} ok wait:500 back up ok wait:100 expect-screen:Games")),
@@ -243,6 +249,36 @@ fn games_cases(add: &mut dyn FnMut(String, String)) {
         ("sol_settings", format!("{mid} back down*2 ok expect-screen:GameSettings")),
         ("sol_settings_end", format!("{mid} back down*2 ok up")),
         ("sol_help", format!("{mid} back down*3 ok expect-screen:GameHelp")),
+        // GAME-4/5 Salvo.
+        ("salvo_aim", salvo.clone()),
+        ("salvo_menu", format!("{salvo} menu down")),
+        ("salvo_overview", format!("{salvo} press:ok wait:600 release:ok")),
+        ("salvo_flight", format!("{salvo} set:salvoaim=0.50.450 press:ok release:ok wait:900")),
+        ("salvo_fast", format!("{salvo} set:salvoaim=0.60.700 press:ok release:ok wait:600 ok wait:300")),
+        ("salvo_blast", format!("{salvo} {flat} set:salvoblast=80.40.1 wait:70")),
+        ("salvo_crater", format!("{salvo} {flat} set:salvoblast=80.40.1 set:salvoblast=95.36.4 wait:700")),
+        ("salvo_pass", format!("set:0x0e63=0 {salvo}")),
+        ("salvo_thinking", format!("set:0x0e62=4 {salvo} wait:100")),
+        ("salvo_round_over", round.clone()),
+        ("salvo_shop", format!("{round} ok wait:100")),
+        ("salvo_over", format!("set:0x0e66=0 {round} ok wait:100")),
+        ("salvo_mountains", format!("set:0x0e68=1 {salvo}")),
+        ("salvo_canyon", format!("set:0x0e68=2 {salvo}")),
+        ("salvo_islands", format!("set:0x0e68=3 {salvo}")),
+        ("salvo_plateaus", format!("set:0x0e68=4 {salvo}")),
+        ("salvo_wide_overview", format!("set:0x0e6c=3 set:0x0e61=2 {salvo} press:ok wait:600 release:ok")),
+        (
+            "salvo_smoke",
+            format!("{salvo} menu down*6 ok set:salvoaim=0.60.400 press:ok release:ok wait:2500"),
+        ),
+        ("salvo_preview", format!("set:0x0e76=2 {salvo} up*5")),
+        ("salvo_timer", format!("set:0x0e67=1 {salvo} wait:2000")),
+        ("salvo_pause", format!("{salvo} back expect-screen:GamePause")),
+        ("salvo_settings", format!("{salvo} back down*2 ok expect-screen:GameSettings")),
+        ("salvo_settings_players", format!("{salvo} back down*2 ok ok expect-screen:GameSettings")),
+        ("salvo_settings_world", format!("{salvo} back down*2 ok down ok expect-screen:GameSettings")),
+        ("salvo_settings_rules", format!("{salvo} back down*2 ok down*2 ok expect-screen:GameSettings")),
+        ("salvo_help", format!("{salvo} back down*3 ok expect-screen:GameHelp")),
     ];
     for t in ["dark", "light"] {
         for (name, script) in journeys {
@@ -258,6 +294,11 @@ fn games_cases(add: &mut dyn FnMut(String, String)) {
     add("games_tiles_ramp_amber".into(), format!("@apps theme:amber {ramp}"));
     // Suits without colour: shapes only.
     add("games_sol_mid_amber".into(), format!("@apps theme:amber {mid}"));
+    // Four tanks told apart by their numbers, without colour.
+    add(
+        "games_salvo_four_amber".into(),
+        format!("@apps theme:amber set:0x0e61=2 set:0x0e6c=0 {salvo} press:ok wait:600 release:ok"),
+    );
 }
 
 /// USB-6 / UI-6: USB Drive over the simulator's export (`sim/src/drive.rs`:

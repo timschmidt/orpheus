@@ -22,6 +22,12 @@
 //! cards to the foundations, hold OK undoes, Back puts held cards back or
 //! pauses.
 //!
+//! Salvo (feature `salvo`) is full screen (`super::salvo`): Up/Down the
+//! barrel, Prev/Next the power, OK fires, hold OK the overview, Menu the
+//! weapon list (Back closes it), Back pauses; a shell in the air lands at
+//! once when the game pauses. A computer's search runs one simulated shot
+//! a frame.
+//!
 //! A save file a firmware's card task reads later (`GamesService`'s
 //! `Open` answered late, the hub's `opening`): the screen shows "Loading…"
 //! until the hub has the game.
@@ -38,7 +44,11 @@ use orpheus_ui::nav::{Arg, Cx, Dirty, Nav, Resume, Screen, ScreenId, StripUse, W
 use orpheus_ui::text::StrBuf;
 use orpheus_ui::theme::Role;
 
+#[cfg(feature = "salvo")]
+use super::GAME_SALVO;
 use super::games::{push_points, push_time};
+#[cfg(feature = "salvo")]
+use super::salvo::SalvoView;
 use super::solitaire::SolitaireView;
 use super::{GAME_BLOCKS, GAME_PAUSE, GAME_SOLITAIRE, GAME_TILES};
 use crate::games::{self, Game, GamesRequest};
@@ -106,6 +116,8 @@ impl GameScreen {
             Game::Blocks => GAME_BLOCKS,
             Game::Tiles => GAME_TILES,
             Game::Solitaire => GAME_SOLITAIRE,
+            #[cfg(feature = "salvo")]
+            Game::Salvo => GAME_SALVO,
         }
     }
 
@@ -115,13 +127,20 @@ impl GameScreen {
             Game::Blocks => "Blocks",
             Game::Tiles => "Game4096",
             Game::Solitaire => "Solitaire",
+            #[cfg(feature = "salvo")]
+            Game::Salvo => "Salvo",
         }
     }
 
     /// Real-time games run logic steps from the ticks (Solitaire: its
     /// timer and auto-complete).
     fn stepped(&self) -> bool {
-        matches!(self.game, Game::Blocks | Game::Solitaire)
+        match self.game {
+            Game::Blocks | Game::Solitaire => true,
+            Game::Tiles => false,
+            #[cfg(feature = "salvo")]
+            Game::Salvo => true,
+        }
     }
 
     fn pause<S: Services + ?Sized>(&mut self, svc: &mut S) {
@@ -133,6 +152,13 @@ impl GameScreen {
             Session::Blocks(b) => b.release_all(),
             Session::Solitaire(s) => {
                 s.drop_held();
+            }
+            // A shot in the air lands now: a pause is saved, and a save
+            // holds no flight.
+            #[cfg(feature = "salvo")]
+            Session::Salvo(s) => {
+                s.release_all();
+                s.settle_now();
             }
             _ => {}
         }
@@ -148,6 +174,8 @@ impl GameScreen {
         match self.game {
             Game::Blocks => View::Paused,
             Game::Tiles | Game::Solitaire => View::Playing,
+            #[cfg(feature = "salvo")]
+            Game::Salvo => View::Playing,
         }
     }
 
@@ -217,6 +245,11 @@ impl GameScreen {
                         self.refused = if s.input(i) == SolOut::Refused { 6 } else { 0 };
                         s.ended()
                     }
+                    #[cfg(feature = "salvo")]
+                    Session::Salvo(s) => {
+                        s.input(i);
+                        s.ended()
+                    }
                     Session::None => false,
                 };
                 if ended {
@@ -272,6 +305,21 @@ impl GameScreen {
                 }
                 ended = s.ended();
             }
+            #[cfg(feature = "salvo")]
+            Session::Salvo(s) => {
+                for _ in 0..n {
+                    // A computer's search simulates a whole shot per step:
+                    // one a frame, so a frame never waits for more.
+                    let thinking = s.phase() == orpheus_games::salvo::Phase::Think;
+                    if s.step().ended {
+                        ended = true;
+                        break;
+                    }
+                    if thinking {
+                        break;
+                    }
+                }
+            }
             _ => {}
         }
         if ended {
@@ -324,10 +372,18 @@ impl<S: Services + ?Sized> Screen<S> for GameScreen {
     fn event(&mut self, cx: &mut Cx<'_, S>, ev: &Event) -> Nav {
         match *ev {
             Event::Key(Key::Back, KeyPhase::Up { held: false }) => {
-                // Solitaire: Back first puts held cards back.
+                // Solitaire: Back first puts held cards back; Salvo: it
+                // closes the weapon list.
                 if self.view == View::Playing
                     && let Session::Solitaire(s) = &mut cx.svc.games_mut().session
                     && s.drop_held()
+                {
+                    return Nav::Stay;
+                }
+                #[cfg(feature = "salvo")]
+                if self.view == View::Playing
+                    && let Session::Salvo(s) = &mut cx.svc.games_mut().session
+                    && s.close_menu()
                 {
                     return Nav::Stay;
                 }
@@ -394,6 +450,21 @@ impl<S: Services + ?Sized> Screen<S> for GameScreen {
                 };
                 self.sol_drawn = Some(v.draw(g, self.lang, dirty, self.sol_drawn));
             }
+            #[cfg(feature = "salvo")]
+            Session::Salvo(s) => {
+                let v = SalvoView {
+                    s,
+                    view: self.view,
+                    guide: games::salvo_guide(cx.svc),
+                    new_best: self.new_best,
+                };
+                let key = v.key();
+                if dirty == Dirty::Changed && self.drawn.is_some_and(|d| d.0 == key) {
+                    return;
+                }
+                v.draw(g, self.lang);
+                self.drawn = Some((key, 0, 0));
+            }
             Session::None => g.clear(Role::Bg),
         }
     }
@@ -416,6 +487,14 @@ impl<S: Services + ?Sized> Screen<S> for GameScreen {
             },
             Game::Solitaire => Wants {
                 ticks: matches!(self.view, View::Playing | View::Loading) || self.refused > 0,
+                full_screen: true,
+                menu_key: true,
+                title,
+                ..Wants::default()
+            },
+            #[cfg(feature = "salvo")]
+            Game::Salvo => Wants {
+                ticks: matches!(self.view, View::Playing | View::Loading),
                 full_screen: true,
                 menu_key: true,
                 title,

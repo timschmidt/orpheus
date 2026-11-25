@@ -16,6 +16,12 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 orpheus-games = { path = ".." }
 
+[features]
+# The bodies' Salvo parts (`src/lib.rs` is also compiled into the crate's
+# tests, where the crate's own feature decides).
+default = ["salvo"]
+salvo = ["orpheus-games/salvo"]
+
 # Its own workspace: not part of the host workspace (nightly only).
 [workspace]
 members = ["."]
@@ -37,6 +43,13 @@ bench = false
 [[bin]]
 name = "solitaire_keys"
 path = "fuzz_targets/solitaire_keys.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "salvo_keys"
+path = "fuzz_targets/salvo_keys.rs"
 test = false
 doc = false
 bench = false

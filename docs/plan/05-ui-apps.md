@@ -938,8 +938,12 @@ built, not yet run on the player).**
   progress written before another is read, a read nobody waits for
   dropped, the score table never written before it was read). The card
   task carries each out as `media::Req::Games` (`fw/firmware/src/games.rs`):
-  at once when idle, while music plays as a chore of its own kind under
-  the chore rule (seed need 25 ms until measured). `Open` is answered
+  at once when idle, while music plays in pieces (GAME-4/5: one piece was
+  100 ms on the player; `orpheus_apps::games::CardRun`, a path walk with a
+  read or a write into the sector cache, one sector written back, the
+  sync: the first piece in the request's chore, the rest as `job:games`
+  listing pieces under the chore budget; idle, all at once and before a
+  pending card hand-over or power-off). `Open` is answered
   late: the hub's `opening` names the game and the game screen shows
   "Loading…" until the file is read (the simulator's `set:gamesio=on` runs
   the same queue one operation per step). A job not started in 3 s is
@@ -1038,6 +1042,113 @@ other product).
   bricks broken; deterministic replays; key-sequence fuzzing; golden
   images; settings in the VER-13 manifest with differential tests; saved
   games and scores like the other games.
+**As built (GAME-4/5 Salvo, 2026-11-25; host and simulator; not in the
+firmware yet: feature `salvo`, see below).**
+* Engine `orpheus_games::salvo` (feature `salvo`; the only floats in the
+  crate). World: one `u8` height per column, 128/192/256/384 px wide
+  (`WIDTHS`), 128 px high (ground at most 104), 4 m per pixel. Terrain per
+  round from the seed (or the terrain seed setting and the round): value
+  noise of 2–5 octaves (roughness) over a relief range (low 16–48, medium
+  12–72, high 8–96 px); hills; mountains (ridged noise); canyon (a gorge of
+  quartic profile, steep walls, in the middle fifth); islands (a mound per
+  tank over a sea at a quarter of the relief); plateaus (four levels with
+  cliffs); mixed (one of them per round). Tanks in random order at evenly
+  spread slots with jitter, each on a flat 9-px pad (above the water).
+* Physics in SI units, semi-implicit Euler at 200 Hz, 20 steps per 60 Hz
+  logic step (game time 6× real time; OK during a flight 4× more):
+  `v += a·Δt; x += v·Δt` with `a = (0, −g) − ρ·k·|v − w|·(v − w)`, `k =
+  ½·Cd·A/m` per weapon (Cd 0.4), `w` the wind (re-drawn each turn in tenths
+  of m/s within the maximum) plus, with gusts, a gust updated every 20
+  steps (`0.9·g + U(−1, 1)·0.4·max`, clamped to the maximum) from the game's
+  generator. Gravity presets 1.62, 3.71, 9.81, 24.8 m/s²; air 0, 1.225,
+  3.675 kg/m³. Only `+ − × ÷` and a Newton square root (`salvo::sqrt`, 4
+  steps from a halved exponent): the thumbv7em build has no fused
+  multiply-add (checked: 0 `vfma`, 40 unfused `vmla`). Full power is the
+  speed (`V_MAX[gravity][air]`, 57–465 m/s) that carries a shell 1.25 widest
+  worlds at its best angle (a test checks the table, within 15 %). Hits are
+  probed along each step's path at most every half pixel (a shell moves
+  under a pixel per step), the firing tank ignored for its first 0.2 s, a
+  barrel inside the ground goes off at once. A flight ends after 180 s.
+* Weapons (`SPECS`: mass, diameter, blast radius, damage, price, the full
+  set's rounds): shell 10 kg/114 mm, r 10, 40 (unlimited); heavy shell
+  30 kg/155 mm, r 15, 65, 40 credits, 3; cluster 12 kg, splits at the top
+  of its flight into three 1.5-kg bomblets ±18 m/s apart (r 7, 24 each),
+  60, 2; roller 10 kg, rolls on the ground (slope acceleration, friction)
+  until it stops, meets a tank, a wall over 3 px or 4 s, then r 11, 45, 30,
+  2; digger 12 kg, cuts a 24-px trench of 2-px radius along its way, then
+  r 6, 22, 25, 2; dirt bomb, a 14-px disc of earth falling onto the
+  ground (tanks under it come up), 20, 2; smoke 3 kg, puffs every 0.25 s
+  of its flight and three where it lands, drifting with the air for 12 s
+  (three puffs at most), 10, 3. Damage `D·(R − d)/R`, `R` the radius plus
+  the tank's half width. A blast cuts a disc; each column loses exactly the
+  part of the disc below its top (the earth above falls in at once).
+* Tanks: 7 × 4 px, fall at 3/16 px per step² when their column drops, a
+  fall over 4 px costs 2 health per pixel (setting), slide a pixel every 4
+  steps down slopes steeper than 3 px over 2, sink in water. Points: damage
+  dealt, 50 per tank destroyed, 100 for the round's survivor; credits the
+  same plus 30 a round; the shop between rounds for each human (computers
+  buy heavy shells and clusters at once).
+* Turns: each round another player starts; a human's turn starts with
+  "Pass to Player n" when two or more humans play. Keys: Up/Down the
+  barrel ±1° (held: every 3 steps, after 1 s every step), Prev/Next power
+  ±0.1 % (held: 1, then 5, then 20 per 2 steps), OK fires on release,
+  hold OK the overview (the world squeezed into 128 px), Menu the weapon
+  list (Up/Down, OK; Back or Menu closes); during a flight or a
+  computer's turn OK is fast (×4) and Prev/Next held pan the view. The
+  view follows the shell or the tank whose turn it is; tanks beyond it
+  show as their number and an arrow at the edge. Turn timer: the tank
+  fires as aimed at 0.
+* Computers (`Kind`: Novice, Easy, Hard, Expert): target the nearest tank
+  (Novice any); wind estimate = wind + noise (±60/30/12/0 % of the
+  maximum) + a bias per round (±40/20/8/0 %); aim point = target +
+  correction learnt from the last shot at the same target (`ai_off −=
+  miss·4/6/8/10 tenths`: bracketing); search: bisection on the power for
+  45°, 60°, 30°, 72°, 20°, 80° (2/3/4/6 angles, 4/6/8/11 steps each; done within
+  1 px), shots that would hurt the shooter never chosen; then noise
+  ±3/2/1/0° and ±30/15/6/0 ‰ and the barrel turned visibly. Expert with
+  gusts simulates with a copy of the game's generator (the gusts the
+  flight will draw); below Expert never. One simulated shot per logic
+  step, and the screen runs at most one per frame.
+* RAM: `Salvo` 680 B (heights 384, four tanks 120, three shells 60, the
+  rest), so `Session` 352 → 680 B and the hub 848 → 1,176 B. Built and
+  decoded in place (`Session::start_salvo`, `decode_into`): no 680-B copy
+  on the UI task's stack. Save `salvo.sav` (version 1): rules, generator,
+  phase (a flight saves as settling, a computer's search as starting
+  again), heights seven bits each, tanks (≤ 492 B with the envelope; `SAVE_MAX` 512). A pause
+  lands a shell in the air first (`settle_now`).
+* App: `Game::Salvo` (Games list fourth), screen `Salvo` (full screen,
+  `screens/salvo.rs`: two info lines, world, overlays; drawn when its key
+  over the state changes). Settings in three groups (the pause menu's
+  Settings lists Players, World, Rules; `Game::groups`), 21 settings
+  `0x0E61–0x0E76` packed into four stored words `0x0E80–0x0E83`
+  (`Setting::pack`: the cache stays within its 128 slots, `STORED` 120 →
+  124): players 2/3/4 (2), Player 1–4 Human/Novice/Easy/Hard/Expert
+  (Human, Easy, Easy, Easy), rounds 1/3/5/10 (3), turn timer off/15/30/
+  60 s (off), terrain (Hills), roughness (medium), height range (medium),
+  terrain seed 0–99 (0: new every game), world width (256 px), gravity
+  (Earth), wind none/light 4/strong 12/custom (light), custom wind 1–30
+  m/s (8), gusts (off), air drag off/realistic/heavy (realistic), tank
+  health 50/100/150/200 (100), fall damage (on), weapons shells only/all
+  seven (all), shop (on), aim guide none/last shot/preview (last shot;
+  the only one at once). Score table: the best human's points, won when a
+  human leads; variant from players, hardest computer, gravity, wind,
+  gusts, drag, width, weapons, shop.
+* Firmware: **not built in.** With Salvo the firmware measured (2026-11-25)
+  resident +368 B (constant pools and strings, mergeable sections stay
+  resident), `.bss` +368 B (the hub +328, settings +8, …): the stack's
+  start moved three 256-B steps, usable 20,480 → 19,712 B, nested worst
+  case 16,108 B: margin **3,604 B < 4,096 B**. It needs ≈ 490 B more: a cut
+  of the UI task's deepest path (`Fw::derive_finish`, the Authenticator's
+  4,008-B future, 6,796 B in all) or ≈ 460 B less static RAM. Then
+  `orpheus-apps/salvo` on in `fw/firmware/Cargo.toml` (and the suite's
+  masked fourth Games row unmasked).
+* Measured (host, release): one simulated shot ≤ 0.43 ms (Moon, 384 px),
+  a computer's decision 0.4–2.0 ms (Jupiter fastest, the Moon slowest), 25 ns per physics step, 1 µs per logic step of a
+  flight; game loop per 33-ms frame (simulator, all services): aiming
+  10.4 µs / 21 dirty rows, a flight 14.6 µs / 38 rows, four computers 27 µs
+  / 89 rows. Player estimate (× 40–60, FPU, paged code): a simulated shot
+  ≤ 20–25 ms (one per frame), a decision 20–100 ms spread over its frames,
+  a flight step ≈ 50 µs.
 
 ### 7.14 Accessibility and speech (M15; owner's requirement 2026-11-25)
 

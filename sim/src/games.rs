@@ -19,10 +19,13 @@
 //! game); `solplay=N` plays the first `N` moves of the deal check's line in
 //! the Solitaire game in RAM; `sollong=1` a column of six face-down cards
 //! and a king-to-ace run; `solstuck=1` a game with no move left (one
-//! pass); `gamesio=on|off` the deferred mode.
+//! pass); `gamesio=on|off` the deferred mode. Salvo (the game in RAM):
+//! `salvoturn=P`, `salvoaim=P.A.W` (angle °, power ‰), `salvowind=T`
+//! (tenths of m/s), `salvohealth=P.H`, `salvoflat=H`, `salvoplace=P.X`,
+//! `salvoblast=X.Y.W` (weapon W's blast at X, Y px).
 
 use anyhow::{Result, bail};
-use orpheus_apps::games::{self as app, CardAnswer, CardOp, Game, GamesIo, GamesRequest};
+use orpheus_apps::games::{self as app, CardOp, CardRun, Game, GamesIo, GamesRequest};
 use orpheus_fs::OpenMode;
 use orpheus_fs::host::block_on;
 use orpheus_games::blocks::{self, Blocks, W};
@@ -47,6 +50,8 @@ pub struct SimGames {
     buf: [u8; SAVE_MAX],
     /// Card operations carried out in the deferred mode (tests).
     pub ops: Vec<CardOp>,
+    /// The deferred mode's operation in steps.
+    run: Option<CardRun>,
 }
 
 impl Default for SimGames {
@@ -60,6 +65,7 @@ impl Default for SimGames {
             io: None,
             buf: [0; SAVE_MAX],
             ops: Vec::new(),
+            run: None,
         }
     }
 }
@@ -249,52 +255,23 @@ impl SimGames {
         }
     }
 
-    /// The deferred mode: carry out the next queued card operation, as the
-    /// firmware's card task does (`fw/firmware/src/games.rs`). True if the
-    /// hub changed.
+    /// The deferred mode: one step of the queued card operations, as the
+    /// firmware's card task makes them in pieces while music plays
+    /// (`orpheus_apps::games::CardRun`, `fw/firmware/src/games.rs`). True
+    /// if the hub changed.
     pub fn pump(&mut self, media: &mut Media) -> bool {
         let Some(io) = &mut self.io else { return false };
-        let Some((op, n)) = io.next(&self.hub, &mut self.buf) else { return false };
-        self.ops.push(op);
-        let file = |g: u8| Game::from_id(g).map(Game::path);
-        let a = match op {
-            CardOp::Load => {
-                let mut a = CardAnswer { ok: true, ..CardAnswer::default() };
-                if let Some(d) = read(media, app::SCORES_PATH).filter(|d| d.len() <= SAVE_MAX) {
-                    self.buf[..d.len()].copy_from_slice(&d);
-                    a.len = u16::try_from(d.len()).unwrap_or(0);
-                }
-                for g in Game::ALL {
-                    if exists(media, g.path()) {
-                        a.saved |= 1 << g.id();
-                    }
-                }
-                a
-            }
-            CardOp::Read(g) => match file(g).and_then(|p| read(media, p)).filter(|d| d.len() <= SAVE_MAX) {
-                Some(d) => {
-                    self.buf[..d.len()].copy_from_slice(&d);
-                    CardAnswer { ok: true, len: u16::try_from(d.len()).unwrap_or(0), saved: 0 }
-                }
-                None => CardAnswer::FAILED,
-            },
-            CardOp::Write(g) => {
+        if self.run.is_none() {
+            let Some((op, n)) = io.next(&self.hub, &mut self.buf) else { return false };
+            self.ops.push(op);
+            if matches!(op, CardOp::Write(_) | CardOp::WriteScores) {
                 self.writes += 1;
-                let ok = file(g).is_some_and(|p| write(media, p, &self.buf[..n]));
-                CardAnswer { ok, ..CardAnswer::default() }
             }
-            CardOp::Remove(g) => {
-                if let Some(p) = file(g) {
-                    remove(media, p);
-                }
-                CardAnswer { ok: true, ..CardAnswer::default() }
-            }
-            CardOp::WriteScores => {
-                self.writes += 1;
-                let ok = write(media, app::SCORES_PATH, &self.buf[..n]);
-                CardAnswer { ok, ..CardAnswer::default() }
-            }
-        };
+            self.run = Some(CardRun::new(op, n));
+        }
+        let Some(run) = &mut self.run else { return false };
+        let Some(a) = block_on(run.step(media.volume(), &mut self.buf)) else { return false };
+        self.run = None;
         let buf = self.buf;
         io.done(&mut self.hub, a, &buf)
     }
@@ -375,6 +352,33 @@ impl SimGames {
                     g.input(orpheus_games::Input::Press(orpheus_games::Button::Right));
                 }
                 self.hub.session = Session::Solitaire(g);
+            }
+            k if k.starts_with("salvo") => {
+                let Session::Salvo(g) = &mut self.hub.session else { bail!("{k}: no Salvo game") };
+                let nums: Vec<i32> = v.split('.').map(str::parse).collect::<Result<_, _>>()?;
+                let n = |i: usize| nums.get(i).copied().unwrap_or(0);
+                match k {
+                    // `salvoturn=P`: player P's turn now (no pass screen).
+                    "salvoturn" => g.force_turn(u8::try_from(n(0))?),
+                    // `salvoaim=P.A.W`: player P's barrel at A°, power W‰.
+                    "salvoaim" => {
+                        g.set_aim(usize::try_from(n(0))?, u8::try_from(n(1))?, u16::try_from(n(2))?);
+                    }
+                    // `salvowind=T`: this turn's wind in tenths of m/s.
+                    "salvowind" => g.set_wind(i16::try_from(n(0))?),
+                    // `salvohealth=P.H`.
+                    "salvohealth" => g.set_health(usize::try_from(n(0))?, u8::try_from(n(1))?),
+                    // `salvoflat=H`: flat ground H px high everywhere.
+                    "salvoflat" => {
+                        let h = vec![u8::try_from(n(0))?; usize::from(g.width())];
+                        g.set_heights(&h);
+                    }
+                    // `salvoplace=P.X`: tank P at column X.
+                    "salvoplace" => g.place(usize::try_from(n(0))?, i16::try_from(n(1))?),
+                    // `salvoblast=X.Y.W`: weapon W's blast at (X, Y) px.
+                    "salvoblast" => g.explode_at(n(0), n(1), u8::try_from(n(2))?),
+                    _ => bail!("unknown {k}"),
+                }
             }
             _ => return Ok(false),
         }

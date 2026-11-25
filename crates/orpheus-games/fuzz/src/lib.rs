@@ -9,10 +9,14 @@
 //! random, bit 1 no hold, bit 2 no kicks), lock delay, auto-shift delay,
 //! repeat (one byte each), a 64-bit seed, then per byte either an input
 //! (bit 7 clear) or `(b & 0x7F) + 1` logic steps (bit 7 set).
+//! `salvo_keys`: ten configuration bytes ([`salvo_config`]), a 64-bit
+//! seed, then inputs and steps as for Blocks.
 
 #![allow(clippy::missing_panics_doc)]
 
 use orpheus_games::blocks::{self, Blocks, CLEAR_POINTS, COMBO_POINTS, H, HIDDEN, ROWS, W, level_for};
+#[cfg(feature = "salvo")]
+use orpheus_games::salvo;
 use orpheus_games::solitaire;
 use orpheus_games::tiles::{self, Dir, Tiles, TilesOut};
 use orpheus_games::{Input, SAVE_MAX, Session};
@@ -534,4 +538,91 @@ pub fn solitaire_run(data: &[u8]) -> solitaire::Solitaire {
 pub fn solitaire_keys(data: &[u8]) {
     let a = solitaire_run(data);
     assert_eq!(a, solitaire_run(data), "deterministic");
+}
+
+#[cfg(feature = "salvo")]
+/// The Salvo configuration of an input's first ten bytes: players and
+/// who plays them (two bits each: human, or a computer of a difficulty),
+/// rounds, gravity, wind, drag, terrain style, roughness and relief,
+/// width, flags (gusts, fall damage, full set, shop, turn timer).
+#[must_use]
+pub fn salvo_config(d: &[u8]) -> salvo::Config {
+    use salvo::{Config, Kind, Style};
+    let b = |i: usize| d.get(i).copied().unwrap_or(0);
+    let k = |v: u8| Kind::from_u8(v % 5).unwrap_or_default();
+    Config {
+        players: 2 + b(0) % 3,
+        kinds: [k(b(1)), k(b(1) >> 3), k(b(2)), k(b(2) >> 3)],
+        rounds: 1 + b(3) % 3,
+        gravity: b(4) % 4,
+        wind: [0, 4, 12, 30][usize::from(b(5) % 4)],
+        drag: b(6) % 3,
+        style: Style::from_u8(b(7) % 6).unwrap_or_default(),
+        rough: (b(7) >> 3) % 3,
+        relief: (b(7) >> 5) % 3,
+        terrain_seed: u16::from(b(8) & 3),
+        width: b(8) >> 2 & 3,
+        health: [50, 100, 200][usize::from(b(8) >> 4) % 3],
+        gusts: b(9) & 1 != 0,
+        fall_damage: b(9) & 2 == 0,
+        full_set: b(9) & 4 == 0,
+        shop: b(9) & 8 == 0,
+        timer: if b(9) & 16 != 0 { 15 } else { 0 },
+    }
+    .sanitised()
+}
+
+#[cfg(feature = "salvo")]
+/// Run a Salvo input: ten config bytes, a 64-bit seed, then per byte
+/// either an input (bit 7 clear: [`Input::from_byte`]) or `(b & 0x7F) + 1`
+/// logic steps (bit 7 set). After every input and step: the invariants
+/// (`Salvo::check`: nothing non-finite, no shell in the ground, terrain
+/// within the world, tanks in it), the phase consistent with the shells,
+/// health never rising within a round, a save read back that checks.
+/// Returns the final game.
+pub fn salvo_run(data: &[u8]) -> salvo::Salvo {
+    use salvo::{Phase, Salvo};
+    let cfg = salvo_config(data);
+    let mut g = Salvo::new(cfg, seed(data.get(10..18).unwrap_or(&[])));
+    g.check().unwrap_or_else(|e| panic!("new game: {e:?}"));
+    let mut buf = [0u8; SAVE_MAX];
+    for (k, &b) in data.iter().skip(18).enumerate().take(400) {
+        let round = g.round();
+        let health: Vec<u8> = g.tanks().iter().map(|t| t.health).collect();
+        if b & 0x80 != 0 {
+            for _ in 0..=(b & 0x7F) {
+                g.step();
+                g.check().unwrap_or_else(|e| panic!("byte {k}: {e:?}"));
+            }
+        } else if let Some(i) = Input::from_byte(b) {
+            g.input(i);
+            g.check().unwrap_or_else(|e| panic!("byte {k}: {e:?}"));
+        }
+        let flying = g.shells().iter().any(|s| s.active());
+        assert!(!flying || g.phase() == Phase::Flight, "byte {k}: shells outside a flight");
+        if g.round() == round && g.phase() != Phase::Shop {
+            for (t, h) in g.tanks().iter().zip(&health) {
+                assert!(t.health <= *h, "byte {k}: health rose");
+            }
+        }
+        if k % 37 == 0 {
+            let s = Session::Salvo(g.clone());
+            let n = s.encode(&mut buf).expect("fits SAVE_MAX");
+            let back = Session::decode(&buf[..n], Some(orpheus_games::id::SALVO)).expect("reads back");
+            let Session::Salvo(x) = back else { panic!("another game") };
+            assert_eq!(x.heights(), g.heights());
+            assert_eq!(
+                x.tanks().iter().map(|t| (t.x, t.health, t.score)).collect::<Vec<_>>(),
+                g.tanks().iter().map(|t| (t.x, t.health, t.score)).collect::<Vec<_>>()
+            );
+        }
+    }
+    g
+}
+
+/// The fuzz target: the same input twice gives the same game.
+#[cfg(feature = "salvo")]
+pub fn salvo_keys(data: &[u8]) {
+    let a = salvo_run(data);
+    assert_eq!(a, salvo_run(data), "deterministic");
 }

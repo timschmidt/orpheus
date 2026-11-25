@@ -11,22 +11,28 @@
 //! pause and quit) and the scores to `/.orpheus/games/scores.bin`.
 
 pub use orpheus_games as engine;
+#[cfg(feature = "salvo")]
+use orpheus_games::salvo;
 use orpheus_games::{Hub, Outcome, Rng, Session, blocks, id as gid, solitaire, tiles};
 
 use crate::services::SettingsService;
 use crate::settings::{Choice, Setting, SettingId, Unit, c, r, t};
 use crate::strings::Str;
 
-/// The games of the app, in list order. The artillery game (GAME-4/5)
-/// is not listed until it is built.
+/// The games of the app, in list order.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Game {
     Blocks,
     Tiles,
     Solitaire,
+    #[cfg(feature = "salvo")]
+    Salvo,
 }
 
 impl Game {
+    #[cfg(feature = "salvo")]
+    pub const ALL: [Game; 4] = [Game::Blocks, Game::Tiles, Game::Solitaire, Game::Salvo];
+    #[cfg(not(feature = "salvo"))]
     pub const ALL: [Game; 3] = [Game::Blocks, Game::Tiles, Game::Solitaire];
 
     /// The engine's id (save files, scores).
@@ -36,6 +42,8 @@ impl Game {
             Game::Blocks => gid::BLOCKS,
             Game::Tiles => gid::TILES,
             Game::Solitaire => gid::SOLITAIRE,
+            #[cfg(feature = "salvo")]
+            Game::Salvo => gid::SALVO,
         }
     }
 
@@ -50,6 +58,8 @@ impl Game {
             Game::Blocks => Str::GameBlocks,
             Game::Tiles => Str::Game4096,
             Game::Solitaire => Str::GameSolitaire,
+            #[cfg(feature = "salvo")]
+            Game::Salvo => Str::GameSalvo,
         }
     }
 
@@ -68,6 +78,10 @@ impl Game {
                 Str::HelpSolitaire4,
                 Str::HelpSolitaire5,
             ],
+            #[cfg(feature = "salvo")]
+            Game::Salvo => {
+                &[Str::HelpSalvo, Str::HelpSalvo2, Str::HelpSalvo3, Str::HelpSalvo4, Str::HelpSalvo5]
+            }
         }
     }
 
@@ -78,6 +92,8 @@ impl Game {
             Game::Blocks => "blocks.sav",
             Game::Tiles => "4096.sav",
             Game::Solitaire => "solitaire.sav",
+            #[cfg(feature = "salvo")]
+            Game::Salvo => "salvo.sav",
         }
     }
 
@@ -88,17 +104,38 @@ impl Game {
             Game::Blocks => "/.orpheus/games/blocks.sav",
             Game::Tiles => "/.orpheus/games/4096.sav",
             Game::Solitaire => "/.orpheus/games/solitaire.sav",
+            #[cfg(feature = "salvo")]
+            Game::Salvo => "/.orpheus/games/salvo.sav",
         }
     }
 
-    /// Its settings, in pause-menu order.
+    /// Its settings, in pause-menu order (Salvo's: [`Game::groups`]).
     #[must_use]
     pub fn settings(self) -> &'static [Setting] {
         match self {
             Game::Blocks => &SETTINGS[..BLOCKS_SETTINGS],
             Game::Tiles => &SETTINGS[BLOCKS_SETTINGS..SOLITAIRE_FROM],
-            Game::Solitaire => &SETTINGS[SOLITAIRE_FROM..],
+            Game::Solitaire => &SETTINGS[SOLITAIRE_FROM..SALVO_FROM],
+            #[cfg(feature = "salvo")]
+            Game::Salvo => &SETTINGS[SALVO_FROM..SALVO_WORDS],
         }
+    }
+
+    /// Its settings in groups, each a row of the pause menu's Settings
+    /// that opens a list of its own (a game with many settings; one group
+    /// for the others).
+    #[must_use]
+    pub fn groups(self) -> &'static [(Str, &'static [Setting])] {
+        #[cfg(feature = "salvo")]
+        if self == Game::Salvo {
+            const SALVO_GROUPS: [(Str, &[Setting]); 3] = [
+                (Str::GamePlayers, &SETTINGS_SALVO_PLAYERS),
+                (Str::World, &SETTINGS_SALVO_WORLD),
+                (Str::GameRules, &SETTINGS_SALVO_RULES),
+            ];
+            return &SALVO_GROUPS;
+        }
+        &[]
     }
 
     /// The session holds a game of this kind.
@@ -141,6 +178,28 @@ pub mod id {
     pub const SOL_AUTO_COMPLETE: SettingId = SettingId(0x0E45);
     pub const SOL_TIMER: SettingId = SettingId(0x0E46);
     pub const SOL_WINNABLE: SettingId = SettingId(0x0E47);
+    pub const SALVO_PLAYERS: SettingId = SettingId(0x0E61);
+    /// Player 1 … 4: human or a computer's difficulty (0x0E62 …).
+    pub const SALVO_PLAYER1: SettingId = SettingId(0x0E62);
+    pub const SALVO_ROUNDS: SettingId = SettingId(0x0E66);
+    pub const SALVO_TIMER: SettingId = SettingId(0x0E67);
+    pub const SALVO_TERRAIN: SettingId = SettingId(0x0E68);
+    pub const SALVO_ROUGHNESS: SettingId = SettingId(0x0E69);
+    pub const SALVO_RELIEF: SettingId = SettingId(0x0E6A);
+    pub const SALVO_SEED: SettingId = SettingId(0x0E6B);
+    pub const SALVO_WIDTH: SettingId = SettingId(0x0E6C);
+    pub const SALVO_GRAVITY: SettingId = SettingId(0x0E6D);
+    pub const SALVO_WIND: SettingId = SettingId(0x0E6E);
+    pub const SALVO_CUSTOM_WIND: SettingId = SettingId(0x0E6F);
+    pub const SALVO_GUSTS: SettingId = SettingId(0x0E70);
+    pub const SALVO_DRAG: SettingId = SettingId(0x0E71);
+    pub const SALVO_HEALTH: SettingId = SettingId(0x0E72);
+    pub const SALVO_FALL: SettingId = SettingId(0x0E73);
+    pub const SALVO_WEAPONS: SettingId = SettingId(0x0E74);
+    pub const SALVO_SHOP: SettingId = SettingId(0x0E75);
+    pub const SALVO_GUIDE: SettingId = SettingId(0x0E76);
+    /// The four stored words Salvo's settings are packed into.
+    pub const SALVO_WORD0: SettingId = SettingId(0x0E80);
 }
 
 /// Lock delay, auto-shift delay and repeat interval choices (ms).
@@ -184,11 +243,184 @@ pub const PASS_LIMITS: [u8; 3] = [0, 3, 1];
 
 const BLOCKS_SETTINGS: usize = 10;
 const SOLITAIRE_FROM: usize = 15;
+const SALVO_FROM: usize = 22;
+#[cfg(feature = "salvo")]
+const SALVO_WORDS: usize = SALVO_FROM + 22;
+/// Game settings with a value of their own in the settings cache: all
+/// but Salvo's packed ones (its four words are).
+#[cfg(feature = "salvo")]
+pub const STORED_SETTINGS: usize = SALVO_FROM + 4;
+#[cfg(not(feature = "salvo"))]
+pub const STORED_SETTINGS: usize = SALVO_FROM;
 
-/// Every game setting (Blocks', 4096's, Solitaire's), each with the
-/// default that suits a first game. Stored like the apps' settings; edited
-/// in the pause menu's Settings.
-pub const SETTINGS: [Setting; 22] = [
+/// Salvo's settings (feature `salvo`): its choices, groups, and the four
+/// words they are packed into.
+#[cfg(feature = "salvo")]
+mod salvo_defs {
+    use super::*;
+
+    pub const PLAYER_COUNTS: &[Choice] = &[Choice::Lit("2"), Choice::Lit("3"), Choice::Lit("4")];
+    pub const KINDS: &[Choice] = &[
+        Choice::S(Str::GameHuman),
+        Choice::S(Str::GameNovice),
+        Choice::S(Str::GameEasy),
+        Choice::S(Str::GameHard),
+        Choice::S(Str::GameExpert),
+    ];
+    pub const ROUNDS: &[Choice] = &[Choice::Lit("1"), Choice::Lit("3"), Choice::Lit("5"), Choice::Lit("10")];
+    /// Rounds of each choice of `ROUNDS`.
+    pub const ROUND_COUNTS: [u8; 4] = [1, 3, 5, 10];
+    pub const TIMERS: &[Choice] =
+        &[Choice::S(Str::Off), Choice::Secs(15), Choice::Secs(30), Choice::Secs(60)];
+    /// Seconds per turn of each choice of `TIMERS` (0 = none).
+    pub const TIMER_SECS: [u8; 4] = [0, 15, 30, 60];
+    pub const TERRAINS: &[Choice] = &[
+        Choice::S(Str::GameHills),
+        Choice::S(Str::GameMountains),
+        Choice::S(Str::GameCanyon),
+        Choice::S(Str::GameIslands),
+        Choice::S(Str::GamePlateaus),
+        Choice::S(Str::GameMixed),
+    ];
+    pub const LEVELS: &[Choice] = &[Choice::S(Str::Low), Choice::S(Str::Medium), Choice::S(Str::High)];
+    pub const WIDTHS: &[Choice] =
+        &[Choice::Lit("128 px"), Choice::Lit("192 px"), Choice::Lit("256 px"), Choice::Lit("384 px")];
+    pub const GRAVITIES: &[Choice] = &[
+        Choice::S(Str::GameMoon),
+        Choice::S(Str::GameMars),
+        Choice::S(Str::GameEarth),
+        Choice::S(Str::GameJupiter),
+    ];
+    pub const WINDS: &[Choice] = &[
+        Choice::S(Str::GameNoScore),
+        Choice::S(Str::GameLight),
+        Choice::S(Str::GameStrong),
+        Choice::S(Str::GameCustom),
+    ];
+    /// Largest wind (m/s) of the first three choices of `WINDS`.
+    pub const WIND_MAX: [u8; 3] = [0, 4, 12];
+    pub const DRAGS: &[Choice] =
+        &[Choice::S(Str::Off), Choice::S(Str::GameRealistic), Choice::S(Str::GameHeavy)];
+    pub const HEALTHS: &[Choice] =
+        &[Choice::Lit("50"), Choice::Lit("100"), Choice::Lit("150"), Choice::Lit("200")];
+    /// Tank health of each choice of `HEALTHS`.
+    pub const HEALTH_POINTS: [u8; 4] = [50, 100, 150, 200];
+    pub const WEAPON_SETS: &[Choice] = &[Choice::S(Str::GameShellsOnly), Choice::S(Str::GameAllWeapons)];
+    pub const GUIDES: &[Choice] =
+        &[Choice::S(Str::GameNoScore), Choice::S(Str::GameLastShot), Choice::S(Str::GamePreview)];
+
+    pub const W0: u16 = 0x0E80;
+    pub const W1: u16 = 0x0E81;
+    pub const W2: u16 = 0x0E82;
+    pub const W3: u16 = 0x0E83;
+
+    /// Salvo's settings by group (players, world, rules), packed into the four
+    /// stored words `0x0E80 …` (bit fields; see `Setting::pack`).
+    pub const SETTINGS_SALVO_PLAYERS: [Setting; 7] = [
+        c(0x0E61, Str::GamePlayers, PLAYER_COUNTS, 0).packed(W0, 0, 2),
+        c(0x0E62, Str::GamePlayer1, KINDS, 0).packed(W0, 2, 3),
+        c(0x0E63, Str::GamePlayer2, KINDS, 2).packed(W0, 5, 3),
+        c(0x0E64, Str::GamePlayer3, KINDS, 2).packed(W0, 8, 3),
+        c(0x0E65, Str::GamePlayer4, KINDS, 2).packed(W0, 11, 3),
+        c(0x0E66, Str::GameRounds, ROUNDS, 1).packed(W0, 14, 2),
+        c(0x0E67, Str::GameTurnTimer, TIMERS, 0).packed(W1, 0, 2),
+    ];
+    pub const SETTINGS_SALVO_WORLD: [Setting; 10] = [
+        c(0x0E68, Str::GameTerrain, TERRAINS, 0).packed(W1, 2, 3),
+        c(0x0E69, Str::GameRoughness, LEVELS, 1).packed(W1, 5, 2),
+        c(0x0E6A, Str::GameRelief, LEVELS, 1).packed(W1, 7, 2),
+        r(0x0E6B, Str::GameTerrainSeed, 0, 99, 1, Unit::None, 0).packed(W1, 9, 7),
+        c(0x0E6C, Str::GameWorldWidth, WIDTHS, 2).packed(W2, 0, 2),
+        c(0x0E6D, Str::GameGravity, GRAVITIES, 2).packed(W2, 2, 2),
+        c(0x0E6E, Str::GameWind, WINDS, 1).packed(W2, 4, 2),
+        r(0x0E6F, Str::GameCustomWind, 1, 30, 1, Unit::MetresPerSecond, 8).packed(W2, 6, 5),
+        t(0x0E70, Str::GameGusts, 0).packed(W2, 11, 1),
+        c(0x0E71, Str::GameDrag, DRAGS, 1).packed(W2, 12, 2),
+    ];
+    pub const SETTINGS_SALVO_RULES: [Setting; 5] = [
+        c(0x0E72, Str::GameTankHealth, HEALTHS, 1).packed(W3, 0, 2),
+        t(0x0E73, Str::GameFallDamage, 1).packed(W3, 2, 1),
+        c(0x0E74, Str::GameWeapons, WEAPON_SETS, 1).packed(W3, 3, 1),
+        t(0x0E75, Str::GameShop, 1).packed(W3, 4, 1),
+        c(0x0E76, Str::GameAimGuide, GUIDES, 1).packed(W3, 5, 2),
+    ];
+
+    /// The default of a word: its settings' defaults in their bits.
+    pub const fn word_default(word: u16) -> i16 {
+        let groups: [&[Setting]; 3] = [&SETTINGS_SALVO_PLAYERS, &SETTINGS_SALVO_WORLD, &SETTINGS_SALVO_RULES];
+        let mut v: u16 = 0;
+        let mut g = 0;
+        while g < groups.len() {
+            let mut i = 0;
+            while i < groups[g].len() {
+                let s = &groups[g][i];
+                if let Some((w, shift, _)) = s.pack
+                    && w.0 == word
+                {
+                    v |= (s.default as u16) << shift;
+                }
+                i += 1;
+            }
+            g += 1;
+        }
+        v as i16
+    }
+
+    /// A stored word of packed settings (never shown).
+    pub const fn word(id: u16) -> Setting {
+        r(id, Str::GameSalvo, i16::MIN, i16::MAX, 1, Unit::None, word_default(id))
+    }
+
+    pub const fn salvo_settings() -> [Setting; 26] {
+        let mut out = [word(W0); 26];
+        let mut k = 0;
+        let groups: [&[Setting]; 3] = [&SETTINGS_SALVO_PLAYERS, &SETTINGS_SALVO_WORLD, &SETTINGS_SALVO_RULES];
+        let mut g = 0;
+        while g < groups.len() {
+            let mut i = 0;
+            while i < groups[g].len() {
+                out[k] = groups[g][i];
+                k += 1;
+                i += 1;
+            }
+            g += 1;
+        }
+        out[k] = word(W0);
+        out[k + 1] = word(W1);
+        out[k + 2] = word(W2);
+        out[k + 3] = word(W3);
+        out
+    }
+
+    pub const SALVO: [Setting; 26] = salvo_settings();
+}
+
+#[cfg(feature = "salvo")]
+pub use salvo_defs::{HEALTH_POINTS, ROUND_COUNTS, TIMER_SECS, WIND_MAX};
+#[cfg(feature = "salvo")]
+use salvo_defs::{SALVO, SETTINGS_SALVO_PLAYERS, SETTINGS_SALVO_RULES, SETTINGS_SALVO_WORLD, W0, word};
+
+/// Every game setting (Blocks', 4096's, Solitaire's, Salvo's and its
+/// words), each with the default that suits a first game. Stored like the
+/// apps' settings; edited in the pause menu's Settings.
+#[cfg(not(feature = "salvo"))]
+pub const SETTINGS: [Setting; 22] = FIRST;
+#[cfg(feature = "salvo")]
+pub const SETTINGS: [Setting; 48] = {
+    let mut out = [word(W0); 48];
+    let mut i = 0;
+    while i < SALVO_FROM {
+        out[i] = FIRST[i];
+        i += 1;
+    }
+    while i < 48 {
+        out[i] = SALVO[i - SALVO_FROM];
+        i += 1;
+    }
+    out
+};
+
+const FIRST: [Setting; 22] = [
     c(0x0E01, Str::GameMode, MODES, 0),
     r(0x0E02, Str::GameStartLevel, 1, 15, 1, Unit::None, 1),
     c(0x0E03, Str::GamePieces, PIECES, 0),
@@ -215,7 +447,7 @@ pub const SETTINGS: [Setting; 22] = [
 
 /// Settings that change the rules apply from the next game; the others
 /// (ghost, previews, animations, auto-shift and repeat, Solitaire's
-/// assists and timer) at once.
+/// assists and timer, Salvo's aim guide) at once.
 #[must_use]
 pub fn applies_next_game(sid: SettingId) -> bool {
     ![
@@ -227,6 +459,7 @@ pub fn applies_next_game(sid: SettingId) -> bool {
         id::SOL_AUTO_MOVE,
         id::SOL_AUTO_COMPLETE,
         id::SOL_TIMER,
+        id::SALVO_GUIDE,
     ]
     .contains(&sid)
 }
@@ -294,6 +527,46 @@ pub fn solitaire_config<S: SettingsService + ?Sized>(s: &S) -> solitaire::Config
 /// Solitaire's timer is shown.
 pub fn solitaire_timer<S: SettingsService + ?Sized>(s: &S) -> bool {
     s.setting(id::SOL_TIMER) != 0
+}
+
+/// The Salvo rules from the settings.
+#[cfg(feature = "salvo")]
+pub fn salvo_config<S: SettingsService + ?Sized>(s: &S) -> salvo::Config {
+    let v = |sid: SettingId| u8::try_from(s.setting(sid)).unwrap_or(0);
+    let mut kinds = [salvo::Kind::Human; 4];
+    for (i, k) in kinds.iter_mut().enumerate() {
+        *k = salvo::Kind::from_u8(v(SettingId(id::SALVO_PLAYER1.0 + i as u16))).unwrap_or_default();
+    }
+    let wind = match v(id::SALVO_WIND) {
+        w @ 0..=2 => WIND_MAX[usize::from(w)],
+        _ => v(id::SALVO_CUSTOM_WIND).clamp(1, 30),
+    };
+    salvo::Config {
+        players: 2 + v(id::SALVO_PLAYERS).min(2),
+        kinds,
+        rounds: pick(&ROUND_COUNTS, s.setting(id::SALVO_ROUNDS), 3),
+        gravity: v(id::SALVO_GRAVITY).min(3),
+        wind,
+        gusts: v(id::SALVO_GUSTS) != 0,
+        drag: v(id::SALVO_DRAG).min(2),
+        style: salvo::Style::from_u8(v(id::SALVO_TERRAIN)).unwrap_or_default(),
+        rough: v(id::SALVO_ROUGHNESS).min(2),
+        relief: v(id::SALVO_RELIEF).min(2),
+        terrain_seed: u16::from(v(id::SALVO_SEED)),
+        width: v(id::SALVO_WIDTH).min(3),
+        health: pick(&HEALTH_POINTS, s.setting(id::SALVO_HEALTH), 100),
+        fall_damage: v(id::SALVO_FALL) != 0,
+        full_set: v(id::SALVO_WEAPONS) != 0,
+        shop: v(id::SALVO_SHOP) != 0,
+        timer: pick(&TIMER_SECS, s.setting(id::SALVO_TIMER), 0),
+    }
+    .sanitised()
+}
+
+/// Salvo's aim guide: 0 none, 1 the last shot's trace, 2 a short preview.
+#[cfg(feature = "salvo")]
+pub fn salvo_guide<S: SettingsService + ?Sized>(s: &S) -> u8 {
+    u8::try_from(s.setting(id::SALVO_GUIDE)).unwrap_or(0).min(2)
 }
 
 /// What the screens ask of the service's storage side.
@@ -521,11 +794,9 @@ impl GamesIo {
                     return false;
                 }
                 hub.opening = None;
-                hub.session = if a.ok {
-                    Session::decode(data, Some(g)).unwrap_or(Session::None)
-                } else {
-                    Session::None
-                };
+                if !(a.ok && hub.session.decode_into(data, Some(g))) {
+                    hub.session = Session::None;
+                }
                 true
             }
             CardOp::Write(g) => {
@@ -542,6 +813,200 @@ impl GamesIo {
     }
 }
 
+/// Where a [`CardRun`] is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Stage {
+    /// Open the file and read it (`Load`: the score table), or open it
+    /// truncated, write the bytes and its directory entry (`Write`).
+    Open,
+    /// `Write`: the file could not be opened; make `/.orpheus` (0) and
+    /// [`DIR`] (1), then [`Stage::Open`] again (2).
+    MakeDir(u8),
+    /// `Load`: does the save file of `Game::ALL[k]` exist? `Remove`: does
+    /// the file exist (`k` 0)?
+    Exists(u8),
+    /// `Remove`: remove the file.
+    Remove,
+    /// The volume's dirty sectors back to the card, one per step, then
+    /// the sync and the clean flag (`Volume::flush_step`).
+    Flush,
+}
+
+/// A [`CardOp`] carried out in steps (a path walk with a read, or with a
+/// write into the sector cache; one sector written back; the sync), so that
+/// the firmware's card task runs it in pieces between DAC ring refills
+/// while music plays: whole, a save written before another game is read
+/// was one 100 ms piece, beyond every chore budget (`serve:games`, 8
+/// underruns on the player, 2026-11-25). The bytes are those of
+/// [`GamesIo::next`]'s buffer; the answer is [`GamesIo::done`]'s. Only
+/// files under [`DIR`] (CLAUDE.md rule 5). No file handle is kept between
+/// steps (a few bytes of state in the card task).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CardRun {
+    op: CardOp,
+    stage: Stage,
+    /// Bytes to write.
+    len: u16,
+    answer: CardAnswer,
+}
+
+/// The save file of engine id `g`.
+fn save_path(g: u8) -> Option<&'static str> {
+    Game::from_id(g).map(Game::path)
+}
+
+impl CardRun {
+    /// `op` with `len` bytes to write (`GamesIo::next`'s answer).
+    #[must_use]
+    pub fn new(op: CardOp, len: usize) -> CardRun {
+        let stage = if matches!(op, CardOp::Remove(_)) { Stage::Exists(0) } else { Stage::Open };
+        CardRun {
+            op,
+            stage,
+            len: u16::try_from(len).unwrap_or(0),
+            answer: CardAnswer { ok: true, len: 0, saved: 0 },
+        }
+    }
+
+    #[must_use]
+    pub fn op(&self) -> CardOp {
+        self.op
+    }
+
+    /// The file the operation is on.
+    fn path(&self) -> Option<&'static str> {
+        match self.op {
+            CardOp::Load | CardOp::WriteScores => Some(SCORES_PATH),
+            CardOp::Read(g) | CardOp::Write(g) | CardOp::Remove(g) => save_path(g),
+        }
+    }
+
+    /// One piece: steps while `more` says another may start (the firmware's
+    /// `audio::piece_left`: always for the first, and always outside a
+    /// chore, so the idle card task finishes in one piece). `Some` with the
+    /// answer when the operation is done.
+    pub async fn piece<D: orpheus_fs::BlockDevice>(
+        &mut self,
+        vol: &mut orpheus_fs::Volume<'_, D>,
+        buf: &mut [u8],
+        mut more: impl FnMut() -> bool,
+    ) -> Option<CardAnswer> {
+        while more() {
+            if let Some(a) = self.step(vol, buf).await {
+                return Some(a);
+            }
+        }
+        None
+    }
+
+    /// One step. `Some` with the answer when done.
+    pub async fn step<D: orpheus_fs::BlockDevice>(
+        &mut self,
+        vol: &mut orpheus_fs::Volume<'_, D>,
+        buf: &mut [u8],
+    ) -> Option<CardAnswer> {
+        let Some(path) = self.path() else { return self.fail() };
+        match self.stage {
+            Stage::Open | Stage::MakeDir(2..) => {
+                if matches!(self.op, CardOp::Write(_) | CardOp::WriteScores) {
+                    return self.open_write(vol, path, buf).await;
+                }
+                let read = Self::read(vol, path, buf).await;
+                match (read, self.op) {
+                    (Some(n), CardOp::Load) => {
+                        self.answer.len = n;
+                        self.stage = Stage::Exists(0);
+                    }
+                    // No table yet (or a damaged one) is fine: an empty one.
+                    (None, CardOp::Load) => self.stage = Stage::Exists(0),
+                    (Some(n), _) => {
+                        self.answer.len = n;
+                        return Some(self.answer);
+                    }
+                    (None, _) => return self.fail(),
+                }
+            }
+            Stage::MakeDir(k) => {
+                let _ = vol.create_dir(if k == 0 { "/.orpheus" } else { DIR }).await;
+                self.stage = Stage::MakeDir(k + 1);
+            }
+            Stage::Exists(k) => {
+                if let CardOp::Remove(_) = self.op {
+                    if !vol.exists(path).await.unwrap_or(false) {
+                        return Some(self.answer);
+                    }
+                    self.stage = Stage::Remove;
+                } else {
+                    let Some(g) = Game::ALL.get(usize::from(k)) else { return Some(self.answer) };
+                    if vol.exists(g.path()).await.unwrap_or(false) {
+                        self.answer.saved |= 1 << g.id();
+                    }
+                    if usize::from(k) + 1 >= Game::ALL.len() {
+                        return Some(self.answer);
+                    }
+                    self.stage = Stage::Exists(k + 1);
+                }
+            }
+            Stage::Remove => {
+                if vol.remove(path).await.is_err() {
+                    self.answer.ok = false;
+                }
+                self.stage = Stage::Flush;
+            }
+            Stage::Flush => match vol.flush_step().await {
+                Ok(true) => return Some(self.answer),
+                Ok(false) => {}
+                Err(_) => return self.fail(),
+            },
+        }
+        None
+    }
+
+    /// A whole file of at most `buf.len()` bytes into `buf`.
+    async fn read<D: orpheus_fs::BlockDevice>(
+        vol: &mut orpheus_fs::Volume<'_, D>,
+        path: &str,
+        buf: &mut [u8],
+    ) -> Option<u16> {
+        let mut f = vol.open(path, orpheus_fs::OpenMode::Read).await.ok()?;
+        if f.size() > buf.len() as u64 {
+            return None;
+        }
+        // A file opened for reading needs no close.
+        let n = vol.read_exact_or_eof(&mut f, buf).await.ok()?;
+        u16::try_from(n).ok()
+    }
+
+    /// Open truncated, write the bytes and the directory entry (into the
+    /// sector cache; [`Stage::Flush`] writes them back).
+    async fn open_write<D: orpheus_fs::BlockDevice>(
+        &mut self,
+        vol: &mut orpheus_fs::Volume<'_, D>,
+        path: &str,
+        buf: &[u8],
+    ) -> Option<CardAnswer> {
+        let mut f = match vol.open(path, orpheus_fs::OpenMode::Truncate).await {
+            Ok(f) => f,
+            Err(_) if self.stage == Stage::Open => {
+                self.stage = Stage::MakeDir(0);
+                return None;
+            }
+            Err(_) => return self.fail(),
+        };
+        let data = buf.get(..usize::from(self.len)).unwrap_or(&[]);
+        let wrote = vol.write(&mut f, data).await.is_ok_and(|n| n == data.len());
+        // What was done is still written back.
+        self.answer.ok = wrote && vol.write_entry(&mut f).await.is_ok();
+        self.stage = Stage::Flush;
+        None
+    }
+
+    fn fail(&mut self) -> Option<CardAnswer> {
+        self.answer = CardAnswer::FAILED;
+        Some(self.answer)
+    }
+}
+
 /// Start a new game of `game` with the settings as they are now.
 ///
 /// Solitaire with casino scoring: the game it replaces pays out its
@@ -550,20 +1015,36 @@ impl GamesIo {
 pub fn new_game<S: SettingsService + GamesService + ?Sized>(svc: &mut S, game: Game) {
     let seed = svc.game_seed();
     let banked = settle_casino(svc);
+    let charge = start_session(svc, game, seed);
+    if charge {
+        svc.games_mut().scores.add_to_bank(gid::SOLITAIRE, -solitaire::CASINO_DEAL, true);
+    }
+    // A request may apply an answer of the card side at once (the
+    // firmware): the new game is built by then, in a frame of its own.
+    if banked || charge {
+        svc.games_request(GamesRequest::SaveScores);
+    }
+}
+
+/// The new game into the session; true for a casino deal (charged).
+/// Salvo's is built in place (680 bytes: no copy on the stack).
+#[inline(never)]
+fn start_session<S: SettingsService + GamesService + ?Sized>(svc: &mut S, game: Game, seed: u64) -> bool {
     let session = match game {
         Game::Blocks => Session::Blocks(blocks::Blocks::new(blocks_config(svc), seed)),
         Game::Tiles => Session::Tiles(tiles::Tiles::new(tiles_config(svc), seed)),
         Game::Solitaire => Session::Solitaire(solitaire::Solitaire::new(solitaire_config(svc), seed)),
+        #[cfg(feature = "salvo")]
+        Game::Salvo => {
+            let cfg = salvo_config(svc);
+            svc.games_mut().session.start_salvo(cfg, seed);
+            return false;
+        }
     };
     let charge =
         matches!(&session, Session::Solitaire(s) if s.config().scoring == solitaire::Scoring::Casino);
-    if charge {
-        svc.games_mut().scores.add_to_bank(gid::SOLITAIRE, -solitaire::CASINO_DEAL, true);
-    }
     svc.games_mut().session = session;
-    if banked || charge {
-        svc.games_request(GamesRequest::SaveScores);
-    }
+    charge
 }
 
 /// What a casino game earned so far: 5 per card on the foundations.
@@ -661,6 +1142,24 @@ pub fn outcome(s: &Session) -> Option<(u8, u16, Outcome)> {
             };
             Some((gid::SOLITAIRE, g.config().variant(), o))
         }
+        #[cfg(feature = "salvo")]
+        Session::Salvo(g) if g.ended() => {
+            // The best human's points; won when a human leads. A game of
+            // computers only is not ranked.
+            let (best, lead) = g.human_result().unwrap_or((0, false));
+            let ranked = g.config().humans() > 0;
+            Some((
+                gid::SALVO,
+                g.config().variant(),
+                Outcome {
+                    result: u32::try_from(best).unwrap_or(0),
+                    detail: u32::from(g.config().rounds),
+                    lower_is_better: false,
+                    ranked,
+                    won: lead,
+                },
+            ))
+        }
         _ => None,
     }
 }
@@ -685,6 +1184,8 @@ pub fn best<S: SettingsService + GamesService + ?Sized>(svc: &S, game: Game) -> 
         Game::Blocks => blocks_config(svc).variant(),
         Game::Tiles => tiles_config(svc).variant(),
         Game::Solitaire => solitaire_config(svc).variant(),
+        #[cfg(feature = "salvo")]
+        Game::Salvo => salvo_config(svc).variant(),
     };
     svc.games().scores.get(game.id(), variant).map(|r| r.best).filter(|&b| b > 0)
 }
@@ -695,6 +1196,8 @@ pub fn best_is_time<S: SettingsService + ?Sized>(svc: &S, game: Game) -> bool {
         Game::Blocks => blocks_config(svc).mode == blocks::Mode::Lines40,
         Game::Solitaire => solitaire_config(svc).scoring == solitaire::Scoring::None,
         Game::Tiles => false,
+        #[cfg(feature = "salvo")]
+        Game::Salvo => false,
     }
 }
 
@@ -737,11 +1240,19 @@ mod tests {
             let key = std::format!("id = \"{:#06X}\"", s.id.0).replace("0X", "0x");
             assert!(manifest.contains(&key), "{key} missing from tests/settings/effects.toml");
         }
-        assert_eq!(
-            Game::Blocks.settings().len() + Game::Tiles.settings().len() + Game::Solitaire.settings().len(),
-            SETTINGS.len()
-        );
-        assert!(Game::Solitaire.settings().iter().all(|s| s.id.0 >= 0x0E41));
+        // Every setting in its game's list, Salvo's four words besides.
+        let words = if cfg!(feature = "salvo") { 4 } else { 0 };
+        assert_eq!(Game::ALL.iter().map(|g| g.settings().len()).sum::<usize>() + words, SETTINGS.len());
+        assert!(Game::Solitaire.settings().iter().all(|s| (0x0E41..0x0E61).contains(&s.id.0)));
+        #[cfg(feature = "salvo")]
+        {
+            assert!(
+                Game::Salvo.settings().iter().all(|s| (0x0E61..0x0E80).contains(&s.id.0) && s.pack.is_some())
+            );
+            let grouped: usize = Game::Salvo.groups().iter().map(|(_, l)| l.len()).sum();
+            assert_eq!(grouped, Game::Salvo.settings().len(), "every Salvo setting in a group");
+        }
+        assert_eq!(SETTINGS.iter().filter(|s| s.stored()).count(), STORED_SETTINGS);
         assert!(Game::Tiles.settings().iter().all(|s| (0x0E21..0x0E41).contains(&s.id.0)));
         assert!(matches!(def(id::BLOCKS_MODE).map(|d| d.kind), Some(Kind::Choice(_))));
     }
@@ -849,6 +1360,146 @@ mod tests {
         assert!(!hub.loaded);
         io.request(&mut hub, GamesRequest::SaveScores);
         assert_eq!(io.next(&hub, &mut buf).map(|j| j.0), Some(CardOp::Load));
+    }
+
+    /// A formatted card image (`mkfs`; `None` if the tool is missing):
+    /// exFAT with 128 KiB clusters (the owner's card) or FAT32 with
+    /// 512-byte clusters (two FAT copies, the most metadata per byte).
+    fn card_image(exfat: bool) -> Option<orpheus_fs::host::RamDisk> {
+        use std::process::Command;
+        let tool = if exfat { "mkfs.exfat" } else { "mkfs.fat" };
+        let dir = std::env::temp_dir().join("orpheus-apps-games-card");
+        std::fs::create_dir_all(&dir).ok()?;
+        let p = dir.join(std::format!("{tool}-{}.img", std::process::id()));
+        let f = std::fs::File::create(&p).ok()?;
+        f.set_len(if exfat { 192 << 20 } else { 64 << 20 }).ok()?;
+        drop(f);
+        let mut c = Command::new(tool);
+        if exfat {
+            c.args(["-q", "-c", "131072"]);
+        } else {
+            c.args(["-F", "32", "-s", "1"]);
+        }
+        let ok = c.arg(&p).output().is_ok_and(|o| o.status.success());
+        let disk = ok.then(|| orpheus_fs::host::RamDisk::load(&p).ok()).flatten();
+        let _ = std::fs::remove_file(&p);
+        if disk.is_none() {
+            std::eprintln!("{tool} missing: skipped");
+        }
+        disk
+    }
+
+    /// Player, 2026-11-25: with music playing, switching games (a save
+    /// written, then another read) was one `serve:games` piece of 100 ms,
+    /// above every chore budget (≈ 42 ms), forced after the starvation
+    /// bound: 8 underruns. Now every card operation runs in steps of at
+    /// most one path walk, file read or write, one sector written back or
+    /// the sync, and a piece whose budget allows one step does no more. The
+    /// result is the same as in one piece (the idle card task's case:
+    /// power-off, USB hand-over).
+    #[test]
+    fn regress_games_card_ops_in_pieces() {
+        use orpheus_fs::host::{RamDisk, block_on};
+        use orpheus_fs::{CacheSlot, MountOptions, Volume, WalkCache};
+        use orpheus_games::{SAVE_MAX, tiles::Tiles};
+        for exfat in [true, false] {
+            let Some(disk) = card_image(exfat) else { continue };
+            let mut results = std::vec::Vec::new();
+            for one_step in [true, false] {
+                let mut cache = std::vec![CacheSlot::EMPTY; 8];
+                let mut walks = WalkCache::EMPTY;
+                let opts = MountOptions { read_only: false, write_prefix: None, partition: None };
+                let mut vol: Volume<'_, RamDisk> =
+                    block_on(Volume::mount(disk.clone(), &mut cache, opts)).expect("mount");
+                vol.set_walk_cache(&mut walks);
+                block_on(vol.create_dir("/Music")).unwrap();
+                block_on(vol.flush()).unwrap();
+                let save = Session::Tiles(Tiles::new(tiles::Config::DEFAULT, 4));
+                let mut file = [0u8; SAVE_MAX];
+                let n = save.encode(&mut file).unwrap();
+                let scores = orpheus_games::Scores::new();
+                let mut table = [0u8; SAVE_MAX];
+                let tn = scores.encode(&mut table).unwrap();
+                let ops = [
+                    (CardOp::Load, 0),
+                    (CardOp::Write(gid::TILES), n),
+                    (CardOp::Write(gid::TILES), n),
+                    (CardOp::WriteScores, tn),
+                    (CardOp::Read(gid::TILES), 0),
+                    (CardOp::Load, 0),
+                    (CardOp::Remove(gid::TILES), 0),
+                    (CardOp::Read(gid::TILES), 0),
+                    (CardOp::Remove(gid::BLOCKS), 0),
+                    (CardOp::Load, 0),
+                ];
+                let mut answers = std::vec::Vec::new();
+                for (op, len) in ops {
+                    let mut buf = [0u8; SAVE_MAX];
+                    match op {
+                        CardOp::Write(_) => buf[..n].copy_from_slice(&file[..n]),
+                        CardOp::WriteScores => buf[..tn].copy_from_slice(&table[..tn]),
+                        _ => {}
+                    }
+                    let mut run = CardRun::new(op, len);
+                    let mut pieces = 0;
+                    let mut most = (0u64, 0u64);
+                    let a = loop {
+                        let (r0, w0) = (vol.device().reads, vol.device().writes);
+                        let mut first = true;
+                        let mut more = || core::mem::replace(&mut first, !one_step);
+                        let a = block_on(run.piece(&mut vol, &mut buf, &mut more));
+                        pieces += 1;
+                        let (r, w) = (vol.device().reads - r0, vol.device().writes - w0);
+                        most = (most.0.max(r), most.1.max(w));
+                        // Making the games folder zeroes its cluster
+                        // (once in a card's life): not bounded here.
+                        let made_dir = matches!(run.stage, Stage::MakeDir(1 | 2));
+                        if one_step && !made_dir {
+                            // FAT32's truncating open: the dirty flag in
+                            // both FATs and the freed chain's FAT sector.
+                            assert!(w <= 3, "{op:?} (exFAT {exfat}): a piece wrote {w} sectors");
+                            assert!(r + w <= 6, "{op:?} (exFAT {exfat}): a piece did {r} reads, {w} writes");
+                        }
+                        if let Some(a) = a {
+                            break a;
+                        }
+                        assert!(pieces < 40, "{op:?} never ends");
+                    };
+                    if !one_step {
+                        assert_eq!(pieces, 1, "{op:?}: one piece outside a chore");
+                    } else if matches!(op, CardOp::Write(_) | CardOp::WriteScores) {
+                        // Open and write, at least one sector back, the sync.
+                        assert!(pieces >= 3, "{op:?}: {pieces} pieces");
+                    }
+                    if one_step {
+                        std::eprintln!(
+                            "exFAT {exfat}: {op:?}: {pieces} pieces, ≤ {} reads, ≤ {} writes",
+                            most.0,
+                            most.1
+                        );
+                    }
+                    if op == CardOp::Read(gid::TILES) && a.ok {
+                        assert_eq!(
+                            Session::decode(&buf[..usize::from(a.len)], Some(gid::TILES)),
+                            Some(save.clone())
+                        );
+                    }
+                    answers.push(a);
+                }
+                assert_eq!(vol.dirty_sectors(), 0);
+                let (_, r) = block_on(vol.unmount());
+                r.unwrap();
+                results.push(answers);
+            }
+            let a = &results[0];
+            assert_eq!(a, &results[1], "pieces or not: the same answers");
+            assert!(a[0].ok && a[0].saved == 0 && a[0].len == 0, "no table, no saves");
+            assert!(a[1].ok && a[2].ok && a[3].ok, "writes");
+            assert!(a[4].ok && usize::from(a[4].len) > 0, "read back");
+            assert!(a[5].ok && a[5].saved == 1 << gid::TILES && a[5].len > 0, "table and a save");
+            assert!(a[6].ok && !a[7].ok && a[8].ok, "removed; read fails; nothing to remove");
+            assert_eq!(a[9].saved, 0);
+        }
     }
 
     /// Casino: the deal is charged, a game left pays its cards out.
