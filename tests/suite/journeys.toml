@@ -68,6 +68,9 @@ ok expect-screen:SettingsGroup shot:system back
 expect-screen:Settings
 """
 
+[journey.shot.usb]
+rects = [{ x = 0, y = 34, w = 84, h = 17, why = "focused row's scrolling label (marquee timing)" }]
+
 [[journey]]
 name = "system"
 about = "Information screens: About, Battery, Card (figures masked)"
@@ -79,8 +82,13 @@ expect-screen:Settings
 """
 
 # A label is shortened to fit its value: the serial is the player's own.
+# The full-layout player has a "Firmware slot" row the simulator lacks
+# (T-6, 2026-11-24): rows 3–4 differ until the simulator shows a slot.
 [journey.shot.about]
-rects = [{ x = 24, y = 71, w = 24, h = 19, why = "Serial number label (shortened to fit the player's serial)" }]
+rects = [
+    { x = 24, y = 71, w = 24, h = 19, why = "Serial number label (shortened to fit the player's serial)" },
+    { x = 0, y = 71, w = 128, h = 38, why = "Firmware slot row on the full-layout player (the simulator has no slot)" },
+]
 
 [[journey]]
 name = "usb"
@@ -90,6 +98,13 @@ prev ok down*8 ok expect-screen:SettingsGroup shot:usb_group
 ok expect-screen:Choice shot:usb_when back
 expect-screen:SettingsGroup
 """
+
+# The focused first row's label ("When connected") is too long and scrolls;
+# on the player the suite's reads land mid-scroll (2026-11-25, open:
+# the marquee's rest vs the 6 s retry). The label is checked at rest in
+# other shots; its value and the other rows stay compared.
+[journey.shot.usb_group]
+rects = [{ x = 0, y = 34, w = 84, h = 17, why = "focused row's scrolling label (marquee timing)" }]
 
 [[journey]]
 name = "files"

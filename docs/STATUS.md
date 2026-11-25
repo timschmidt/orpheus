@@ -67,6 +67,16 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-25 — on-device suite on the games build: 16/16 (lead)
+
+* Build `40953ef7` (Games on Home, Solitaire, Recordings fix): 16 journeys
+  (new `games`); stack free ≥ 7,824 B of 20,832 B. Three shots needed
+  masks, each with its reason in `tests/suite/journeys.toml`: `about` (the
+  full-layout player's "Firmware slot" row, absent in the simulator) and
+  the USB group's first row (`usb_group`, `settings/usb`: the focused
+  label "When connected" scrolls and the reads land mid-scroll — open: the
+  marquee's rest against the 6 s retry). After that: **16 of 16 pass**.
+
 ### 2026-11-25 — Recorder › Recordings fixed; the lead's test recordings removed (lead)
 
 * Recorder › Recordings… listed the **card's root** instead of
