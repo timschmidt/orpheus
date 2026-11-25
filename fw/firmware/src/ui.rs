@@ -392,6 +392,9 @@ static SESSION: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool:
 static SESSION_HELD: core::sync::atomic::AtomicU16 = core::sync::atomic::AtomicU16::new(0);
 /// `settings test-set ID VALUE` for the UI task: `id << 16 | value`, 0 none.
 static PENDING_SET: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// `PENDING_SET` value asking for the `settings changed` list (no setting
+/// has id 0xFFFF).
+const CHANGED_REQ: u32 = u32::MAX;
 /// Settings keys loaded from NOR at boot (0xFFFF: the store did not mount)
 /// and a CRC-32 over them (key, bytes): the soak compares the boot before
 /// and after a run (the store is readable and unchanged).
@@ -463,6 +466,12 @@ pub fn settings_command(rest: &[u8]) -> bool {
         session_reply();
         return true;
     }
+    if rest == b"changed" {
+        // Read-only: the UI loop lists every stored setting whose value is
+        // not its default (no session needed; nothing is written).
+        PENDING_SET.store(CHANGED_REQ, core::sync::atomic::Ordering::Relaxed);
+        return true;
+    }
     let Some(args) = rest.strip_prefix(b"test-set ") else { return false };
     let mut w = args.split(|&b| b == b' ').filter(|w| !w.is_empty());
     let (Some(id), Some(v)) = (w.next().and_then(parse_num), w.next().and_then(parse_num)) else {
@@ -501,6 +510,18 @@ pub fn request_screen_off() {
 fn soak_hooks(ui: &mut Ui) {
     use orpheus_apps::services::SettingsService;
     let p = PENDING_SET.swap(0, core::sync::atomic::Ordering::Relaxed);
+    if p == CHANGED_REQ {
+        crate::audio::reply(|r| {
+            r.s(b"changed:");
+            for d in orpheus_apps::settings::all().filter(|d| d.stored()) {
+                let v = ui.fw.settings.get(d.id);
+                if v != d.default {
+                    r.s(b" ").h(u32::from(d.id.0)).s(b"=").i(v);
+                }
+            }
+        });
+        return;
+    }
     if p != 0 && session_on() {
         let sid = orpheus_apps::settings::SettingId((p >> 16) as u16);
         let want = p as u16 as i16;

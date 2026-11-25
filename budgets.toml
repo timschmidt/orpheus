@@ -39,7 +39,9 @@ stack_bytes = 12288             # 12 KiB
 # own; .bss -512 B, the audio task's future). A ratchet at the measured
 # margin less one 256 B step: the usable size moves by 256 B with .bss
 # (the guard is aligned to 256 B; `__stack_bottom` 0x131B00 is on a step).
-stack_static_margin_bytes = 6084
+# 2026-11-25: `settings changed` (+8 B resident) crossed one step: margin
+# 6,340 -> 6,076 B; ratchet at that less one step.
+stack_static_margin_bytes = 5820
 # Firmware partition in the dual-boot layout (slot A): the whole "YFW1"
 # image (header sector, resident image, page store).
 slot_bytes_dual = 491520        # 480 KiB
