@@ -333,8 +333,37 @@ pub fn top_reply() {
             .s(b" locked=")
             .u(bit(14))
             .s(b" screen=")
-            .u(bit(15));
+            .u(bit(15))
+            .s(b" look=")
+            .u(u64::from(TEST_LOOK.load(core::sync::atomic::Ordering::Relaxed)));
     });
+}
+
+/// Developer `ui test-look on|off` (VER-7): while on, the appearance
+/// settings read as their defaults (Dark, Blue, all Home apps, clock in the
+/// bar, lists roll round, no rotation, English, Now Playing's first view)
+/// so screenshots match the simulator; the settings store is not written.
+/// A RAM flag: cleared by `off` and by every reboot (`.bss`).
+static TEST_LOOK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+pub fn set_test_look(on: bool) {
+    TEST_LOOK.store(on, core::sync::atomic::Ordering::Relaxed);
+    crate::audio::reply(|r| {
+        r.s(if on { b"test-look on" } else { b"test-look off" });
+    });
+}
+
+/// The value `sid` reads as under the test look, if it is one of its
+/// settings: Display 0x0304–0x030C (theme … roll round), language,
+/// Now Playing view.
+pub fn test_look(sid: orpheus_apps::settings::SettingId) -> Option<i16> {
+    let look = (0x0304..=0x030C).contains(&sid.0) || sid.0 == 0x0A01 || sid.0 == 0x0D03;
+    (look && TEST_LOOK.load(core::sync::atomic::Ordering::Relaxed))
+        .then(|| orpheus_apps::settings::def(sid).map_or(0, |d| d.default))
+}
+
+fn test_look_on() -> bool {
+    TEST_LOOK.load(core::sync::atomic::Ordering::Relaxed)
 }
 
 static mut FW_CELL: core::mem::MaybeUninit<Fw> = core::mem::MaybeUninit::uninit();
@@ -429,6 +458,7 @@ pub async fn ui() {
     let mut last_key_ms = now().0;
     let mut low_since = 0u64;
     let mut flashing = false;
+    let mut seen_look = false;
     loop {
         let t = now();
         let mut deadline = t.0 + 1000;
@@ -490,6 +520,14 @@ pub async fn ui() {
                 }
             }
             Either4::Third(()) => {}
+        }
+        // VER-7: the test look switched: every screen reloads and redraws.
+        if test_look_on() != seen_look {
+            seen_look = !seen_look;
+            ui.fw
+                .pending
+                .push(Event::Service(ServiceEvent::SettingChanged(orpheus_apps::settings::id::HOME_APPS.0)));
+            ui.shell.invalidate();
         }
         let w0 = atj2157_hal::time::now_us();
         LOOPS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);

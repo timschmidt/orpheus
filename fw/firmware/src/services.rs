@@ -805,6 +805,10 @@ impl Fw {
 
 impl SettingsService for Fw {
     fn setting(&self, sid: SettingId) -> i16 {
+        // VER-7: `ui test-look on` (RAM only, the store keeps its values).
+        if let Some(v) = crate::ui::test_look(sid) {
+            return v;
+        }
         self.settings.get(sid)
     }
     fn set_setting(&mut self, sid: SettingId, value: i16) {
