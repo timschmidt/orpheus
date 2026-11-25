@@ -199,5 +199,9 @@ fn rotation_swaps_keys() {
     // Up on a rotated device moves down: Settings instead of Library.
     s.run_script("up ok expect-screen:Settings").unwrap();
     let mut n = Sim::new();
-    n.run_script("up ok expect-screen:Library").unwrap();
+    n.run_script("down ok expect-screen:Settings").unwrap();
+    // Unrotated Up on the first row rolls round to the last (UI-8).
+    let mut u = Sim::new();
+    u.run_script("up ok").unwrap();
+    assert!(!["Library", "Settings"].contains(&u.shell.top_name()), "{}", u.shell.top_name());
 }

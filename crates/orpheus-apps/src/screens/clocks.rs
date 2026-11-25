@@ -458,6 +458,10 @@ impl<S: Services + ?Sized> Screen<S> for ToolsScreen {
                 self.next_key(cx);
                 return Nav::Stay;
             }
+            // Prev/Next belong to the tabs: the rest of the press (its
+            // release) must not page the alarm list, which would roll it
+            // round (UI-8).
+            Event::Key(Key::Prev | Key::Next, _) => return Nav::Stay,
             Event::Ui(UiEvent::Dialog { id: DLG_RESET, button }) => {
                 if button == 1 {
                     cx.svc.tools_mut().stopwatch.reset();
@@ -487,7 +491,7 @@ impl<S: Services + ?Sized> Screen<S> for ToolsScreen {
         match self.tab {
             TAB_ALARM => {
                 let mut l = self.list;
-                let act = l.handle(&self.rows, ev, ALARM_ROWS, cx.now);
+                let act = l.handle(&self.rows, ev, ALARM_ROWS, cx.list());
                 self.list = l;
                 if let ListAction::Activated(_) = act
                     && let Some(i) = self.focused_alarm()
@@ -505,13 +509,15 @@ impl<S: Services + ?Sized> Screen<S> for ToolsScreen {
                 Event::Key(Key::Ok, KeyPhase::Down) => self.ok_key(cx),
                 Event::Key(k @ (Key::Up | Key::Down), KeyPhase::Down | KeyPhase::Repeat) => {
                     if self.tab == TAB_SW {
-                        let max = u8::try_from(cx.svc.tools().stopwatch.kept().saturating_sub(LAP_ROWS))
-                            .unwrap_or(0);
-                        self.lap_top = if k == Key::Up {
-                            self.lap_top.saturating_sub(1)
-                        } else {
-                            (self.lap_top + 1).min(max)
-                        };
+                        // The laps scroll by whole rows with the toolkit's
+                        // list rules (roll-around, repeat stops at the end).
+                        let max = cx.svc.tools().stopwatch.kept().saturating_sub(LAP_ROWS);
+                        let n = u32::try_from(max).map_or(1, |m| m + 1);
+                        if let Some((t, _)) =
+                            ListView::step_plain(u32::from(self.lap_top), 0, n, 1, ev, cx.list())
+                        {
+                            self.lap_top = u8::try_from(t).unwrap_or(0);
+                        }
                     } else {
                         self.choose_preset(cx, k == Key::Up);
                     }
@@ -667,7 +673,7 @@ impl<S: Services + ?Sized> Screen<S> for AlarmDaysScreen {
             return Nav::Pop;
         }
         let mut l = self.list;
-        let act = l.handle(&self.rows, ev, 5, cx.now);
+        let act = l.handle(&self.rows, ev, 5, cx.list());
         self.list = l;
         if let ListAction::Activated(i) = act
             && let Some(r) = self.rows.get(i)

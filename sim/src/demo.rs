@@ -337,7 +337,7 @@ impl Screen<SimSystem> for HomeScreen {
     fn event(&mut self, cx: &mut C<'_>, ev: &Event) -> Nav {
         self.lang = cx.svc.lang;
         let mut list = self.list;
-        let act = list.handle(self, ev, ROWS, cx.now);
+        let act = list.handle(self, ev, ROWS, cx.list());
         self.list = list;
         match act {
             ListAction::Activated(i) => {
@@ -477,7 +477,7 @@ impl Screen<SimSystem> for LibraryScreen {
             _ => {}
         }
         let mut list = self.list;
-        let act = list.handle(self, ev, ROWS, cx.now);
+        let act = list.handle(self, ev, ROWS, cx.list());
         self.list = list;
         if let ListAction::Activated(i) = act {
             if i < 4 {
@@ -584,7 +584,7 @@ impl Screen<SimSystem> for SettingsScreen {
             return Nav::Pop;
         }
         let mut list = self.list;
-        let act = list.handle(self, ev, ROWS, cx.now);
+        let act = list.handle(self, ev, ROWS, cx.list());
         self.list = list;
         if let ListAction::Activated(i) = act {
             match i {

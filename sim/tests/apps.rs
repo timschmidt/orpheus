@@ -154,7 +154,7 @@ fn home_grid_and_hidden_apps() {
          down ok expect-screen:Recorder back up",
     );
     // Hide Radio (bit 2) in Settings > Display > Home screen.
-    run(&mut s, "prev ok down*2 ok down*10 ok expect-screen:HomeApps down*2 ok");
+    run(&mut s, "prev ok down*2 ok down*11 ok expect-screen:HomeApps down*2 ok");
     assert_eq!(s.sys.settings.get(id::HOME_APPS) & (1 << 2), 0);
     // Settings cannot be hidden.
     run(&mut s, "down*8 ok");
@@ -176,7 +176,7 @@ fn picker_sets_the_clock() {
 fn language_switch_changes_strings() {
     let mut s = sim("lang:cyrillic");
     assert_eq!(s.sys.lang.code(), "ru");
-    run(&mut s, "prev ok down*9 ok ok down*2 ok");
+    run(&mut s, "prev ok down*9 ok ok down ok");
     assert_eq!(s.sys.lang.code(), "ja", "Language choice list: English, Русский, 日本語");
     assert_eq!(settings::lang_code("ja"), s.sys.settings.get(id::LANGUAGE));
 }
@@ -229,13 +229,13 @@ fn performance_choice() {
 #[test]
 fn developer_rows_unlock_and_logger() {
     // Without the unlock the last System row is Performance.
-    let mut s = sim("prev ok down*11 ok down*9 ok expect-screen:Choice");
+    let mut s = sim("prev ok down*11 ok up ok expect-screen:Choice");
     assert!(!s.sys.developer);
     run(&mut s, "back back ok ok expect-screen:Info ok*4");
     assert!(!s.sys.developer, "four presses are not enough");
     run(&mut s, "ok");
     assert!(s.sys.developer);
-    run(&mut s, "back down*9 ok expect-screen:Developer ok");
+    run(&mut s, "back up ok expect-screen:Developer ok");
     assert!(s.sys.drain.on && !s.sys.drain.stay);
     assert_eq!(s.sys.drain.file, 1);
     run(&mut s, "down ok");

@@ -1094,6 +1094,13 @@ pub fn palette<S: SettingsService + ?Sized>(s: &S) -> Palette {
     theme.palette(accent)
 }
 
+/// Settings → Display → List roll-around (UI-8): what
+/// `orpheus_ui::shell::System::list_roll_around` answers, so every list
+/// follows the one stored setting.
+pub fn list_roll_around<S: SettingsService + ?Sized>(s: &S) -> bool {
+    s.setting(id::LIST_ROLL) != 0
+}
+
 // ---------------------------------------------------------------- Files
 
 pub use crate::browse::{DirId, EntryKind, FileRef};

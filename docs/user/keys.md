@@ -10,7 +10,7 @@ times (below).
 
 | Key | Press | Hold |
 |---|---|---|
-| **Up / Down** | Move the highlight; change a value in an editor | Repeat, faster after a second |
+| **Up / Down** | Move the highlight (in lists, past the end round to the other end: Settings › Display › List roll-around); change a value in an editor | Repeat, faster after a second; stops at the end of a list |
 | **Prev / Next** | Lists: page up / page down. Now Playing: previous / next track | Lists: jump by first letter. Now Playing: seek |
 | **OK** | Open or start the highlighted item. Now Playing: play / pause | Now Playing: stop |
 | **Back** | Up one level; closes menus and dialogs | Go to Home |

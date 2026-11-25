@@ -135,6 +135,48 @@ pub trait ListSource {
     }
 }
 
+/// What a list needs from the context to handle a key: the time of the
+/// key and the **List roll-around** setting (Settings › Display, 05 §3,
+/// §5.2). Screens take it from [`Cx::list`](crate::nav::Cx::list); the shell
+/// fills it from [`System::list_roll_around`](crate::shell::System), so
+/// every list in the UI follows the one setting.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ListCx {
+    pub now: Instant,
+    /// Down on the last row goes to the first, Up on the first to the last
+    /// (fresh presses only; an auto-repeat stops at the end).
+    pub roll: bool,
+}
+
+impl ListCx {
+    /// Roll-around on (the setting's default).
+    #[must_use]
+    pub const fn new(now: Instant) -> ListCx {
+        ListCx { now, roll: true }
+    }
+
+    /// Roll-around off: the ends clamp.
+    #[must_use]
+    pub const fn clamped(now: Instant) -> ListCx {
+        ListCx { now, roll: false }
+    }
+}
+
+/// `n` plain focusable rows: the shape of a list whose screen draws its own
+/// rows (Authenticator, laps, the Steps week) but moves focus with the
+/// toolkit's rules through [`ListView::step_plain`].
+#[derive(Clone, Copy, Debug)]
+pub struct Plain(pub u32);
+
+impl ListSource for Plain {
+    fn len(&self) -> u32 {
+        self.0
+    }
+    fn row(&self, _i: u32) -> Row<'_> {
+        Row::Item(Item::new(""))
+    }
+}
+
 /// What a key did to the list.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ListAction {
@@ -155,12 +197,18 @@ struct Drawn {
 }
 
 /// Focus, scroll and marquee state of a list (about 48 bytes).
+///
+/// Movement (05 §3, §5.2): Up/Down step over rows (section headers are
+/// skipped); Prev/Next page by the visible rows; with roll-around
+/// ([`ListCx::roll`]) a fresh Down on the last row goes to the first and a
+/// fresh Up on the first to the last, and Next on the last row / Prev on
+/// the first roll round to the other end the same way. Auto-repeats never
+/// roll round: a held key stops at the end. Without roll-around the ends
+/// clamp.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ListView {
     pub focus: u32,
     pub top: u32,
-    /// Wrap from the last row to the first (off by default, 05 §5.2).
-    pub wrap: bool,
     focus_since: Instant,
     /// Pixels by which the focused row's text overflows (measured on draw).
     overflow: i16,
@@ -199,7 +247,6 @@ impl ListView {
         ListView {
             focus: 0,
             top: 0,
-            wrap: false,
             focus_since: Instant(0),
             overflow: 0,
             jump: None,
@@ -243,10 +290,12 @@ impl ListView {
 
     fn scroll_to_focus(&mut self, src: &dyn ListSource, rows: u32) {
         let n = src.len();
-        if self.focus < self.top {
+        if self.focus <= self.top {
             self.top = self.focus;
-            // Keep a section header above the focused row visible.
-            if self.top > 0 && !Self::focusable(src, self.top - 1) {
+            // Keep a section header above the focused row visible (also
+            // when focus lands on the top row, as rolling round from the
+            // last row to the first does).
+            if self.top > 0 && rows > 1 && !Self::focusable(src, self.top - 1) {
                 self.top -= 1;
             }
         } else if self.focus >= self.top + rows {
@@ -259,7 +308,8 @@ impl ListView {
         }
     }
 
-    fn step(&mut self, src: &dyn ListSource, forward: bool) -> bool {
+    /// Move focus one focusable row; past an end only when `roll`.
+    fn step(&mut self, src: &dyn ListSource, forward: bool, roll: bool) -> bool {
         let n = src.len();
         if n == 0 {
             return false;
@@ -268,7 +318,7 @@ impl ListView {
         for _ in 0..n {
             if forward {
                 if i + 1 >= n {
-                    if !self.wrap {
+                    if !roll {
                         return false;
                     }
                     i = 0;
@@ -276,7 +326,7 @@ impl ListView {
                     i += 1;
                 }
             } else if i == 0 {
-                if !self.wrap {
+                if !roll {
                     return false;
                 }
                 i = n - 1;
@@ -284,26 +334,47 @@ impl ListView {
                 i -= 1;
             }
             if Self::focusable(src, i) {
+                let moved = i != self.focus;
                 self.focus = i;
-                return true;
+                return moved;
             }
         }
         false
     }
 
-    fn page(&mut self, src: &dyn ListSource, forward: bool, rows: u32) -> bool {
+    /// No focusable row after (`forward`) or before the focused one.
+    fn at_end(&self, src: &dyn ListSource, forward: bool) -> bool {
+        let n = src.len();
+        if forward {
+            !(self.focus.saturating_add(1)..n).any(|i| Self::focusable(src, i))
+        } else {
+            !(0..self.focus.min(n)).any(|i| Self::focusable(src, i))
+        }
+    }
+
+    fn page(&mut self, src: &dyn ListSource, forward: bool, rows: u32, roll: bool) -> bool {
         let n = src.len();
         if n == 0 {
             return false;
         }
         let old = self.focus;
+        if roll && self.at_end(src, forward) {
+            // The last page to the first, the first to the last: land on
+            // the end row the way Up/Down roll round.
+            self.focus = if forward { 0 } else { n - 1 };
+            if !Self::focusable(src, self.focus) {
+                self.step(src, forward, false);
+            }
+            self.top = if forward { 0 } else { n.saturating_sub(rows) };
+            return self.focus != old;
+        }
         let target = if forward { (self.focus + rows).min(n - 1) } else { self.focus.saturating_sub(rows) };
         self.focus = target;
         if !Self::focusable(src, target) {
             // Move to the nearest focusable row in the paging direction,
             // else the other way.
-            if !self.step(src, forward) {
-                self.step(src, !forward);
+            if !self.step(src, forward, false) {
+                self.step(src, !forward, false);
             }
         }
         if forward {
@@ -312,6 +383,22 @@ impl ListView {
             self.top = self.top.saturating_sub(rows);
         }
         self.focus != old
+    }
+
+    /// The toolkit's list movement for a screen that keeps its own focus
+    /// and scroll over `n` plain rows (`rows` visible): Up/Down and
+    /// Prev/Next with roll-around and the repeat stop exactly as
+    /// [`ListView::handle`] (without repeat acceleration). Returns the new
+    /// `(focus, top)` if the key moved the focus.
+    #[must_use]
+    pub fn step_plain(focus: u32, top: u32, n: u32, rows: u32, ev: &Event, lc: ListCx) -> Option<(u32, u32)> {
+        let mut l = ListView::new();
+        l.focus = focus.min(n.saturating_sub(1));
+        l.top = top;
+        match l.handle(&Plain(n), ev, rows.max(1), lc) {
+            ListAction::Moved => Some((l.focus, l.top)),
+            _ => None,
+        }
     }
 
     fn jump_letter(&mut self, src: &dyn ListSource, forward: bool) -> bool {
@@ -336,23 +423,28 @@ impl ListView {
         }
     }
 
-    /// Handle a key. `rows` is the number of visible rows.
-    pub fn handle(&mut self, src: &dyn ListSource, ev: &Event, rows: u32, now: Instant) -> ListAction {
+    /// Handle a key. `rows` is the number of visible rows; `lc` carries the
+    /// time and the roll-around setting ([`Cx::list`](crate::nav::Cx::list)).
+    pub fn handle(&mut self, src: &dyn ListSource, ev: &Event, rows: u32, lc: ListCx) -> ListAction {
         let Event::Key(k, p) = *ev else { return ListAction::None };
+        let now = lc.now;
         let moved = match (k, p) {
             (Key::Up | Key::Down, KeyPhase::Down) => {
                 self.repeats = 0;
-                self.step(src, k == Key::Down)
+                self.step(src, k == Key::Down, lc.roll)
             }
             (Key::Up | Key::Down, KeyPhase::Repeat) => {
+                // A held key stops at the end (05 §3): never roll round.
                 self.repeats = self.repeats.saturating_add(1);
                 let mut moved = false;
                 for _ in 0..self.repeat_rows() {
-                    moved |= self.step(src, k == Key::Down);
+                    moved |= self.step(src, k == Key::Down, false);
                 }
                 moved
             }
-            (Key::Prev | Key::Next, KeyPhase::Up { held: false }) => self.page(src, k == Key::Next, rows),
+            (Key::Prev | Key::Next, KeyPhase::Up { held: false }) => {
+                self.page(src, k == Key::Next, rows, lc.roll)
+            }
             (Key::Prev | Key::Next, KeyPhase::Hold) => {
                 if src.letter(self.focus).is_some() {
                     self.jump = src.letter(self.focus);
@@ -622,8 +714,34 @@ mod tests {
         }
     }
 
+    /// A windowed source: only rows `[lo, hi)` are loaded.
+    struct Window {
+        n: u32,
+        lo: u32,
+        hi: u32,
+    }
+    impl ListSource for Window {
+        fn len(&self) -> u32 {
+            self.n
+        }
+        fn row(&self, i: u32) -> Row<'_> {
+            if (self.lo..self.hi).contains(&i) { Row::Item(Item::new("x")) } else { Row::Pending }
+        }
+    }
+
+    const ON: ListCx = ListCx::new(Instant(0));
+    const OFF: ListCx = ListCx::clamped(Instant(0));
+
     fn key(k: Key) -> Event {
         Event::Key(k, KeyPhase::Down)
+    }
+
+    fn rep(k: Key) -> Event {
+        Event::Key(k, KeyPhase::Repeat)
+    }
+
+    fn tap(k: Key) -> Event {
+        Event::Key(k, KeyPhase::Up { held: false })
     }
 
     #[test]
@@ -633,37 +751,172 @@ mod tests {
         assert_eq!(l.focus, 1);
         assert_eq!(l.top, 0);
         for _ in 0..5 {
-            l.handle(&Src, &key(Key::Down), 5, Instant(0));
+            l.handle(&Src, &key(Key::Down), 5, OFF);
         }
         assert_eq!(l.focus, 6);
-        l.handle(&Src, &key(Key::Down), 5, Instant(0));
+        l.handle(&Src, &key(Key::Down), 5, OFF);
         assert_eq!(l.focus, 8, "skips header at 7");
         assert_eq!(l.top, 4);
         // Back up across the header: the header stays in view.
-        l.handle(&Src, &key(Key::Up), 5, Instant(0));
+        l.handle(&Src, &key(Key::Up), 5, OFF);
         assert_eq!(l.focus, 6);
-        // Bottom: no wrap.
+        // Bottom, roll-around off: clamps.
         for _ in 0..40 {
-            l.handle(&Src, &key(Key::Down), 5, Instant(0));
+            l.handle(&Src, &key(Key::Down), 5, OFF);
         }
         assert_eq!(l.focus, 19);
         assert_eq!(l.top, 15);
-        l.wrap = true;
-        l.handle(&Src, &key(Key::Down), 5, Instant(0));
+        assert_eq!(l.handle(&Src, &key(Key::Down), 5, OFF), ListAction::None);
+        assert_eq!(l.focus, 19);
+    }
+
+    #[test]
+    fn roll_around_at_both_ends() {
+        let mut l = ListView::new();
+        l.set_focus(&Src, 0, 5, Instant(0));
+        // Up on the first focusable row (row 0 is a header): the last row.
+        assert_eq!(l.handle(&Src, &key(Key::Up), 5, ON), ListAction::Moved);
+        assert_eq!((l.focus, l.top), (19, 15));
+        // Down on the last row: the first focusable row, header in view.
+        assert_eq!(l.handle(&Src, &key(Key::Down), 5, ON), ListAction::Moved);
+        assert_eq!((l.focus, l.top), (1, 0));
+        // Off: both ends clamp.
+        assert_eq!(l.handle(&Src, &key(Key::Up), 5, OFF), ListAction::None);
         assert_eq!(l.focus, 1);
+    }
+
+    #[test]
+    fn rolling_to_the_top_shows_the_header_above() {
+        // A settings group: a title header and five rows, five visible.
+        struct Group;
+        impl ListSource for Group {
+            fn len(&self) -> u32 {
+                6
+            }
+            fn row(&self, i: u32) -> Row<'_> {
+                if i == 0 { Row::Header("Power") } else { Row::Item(Item::new("x")) }
+            }
+        }
+        let mut l = ListView::new();
+        l.set_focus(&Group, 0, 5, Instant(0));
+        assert_eq!((l.focus, l.top), (1, 0));
+        l.handle(&Group, &key(Key::Up), 5, ON);
+        assert_eq!((l.focus, l.top), (5, 1));
+        l.handle(&Group, &key(Key::Down), 5, ON);
+        assert_eq!((l.focus, l.top), (1, 0), "the title is back in view");
+    }
+
+    #[test]
+    fn repeat_stops_at_the_end() {
+        let mut l = ListView::new();
+        l.set_focus(&Src, 0, 5, Instant(0));
+        // A held Down runs to the end and stays there with roll-around on.
+        l.handle(&Src, &key(Key::Down), 5, ON);
+        for _ in 0..60 {
+            l.handle(&Src, &rep(Key::Down), 5, ON);
+        }
+        assert_eq!(l.focus, 19);
+        assert_eq!(l.handle(&Src, &rep(Key::Down), 5, ON), ListAction::None);
+        assert_eq!(l.focus, 19);
+        // A fresh press rolls round.
+        l.handle(&Src, &key(Key::Down), 5, ON);
+        assert_eq!(l.focus, 1);
+        // Held Up from the first row stays.
+        assert_eq!(l.handle(&Src, &rep(Key::Up), 5, ON), ListAction::None);
+        assert_eq!(l.focus, 1);
+        // Accelerated repeats (5 and 20 rows) stop on the last row, not
+        // past it.
+        let mut l = ListView::new();
+        l.set_focus(&Window { n: 1000, lo: 0, hi: 1000 }, 0, 5, Instant(0));
+        let w = Window { n: 1000, lo: 0, hi: 1000 };
+        for _ in 0..200 {
+            l.handle(&w, &rep(Key::Down), 5, ON);
+        }
+        assert_eq!((l.focus, l.top), (999, 995));
+    }
+
+    #[test]
+    fn paging_rolls_round() {
+        let mut l = ListView::new();
+        l.set_focus(&Src, 0, 5, Instant(0));
+        let next = tap(Key::Next);
+        let prev = tap(Key::Prev);
+        // Prev on the first page goes to the last row.
+        assert_eq!(l.handle(&Src, &prev, 5, ON), ListAction::Moved);
+        assert_eq!((l.focus, l.top), (19, 15));
+        // Next on the last row goes to the first.
+        assert_eq!(l.handle(&Src, &next, 5, ON), ListAction::Moved);
+        assert_eq!((l.focus, l.top), (1, 0));
+        // Pages forward to the end (clamped to the last row), then round.
+        let mut seen = [0u32; 6];
+        for s in &mut seen {
+            l.handle(&Src, &next, 5, ON);
+            *s = l.focus;
+        }
+        assert_eq!(seen, [6, 11, 16, 19, 1, 6]);
+        // Off: the last page stays.
+        l.set_focus(&Src, 19, 5, Instant(0));
+        assert_eq!(l.handle(&Src, &next, 5, OFF), ListAction::None);
+        assert_eq!(l.focus, 19);
+        l.set_focus(&Src, 1, 5, Instant(0));
+        assert_eq!(l.handle(&Src, &prev, 5, OFF), ListAction::None);
+        assert_eq!(l.focus, 1);
+    }
+
+    #[test]
+    fn windowed_lists_roll_to_unloaded_rows() {
+        // Only the first window is loaded: Up rolls to the last row, which
+        // is a placeholder until the screen loads its window.
+        let w = Window { n: 5000, lo: 0, hi: 6 };
+        let mut l = ListView::new();
+        l.set_focus(&w, 0, 5, Instant(0));
+        assert_eq!(l.handle(&w, &key(Key::Up), 5, ON), ListAction::Moved);
+        assert_eq!((l.focus, l.top), (4999, 4995));
+        assert!(matches!(w.row(l.focus), Row::Pending));
+        let a = l.handle(&w, &tap(Key::Ok), 5, ON);
+        assert_eq!(a, ListAction::None, "a placeholder is not activated");
+        let w = Window { n: 5000, lo: 4994, hi: 5000 };
+        assert_eq!(l.handle(&w, &key(Key::Down), 5, ON), ListAction::Moved);
+        assert_eq!((l.focus, l.top), (0, 0));
+    }
+
+    #[test]
+    fn single_row_and_empty() {
+        let one = Plain(1);
+        let mut l = ListView::new();
+        l.set_focus(&one, 0, 5, Instant(0));
+        assert_eq!(l.handle(&one, &key(Key::Down), 5, ON), ListAction::None);
+        assert_eq!(l.handle(&one, &tap(Key::Next), 5, ON), ListAction::None);
+        assert_eq!(l.focus, 0);
+        let none = Plain(0);
+        assert_eq!(l.handle(&none, &key(Key::Up), 5, ON), ListAction::None);
+        assert_eq!(l.handle(&none, &tap(Key::Prev), 5, ON), ListAction::None);
+    }
+
+    #[test]
+    fn plain_lists_share_the_rules() {
+        let up = key(Key::Up);
+        assert_eq!(ListView::step_plain(0, 0, 7, 5, &up, ON), Some((6, 2)));
+        assert_eq!(ListView::step_plain(0, 0, 7, 5, &up, OFF), None);
+        assert_eq!(ListView::step_plain(0, 0, 7, 5, &rep(Key::Up), ON), None);
+        assert_eq!(ListView::step_plain(6, 2, 7, 5, &key(Key::Down), ON), Some((0, 0)));
+        assert_eq!(ListView::step_plain(3, 0, 7, 5, &key(Key::Down), OFF), Some((4, 0)));
+        assert_eq!(ListView::step_plain(6, 2, 7, 5, &tap(Key::Next), ON), Some((0, 0)));
+        assert_eq!(ListView::step_plain(0, 0, 0, 5, &up, ON), None);
+        assert_eq!(ListView::step_plain(0, 0, 7, 5, &tap(Key::Ok), ON), None);
     }
 
     #[test]
     fn paging_and_letters() {
         let mut l = ListView::new();
         l.set_focus(&Src, 0, 5, Instant(0));
-        l.handle(&Src, &Event::Key(Key::Next, KeyPhase::Up { held: false }), 5, Instant(0));
+        l.handle(&Src, &tap(Key::Next), 5, ON);
         assert_eq!(l.focus, 6);
-        l.handle(&Src, &Event::Key(Key::Next, KeyPhase::Hold), 5, Instant(0));
+        l.handle(&Src, &Event::Key(Key::Next, KeyPhase::Hold), 5, ON);
         assert_eq!(l.jump, Some('B'));
-        l.handle(&Src, &Event::Key(Key::Next, KeyPhase::Repeat), 5, Instant(0));
+        l.handle(&Src, &Event::Key(Key::Next, KeyPhase::Repeat), 5, ON);
         assert_eq!((l.focus, l.jump), (8, Some('C')));
-        l.handle(&Src, &Event::Key(Key::Next, KeyPhase::Up { held: true }), 5, Instant(0));
+        l.handle(&Src, &Event::Key(Key::Next, KeyPhase::Up { held: true }), 5, ON);
         assert_eq!(l.jump, None);
     }
 
@@ -671,7 +924,7 @@ mod tests {
     fn activation() {
         let mut l = ListView::new();
         l.set_focus(&Src, 3, 5, Instant(0));
-        let a = l.handle(&Src, &Event::Key(Key::Ok, KeyPhase::Up { held: false }), 5, Instant(0));
+        let a = l.handle(&Src, &tap(Key::Ok), 5, ON);
         assert_eq!(a, ListAction::Activated(3));
     }
 

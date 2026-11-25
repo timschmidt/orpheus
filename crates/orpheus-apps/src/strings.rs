@@ -692,6 +692,8 @@ strings! {
     RecStopFirst = "Stop the recording first",
     AutoGain = "Automatic gain",
     RecDropped = "dropped",
+    // UI-8: Settings › Display.
+    ListRollAround = "List roll-around",
 }
 
 /// Number of strings.

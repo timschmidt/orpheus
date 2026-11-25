@@ -360,7 +360,7 @@ impl<S: Services + ?Sized> Screen<S> for FilesScreen {
         let act = {
             let src = DirSource::new(&*cx.svc, self.count, self.list.focus);
             let mut l = self.list;
-            let a = l.handle(&src, ev, ROWS, cx.now);
+            let a = l.handle(&src, ev, ROWS, cx.list());
             self.list = l;
             a
         };

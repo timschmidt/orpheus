@@ -53,8 +53,85 @@ of every session. Newest entries first in §3.
 | WEB-1 | done (host); not published | `cargo xtask site [--check]` → `target/orpheus/site/`; Home, Manual, Developers, Hardware, Changelog, FAQ, Try it and Install (placeholders for WEB-2/WEB-3). Deploy only with repository variable `PAGES_ENABLED=true`. User: review the site |
 | AU-13 | **built; first player run 2026-11-24: capture runs, microphone silent → front-end fix + `rec raw`/`rec width`/`rec mic` (not yet re-run)** | `orpheus-rec` (WAV PCM, IMA ADPCM, FLAC 0–2 encoders; low-cut, AGC, meter, voice activation; names; write-behind ring; the recording session), `atj2157_hal::adc` (vendor capture sequence VERBATIM, DMA ch 6), `firmware::rec` (recording mode of the card task, SRAM3 state after the radio's), developer `rec start/stop/status`. Not built: voice (Opus/Speex) encoders, mic monitoring, pre-record. User check 23 |
 | UI-5b | **built (host + firmware), not yet run on the player** | Recorder app (meters, timer, pause/mark/stop question, gain, menu with source/format/quality/AGC/VOX/split/monitor/low-cut), Recordings… (newest first, play, delete with question); simulator back end over the same session and a fake ADC; 122 goldens, 10 behaviour tests |
+| UI-8 | **done (host); not yet on the player** | List roll-around in every list (`ListView` + `ListView::step_plain`), Settings › Display › List roll-around (`0x030C`, on by default), held keys stop at the end; Up next/Details keep their view change. User check 26; the on-device journey belongs to VER-7 |
 
 ## 3. Session log
+
+### 2026-11-24 — UI-8: list roll-around (worker, no hardware)
+
+* **Toolkit** (`orpheus-ui`): `ListView::handle` takes a `ListCx { now,
+  roll }` instead of `now`; screens pass `cx.list()`. `Cx::roll` is filled
+  by the shell from the new `System::list_roll_around` (default `true`),
+  read once per key, and also drives the menu sheet. A fresh Up/Down rolls
+  round past an end, an auto-repeat never does (stops on the end row, also
+  at the 5/20-row speeds); Next on the last row → first, Prev on the first
+  → last; with the setting off everything clamps as before. The old
+  `ListView::wrap` field (unused) is gone. `ListView::step_plain` gives
+  screens with their own rows the same rules. The header above a row that
+  lands at the top of the view is now kept in view also when focus lands
+  exactly on the top row (rolling round in a 6-row settings group hid the
+  group title otherwise).
+* **Setting**: `id::LIST_ROLL` = `0x030C` (next free Display id), toggle,
+  default **on** (the owner asked for it to work), shown between Clock in
+  status bar and Home screen; `STORED` 97 → 98; strings `ListRollAround`
+  (en "List roll-around", ru "Списки по кругу", ja "リストのループ" —
+  "循環" is not in the Unifont subset). Firmware and simulator `System`
+  impls read it through `services::list_roll_around`.
+* **Screens covered** (all through `ListView`/`ListCx`): menus, Settings
+  root and all groups, Choice lists, Home screen apps, Info pages (About,
+  card, battery), power menu, quick panel, Files / Music › Folders /
+  Pictures / Recordings (windowed: rolling onto the last row loads its
+  window), Music root and library lists, Bookmarks, Properties,
+  Bluetooth main / found / paired lists, radio presets, alarm list, alarm
+  days, Developer rows; through `step_plain`: the Authenticator list (and
+  Up/Down in its big-code view) and the stopwatch laps. Unchanged (not
+  lists, documented in 05 §5.2): Home grid, timer preset chips and the
+  radio's Up/Down preset stepping (always wrap), Steps week chart (seven
+  bars, no scrolling), dialog buttons, editors and pickers. **Exception
+  for the owner to confirm:** Now Playing's Up next and Details views keep
+  changing the view at either end in both settings; rolling round inside
+  them would leave Up/Down no way out of the view.
+* **Fixes found on the way**: the stopwatch screen let the release of the
+  Prev/Next that switched to the Alarm tab page the alarm list (with
+  roll-around that jumped to the last row); it now swallows the whole
+  press. VER-4 corpus input `58133401…` (a rolled-round Files list into a
+  folder whose first name scrolls, then a menu) showed the frozen screen
+  under a menu differing from a full redraw because the marquee moved:
+  the shell now draws the screen under an open menu/dialog as of the
+  moment it opened (`Shell::underlay_at`).
+* **Tests**: `orpheus-ui` list tests (both ends with headers, repeat stop
+  incl. 1000-row acceleration, paging round and clamped, windowed list
+  rolling onto an unloaded row and back, single row/empty, `step_plain`,
+  header kept in view), menu sheet with the setting on/off;
+  `orpheus-apps` setting test (toggle, default, position, persisted off);
+  `sim/tests/roll.rs` walks 31 list screens (every group but Language,
+  Files incl. the 5000-entry folder, library, Bluetooth, presets,
+  recordings, Authenticator, alarms, alarm days, laps, menu, …) in both
+  settings: Up/Down round and back, Prev/Next round, a 20 s held Down ends
+  on the last row, and with it off nothing moves past the ends; plus the
+  Display row switching it. Existing tests and golden scripts that
+  reached the end of a list by pressing past it now use Up (the last row)
+  or the right count.
+* **Goldens**: new (12) `app_list_roll_{dark_latin,light_cyrillic,dark_cjk}`
+  (the row, on), `app_list_roll_off_*` (off), `app_group_rolled_*`
+  (Display after Up on the first row: Home screen focused),
+  `media_files_rolled_*` (5000-entry folder after Up: Zephyr 192, window
+  loaded). Re-blessed (14): `app_display_*` (6) and `app_group02_*` (2):
+  the scroll thumb is shorter for the extra row; `media_files_sort_*` (6):
+  the track list under the Sort sub-menu is drawn as when the menu opened
+  (ellipsis, not a half-scrolled marquee). `docs/shots/app_display_dark_
+  latin.png` regenerated. 1,231 goldens.
+* **Numbers**: resident 77,428 → 77,444 B (+16, rodata); `.bss` 123,656 →
+  123,664 B (+8: the shell's `roll` and `underlay_at`); RAM +24 B (limit
+  +64). Paged code 800,394 → 801,522 B (99 pages, unchanged), paged rodata
+  137,858 → 137,918 B.
+* Gate: host fmt, clippy (`--workspace --all-targets -D warnings`), `cargo
+  test --workspace`, `xtask test golden`, `xtask site --check`; fw fmt,
+  clippy; `xtask build`, `check-resident` pass. Not run: `size --check`
+  (worktree path), `brand --check`, the player (host-only package).
+* **User**: check 26 (roll-around on the player, and whether on is the
+  right default). Open: the Up next/Details exception above; VER-7's
+  on-device journey for roll-around.
 
 ### 2026-11-24 — AU-13 fix after the first device run: the microphone recorded silence (worker, no hardware)
 

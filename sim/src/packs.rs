@@ -589,6 +589,7 @@ pub const RU: &[(Str, &str)] = &[
     (RecStopFirst, "Сначала остановите запись"),
     (AutoGain, "Автоусиление"),
     (RecDropped, "пропущено"),
+    (ListRollAround, "Списки по кругу"),
 ];
 
 pub const JA: &[(Str, &str)] = &[
@@ -1107,4 +1108,5 @@ pub const JA: &[(Str, &str)] = &[
     (RecStopFirst, "先に録音を停止してください"),
     (AutoGain, "自動ゲイン"),
     (RecDropped, "ドロップ"),
+    (ListRollAround, "リストのループ"),
 ];

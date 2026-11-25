@@ -523,7 +523,7 @@ impl<S: Services + ?Sized> Screen<S> for PresetsScreen {
         }
         self.fill(&*cx.svc);
         let mut l = self.list;
-        let act = l.handle(self, ev, VISIBLE, cx.now);
+        let act = l.handle(self, ev, VISIBLE, cx.list());
         self.list = l;
         self.fill(&*cx.svc);
         match act {

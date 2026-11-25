@@ -166,7 +166,7 @@ fn delete_and_move() {
     let mut s = sim(&format!("set:vault=unlocked {APP} down menu down ok wait:100"));
     assert_eq!(s.sys.auth_entry(0).unwrap().issuer.as_str(), "Proton");
     // Focus on the first row: Import, Move down, Delete…
-    run(&mut s, "up menu down*2 ok wait:50 next ok wait:100");
+    run(&mut s, "menu down*2 ok wait:50 next ok wait:100");
     assert_eq!(s.sys.vault(), VaultState::Unlocked { count: 6 });
     assert_eq!(s.sys.auth_entry(0).unwrap().issuer.as_str(), "GitHub");
 }

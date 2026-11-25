@@ -6,6 +6,7 @@ use crate::gfx::Gfx;
 use crate::menu::MenuBuilder;
 use crate::text::StrBuf;
 use crate::widgets::dialog::DialogSpec;
+use crate::widgets::list::ListCx;
 
 /// Identifies a screen. The app crate defines the constants.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -128,6 +129,19 @@ pub struct Cx<'a, S: ?Sized> {
     pub svc: &'a mut S,
     pub ui: &'a mut UiRequests,
     pub now: Instant,
+    /// The List roll-around setting as the shell read it from
+    /// [`System::list_roll_around`](crate::shell::System) for this key.
+    pub roll: bool,
+}
+
+impl<S: ?Sized> Cx<'_, S> {
+    /// What a list needs to handle a key (time, roll-around): pass it to
+    /// [`ListView::handle`](crate::widgets::list::ListView::handle) so every
+    /// list follows the one setting.
+    #[must_use]
+    pub fn list(&self) -> ListCx {
+        ListCx { now: self.now, roll: self.roll }
+    }
 }
 
 /// One screen (05 §5.1). Implemented by each screen struct and by the app's

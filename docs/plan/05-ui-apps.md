@@ -198,6 +198,35 @@ pub trait Screen {
 | `Tabs` | Up to 4 labelled tabs under the status bar; Prev/Next switch |
 | `BigValue` | Large-numeral field with unit and caption (clock, steps, frequency) |
 
+**As built (UI-8, 2026-11-24): list roll-around.** The setting is
+Settings › Display › List roll-around (`0x030C`, toggle, **on by default**,
+between Clock in status bar and Home screen). `orpheus_ui::shell::System::
+list_roll_around` reads it (apps: `services::list_roll_around`); the shell
+reads it once per key into `Cx::roll`, and every list takes it as
+`ListCx` from `cx.list()` into `ListView::handle` — the menu sheet too.
+Rules, all in `ListView`: a fresh Up/Down (`KeyPhase::Down`) rolls round
+past an end (section headers are skipped, the header above the first row
+comes back into view); `KeyPhase::Repeat` never rolls round, so a held key
+stops on the end row (the accelerated 5/20-row steps too); Next on the last
+focusable row goes to the first, Prev on the first to the last row (other
+pages clamp to the end row first: 0 → 5 → 10 → 15 → 19 → 0 in 20 rows, 5
+visible); without roll-around every end clamps as before. Windowed lists (Files,
+Music › Folders, Pictures, Recordings, the library) roll onto the last row
+as a placeholder and load its window like any other move. Screens that draw
+their own rows use the same rules through `ListView::step_plain` (the
+Authenticator list and its big-code view, the stopwatch laps). Not lists,
+and unchanged: the Home grid and the timer's preset chips (always wrap), the
+radio's Up/Down preset stepping (always wraps), the Steps week chart (seven
+bars, clamps), dialog buttons, value editors and pickers (Choice lists *are*
+lists and roll). **Exception:** Now Playing's Up next and Details views
+keep their behaviour in both settings — a fresh Up/Down past either end
+changes the view (the views cycle round), so rolling round inside them
+would trap the key in the view; a held key stops at the end. Two toolkit
+changes came with it: the stopwatch/timer/alarm screen swallows the rest of
+a Prev/Next press (its release no longer pages the alarm list), and the
+screen under an open menu or dialog is drawn as of the moment it opened
+(a marquee under the scrim no longer moves when the scrim is redrawn).
+
 ### 5.3 Text and strings
 
 All user-visible strings go through a string table (`tr!(Id)`), English built

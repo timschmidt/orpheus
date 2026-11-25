@@ -270,7 +270,7 @@ impl<S: Services + ?Sized> Screen<S> for LibraryScreen {
         let act = {
             let src = LibSource::new(&*cx.svc, self.lang, self.count, self.view.focus);
             let mut v = self.view;
-            let a = v.handle(&src, ev, ROWS, cx.now);
+            let a = v.handle(&src, ev, ROWS, cx.list());
             self.view = v;
             a
         };

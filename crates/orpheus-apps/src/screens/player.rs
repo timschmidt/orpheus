@@ -640,8 +640,10 @@ impl<S: Services + ?Sized> Screen<S> for NowPlayingScreen {
         if !self.list_view() {
             return Nav::Stay;
         }
-        // Up next / Details: Up/Down move in the list; past either end they
-        // change the view.
+        // Up next / Details: Up/Down move in the list; past either end a
+        // fresh press changes the view (the views themselves roll round, so
+        // these lists never trap the key: UI-8 leaves them out of the List
+        // roll-around setting). A held key stops at the end (05 §3).
         let len = if self.view == V_UP_NEXT {
             p.queue_len.saturating_sub(p.queue_pos)
         } else {
@@ -661,13 +663,13 @@ impl<S: Services + ?Sized> Screen<S> for NowPlayingScreen {
         let act = if self.view == V_UP_NEXT {
             let src = QueueSource { svc: &*cx.svc, base: p.queue_pos, len };
             let mut l = self.list;
-            let a = l.handle(&src, ev, LIST_ROWS, cx.now);
+            let a = l.handle(&src, ev, LIST_ROWS, cx.list());
             self.list = l;
             a
         } else {
             let rows = Self::details(&*cx.svc, self.lang);
             let mut l = self.list;
-            let a = l.handle(&rows, ev, LIST_ROWS, cx.now);
+            let a = l.handle(&rows, ev, LIST_ROWS, cx.list());
             self.list = l;
             a
         };

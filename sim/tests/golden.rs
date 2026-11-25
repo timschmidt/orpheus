@@ -37,7 +37,7 @@ fn cases() -> Vec<(String, String)> {
             // Toggles, value, radios.
             add(format!("settings_{t}_{l}"), format!("{p} down ok expect-screen:Settings down*5"));
             // Checks and section header.
-            add(format!("checks_{t}_{l}"), format!("{p} down ok down*9"));
+            add(format!("checks_{t}_{l}"), format!("{p} down ok up"));
             // Now Playing (strip used for a hint, no mini-player).
             add(format!("player_{t}_{l}"), format!("{p} down*2 ok expect-screen:NowPlaying"));
             // Mini-player in the strip while browsing, title scrolled.
@@ -60,7 +60,7 @@ fn cases() -> Vec<(String, String)> {
             format!("{p} set:battery=7 set:bt=connected set:source=recording set:locked=1 set:clock=off ok"),
         );
         add(format!("letter_{t}"), format!("{p} ok down*13 press:prev wait:800"));
-        add(format!("pending_{t}"), format!("{p} ok down*20"));
+        add(format!("pending_{t}"), format!("{p} ok up"));
     }
     add("amber_home".into(), "theme:amber".into());
     add("amber_menu".into(), "theme:amber ok down menu".into());
@@ -500,7 +500,7 @@ fn app_cases(add: &mut dyn FnMut(String, String)) {
         ("battery", "prev ok down*3 ok down*4 ok expect-screen:Info"),
         ("reset_dialog", "prev ok down*11 ok down*4 ok"),
         ("format_dialog", "prev ok down*10 ok down*4 ok"),
-        ("home_apps", "prev ok down*2 ok down*10 ok expect-screen:HomeApps down*2"),
+        ("home_apps", "prev ok down*2 ok down*11 ok expect-screen:HomeApps down*2"),
         ("power_menu", "hold:power expect-screen:PowerMenu"),
         ("quick", "set:playing=1 set:bt=connected hold:menu expect-screen:QuickPanel down*3 next"),
         ("lock", "set:playing=1 power down expect-screen:Lock"),
@@ -533,6 +533,20 @@ fn app_cases(add: &mut dyn FnMut(String, String)) {
     for g in 0..12 {
         add(format!("app_group{g:02}_dark_latin"), format!("@apps prev ok down*{g} ok"));
         add(format!("app_group{g:02}_light_cjk"), format!("@apps theme:light lang:cjk prev ok down*{g} ok"));
+    }
+    // UI-8: Settings › Display › List roll-around (on by default, then off),
+    // and lists rolled round: Up on the first row of a Settings group and
+    // of the windowed 5000-entry folder lands on the last row (its window
+    // loaded).
+    for (t, l) in [("dark", "latin"), ("light", "cyrillic"), ("dark", "cjk")] {
+        let p = format!("@apps theme:{t} lang:{l}");
+        add(format!("app_list_roll_{t}_{l}"), format!("{p} prev ok down*2 ok down*10"));
+        add(format!("app_list_roll_off_{t}_{l}"), format!("{p} prev ok down*2 ok down*10 ok"));
+        add(format!("app_group_rolled_{t}_{l}"), format!("{p} prev ok down*2 ok up"));
+        add(
+            format!("media_files_rolled_{t}_{l}"),
+            format!("{p} next ok down*2 ok ok wait:600 up wait:300 expect-screen:Files"),
+        );
     }
     media_cases(add);
     add("app_amber_home".into(), "@apps theme:amber".into());

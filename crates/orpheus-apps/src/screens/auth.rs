@@ -23,6 +23,7 @@ use orpheus_ui::nav::{Arg, Cx, Dirty, Nav, Resume, Screen, StripUse, Wants};
 use orpheus_ui::text::StrBuf;
 use orpheus_ui::theme::Role;
 use orpheus_ui::widgets::dialog::DialogSpec;
+use orpheus_ui::widgets::list::ListView;
 use orpheus_ui::widgets::misc::draw_progress;
 
 use crate::services::{
@@ -350,25 +351,22 @@ impl AuthScreen {
 
     fn list_key<S: Services + ?Sized>(&mut self, cx: &mut Cx<'_, S>, k: Key, phase: KeyPhase) -> Nav {
         let n = self.count;
-        let before = (self.focus, self.top);
         match (k, phase) {
-            (Key::Up, KeyPhase::Down | KeyPhase::Repeat) => self.focus = self.focus.saturating_sub(1),
-            (Key::Down, KeyPhase::Down | KeyPhase::Repeat) => {
-                self.focus = (self.focus + 1).min(n.saturating_sub(1));
-            }
-            (Key::Prev, KeyPhase::Up { held: false }) => self.focus = self.focus.saturating_sub(ROWS as u8),
-            (Key::Next, KeyPhase::Up { held: false }) => {
-                self.focus = (self.focus + ROWS as u8).min(n.saturating_sub(1));
-            }
             (Key::Ok, KeyPhase::Up { held: false }) if n > 0 => self.mode = Mode::Code,
             (Key::Back, KeyPhase::Up { held: false }) => {
                 cx.svc.auth_request(AuthRequest::Lock);
                 return Nav::Pop;
             }
-            _ => {}
-        }
-        if (self.focus, self.top) != before {
-            self.reload(cx.svc);
+            // Up/Down/Prev/Next: the toolkit's list rules (roll-around).
+            _ => {
+                let (f, t, n) = (u32::from(self.focus), u32::from(self.top), u32::from(n));
+                let ev = Event::Key(k, phase);
+                if let Some((f, t)) = ListView::step_plain(f, t, n, ROWS as u32, &ev, cx.list()) {
+                    self.focus = u8::try_from(f).unwrap_or(0);
+                    self.top = u8::try_from(t).unwrap_or(0);
+                    self.reload(cx.svc);
+                }
+            }
         }
         Nav::Stay
     }

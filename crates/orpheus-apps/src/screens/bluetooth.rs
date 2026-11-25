@@ -417,7 +417,7 @@ impl<S: Services + ?Sized> Screen<S> for BluetoothScreen {
             _ => {}
         }
         let mut l = self.list;
-        let act = l.handle(&self.rows, ev, visible(), cx.now);
+        let act = l.handle(&self.rows, ev, visible(), cx.list());
         self.list = l;
         match act {
             ListAction::Activated(_) => self.activate(cx),

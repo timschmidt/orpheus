@@ -879,7 +879,7 @@ impl<S: Services + ?Sized> Screen<S> for ListScreen {
             _ => {}
         }
         let mut l = self.list;
-        let act = l.handle(&self.rows, ev, rows_visible(), cx.now);
+        let act = l.handle(&self.rows, ev, rows_visible(), cx.list());
         self.list = l;
         match act {
             ListAction::Activated(_) => self.activate(cx),

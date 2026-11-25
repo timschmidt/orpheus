@@ -12,7 +12,7 @@ or changes, Back goes up a level.
 |---|---|---|
 | **Sound** | Equaliser (Flat, Rock, Pop, Jazz, Classical, Electronic, Hip-hop, Bass boost, Vocal, two custom curves), balance, bass, crossfeed, channel mode (stereo, mono, swapped), volume limit | Works |
 | **Playback** | Shuffle, repeat, gapless, ReplayGain, resume at start, seek step | Works; speed and fades are **in progress** |
-| **Display** | Brightness, backlight time, auto-lock, theme (Dark, Light, Amber), accent colour, clock in the status bar, Home screen apps | Works; rotation, wallpaper and screen saver are **in progress** |
+| **Display** | Brightness, backlight time, auto-lock, theme (Dark, Light, Amber), accent colour, clock in the status bar, list roll-around, Home screen apps | Works; rotation, wallpaper and screen saver are **in progress** |
 | **Power** | Sleep timer, auto-off, what the keys do when locked, battery | Auto-off and low-battery switch-off are **being checked** on the player |
 | **Date & time** | Time, date, 24-hour clock, date format | Works; the clock has stopped after some restarts (known issue: set it again) |
 | **Bluetooth** | Device list, reconnect | See [Bluetooth](bluetooth.md) |
@@ -25,6 +25,11 @@ Radio and Recording groups belong to apps that are not built yet; their
 settings are stored but do nothing.
 
 ![Display](../shots/app_display_dark_latin.png)
+
+**List roll-around** (on at first): in every list, Down on the last row
+goes to the first and Up on the first row to the last; Prev and Next jump
+round from the last page to the first the same way. Holding Up or Down
+stops at the end of the list. Switch it off to make the ends stop.
 
 ## Equaliser
 

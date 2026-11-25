@@ -70,8 +70,8 @@ fn inquiry_ends_by_itself_then_search_again() {
     let mut s = sim(&format!("set:bt=on {APP} down*2 ok wait:{}", INQUIRY_MS + 700));
     assert_eq!(phase(&s), BtPhase::Ready);
     assert_eq!(s.sys.bt_count(BtList::Found), 5);
-    // Last row: Search again.
-    run(&mut s, "down*6 ok wait:100");
+    // Last row: Search again (Up from the first row rolls round to it).
+    run(&mut s, "up ok wait:100");
     assert_eq!(s.sys.bt.log.last(), Some(&BtRequest::Scan));
     assert_eq!(phase(&s), BtPhase::Scanning);
     assert_eq!(s.sys.bt_count(BtList::Found), 0, "a new inquiry empties the list");

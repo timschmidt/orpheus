@@ -194,6 +194,9 @@ pub mod id {
     pub const ROTATE: SettingId = SettingId(0x0309);
     pub const CLOCK_IN_BAR: SettingId = SettingId(0x030A);
     pub const HOME_APPS: SettingId = SettingId(0x030B);
+    /// Settings › Display › List roll-around (UI-8): 1 (default) every
+    /// list rolls round at its ends, 0 the ends clamp.
+    pub const LIST_ROLL: SettingId = SettingId(0x030C);
     pub const POWER_MODE: SettingId = SettingId(0x0401);
     pub const SLEEP_TIMER: SettingId = SettingId(0x0402);
     pub const KEYS_LOCKED: SettingId = SettingId(0x0404);
@@ -311,6 +314,9 @@ const DISPLAY: &[Setting] = &[
     t(0x0308, Str::Animations, 1),
     t(0x0309, Str::Rotate, 0),
     t(0x030A, Str::ClockInBar, 1),
+    // UI-8: on by default (the owner's requirement); shown before Home
+    // screen as in 05 §7.11.
+    t(0x030C, Str::ListRollAround, 1),
     Setting { id: SettingId(0x030B), label: Str::HomeScreen, kind: Kind::HomeApps, default: 0x07FF },
 ];
 
@@ -534,7 +540,7 @@ pub fn def(id: SettingId) -> Option<&'static Setting> {
 }
 
 /// Number of stored items.
-pub const STORED: usize = 97;
+pub const STORED: usize = 98;
 
 /// Position among stored items (cache index).
 #[must_use]
@@ -783,6 +789,24 @@ mod tests {
         assert_eq!(d.get(id::UTC_OFFSET), 0, "not on the 15-minute grid");
         d.reset();
         assert_eq!(d.take_dirty().count(), STORED);
+    }
+
+    #[test]
+    fn list_roll_around_is_a_display_toggle_on_by_default() {
+        let s = def(id::LIST_ROLL).unwrap();
+        assert_eq!((s.kind, s.default, s.label), (Kind::Toggle, 1, Str::ListRollAround));
+        let display = &GROUPS[2];
+        assert_eq!(display.label, Str::GDisplay);
+        let pos = display.items.iter().position(|s| s.id == id::LIST_ROLL).unwrap();
+        assert_eq!(display.items.get(pos + 1).map(|s| s.id), Some(id::HOME_APPS));
+        let mut c = SettingsCache::new();
+        assert_eq!(c.get(id::LIST_ROLL), 1);
+        assert!(c.set(id::LIST_ROLL, 0));
+        let w: Vec<_> = c.take_dirty().collect();
+        assert_eq!(w, [(0x030C, encode(0))]);
+        let mut d = SettingsCache::new();
+        d.load(0x030C, &w[0].1);
+        assert_eq!(d.get(id::LIST_ROLL), 0, "persisted off");
     }
 
     #[test]

@@ -29,7 +29,7 @@ use crate::widgets::bars::{
     MiniPlayer, Status, draw_blank_strip, draw_hint, draw_mini_player, draw_status_bar, mini_player_overflow,
 };
 use crate::widgets::dialog::{Dialog, DialogResult};
-use crate::widgets::list::marquee_offset;
+use crate::widgets::list::{ListCx, marquee_offset};
 use crate::widgets::overlay::{Toast, VOLUME_MS, VolumeOverlay};
 
 /// What the shell needs from the system, beyond what screens use.
@@ -39,6 +39,11 @@ pub trait System {
     fn volume_step(&mut self, delta: i8) -> (u8, u8);
     /// What plays, if anything (drives the mini-player).
     fn mini_player(&self) -> Option<MiniPlayer<'_>>;
+    /// The **List roll-around** setting (Settings › Display, 05 §3): every
+    /// list rolls round at its ends while this is true. Read once per key.
+    fn list_roll_around(&self) -> bool {
+        true
+    }
 }
 
 /// Things only the caller can do, returned from event handling.
@@ -90,6 +95,12 @@ pub struct Shell<T, S: ?Sized> {
     strip_scrolls: bool,
     modal_fresh: bool,
     now: Instant,
+    /// [`System::list_roll_around`], read at each key.
+    roll: bool,
+    /// When the open menu or dialog opened: the screen under it is drawn
+    /// as of that moment (a marquee or clock under the scrim stays still,
+    /// so redrawing it there gives the same frame).
+    underlay_at: Instant,
     _svc: PhantomData<fn(&mut S)>,
 }
 
@@ -121,10 +132,12 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
             strip_scrolls: false,
             modal_fresh: false,
             now,
+            roll: svc.list_roll_around(),
+            underlay_at: now,
             _svc: PhantomData,
         };
         s.stack.push(NavEntry { id: root, arg, resume: Default::default() });
-        let mut cx = Cx { svc, ui: &mut s.ui, now };
+        let mut cx = Cx { svc, ui: &mut s.ui, now, roll: s.roll };
         s.top.enter(&mut cx, arg);
         s.apply_requests(svc, now);
         s
@@ -191,6 +204,7 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
     /// A key event from the [`KeyMapper`](crate::input::KeyMapper).
     pub fn key(&mut self, svc: &mut S, k: Key, p: KeyPhase, now: Instant) -> Requests {
         self.now = now;
+        self.roll = svc.list_roll_around();
         let mut req = Requests::default();
         match self.gate.filter(k, p) {
             Gate::Pass(k, p) => self.key_pass(svc, k, p, now, &mut req),
@@ -281,7 +295,7 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
 
     fn build_menu(&mut self, svc: &mut S, parent: Option<u16>, now: Instant) -> MenuBuilder {
         let mut b = MenuBuilder::new(parent);
-        let cx = Cx { svc, ui: &mut self.ui, now };
+        let cx = Cx { svc, ui: &mut self.ui, now, roll: self.roll };
         self.top.menu(&cx, &mut b);
         b
     }
@@ -293,11 +307,12 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
         }
         self.sheet = Some(MenuSheet::new(b, now));
         self.modal_fresh = true;
+        self.underlay_at = now;
     }
 
     fn sheet_key(&mut self, svc: &mut S, ev: &Event, now: Instant) {
         let Some(sheet) = self.sheet.as_mut() else { return };
-        match sheet.handle(ev, now) {
+        match sheet.handle(ev, ListCx { now, roll: self.roll }) {
             SheetResult::None => {}
             SheetResult::Close => self.close_modal(),
             SheetResult::Level(parent) => {
@@ -338,7 +353,7 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
         self.now = now;
         // App-wide reactions first (low battery, USB host, card removed).
         let nav = {
-            let mut cx = Cx { svc: &mut *svc, ui: &mut self.ui, now };
+            let mut cx = Cx { svc: &mut *svc, ui: &mut self.ui, now, roll: self.roll };
             T::global(&mut cx, &ev)
         };
         if nav != Nav::Stay {
@@ -381,7 +396,7 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
 
     fn deliver(&mut self, svc: &mut S, ev: Event, now: Instant) {
         let nav = {
-            let mut cx = Cx { svc: &mut *svc, ui: &mut self.ui, now };
+            let mut cx = Cx { svc: &mut *svc, ui: &mut self.ui, now, roll: self.roll };
             self.top.event(&mut cx, &ev)
         };
         self.apply_nav(svc, nav, now);
@@ -404,6 +419,7 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
             self.sheet = None;
             self.dialog = Some(Dialog::new(d));
             self.modal_fresh = true;
+            self.underlay_at = now;
         }
         if core::mem::take(&mut self.ui.redraw) {
             self.content_all = true;
@@ -412,7 +428,7 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
 
     fn rebuild(&mut self, svc: &mut S, e: NavEntry, restore: bool, now: Instant) {
         self.top = T::create(e.id);
-        let mut cx = Cx { svc, ui: &mut self.ui, now };
+        let mut cx = Cx { svc, ui: &mut self.ui, now, roll: self.roll };
         self.top.enter(&mut cx, e.arg);
         if restore {
             self.top.restore(&mut cx, &e.resume);
@@ -514,7 +530,8 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
                 self.strip_drawn = StripKey::None;
             }
             let top = &mut self.top;
-            let cx = Cx { svc: &mut *svc, ui: &mut self.ui, now };
+            let at = if modal { self.underlay_at } else { now };
+            let cx = Cx { svc: &mut *svc, ui: &mut self.ui, now: at, roll: self.roll };
             g.with_area(content, |g| {
                 if dirty == Dirty::All {
                     g.clear(Role::Bg);

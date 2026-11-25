@@ -1684,4 +1684,7 @@ impl System for Fw {
     fn mini_player(&self) -> Option<MiniPlayer<'_>> {
         services::mini_player(self)
     }
+    fn list_roll_around(&self) -> bool {
+        services::list_roll_around(self)
+    }
 }

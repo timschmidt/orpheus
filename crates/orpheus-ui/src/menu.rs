@@ -9,7 +9,7 @@ use crate::gfx::{Align, Gfx, SCREEN_H, SCREEN_W};
 use crate::nav::Dirty;
 use crate::text::StrBuf;
 use crate::theme::Role;
-use crate::widgets::list::{Accessory, Item, ListAction, ListSource, ListView, ROW_H, Row};
+use crate::widgets::list::{Accessory, Item, ListAction, ListCx, ListSource, ListView, ROW_H, Row};
 
 /// Most items in one menu level.
 pub const MENU_MAX: usize = 12;
@@ -191,7 +191,7 @@ impl MenuSheet {
         head + rows * ROW_H + 4
     }
 
-    pub fn handle(&mut self, ev: &Event, now: Instant) -> SheetResult {
+    pub fn handle(&mut self, ev: &Event, lc: ListCx) -> SheetResult {
         let Event::Key(k, p) = *ev else { return SheetResult::None };
         match (k, p) {
             (Key::Menu, KeyPhase::Up { held: false }) => return SheetResult::Close,
@@ -219,7 +219,7 @@ impl MenuSheet {
             }
             _ => {}
         }
-        match self.list.handle(&self.items, ev, SHEET_ROWS, now) {
+        match self.list.handle(&self.items, ev, SHEET_ROWS, lc) {
             ListAction::Activated(i) => {
                 let Some(it) = usize::try_from(i).ok().and_then(|i| self.items.items().get(i)).copied()
                 else {
@@ -291,6 +291,8 @@ impl MenuSheet {
 mod tests {
     use super::*;
 
+    const ON: ListCx = ListCx::new(Instant(0));
+
     fn tap(k: Key) -> Event {
         Event::Key(k, KeyPhase::Up { held: false })
     }
@@ -302,18 +304,31 @@ mod tests {
         b.toggle(2, "Shuffle", false);
         b.sub(3, "Repeat");
         let mut s = MenuSheet::new(b, Instant(0));
-        assert_eq!(s.handle(&tap(Key::Ok), Instant(0)), SheetResult::Pick { id: 1, value: 0, close: true });
-        s.handle(&Event::Key(Key::Down, KeyPhase::Down), Instant(0));
-        assert_eq!(s.handle(&tap(Key::Ok), Instant(0)), SheetResult::Pick { id: 2, value: 1, close: false });
-        assert_eq!(
-            s.handle(&tap(Key::Next), Instant(0)),
-            SheetResult::Pick { id: 2, value: 1, close: false }
-        );
-        s.handle(&Event::Key(Key::Down, KeyPhase::Down), Instant(0));
-        assert_eq!(s.handle(&tap(Key::Ok), Instant(0)), SheetResult::Level(Some(3)));
+        assert_eq!(s.handle(&tap(Key::Ok), ON), SheetResult::Pick { id: 1, value: 0, close: true });
+        s.handle(&Event::Key(Key::Down, KeyPhase::Down), ON);
+        assert_eq!(s.handle(&tap(Key::Ok), ON), SheetResult::Pick { id: 2, value: 1, close: false });
+        assert_eq!(s.handle(&tap(Key::Next), ON), SheetResult::Pick { id: 2, value: 1, close: false });
+        s.handle(&Event::Key(Key::Down, KeyPhase::Down), ON);
+        assert_eq!(s.handle(&tap(Key::Ok), ON), SheetResult::Level(Some(3)));
         assert_eq!(s.parent(), Some(3));
-        assert_eq!(s.handle(&tap(Key::Back), Instant(0)), SheetResult::Level(None));
-        assert_eq!(s.handle(&tap(Key::Back), Instant(0)), SheetResult::Close);
+        assert_eq!(s.handle(&tap(Key::Back), ON), SheetResult::Level(None));
+        assert_eq!(s.handle(&tap(Key::Back), ON), SheetResult::Close);
+    }
+
+    #[test]
+    fn sheet_rolls_round_with_the_setting() {
+        let mut b = MenuBuilder::new(None);
+        for i in 0..6 {
+            b.action(i, "x");
+        }
+        let mut s = MenuSheet::new(b, Instant(0));
+        let up = Event::Key(Key::Up, KeyPhase::Down);
+        s.handle(&up, ListCx::clamped(Instant(0)));
+        assert_eq!(s.focused().map(|i| i.id), Some(0), "off: the top clamps");
+        s.handle(&up, ON);
+        assert_eq!(s.focused().map(|i| i.id), Some(5), "on: Up on the first item goes to the last");
+        s.handle(&Event::Key(Key::Down, KeyPhase::Down), ON);
+        assert_eq!(s.focused().map(|i| i.id), Some(0));
     }
 
     #[test]
