@@ -1196,6 +1196,15 @@ pub trait UsbDriveService {
     fn drive_name(&self) -> &str;
 }
 
+/// The Games app's service (M14) with the `games` feature; without it, a
+/// part every type has.
+#[cfg(feature = "games")]
+pub use crate::games::GamesService as GamesPart;
+#[cfg(not(feature = "games"))]
+pub trait GamesPart {}
+#[cfg(not(feature = "games"))]
+impl<T: ?Sized> GamesPart for T {}
+
 /// Everything the apps need. Implemented automatically for any type with
 /// all the parts; the toolkit's `System` (status bar, volume, mini-player)
 /// can be implemented with [`status`], [`mini_player`] and
@@ -1222,6 +1231,7 @@ pub trait Services:
     + RecorderService
     + UsbDriveService
     + UpdateService
+    + GamesPart
 {
 }
 
@@ -1247,6 +1257,7 @@ impl<T> Services for T where
         + RecorderService
         + UsbDriveService
         + UpdateService
+        + GamesPart
 {
 }
 

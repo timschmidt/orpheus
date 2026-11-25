@@ -102,18 +102,18 @@ macro_rules! tr {
 }
 
 macro_rules! strings {
-    ($($id:ident = $en:literal,)*) => {
+    ($($(#[$m:meta])* $id:ident = $en:literal,)*) => {
         /// String ids. Append only: packs index by number.
         #[derive(Clone, Copy, PartialEq, Eq, Debug)]
         #[repr(u16)]
-        pub enum Str { $($id,)* }
+        pub enum Str { $($(#[$m])* $id,)* }
 
         /// English, indexed by `Str as usize`.
-        pub static EN: &[&str] = &[$($en,)*];
+        pub static EN: &[&str] = &[$($(#[$m])* $en,)*];
 
         impl Str {
             /// All ids in order (pack builders, tests).
-            pub const ALL: &'static [Str] = &[$(Str::$id,)*];
+            pub const ALL: &'static [Str] = &[$($(#[$m])* Str::$id,)*];
         }
     };
 }
@@ -755,7 +755,66 @@ strings! {
     HintUpdInstall = "OK install",
     // T-6: About, the slot stage 2 started.
     FwSlot = "Firmware slot",
-    SlotFailed = "Failed to start",
+    SlotFailed = "Failed to start",    // M14 Games (GAME-0/1/3), behind the `games` feature: last, so that
+    // the numbers of the strings above are the same with and without it.
+    // While the firmware builds without the feature, new strings for
+    // everything else go above this block.
+    #[cfg(feature = "games")] AppGames = "Games",
+    #[cfg(feature = "games")] GameBlocks = "Blocks",
+    #[cfg(feature = "games")] Game4096 = "4096",
+    #[cfg(feature = "games")] GameContinue = "Continue",
+    #[cfg(feature = "games")] GameResume = "Resume",
+    #[cfg(feature = "games")] GameNew = "New game",
+    #[cfg(feature = "games")] GameHowToPlay = "How to play",
+    #[cfg(feature = "games")] GameQuit = "Quit",
+    #[cfg(feature = "games")] GamePaused = "Paused",
+    #[cfg(feature = "games")] GameOkToContinue = "OK to continue",
+    #[cfg(feature = "games")] GameOkToStart = "OK to start",
+    #[cfg(feature = "games")] GameOver = "Game over",
+    #[cfg(feature = "games")] GameTimeUp = "Time is up",
+    #[cfg(feature = "games")] GameAllLines = "40 lines done",
+    #[cfg(feature = "games")] GameGoalReached = "Goal reached",
+    #[cfg(feature = "games")] GameOkKeepGoing = "OK to keep going",
+    #[cfg(feature = "games")] GameOkNewGame = "OK for a new game",
+    #[cfg(feature = "games")] GameNewBest = "New best",
+    #[cfg(feature = "games")] GameScore = "Score",
+    #[cfg(feature = "games")] GameBest = "Best",
+    #[cfg(feature = "games")] GameLines = "Lines",
+    #[cfg(feature = "games")] GameTime = "Time",
+    #[cfg(feature = "games")] GameNext = "Next",
+    #[cfg(feature = "games")] GameHold = "Hold",
+    #[cfg(feature = "games")] GameNewQ = "Start a new game?",
+    #[cfg(feature = "games")] GameNewText = "The game in progress ends.",
+    #[cfg(feature = "games")] GameNextGame = "From the next game",
+    #[cfg(feature = "games")] GamePlayed = "Played",
+    #[cfg(feature = "games")] GameMode = "Mode",
+    #[cfg(feature = "games")] GameEndless = "Endless",
+    #[cfg(feature = "games")] GameFortyLines = "40 lines",
+    #[cfg(feature = "games")] GameTwoMinutes = "2 minutes",
+    #[cfg(feature = "games")] GameStartLevel = "Start level",
+    #[cfg(feature = "games")] GamePieces = "Pieces",
+    #[cfg(feature = "games")] GameBag = "Bag of 7",
+    #[cfg(feature = "games")] GameRandom = "Random",
+    #[cfg(feature = "games")] GameGhost = "Ghost piece",
+    #[cfg(feature = "games")] GamePreviews = "Previews",
+    #[cfg(feature = "games")] GameHoldPiece = "Hold piece",
+    #[cfg(feature = "games")] GameLockDelay = "Lock delay",
+    #[cfg(feature = "games")] GameAutoShift = "Shift",
+    #[cfg(feature = "games")] GameRepeat = "Repeat",
+    #[cfg(feature = "games")] GameKicks = "Wall kicks",
+    #[cfg(feature = "games")] GameBoard = "Board",
+    #[cfg(feature = "games")] GameGoalTile = "Goal tile",
+    #[cfg(feature = "games")] GameChanceOfFour = "Chance of 4",
+    #[cfg(feature = "games")] GameUndoSteps = "Undo steps",
+    // How to play, a string per paragraph (`games::Game::help`).
+    #[cfg(feature = "games")] HelpBlocks = "Pieces of four squares fall into the well. Fill a row from wall to wall and it goes; clear several rows with one piece for more points. The game ends when the stack reaches the top.",
+    #[cfg(feature = "games")] HelpBlocks2 = "Prev and Next move the piece, Up turns it clockwise and OK the other way. Down drops it faster; hold Down to drop it at once. Menu puts the piece aside and brings back the one kept there.",
+    #[cfg(feature = "games")] HelpBlocks3 = "Every ten rows the level rises and the pieces fall faster. Modes: Endless; 40 lines, as fast as you can; 2 minutes, as many points as you can.",
+    #[cfg(feature = "games")] HelpBlocks4 = "In Settings, Shift is how long Prev or Next is held before the piece runs, and Repeat how fast it runs then.",
+    #[cfg(feature = "games")] HelpBlocks5 = "Back pauses the game.",
+    #[cfg(feature = "games")] Help4096 = "Up, Down, Prev and Next slide every tile as far as it goes. Two equal tiles that meet join into one of twice the value, which is added to the score. After each slide a new tile appears: a 2, now and then a 4.",
+    #[cfg(feature = "games")] Help40962 = "Make a 4096 tile to win (Goal tile sets another), then keep going if you like. The game ends when no slide can move a tile.",
+    #[cfg(feature = "games")] Help40963 = "OK takes back the last slide, as many times as Undo steps allows. Back pauses the game.",
 }
 
 /// Number of strings.

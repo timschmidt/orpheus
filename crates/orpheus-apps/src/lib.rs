@@ -10,6 +10,8 @@
 #![forbid(unsafe_code)]
 
 pub mod browse;
+#[cfg(feature = "games")]
+pub mod games;
 pub mod icons;
 #[cfg(test)]
 mod id_tests;
@@ -31,7 +33,9 @@ pub fn strings_fit(g: &mut orpheus_ui::Gfx<'_>, word: &str, font: orpheus_ui::Fo
     word.chars().any(orpheus_ui::text::is_cjk) || g.measure(word, font) <= w
 }
 
-/// The eleven apps on Home, in grid order (05 §6.2).
+/// The apps on Home, in grid order (05 §6.2): eleven, and Games (M14) as
+/// the twelfth with the `games` feature (not on the player's Home yet:
+/// [`App::on_player`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum App {
@@ -46,10 +50,19 @@ pub enum App {
     Authenticator,
     UsbDrive,
     Settings,
+    /// M14 (05 §7.13). After Settings so that the other apps keep their
+    /// Home-screen bits; its bit (11) is off in the default mask, as the
+    /// player's Home has no Games yet (the simulator's `set:games=on`
+    /// turns it on).
+    #[cfg(feature = "games")]
+    Games,
 }
 
 impl App {
-    pub const ALL: [App; 11] = [
+    /// How many apps there are.
+    pub const COUNT: usize = if cfg!(feature = "games") { 12 } else { 11 };
+
+    pub const ALL: [App; App::COUNT] = [
         App::Music,
         App::Files,
         App::Radio,
@@ -60,6 +73,26 @@ impl App {
         App::Stopwatch,
         App::Authenticator,
         App::UsbDrive,
+        App::Settings,
+        #[cfg(feature = "games")]
+        App::Games,
+    ];
+
+    /// Home's grid order: [`App::ALL`] with Settings last (Prev on Home's
+    /// first cell reaches it).
+    pub const GRID: [App; App::COUNT] = [
+        App::Music,
+        App::Files,
+        App::Radio,
+        App::Bluetooth,
+        App::Recorder,
+        App::Pictures,
+        App::Steps,
+        App::Stopwatch,
+        App::Authenticator,
+        App::UsbDrive,
+        #[cfg(feature = "games")]
+        App::Games,
         App::Settings,
     ];
 
@@ -77,6 +110,8 @@ impl App {
             App::Authenticator => Str::AppAuthenticator,
             App::UsbDrive => Str::AppUsbDrive,
             App::Settings => Str::AppSettings,
+            #[cfg(feature = "games")]
+            App::Games => Str::AppGames,
         }
     }
 
@@ -94,6 +129,8 @@ impl App {
             App::Authenticator => &icons::AUTHENTICATOR,
             App::UsbDrive => &icons::USB_DRIVE,
             App::Settings => &icons::SETTINGS,
+            #[cfg(feature = "games")]
+            App::Games => &icons::GAMES,
         }
     }
 
@@ -120,6 +157,10 @@ impl App {
             | App::Authenticator
             | App::UsbDrive
             | App::Settings => true,
+            // Not until the firmware has the stack for it (M14 package
+            // note in docs/STATUS.md).
+            #[cfg(feature = "games")]
+            App::Games => false,
         }
     }
 
@@ -143,6 +184,12 @@ mod tests {
     #[test]
     fn regress_every_app_is_on_the_players_home() {
         for a in App::ALL {
+            #[cfg(feature = "games")]
+            if a == App::Games {
+                // M14: built on the host, not yet integrated.
+                assert!(!a.on_player());
+                continue;
+            }
             assert!(a.on_player(), "{a:?} missing from the player's Home");
         }
     }

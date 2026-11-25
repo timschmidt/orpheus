@@ -812,6 +812,7 @@ impl<S: Services + ?Sized> Screen<S> for NowPlayingScreen {
             strip: StripUse::Content,
             title,
             is_player: true,
+            menu_key: false,
         }
     }
 }

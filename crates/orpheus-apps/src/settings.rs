@@ -144,13 +144,21 @@ macro_rules! ch {
 
 use Choice::{Lit, Mins, S, Secs, Speed};
 
-const fn t(id: u16, label: Str, default: i16) -> Setting {
+pub(crate) const fn t(id: u16, label: Str, default: i16) -> Setting {
     Setting { id: SettingId(id), label, kind: Kind::Toggle, default }
 }
-const fn c(id: u16, label: Str, choices: &'static [Choice], default: i16) -> Setting {
+pub(crate) const fn c(id: u16, label: Str, choices: &'static [Choice], default: i16) -> Setting {
     Setting { id: SettingId(id), label, kind: Kind::Choice(choices), default }
 }
-const fn r(id: u16, label: Str, min: i16, max: i16, step: i16, unit: Unit, default: i16) -> Setting {
+pub(crate) const fn r(
+    id: u16,
+    label: Str,
+    min: i16,
+    max: i16,
+    step: i16,
+    unit: Unit,
+    default: i16,
+) -> Setting {
     Setting { id: SettingId(id), label, kind: Kind::Range { min, max, step, unit }, default }
 }
 const fn a(id: u16, label: Str, act: Action) -> Setting {
@@ -528,9 +536,16 @@ pub static GROUPS: [Group; 12] = [
     Group { label: Str::GSystem, items: SYSTEM },
 ];
 
-/// Every item, group by group.
+/// Every item, group by group, then the apps' own.
+#[cfg(not(feature = "games"))]
 pub fn all() -> impl Iterator<Item = &'static Setting> {
     GROUPS.iter().flat_map(|g| g.items.iter()).chain(APP_ITEMS.iter())
+}
+
+/// Every item, group by group, then the apps' own and the games' (M14).
+#[cfg(feature = "games")]
+pub fn all() -> impl Iterator<Item = &'static Setting> {
+    GROUPS.iter().flat_map(|g| g.items.iter()).chain(APP_ITEMS.iter()).chain(crate::games::SETTINGS.iter())
 }
 
 /// Look an item up by key.
@@ -539,8 +554,11 @@ pub fn def(id: SettingId) -> Option<&'static Setting> {
     all().find(|s| s.id == id)
 }
 
-/// Number of stored items.
+/// Number of stored items (the games' settings with the `games` feature).
+#[cfg(not(feature = "games"))]
 pub const STORED: usize = 98;
+#[cfg(feature = "games")]
+pub const STORED: usize = 98 + crate::games::SETTINGS.len();
 
 /// Position among stored items (cache index).
 #[must_use]

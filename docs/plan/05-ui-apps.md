@@ -867,6 +867,62 @@ to Player n" screen between turns) or computer.
   bounded without wind; terrain heights within the world; the same seed and
   inputs give the same round on host and player.
 
+**As built (GAME-0/1/3, 2026-11-25; host and simulator, not yet on the
+player's Home).**
+* Logic: crate `orpheus-games` (no_std, no alloc, no floats,
+  `forbid(unsafe_code)`): SplitMix64 `Rng` (state saved with the game),
+  `StepClock` (ticks → whole 60 Hz steps, a gap over 250 ms pauses),
+  game buttons and key edges (`Input`: press, release, long), the save
+  envelope `"OGS1" | kind | version | length | payload | CRC-32`, the
+  score table (24 records of game × variant: best, its detail, played,
+  won; the least played record makes room), `Session` (the one game in
+  RAM) and `Hub` (session, scores, which games have a save file, the
+  pause menu's resume flag).
+* App: `orpheus-apps` feature **`games`** (off in the firmware until a
+  stack-headroom package; on in the simulator, the browser build and the
+  UI fuzzer). Screens `Games` (list: a game's value is "Continue" or its
+  best under the current settings), `Blocks`, `Game4096`, `GamePause`
+  (Resume, New game — asks while a game is in progress —, Settings, How to
+  play, Best, Quit), `GameSettings`, `GameHelp`; Games is the Home cell
+  before Settings (`App::GRID`; bit 11 of the Home-screen mask, off by default as on the player; the simulator's `set:games=on` sets it). The game
+  lives in `GamesService::games`, so any screen may cover it; a game
+  screen rebuilt without the pause menu's Resume/New game comes back
+  paused ("OK to continue"), as after the screen going off or a tick gap.
+  The toolkit's `Wants::menu_key` gives Blocks the Menu key (hold Menu
+  still opens the quick panel).
+* Files: `/.orpheus/games/blocks.sav`, `4096.sav` (written on pause and
+  quit, read when the game is opened, removed when it ends),
+  `scores.bin` (written when a game ends).
+* Blocks: well 10 × 20 (+2 hidden rows) of 6 px, full screen; panel: up
+  to three previews, hold, score, level, lines (n/40), time (40 lines:
+  elapsed; 2 minutes: left) or best (endless). Own rules: the piece turns
+  in its 3 × 3 box (4 × 4 for the long one, the square does not turn);
+  kicks tried in order (0,0), (−1,0), (+1,0), up one, up-left, up-right,
+  and ±2 for the long piece; gravity 48 … 1 steps per row for levels
+  1–20, level +1 per 10 lines; points 100/250/450/800 × level for 1–4
+  rows, +50 × combo × level, soft drop 1 and hard drop 2 per row; lock
+  delay restarted by up to 15 shifts or turns per row reached; cleared rows
+  flash 12 steps. Down held past the hold threshold hard-drops the piece it
+  was pressed on (so a soft drop longer than 0.5 s ends in a hard drop).
+* 4096: 4 × 4 / 5 × 5 / 6 × 6 board of 98 px under the status bar; tiles
+  a ramp of role mixes; values in the largest face that fits (numerals,
+  UI faces, own 3 × 5 digits; "4K" when nothing fits); a 4-frame slide
+  animation; OK undoes (the generator restored too), OK on the goal banner
+  keeps going.
+* Settings (stored, `0x0E__`; `tests/settings/effects.toml`): Blocks mode
+  `0x0E01` (Endless), start level `0x0E02` (1–15, 1), pieces `0x0E03`
+  (Bag of 7), ghost `0x0E04` (on), previews `0x0E05` (3), hold `0x0E06`
+  (on), lock delay `0x0E07` (0.25/0.5/0.75/1 s, 0.5), shift `0x0E08`
+  (100–267 ms, 167), repeat `0x0E09` (0–83 ms, 33), wall kicks `0x0E0A`
+  (on); 4096 board `0x0E21` (4 × 4), goal `0x0E22` (2048/4096/8192/
+  endless, 4096), chance of a 4 `0x0E23` (0/10/25/50 %, 10), undo steps
+  `0x0E24` (0–3, 1), animations `0x0E25` (on). Rule settings apply from
+  the next game (a toast says so); ghost, previews, shift, repeat and
+  animations at once.
+* Not built yet: the effects synthesiser and music ducking, player
+  names, Solitaire, the artillery game, the firmware's `GamesService`
+  (card task: the files above; the power-off path: save the game).
+
 ### 7.14 Accessibility and speech (M15; owner's requirement 2026-11-25)
 
 * **Screen reader** (A11Y-1): spoken output from the text-to-speech engine

@@ -23,6 +23,8 @@
 //! | `goto:Library` | push a screen directly |
 //! | `set:drivehost=1`, `set:drivewrite=8` | a computer uses the USB Drive (reads it all; writes 8 blocks) |
 //! | `expect-typed:287082↵` | fail unless the fake computer on the USB keyboard received this (`↵` = Enter) |
+//! | `set:games=on` | the Games app on Home (M14; off by default, as on the player) |
+//! | `set:gameseed=7`, `set:tiles=1.2.3…`, `set:blocksrows=12` | Games: next seed, a 4096 board, a Blocks stack (`games.rs`) |
 
 pub mod apps;
 pub mod auth;
@@ -31,6 +33,7 @@ pub mod card;
 pub mod demo;
 pub mod drive;
 pub mod fallback;
+pub mod games;
 pub mod library;
 pub mod media;
 pub mod packs;

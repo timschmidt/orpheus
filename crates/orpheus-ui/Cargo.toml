@@ -7,6 +7,12 @@ license.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+# `Wants::menu_key` honoured by the shell (the Games app, M14). Off in the
+# firmware until it has the Games app: the check costs the key handler 8 B
+# of stack, and the firmware's static stack margin is 204 B.
+menu-key = []
+
 [dependencies]
 embedded-graphics-core = "0.4"
 

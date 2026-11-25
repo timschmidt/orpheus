@@ -1,0 +1,35 @@
+# cargo-fuzz targets of orpheus-games (nightly only; 07 §3.4, VER-4):
+#   cd crates/orpheus-games/fuzz && cargo +nightly fuzz run <target> ../../../tests/fuzz-corpus/<target>
+# The bodies live in `src/lib.rs`; the crate's `tests/fuzz_corpus.rs`
+# replays the committed corpus and regression inputs through them on stable.
+[package]
+name = "orpheus-games-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+orpheus-games = { path = ".." }
+
+# Its own workspace: not part of the host workspace (nightly only).
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "blocks_keys"
+path = "fuzz_targets/blocks_keys.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tiles_keys"
+path = "fuzz_targets/tiles_keys.rs"
+test = false
+doc = false
+bench = false
