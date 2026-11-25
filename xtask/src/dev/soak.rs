@@ -2433,6 +2433,25 @@ fn fallback_start(reply: &str) -> Option<&str> {
     reply.contains(" failed").then_some(reply.trim())
 }
 
+/// Where `main` keeps the previous start's last interrupt sample.
+const PREV_SAMPLE_EXC: u32 = 0x0013_7FDC;
+const PREV_SAMPLE_PC: u32 = 0x0013_7FE0;
+
+/// The function holding `pc` in the firmware ELF, demangled, with the
+/// offset.
+fn symbol_at(elf: &std::path::Path, pc: u32) -> Option<String> {
+    use object::{Object, ObjectSymbol, SymbolKind};
+    let data = std::fs::read(elf).ok()?;
+    let file = object::File::parse(&*data).ok()?;
+    let pc = u64::from(pc & !1);
+    file.symbols()
+        .filter(|s| s.kind() == SymbolKind::Text && s.address() <= pc && pc < s.address() + s.size().max(1))
+        .max_by_key(|s| s.address())
+        .and_then(|s| {
+            Some(format!("{:#} +{:#x}", rustc_demangle::demangle(s.name().ok()?), pc - s.address()))
+        })
+}
+
 /// After a channel loss: what the player shows and its last log lines
 /// (before anything else changes them), and a screenshot under
 /// `target/orpheus/soak/`. Best effort: nothing here fails the run.
@@ -2453,6 +2472,15 @@ fn lost_evidence(rig: &mut dyn Rig, rebooted: bool) {
         {
             log(&format!("   screenshot: {}", path.display()));
         }
+    }
+    if rebooted
+        && let (Ok(Some(exc)), Ok(Some(pc))) = (rig.peek_word(PREV_SAMPLE_EXC), rig.peek_word(PREV_SAMPLE_PC))
+    {
+        // The previous start's last interrupt taken from handler mode
+        // (`rt::SAMPLE_*`, copied at start): after a watchdog reset, where
+        // the RT executor was spinning.
+        let at = symbol_at(&root().join("target/orpheus/firmware.elf"), pc).unwrap_or_else(|| "?".into());
+        log(&format!("   last interrupt before the reset: exception {exc}, PC {pc:#010x} in {at}"));
     }
     if let Ok(lines) = rig.log_lines() {
         let tail = lines.len().saturating_sub(8);

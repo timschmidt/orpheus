@@ -1,0 +1,2 @@
+date,commit,scenario,seed,minutes,actions,samples,pass,findings,loads_per_s_mean,loads_per_s_max,evictions_per_s_max,stack_free_min,underruns_total,underruns_in_disruptions,head_min,card_errors,drift_ppm,clock_ppm,idle_pct_mean
+20261125-070557,54b17e8c1879,mixed,1,11.6,6,20,0,reset,1671,2849,3073,5312,0,0,,0,,16,52.3

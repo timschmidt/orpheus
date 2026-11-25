@@ -231,6 +231,10 @@ async fn run(
 ) -> Result<(), Stop> {
     let start = time::now_us();
     let mut t0 = start;
+    let mut l = atj2157_hal::log::LineBuf::new();
+    l.push_str("pic: decode ").push_u32(f.size().min(u64::from(u32::MAX)) as u32).push_str(" B");
+    l.emit();
+    let mut next_note = start + 1_000_000;
     // Longest stretch without giving the CPU back (VER-12 soak finding,
     // 2026-11-25: browsing pictures stalled thread mode for seconds).
     let mut longest = 0u64;
@@ -260,6 +264,18 @@ async fn run(
         if cancelled() {
             r = Err(Stop::Cancelled);
             break;
+        }
+        if time::now_us() >= next_note {
+            // A breadcrumb each second: after a reset the ring shows how far
+            // a long decode got.
+            next_note += 1_000_000;
+            let mut l = atj2157_hal::log::LineBuf::new();
+            l.push_str("pic: still decoding, ")
+                .push_u32(((time::now_us() - start) / 1000) as u32)
+                .push_str(" ms, longest ")
+                .push_u32((longest / 1000) as u32)
+                .push_str(" ms");
+            l.emit();
         }
         let el = time::now_us() - t0;
         if el >= 8_000 {

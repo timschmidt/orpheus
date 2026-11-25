@@ -1,0 +1,8 @@
+# soak scenario=mixed seed=1 oracle=reset: uptime went back from 411685 to 3603 ms (watchdog or reset)
+# 6 actions before the finding
+# replay: cargo xtask dev soak --replay <this file> [--sim]
+# minimised to 4 actions (8 replays)
+browse files 37 1267047402
+seek-start
+volume 1
+browse pictures 23 1669336479

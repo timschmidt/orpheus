@@ -97,6 +97,10 @@ pub trait Player {
     fn log_lines(&mut self) -> Result<Vec<String>> {
         Ok(Vec::new())
     }
+    /// One word of the player's memory (`None` in the simulator).
+    fn peek_word(&mut self, _addr: u32) -> Result<Option<u32>> {
+        Ok(None)
+    }
     /// Normal reboot; returns once the player answers again.
     fn reboot(&mut self) -> Result<()>;
     /// The channel failed: wait (up to [`COME_BACK`]) for the player.
@@ -328,6 +332,10 @@ impl Player for UsbPlayer {
     }
     fn fault(&mut self) -> Result<Option<FaultRecord>> {
         Ok(FaultRecord::from_bytes(&self.d()?.peek(fault::BASE, fault::SIZE)?))
+    }
+    fn peek_word(&mut self, addr: u32) -> Result<Option<u32>> {
+        let b = self.d()?.peek(addr, 4)?;
+        Ok(b.get(..4).map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]])))
     }
     fn log_lines(&mut self) -> Result<Vec<String>> {
         let area = self.d()?.log_area()?;
