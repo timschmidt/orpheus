@@ -235,8 +235,8 @@ next*8 ok wait:200 expect-screen:Authenticator shot:auth_locked
 """
 
 [[journey]]
-name = "notice"
-about = "USB Drive app: the not-yet notice"
+name = "usbdrive"
+about = "USB Drive app: its home list (no image is presented)"
 script = """
-next*9 ok expect-screen:Notice shot:notice back
+next*9 ok expect-screen:UsbDrive shot:home back
 """

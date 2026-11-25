@@ -1710,7 +1710,8 @@ impl SystemService for Fw {
         // The tuner answers at 0x10 on every YM03 seen (01-hardware §9); a
         // tuner that does not shows "Tuner not responding" in the app.
         // Steps and Stopwatch: SENS-1, UI-5c, UI-5d (Steps says so when the
-        // sensor does not answer).
+        // sensor does not answer). Recorder (AU-13) and USB Drive (USB-6)
+        // are built and verified on the player (2026-11-24).
         matches!(
             app,
             App::Settings
@@ -1722,6 +1723,8 @@ impl SystemService for Fw {
                 | App::Steps
                 | App::Stopwatch
                 | App::Authenticator
+                | App::Recorder
+                | App::UsbDrive
         )
     }
     fn dual_boot(&self) -> bool {
