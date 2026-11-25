@@ -1,8 +1,8 @@
-# soak scenario=mixed seed=1 oracle=underrun: 2 underruns outside seeks (serve=2) on `Craig Finn & The Uptown ` q=1/256; over the 10.5 s since the last sample
-# 6 actions before the finding
+# soak scenario=mixed seed=1 oracle=underrun: 2 underruns outside seeks (serve=2) on `Soul Glo： Tiny Desk Co` q=1/256; over the 28.0 s since the sample in action #5
+# 7 actions before the finding
 # replay: cargo xtask dev soak --replay <this file> [--sim]
 # minimised to 4 actions (8 replays)
-browse files 37 1267047402
 seek-start
 volume 1
 browse pictures 23 1669336479
+radio-keys 8 2912082481

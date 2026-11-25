@@ -65,6 +65,21 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-25 — chore margin calibrated; one uncontrolled 55 ms block left (lead)
+
+* Host model calibrated to the player (decoder 4–9 ms, +5 ms code reload
+  after a chore, refills 3–8 ms, listing operations up to 21 ms); it
+  reproduced the soak's underrun at the old 10 ms margin
+  (`regress_margin_covers_the_reload_after_a_chore`); `MARGIN_US` now
+  22 ms (no change for the heavy-load cases, whose margin follows the
+  decoder peak).
+* 30-min seed 1 on that build: no reset; loads/s 1,044, idle 71 %, stack
+  ≥ 9,360 B; chore pieces now keep to their budgets (`job:rows 16/16`,
+  `job:count 25/25`), but **2 underruns from one 55 ms block labelled
+  `serve` that no `chore:` line accounts for** — work that bypasses
+  `chore::decide` (around `browse pictures` → `radio-keys`). Next: find
+  that path (worker).
+
 ### 2026-11-25 — fix: SD waits slept inside synchronous sessions (watchdog reset) (lead)
 
 * The first soak on `13b0ce70` (index places) lost the player at the start:
