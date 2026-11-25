@@ -1934,6 +1934,14 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — plan: list roll-around (owner's request)
+
+* Added UI-8: every scrollable list rolls round at both ends (Down on the
+  last row → first, Up on the first → last; Prev/Next pages too), owned by
+  `ListView` so all lists behave the same; auto-repeat stops at the end;
+  Settings › Display › List roll-around (on/off). 05 §3, §5.2, §7.11 and 08
+  updated.
+
 ### 2026-11-24 — the recorder records from the microphone (lead)
 
 * Merged the AU-13 mic fix (`596ee066`: the left mic input and feedback

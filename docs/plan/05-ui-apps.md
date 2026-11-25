@@ -59,7 +59,7 @@ adjusts on-screen hints (not behaviour) to match.
 
 | Key | Tap | Hold (≥ 500 ms) |
 |---|---|---|
-| **Up / Down** | Move focus; change the focused value in editors | Auto-repeat, accelerating after 1 s (lists: 8 → 30 rows/s) |
+| **Up / Down** | Move focus; change the focused value in editors. In every scrollable list, Down on the last row goes to the first and Up on the first to the last when **List roll-around** is on (Settings › Display; owner's requirement 2026-11-24) | Auto-repeat, accelerating after 1 s (lists: 8 → 30 rows/s); auto-repeat stops at the list end instead of rolling round, so a held key never races round a list |
 | **Prev / Next** | Lists: page up / page down. Players: previous / next item. Editors: previous / next field. Tabs: previous / next tab | Lists: jump by first letter (overlay shows the letter). Players: seek / tune, accelerating |
 | **OK** | Activate the focused item. Players: play / pause | Players: stop (radio: mute; recorder: stop and save after confirmation) |
 | **Back** | Up one level; closes menus, dialogs, overlays | Home |
@@ -186,7 +186,7 @@ pub trait Screen {
 
 | Widget | Notes |
 |---|---|
-| `ListView` | Virtual: asks a `ListSource` for rows `[first, first+n)`; keeps a cache of two pages. Rows not yet loaded draw as dim placeholders. Supports sections, per-row icon/value/accessory, letter jump, wrap-around off by default |
+| `ListView` | Virtual: asks a `ListSource` for rows `[first, first+n)`; keeps a cache of two pages. Rows not yet loaded draw as dim placeholders. Supports sections, per-row icon/value/accessory, letter jump, **roll-around** (Down past the last row → first, Up before the first → last; Prev/Next pages roll round the same way) following the **List roll-around** setting, owned by `ListView` so every list — menus, settings, Files, Music/library lists, Up next, presets, recordings, Authenticator, Bluetooth devices, pickers — behaves the same; an auto-repeated key stops at the end, a fresh press rolls round |
 | `Menu` | A `ListView` in a bottom sheet over a dimmed screen; items: action, toggle, radio group, sub-menu, slider launcher |
 | `Dialog` | Title, up to 3 lines of text, 1–3 buttons; destructive dialogs focus the safe button |
 | `Slider` | Horizontal value with min/max/step, live apply (brightness, EQ band, gain) |
@@ -668,7 +668,7 @@ settings service (debounced write).
 |---|---|
 | Sound | Equaliser · Balance · Bass · Crossfeed · Channel mode · ReplayGain · Volume limit · Key click · Fade on pause |
 | Playback | Shuffle · Repeat · Gapless · Resume at start-up · Seek step · Speed · Auto-bookmark long files · Tag code page |
-| Display | Brightness · Backlight time-out (5 s … always) · Screen-off lock delay · Theme · Accent · Wallpaper · Screen saver (off / clock) · Animations · Rotation 180° · Clock in status bar · Home screen (order, hide) |
+| Display | Brightness · Backlight time-out (5 s … always) · Screen-off lock delay · Theme · Accent · Wallpaper · Screen saver (off / clock) · Animations · Rotation 180° · Clock in status bar · **List roll-around (on / off)** · Home screen (order, hide) |
 | Power | Mode (Automatic / Battery saver / High performance) · Sleep timer · Auto power-off when idle (off, 5 … 60 min) · Keys when locked (none / volume / volume + transport) · Battery (percent, voltage, state, cycles if tracked) |
 | Date and time | Set time · Set date · 24-hour clock · Date format · UTC offset · Correction (s/day) · Set from radio (RDS) |
 | Bluetooth | Same content as the Bluetooth app's settings rows |
