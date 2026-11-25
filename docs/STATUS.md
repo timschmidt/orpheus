@@ -2794,6 +2794,15 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-25 — plan: factory-firmware reference player (owner)
+
+* The owner has a second, identical YM03 on the factory firmware for
+  side-by-side comparisons over Bluetooth and the line input. Planned in
+  07 §5.11 and M13 (MEAS-1, AQ-1, PWR-6): same files under
+  `ORPHEUS-REF/` on its card, every audio figure and AU-0b checked on both,
+  its runtimes as the battery baseline. New hard rule 9 in CLAUDE.md: no
+  Orpheus tool ever talks to it; never on USB while `xtask dev` runs.
+
 ### 2026-11-25 — soak reset found: card loops never yielded (lead)
 
 * With the surviving log and the new post-reset PC report, the soak's

@@ -1007,6 +1007,22 @@ rear blue line input** (node 0x1a, `Line In at Ext Rear`, already
 `Line` for the capture), so no root command is needed; the front mic input
 stays the fallback.
 
+**Reference player (owner, 2026-11-25).** A second, identical YM03 runs
+the factory firmware. It is the reference for every comparison: the same
+signal and music files are copied into a folder `ORPHEUS-REF/` on its card
+(through its own card-reader mode, nothing else written), played through
+its menus, and recorded the same way — through the workstation's line
+input with its USB disconnected, and over Bluetooth A2DP into the
+workstation (null-sink capture). Each AQ-1 figure is reported for both
+players side by side; AU-0b (the periodic ticking, not heard with the
+factory firmware) is checked on both under the same conditions. Its
+battery runtime for the same files at the same volume is the PWR-6
+baseline (started by hand from its menus; the logging is the
+recording's length and its battery icon). **Its firmware is never changed
+and no Orpheus tool talks to it** (CLAUDE.md rule 9): it is not connected
+to the workstation's USB while any `xtask dev` command runs, and never put
+into recovery mode.
+
 **Run engine (MEAS-2, firmware).** A plan compiled by `xtask meas` into a
 small binary file under `/.orpheus/meas/` (uploaded with `dev put`) and armed
 over USB: steps such as play file/tone set at volume V, clock level or

@@ -49,6 +49,13 @@ in `docs/PLAN.md`; start every session there and in `docs/STATUS.md`.
    a user decision (D-n) in `docs/PLAN.md` §5, anything that could need the
    case opened.
 
+9. A second YM03 runs the factory firmware as the owner's reference
+   player (07 §5.11). Never change its firmware or write to it other than
+   adding test files under `ORPHEUS-REF/` on its card through its own card
+   reader mode; never run `xtask dev` commands while it is on the
+   workstation's USB, and never put it into recovery mode. If a `10d6`
+   device appears that is not the Orpheus player, stop and ask.
+
 ## Engineering rules
 
 * `no_std`, no `alloc`, no `core::fmt` in firmware crates; `defmt` for logs.
