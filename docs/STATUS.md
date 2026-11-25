@@ -2872,6 +2872,16 @@ Finding: 30-minute `mixed` soak, seed 1, 10.4 min, read in `radio-keys 8
   off: the disk is full); fw fmt, clippy, `xtask build`, `check-resident`,
   `size --check`: pass. Not run: `xtask dev …` (no player), brand/site.
 
+### 2026-11-25 — plan: setting → effect coverage (VER-13, owner's request)
+
+* M11 gains VER-13 (07 §5.12): every setting × value × context proven by a
+  differential test with an oracle (simulator for UI effects, the player
+  for sound, clock, timers, USB, Bluetooth), global settings in every
+  context, local ones in theirs, no leaks elsewhere, pairwise for
+  interacting settings, persistence/defaults/clamping/migration;
+  `xtask settings-matrix --check` gate at 100 %. CLAUDE.md: a new setting
+  lands with its manifest entry and tests.
+
 ### 2026-11-25 — honest underrun count exposed paced refills; fixed (lead)
 
 * With `6db03fb0` (headroom read race fixed, underruns inside a half

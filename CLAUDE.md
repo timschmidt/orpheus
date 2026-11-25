@@ -70,6 +70,10 @@ in `docs/PLAN.md`; start every session there and in `docs/STATUS.md`.
 * RAM and size budgets live in `budgets.toml`; exceeding one needs the
   measured numbers and the reason in the same commit.
 * Every screen has a golden image; look at the PNG you produce.
+* Every setting has an entry in `tests/settings/effects.toml` (scope,
+  values, contexts, oracle) and differential tests showing its effect in
+  every context it applies to and nowhere else (owner's requirement
+  2026-11-25; 07 §5.12). A new or changed setting lands with them.
 * Every fixed bug becomes a regression test in the same commit as the fix
   (owner's policy, 2026-11-25): a host test named `regress_<bug>` whose doc
   comment names the bug, the date and the symptom, and which fails without

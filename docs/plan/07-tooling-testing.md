@@ -1097,6 +1097,62 @@ level, pager load rate, UI frame time and key latency, underruns — over a
 whole discharge, to catch behaviour that changes as the voltage falls
 (Maximum near the floor in particular); results join VER-10's history.
 
+### 5.12 Setting → effect coverage (M11, VER-13; owner's requirement 2026-11-25)
+
+**Every setting, at every value, is shown to have its effect in every
+context it applies to — global options in all contexts, local options in
+their relevant contexts — and no effect anywhere else.** 100 % of the
+matrix, measured like code coverage.
+
+* **The manifest** `tests/settings/effects.toml` lists every setting of the
+  settings tree (the tree in `orpheus-apps` is the source of truth, not a
+  hand list): its scope (`global` or `local`), its values or range (with
+  boundary and representative values for ranges), the **contexts** it
+  applies to, and for each the **oracle** that shows the effect:
+  * *global* settings (theme, accent, text size, language, list
+    roll-around, clock in the status bar, volume limit, key click,
+    transport keys when locked, auto-off, backlight and lock timers,
+    Performance, …) apply to **every context**: every screen and app of the
+    screen registry, with the screen off, locked, during playback, radio,
+    recording, the USB personalities and Bluetooth streaming, as far as
+    the effect can show there;
+  * *local* settings (Files sort and hidden files, Pictures fit and
+    slideshow, Now Playing view, recorder format and source, radio region
+    and step, game and Sequencer options, …) apply to their app's screens
+    **and to every other context that uses them** (hidden files also in
+    Pictures, the Library and the USB Drive picker; sort order also in
+    playback queues made from a folder);
+  * oracles: screenshot difference against the simulator (UI), the
+    developer-channel state (`status`, `ui top`, STATS words), audio
+    (rendered-block CRCs and spectra for sound settings and the DSP chain;
+    the DAC volume and PA registers), the clock level and governor
+    statistics, timers with injected time (auto-off, backlight, lock,
+    sleep timer, alarms), USB enumeration (personality on connect), the
+    Bluetooth module's commands, and the card (files written only where a
+    setting says).
+* **Differential tests**: for each setting × value × context, the same
+  journey runs with the value under test and with a reference value; the
+  oracle must differ in the declared way, and every other oracle must stay
+  equal (catches settings that leak into contexts they should not touch).
+  Interacting settings (volume limit × ReplayGain × EQ × bass × balance;
+  theme × accent × text size; sort × hidden; Performance × governor) are
+  covered pairwise.
+* **Persistence and defaults**: each setting survives a reboot and a
+  power-off, a factory reset restores its default, an out-of-range stored
+  value is clamped, and a store from an older firmware migrates.
+* **Where it runs**: UI-visible effects in the simulator for every screen
+  (fast, exhaustive); every effect that only hardware shows (sound, clock,
+  backlight, timers, USB, Bluetooth, charging-independent ones) on the
+  player through the test-session settings (`settings test-set`, RAM only
+  — the owner's settings are never changed by a test), extended to the
+  settings the whitelist does not yet allow, each with its safety reason.
+* **Gate**: `cargo xtask settings-matrix --check` fails when a setting in
+  the tree has no manifest entry, a declared context has no test, a value
+  is never exercised, or an oracle did not change; it reports the matrix
+  coverage (settings × values × contexts) next to code coverage in the
+  verification report. A new setting lands with its manifest entry and
+  tests in the same commit (CLAUDE.md).
+
 ## 6. Milestone gate (run before declaring any work package done)
 
 ```

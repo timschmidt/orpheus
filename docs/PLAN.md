@@ -131,7 +131,11 @@ Written up in `docs/hw/` (four reverse-engineering reports),
     with every test and fuzz target clean under **AddressSanitizer** (and
     Miri where `unsafe` code runs on the host); **every on-device function
     and every interaction of every screen and app** is tested on the player,
-    also in **fuzzed key sequences** and in **several long soaks** (hours of interactive use with music, radio, seeking and settings changes, to elicit stack, buffer and paging problems); **every bug found by fuzzing stays in
+    also in **fuzzed key sequences**, in **several long soaks**, and **every
+    setting is shown to take effect at every value in every context it
+    applies to (global options everywhere, local options in their
+    contexts) and nowhere else** (VER-13, owner 2026-11-25),
+    and (hours of interactive use with music, radio, seeking and settings changes, to elicit stack, buffer and paging problems); **every bug found by fuzzing stays in
     the test corpus** as a regression test; **memory use and performance**
     are tracked per commit as thoroughly as coverage (08 M11, 07 §3.5–3.8,
     §4.4, §5.7–5.9). Exclusions from the 100 % are an owner-reviewed list
