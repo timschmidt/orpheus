@@ -94,6 +94,30 @@ impl Card {
     }
 }
 
+/// Card work with a deadline running now ([`Urgent`]): no rests.
+static URGENT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// Marks card work with a deadline (the playback ring's refill) for its
+/// lifetime: [`pace`] does not rest meanwhile. Found 2026-11-25: with rests
+/// in the refill, a refill took 25–29 ms and, with the decoding, no longer
+/// fitted a 32 ms DAC half — 27 underruns while browsing Pictures.
+pub struct Urgent(());
+
+impl Urgent {
+    /// Start; the mark ends when the value is dropped.
+    #[must_use]
+    pub fn enter() -> Self {
+        URGENT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        Self(())
+    }
+}
+
+impl Drop for Urgent {
+    fn drop(&mut self) {
+        URGENT.fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// End of the card task's last rest ([`pace`]), µs counter.
 static LAST_REST: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
@@ -106,10 +130,13 @@ async fn pace() {
     use core::sync::atomic::Ordering::Relaxed;
     // Thread mode needs no pacing; inside a synchronous poller a timer
     // would never fire (`orpheus_fs::SyncPoll`).
-    if !atj2157_hal::rt::in_handler_mode() || orpheus_fs::SyncPoll::active() {
-        return;
-    }
-    if orpheus_power::pace::due(atj2157_hal::time::now_us() as u32, LAST_REST.load(Relaxed)) {
+    if orpheus_power::pace::should_rest(
+        atj2157_hal::rt::in_handler_mode(),
+        orpheus_fs::SyncPoll::active(),
+        URGENT.load(Relaxed) != 0,
+        atj2157_hal::time::now_us() as u32,
+        LAST_REST.load(Relaxed),
+    ) {
         embassy_time::Timer::after_micros(u64::from(orpheus_power::pace::REST_US)).await;
         LAST_REST.store(atj2157_hal::time::now_us() as u32, Relaxed);
     }

@@ -1502,7 +1502,11 @@ async fn play_file(
                     mark(1);
                     // The next file's head only with room to spare: near a
                     // file's end the decoder must stay ahead of the DAC.
-                    ring.fill_in(vol, None, head >= ROOMY).await;
+                    {
+                        // A deadline: no card rests (yoton_bsp::card::Urgent).
+                        let _urgent = yoton_bsp::card::Urgent::enter();
+                        ring.fill_in(vol, None, head >= ROOMY).await;
+                    }
                     mark(0);
                     note(UB_FILL, a);
                     T_FILL.fetch_add(now32().wrapping_sub(a), Ordering::Relaxed);
@@ -1612,7 +1616,10 @@ async fn play_file(
                     break 'play Ok(End::Idle);
                 }
                 let (a, head) = (now32(), out.headroom());
-                let filled = ring.fill_in(vol, None, head >= ROOMY).await;
+                let filled = {
+                    let _urgent = yoton_bsp::card::Urgent::enter();
+                    ring.fill_in(vol, None, head >= ROOMY).await
+                };
                 note(UB_FILL, a);
                 if !filled {
                     // The ring is full and the decoder still wants more:

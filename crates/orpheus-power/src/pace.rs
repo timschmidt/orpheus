@@ -23,6 +23,15 @@ pub fn due(now_us: u32, last_us: u32) -> bool {
     now_us.wrapping_sub(last_us) >= RUN_US
 }
 
+/// Whether the card task should rest before a transfer: only on the
+/// real-time executor (`handler`), never inside a synchronous poller
+/// (`sync`: a timer would not fire there) or during work with a deadline
+/// (`urgent`: the playback ring's refill), and only when [`due`].
+#[must_use]
+pub fn should_rest(handler: bool, sync: bool, urgent: bool, now_us: u32, last_us: u32) -> bool {
+    handler && !sync && !urgent && due(now_us, last_us)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -37,5 +46,18 @@ mod tests {
         assert!(due(RUN_US, 0));
         assert!(due(5_000, u32::MAX - 4_000));
         assert!(!due(2_000, u32::MAX - 4_000));
+    }
+
+    /// Regression (2026-11-25): rests inside the playback refill made a
+    /// refill take 25–29 ms; with the decoding it no longer fitted a 32 ms
+    /// DAC half (27 underruns while browsing Pictures). Urgent work and
+    /// synchronous pollers never rest; thread mode never rests.
+    #[test]
+    fn regress_playback_refill_is_never_paced() {
+        assert!(should_rest(true, false, false, RUN_US, 0));
+        assert!(!should_rest(true, false, true, RUN_US, 0), "urgent refill");
+        assert!(!should_rest(true, true, false, RUN_US, 0), "synchronous poller");
+        assert!(!should_rest(false, false, false, RUN_US, 0), "thread mode");
+        assert!(!should_rest(true, false, false, RUN_US - 1, 0), "not due");
     }
 }
