@@ -254,6 +254,11 @@ impl Target for Fw {
             crate::services::alarm_status();
             return true;
         }
+        // VER-7: the UI's top screen for the on-device suite and fuzzer.
+        if data == b"ui top" {
+            crate::ui::top_reply();
+            return true;
+        }
         if CARD_WITH_USB.load(Ordering::Relaxed) {
             crate::audio::busy_reply();
             return true;
