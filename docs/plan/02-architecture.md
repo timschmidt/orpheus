@@ -66,6 +66,9 @@ SRAM2  32 KiB  0x200000   code page cache: 4 slots × 8 KiB (32 lines of 1 KiB)
 SRAM3  32 KiB  0x300000   rodata page cache: 2 slots × 8 KiB        (0x300000–0x303FFF)
                0x304000   PCM output ring 12 KiB · log ring 2 KiB · pager tables
                           and other must-not-move statics 2 KiB     (0x304000–0x307FFF)
+                          as built: 0x307000 profiler block 2 KiB (T-8,
+                          `orpheus_proto::prof`; the log ring runs in SRAM0
+                          at 0x137400 and never used this place)
                           as built: 0x307800 battery-logger state and shared
                           flags (`firmware::drain::Shared`, < 2 KiB; kept out
                           of SRAM0, whose statics come off the stack),

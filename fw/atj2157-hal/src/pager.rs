@@ -112,7 +112,15 @@ extern "C" fn orpheus_pager_fault(frame: *const u32, exc_return: u32, ipsr: u32)
     w(SCB_CFSR, cfsr & 0xFF);
     // SAFETY: only this handler mutates the core after `init`.
     let core = unsafe { &mut *CORE.0.get() };
-    match core.fault(addr, pc) {
+    let action = core.fault(addr, pc);
+    if crate::prof::faults_on() {
+        // WP-T-8: off by default; one load and one branch here when off.
+        if !matches!(action, Action::Fatal(_)) {
+            let loaded = matches!(action, Action::Load { .. });
+            crate::prof::log_fault(addr, pc, cfsr & mpu::CFSR_MMARVALID != 0, loaded);
+        }
+    }
+    match action {
         Action::Remap(m) => {
             w(MPU_CTRL, mpu::CTRL_OFF);
             barrier();

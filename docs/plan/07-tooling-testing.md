@@ -577,6 +577,73 @@ driver exists because it is much faster than reboot cycles.
   Now Playing redraw path…), so working sets do not evict each other.
 * **Stack**: painted at boot; high-water mark exposed through the developer
   channel and the Diagnostics screen.
+
+#### As built (T-8; 2026-11-25, not yet run on the player)
+
+* **Block**: one capture at a time in the 2 KiB **profiler block** at
+  `0x307000` (SRAM3, after the PCM ring; `orpheus_proto::mem::SRAM3_PROF`).
+  That place was reserved for the log ring, which runs in SRAM0
+  (`logring::ALT_BASE`), so the block costs no RAM that anything else
+  uses; SRAM0 gains 8 B of flags. Layout, entry formats and the thinning
+  rule: `orpheus_proto::prof` (host-tested). The host reads it with PEEK
+  (`REQ_PEEK`) after the capture stopped.
+* **Thinning**: a capture started with `on` keeps a uniform sample of the
+  whole run whatever its length: when the ring is full it keeps every
+  other entry and from then on takes one event in two (the stride
+  doubles; entry *i* is event *i* · 2^shift). `burst` stops at full
+  instead (the first 500 samples or 250 faults, complete).
+* **PC sampler**: timer **T2** (unused before; [DS] only, U-TMR-1) at
+  1 MHz with the period given (default 1,000 µs), its own vector entry at
+  **level 0** (not masked by BASEPRI: it sees critical sections and the
+  level-1 handlers). A tick during a page fault is taken when the fault
+  returns, on the faulting instruction, so paging time is charged to the
+  code that faulted. One word per sample: PC with bit 0 = handler mode;
+  500 entries.
+* **Fault log**: `pager::orpheus_pager_fault` calls `prof::log_fault` for
+  every fault served while the log is on (one load and one branch when
+  off). Two words per fault: address, faulting PC, NOR read or re-map,
+  data access or fetch (code / literal pool / rodata follows from the
+  address), time since the start in 1,024 µs units; 250 entries.
+* **Commands** (USB task, answered at once): `prof pc on|burst [µs]`,
+  `prof faults on|burst`, `prof off`, `prof status` → `prof: faults on
+  n=250/250 seen=41273 shift=8 period=0us t=30012ms at 0x307000`.
+* **Cost**: resident +656 B (79,356 → 80,012 B: sampler entry 18 B and
+  handler 74 B, `log_fault` 84 B, the shared ring push 310 B, the branch
+  in the fault handler); `.bss` +8 B.
+* **`cargo xtask dev prof`** `--pc S | --faults S` (or `--during
+  "SUBCOMMAND …"`, run in the same process after the capture starts; a
+  soak calls the profiler's hook after its prologue, around each action —
+  `--only TEXT` captures only the first action whose text contains TEXT —
+  and before its final reboot). It refuses a player whose build id differs
+  from `target/orpheus/layout.json` (`--any-build`). Writes
+  `target/orpheus/prof/<stamp>/`: `capture.bin`, `meta.json` (command,
+  pager counters over the capture), `log.txt` (the log ring at the stop;
+  `art: cover search` lines are printed), and `pc.txt`, `pc-functions.csv`,
+  `pc-crates.csv` (flat profile by function and by crate, resident/paged ×
+  thread/handler) or `faults.txt`, `faults-sections.csv`,
+  `faults-functions.csv`, `faults-windows.csv` (counts by section with
+  lines touched, kind and owning cluster; by faulting function; distinct
+  lines per window, `--window-ms`; each cluster's share of the faults and
+  its size against the 24-line budget). `cargo xtask prof DIR` reports a
+  saved capture again (no player).
+* **`--update-hot NAME`** (fault captures): the hottest paged sections by
+  line loads, greedily within `--lines` (≤ 24, default 24) code lines and
+  `--ro-lines` (default 8) rodata lines, skipping sections another cluster
+  owns (pagelink gives a section to the first matching cluster) and names
+  shared with them; hottest first. Replaces the `[[cluster]]` of that name
+  in `hot.toml` (comments of other clusters kept) or appends it; also
+  `hot-NAME.toml` in the report directory.
+* **What it cannot measure**: the profile is a sample (500 PCs / 250
+  faults per capture: a function under ~1 % of the time or faults may not
+  appear; distinct-line counts of a thinned capture are lower bounds, take
+  a `burst` capture for a complete working set over ~0.1 s); time spent
+  inside the pager's line loads is charged to the faulting PC, and MemManage
+  itself is never sampled; samples are of T2's 1 MHz clock, not the core
+  cycle count; with the core in WFI the sample is the idle loop; the
+  fault log records the first fault of an access that straddles two lines
+  and then the second, as the pager serves them; nothing survives a reboot
+  (SRAM3 retention is not established), so a subcommand that reboots
+  loses the capture unless it calls the hook.
 * **Power proxy**: per-level time accounting in the clock governor (seconds
   spent at each frequency and in WFI) plus the battery-voltage log. Real
   current needs a meter: listed as a user-assisted measurement with a table to

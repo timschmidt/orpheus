@@ -10,6 +10,7 @@ mod fuzz;
 mod hil;
 mod mask;
 mod player;
+pub mod prof;
 mod ram;
 mod script;
 mod soak;
@@ -76,6 +77,15 @@ cargo xtask dev <subcommand>
                                 settings-churn, mixed, stress; oracles every 10 s, time series in
                                 metrics/soak/, findings minimised into tests/regress/soak/;
                                 starts and ends with a reboot
+  prof --pc S | --faults S [--burst] [--period-us N] [--during 'SUBCOMMAND …'] [--only TEXT]
+       [--update-hot NAME [--lines N] [--ro-lines N]] [--window-ms N] [--top N] [--any-build]
+                                profilers (T-8, 07 §5.6): PC sampler or fault log while
+                                S seconds pass or the subcommand runs (same process; a
+                                soak captures from after its prologue, or only during the
+                                first action containing TEXT); symbolised reports in
+                                target/orpheus/prof/STAMP/; --update-hot writes a
+                                hot.toml cluster from the hottest faulting sections
+                                (`cargo xtask prof DIR` reports a saved capture again)
   stats [--irq]                 executor idle time, pager and UI counters (--irq: per line)
   time [--set]                  read (or set from the host, UTC) the player's clock
   otp-add 'otpauth://…'         PROVISION one authenticator account (the
@@ -146,7 +156,13 @@ pub fn cmd(args: &mut Args) -> Result<String> {
         return Ok("help".into());
     }
     let _lock = DeviceLock::take()?;
-    match sub.as_str() {
+    dispatch(&sub, args)
+}
+
+/// One subcommand, with the device lock held by the caller (`cmd`, or
+/// `prof --during`).
+fn dispatch(sub: &str, args: &mut Args) -> Result<String> {
+    match sub {
         "state" => Ok(device::state().name().to_string()),
         "adfu" => {
             to_ymon()?;
@@ -256,6 +272,7 @@ pub fn cmd(args: &mut Args) -> Result<String> {
         "suite" => suite::cmd(args),
         "fuzz-ui" => fuzz::cmd(args),
         "soak" => soak::cmd(args),
+        "prof" => prof::cmd(args),
         "usbimage-test" => usbimage::cmd(args),
         "otp-add" => {
             let uri = args.next_positional().context("otp-add needs an otpauth:// URI")?;

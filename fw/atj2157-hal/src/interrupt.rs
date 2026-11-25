@@ -4,7 +4,7 @@
 //!
 //! | Level | Byte | Use |
 //! |---|---|---|
-//! | 0 | `0x00` | Faults and the pager only. Never masked by BASEPRI |
+//! | 0 | `0x00` | Faults and the pager; the profiler's PC sampler (T2, only while `prof pc` runs; resident, never faults). Never masked by BASEPRI |
 //! | 1 | `0x40` | Deadline interrupts: time driver, audio DMA, UART DMA |
 //! | 2 | `0x80` | The RT executor (software-pended line) |
 //! | 3 | `0xC0` | Everything else |

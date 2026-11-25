@@ -304,6 +304,11 @@ impl Target for Fw {
         if let Some(rest) = data.strip_prefix(b"drain ") {
             return crate::drain::test_command(rest);
         }
+        // WP-T-8: the PC sampler and the fault log.
+        if let Some(rest) = data.strip_prefix(b"prof ") {
+            prof_command(rest);
+            return true;
+        }
         // SENS-1: the accelerometer and the step counter; UI-5d: the RTC
         // alarm.
         if let Some(rest) = data.strip_prefix(b"acc ") {
@@ -377,6 +382,71 @@ impl Target for Fw {
             n
         })
     }
+}
+
+/// `prof pc on|burst [PERIOD_US]`, `prof faults on|burst`, `prof off` (also
+/// `prof pc off`, `prof faults off`), `prof status`. The reply is always
+/// the status line (`orpheus_proto::prof` describes the block the host
+/// reads afterwards): `prof: pc on n=12/500 seen=96 shift=3 period=1000us
+/// t=812ms` / `prof: refused (running)` / `prof: off`.
+fn prof_command(cmd: &[u8]) {
+    use atj2157_hal::prof;
+    use orpheus_proto::prof as p;
+    let mut words = cmd.split(|&b| b == b' ').filter(|w| !w.is_empty());
+    let what = words.next().unwrap_or(b"");
+    let how = words.next().unwrap_or(b"");
+    let num = words.next().map(|d| {
+        d.iter()
+            .filter(|c| c.is_ascii_digit())
+            .fold(0u32, |n, c| n.saturating_mul(10).saturating_add(u32::from(c - b'0')))
+    });
+    let ok = match (what, how) {
+        (b"pc", b"on" | b"burst") => prof::pc_start(num.unwrap_or(1000), how == b"burst"),
+        (b"faults", b"on" | b"burst") => prof::faults_start(how == b"burst"),
+        (b"off" | b"stop", _) | (b"pc" | b"faults", b"off") => {
+            prof::stop();
+            true
+        }
+        _ => true,
+    };
+    let h = prof::header();
+    crate::audio::reply(|w| {
+        w.s(b"prof: ");
+        if !ok {
+            w.s(b"refused (running) ");
+        }
+        let mode = h[p::W_MODE];
+        match mode & p::KIND_MASK {
+            p::KIND_PC => w.s(b"pc"),
+            p::KIND_FAULTS => w.s(b"faults"),
+            _ => {
+                w.s(b"off");
+                return;
+            }
+        };
+        w.s(if mode & p::RUNNING != 0 && prof::busy() { b" on" } else { b" stopped" });
+        if mode & p::BURST != 0 {
+            w.s(b" burst");
+        }
+        if mode & p::FULL != 0 {
+            w.s(b" full");
+        }
+        let end = if mode & p::RUNNING != 0 { atj2157_hal::time::now_us_raw() } else { h[p::W_STOP] };
+        w.s(b" n=")
+            .u(u64::from(h[p::W_COUNT]))
+            .s(b"/")
+            .u(u64::from(h[p::W_CAP]))
+            .s(b" seen=")
+            .u(u64::from(h[p::W_SEEN]))
+            .s(b" shift=")
+            .u(u64::from(h[p::W_SHIFT]))
+            .s(b" period=")
+            .u(u64::from(h[p::W_PERIOD]))
+            .s(b"us t=")
+            .u(u64::from(end.wrapping_sub(h[p::W_START]) / 1000))
+            .s(b"ms at 0x")
+            .h(p::BASE);
+    });
 }
 
 /// `boot status`: `slot B, start 1, after A failed` (or `slot A, start 1`;

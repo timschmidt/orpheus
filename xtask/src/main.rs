@@ -16,6 +16,7 @@ mod linkmap;
 mod metrics;
 mod ofw;
 mod pagelink;
+mod profile;
 mod resident;
 mod rules;
 mod sanitize;
@@ -61,6 +62,9 @@ usage: cargo xtask <command> [options]
                                    the milestone gate (07 §6); --coverage adds the
                                    coverage report, --m11 enforces 100 % + ASan + Miri
   dev <subcommand>                 talk to the player (see `cargo xtask dev help`)
+  prof DIR [--update-hot NAME [--lines N] [--ro-lines N]] [--window-ms N] [--top N]
+                                   report a capture of `dev prof` again (T-8, 07 §5.6;
+                                   no player): against the current layout and hot.toml
   drain report FILE.csv [FILE…]    battery-logger files (PWR-5): duration, mV drop,
                                    mV/h (end points and fit), time per clock level
                                    and playing, a comparison table
@@ -97,6 +101,7 @@ fn main() -> ExitCode {
         "cover" => cover::cmd(&mut args),
         "metrics" => metrics::cmd(&mut args),
         "dev" => dev::cmd(&mut args),
+        "prof" => dev::prof::report_cmd(&mut args),
         "drain" => drain::cmd(&mut args),
         "brand" => brand::cmd(&mut args),
         "site" => site::cmd(&mut args),

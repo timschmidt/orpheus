@@ -1,4 +1,6 @@
-//! Persistent log ring: 2 KiB at `0x307000` (SRAM3, above the PCM ring).
+//! Persistent log ring: 2 KiB. The firmware and the bring-up images keep it
+//! at [`ALT_BASE`] in SRAM0; the SRAM3 placement [`BASE`] was never used and
+//! now holds the profiler block in the firmware ([`crate::prof`]).
 //!
 //! The firmware's `defmt` global logger appends rzCOBS-encoded frames (each
 //! terminated by a `0x00` byte) to `data`; the host reads the whole area,
@@ -17,6 +19,8 @@
 
 use crate::{magic, rd32};
 
+/// The first plan's SRAM3 placement; only `xtask dev hil` still looks there
+/// (for the magic). The firmware's profiler block occupies it.
 pub const BASE: u32 = 0x0030_7000;
 pub const SIZE: usize = 2048;
 /// Fallback placement inside the persistent area's spare space is too small;

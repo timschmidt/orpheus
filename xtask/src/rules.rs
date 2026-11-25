@@ -163,6 +163,12 @@ pub fn load_hot(path: &Path, bin: &str) -> Result<Vec<Cluster>> {
     Ok(f.cluster.into_iter().filter(|c| c.bins.is_empty() || c.bins.iter().any(|b| b == bin)).collect())
 }
 
+/// Every cluster of a `hot.toml` text, in file order.
+pub fn parse_hot(text: &str) -> Result<Vec<Cluster>> {
+    let f: HotFile = toml::from_str(text)?;
+    Ok(f.cluster)
+}
+
 pub fn symbol_matches(pat: &str, demangled: &str) -> bool {
     glob(pat, demangled) || glob(pat, demangled.trim_start_matches('<'))
 }

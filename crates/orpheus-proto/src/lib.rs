@@ -25,6 +25,7 @@ pub mod layout;
 pub mod logring;
 pub mod mailbox;
 pub mod mem;
+pub mod prof;
 pub mod result;
 pub mod slot;
 
