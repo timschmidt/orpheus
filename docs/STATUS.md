@@ -2579,6 +2579,22 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — stage 2 slot fallback installed and verified (lead, owner's approval)
+
+* Merged T-6 (stage2) `699e2cf4`: stage 2 falls back to the next startable
+  slot (also a superseded one, after a trip) when a slot fails 3 starts;
+  964 of 1,024 B. Installed with `install-stage2` (old one saved in
+  `local/stage2-previous.bin`) after putting the current firmware in both
+  slots (`stage` A, `update` B, `switch-slot` A).
+* **Crash test on the player**: `boot crash-test` + reset → slot A failed
+  3 starts → **stage 2 started slot B** (`boot status`: "slot B, start 1,
+  after A failed"; `dev slots`: "fallback: A failed 3 starts"); reset after
+  the good-boot confirmation → slot A again. The crashes went through USB
+  recovery mode between starts because a test-mode marker from earlier
+  test windows was still in RAM (fault reboots return to ADFU only in test
+  mode); the counter survived those detours. In normal use a crash reboots
+  straight into the next start.
+
 ### 2026-11-24 — VER-7: the on-device suite passes on the player (lead)
 
 * Merged the triage (`437c2d1c` UI-2: Card info and the About hardware
