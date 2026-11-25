@@ -3397,7 +3397,11 @@ async fn start(slot: &mut Option<Volume<'static, Card>>) -> Option<(&'static mut
     // The listings' index folder into the walk cache while nothing plays:
     // otherwise the first listing searches the card's root for it during
     // playback (59 ms on the owner's card, 2026-11-25).
-    let _ = Apart(vol.warm_walk(orpheus_index::card::INDEX_DIR)).await;
+    // `/.orpheus` itself: the listings' index and the games' files both
+    // resolve from it (a small folder) instead of the card's root (games
+    // saves took 43–55 ms in their first piece while music played,
+    // 2026-11-25).
+    let _ = Apart(vol.warm_walk("/.orpheus")).await;
     Apart(crate::rec::find_dir(vol)).await;
     Apart(crate::drive::find_dirs(vol)).await;
     atj2157_hal::log::line(b"audio: state loaded");
