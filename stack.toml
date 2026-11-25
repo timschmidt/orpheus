@@ -158,7 +158,10 @@ callers = [
     "firmware::media::play",
     "firmware::media::ready",
     "firmware::ui::__ui_task::__ui_task_inner_function::{closure#0}",
-    "firmware::audio::__audio_task::__audio_task_inner_function::{closure#0}",
+    # The audio task's parts after AU-PERF (`Apart` polls each in its own
+    # frame; the waker calls of the futures inlined into them).
+    "firmware::audio::idle::{closure#0}",
+    "<firmware::audio::Apart<*",
     "firmware::audio::play_file::{closure#0}",
     "<yoton_bsp::settings::NorRegion as orpheus_settings::Nor>::program::{closure#0}",
 ]

@@ -37,7 +37,7 @@ stack_bytes = 12288             # 12 KiB
 # context's 14,856 B), left to the AU-PERF restructuring of audio.rs.
 # The usable size moves by up to 255 B with .bss (the guard is aligned to
 # 256 B), hence the slack below the measured -884 B.
-stack_static_margin_bytes = -1536
+stack_static_margin_bytes = 0
 # Firmware partition in the dual-boot layout (slot A): the whole "YFW1"
 # image (header sector, resident image, page store).
 slot_bytes_dual = 491520        # 480 KiB
