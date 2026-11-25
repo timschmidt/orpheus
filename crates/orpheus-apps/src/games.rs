@@ -830,6 +830,19 @@ const SPACE_SECTORS: u32 = 8;
 /// 128 KiB clusters).
 const SPACE_STEPS: u8 = 255;
 
+/// A future polled in a function of its own (`CardRun::step`'s rare
+/// stages): its state machine is not inlined into the caller's poll,
+/// whose code stays small. The caller pins the future in its own state
+/// (`pin!`; an `async fn` taking the future by value would keep it twice:
+/// its argument and its pinned copy, +464 B of the card task's future).
+#[inline(never)]
+fn poll_apart<F: core::future::Future>(
+    fut: core::pin::Pin<&mut F>,
+    cx: &mut core::task::Context<'_>,
+) -> core::task::Poll<F::Output> {
+    fut.poll(cx)
+}
+
 /// Where a [`CardRun`] is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Stage {
@@ -934,6 +947,14 @@ impl CardRun {
     }
 
     /// One step. `Some` with the answer when done.
+    ///
+    /// The stages every save, read and score load goes through (`Open`,
+    /// `Exists` of a load, `Flush`) are here; the rest (a new file's
+    /// allocation and creation, the folders, a removal: once per file or
+    /// never while music plays) is [`CardRun::rare_step`], a future polled
+    /// in a function of its own (AU-PERF, 2026-11-25): inlined, it spread
+    /// this state machine over five code lines, and with it the paged code
+    /// a games piece runs (`hot.toml` `games-io`, `cargo xtask hot`).
     pub async fn step<D: orpheus_fs::BlockDevice>(
         &mut self,
         vol: &mut orpheus_fs::Volume<'_, D>,
@@ -961,6 +982,40 @@ impl CardRun {
                     (None, _) => return self.fail(),
                 }
             }
+            Stage::Exists(k) if !matches!(self.op, CardOp::Remove(_)) => {
+                let Some(g) = Game::ALL.get(usize::from(k)) else { return Some(self.answer) };
+                if vol.exists(g.path()).await.unwrap_or(false) {
+                    self.answer.saved |= 1 << g.id();
+                }
+                if usize::from(k) + 1 >= Game::ALL.len() {
+                    return Some(self.answer);
+                }
+                self.stage = Stage::Exists(k + 1);
+            }
+            Stage::Flush => match vol.flush_step().await {
+                Ok(true) => return Some(self.answer),
+                Ok(false) => {}
+                Err(_) => return self.fail(),
+            },
+            _ => {
+                let mut rare = core::pin::pin!(self.rare_step(vol, path, buf));
+                return core::future::poll_fn(|cx| poll_apart(rare.as_mut(), cx)).await;
+            }
+        }
+        None
+    }
+
+    /// The stages a save of an existing file, a read and a score load do
+    /// not go through: [`Stage::Space`], [`Stage::Alloc`],
+    /// [`Stage::MakeDir`], and a removal's [`Stage::Exists`] and
+    /// [`Stage::Remove`].
+    async fn rare_step<D: orpheus_fs::BlockDevice>(
+        &mut self,
+        vol: &mut orpheus_fs::Volume<'_, D>,
+        path: &'static str,
+        buf: &mut [u8],
+    ) -> Option<CardAnswer> {
+        match self.stage {
             Stage::Space(k) => {
                 self.stage = match vol.find_free_step(SPACE_SECTORS).await {
                     Ok(false) if k < SPACE_STEPS => Stage::Space(k + 1),
@@ -972,22 +1027,11 @@ impl CardRun {
                 let _ = vol.create_dir(if k == 0 { "/.orpheus" } else { DIR }).await;
                 self.stage = if k == 0 { Stage::MakeDir(1) } else { Stage::Alloc(true) };
             }
-            Stage::Exists(k) => {
-                if let CardOp::Remove(_) = self.op {
-                    if !vol.exists(path).await.unwrap_or(false) {
-                        return Some(self.answer);
-                    }
-                    self.stage = Stage::Remove;
-                } else {
-                    let Some(g) = Game::ALL.get(usize::from(k)) else { return Some(self.answer) };
-                    if vol.exists(g.path()).await.unwrap_or(false) {
-                        self.answer.saved |= 1 << g.id();
-                    }
-                    if usize::from(k) + 1 >= Game::ALL.len() {
-                        return Some(self.answer);
-                    }
-                    self.stage = Stage::Exists(k + 1);
+            Stage::Exists(_) => {
+                if !vol.exists(path).await.unwrap_or(false) {
+                    return Some(self.answer);
                 }
+                self.stage = Stage::Remove;
             }
             Stage::Remove => {
                 if vol.remove(path).await.is_err() {
@@ -995,11 +1039,7 @@ impl CardRun {
                 }
                 self.stage = Stage::Flush;
             }
-            Stage::Flush => match vol.flush_step().await {
-                Ok(true) => return Some(self.answer),
-                Ok(false) => {}
-                Err(_) => return self.fail(),
-            },
+            Stage::Open | Stage::Flush => {}
         }
         None
     }

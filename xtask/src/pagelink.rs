@@ -141,6 +141,9 @@ pub struct PagesInfo {
     /// Bytes of paged sections (without padding).
     pub code_bytes: u32,
     pub rodata_bytes: u32,
+    /// Code window left empty before `starts_over` clusters.
+    #[serde(default)]
+    pub code_padding: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -349,6 +352,8 @@ pub struct Plan {
     pub nro: u32,
     /// Where the `hot.toml` clusters of code went.
     pub clusters: Vec<ClusterInfo>,
+    /// Bytes left empty before `starts_over` clusters.
+    pub padding: u32,
 }
 
 impl Plan {
@@ -459,6 +464,18 @@ pub fn pack(g: &Graph, places: &[Place], hot: &[Cluster], crates: &[String]) -> 
         let start = cluster.is_some() && cluster != prev;
         if start {
             cur = align_up(cur, LINE_SIZE);
+            if let Some(ci) = cluster
+                && let Some(over) = &hot[ci].starts_over
+            {
+                let Some(o) = plan.clusters.iter().find(|c| c.name == *over) else {
+                    bail!("cluster {}: starts_over `{over}` is not a cluster placed before it", hot[ci].name);
+                };
+                let want = (o.va - CODE_WIN) / LINE_SIZE % PHYS_LINES;
+                let have = cur / LINE_SIZE % PHYS_LINES;
+                let pad = (want + PHYS_LINES - have) % PHYS_LINES;
+                plan.padding += pad * LINE_SIZE;
+                cur += pad * LINE_SIZE;
+            }
         }
         let s = &g.nodes[n];
         cur = align_up(cur, s.align);
@@ -520,11 +537,18 @@ pub fn script(g: &Graph, plan: &Plan, script_dir: &Path, bin: &str) -> String {
     s.push_str("SECTIONS\n{\n");
     if !plan.code.is_empty() {
         let _ = writeln!(s, "    {CODE_OUT} {:#010x} :\n    {{", code_page_va(0));
-        for &(n, _, start) in &plan.code {
+        let mut end = 0;
+        for &(n, off, start) in &plan.code {
             if start {
                 let _ = writeln!(s, "        . = ALIGN({LINE_SIZE:#x});");
+                let pad = off - align_up(end, LINE_SIZE);
+                if pad > 0 {
+                    // `starts_over`: the code window left empty up to here.
+                    let _ = writeln!(s, "        . += {pad:#x};");
+                }
             }
             let _ = writeln!(s, "        *(\"{}\")", g.nodes[n].name);
+            end = off + g.nodes[n].size;
         }
         s.push_str("    } > PAGED_CODE\n");
     }
@@ -844,6 +868,7 @@ pub fn run(o: &Options) -> Result<Layout> {
             rodata_max: MAX_RO_PAGES,
             code_bytes,
             rodata_bytes,
+            code_padding: plan.padding,
         },
         groups,
         clusters: plan.clusters.clone(),
@@ -877,6 +902,9 @@ pub fn print_summary(l: &Layout) {
         l.slot.bytes,
         l.slot.layout
     ));
+    if l.pages.code_padding > 0 {
+        log(&format!("  code window left empty before starts_over clusters: {} B", l.pages.code_padding));
+    }
     let closure: Vec<&SectionInfo> = l.sections.iter().filter(|s| s.reason.starts_with("closure:")).collect();
     log(&format!("  {} sections resident through the closure of {} roots", closure.len(), l.roots.len()));
     for c in &l.clusters {
@@ -1018,6 +1046,7 @@ symbols = ["*planted"]
             symbols: vec![],
             sections: vec![],
             fits_with: with.iter().map(|s| (*s).to_string()).collect(),
+            ..Cluster::default()
         };
         let hot = [
             cl("dec", &["block", "fill"]),
@@ -1053,6 +1082,7 @@ symbols = ["*planted"]
             symbols: vec!["app::hot_a".into(), "app::hot_b".into()],
             sections: vec![],
             fits_with: vec![],
+            ..Cluster::default()
         }];
         let crates = crates(&g);
         let plan = pack(&g, &p, &hot, &crates).unwrap();
@@ -1081,6 +1111,37 @@ symbols = ["*planted"]
         let addrs = plan.addresses();
         assert_eq!(addrs[&13], 0x34_0000 + 9000);
         assert_eq!(addrs[&12], 0x34_8000);
+    }
+
+    /// `starts_over`: the cluster starts on the physical line of the one it
+    /// names (one alias block later here), the window between left empty;
+    /// the script places it there.
+    #[test]
+    fn starts_over_pads_to_the_named_clusters_line() {
+        let g = sample();
+        let r = rules();
+        let roots = resolve_roots(&g, &r);
+        let (p, _) = classify(&g, &r, &roots);
+        let cl = |name: &str, sym: &str, over: Option<&str>| Cluster {
+            name: name.into(),
+            symbols: vec![sym.into()],
+            starts_over: over.map(str::to_string),
+            ..Cluster::default()
+        };
+        let hot = vec![cl("a", "app::hot_a", None), cl("b", "app::hot_b", Some("a"))];
+        let plan = pack(&g, &p, &hot, &crates(&g)).unwrap();
+        // a: line 0 (700 B); b would start on line 1: 31 lines of padding.
+        assert_eq!(plan.code, vec![(10, 0, true), (9, 0x8000, true), (7, 0x8000 + 500, false)]);
+        assert_eq!(plan.padding, 31 * LINE_SIZE);
+        assert_eq!(phys_lines(&plan.clusters[1]), vec![0]);
+        let s = script(&g, &plan, Path::new("/l"), "t");
+        assert!(
+            s.contains("        . = ALIGN(0x400);\n        . += 0x7c00;\n        *(\".text.hot_b\")"),
+            "{s}"
+        );
+        // Not placed before it: an error.
+        let hot = vec![cl("b", "app::hot_b", Some("a")), cl("a", "app::hot_a", None)];
+        assert!(pack(&g, &p, &hot, &crates(&g)).is_err());
     }
 
     #[test]
