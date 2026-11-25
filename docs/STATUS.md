@@ -2636,6 +2636,22 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
   OK-hold Stop clears the resume point as 05 §7.1 says (the player keeps
   its current track, so OK on an idle Now Playing still restarts it).
 
+### 2026-11-24 — first soak: USB wedges during use (lead) — open bug USB-W1
+
+* Merged VER-12 (soak tooling). First run `dev soak mixed --minutes 30
+  --setup --seed 1`: at minute 3.2, on a `volume` action, the developer
+  channel failed (`control OUT 0x6: Cancelled`), came back after 1.5 s,
+  then `control IN 0xa` (PEEK) stalled and the player **stopped answering
+  USB entirely** — even after re-plugging, on two ports, the kernel logged
+  "device not responding to setup address … error -71". The UI stayed
+  responsive and the watchdog did not fire (it watches the executors, not
+  USB). The owner's reset did not reach the player; the power menu's
+  Recovery mode rebooted it, and a normal boot then enumerated fine (no
+  persistent cause). **Bug USB-W1**: the USB device stack can wedge for good
+  at run time; it needs a root cause, self-recovery (re-initialise the
+  controller when setup packets go unanswered) and USB liveness in the
+  watchdog health check. The soak cannot run unattended until then.
+
 ### 2026-11-24 — stage 2 slot fallback installed and verified (lead, owner's approval)
 
 * Merged T-6 (stage2) `699e2cf4`: stage 2 falls back to the next startable
