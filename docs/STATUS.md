@@ -64,6 +64,7 @@ of every session. Newest entries first in §3.
 | VER-10 (static stack) | **tool done (host-tested), gate step; firmware cut from ≥ 30,232 to 22,900 B, then to 16,188 B nested worst case of 22,528 B usable: margin 6,340 B, goal ≥ 4 KiB met (built, not yet run on the player)** | `cargo xtask stack [--check] [--root P]`, `stack.toml`, `budgets.toml stack_static_margin_bytes` = 6,084 B (the measured margin less one 256 B step: a ratchet). Second round: the card task's poll frames (the volume and the decoder no longer move by value; `idle`'s and start-up's children are futures of their own), .bss −512 B. Lead: soak, a Vorbis seek, the Authenticator, card hand-over to USB (session entry 2026-11-25 "VER-10: card task frames") |
 | SYN-1 | **done (host)**; not in the firmware (SYN-3) | `orpheus-synth`: band-limited oscillators (polyBLEP/BLAMP, sine, wavetables, white/pink noise), 2–4 operator FM (8 algorithms, feedback), ADSR (linear/exponential), pitch envelope, SVF LP/BP/HP, LFOs (Hz or tempo sync), 16 voices + 4 fade-out tails with stealing, mono legato glide, sample-accurate events, 6 drum voices, delay/chorus/reverb sends, soft limiter; 69,040 B engine; golden hashes equal at opt-level 1 and release; player estimate: 16 saw-lead voices ≈ 79 % of 144 MHz (session entry 2026-11-25 "SYN-1") |
 | TTS-1 | **done (host)**; not in the firmware, simulator or apps (TTS-2, A11Y-1, BOOK-3) | `orpheus-tts`: incremental converter (1,408 B, any feed sizes), English normaliser, NRL letter-to-sound rules + stress heuristic + stems, CMUdict exception lexicon (4,487 entries in 32,766 B; `cargo xtask tts-lexicon`), duration model for 0.25×–10×; rules alone 79.8 % of tokens, with the lexicon 98.1 % (session entry 2026-11-25 "TTS-1") |
+| TTS-2 | **done (host)**; not in the firmware, simulator or apps (A11Y-1, BOOK-3, firmware integration) | `orpheus-tts`: cascade/parallel formant synthesiser after Klatt 1980 (KLGLOTT88-like source with polyBLEP, F1–F6 cascade, nasal pole/zero, parallel frication/bursts), phoneme targets and loci from the phonetics literature, intonation (declination, accents, 5 contours, asides), voices Neutral/Low/Bright, exact TTS-1 durations at 0.25×–10×, resampler to 8–48 kHz, `Synth` (1,936 B) and `Speaker` (3,352 B with the converter), events and stop; WER (whisper base.en) 13.9 / 30.5 / 93 % at 1/2/4× (espeak-ng 5.9 / 63 / 89 %); player estimate ≈ 22 % of Base at 48 kHz (over the 20 % budget), code ≈ 70 KB without the lexicon (over 64 KiB) (session entry 2026-11-25 "TTS-2") |
 
 ## 3. Session log
 
@@ -82,6 +83,73 @@ of every session. Newest entries first in §3.
   pieces (open / write in sectors / close), or defer saves while playing.
 * Plan (owner's request): GAME-6, a brick breaker ("breakout"-style; an
   original game, working name "Bricks") added to M14 (05 §7.13, 08, PLAN).
+### 2026-11-25 — TTS-2: formant synthesiser and prosody, host side (worker, no hardware)
+
+In `crates/orpheus-tts` (modules `klatt`, `targets`, `voice`, `resample`,
+`speak`; "as built" in 04 §8). Not wired into the firmware, the simulator
+or `orpheus-apps`.
+
+* **Design**: a cascade/parallel formant synthesiser written from Klatt
+  (1980)'s description at 16 kHz with 1 ms control ticks; KLGLOTT88-like
+  voicing (closure band-limited by polyBLEP, F0 not quantised), aspiration
+  and frication noise, F1–F6 cascade with nasal pole/zero, parallel branch
+  for fricatives and bursts; phoneme targets from Peterson & Barney,
+  Klatt/MITalk, Hughes & Halle, Stevens & Blumstein, Lisker & Abramson
+  (cited in `targets.rs`); locus equations for transitions; stops with
+  closure, burst and aspiration; intonation with declination, accents,
+  fall/rise/continue/exclaim/wh-fall on the last stressed syllable, lower
+  and faster asides, `pitch_depth_pct`; three voices; polyphase resampler.
+  `Synth` takes tokens, `Speaker` takes text; events (sentence, word,
+  end) at their output frame; stop now (3 ms fade) or at the next word.
+  `cargo run -p orpheus-tts --example say -- "text"` writes a WAV.
+* **Measured**: RAM `Synth` 1,936 B, `Speaker` 3,352 B (≤ 8 KiB). Host:
+  31 ns per 16 kHz sample; 20 ns per 48 kHz stereo frame with the
+  resampler; front end 86 µs per second of speech at 10×. Player estimate
+  (disassembly, ±30 %): ≈ 10.8 M cycles/s at 48 kHz = 7.5 % of 144 MHz,
+  **22 % of Base 48 MHz (budget 20 %)**, 27 % at 44.1 kHz, 12.5 % with
+  16 kHz output; front end at 10× ≈ 1 % of 144 MHz. Code (thumbv7em, opt
+  "s", no LTO): TTS-2 adds ≈ 16 KB code + 5.3 KB tables, **≈ 70 KB without
+  the lexicon, over the 64 KiB plan budget**. Formants by LPC within 12 %
+  (F1) and 3 % (F2, F3) of target; peak −3.1 dBFS over all voices and
+  speeds; mean F0 within 8 % from 0.25× to 10×.
+* **Intelligibility**: whisper.cpp 1.9.4 was installed (Unsloth's
+  `whisper-server`), without a model: **I downloaded `ggml-base.en.bin`
+  (148 MB, SHA-256 a03779c8…6d002) into the session's scratch area, not
+  the repository**. Neutral WER 13.9 % at 1×, 30.5 % at 2×, 93 % at 4×
+  (6× 98 %, 10× 100 %); Low 13.4 / 31.6 %, Bright 7.5 / 27.8 % at 1×/2×.
+  References (same recogniser): espeak-ng 5.9 / 63 / 89 %, flite 7.5 % at
+  1×; our 1× audio time-compressed (WSOLA) 41 / 86 / 96 % at 2/3/4×, so
+  the 4× number is the recogniser's limit. Budgets in `budgets.toml
+  [tts]` (18 / 36 / 97 %); the test reports "not run" without
+  `ORPHEUS_ASR_URL`/`ORPHEUS_ASR_CMD`. Tuning by measurement: levels of
+  fricatives, nasals, /h/ and bursts, source pre-emphasis and F6, liquids
+  holding their targets, abrupt onsets in stop clusters (1×: 15.4 →
+  13.9 %, 2×: 29.8 → 30.5 %, within the run-to-run noise of my tuning).
+* **Tests**: `tests/speech.rs` (13: exact durations at 4 speeds × 3
+  rates, word-event samples, block-size and feeding independence, LPC
+  formants, fricative spectra, F0 contours on audio and on `pitch()`,
+  pitch across speeds, no clipping/NaN, events, both stops, RAM, every
+  phoneme), `tests/golden_speech.rs` (34 hashes, `tests/goldens/
+  speech.txt`), `tests/intelligibility.rs`, unit tests; fuzz target
+  `tts_synth` (6 seeds in `tests/fuzz-corpus/tts_synth`, one regression
+  input in `tests/regress/tts_synth`: the harness's own limit of 10⁶
+  render calls hit by a legitimate one-minute render in 1-frame blocks —
+  the limit now follows the expected length), 4 min of
+  libFuzzer + ASan (2,793 inputs): no findings. A restructuring of the
+  signal path into per-filter block loops (spills 120 → 7 memory
+  operations per sample) left every golden hash unchanged.
+* **Gate**: `cargo fmt --check`, `cargo clippy --all-targets -D warnings`
+  and `cargo test` on `orpheus-tts`: pass; workspace-wide `cargo fmt
+  --all --check`, `cargo clippy --workspace --all-targets -D warnings`,
+  `cargo test --workspace` (167 suites): pass; `cargo +nightly-2026-11-05
+  fuzz build tts_synth`: builds. **Not run**: `xtask test all`, `xtask build`/`size`/
+  `check-resident`/`stack` (no firmware change), `xtask dev …` (not
+  allowed for this package).
+* **Open / for the lead and the owner**: (1) the owner's check for M15
+  TTS-2: listen to the voices and rate them (WAVs from the `say`
+  example); (2) the Base CPU budget at 44.1/48 kHz (governor step or a
+  shorter resampler kernel) and the 64 KiB code budget need a decision;
+  (3) firmware integration items at the end of 04 §8 "as built (TTS-2)".
 
 ### 2026-11-25 — on-device suite on the games build: 16/16 (lead)
 

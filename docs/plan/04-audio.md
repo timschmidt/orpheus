@@ -584,6 +584,169 @@ the reference; in short:
   takes another). Not done here: function-word de-accenting, emphasis
   marks, homograph choice (the lexicon keeps CMUdict's first variant).
 
+**As built (TTS-2, 2026-11-25): the formant synthesiser and prosody, host
+side.** In `crates/orpheus-tts` (still `no_std`, no `alloc`,
+`forbid(unsafe_code)`; new dependency `orpheus-synth` for its f32 helpers
+`sin_turns`/`exp2`, xorshift noise and soft clip). Module docs are the
+reference; in short:
+
+* **API.** `Synth::new(Config { rate, channels, voice, speed, seed })`
+  (8–48 kHz, mono or interleaved stereo); `push(Token)` /
+  `push_with_text(Token, word_text)` (`false` = queue full: render first;
+  `space()`), `finish()`, `render(&mut [i16], |frame, Event|)` and
+  `render_f32` (fewer frames = starved or done; `is_starved`, `is_idle`),
+  `stop(Stop::Now | Stop::AtWord)`, `set_voice`, `set_speed`, `pitch()`
+  (F0 of the last tick, for tests/displays). Events: `Sentence { pos }`,
+  `Word { pos, spelled }` at the output frame where the word starts
+  (±0.5 ms resampler latency), `End`. `Speaker::new(Config, Options)`
+  wraps a `Converter` and a `Synth`: `feed`/`space`/`finish`/`render`/
+  `stop` (drops the unspoken text)/`set_speed`/`set_voice`/`is_idle`; text
+  after an `End` starts a new utterance. Example: `cargo run -p
+  orpheus-tts --example say -- [-s SPEED] [-v neutral|low|bright] [-r
+  RATE] [-m] [-p SEMITONES] [--words] "text"` writes a WAV.
+* **Synthesiser** (`klatt`, written from Klatt 1980's description): 16 kHz,
+  1 ms control ticks. Source: KLGLOTT88-like polynomial flow derivative
+  (Klatt & Klatt 1990) with the closure step band-limited by a two-sample
+  polyBLEP at its fractional position (F0 not quantised to samples), F0 and
+  OQ latched per period, flutter (three slow sines, ±0.35 %), aspiration
+  noise ×½ in the closed phase, a one-zero pre-emphasis (0.65: the pulse
+  alone left F2/F3 of /i/ 28 dB under F1, natural ≈ 20 dB) and a one-pole
+  tilt. Cascade: nasal pole/zero (270 Hz; the zero moves to 450 Hz in
+  nasals and over the transition of a neighbouring vowel), F6…F1 (F4–F6
+  fixed at 3.3/3.75/4.9 kHz × the voice's scale; F6 added for 16 kHz).
+  Parallel (frication and bursts): white noise into P2–P4 (tracking
+  F2–F4), P5 4.7 kHz, P6 6 kHz (peak-normalised), alternating signs, and a
+  bypass. Each filter runs over the whole tick with its state in
+  registers, coefficients are redesigned only when a frequency or
+  bandwidth changed; amplitudes ramp per sample over the tick.
+* **Targets** (`targets`, sources cited in the module): vowels Peterson &
+  Barney 1952 (men's means), schwa 500/1500/2500, diphthongs start/end
+  after Holbrook & Fairbanks 1962, sonorants, nasal murmurs and fricatives
+  after Klatt 1980 / MITalk / Fujimura 1962, frication spectra after Hughes
+  & Halle 1956 and Jongman et al. 2000, burst spectra after Stevens &
+  Blumstein 1978, VOT after Lisker & Abramson 1964. Loci as linear locus
+  equations per place (after Lindblom 1963, Sussman et al. 1991; velar
+  front/back split and F2–F3 pinch). Levels set by measurement: /s/ −8 dB,
+  /ʃ/ −5, /f/ −20, /θ/ −24, nasals −9, /h/ −15 re the vowel RMS.
+* **Tracks** (`speak`): per tick, from the previous, current and next unit:
+  formant targets (diphthongs glide over 20–90 % of the segment, /h/ takes
+  the neighbouring vowel's), boundary values (locus onset when a placed
+  consonant meets a vocalic segment, else the mean), linear transitions of
+  45 ms (stops), 40 (fricatives), 35 (nasals), 50 (vowel–vowel), 60
+  (vowel next to a liquid/glide; the liquid itself 22 ms so it reaches its
+  target), each at most half the segment (fast speech undershoots
+  naturally); 3 ms amplitude cross-fades (6/8 ms after/before a pause).
+  Stops: closure (holding the incoming formants; voice bar after a voiced
+  sound, 20 ms prevoicing otherwise for b d g), burst at the end (4–10 ms ×
+  2/(1+s)), none before another stop or affricate; aspiration at the start
+  of the next vocalic segment (VOT 55/65/75 ms for p t k at 1×, ×0.6 when
+  unstressed, ≤ 12 ms after /s/, ≤ 45 % of the segment, widened B1–B3);
+  liquids/glides after a stop start at the vowel's level. Affricates:
+  45 % closure, then /ʃ/-like frication. Pauses hold the last filters (no
+  coefficient jump while they ring).
+* **Prosody**: a word is final when the next word or break arrives (the
+  queue holds 64 units ≥ a word's 48 phones + its break). Accent on the
+  first primary-stressed vowel of each content word (+20 % of the
+  baseline, first accent of a phrase +25 %, spelled letters ×0.6;
+  secondary stress +7 %); function words (66, `is_function_word`) flat.
+  Contours on the last stressed vowel of the phrase-final word, ending on
+  its last voiced sound: fall (+19 % → −17 %), wh-question fall (+32 % →
+  −17 %), rise (−6 % → +52 %), continue (→ +23 %), exclaim (+46 % →
+  −15 %). Baseline ×1.10 declining 9 % per second of speech (in 1×
+  seconds, so the shape is the same at every speed), floor ×0.86, full
+  reset after a sentence end, half after a phrase break. Asides: baseline
+  ×0.9, movements ×0.6, units 15 % shorter. All movements × the voice's
+  range × `pitch_depth_pct` (40 % at 10×); F0 smoothed (22 ms at 1×, 8 ms
+  at ≥ 8×).
+* **Voices** (`voice`): Neutral (118 Hz, formants ×1, OQ 0.55, tilt 3 dB,
+  breath −34 dB), Low (92 Hz, ×0.93, OQ 0.5, tilt 6, range 0.85), Bright
+  (195 Hz, ×1.16, OQ 0.62, tilt 2, breath −26, range 1.2);
+  `Voice::with_pitch(semitones)` for the screen reader's pitch setting.
+* **Speed**: durations are TTS-1's, exactly: a phone of `ms` lasts `ms`
+  ticks; an utterance lasts `frames_for(16·Σms, rate)` frames (tested at
+  0.25/1/4/10× and 16/44.1/48 kHz; word events at 16 kHz on the exact
+  sample). Speed only changes the pitch depth, the F0 smoothing and the
+  burst/VOT scaling: the mean F0 stays within 8 % from 0.25× to 10× (test).
+* **Resampler** (`resample`): 16-tap Kaiser (β 6) windowed sinc, cutoff
+  7.36 kHz, 48 phases + linear interpolation (3,136 B table, built by
+  `const fn`), exact rational phase: 48/32/24 kHz use table phases, 44.1/
+  22.05 interpolate; 16 kHz passes through; below 16 kHz a 4th-order
+  Butterworth pre-filter. Image at 10 kHz from a 6 kHz tone < −30 dB
+  (test); 1 kHz gain ±2 %.
+* **RAM** (`speak::ram`, test): `Synth` 1,936 B (signal path 460 B,
+  resampler 208 B, unit queue 64 × 16 B); `Speaker` (converter + synth)
+  **3,352 B** (≤ 8 KiB). **Code/data** (thumbv7em, opt "s", no LTO, whole
+  crate, generic `render` paths not counted): text 47.5 KB, rodata
+  55.5 KB (TTS-1: 31.5 + 50.2), so TTS-2 adds ≈ 16 KB code (largest
+  `Synth::frame` 4.7 KB, `Dsp::render` 2.1 KB) and 5.3 KB tables;
+  **without the lexicon ≈ 70 KB, over the 64 KiB plan budget** (open).
+* **Cost.** Host (x86-64, `cargo bench -p orpheus-tts`, release): 31 ns
+  per 16 kHz sample (synthesiser and control, ≈ 2,000× real time); 20 ns
+  per 48 kHz stereo frame and 26 ns per 44.1 kHz frame including the
+  resampler; front end 12 µs per second of speech at 1×, 86 µs at 10×.
+  **Player estimate** (thumbv7em disassembly, instructions + 1 per
+  load/store + 2 per taken branch, ±30 %): per 16 kHz sample source ≈ 90
+  cycles, each of the 8 cascade filters ≈ 15, the parallel branch ≈ 120
+  when frication sounds: ≈ 210 (vowels) / 330 (fricatives) / 60 (pauses),
+  plus ≈ 2,000 per tick for the tracks and filter design (≈ 125 per
+  sample) → ≈ 5.5 M cycles per second of speech. Resampler + i16 stereo
+  out ≈ 110 cycles per frame at 48 kHz, ≈ 175 at 44.1 kHz. **Total ≈ 10.8 M
+  cycles/s at 48 kHz (7.5 % of 144 MHz, 22 % of Base 48 MHz), ≈ 13 M at
+  44.1 kHz (9 % / 27 %), ≈ 6 M with 16 kHz output (4 % / 12.5 %)**: the
+  "≤ 20 % at Base" budget holds only at 16–32 kHz output; at 44.1/48 kHz
+  the governor needs one step up (96 MHz) while speech plays, or the
+  resampler a shorter kernel. Front end at 10×: ≈ 1.3–1.7 M cycles per
+  second of speech (host time × 15–20, SYN-1's ratio), ≈ 1 % of 144 MHz
+  (lexicon NOR reads not counted): it keeps up.
+* **Tests**: unit tests (resonator/antiresonator responses, glottal period
+  and DC, resampler table/pass band/images/counts, tilt, voices, function
+  words, accents and contours per word, full queue); `tests/speech.rs`
+  (durations exact at 4 speeds × 3 rates and word-event samples; asides
+  faster; output independent of block sizes 1/7/256/1023/4096 and of
+  feeding text in 5-byte pieces; LPC formants of the 10 monophthongs in
+  Neutral and Low within 15 % (F1) / 8 % (F2, F3) — measured within 12 %
+  / 3 %; /s/ > 60 % of its energy above 4 kHz, /ʃ/ > 50 % in 1.8–4 kHz,
+  /f/ weaker than /s/; question rise, statement fall and wh-question fall
+  on the audio (Neutral, pitch tracker) and on `pitch()` (all voices);
+  mean F0 within 8 % from 0.25× to 10×; no NaN and peak < 0.8 (soft-clip
+  knee) over 3 voices × 4 speeds × 6 sentences — measured −3.1 dBFS;
+  events, stop now (≤ 3 ms + latency), stop at word (no further word,
+  ends at the next word's start), RAM, every phoneme at 0.25×/10× in
+  three positions); `tests/golden_speech.rs` (34 FNV-1a hashes: 4
+  sentences × 1/0.25/4/10× × Neutral/Bright at 48 kHz stereo, Low at
+  44.1 kHz, 16 kHz mono; `tests/goldens/speech.txt`); fuzz target
+  `tts_synth` (tokens or text, every rate/voice/speed, stops; oracle:
+  finite, within ±1, i16 = f32 rounded, ends within the pushed duration,
+  exactly it without asides or stops) with 6 seeds and one regression
+  input, fuzzed 4 min (2,793 inputs, ASan): no findings.
+* **Intelligibility** (`tests/intelligibility.rs`; runs with
+  `ORPHEUS_ASR_URL` = a whisper.cpp server or `ORPHEUS_ASR_CMD`, "not
+  run" otherwise; 24 own sentences, 187 words): whisper.cpp 1.9.4
+  `ggml-base.en`, greedy: **Neutral 13.9 % WER at 1×, 30.5 % at 2×,
+  93 % at 4×** (6× 98 %, 10× 100 %, measured, not gated); Low 13.4 /
+  31.6 %, Bright 7.5 / 27.8 % at 1× / 2×. Same recogniser and sentences:
+  espeak-ng 5.9 / 63 / 89 % at 1/2/4×, flite 7.5 % at 1×; our 1× audio
+  time-compressed by WSOLA scores 41 / 86 / 96 % at 2/3/4×: **the 4×
+  figure is the recogniser's limit**, not the synthesiser's (a human
+  listener check is the real measure there). Budgets `budgets.toml
+  [tts]`: 18 / 36 / 97 %. Typical 1× errors: stop + /r/ onsets ("green
+  umbrella", the same for espeak-ng), word-boundary runs ("water and
+  heat").
+* **For the firmware (TTS-3 / A11Y-1 / BOOK-3)**: a speech voice in the
+  mixer (own volume, DSP bypassed, ducking or pausing the music), fed from
+  `Speaker::render` at the DAC rate (16 kHz natively when nothing else
+  plays); `Speaker` (3.4 KB) as one static; the lexicon paged as data
+  (`Converter::with_lexicon`); `Dsp::render`, `Resonator::block`, the
+  resampler and its table hot/resident (per-sample paths); a clock floor
+  of 96 MHz at 44.1/48 kHz output; check the golden hashes on the player
+  (FZ = 0) and measure cycles and first-sound latency (≤ 150 ms) into
+  `budgets.toml`; decide the code-size budget (≈ 70 KB vs 64 KiB). The
+  screen reader uses `Stop::Now` on a key, `Voice::with_pitch`,
+  `set_speed`; read-aloud feeds text by `space()`, highlights on
+  `Event::Sentence`/`Word` (`pos` = byte offset of the source chunk) and
+  resumes from a word's `pos`. Not done: emphasis marks, homographs,
+  intonation of lists, a male/female choice beyond the three voices.
+
 ## 9. Synthesis and MIDI (M17; owner's requirement 2026-11-25)
 
 One synthesis crate, `orpheus-synth` (no_std, no alloc, host-tested, in

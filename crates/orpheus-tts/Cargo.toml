@@ -1,6 +1,6 @@
 [package]
 name = "orpheus-tts"
-description = "Text-to-speech front end: English text normalisation, NRL letter-to-sound rules, CMUdict exception lexicon, stress, prosody marks and the duration model (04-audio §8, WP TTS-1)"
+description = "Text-to-speech: English text normalisation, NRL letter-to-sound rules, CMUdict exception lexicon, stress, prosody marks and the duration model (TTS-1); a cascade/parallel formant synthesiser with intonation, voices and a resampler (TTS-2) (04-audio §8)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,6 +13,14 @@ publish = false
 build = []
 
 [dependencies]
+# The synthesis engine's sample-path helpers: f32 math without fused
+# multiply-add or libm (sin_turns, exp2), the xorshift noise, the soft clip
+# (04 §9), so the speech renders the same samples on the host and the player.
+orpheus-synth = { path = "../orpheus-synth" }
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "speech"
+harness = false

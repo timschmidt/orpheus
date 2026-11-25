@@ -15,6 +15,18 @@ fn tts_text_corpus() {
 }
 
 #[test]
+fn tts_synth_corpus() {
+    let n = replay::replay("tts_synth", bodies::tts_synth);
+    assert!(n >= 6, "{n} inputs");
+}
+
+/// A `tts_synth` token: Word (`kind` 0), Phone (1, phoneme `ph`), Break
+/// (3, break kind and contour in `b`); `ms10` in tens of ms.
+fn tok(kind: u8, ph: u8, b: u8, ms10: u8) -> [u8; 3] {
+    [kind | (ph << 2), b, ms10]
+}
+
+#[test]
 fn tts_lexicon_corpus() {
     let n = replay::replay("tts_lexicon", bodies::tts_lexicon);
     assert!(n >= 2, "{n} inputs");
@@ -96,9 +108,62 @@ fn seeds() {
             b"OTL1\x02\x00\x01\x00\x02\x00\x02a\x01\xff\x01\x02\x05\x01\xff\x01\x00\x00\x40".to_vec(),
         ),
     ];
+    // tts_synth: a sentence of tokens; every phoneme; extreme durations and
+    // asides; a stop; text through the speaker.
+    let mut sentence = vec![0b0011_1000, 4, 64];
+    for t in [
+        tok(0, 0, 0, 0),
+        tok(1, 17, 0, 6),  // D
+        tok(1, 10, 1, 12), // IY1
+        tok(0, 0, 1, 0),
+        tok(1, 28, 0, 8),    // P
+        tok(1, 29, 0, 6),    // R
+        tok(1, 1, 1, 15),    // AE1
+        tok(1, 32, 0, 7),    // T
+        tok(3, 0, 0x2A, 45), // Period, Rise
+    ] {
+        sentence.extend_from_slice(&t);
+    }
+    let mut every = vec![0b0001_0101, 16, 7];
+    for p in 0..39u8 {
+        every.extend_from_slice(&tok(if p % 7 == 0 { 0 } else { 1 }, p, p % 3, 3 + p % 9));
+    }
+    every.extend_from_slice(&tok(3, 0, 0x4B, 20));
+    let mut extreme = vec![0b0010_0110, 1, 255];
+    for t in [
+        tok(3, 0, 2, 255), // ParenOpen, 2.55 s
+        tok(0, 0, 3, 0),
+        tok(1, 5, 1, 255), // AY1 2.55 s
+        tok(1, 21, 0, 1),  // HH 10 ms
+        tok(1, 37, 0, 0),  // Z 0 ms
+        tok(3, 0, 3, 0),   // ParenClose
+        tok(1, 15, 0, 1),  // B
+        tok(1, 15, 0, 1),
+        tok(1, 23, 0, 1), // K
+        tok(3, 0, 0x4B, 1),
+    ] {
+        extreme.extend_from_slice(&t);
+    }
+    let mut stopped = sentence.clone();
+    stopped[0] |= 64;
+    stopped[2] = 3;
+    let mut fast = sentence.clone();
+    fast[1] = 40;
+    fast[0] = 0b0000_0001;
+    let mut synth: Vec<(String, Vec<u8>)> =
+        vec![("sentence".into(), sentence), ("every".into(), every), ("extreme".into(), extreme)];
+    synth.push(("stopped".into(), stopped));
+    synth.push(("fast".into(), fast));
+    let mut speak = vec![0b1011_1110, 6, 100];
+    speak.extend_from_slice(b"Hello (world)! Is it 4:05? Track 3, \"quoted\"... done.");
+    synth.push(("text".into(), speak));
     let a = replay::write_seeds("tts_text", &text);
     let b = replay::write_seeds("tts_lexicon", &lexicon);
-    if !a && !b {
+    let c = replay::write_seeds("tts_synth", &synth);
+    for (_, d) in &synth {
+        bodies::tts_synth(d);
+    }
+    if !a && !b && !c {
         for (_, d) in &text {
             bodies::tts_text(d);
         }
