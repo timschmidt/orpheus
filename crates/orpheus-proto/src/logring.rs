@@ -31,6 +31,26 @@ pub const OFF_WRITE: usize = 4;
 pub const OFF_BUILD: usize = 8;
 pub const OFF_CAP: usize = 12;
 
+/// The line a start appends when it keeps the ring.
+pub const BOOT_MARK: &[u8] = b"--- boot ---";
+
+/// Whether a start keeps the ring it finds (header intact), appending
+/// [`BOOT_MARK`], instead of clearing it. Regression (2026-11-25, soak
+/// finding): the ring was cleared at every start, so the lines before a
+/// watchdog reset — the only evidence of what hung — were lost.
+#[must_use]
+pub fn keep(magic: u32, cap: u32, write: u32) -> bool {
+    magic == MAGIC && cap as usize == CAP && write != u32::MAX
+}
+
+/// The lines before the last [`BOOT_MARK`] (the previous start's tail),
+/// at most `n`, oldest first; empty without a mark.
+#[must_use]
+pub fn before_last_boot<'a>(lines: &'a [&'a [u8]], n: usize) -> &'a [&'a [u8]] {
+    let Some(at) = lines.iter().rposition(|l| *l == BOOT_MARK) else { return &[] };
+    &lines[at.saturating_sub(n)..at]
+}
+
 /// Return the ring's bytes in write order (oldest first) and whether data
 /// was lost to wrapping. `None` if the header is absent or inconsistent.
 #[must_use]
@@ -55,6 +75,19 @@ pub fn unroll(area: &[u8], out: &mut [u8]) -> Option<(usize, bool)> {
 
 #[cfg(test)]
 mod tests {
+    /// Regression: the log ring was cleared at every start (2026-11-25).
+    #[test]
+    fn regress_log_ring_survives_a_reset() {
+        assert!(keep(MAGIC, CAP as u32, 1234));
+        assert!(!keep(0, CAP as u32, 0));
+        assert!(!keep(MAGIC, 64, 0));
+        let a: &[u8] = b"pic: slow";
+        let lines: [&[u8]; 5] = [b"x", a, BOOT_MARK, b"fw: start", b"y"];
+        assert_eq!(before_last_boot(&lines, 1), &[a]);
+        assert_eq!(before_last_boot(&lines, 8).len(), 2);
+        assert!(before_last_boot(&lines[..2], 8).is_empty());
+    }
+
     use super::*;
     use crate::wr32;
 

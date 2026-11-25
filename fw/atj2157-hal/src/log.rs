@@ -16,8 +16,19 @@ fn rd(addr: u32) -> u32 {
     unsafe { core::ptr::read_volatile(addr as *const u32) }
 }
 
-/// Reset the ring (start of an image).
+/// Start of an image: keep the ring a previous start left (its last lines
+/// say what happened before a reset) and mark the new start, or set up an
+/// empty one ([`logring::keep`]).
 pub fn init() {
+    let kept = logring::keep(
+        rd(BASE + logring::OFF_MAGIC as u32),
+        rd(BASE + logring::OFF_CAP as u32),
+        rd(BASE + logring::OFF_WRITE as u32),
+    );
+    if kept {
+        line(logring::BOOT_MARK);
+        return;
+    }
     wr(BASE + logring::OFF_WRITE as u32, 0);
     wr(BASE + logring::OFF_CAP as u32, logring::CAP as u32);
     wr(BASE + logring::OFF_BUILD as u32, 0);

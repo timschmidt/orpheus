@@ -2438,8 +2438,15 @@ fn lost_evidence(rig: &mut dyn Rig, rebooted: bool) {
         }
     }
     if let Ok(lines) = rig.log_lines() {
-        let tail = lines.len().saturating_sub(if rebooted { 4 } else { 8 });
-        for l in &lines[tail..] {
+        let tail = lines.len().saturating_sub(8);
+        let shown: Vec<&String> = if rebooted {
+            // The previous start's last lines (the ring survives resets).
+            let at = lines.iter().rposition(|l| l.as_bytes() == orpheus_proto::logring::BOOT_MARK);
+            at.map_or_else(Vec::new, |at| lines[at.saturating_sub(10)..at].iter().collect())
+        } else {
+            lines[tail..].iter().collect()
+        };
+        for l in shown {
             log(&format!("   log: {l}"));
         }
     }
