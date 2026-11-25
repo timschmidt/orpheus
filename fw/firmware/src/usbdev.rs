@@ -83,7 +83,7 @@ impl Target for Fw {
         out[2] = usb::DMA_ERRORS.load(Ordering::Relaxed);
         out[3] = executor::idle_us();
         let p = atj2157_hal::pager::stats();
-        let n = out.len().min(21);
+        let n = out.len().min(24);
         let v = [
             p.loads,
             p.code_faults,
@@ -102,6 +102,12 @@ impl Target for Fw {
             crate::audio::T_SERVE.load(Ordering::Relaxed),
             atj2157_hal::clock::current() as u32,
             atj2157_hal::clock::switches(),
+            // VER-12 (soak oracles): the DAC headroom low-water since the
+            // last read (frames; 0x7FFFFFFF none), failed card operations,
+            // failed pager line loads.
+            crate::audio::take_head_min(),
+            yoton_bsp::card::error_count(),
+            atj2157_hal::pager::LOAD_ERRORS.load(Ordering::Relaxed),
         ];
         out[4..n].copy_from_slice(&v[..n - 4]);
         n
@@ -270,6 +276,14 @@ impl Target for Fw {
         }
         if data == b"ui test-look on" || data == b"ui test-look off" {
             crate::ui::set_test_look(data.ends_with(b"on"));
+            return true;
+        }
+        // VER-12: the long soaks (session-only settings, screen off).
+        if let Some(rest) = data.strip_prefix(b"settings ") {
+            return crate::ui::settings_command(rest);
+        }
+        if data == b"ui screen-off" {
+            crate::ui::request_screen_off();
             return true;
         }
         if CARD_WITH_USB.load(Ordering::Relaxed) {

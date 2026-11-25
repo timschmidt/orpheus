@@ -251,6 +251,16 @@ impl UsbPlayer {
         super::upload(self.d()?, remote, data)
     }
 
+    /// STATS group `g` (words; the soak's pager, clock and ring counters).
+    pub fn stats(&mut self, g: u16) -> Result<Vec<u32>> {
+        self.d()?.stats(g)
+    }
+
+    /// INFO's battery voltage (mV).
+    pub fn battery_mv(&mut self) -> Result<u16> {
+        Ok(self.d()?.info()?.battery_mv)
+    }
+
     fn come_back(&mut self) -> Result<()> {
         let t0 = Instant::now();
         let d = DevChannel::open(COME_BACK).with_context(|| {

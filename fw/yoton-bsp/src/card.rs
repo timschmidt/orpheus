@@ -27,6 +27,23 @@ pub fn io_count() -> u32 {
     io().load(core::sync::atomic::Ordering::Relaxed)
 }
 
+/// Card read and write operations that failed (VER-12 soak oracle:
+/// developer-channel STATS group 0 word 22).
+static ERRORS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// Failed card operations since boot.
+#[must_use]
+pub fn error_count() -> u32 {
+    ERRORS.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+fn counted<T>(r: Result<T, Error>) -> Result<T, Error> {
+    if r.is_err() {
+        ERRORS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    }
+    r
+}
+
 use crate::pins;
 
 #[repr(C, align(4))]
@@ -84,11 +101,11 @@ impl BlockDevice for Card {
         count_io();
         let flat = buf.as_flattened_mut();
         if dma_ok(flat.as_ptr(), flat.len()) {
-            return self.sd.read(lba, flat).await;
+            return counted(self.sd.read(lba, flat).await);
         }
         for (i, s) in buf.iter_mut().enumerate() {
             self.bounced += 1;
-            self.sd.read(lba + i as u32, &mut self.bounce.0).await?;
+            counted(self.sd.read(lba + i as u32, &mut self.bounce.0).await)?;
             s.copy_from_slice(&self.bounce.0);
         }
         Ok(())
@@ -98,12 +115,12 @@ impl BlockDevice for Card {
         count_io();
         let flat = buf.as_flattened();
         if dma_ok(flat.as_ptr(), flat.len()) {
-            return self.sd.write(lba, flat).await;
+            return counted(self.sd.write(lba, flat).await);
         }
         for (i, s) in buf.iter().enumerate() {
             self.bounced += 1;
             self.bounce.0.copy_from_slice(s);
-            self.sd.write(lba + i as u32, &self.bounce.0).await?;
+            counted(self.sd.write(lba + i as u32, &self.bounce.0).await)?;
         }
         Ok(())
     }

@@ -12,6 +12,7 @@ mod mask;
 mod player;
 mod ram;
 mod script;
+mod soak;
 mod stage;
 mod suite;
 mod usbimage;
@@ -66,6 +67,12 @@ cargo xtask dev <subcommand>
           [--max-replays R] | --replay FILE
                                 random key sequences (ui_keys grammar, no Power) with the
                                 07 §5.7 oracles; failures minimised into tests/regress/ui-device/
+  soak SCENARIO [--hours H | --minutes M] [--seed N] [--sim] [--report DIR] [--setup]
+       [--battery] [--music DIR]... [--no-minimise] [--max-replays R] | --replay FILE | --list
+                                long soaks (VER-12, 07 §5.10): music, radio, browse-while-playing,
+                                settings-churn, mixed, stress; oracles every 10 s, time series in
+                                metrics/soak/, findings minimised into tests/regress/soak/;
+                                starts and ends with a reboot
   stats [--irq]                 executor idle time, pager and UI counters (--irq: per line)
   time [--set]                  read (or set from the host, UTC) the player's clock
   otp-add 'otpauth://…'         PROVISION one authenticator account (the
@@ -196,7 +203,7 @@ pub fn cmd(args: &mut Args) -> Result<String> {
                 r.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
             let g = |i: usize| w.get(i).copied().unwrap_or(0);
             Ok(format!(
-                "uptime {} ms, idle {} us, pager loads {} (code faults {}, ro faults {}, evictions {}), usb resets {} setups {}, ui loops {} busy {} us rows {}, settings writes {} (last key {:#06x}, {} us), ui draw {} us flush {} us, rt decode {} us fill {} us serve {} us, clock level {} ({} switches)",
+                "uptime {} ms, idle {} us, pager loads {} (code faults {}, ro faults {}, evictions {}), usb resets {} setups {}, ui loops {} busy {} us rows {}, settings writes {} (last key {:#06x}, {} us), ui draw {} us flush {} us, rt decode {} us fill {} us serve {} us, clock level {} ({} switches){}",
                 g(8),
                 g(3),
                 g(4),
@@ -220,7 +227,19 @@ pub fn cmd(args: &mut Args) -> Result<String> {
                     .get(g(19) as usize)
                     .copied()
                     .unwrap_or("?"),
-                g(20)
+                g(20),
+                // VER-12 words (21 is reset by this read).
+                if w.len() > 23 {
+                    let h = g(21) as i32;
+                    format!(
+                        ", DAC headroom low-water {}, card errors {}, pager load errors {}",
+                        if h == i32::MAX { "-".to_string() } else { format!("{h} frames") },
+                        g(22),
+                        g(23)
+                    )
+                } else {
+                    String::new()
+                }
             ))
         }
         "put" => {
@@ -230,6 +249,7 @@ pub fn cmd(args: &mut Args) -> Result<String> {
         }
         "suite" => suite::cmd(args),
         "fuzz-ui" => fuzz::cmd(args),
+        "soak" => soak::cmd(args),
         "usbimage-test" => usbimage::cmd(args),
         "otp-add" => {
             let uri = args.next_positional().context("otp-add needs an otpauth:// URI")?;

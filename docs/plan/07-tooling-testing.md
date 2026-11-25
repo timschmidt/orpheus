@@ -787,6 +787,156 @@ the scenario logic also in the simulator).
   kept forever in `tests/regress/soak/` (replayed by the suite), like fuzz
   findings (VER-9).
 
+#### As built (VER-12 tooling; 2026-11-24, not yet run on the player)
+
+Host side `xtask/src/dev/soak.rs` (reuses the suite's Home frames, the
+fuzzer's guard, `ddmin`, root listing and RNG, the player interface of
+`player.rs`). Firmware test hooks (+22 B of statics; stack −48 B):
+
+* `settings test-session on` → `test-session on held=N store=ok keys=K
+  crc=C`: from now on setting changes (keys, `test-set`, radio presets,
+  the radio's start station) stay in RAM and are **not written to NOR**;
+  `held` counts them. No command switches it off: the reboot that ends
+  every run does, and the stored values come back. `settings test-session`
+  answers the same line; `keys`/`crc` describe the store as the last boot
+  read it (CRC-32 over keys and values, and the presets).
+* `settings test-set ID VALUE` (decimal or `0x…`), only in a session and
+  only for Sound, Playback, Display (not Home apps), Language, Performance,
+  Files sort/hidden and Now Playing's view (`ui.rs` `session_settable`,
+  mirrored and checked by a host test): `test-set: queued`, then the UI
+  task applies it as the screens do and answers `test-set ID=V ok|refused`.
+* `ui screen-off`: the screen goes off without locking the keys (there is
+  no backlight timeout yet; Power would lock them); the next key wakes it.
+* `status` gains `pos=` (ms into the track); STATS group 0 gains word 21
+  (the DAC headroom low-water in frames since the last read, reset by the
+  read; `0x7FFFFFFF` none), 22 (failed card operations) and 23 (failed
+  pager line loads). `xtask dev stats` prints them.
+
+**`cargo xtask dev soak <scenario> [--hours H | --minutes M] [--seed N]
+[--sim] [--report DIR] [--setup] [--battery] [--music DIR]…
+[--no-minimise] [--max-replays R]`**, `--replay FILE [--sim]`, `--list`.
+
+* Start: reboot, `ui test-look on`, `settings test-session on` (refused if
+  the firmware lacks it), the store line, `stop`, the card's root listing,
+  then the folders: `--music DIR` (repeatable) or found by a breadth-first
+  `ls` walk (fixtures first, then `/` to depth 4, at most 40 listings, 16
+  folders with ≥ 2 audio files, paths that fit the 120-byte command).
+  `--setup` uploads 44.1/48 kHz tones and, if `xtask test codecs --gen`
+  made them, the gapless parts per codec to `/.orpheus/test/soak/`.
+  `--battery`: `charge pause` and `drain start soak stay` (the logger
+  records, auto-off stays away; the cable stays in for the channel).
+* Loop: actions from the seeded generator until the time is up (defaults:
+  2 h, `mixed` 8 h, `stress` 1 h; `--sim` 10 min of simulator time); the
+  oracles every `[soak] sample_every_s` (10 s), also inside long actions
+  and key bursts. The first finding stops the run.
+* End: keys released, Home, `rec stop`, `fm off`, `stop`, `gov on`; the
+  card root listing compared; `queue.bin`/`player.bin` listed; the test
+  look off; **reboot**; after it the store line must equal the one before
+  the run (store mounted, same keys, same CRC: nothing persistent changed),
+  and the state files must still be listed. Every error after the start
+  reboots too, unless the player stopped answering (then rule 7).
+
+Actions (one line each in a `.soak` file): `playdir PATH`; `seek next|prev
+MS` (Now Playing, hold); `seek-start`; `pause MS`; `skip next|prev N`;
+`volume N` (N × Vol+, then N × Vol−: never ends louder); `dsp on|off`;
+`eq g0 g1 g2 g3 g4 bass crossfeed` (`sound`); `np-view N`; `listen S`;
+`idle S` (`stop`, `ui screen-off`, wait, wake); `browse
+files|library|pictures|settings|nowplaying STEPS SEED` and `menus STEPS
+SEED` (seeded keys through the fuzzer's guard: taps, holds of 0.8–3 s,
+letter jumps, OK, Back, Menu; stress: 20 ms press/release); `radio-on
+[kHz]`, `radio-seek up|down`, `radio-scan` (session only: it replaces the
+presets), `radio-off`, `radio-keys STEPS SEED` (Radio app: steps, presets,
+mute pairs, seeks); `record S` (`rec start fm|mic adpcm S soak` →
+`/.orpheus/test/rec/soak/`, ≤ 24 per run); `set ID VALUE`; `look
+ID=V,… STEPS SEED S` (test look off, the owner's look plus these values,
+keys where the player is, listening, test look on); `clock 48` (governor
+off, Base) / `clock gov`; `handover S` (`usb msc ro`, S seconds, `usb dev`:
+the computer gets the card read-only); `personality S` (`usb kbd`, back).
+Never the Power key, never Bluetooth (`bt …`, its settings and screens are
+guarded), never a writable card reader. Navigation: a long Back to Home,
+the focus found by comparing the grid (status bar and strip masked, so a
+playing mini-player does not matter) with the simulator's 11 Home frames,
+then Next/Prev and OK; Now Playing through Music's first row (held Up
+stops at the top). An app that does not open skips the action (counted);
+five failed Home matches stop the run.
+
+Weights (`--list` prints them; `soak.rs` `weights`):
+
+| Scenario | Actions (weight) |
+|---|---|
+| `music` | playdir 8, shuffle (set 0x0201) 3, repeat 1, seek fwd 8, seek back 5, seek-start 3, seek to the end (6 s hold) 2, pause 5, skip 5, volume 4, dsp 3, eq 5, np-view 3, listen 60–300 s 20 |
+| `radio` | radio-on 8, radio-seek 8, radio-scan 2, radio-keys 10, radio-off 4, playdir (music while the radio holds) 6, record 3, volume 3, listen 20 |
+| `browse-while-playing` | playdir 4, browse files 20, library 15, pictures 10, nowplaying 6, settings 4, menus 8, seek 3, skip 3, listen 30–120 s 8 |
+| `settings-churn` | look 15, set sound (EQ preset, balance, bass, crossfeed, channels, ReplayGain) 15, set playback (shuffle, repeat, gapless, seek step) 6, set display (brightness, animations, clock in bar) 6, Performance 5, dsp 3, eq 3, browse files 4, playdir 4, listen 60–240 s 25 |
+| `mixed` | playdir 6, shuffle 2, seek 5+3, seek-start 2, seek-end 1, pause 3, skip 3, volume 3, dsp 2, eq 3, np-view 2, listen 10, long listen 300–900 s 6, idle 120–600 s 3, browse files 6, library 5, pictures 4, settings 2, nowplaying 2, menus 3, radio-on 3, radio-seek 2, radio-scan 1, radio-keys 3, radio-off 2, record 1, set sound 3, playback 1, display 1, Performance 1, look 3, handover 1, personality 1 |
+| `stress` | first `clock 48`; playdir 4, seek 6+4, skip 6 (2–8 taps), pause 2, volume 3, eq 3, dsp 2, np-view 3, browse files 12, library 10, pictures 8, nowplaying 4, settings 3 (2–3× the steps, 20 ms keys), menus 6, radio-keys 2, set sound 3, look 3, listen 5–20 s 4 |
+
+Oracles and limits (`budgets.toml [hil]`, `[soak]`; first values, to be
+tightened from the first runs):
+
+| Oracle | Limit |
+|---|---|
+| Fault record | none new |
+| Uptime | never goes back (watchdog, reset) |
+| Stack free (INFO) | ≥ 2,048 B |
+| Underruns per track (`status`, by `ub:` cause) | 0 outside disruption windows; inside a window (10 s after a seek, skip, playdir, pause, idle, radio change, recording, clock change, card hand-over, personality, shuffle/repeat/Performance, or a browse that pressed OK; longer by the action's own time) ≤ 6 per window |
+| Pager line loads/s | ≤ 7,000 for fewer than 3 samples in a row (thrash); run mean ≤ 4,500 (measured ≈ 2,670–3,220 in 48 kHz MP3) |
+| Pager evictions/s | ≤ 7,000 for fewer than 3 samples in a row |
+| DAC headroom low-water (STATS 21) | ≥ 1 frame outside windows (≤ 0: stale data played) |
+| Card I/O errors (STATS 22), pager load errors (23) | 0 |
+| DAC against the host clock (`played=` halves × 1,536 / rate over ≥ 300 s of unbroken playback) | ±2,500 ppm (crystal ±100 ppm, but U-AUD-10 measured +1,500 ppm) |
+| Uptime against the host clock | ±300 ppm |
+| Seek / pause (Now Playing, `pos=`) | moved the way the key asked; a note per miss, a finding after 3 misses in a row |
+| Card root listing (without `/.orpheus/`) | unchanged |
+| Settings store after the reboot | mounted, same keys, same CRC as before the run |
+| `queue.bin`, `player.bin` | still listed after the reboot (their content is not read back: no test command reads them and the restored queue is published only when something plays) |
+| `--battery` | stops (no finding) below 3,550 mV — reported as the battery minimum |
+
+Not built: a screenshot per checkpoint compared with the simulator, the
+stream ring and spill high-water (the PCM ring fill `written − played` is
+recorded), regressions against the last run fail nothing yet (REL-1), CPU
+idle has no limit. The **unplugged** `mixed` run cannot be driven from the
+host (no cable, no channel): `--battery` keeps the cable for the channel
+and pauses charging, which may or may not run the player from its cell
+(open; PWR-5's user check 19 is the unplugged drain run).
+
+Output: `target/orpheus/soak/<scenario>-<UTC>-seed<N>/` (or `--report`):
+`samples.csv` (per sample: time, uptime, action, screen, playing, rate,
+`pos`, queue, underruns and the eight causes, loads/s, evictions/s,
+counters, idle %, clock level and switches, stack free, headroom, card and
+pager errors, battery, PCM ring halves), `actions.soak` (the whole session,
+replayable), `summary.txt`/`.json`, `index.html` (nine inline SVG charts
+with the budgets dashed and findings marked; no scripts, no CDN). Player
+runs also write `metrics/soak/<scenario>-<UTC>-seed<N>.csv` and a row in
+`metrics/soak/history.csv` (the previous row of the scenario is printed).
+
+Findings: replayed from a fresh boot each time (prologue as above): the
+last 2, 4, 8 … actions until it reproduces, then `ddmin`, at most
+`--max-replays` (8) replays; saved as `tests/regress/soak/<scenario>-
+<oracle>-seed<N>-<len>.soak` (scenario, seed and finding in the header);
+`--replay FILE` runs one on the player (or `--sim`); `cargo test` replays
+every committed one in the simulator. After-run findings (card, store,
+state files, drift, clock) keep the whole session.
+
+`--sim`: the same tool against the simulator (`SoakSim`: the suite's
+`SimPlayer` plus playback with a DAC model, radio, recorder, sessions,
+test look, listings, personalities), in simulator time (30 min ≈ 16 s).
+Host tests: generation deterministic per seed and every action round-trips
+through its text; generated settings inside the firmware's whitelist and
+valid; oracles pass a healthy synthetic stream and trip on a fault, a
+reset, low stack, underruns, thrash, card errors, headroom, DAC drift and
+clock drift; underrun windows; `ddmin` on actions; every scenario 40
+actions in the simulator without a finding, Home found every time, no
+power/storage/factory-reset request; a planted underrun found, replayed,
+minimised and saved; a planted two-action bug minimised to exactly those
+two.
+
+First run (the lead): stage a firmware with these hooks; `cargo xtask dev
+soak mixed --minutes 30 --setup --seed 1`; read `summary.txt` and
+`index.html`; then the set: `music`, `radio`, `browse-while-playing`,
+`settings-churn` (2 h each), `stress` (1 h), `mixed` (8 h, then 24 h), one
+`mixed --battery`.
+
 ## 6. Milestone gate (run before declaring any work package done)
 
 ```

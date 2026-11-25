@@ -504,6 +504,14 @@ const HALF: usize = PCM_FRAMES / 2;
 const DAC_CH: usize = 5;
 
 static PLAYED: AtomicU32 = AtomicU32::new(0);
+/// The DAC's lowest headroom (frames) seen by the playback loop since the
+/// last read (VER-12 soak: STATS group 0 word 21; `i32::MAX`: not playing).
+static HEAD_MIN: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(i32::MAX);
+
+/// Take the headroom low-water mark (reset to "none").
+pub fn take_head_min() -> u32 {
+    HEAD_MIN.swap(i32::MAX, Ordering::Relaxed) as u32
+}
 static PCM_WAKER: AtomicWaker = AtomicWaker::new();
 
 fn on_dac_dma() {
@@ -601,7 +609,9 @@ impl PcmOut {
         let rem = unsafe { DmaCh::steal(DAC_CH) }.remaining().min(BYTES);
         let at = ((BYTES - rem) / 4) as usize % HALF;
         let halves = self.written.wrapping_sub(PLAYED.load(Ordering::Acquire)) as i32;
-        halves * HALF as i32 + self.fill as i32 - at as i32
+        let h = halves * HALF as i32 + self.fill as i32 - at as i32;
+        HEAD_MIN.fetch_min(h, Ordering::Relaxed);
+        h
     }
 
     fn start(&mut self) {
@@ -2384,15 +2394,17 @@ pub fn status_reply() {
             .s(b" d")
             .u(u64::from(media::Server::walk_progress().1 >> 24));
         // The queue and the track (HIL tests need no key navigation).
-        let (pos, len, shuffled, title) = critical_section::with(|cs| {
+        let (pos, len, shuffled, title, at_ms) = critical_section::with(|cs| {
             let p = media::PLAYER.borrow(cs).borrow();
-            (p.queue_pos, p.queue_len, p.shuffled, p.title)
+            (p.queue_pos, p.queue_len, p.shuffled, p.title, p.position_ms)
         });
         let t = title.as_str();
         let mut n = t.len().min(24);
         while !t.is_char_boundary(n) {
             n -= 1;
         }
+        // VER-12: the position in the track (soak seek checks).
+        w.s(t!(b" pos=")).u(u64::from(at_ms));
         w.s(t!(b" q="))
             .u(u64::from(pos) + u64::from(len > 0))
             .s(b"/")

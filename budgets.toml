@@ -40,6 +40,44 @@ resident_panic_sites = 0
 # free, 2026-11-24): 2 KiB is the margin a fuzz session may not eat into.
 stack_free_min_bytes = 2048
 
+[soak]
+# Long soaks (VER-12, 07 §5.10: `cargo xtask dev soak`). First values,
+# from the measurements in docs/STATUS.md (2026-11-24): 48 kHz MP3
+# playback takes ≈ 2,670–3,220 NOR line loads/s (Home or browsing a large
+# folder, 0 underruns); evictions are not measured yet (≤ loads by
+# construction). The first soaks measure them; tighten from those runs.
+# Oracles are read every `sample_every_s`.
+sample_every_s = 10
+# Mean over the whole run (≈ the MP3 figure plus browsing).
+loads_per_s_mean_max = 4500
+# A thrash episode: above this for `thrash_samples` samples in a row
+# (≈ 2× the measured playback rate).
+loads_per_s_max = 7000
+evictions_per_s_max = 7000
+thrash_samples = 3
+# Seeks, track and source changes, card hand-over and clock changes open a
+# window in which underruns are allowed, at most this many per window;
+# none outside (07 §5.10).
+seek_window_s = 10
+underruns_per_disruption_max = 6
+# The DAC's headroom low-water (frames, STATS word 21) outside those
+# windows: ≤ 0 means the DAC played stale data.
+head_min_frames = 1
+card_errors_max = 0
+pager_load_errors_max = 0
+# Played samples against the host's clock, over at least 300 s of
+# uninterrupted playback. Crystal tolerance is ±100 ppm, but the DAC rate
+# was measured +0.15 % (≈ +1,500 ppm) against T0 (U-AUD-10, open): the
+# limit stays above that until it is resolved.
+drift_ppm_max = 2500
+drift_min_window_s = 300
+# The uptime (T0, measured 2.5 ppm off) against the host's clock.
+clock_ppm_max = 300
+# `--battery` (charging paused, the drain logger on) stops here.
+battery_min_mv = 3550
+# Recordings per run (ADPCM, ≤ 12 s each, under /.orpheus/test/rec/soak/).
+max_recordings = 24
+
 [bringup]
 # RAM-loaded images end below ymon (0x118000).
 image_bytes = 98304             # 96 KiB

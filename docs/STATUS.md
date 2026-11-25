@@ -61,6 +61,63 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-24 — VER-12: long-soak tooling (worker, no hardware)
+
+* **`cargo xtask dev soak <scenario> [--hours H | --minutes M] [--seed N]
+  [--sim] [--report DIR] [--setup] [--battery] [--music DIR]…
+  [--no-minimise] [--max-replays R]`**, `--replay FILE`, `--list`
+  (`xtask/src/dev/soak.rs`). Six scenarios, each a seeded loop of weighted
+  actions (weights, durations, oracle limits: 07 §5.10 "As built"). Every
+  run starts with a reboot, `ui test-look on` and a settings test session,
+  and ends with clean-up, the card root comparison and a reboot; every
+  error after the start reboots too (unless the player stopped answering:
+  rule 7).
+* **Firmware test hooks** (the soak changes settings without touching the
+  owner's): `settings test-session on` keeps every setting change (keys,
+  `test-set`, radio presets and start station) in RAM — the end-of-run
+  reboot restores the stored values; `settings test-session` reports the
+  store as the boot read it (keys, CRC), compared before and after a run;
+  `settings test-set ID VALUE` (Sound, Playback, Display without Home
+  apps, Language, Performance, Files sort/hidden, Now Playing view; never
+  Bluetooth, power, clock, USB, storage, alarms); `ui screen-off` (screen
+  off without the key lock that Power would set); `status pos=`; STATS
+  words 21 (DAC headroom low-water since the last read), 22 (failed card
+  operations), 23 (failed pager line loads). +22 B of statics, stack −48 B
+  (`__stack_bottom` 0x131a40 → 0x131a70), resident +32 B.
+* **`[soak]` in `budgets.toml`**: sampling 10 s; line loads/s thrash
+  > 7,000 for 3 samples, run mean ≤ 4,500 (measured ≈ 2,670–3,220 during
+  48 kHz MP3); evictions/s 7,000 (not measured yet); underruns 0 outside
+  10-s disruption windows, ≤ 6 inside; headroom ≥ 1 frame; card and pager
+  errors 0; DAC drift ±2,500 ppm over ≥ 300 s (U-AUD-10's +1,500 ppm is
+  inside it); uptime ±300 ppm; `--battery` stops at 3,550 mV; ≤ 24
+  recordings per run.
+* **Simulator mode and host tests** (14 in `soak.rs`): deterministic
+  generation, actions round-trip through `.soak` text, generated settings
+  inside the firmware whitelist (the host checks the firmware source),
+  oracles pass a healthy stream and trip on each kind of bad data,
+  underrun windows, `ddmin` on actions, all six scenarios 40 actions in
+  the simulator clean (Home found every time, no power/storage/factory
+  reset request), a planted bug found, replayed, minimised and saved, a
+  planted two-action bug minimised to exactly those two. `xtask dev soak
+  mixed --sim --minutes 30`: 24 actions, 197 samples, pass, ≈ 16 s.
+* Gate: host `fmt`, `clippy --workspace --all-targets -D warnings`, `cargo
+  test --workspace` (1,006 tests) pass; fw `fmt`, `clippy --workspace`,
+  `xtask build`, `size --check`, `check-resident` pass. Not run: the
+  player (host-only package; the lead runs the soaks), `brand --check`,
+  `site --check`.
+* **Open**: the queue check only sees `queue.bin`/`player.bin` listed (the
+  restored queue is published only when something plays); an unplugged
+  run cannot be host-driven (`--battery` = cable in, charging paused —
+  whether that drains the cell is open); Bluetooth on/off is not churned
+  (rule 6); the screenshot-per-checkpoint oracle and stream-ring high-water
+  are not built; thrash and eviction limits are first guesses until the
+  first runs.
+* **Lead, first run**: stage a build with the hooks, then `cargo xtask dev
+  soak mixed --minutes 30 --setup --seed 1`; read
+  `target/orpheus/soak/…/summary.txt` and `index.html`; then `music`,
+  `radio`, `browse-while-playing`, `settings-churn` (2 h each), `stress`
+  (1 h), `mixed` (8 h, then 24 h).
+
 ### 2026-11-24 — UPD-1 (firmware update) and WEB-3 (browser installer) (worker, no hardware)
 
 * **`orpheus-update`** (new, `no_std`, host-tested, 31 tests): the update
@@ -291,6 +348,7 @@ of every session. Newest entries first in §3.
   on-device journey for roll-around.
 | VER-7 | **tooling built (host + `ui top`, `ui test-look`); first player run failed at Home (owner's accent) → session-only test look added** | `cargo xtask dev suite`: 15 journeys (`tests/suite/journeys.toml`) in the simulator's script language, run in the simulator (expected frames `tests/suite/expected/`, 48 shots) and on the player (keys, `ui top`, screenshots under `tests/suite/masks.toml`, `cmd:` reply checks), report in `target/orpheus/suite/<ts>/`, `--setup` fixtures in `/.orpheus/test/suite/`, `--sim` dry run, ends in a reboot. 07 §5.7 "As built". Not done: every interaction of every screen (VER-7 proper), audio CRC and card-image oracles |
 | VER-8 | **groundwork built, not yet run on the player** | `cargo xtask dev fuzz-ui --seed N --minutes M`: `ui_keys` grammar without Power, a `ui top` guard before every key (dialogs, Bluetooth, USB, Recorder, vault, settings), oracles every K keys (fault record, uptime, stack ≥ `[hil] stack_free_min_bytes`, underruns), card root listing before/after, replay + ddmin into `tests/regress/ui-device/`, `--replay`. Not done: model-guided sequences, injected events, simulator divergence |
+| VER-12 | **tooling built (host + 4 firmware test hooks), not yet run on the player** | `cargo xtask dev soak <music\|radio\|browse-while-playing\|settings-churn\|mixed\|stress>`: seeded weighted actions (playback, Now Playing seeks/pause/skips, browsing through the fuzzer's guard, radio, recordings in `/.orpheus/test/rec/soak/`, session-only settings, card hand-over read-only, keyboard personality), oracles every 10 s (fault, uptime, stack, underruns by cause outside seek windows, pager loads/evictions per second, DAC headroom, card/pager errors, DAC and uptime against the host clock), after the run card root, settings store CRC across the reboot, state files; CSV + HTML per run, `metrics/soak/`, findings minimised into `tests/regress/soak/`, `--replay`, `--sim`. Firmware: `settings test-session on`/`test-set`, `ui screen-off`, `status pos=`, STATS words 21–23. 07 §5.10 "As built" |
 
 ## 3. Session log
 
@@ -3201,6 +3259,8 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 | 2026-11-24 | Committed fuzz corpora | 30 targets, 13.5 k files, 15 MB | `du --apparent-size tests/fuzz-corpus` |
 | 2026-11-24 | Firmware with `ui top` (VER-7), worker worktree build | resident 77,500 B (`size --check`: 77,495), bss 123,664 B (+8: `TOP`, `TOP_NAME`), 99 code + 18 rodata pages, slot 1,040,384 B | `xtask build`, `xtask size --check` |
 | 2026-11-24 | Firmware with `ui test-look` (VER-7), worker worktree build | resident 77,532 B (was 77,500), bss 123,672 B (was 123,664: +8, `TEST_LOOK` aligned), 99 code + 18 rodata pages | `xtask build`, `xtask size --check` |
+| 2026-11-24 | Firmware with the VER-12 soak hooks, worker worktree build | resident 78,703 B (`size --check`; was 78,671), bss 124,660 B (was 124,648), `__stack_bottom` 0x131a40 → 0x131a70 (stack −48 B), 104 code + 18 rodata pages, slot 1,085,440 B (unchanged) | `xtask build`, `xtask size --check`, `llvm-nm` |
+| 2026-11-24 | Soak tool in the simulator (VER-12) | `mixed` 30 min of simulator time: 24 actions, 197 samples, ≈ 16 s on the host; 14 host tests 0.6 s | `xtask dev soak mixed --sim`, `cargo test -p xtask soak` |
 | 2026-11-24 | On-device suite estimate (VER-7) | 15 journeys, 48 shots, ≈ 106 s + reboot; expected frames 256 KiB | `cargo test -p xtask list_estimates`, `du` |
 | 2026-11-24 | Firmware with SENS-1, UI-5c, UI-5d, worker worktree build | resident 83,316 → 83,484 B; `__stack_bottom` 0x132238 → 0x132498 (+608 B); 75 → 79 code pages (+16 rodata), slot 835,584 → 868,352 B; cluster `steps-sample` 3,648 B (4 lines) at 0x222000; sensor task poll frame 68 B, audio task poll 4,992 B (unchanged) | `xtask build`, `llvm-nm`, `llvm-objdump` `sub sp` |
 | 2026-11-24 | Step detector on synthetic traces (25 Hz, 8 seeds × walk/slow/brisk/pocket 120 s, run 90 s) | all within ± 5 %; 0 steps: table 10 min, handling, bus 10 min, shaking 3.8–8 Hz | `cargo test -p orpheus-steps` |
@@ -3210,6 +3270,11 @@ Continued an interrupted worker's WIP (merged, reviewed, mostly kept).
 | 2026-11-24 | Browser build in headless Chromium 155 / Firefox 157 (localhost) | first screen 155–220 ms; per-frame simulation + draw 0.08–0.11 ms mean, ≤ 1 ms worst; 230 frames in 4 s; 4.0 s of Lyre Study played with 0 dropouts (also with Chromium's fake sink); wasm memory 80 MiB with the 36 MiB card | `xtask wasm --test`, `tests/web/try.mjs --browser firefox` |
 
 ## 5. Open questions for the user
+
+* VER-12 (2026-11-24): the unplugged `mixed` soak cannot be driven over
+  USB. Is a cable-in run with charging paused (`--battery`) an acceptable
+  stand-in, or should the owner run an unplugged listening session with
+  the drain logger (user check 19) as the battery part?
 
 * SENS-1/UI-5d (2026-11-24): user checks 20 (200 steps twice, 10 min on a
   table) and 21 (stopwatch against a phone, timer and alarm alerts while
