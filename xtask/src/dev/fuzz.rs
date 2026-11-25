@@ -153,6 +153,19 @@ pub fn guard(top: &Top, s: &Step, settings: bool) -> Step {
     s.clone()
 }
 
+/// Turn the firmware's settings test session on (RAM-only settings until
+/// the next reboot); false when the firmware has none.
+pub fn session_on(p: &mut dyn Player) -> Result<bool> {
+    let re = regex::Regex::new("^test-session|^commands:|^card:")?;
+    let r = player::command(p, "settings test-session on", Some(&re), 3000).unwrap_or_default();
+    Ok(session_reply_ok(&r))
+}
+
+/// Whether a `settings test-session on` reply confirms the session.
+fn session_reply_ok(r: &str) -> bool {
+    r.starts_with("test-session on")
+}
+
 /// What an oracle found.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -332,6 +345,11 @@ impl Exec {
 
 /// Back to Home before a replay (keys released, dialogs closed).
 pub fn reset_ui(p: &mut dyn Player) -> Result<()> {
+    // Settings changed by keys stay in RAM: every session (and every
+    // replay after a reboot) runs inside the firmware's test session.
+    // Before 2026-11-25 `--settings` changed the owner's stored settings
+    // through the menus (the equaliser, brightness, timer presets, …).
+    session_on(p)?;
     let t = player::top(p)?;
     if t.locked {
         return Err(Locked.into());
@@ -613,6 +631,11 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     let settings = args.flag("settings");
     let regress_dir = root().join("tests/regress/ui-device");
     let mut p = UsbPlayer::open()?;
+    if settings && !session_on(&mut p)? {
+        bail!(
+            "--settings needs the firmware's settings test session (RAM-only settings): this firmware has none"
+        );
+    }
     if let Some(file) = args.value("replay") {
         let steps = read_keys(Path::new(&file))?;
         player::test_look(&mut p, true)?;
@@ -706,6 +729,16 @@ pub fn cmd(args: &mut Args) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    /// Regression (2026-11-25): `fuzz-ui --settings` changed the owner's
+    /// stored settings through the menus; it now refuses to run unless the
+    /// firmware confirms its RAM-only settings session.
+    #[test]
+    fn regress_settings_fuzzing_requires_the_ram_only_session() {
+        assert!(super::session_reply_ok("test-session on held=0 store=ok keys=65 crc=1234abcd"));
+        assert!(!super::session_reply_ok("commands: …"));
+        assert!(!super::session_reply_ok(""));
+    }
+
     use super::*;
     use crate::dev::player::{Health, SimPlayer};
     use orpheus_proto::fault::FaultRecord;

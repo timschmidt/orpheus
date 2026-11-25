@@ -65,6 +65,30 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-25 — **`fuzz-ui --settings` changed the owner's stored settings** (lead) — fixed
+
+* The on-device suite on the stack-headroom build (`10607b87`): 13 of 15
+  journeys pass, stack free 9,872 B (was 6,136). `system/about` differs
+  because the player now shows "Firmware slot" (T-6), the simulator's
+  reference not: expected drift, the reference needs the row.
+  `settings/sound` showed **Equaliser: Electronic** where every earlier run
+  showed Flat.
+* Cause: `cargo xtask dev fuzz-ui --settings` let random keys change
+  settings through the menus, which stores them; it never turned on the
+  firmware's RAM-only settings test session (the soak does). The lead's
+  report that those settings changes "stay in RAM" was wrong.
+* New read-only `settings changed` developer command (lists stored values
+  that differ from their defaults; +8 B resident, which crossed one 256 B
+  step: stack margin 6,340 → 6,076 B, ratchet 5,820 B). On the player:
+  equaliser 5 (Electronic), shuffle 1, repeat 1, brightness 16, accent 1,
+  files sort 1, timer presets reordered (300/1500/180/·/60 s), Home apps
+  2046, output 1 (Bluetooth, from the lead's Bluetooth tests), radio
+  95.0 MHz. **Asked the owner which to restore.**
+* Fix: every fuzz session and replay runs inside the test session
+  (`fuzz::reset_ui` turns it on after each reboot), `--settings` refuses
+  firmware without it (`regress_settings_fuzzing_requires_the_ram_only_session`),
+  and the suite turns it on too.
+
 ### 2026-11-25 — VER-10: card task frames, static stack margin 204 → 6,340 B (worker, no hardware)
 
 Trigger: margin 204 B (21,812 B nested of 22,016 B usable) with

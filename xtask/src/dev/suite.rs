@@ -799,6 +799,11 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     // The simulator's appearance for this session only (the owner's
     // settings stay as they are; off again at the end, and after a reboot).
     player::test_look(p, true)?;
+    // Any setting a journey changes stays in RAM (the reboot at the end
+    // restores the owner's).
+    if !super::fuzz::session_on(p)? {
+        log("   note: this firmware has no settings test session; journeys must not change settings");
+    }
     let mut results = Vec::new();
     for j in &js {
         log(&format!("== suite/{}", j.name));
