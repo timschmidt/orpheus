@@ -18,6 +18,7 @@ use orpheus_apps::services::{
     PictureService, PlayerCmd, PlayerService, PlayerState, QueueEntry, TextService, TrackInfo,
 };
 use orpheus_apps::services::{BtDevice, BtList, BtPhase, BtRequest, StepsInfo, StepsService, ToolsService};
+use orpheus_apps::services::{DriveInfo, DriveRequest, UsbDriveService, drive_event};
 use orpheus_apps::services::{PresetOp, Presets, RadioInfo, RadioPhase, RadioRequest, RadioService, Region};
 use orpheus_apps::services::{RecInfo, RecRequest, RecorderService, rec_settings};
 use orpheus_apps::settings::{SettingId, SettingsCache, id};
@@ -135,6 +136,9 @@ pub struct Fw {
     /// The recorder as last seen (`crate::rec`, AU-13) and its file name.
     rec: RecInfo,
     rec_seq: u32,
+    /// USB Drive: the export's change counter last seen, its file name.
+    drive_gen: u32,
+    drive_name: StrBuf<{ crate::drive::NAME_LEN }>,
     rec_name: StrBuf<40>,
 }
 
@@ -296,6 +300,8 @@ impl Fw {
             rec: RecInfo::default(),
             rec_seq: 0,
             rec_name: StrBuf::new(),
+            drive_gen: 0,
+            drive_name: StrBuf::new(),
         }
     }
 
@@ -647,6 +653,19 @@ impl Fw {
         self.rec_seq = seq;
     }
 
+    /// USB Drive: an event when the export's phase or host changed.
+    pub fn sync_drive(&mut self) {
+        let g = crate::drive::GEN.load(Ordering::Relaxed);
+        if g != self.drive_gen {
+            self.drive_gen = g;
+            crate::drive::name(&mut self.drive_name);
+            self.pending.push(Event::Service(ServiceEvent::Other {
+                kind: services::other::USB_DRIVE,
+                value: drive_event::STATE,
+            }));
+        }
+    }
+
     pub fn sync_radio(&mut self, now_ms: u64) {
         use orpheus_apps::services::radio_event;
         use orpheus_fm::Phase;
@@ -897,7 +916,13 @@ impl ClockService for Fw {
 
 impl StorageService for Fw {
     fn card(&self) -> CardState {
-        if state::CARD_READY.load(Ordering::Relaxed) { CardState::Ready } else { CardState::Absent }
+        if crate::usbdev::CARD_WITH_USB.load(Ordering::Relaxed) {
+            CardState::UsbOwned
+        } else if state::CARD_READY.load(Ordering::Relaxed) {
+            CardState::Ready
+        } else {
+            CardState::Absent
+        }
     }
     fn card_info(&self) -> Option<CardInfo> {
         None
@@ -1281,6 +1306,40 @@ impl UsbService for Fw {
     }
     fn select_usb(&mut self, mode: UsbMode) {
         self.actions.push(Action::Usb(mode));
+    }
+}
+
+impl UsbDriveService for Fw {
+    fn drive_dirs(&mut self) -> (Option<DirId>, Option<DirId>) {
+        let (u, t) = crate::drive::dirs();
+        ((u != 0).then_some(DirId(u)), (t != 0).then_some(DirId(t)))
+    }
+    fn drive_test_mode(&self) -> bool {
+        // Test mode for the app: the developer rows are shown (About × 5).
+        PowerService::developer(self)
+    }
+    fn drive_start(&mut self, req: DriveRequest, name: &str) {
+        let w = crate::drive::Want {
+            src: crate::drive::Source::File(req.file),
+            req: orpheus_usb::msc::image::Request { medium: req.medium, write: req.write },
+            test_mode: self.drive_test_mode(),
+        };
+        if crate::drive::want(w, name) {
+            self.actions.push(Action::Usb(UsbMode::DiskImage));
+        }
+    }
+    fn drive_stop(&mut self) {
+        if crate::drive::info().phase.is_active() {
+            crate::usbdev::MODE.signal(crate::usbdev::Personality::Dev);
+        } else {
+            crate::drive::clear_failed();
+        }
+    }
+    fn drive(&self) -> DriveInfo {
+        crate::drive::info()
+    }
+    fn drive_name(&self) -> &str {
+        self.drive_name.as_str()
     }
 }
 

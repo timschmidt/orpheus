@@ -45,6 +45,10 @@ replaced).
   personality (logs, screenshots, key injection, test commands); a USB
   keyboard personality (boot keyboard; US, UK, German and French layouts)
   — built, not yet tried on the player.
+- **USB Drive** (built, not yet tried on the player): an `.iso` or `.img`
+  from the card's `Images` folder presented to a computer as a read-only
+  CD-ROM or disk, so that it can start from it; files stored in more than
+  682 pieces are refused with a reason.
 - **Authenticator** (built, not yet tried on the player): time- and
   counter-based one-time codes behind a PIN, with a countdown, typed into
   the computer over the USB keyboard; accounts imported from

@@ -663,6 +663,29 @@ pub unsafe fn usb_buffer() -> &'static mut [u8; 16384] {
     // SAFETY: see above; the arena is 72 KiB, 8-byte aligned.
     unsafe { &mut *((&raw mut ARENA_BUF.0).cast::<[u8; 16384]>()) }
 }
+/// USB Drive's extent table (USB-6): the 8 KiB after the transfer buffer.
+const EXTENTS_AT: usize = 16384;
+const EXTENTS_LEN: usize = 8192;
+const _: () = assert!(EXTENTS_AT + EXTENTS_LEN + crate::library::STATE <= ARENA);
+
+/// The extent area of the arena (the card task's view: inside its arena
+/// slice, before the library state).
+fn extent_area(arena: &mut [u8]) -> &mut [u8] {
+    &mut arena[EXTENTS_AT..EXTENTS_AT + EXTENTS_LEN]
+}
+
+/// The extent table the card task filled for USB Drive. Only while the
+/// card is with the USB task, as [`usb_buffer`].
+///
+/// # Safety
+/// As [`usb_buffer`]; the borrow ends before the card goes back.
+pub unsafe fn usb_extents() -> &'static mut [u8] {
+    // SAFETY: see above; the bytes lie after `usb_buffer`'s 16 KiB and
+    // before the library state, inside the 8-byte aligned arena.
+    unsafe {
+        core::slice::from_raw_parts_mut((&raw mut ARENA_BUF.0).cast::<u8>().add(EXTENTS_AT), EXTENTS_LEN)
+    }
+}
 static mut CACHE: [CacheSlot; 8] = [CacheSlot::EMPTY; 8];
 /// The path walk's directory cache (`/.orpheus/library`, the art cache…:
 /// a walk from the root of a large card takes tens of sector reads).
@@ -2489,6 +2512,7 @@ pub async fn audio() {
     atj2157_hal::log::line(b"audio: mounted, loading state");
     load_state(&mut vol, arena, srv).await;
     crate::rec::find_dir(&mut vol).await;
+    crate::drive::find_dirs(&mut vol).await;
     atj2157_hal::log::line(b"audio: state loaded");
     loop {
         // A request left over from playback, else wait for one.
@@ -2546,13 +2570,35 @@ pub async fn audio() {
                 if srv.serve(&mut vol, r, arena, true).await {
                     continue;
                 }
-                if let Some(Req::Release) = srv.pending.take() {
-                    hand_over(&mut vol, srv, arena).await;
-                    match release(vol).await {
-                        Some(v) => vol = v,
-                        None => return,
+                match srv.pending.take() {
+                    Some(Req::Release) => {
+                        hand_over(&mut vol, srv, arena).await;
+                        match release(vol).await {
+                            Some(v) => vol = v,
+                            None => return,
+                        }
+                        crate::library::card_back(&mut vol, srv).await;
+                        crate::drive::find_dirs(&mut vol).await;
                     }
-                    crate::library::card_back(&mut vol, srv).await;
+                    Some(Req::Image) => {
+                        // USB Drive: the file's runs into the arena's
+                        // extent area, then the card goes as for the card
+                        // reader; a refusal keeps it here.
+                        hand_over(&mut vol, srv, arena).await;
+                        let ext = crate::drive::as_extents(extent_area(arena));
+                        let m = crate::drive::map(&mut vol, ext).await;
+                        let ok = m.is_ok();
+                        crate::drive::MAPPED.signal(m);
+                        if ok {
+                            match release(vol).await {
+                                Some(v) => vol = v,
+                                None => return,
+                            }
+                            crate::library::card_back(&mut vol, srv).await;
+                            crate::drive::find_dirs(&mut vol).await;
+                        }
+                    }
+                    _ => {}
                 }
                 continue;
             }

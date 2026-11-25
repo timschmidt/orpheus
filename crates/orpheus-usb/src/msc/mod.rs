@@ -6,11 +6,14 @@
 //! * [`mmc`]: the CD/DVD-ROM commands of a type-5 unit (§3.3).
 //! * [`bot`]: the transport pump over `embassy-usb-driver` endpoints and a
 //!   [`BlockDevice`].
+//! * [`image`]: the export rules (medium, read-only, CLAUDE.md rule 5)
+//!   and mapping a file of `orpheus-fs` into the table.
 //! * [`extent`]: image files as block devices through an extent table
 //!   (§3.1).
 
 pub mod bot;
 pub mod extent;
+pub mod image;
 pub mod mmc;
 pub mod scsi;
 

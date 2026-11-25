@@ -37,7 +37,9 @@ of every session. Newest entries first in §3.
 | AU-6 | done (host); **working on the player** | `orpheus-dsp` chain between decoder and DAC, fed by the Sound settings; works on a scratch copy of the decoder output; while any stage is active during playback the clock floor is 96 MHz (EQ + bass + crossfeed: 0 underruns, ≈ 90 % idle). WSOLA not done; Levels meter not wired |
 | AU-12 (directory index, music library) | host done; **firmware wired in (built, not yet run on the player)** | `orpheus-index` + its `card` adapters over `orpheus-fs` (host-tested on FAT32/exFAT images). Files/Music › Folders sorted (Name/Date/Size, hidden per setting), letter jump from the index's letter runs, play queue in listing order. **Music library** (`orpheus-library`) built in the card task's idle loop, Music › Artists/Albums/Songs/Genres/Recently added, Play/Shuffle, Shuffle all from the library, Go to album/artist. Playlists, Favourites: not started. User check 16 |
 | AU-14 | done (host); **device: Pictures app and album art (built, not yet run on the player)** | `orpheus-img`. Pictures (folders + pictures, list mode), viewer (fit/fill, rotate, next/prev, slideshow), album art made at track open and cached in `/.orpheus/cache/art`. Not done: thumbnail grid, 100 % + pan, wallpaper, delete, per-file rotation memory. User check 14 |
-| OTP-1, BT-1, USB-6 | done (host) | `orpheus-otp`, `orpheus-bt`, MMC/CD-ROM in `orpheus-usb` |
+| OTP-1, BT-1 | done (host) | `orpheus-otp`, `orpheus-bt` |
+| USB-6 | **built (host + firmware), not yet run on the player** | MMC/CD-ROM and the extent mapper (host, earlier); export rules and `map_file` (`orpheus_usb::msc::image`); firmware `crate::drive` + image personality (`usb image <path> [cd\|disk\|fixed] [ro\|rw]`, `usb image status`); card hand-over as the card reader; read-only always for CD, writable only for `/.orpheus/` images in test mode; `xtask dev usbimage-test` (put → present → read the block device → SHA-256 → detach; `--rw`, `--qemu`). User check 26 |
+| UI-6 (USB Drive) | **built (host + firmware), not yet run on the player** | USB Drive app (Images / Test images / Choose file…, options, status with counters, Back disconnects, refusal reasons), Files and the USB dialog open it; simulator back end with a fake computer; 94 goldens; no app is "not available yet" any more |
 | USB-5 | **built, not yet run on the player** | Keyboard personality (developer channel + HID boot keyboard, 1 interrupt IN, 8-byte reports, bInterval 4), `orpheus-hid` (descriptor, reports, US/UK/DE/FR layouts, paced typist, fake host; for BT-4 too), `kbd on/off/type/status/layout/keypad/delay`, Settings › USB › Keyboard layout / Digits from keypad / Enter after code, udev rule (owner: reinstall). U-USB-11 open |
 | OTP-2 | **built (host + firmware), not yet run on the player** | Authenticator app (PIN pad, list with codes and countdown, big code, type over USB, import from `/.orpheus/otp-import.txt`, PROVISION 0x0B + `xtask dev otp-add`, delete/move/next code/change PIN/wipe), key-only vault access in `orpheus-otp`, 190 goldens. Not built: manual entry/`TextEntry`, rename, passphrase. User check 23 |
 | BT-2 (device) | **built, not yet run on the player** | UART1 driver (`atj2157_hal::uart`, `yoton_bsp::bt`), `orpheus_bt::driver`, firmware `bt` task, `BluetoothService`, shutdown 0x24 on power-off. Module off at boot; `bt probe/on/off/status/scan/connect/listen/shutdown/rx/tx` test commands. Not done: volume policy, metadata at track change, pairing UI, U-BT-2 |
@@ -191,6 +193,131 @@ Host tooling only; nothing was run on the player. Details and how to run:
   (every interaction of every screen, audio CRC, card image diff) and
   VER-8 proper (model-guided sequences, injected events, simulator
   divergence) remain.
+### 2026-11-24 — USB-6 device + UI-6 USB Drive: present a disk image to a computer (worker, no hardware)
+
+* **Export rules, host-tested (`orpheus_usb::msc::image`)**: `Medium`
+  (CD-ROM for `.iso`, removable disk otherwise, fixed disk), `check()`:
+  a CD is always read-only; a disk is read-only unless writing was asked
+  for **and** the file is under `/.orpheus/` (`under_orpheus`: first
+  component `.orpheus` case-insensitively, no empty/`.`/`..` components)
+  **and** test mode; smaller than one block, larger than 2 TiB, or an
+  exFAT file with valid length < size are refused. `map_file` maps an
+  `orpheus-fs` file into the extent table (offsets checked; > 682 runs:
+  too fragmented). `Export::unit()` is the SCSI unit (vendor `Orpheus`,
+  product `USB Drive CD-ROM` / `USB Drive disk`). `ImageDevice` now
+  refuses writes unless `set_writable(true)` (a second guard behind
+  the SCSI write protection); `ExtentTable::from_raw` rebuilds a table
+  filled elsewhere (checked: runs in file order, no gap, no overflow);
+  `Extent` is `repr(C)`.
+* **Host tests** (`crates/orpheus-usb/tests/image_export.rs`): a FAT16
+  card with three images written 1 KiB at a time in turn with a filler
+  (dozens of runs each), exported over the real Bulk-Only Transport to a
+  scripted initiator: every image reads back whole (disk: whole sectors,
+  hash equal; CD: padded with zeros); read-only exports refuse WRITE (10)
+  with WRITE PROTECTED (disk) / INVALID OPCODE (CD) and the card is
+  byte-identical; a writable test image takes a full rewrite, writes past
+  it get LBA OUT OF RANGE and change nothing, and **only the image's own
+  sectors differ** afterwards (other files and all metadata identical
+  through `orpheus-fs`); a too-small table reports too fragmented. In
+  `extent.rs`: every addressable block written, then writes past the end,
+  overflowing LBAs and odd lengths refused, no card sector outside the
+  runs touched, the partial last sector untouched.
+* **Firmware** (`fw/firmware/src/drive.rs`, `usbdev.rs`, `audio.rs`,
+  `media.rs`): personality `Image` (INFO personality 3). The request
+  (app: a `FileRef` of the listing; developer command: a path ≤ 96 B) is
+  kept in `drive`; the USB task asks the card task (`media::Req::Image`),
+  which stops playback and saves state as for the card reader
+  (`hand_over`), opens the file, checks it (`under /.orpheus/` = by path,
+  or the file's folder is `/.orpheus/images`), maps its runs into the
+  decoder arena's bytes 16–24 KiB (after the card reader's 16 KiB transfer
+  buffer; `audio::usb_extents`, same contract as `usb_buffer`) and hands
+  the card over with `release` (or answers the refusal and keeps it). The
+  USB task serves the unit through `ImageDevice` over the card's DMA
+  block driver with the BOT pump of the card reader, publishes counters
+  and host presence, and ends on a new personality, `usb dev`, or eject;
+  then the card is re-initialised and goes back, the volume is mounted
+  again. While the card is out the UI's `card()` is `UsbOwned` (Home
+  shows "no card" for the other card apps as before). Developer
+  commands: `usb image <path> [cd|disk|fixed] [ro|rw]` (test mode: the
+  developer channel), `usb image status` (`image attached host
+  medium=cd ro size= runs= read= written=`). Without a mounted card the
+  export fails at once (no wait on a card task that is not there).
+* **App** (05 §7.10, `screens/drive.rs`, screen ids 42–45): Home row list
+  (Presenting · name while one runs, Images, Test images when
+  `/.orpheus/images` exists, Choose file…), a folder of images
+  (`BrowseMode::DiskImages`: other files dimmed, OK on them "cannot
+  open"), Options (name, size, Mode: CD-ROM/Disk/Fixed disk, Read-only
+  locked on unless a test image in test mode = developer rows shown,
+  Connect), Status (name, mode · access, Connect a computer / Connected,
+  Read, rate or Written; Back disconnects, asking first when the computer
+  wrote; a refusal says why: too fragmented, too small, not fully written,
+  card error, only test images writable). Files › a disk image and the USB
+  dialog's "Present disk image…" (also as the "always" choice) open it.
+  The `app_not_yet_*` journey now opens a playlist (still not built);
+  `media_files_notice_*` a firmware file; new `media_files_disk_image_*`.
+* **Simulator** (`sim/src/drive.rs`): the same checks and `map_file` on
+  the simulated card, a fake computer (`set:drivehost=1`, 512 KiB/s;
+  `set:drivewrite=N`). Card: `/.orpheus/images/test.img` (1 MiB) and
+  `scattered.img` (700 one-cluster runs). Behaviour tests
+  (`sim/tests/usb_drive.rs`, 9): ISO as read-only CD read back byte for
+  byte, test image hash equal, read-only unless test image + test mode,
+  the service refuses writable user images / writable CD / too small /
+  writable outside test mode by itself, a writable test image changes only
+  itself (size kept), read-only refuses the computer's writes, scattered
+  image refused with the card kept, Files/USB dialog/Home entry points.
+* **Goldens**: 94 new `drive_*` (15 screens × 2 themes × 3 scripts + 4
+  amber; looked at all three scripts), 6 new `media_files_disk_image_*`;
+  changed: `app_not_yet_*` (6), `media_files_notice_*` (6),
+  `recorder_{clip,gain,ready,saved,waiting}_*` (30: "2 min left": the test
+  images use card space). Japanese test-pack strings avoid characters the
+  Unifont subset lacks. Manual: `docs/user/usb-drive.md` (+3 shots).
+* **Numbers** (worktree build): `__stack_bottom` `0x131180` → `0x1314E8`
+  (**+872 B** SRAM0): resident 77,428 → 77,820 B (+392: `.data` gets
+  `drive::WANT` 104 B, `INFO` 32, `MAPPED` 24 — non-zero initial values —
+  and alignment), `.bss` 123,656 → 124,136 B (+480: the USB task's future
+  with the image pump, `drive` name/dirs/counter, `Fw` +56). Extent table
+  8,184 B in the arena (no new RAM). Paged code 99 → 101 pages, slot
+  1,040,384 → 1,056,768 B. `size --check` within budgets.
+* Gate: host fmt, clippy `--workspace --all-targets -D warnings`, `cargo
+  test --workspace`, `xtask test golden`, `site --check`; fw fmt, clippy
+  `--workspace -D warnings`; `xtask build`, `check-resident`, `size
+  --check`: pass. Not run: anything on the player (no access).
+* **Lead's device run** (one command at a time):
+  1. Flash this build (`cargo xtask dev stage …` as usual), wait for Home.
+  2. `cargo xtask dev usbimage-test`: uploads `usb6-test.img` (256 KiB +
+     300 B) and `usb6-test.iso` (300 KiB + 100 B) to `/.orpheus/images/`,
+     presents each read-only (`usb image … disk ro` / `cd ro`), waits for
+     the `Orpheus USB Drive` block device (`/dev/sdX`, `/dev/srN`), reads
+     it whole, compares SHA-256 with the file (disk: whole sectors; CD:
+     zero-padded), prints `usb image status`, detaches (`usb dev`) and
+     waits for the device to go. Needs the udev rule (block devices
+     0666). Expect two `sha256 equal` lines and `read=` equal to the
+     device size.
+  3. By hand, the same with a real FAT image and ISO, mounted read-only:
+     `truncate -s 8M t.img && mkfs.vfat t.img && mcopy -i t.img README.md ::`;
+     `xorriso -as mkisofs -o t.iso -V USB6 docs/user` (or `genisoimage`);
+     `cargo xtask dev put t.img /.orpheus/images/t.img` (and `t.iso`);
+     `cargo xtask dev cmd "usb image /.orpheus/images/t.img" --wait 5`;
+     `lsblk -o NAME,VENDOR,MODEL,SIZE,RO`; `sudo mount -o ro /dev/sdX
+     /mnt && ls /mnt && sudo umount /mnt`; `sha256sum /dev/sdX t.img`
+     (equal for a 512-multiple image); `cargo xtask dev cmd "usb image
+     status"`; `cargo xtask dev cmd "usb dev"`. For the ISO: `usb image
+     /.orpheus/images/t.iso`, `isoinfo -d -i /dev/srN` (or `blkid`),
+     `sudo mount -o ro /dev/srN /mnt`, then `usb dev`.
+  4. Optional: `cargo xtask dev usbimage-test --rw` (writes 64 KiB over
+     the test image in `/.orpheus/images/` through the block device, then
+     reads it back read-only), and `--qemu --iso <small bootable ISO>
+     --banner <text>` (boots it from `/dev/srN` in QEMU with the serial
+     console in `target/orpheus/usbimage-qemu.log`).
+  5. On the player: Home → USB Drive → Test images → `usb6-test.iso` →
+     Connect while plugged in: "Connected", the Read figure grows when the
+     computer reads; Back → the card is back (Files lists it). A refusal
+     check: Choose file… a large fragmented file if one exists.
+  6. User check 26 (a real PC boots from an ISO) when convenient.
+* **Open**: the boot-while-holding-Next option and "last used" list of 05
+  §7.10 are not built; read speed unmeasured (the card reader does
+  2.3 MB/s); whether Windows/macOS boot menus list the CD (MMC answers as
+  in the host tests).
 
 ### 2026-11-24 — AU-13 fix after the first device run: the microphone recorded silence (worker, no hardware)
 

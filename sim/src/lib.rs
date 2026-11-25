@@ -21,6 +21,7 @@
 //! | `theme:dark`, `accent:green`, `lang:cyrillic` | appearance and language |
 //! | `set:battery=8`, `set:usb=host` … | simulated system state (per host) |
 //! | `goto:Library` | push a screen directly |
+//! | `set:drivehost=1`, `set:drivewrite=8` | a computer uses the USB Drive (reads it all; writes 8 blocks) |
 //! | `expect-typed:287082↵` | fail unless the fake computer on the USB keyboard received this (`↵` = Enter) |
 
 pub mod apps;
@@ -28,6 +29,7 @@ pub mod auth;
 pub mod bt;
 pub mod card;
 pub mod demo;
+pub mod drive;
 pub mod fallback;
 pub mod library;
 pub mod media;

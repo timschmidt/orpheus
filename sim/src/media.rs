@@ -1063,6 +1063,12 @@ impl Media {
         self.dir_paths.iter().find(|(_, p)| p.as_str() == path).map(|(k, _)| DirId(*k))
     }
 
+    /// The path of a file listed before (USB Drive).
+    #[must_use]
+    pub fn file_path(&self, f: FileRef) -> Option<String> {
+        self.file_paths.get(&f).cloned()
+    }
+
     pub fn file_ref(&self, path: &str) -> Option<FileRef> {
         self.file_paths.iter().find(|(_, p)| p.as_str() == path).map(|(f, _)| *f)
     }

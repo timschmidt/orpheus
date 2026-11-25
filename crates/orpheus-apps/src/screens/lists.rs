@@ -752,9 +752,15 @@ impl ListScreen {
                     self.refresh(cx.svc);
                     return Nav::Stay;
                 }
+                if tag == 2 {
+                    // Present disk image…: the USB Drive app chooses it.
+                    if self.always {
+                        cx.svc.set_setting(id::USB_WHEN_CONNECTED, 4);
+                    }
+                    return Nav::Replace(super::USB_DRIVE, Arg(0));
+                }
                 let mode = match tag {
                     1 => UsbMode::FileTransfer,
-                    2 => UsbMode::DiskImage,
                     3 => UsbMode::Keyboard,
                     4 => UsbMode::Audio,
                     _ => UsbMode::ChargeOnly,

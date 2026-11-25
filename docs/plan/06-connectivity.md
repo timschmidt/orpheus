@@ -184,6 +184,14 @@ Purpose: boot a computer from an `.iso` or `.img` on the card.
 * Geometry: 512-byte blocks for disks, 2048-byte blocks for CD-ROM; capacity
   from the file size (truncated to a whole block; an ISO whose size is not a
   multiple of 2048 is exported with the tail padded with zeros).
+* As built (USB-6): the volume is unmounted while an image is exported (the
+  card hand-over of the card reader, §2.4); the 8 KiB table lives in the
+  decoder arena after the card reader's transfer buffer. Rules
+  (`orpheus_usb::msc::image::check`, CLAUDE.md rule 5): a CD is always
+  read-only; a disk is writable only if asked for, the file is under
+  `/.orpheus/` and the player is in test mode (developer channel, or the
+  developer rows shown); the writable `ImageDevice` reaches only the
+  file's own sectors.
 
 ### 3.2 Disk mode
 

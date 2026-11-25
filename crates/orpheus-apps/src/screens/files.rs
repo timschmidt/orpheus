@@ -16,8 +16,8 @@ use orpheus_ui::widgets::dialog::DialogSpec;
 use orpheus_ui::widgets::list::{Accessory, Item, ListAction, ListSource, ListView, Row};
 
 use super::{
-    FILES, INFO, MUSIC_FOLDERS, NOTICE, NOW_PLAYING, Notice, PICTURE_VIEW, PICTURES, PROPERTIES,
-    PictureScreen, RECORDINGS, TEXT_VIEW,
+    DRIVE_FILES, DRIVE_OPTIONS, FILES, INFO, MUSIC_FOLDERS, NOTICE, NOW_PLAYING, Notice, PICTURE_VIEW,
+    PICTURES, PROPERTIES, PictureScreen, RECORDINGS, TEXT_VIEW,
 };
 use crate::App;
 use crate::browse::{DirId, EntryKind, FileRef};
@@ -86,6 +86,8 @@ struct DirSource<'a, S: ?Sized> {
     count: u32,
     focus: u32,
     size: StrBuf<16>,
+    /// USB Drive: files other than disk images are dimmed.
+    images: bool,
 }
 
 impl<'a, S: BrowseService + ?Sized> DirSource<'a, S> {
@@ -96,7 +98,12 @@ impl<'a, S: BrowseService + ?Sized> DirSource<'a, S> {
         {
             push_size(&mut size, e.size);
         }
-        DirSource { svc, count, focus, size }
+        DirSource { svc, count, focus, size, images: false }
+    }
+
+    fn images(mut self, on: bool) -> Self {
+        self.images = on;
+        self
     }
 }
 
@@ -112,6 +119,9 @@ impl<S: BrowseService + ?Sized> ListSource for DirSource<'_, S> {
             it = it.accessory(Accessory::Chevron);
         } else if i == self.focus && !self.size.is_empty() {
             it = it.value(self.size.as_str());
+        }
+        if self.images && !matches!(e.kind, EntryKind::Dir | EntryKind::DiskImage) {
+            it = it.dim();
         }
         Row::Item(it)
     }
@@ -138,6 +148,9 @@ pub enum BrowseMode {
     /// Recorder › Recordings…: the recordings, newest first; OK plays,
     /// Menu deletes (05 §7.5).
     Recordings,
+    /// USB Drive (05 §7.10): a folder of disk images; OK on one opens its
+    /// options, other files are dimmed.
+    DiskImages,
 }
 
 /// One folder.
@@ -185,6 +198,7 @@ impl FilesScreen {
             BrowseMode::Music => MUSIC_FOLDERS,
             BrowseMode::Pictures => PICTURES,
             BrowseMode::Recordings => RECORDINGS,
+            BrowseMode::DiskImages => DRIVE_FILES,
         }
     }
 
@@ -231,7 +245,7 @@ impl FilesScreen {
     }
 
     fn focus_on<S: Services + ?Sized>(&mut self, svc: &S, row: u32, now: orpheus_ui::Instant) {
-        let src = DirSource::new(svc, self.count, row);
+        let src = DirSource::new(svc, self.count, row).images(self.mode == BrowseMode::DiskImages);
         let mut l = self.list;
         l.set_focus(&src, row, ROWS, now);
         self.list = l;
@@ -242,6 +256,8 @@ impl FilesScreen {
         let notice = |n: Notice| Nav::Push(NOTICE, Arg(n.arg()));
         match e.kind {
             EntryKind::Dir => Nav::Push(self.same_screen(), Arg(e.child.0)),
+            EntryKind::DiskImage => Nav::Push(DRIVE_OPTIONS, Arg(i)),
+            _ if self.mode == BrowseMode::DiskImages => notice(Notice::Unsupported),
             EntryKind::Audio => {
                 let file = e.file;
                 cx.svc.command(PlayerCmd::PlayDir { dir: self.dir, start: Some(file), shuffle: false });
@@ -250,7 +266,6 @@ impl FilesScreen {
             EntryKind::Text => Nav::Push(TEXT_VIEW, Arg(i)),
             EntryKind::Playlist => notice(Notice::NotYet(App::Music)),
             EntryKind::Image => Nav::Push(PICTURE_VIEW, Arg(PictureScreen::arg(i, false))),
-            EntryKind::DiskImage => notice(Notice::NotYet(App::UsbDrive)),
             EntryKind::OtpImport => Nav::Push(super::AUTHENTICATOR, Arg(0)),
             EntryKind::Firmware => notice(Notice::NotYetSettings),
             EntryKind::Other => notice(Notice::Unsupported),
@@ -358,7 +373,8 @@ impl<S: Services + ?Sized> Screen<S> for FilesScreen {
             _ => {}
         }
         let act = {
-            let src = DirSource::new(&*cx.svc, self.count, self.list.focus);
+            let src = DirSource::new(&*cx.svc, self.count, self.list.focus)
+                .images(self.mode == BrowseMode::DiskImages);
             let mut l = self.list;
             let a = l.handle(&src, ev, ROWS, cx.list());
             self.list = l;
@@ -381,13 +397,17 @@ impl<S: Services + ?Sized> Screen<S> for FilesScreen {
                 g.clear(Role::Bg);
                 let dim = g.c(Role::TextDim);
                 let (w, h) = g.size();
-                let empty =
-                    if self.mode == BrowseMode::Recordings { Str::NoRecordings } else { Str::EmptyFolder };
+                let empty = match self.mode {
+                    BrowseMode::Recordings => Str::NoRecordings,
+                    BrowseMode::DiskImages => Str::DriveNoImages,
+                    _ => Str::EmptyFolder,
+                };
                 g.text_in(4, h / 2, w - 8, self.lang.get(empty), FontId::Ui, dim, Align::Center);
             }
             return;
         }
-        let src = DirSource::new(&*cx.svc, self.count, self.list.focus);
+        let src =
+            DirSource::new(&*cx.svc, self.count, self.list.focus).images(self.mode == BrowseMode::DiskImages);
         let mut l = self.list;
         l.draw(&src, g, dirty, cx.now, Role::Bg);
         self.list = l;
@@ -403,6 +423,14 @@ impl<S: Services + ?Sized> Screen<S> for FilesScreen {
                     out.action(M_PROPS, l.get(Str::Properties));
                     out.action(M_DELETE, l.get(Str::DeleteMenu));
                 }
+            }
+            None if self.mode == BrowseMode::DiskImages => {
+                if focused.is_some() {
+                    out.action(M_PROPS, l.get(Str::Properties));
+                }
+                out.sub(M_SORT, l.get(Str::SortBy));
+                out.toggle(M_HIDDEN, l.get(Str::ShowHidden), cx.svc.setting(id::SHOW_HIDDEN) != 0);
+                out.action(M_CARD, l.get(Str::CardInfo));
             }
             None => {
                 if self.mode == BrowseMode::Pictures {
@@ -445,6 +473,7 @@ impl<S: Services + ?Sized> Screen<S> for FilesScreen {
                 BrowseMode::Music => Str::Folders,
                 BrowseMode::Pictures => Str::AppPictures,
                 BrowseMode::Recordings => Str::Recordings,
+                BrowseMode::DiskImages => Str::AppUsbDrive,
             })),
             strip: StripUse::Auto,
             ..Wants::default()

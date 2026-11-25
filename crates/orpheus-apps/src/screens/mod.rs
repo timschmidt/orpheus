@@ -4,6 +4,7 @@
 mod auth;
 mod bluetooth;
 mod clocks;
+mod drive;
 mod edit;
 mod files;
 mod home;
@@ -24,6 +25,7 @@ pub use clocks::{
     AlarmDaysScreen, AlertScreen, PICK_ALARM, PICK_TIMER, ToolsScreen, push_days, push_hm, push_hms,
     push_lap, push_stopwatch,
 };
+pub use drive::{DriveView, UsbDriveScreen, medium_label, refusal_text};
 pub use edit::{PickerScreen, SliderScreen};
 pub use files::{BrowseMode, FilesScreen, kind_icon, kind_label, push_size};
 pub use home::HomeScreen;
@@ -115,6 +117,14 @@ pub const AUTHENTICATOR: ScreenId = ScreenId(38);
 pub const RECORDER: ScreenId = ScreenId(40);
 /// Recorder › Recordings…. Arg: the folder's `DirId`.
 pub const RECORDINGS: ScreenId = ScreenId(41);
+/// USB Drive (05 §7.10): the image folders.
+pub const USB_DRIVE: ScreenId = ScreenId(42);
+/// A folder of disk images. Arg: `DirId` (0 = card root, "Choose file…").
+pub const DRIVE_FILES: ScreenId = ScreenId(43);
+/// Mode / read-only / Connect. Arg: the image's row in the current listing.
+pub const DRIVE_OPTIONS: ScreenId = ScreenId(44);
+/// The image presented to the computer.
+pub const DRIVE_STATUS: ScreenId = ScreenId(45);
 
 /// One variant per screen. Only the top screen exists, so the enum's size
 /// (its largest variant, the list screen) is the UI's screen RAM.
@@ -145,6 +155,7 @@ pub enum AppScreen {
     Alert(AlertScreen),
     Auth(AuthScreen),
     Recorder(RecorderScreen),
+    Drive(UsbDriveScreen),
 }
 
 macro_rules! each {
@@ -175,6 +186,7 @@ macro_rules! each {
             AppScreen::Alert($s) => $e,
             AppScreen::Auth($s) => $e,
             AppScreen::Recorder($s) => $e,
+            AppScreen::Drive($s) => $e,
         }
     };
 }
@@ -251,6 +263,10 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             AUTHENTICATOR => AppScreen::Auth(AuthScreen::default()),
             RECORDER => AppScreen::Recorder(RecorderScreen::default()),
             RECORDINGS => AppScreen::Files(FilesScreen::new(BrowseMode::Recordings)),
+            USB_DRIVE => AppScreen::Drive(UsbDriveScreen::new(DriveView::Home)),
+            DRIVE_FILES => AppScreen::Files(FilesScreen::new(BrowseMode::DiskImages)),
+            DRIVE_OPTIONS => AppScreen::Drive(UsbDriveScreen::new(DriveView::Options)),
+            DRIVE_STATUS => AppScreen::Drive(UsbDriveScreen::new(DriveView::Status)),
             _ => AppScreen::Home(HomeScreen::default()),
         }
     }
@@ -271,6 +287,7 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
                 BrowseMode::Music => MUSIC_FOLDERS,
                 BrowseMode::Pictures => PICTURES,
                 BrowseMode::Recordings => RECORDINGS,
+                BrowseMode::DiskImages => DRIVE_FILES,
             },
             AppScreen::Text(_) => TEXT_VIEW,
             AppScreen::NowPlaying(_) => NOW_PLAYING,
@@ -287,6 +304,7 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             AppScreen::Alert(_) => ALERT,
             AppScreen::Auth(_) => AUTHENTICATOR,
             AppScreen::Recorder(_) => RECORDER,
+            AppScreen::Drive(d) => d.screen_id(),
         }
     }
 
@@ -306,6 +324,7 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
                 BrowseMode::Music => "Folders",
                 BrowseMode::Pictures => "Pictures",
                 BrowseMode::Recordings => "Recordings",
+                BrowseMode::DiskImages => "DriveFiles",
             },
             AppScreen::Text(_) => "TextViewer",
             AppScreen::NowPlaying(_) => "NowPlaying",
@@ -322,6 +341,7 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             AppScreen::Alert(_) => "Alert",
             AppScreen::Auth(_) => "Authenticator",
             AppScreen::Recorder(_) => "Recorder",
+            AppScreen::Drive(d) => d.name(),
         }
     }
 
@@ -346,11 +366,12 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             },
             ServiceEvent::Usb { host: true } => match cx.svc.setting(id::USB_WHEN_CONNECTED) {
                 0 => Nav::Push(USB_CONNECT, Arg(0)),
+                // Present disk image…: the USB Drive app chooses the image.
+                4 => Nav::Push(USB_DRIVE, Arg(0)),
                 n => {
                     let mode = match n {
                         2 => UsbMode::FileTransfer,
                         3 => UsbMode::Keyboard,
-                        4 => UsbMode::DiskImage,
                         _ => UsbMode::ChargeOnly,
                     };
                     cx.svc.select_usb(mode);

@@ -129,6 +129,9 @@ pub enum Req {
     QueueWin { first: u32 },
     /// Hand the card to the USB task (stops playback first).
     Release,
+    /// USB Drive (USB-6): map the wanted image (`crate::drive`), then hand
+    /// the card to the USB task as for `Release`, or answer the refusal.
+    Image,
     /// Put a picture into the frame buffer the UI lent (`PicJob`).
     Picture(PicJob),
     /// Make a music-library list the listing (`crate::library`).
@@ -939,7 +942,7 @@ impl Server {
                 self.queue_win(vol, first).await;
                 true
             }
-            Req::Release => {
+            Req::Release | Req::Image => {
                 self.pending = Some(r);
                 false
             }

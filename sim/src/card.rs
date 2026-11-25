@@ -243,8 +243,46 @@ fn build() -> Vec<u8> {
     write(&mut vol, "/otpauth.txt", b"otpauth://totp/Example:me?secret=JBSWY3DPEHPK3PXP\n");
     write(&mut vol, "/.orpheus/library.ydb", b"");
     write(&mut vol, "/.hidden-notes.txt", b"hidden");
+    test_images(&mut vol);
     block_on(vol.flush()).expect("flush");
     vol.into_device().data
+}
+
+/// A test image's bytes: a counter pattern, distinct per `seed`.
+#[must_use]
+pub fn image_bytes(len: usize, seed: u8) -> Vec<u8> {
+    (0..len).map(|i| (i / 512) as u8 ^ (i as u8).wrapping_mul(31) ^ seed).collect()
+}
+
+/// Size of `/.orpheus/images/test.img`.
+pub const TEST_IMG: usize = 1024 * 1024;
+/// Clusters of `/.orpheus/images/scattered.img`, each its own run: more
+/// than the USB Drive's extent table holds (682).
+pub const SCATTERED_RUNS: usize = 700;
+
+/// USB Drive (USB-6) test images: `/.orpheus/images/test.img` (1 MiB,
+/// contiguous) and `scattered.img`, written one cluster at a time in turn
+/// with a filler file (deleted after) so that every cluster is a run of
+/// its own.
+fn test_images(vol: &mut Volume<'_, RamDisk>) {
+    block_on(vol.create_dir("/.orpheus/images")).expect("images dir");
+    let mut f = block_on(vol.open("/.orpheus/images/test.img", OpenMode::CreateNew)).expect("test.img");
+    block_on(vol.write(&mut f, &image_bytes(TEST_IMG, 0x5A))).expect("write");
+    block_on(vol.close(f)).expect("close");
+    let cluster = 2048;
+    let data = image_bytes(SCATTERED_RUNS * cluster, 0x33);
+    let mut a = block_on(vol.open("/.orpheus/images/scattered.img", OpenMode::CreateNew)).expect("scattered");
+    let mut b = block_on(vol.open("/.orpheus/filler.bin", OpenMode::CreateNew)).expect("filler");
+    for piece in data.chunks(cluster) {
+        block_on(vol.write(&mut a, piece)).expect("write");
+        block_on(vol.flush_file(&mut a)).expect("flush");
+        block_on(vol.write(&mut b, &[0u8; 2048])).expect("write");
+        block_on(vol.flush_file(&mut b)).expect("flush");
+    }
+    block_on(vol.close(a)).expect("close");
+    block_on(vol.close(b)).expect("close");
+    // The gaps stay free; the image stays scattered.
+    block_on(vol.remove("/.orpheus/filler.bin")).expect("remove filler");
 }
 
 /// The card image (built on first use, shared). Building takes seconds

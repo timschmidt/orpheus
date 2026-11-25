@@ -18,6 +18,7 @@ use orpheus_apps::services::{
     PlayerCmd, PlayerService, PlayerState, QueueEntry, TextService, TrackInfo,
 };
 use orpheus_apps::services::{BtDevice, BtList, BtPhase, BtRequest, StepsInfo, StepsService, ToolsService};
+use orpheus_apps::services::{DriveInfo, DriveRequest, UsbDriveService};
 use orpheus_apps::services::{PresetOp, Presets, RadioInfo, RadioRequest, RadioService, Region};
 use orpheus_apps::services::{RecInfo, RecRequest, RecorderService, rec_settings};
 use orpheus_apps::settings::{SettingId, SettingsCache, id, lang_code};
@@ -35,6 +36,7 @@ use orpheus_ui::widgets::bars::{MiniPlayer, Status};
 
 use crate::auth::SimAuth;
 use crate::bt::FakeBt;
+use crate::drive::SimDrive;
 use crate::media::Media;
 use crate::radio::SimRadio;
 use crate::recorder::SimRecorder;
@@ -104,6 +106,8 @@ pub struct HostServices {
     /// The Authenticator's vault and the fake computer on the USB
     /// keyboard (OTP-2, USB-5).
     pub auth: SimAuth,
+    /// USB Drive (USB-6): the export and the fake computer using it.
+    pub drive: SimDrive,
 }
 
 impl Default for HostServices {
@@ -153,6 +157,7 @@ impl HostServices {
             now_ms: 0,
             wake: false,
             auth: SimAuth::default(),
+            drive: SimDrive::default(),
         }
     }
 }
@@ -308,6 +313,45 @@ impl UsbService for HostServices {
 
     fn select_usb(&mut self, mode: UsbMode) {
         self.log.push(Logged::Usb(mode));
+    }
+}
+
+impl UsbDriveService for HostServices {
+    fn drive_dirs(&mut self) -> (Option<DirId>, Option<DirId>) {
+        use orpheus_usb::msc::image::{TEST_DIR, USER_DIR};
+        self.media.learn(TEST_DIR);
+        (self.media.dir_id(USER_DIR), self.media.dir_id(TEST_DIR))
+    }
+
+    fn drive_test_mode(&self) -> bool {
+        // The firmware's test mode: the developer rows are shown.
+        self.developer
+    }
+
+    fn drive_start(&mut self, req: DriveRequest, name: &str) {
+        let test = self.drive_test_mode();
+        self.drive.start(req, name, test, &mut self.media);
+        if self.drive.info.phase.is_active() {
+            self.media.command(PlayerCmd::Stop, 0);
+            self.card = CardState::UsbOwned;
+        }
+        self.drive_events();
+    }
+
+    fn drive_stop(&mut self) {
+        self.drive.stop(&mut self.media);
+        if self.card == CardState::UsbOwned {
+            self.card = CardState::Ready;
+        }
+        self.drive_events();
+    }
+
+    fn drive(&self) -> DriveInfo {
+        self.drive.info
+    }
+
+    fn drive_name(&self) -> &str {
+        &self.drive.name
     }
 }
 
@@ -640,6 +684,8 @@ impl Host for HostServices {
                 self.bt_events();
             }
             "developer" => self.developer = on,
+            "drivehost" => self.drive.host_present = on,
+            "drivewrite" => self.drive.write_blocks = v.parse()?,
             // Radio (UI-5a): `radio=off`, `radio=101900` (playing there),
             // `presets=demo|none`, `antenna=0`, `tuner=absent`.
             "radio" => {
@@ -814,6 +860,7 @@ impl Host for HostServices {
             "Recorder" => screens::RECORDER,
             "Stopwatch" => screens::STOPWATCH,
             "Authenticator" => screens::AUTHENTICATOR,
+            "UsbDrive" => screens::USB_DRIVE,
             _ => return None,
         })
     }
@@ -881,6 +928,8 @@ impl Host for HostServices {
         }
         self.rec.advance(ms, &mut self.media);
         self.rec_events();
+        self.drive.advance(ms, &mut self.media);
+        self.drive_events();
         self.now_ms += ms;
         if self.clock_run {
             self.tick_clock(ms);
@@ -1075,6 +1124,15 @@ impl HostServices {
 
     /// The radio's events as service events, and the status bar's source
     /// when the radio started or stopped.
+    fn drive_events(&mut self) {
+        if self.drive.take_changed() {
+            self.events.push(Event::Service(ServiceEvent::Other {
+                kind: services::other::USB_DRIVE,
+                value: services::drive_event::STATE,
+            }));
+        }
+    }
+
     fn rec_events(&mut self) {
         for v in std::mem::take(&mut self.rec.events) {
             self.events
