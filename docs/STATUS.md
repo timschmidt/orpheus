@@ -68,6 +68,7 @@ of every session. Newest entries first in §3.
 | TTS-2 | **done (host)**; not in the firmware, simulator or apps (A11Y-1, BOOK-3, firmware integration) | `orpheus-tts`: cascade/parallel formant synthesiser after Klatt 1980 (KLGLOTT88-like source with polyBLEP, F1–F6 cascade, nasal pole/zero, parallel frication/bursts), phoneme targets and loci from the phonetics literature, intonation (declination, accents, 5 contours, asides), voices Neutral/Low/Bright, exact TTS-1 durations at 0.25×–10×, resampler to 8–48 kHz, `Synth` (1,936 B) and `Speaker` (3,352 B with the converter), events and stop; WER (whisper base.en) 13.9 / 30.5 / 93 % at 1/2/4× (espeak-ng 5.9 / 63 / 89 %); player estimate ≈ 22 % of Base at 48 kHz (over the 20 % budget), code ≈ 70 KB without the lexicon (over 64 KiB) (session entry 2026-11-25 "TTS-2") |
 | VER-13 | **tool and matrix done (host + simulator); one device journey (not yet run on the player)** | `cargo xtask settings-matrix [--check] [--strict]` (alias `settings coverage`; in `test all`, `--strict` in `gate --m11`); manifest for all 162 settings of the tree; simulator matrix over 59 screen + 10 service contexts (`sim/tests/settings_matrix.rs`), host tests for sound, governor, steps, recorder split, persistence/defaults/clamping/migration per kind; journey `settings_shuffle` (RAM-only session). 9,365 / 9,412 matrix cells covered; 22 settings have no effect to show (not wired) and 47 contexts are reviewed exclusions (session entry 2026-11-26 "VER-13") |
 | GAME-6 Bricks (M14) | **built (host + simulator + firmware), not yet run on the player** | Brick breaker of our own: integer physics with one-pixel sub-steps (no tunnelling at any speed, no floating point), paddle angles, 1–3-hit and unbreakable bricks, 8 hand-made + generated levels, five power-ups, lives, scores, saves; 7 settings packed into 1 word; 47 goldens; fuzz `bricks_keys`. In the firmware (`orpheus-apps/bricks`): stack margin 4,116 B unchanged. Lead: session entry 2026-11-25 "GAME-6" |
+| BOOK-2 | **done (host + simulator)**; not in the firmware (as BOOK-1; the scratch is the decoder arena, see session entry) | EPUB 2/3 in `orpheus-books`: zip (end record, streamed central directory, CRC, zip64/encrypted/method refusals), `no_std` inflate (48 B state; 32 KiB window + 2,304 B tables lent: 35,072 B), container/OPF/nav/NCX, XHTML reduction over the XML tokenizer split out of FB2, contents positions from anchors, all in bounded steps into BOOK-1's stream; library titles from the package; 12 new goldens; fuzz targets `books_zip`, `books_epub` (session entry 2026-11-25 "BOOK-2") |
 
 ## 3. Session log
 
@@ -262,6 +263,131 @@ ring, `service` between blocks, measured cycles, clock floor for drum
 patterns, hot loops clustered; whether drums should end at −60 dB);
 MIDI-1 (GM programs → presets, channel 10 → `STANDARD`, SF2 through the
 cache); SEQ-1 (patches and kits as bank records; 2 kit slots).
+### 2026-11-25 — BOOK-2: EPUB (worker, no hardware)
+
+Host and simulator; **not in the firmware** (as BOOK-1: feature
+`orpheus-apps/books` off there). Design and as-built details: 05 §7.15
+"As built (BOOK-2)".
+
+* **`orpheus-books`** (`no_std`, no alloc, no `core::fmt`), new modules:
+  `xml` (the tokenizer split out of FB2 and shared: attributes with
+  references decoded and hashed, unquoted values, 204 named references),
+  `zip` (end record, the central directory as a stream, local headers,
+  CRC-32, path resolution), `inflate` (DEFLATE), `opf` (container, OPF,
+  EPUB 3 navigation, NCX), `xhtml` (content documents → the normalised
+  stream's events), `epub` (the job: `Epub::step` over a `Store` trait,
+  one bounded piece per call; `Epub::library` reads title, author and
+  language only). `convert`: `Format::Epub`, content documents as parts of
+  one stream, `<meta>` charset switch, the anchor watch. `shelf`:
+  `step_with(…, scratch)`, `needs_scratch()`, EPUB conversion and titles,
+  `Book::waiting`, `Book::lang` (cache header bytes 24–27).
+  `orpheus-apps`: the empty library's help names `.epub` (no other UI
+  change: an EPUB opens, waits and reads with BOOK-1's screens).
+* **RAM** (host `size_of`, `tests/ram.rs`): the EPUB job **2,880 B**
+  (read buffer 512, three paths 3 × 257, a package document's reader 952
+  or the converter 384, watch of 16 entries, inflate state 48, directory
+  walk 72); **the scratch lent: 35,072 B** (32 KiB window + 2,304 B of
+  Huffman tables). `Shelf` 9,360 → **12,160 B** (+2,360 B: the EPUB job in
+  the card-work union, as the conversion and in the library search; +440
+  B: files of a job left behind, a title to rewrite). Converter 356 →
+  384 B, MetaReader 524 → 540 B.
+* **The inflate window on the player.** 32 KiB static is out: SRAM0's
+  `.bss` budget is full (124 KiB, measured 123,000 B) and the stack margin
+  is ≈ 4.5 KB. Design as planned in 05 §7.15: the window and tables are a
+  *lent* scratch — the card task's 64 KiB decoder arena while no track is
+  loaded. Without it an EPUB waits ("Preparing", `Book::waiting`); the
+  rest of Books (reading converted books, the library, layout) needs no
+  scratch. Costs of the alternatives, for the integration to choose:
+  (a) the codec arena's lendable remainder while music plays (35 KiB
+  must be free beside the decoder: MP3's state would allow it if the arena
+  lends a sub-slice; FLAC/Vorbis would not) — no card cost; (b) a
+  card-backed window: inflated bytes appended to a 32 KiB ring file, a
+  small RAM window (4 KiB) for near matches, far matches read back — one
+  extra 512-byte write per 512 bytes inflated (≈ doubles the
+  conversion's writes, all on one 64-sector file) and up to two sector
+  reads per far match (a match is ≤ 258 bytes); several seconds per
+  100 KB chapter at ≈ 1 ms a read, and the inflater would have to stop
+  and resume at a far match (an `Error::Window`-like status) — not built.
+  A smaller window alone (`Scratch::new` takes any power of two ≥ 1 KiB)
+  decodes only streams that never reach further back, which zlib's output
+  for books does.
+* **Card work** (FAT32 with 512-byte clusters and exFAT images,
+  `tests/shelf.rs`): ≤ 16 sectors read and ≤ 12 written in any step, as
+  BOOK-1 (the library's title rewrite after a conversion is its own step:
+  in the conversion's last step it made 15). In memory (`tests/epub.rs`):
+  one book read of ≤ 512 B per step, ≤ 20 table writes; the EPUB 3 sample
+  (6,833 B, 35,397 B of text) converts in 111 steps.
+* **Tests**: `inflate` (known vectors: empty, stored, a hand-made fixed
+  block, bad type, distance before the start, stored length check,
+  truncation, over-subscribed code; every sample × level 0/1/6/9 × five
+  piece/limit pairs against flate2 — a host dev-dependency only; 1 KiB
+  window limits), `zip` (CRC check value, paths, end record incl. a
+  self-extractor stub, a comment needing three reads back, zip64,
+  multi-disk, not-zip), `xml`, `xhtml` (structure, soup, depth, meta
+  charset), `opf` (container, package, navigation, NCX), `convert`
+  (EPUB parts, the meta charset switch); `tests/epub.rs` (12, EPUB 2 and 3
+  samples built from parts in `tests/common/epubkit.rs`: every paragraph
+  and nothing else, contents and their positions, headings without
+  navigation, contents out of order, library metadata, the scratch's
+  rules, encrypted/unsupported/too large/bad CRC/truncated/garbage parts,
+  bombs, refused archives, missing and odd pieces, KOI8-R/UTF-16/meta
+  encodings, deep and messy markup); `tests/shelf.rs` EPUB on FAT32 and
+  exFAT (library with and without the scratch, waiting, conversion,
+  every page, contents jumps, chapters, cache on reopen, a broken EPUB,
+  the title fixed on conversion, books unchanged, fsck clean); fuzz
+  targets **`books_zip`** (8 seeds) and **`books_epub`** (13 seeds)
+  replayed by `tests/fuzz_corpus.rs`; `sim/tests/books.rs` (+2: the EPUB's
+  contents and pages, waiting without the scratch; rows after Moby-Dick
+  moved by one); **12 new goldens** (`books_epub*`: first page, page 2,
+  the list with italics, contents, the anchor jump, Medium; dark and
+  light) and 11 changed (library lists, find-in: the EPUB's row), all
+  looked at; the other Books goldens unchanged after the row remap.
+* **Bugs found and fixed** (each with a `regress_` test that fails
+  without its fix): **lost clusters when a conversion or layout was given
+  up** (BOOK-1: opening another book during a conversion, or a new layout
+  during one, dropped files without writing their directory entries;
+  fsck.fat reclaimed 30 clusters in the test) —
+  `regress_abandoned_job_loses_no_clusters`; FB2 `<body name="footnotes">`
+  was not a notes body (the 8-byte buffer held `footnote`, compared with
+  `footnot`) — `regress_fb2_footnotes_body`. During the package (new
+  code): the watch cleared at a part's start (`regress_epub_watch_
+  survives_part_start`), the directory walk skipping the extra field
+  before the name (`regress_cd_walk_name_before_extra`), inflate output
+  allowed past the window (`regress_inflate_max_over_window`).
+* **Simulator**: `/Books/灯台守.epub` ("The Lighthouse Keeper", our own
+  text: three chapters, nested navigation, an anchor, a list, a quote, an
+  image; named to sort last in Files so the media goldens keep their
+  rows), deflated with `miniz_oxide` (new sim dependency, pure Rust, in
+  `Cargo.lock` already); `SimBooks` lends a 35 KiB scratch while the shelf
+  asks; `set:bookscratch=off` lends none (as with music on the player).
+* **For the firmware integration** (with BOOK-1's list: the Shelf split
+  and its step futures, the chore pacing, rodata): (1) lend the decoder
+  arena to `Shelf::step_with` while `needs_scratch()` and no track is
+  loaded, unchanged from an entry's first step to its last (a track
+  started in between: the next step without it restarts the conversion,
+  `Step::Lost`; a title read falls back to the file name); the arena's
+  first 35,072 bytes; (2) a "Pause music to prepare this book" hint for
+  `Book::waiting` (a string; not added, as the other Books strings are
+  English only); (3) the EPUB job (2.9 KB) is card-side state; its
+  `Epub::step` future holds only small locals (≤ 48 B buffers) and the
+  store's 512-byte reads go into its own buffer; the whole
+  `Shelf::step_with` future measures 5,360 B on the host (64-bit; to be
+  measured on the target with BOOK-1's step-future work); (4) rodata: the
+  entity table (204 names), the CRC table (1 KiB), inflate's
+  length/distance tables — not measured for the target.
+* Open: images and their `alt` text, CSS (`display:none`, page breaks),
+  footnote pop-ups, tables beyond a paragraph per cell, MathML,
+  right-to-left and vertical text, DRM detection (encrypted parts read as
+  `[damaged]` or garbage), on-device timing of inflate.
+* Gate: `cargo fmt --all --check`; `cargo clippy --workspace
+  --all-targets -- -D warnings` and `orpheus-apps` with features none,
+  games, salvo, books, games+books, salvo+books: clean; `cargo test
+  --workspace`: all pass (178 test binaries); `cargo xtask build`: ok
+  (resident 81,076 B, firmware unchanged: `orpheus-books` is not in it);
+  `cargo xtask size --check`: within budgets. Not run: `xtask test all`'s
+  cargo-fuzz runs (nightly; the corpora replay on stable), brand, site,
+  check-resident, stack, `dev hil smoke` (no firmware change, no
+  hardware).
 
 ### 2026-11-26 — games-io and BOOK-1 merged; games during music clean (lead)
 

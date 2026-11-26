@@ -21,6 +21,7 @@
 use orpheus_fs::{BlockDevice, DirCursor, DirEntry, File, OpenMode, Volume};
 
 use crate::convert::{Converter, Format, MetaReader};
+use crate::epub::{Epub, Step, Store, Table};
 use crate::fb2::MetaText;
 use crate::files::{
     self, BOOKS_DIR, BookState, Bookmark, CACHE_DIR, INDEX_ENTRY, INDEX_HEADER, IndexHeader, LIB_HEADER,
@@ -230,6 +231,10 @@ pub struct Book {
     src_stamp: u32,
     /// Conversion progress, per mille of the file.
     pub permille: u16,
+    /// An EPUB's conversion waits for the scratch ([`Shelf::step_with`]).
+    pub waiting: bool,
+    /// The book's language tag (EPUB), its first bytes.
+    pub lang: [u8; 4],
     pub text_len: u32,
     pub toc_count: u32,
     /// Position and bookmarks.
@@ -277,6 +282,8 @@ impl Default for Book {
             src_size: 0,
             src_stamp: 0,
             permille: 0,
+            waiting: false,
+            lang: [0; 4],
             text_len: 0,
             toc_count: 0,
             state: BookState::default(),
@@ -376,6 +383,30 @@ impl Book {
     }
 }
 
+/// The card work of the moment ends (done, failed or given up): the
+/// files it still holds become orphans.
+fn drop_work(work: &mut Work, orphans: &mut [Option<File>; 5]) {
+    match core::mem::replace(work, Work::Idle) {
+        Work::Convert(j) => {
+            for f in [j.norm, j.toc].into_iter().chain(j.tables) {
+                orphan(orphans, f);
+            }
+        }
+        Work::Layout(j) => orphan(orphans, Some(j.idx)),
+        Work::Scan(j) => orphan(orphans, j.lib),
+        Work::Idle => {}
+    }
+}
+
+/// `f` (if any) to the orphans (dropped if they are all taken).
+fn orphan(orphans: &mut [Option<File>; 5], f: Option<File>) {
+    if let Some(f) = f
+        && let Some(slot) = orphans.iter_mut().find(|o| o.is_none())
+    {
+        *slot = Some(f);
+    }
+}
+
 fn permille(a: u32, b: u32) -> u16 {
     if b == 0 { 0 } else { u16::try_from(u64::from(a) * 1000 / u64::from(b)).unwrap_or(1000).min(1000) }
 }
@@ -396,6 +427,16 @@ impl SaveRec {
     }
 }
 
+/// How a candidate's title and author are read.
+#[allow(clippy::large_enum_variant)]
+enum Head {
+    /// From its first bytes.
+    Plain(MetaReader),
+    /// From its package document (BOOK-2; needs the scratch for a
+    /// deflated one, else the file name stays the title).
+    Epub(Epub),
+}
+
 /// The search of the library: a stack of folder cursors and the record
 /// being made.
 struct ScanJob {
@@ -407,8 +448,58 @@ struct ScanJob {
     count: u16,
     keys: [u32; MAX_BOOKS],
     /// A candidate's head being read.
-    meta: Option<(MetaReader, File, LibRecord)>,
+    meta: Option<(Head, File, LibRecord)>,
     started: bool,
+}
+
+/// A sink for nothing (the library's EPUB reader writes no text).
+struct Discard;
+
+impl Sink for Discard {
+    fn put(&mut self, _: &[u8]) {}
+}
+
+/// The card as the EPUB job sees it: the book, its scratch tables and its
+/// contents file.
+struct VolStore<'a, 'v, D: BlockDevice> {
+    vol: &'a mut Volume<'v, D>,
+    src: &'a mut File,
+    tables: Option<&'a mut [Option<File>; 3]>,
+    toc: Option<&'a mut File>,
+}
+
+impl<D: BlockDevice> Store for VolStore<'_, '_, D> {
+    async fn read(&mut self, at: u32, buf: &mut [u8]) -> usize {
+        self.src.set_position(u64::from(at));
+        self.vol.read_exact_or_eof(self.src, buf).await.unwrap_or(0)
+    }
+
+    async fn get(&mut self, t: Table, at: u32, buf: &mut [u8]) -> bool {
+        let vol = &mut *self.vol;
+        let Some(f) = (match t {
+            Table::Toc => self.toc.as_deref_mut(),
+            _ => self.tables.as_deref_mut().and_then(|ts| ts.get_mut(t as usize)).and_then(Option::as_mut),
+        }) else {
+            return false;
+        };
+        if u64::from(at) + buf.len() as u64 > f.size() {
+            return false;
+        }
+        f.set_position(u64::from(at));
+        vol.read_exact_or_eof(f, buf).await.is_ok_and(|n| n == buf.len())
+    }
+
+    async fn put(&mut self, t: Table, at: u32, data: &[u8]) -> bool {
+        let vol = &mut *self.vol;
+        let Some(f) = (match t {
+            Table::Toc => self.toc.as_deref_mut(),
+            _ => self.tables.as_deref_mut().and_then(|ts| ts.get_mut(t as usize)).and_then(Option::as_mut),
+        }) else {
+            return false;
+        };
+        f.set_position(u64::from(at));
+        vol.write(f, data).await.is_ok()
+    }
 }
 
 /// Bytes the converter's output buffer holds.
@@ -431,8 +522,17 @@ impl Sink for OutBuf {
     }
 }
 
+/// What converts the book.
+#[allow(clippy::large_enum_variant)]
+enum Parse {
+    /// Not started (the cache files are made first).
+    None,
+    Plain(Converter),
+    Epub(Epub),
+}
+
 struct ConvJob {
-    c: Option<Converter>,
+    c: Parse,
     src: File,
     read: u32,
     inbuf: [u8; 512],
@@ -441,6 +541,8 @@ struct ConvJob {
     out: OutBuf,
     norm: Option<File>,
     toc: Option<File>,
+    /// EPUB: the job's scratch tables ([`files::EPUB_TABLES`]).
+    tables: [Option<File>; 3],
     toc_n: u32,
     eof: bool,
 }
@@ -504,6 +606,13 @@ pub struct Shelf {
     /// Dirty sectors to write back, one per step.
     flush: bool,
     close: bool,
+    /// An EPUB's package named its title and author: its library record
+    /// to rewrite (a step of its own).
+    retitle: Option<(u16, MetaText<64>, MetaText<48>)>,
+    /// Files a job wrote and left (given up, or the EPUB job's tables):
+    /// their entries are written, one per step, before other work (so no
+    /// cluster is lost and a file is not opened again before).
+    orphans: [Option<File>; 5],
     /// Step count (tests).
     pub steps: u32,
 }
@@ -531,6 +640,8 @@ impl Shelf {
             dirs: 0,
             flush: false,
             close: false,
+            retitle: None,
+            orphans: [None, None, None, None, None],
             steps: 0,
         }
     }
@@ -575,7 +686,7 @@ impl Shelf {
                     self.params = Some(p);
                     if relayout && b.phase == Phase::Ready {
                         if matches!(self.work, Work::Layout(_)) {
-                            self.work = Work::Idle;
+                            drop_work(&mut self.work, &mut self.orphans);
                         }
                         b.complete = false;
                         b.pages = 0;
@@ -659,17 +770,51 @@ impl Shelf {
         self.idx = None;
         self.tocf = None;
         if matches!(self.work, Work::Convert(_) | Work::Layout(_)) {
-            self.work = Work::Idle;
+            drop_work(&mut self.work, &mut self.orphans);
         }
     }
 
     /// One piece of card work. True if the model changed (the screens
-    /// look again).
+    /// look again). Without the scratch: an EPUB waits for it
+    /// ([`Shelf::step_with`]).
     pub async fn step<D: BlockDevice>(&mut self, vol: &mut Volume<'_, D>, m: &dyn Metrics) -> bool {
+        self.step_with(vol, m, None).await
+    }
+
+    /// Card work wants the scratch ([`crate::inflate::SCRATCH`] bytes):
+    /// an EPUB being converted or its title read. Lend it, unchanged,
+    /// to every step while this says so (the decoder arena when no track
+    /// is loaded, 05 §7.15); a conversion that loses it in the middle of
+    /// an entry starts again, a title read falls back to the file name.
+    #[must_use]
+    pub fn needs_scratch(&self) -> bool {
+        match &self.work {
+            Work::Convert(_) => self.book.format == Format::Epub,
+            Work::Scan(j) => matches!(j.meta, Some((Head::Epub(_), ..))),
+            _ => false,
+        }
+    }
+
+    /// [`Shelf::step`] with the scratch lent (EPUB: the inflate window and
+    /// tables).
+    pub async fn step_with<D: BlockDevice>(
+        &mut self,
+        vol: &mut Volume<'_, D>,
+        m: &dyn Metrics,
+        scratch: Option<&mut [u8]>,
+    ) -> bool {
         self.steps = self.steps.wrapping_add(1);
         // 0. Write-back of what the last job left in the sector cache.
         if self.flush {
             self.flush = !matches!(vol.flush_step().await, Ok(true) | Err(_));
+            return true;
+        }
+        // Entries of files a job left.
+        if let Some(k) = self.orphans.iter().position(Option::is_some) {
+            if let Some(mut f) = self.orphans[k].take() {
+                let _ = vol.write_entry(&mut f).await;
+            }
+            self.flush = true;
             return true;
         }
         // Folders a job needs, one per step.
@@ -689,6 +834,16 @@ impl Shelf {
             self.save_state(vol, &rec).await;
             return true;
         }
+        if let Some((rec, title, author)) = self.retitle.take() {
+            if let Ok(mut lf) = vol.open(LIBRARY_PATH, OpenMode::ReadWrite).await {
+                lf.set_position(files::lib_record_at(rec) + files::LIB_NAMES_AT as u64);
+                if vol.write(&mut lf, &files::encode_names(&title, &author)).await.is_ok() {
+                    let _ = vol.close(lf).await;
+                }
+            }
+            self.flush = true;
+            return true;
+        }
         if self.close {
             self.close = false;
             self.close_now();
@@ -706,7 +861,7 @@ impl Shelf {
             return true;
         }
         if let Work::Scan(_) = self.work {
-            return self.scan_step(vol).await;
+            return self.scan_step(vol, scratch).await;
         }
         if self.lib.phase == LibPhase::Loading {
             self.load_library(vol).await;
@@ -723,7 +878,7 @@ impl Shelf {
             return true;
         }
         if let Work::Convert(_) = self.work {
-            return self.convert_step(vol).await;
+            return self.convert_step(vol, scratch).await;
         }
         if self.book.phase != Phase::Ready {
             return false;
@@ -812,17 +967,21 @@ impl Shelf {
     fn needs_dirs(&self) -> bool {
         self.save.is_some()
             || matches!(&self.work, Work::Scan(j) if !j.started)
-            || matches!(&self.work, Work::Convert(j) if j.c.is_none())
+            || matches!(&self.work, Work::Convert(j) if matches!(j.c, Parse::None))
             || (self.book.phase == Phase::Ready && !self.book.complete && self.layout().is_none())
     }
 
-    async fn scan_step<D: BlockDevice>(&mut self, vol: &mut Volume<'_, D>) -> bool {
+    async fn scan_step<D: BlockDevice>(
+        &mut self,
+        vol: &mut Volume<'_, D>,
+        scratch: Option<&mut [u8]>,
+    ) -> bool {
         let scope = self.lib.scope;
         let Work::Scan(job) = &mut self.work else { return false };
         if !job.started {
             job.started = true;
             let Ok(mut f) = vol.open(LIBRARY_PATH, OpenMode::Truncate).await else {
-                self.work = Work::Idle;
+                drop_work(&mut self.work, &mut self.orphans);
                 self.lib.phase = LibPhase::Ready;
                 return true;
             };
@@ -843,11 +1002,11 @@ impl Shelf {
             return true;
         }
         if job.meta.is_some() {
-            return Self::meta_step(job, vol, &mut self.lib).await;
+            return Self::meta_step(job, vol, &mut self.lib, scratch).await;
         }
         if job.depth == 0 || usize::from(job.count) >= MAX_BOOKS {
             Self::finish_scan(job, vol, &mut self.lib, scope).await;
-            self.work = Work::Idle;
+            drop_work(&mut self.work, &mut self.orphans);
             self.flush = true;
             return true;
         }
@@ -906,35 +1065,59 @@ impl Shelf {
             let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
             rec.title.push_str(stem);
             if let Ok(f) = vol.open_entry(&job.entry) {
-                job.meta = Some((MetaReader::new(format, &[], false), f, rec));
+                let head = if format == Format::Epub {
+                    Head::Epub(Epub::library(rec.size))
+                } else {
+                    Head::Plain(MetaReader::new(format, &[], false))
+                };
+                job.meta = Some((head, f, rec));
                 return true;
             }
         }
         true
     }
 
-    /// One read of a candidate's head; at the end its record is written.
+    /// One read of a candidate's head (an EPUB: one step of its package
+    /// reader); at the end its record is written.
     async fn meta_step<D: BlockDevice>(
         job: &mut ScanJob,
         vol: &mut Volume<'_, D>,
         lib: &mut Library,
+        scratch: Option<&mut [u8]>,
     ) -> bool {
-        let Some((mut reader, mut f, mut rec)) = job.meta.take() else { return false };
-        let mut buf = [0u8; 512];
-        let n = vol.read(&mut f, &mut buf).await.unwrap_or(0);
-        if reader.fed == 0 {
-            reader = MetaReader::new(rec.format, &buf[..n], n < buf.len());
+        let Some((head, mut f, mut rec)) = job.meta.take() else { return false };
+        let (title, author) = match head {
+            Head::Plain(mut reader) => {
+                let mut buf = [0u8; 512];
+                let n = vol.read(&mut f, &mut buf).await.unwrap_or(0);
+                if reader.fed == 0 {
+                    reader = MetaReader::new(rec.format, &buf[..n], n < buf.len());
+                }
+                reader.feed(&buf[..n]);
+                if n == buf.len() && reader.wants_more() {
+                    job.meta = Some((Head::Plain(reader), f, rec));
+                    return true;
+                }
+                let meta = reader.finish();
+                (meta.title, meta.author)
+            }
+            Head::Epub(mut e) => {
+                let mut st = VolStore { vol, src: &mut f, tables: None, toc: None };
+                match e.step(&mut st, scratch, &mut Discard).await {
+                    Step::Busy => {
+                        job.meta = Some((Head::Epub(e), f, rec));
+                        return true;
+                    }
+                    Step::Done => (e.metadata().title, e.metadata().author),
+                    // Refused, or no scratch now: the file name.
+                    _ => (MetaText::default(), MetaText::default()),
+                }
+            }
+        };
+        if !title.is_empty() {
+            rec.title = title;
         }
-        reader.feed(&buf[..n]);
-        if n == buf.len() && reader.wants_more() {
-            job.meta = Some((reader, f, rec));
-            return true;
-        }
-        let meta = reader.finish();
-        if !meta.title.is_empty() {
-            rec.title = meta.title;
-        }
-        rec.author = meta.author;
+        rec.author = author;
         if let Some(lf) = job.lib.as_mut() {
             lf.set_position(files::lib_record_at(job.count));
             if vol.write(lf, &rec.encode()).await.is_ok() {
@@ -1032,6 +1215,7 @@ impl Shelf {
         };
         match cached {
             Some((h, f)) => {
+                b.lang = h.lang;
                 self.norm = Some(f);
                 self.tocf = vol.open(self.path.file(CACHE_DIR, b.id, "toc"), OpenMode::Read).await.ok();
                 Self::ready(b, h.text_len, h.toc_count);
@@ -1041,7 +1225,7 @@ impl Shelf {
                 b.phase = Phase::Converting;
                 b.permille = 0;
                 self.work = Work::Convert(ConvJob {
-                    c: None,
+                    c: Parse::None,
                     src,
                     read: 0,
                     inbuf: [0; 512],
@@ -1050,6 +1234,7 @@ impl Shelf {
                     out: OutBuf { b: [0; OUT], n: 0 },
                     norm: None,
                     toc: None,
+                    tables: [None, None, None],
                     toc_n: 0,
                     eof: false,
                 });
@@ -1070,29 +1255,42 @@ impl Shelf {
         b.laid = 0;
     }
 
-    async fn convert_step<D: BlockDevice>(&mut self, vol: &mut Volume<'_, D>) -> bool {
+    async fn convert_step<D: BlockDevice>(
+        &mut self,
+        vol: &mut Volume<'_, D>,
+        scratch: Option<&mut [u8]>,
+    ) -> bool {
         let Work::Convert(job) = &mut self.work else { return false };
         let b = &mut self.book;
-        if job.c.is_none() {
-            // The head: the encoding and (plain text) the line style.
-            let n = vol.read(&mut job.src, &mut job.inbuf).await.unwrap_or(0);
-            job.in_n = n;
-            job.in_at = 0;
-            job.read = n as u32;
-            job.eof = n < job.inbuf.len();
-            job.c = Some(Converter::new(b.format, &job.inbuf[..n], job.eof));
+        if matches!(job.c, Parse::Epub(_)) {
+            return self.epub_step(vol, scratch).await;
+        }
+        if matches!(job.c, Parse::None) {
+            if b.format == Format::Epub {
+                job.c = Parse::Epub(Epub::new(b.src_size));
+                job.tables = [None, None, None];
+                job.out.n = 0;
+            } else {
+                // The head: the encoding and (plain text) the line style.
+                let n = vol.read(&mut job.src, &mut job.inbuf).await.unwrap_or(0);
+                job.in_n = n;
+                job.in_at = 0;
+                job.read = n as u32;
+                job.eof = n < job.inbuf.len();
+                job.c = Parse::Plain(Converter::new(b.format, &job.inbuf[..n], job.eof));
+            }
             job.norm = vol.open(self.path.file(CACHE_DIR, b.id, "txt"), OpenMode::Truncate).await.ok();
             job.toc = vol.open(self.path.file(CACHE_DIR, b.id, "toc"), OpenMode::Truncate).await.ok();
             let (Some(norm), Some(_)) = (job.norm.as_mut(), job.toc.as_ref()) else {
                 b.phase = Phase::Failed;
-                self.work = Work::Idle;
+                drop_work(&mut self.work, &mut self.orphans);
                 return true;
             };
             // The header is written last (complete): zeros until then.
             let _ = vol.write(norm, &[0u8; NORM_HEADER]).await;
             return true;
         }
-        let Some(c) = job.c.as_mut() else { return false };
+        let Parse::Plain(c) = &mut job.c else { return false };
         // Feed until the input piece is used or the output must be written.
         while job.in_at < job.in_n && job.out.n < 512 {
             let used = c.feed(&job.inbuf[job.in_at..job.in_n], &mut job.out);
@@ -1140,7 +1338,7 @@ impl Shelf {
         let enc = c.encoding() as u8;
         let (Some(mut nf), Some(mut tf)) = (job.norm.take(), job.toc.take()) else {
             b.phase = Phase::Failed;
-            self.work = Work::Idle;
+            drop_work(&mut self.work, &mut self.orphans);
             return true;
         };
         let _ = vol.write(&mut nf, &job.out.b[..job.out.n]).await;
@@ -1152,6 +1350,7 @@ impl Shelf {
             src_stamp: b.src_stamp,
             text_len,
             toc_count: job.toc_n,
+            lang: [0; 4],
         };
         nf.set_position(0);
         let _ = vol.write(&mut nf, &h.encode()).await;
@@ -1161,9 +1360,111 @@ impl Shelf {
         self.norm = Some(nf);
         self.tocf = Some(tf);
         let toc_n = job.toc_n;
-        self.work = Work::Idle;
+        drop_work(&mut self.work, &mut self.orphans);
         Self::ready(b, text_len, toc_n);
         true
+    }
+
+    /// One piece of an EPUB's conversion ([`crate::epub`]): its scratch
+    /// tables made (one per step), the text written 512 bytes at a time,
+    /// else one step of the job.
+    async fn epub_step<D: BlockDevice>(
+        &mut self,
+        vol: &mut Volume<'_, D>,
+        scratch: Option<&mut [u8]>,
+    ) -> bool {
+        let Work::Convert(job) = &mut self.work else { return false };
+        let b = &mut self.book;
+        let Parse::Epub(e) = &mut job.c else { return false };
+        if let Some(k) = job.tables.iter().position(Option::is_none) {
+            job.tables[k] = vol.open(files::EPUB_TABLES[k], OpenMode::Truncate).await.ok();
+            if job.tables[k].is_none() {
+                b.phase = Phase::Failed;
+                drop_work(&mut self.work, &mut self.orphans);
+            }
+            return true;
+        }
+        if job.out.n >= 512 {
+            if let Some(nf) = job.norm.as_mut() {
+                let _ = vol.write(nf, &job.out.b[..512]).await;
+            }
+            job.out.b.copy_within(512..job.out.n, 0);
+            job.out.n -= 512;
+            return true;
+        }
+        let Some(toc) = job.toc.as_mut() else { return false };
+        let mut st = VolStore { vol, src: &mut job.src, tables: Some(&mut job.tables), toc: Some(toc) };
+        let r = e.step(&mut st, scratch, &mut job.out).await;
+        b.permille = e.permille();
+        b.waiting = r == Step::NeedScratch;
+        match r {
+            Step::Busy => true,
+            // Nothing to do until the scratch is lent.
+            Step::NeedScratch => false,
+            Step::Lost => {
+                // Taken away in the middle of an entry: from the start.
+                for f in [job.norm.take(), job.toc.take()]
+                    .into_iter()
+                    .chain(job.tables.iter_mut().map(Option::take))
+                {
+                    orphan(&mut self.orphans, f);
+                }
+                job.c = Parse::None;
+                job.out.n = 0;
+                true
+            }
+            Step::Failed(_) => {
+                b.phase = Phase::Failed;
+                drop_work(&mut self.work, &mut self.orphans);
+                true
+            }
+            Step::Done => {
+                let (text_len, toc_n, meta) = (e.text_len(), e.toc_n, *e.metadata());
+                let (Some(mut nf), Some(mut tf)) = (job.norm.take(), job.toc.take()) else {
+                    b.phase = Phase::Failed;
+                    drop_work(&mut self.work, &mut self.orphans);
+                    return true;
+                };
+                let _ = vol.write(&mut nf, &job.out.b[..job.out.n]).await;
+                let mut lang = [0u8; 4];
+                let l = meta.language.as_str().as_bytes();
+                lang[..l.len().min(4)].copy_from_slice(&l[..l.len().min(4)]);
+                let h = NormHeader {
+                    format: Format::Epub as u8,
+                    encoding: 0,
+                    complete: true,
+                    src_size: b.src_size,
+                    src_stamp: b.src_stamp,
+                    text_len,
+                    toc_count: toc_n,
+                    lang,
+                };
+                nf.set_position(0);
+                let _ = vol.write(&mut nf, &h.encode()).await;
+                let _ = vol.write_entry(&mut nf).await;
+                let _ = vol.write_entry(&mut tf).await;
+                // The package's title and author in the library (the
+                // search may have had only the file name), next step.
+                if !meta.title.is_empty() {
+                    self.retitle = Some((b.rec, meta.title, meta.author));
+                    b.title = meta.title;
+                    if let Some(k) = b.row.checked_sub(self.lib.first)
+                        && k < u16::from(self.lib.loaded)
+                        && let Some(row) = self.lib.rows.get_mut(usize::from(k))
+                    {
+                        row.title = meta.title;
+                        row.author = meta.author;
+                    }
+                }
+                b.lang = lang;
+                self.flush = true;
+                self.norm = Some(nf);
+                self.tocf = Some(tf);
+                drop_work(&mut self.work, &mut self.orphans);
+                Self::ready(b, text_len, toc_n);
+                true
+            }
+        }
     }
 
     // ----- reading ------------------------------------------------------
@@ -1415,7 +1716,7 @@ impl Shelf {
         let b = &mut self.book;
         let key = p.key();
         if layout_of(&self.work).is_some_and(|j| j.key != key) {
-            self.work = Work::Idle;
+            drop_work(&mut self.work, &mut self.orphans);
         }
         let Work::Layout(job) = &mut self.work else {
             // An index made with these parameters?

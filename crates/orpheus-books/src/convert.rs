@@ -2,13 +2,14 @@
 //! detection from the head, the format's parser, the [`Writer`]; and the
 //! library's title and author from a file's head ([`MetaReader`]).
 
-use crate::enc::{Decoder, Encoding, detect};
+use crate::enc::{Decoder, Encoding, bom, detect, xml_declared};
 use crate::fb2::{Fb2, MetaText};
 use crate::md::Md;
-use crate::norm::{Emit, Events, Kind, Sink, TocEntry, Writer};
+use crate::norm::{Emit, Events, ITALIC, Kind, Sink, TocEntry, Writer};
 use crate::txt::{self, Txt};
+use crate::xhtml::Xhtml;
 
-/// The book formats of BOOK-1 (EPUB is BOOK-2).
+/// The book formats (BOOK-1; EPUB BOOK-2).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[repr(u8)]
 pub enum Format {
@@ -16,6 +17,7 @@ pub enum Format {
     Txt = 0,
     Md = 1,
     Fb2 = 2,
+    Epub = 3,
 }
 
 impl Format {
@@ -30,6 +32,8 @@ impl Format {
             Some(Format::Md)
         } else if is("fb2") {
             Some(Format::Fb2)
+        } else if is("epub") {
+            Some(Format::Epub)
         } else {
             None
         }
@@ -40,6 +44,7 @@ impl Format {
         match v {
             1 => Format::Md,
             2 => Format::Fb2,
+            3 => Format::Epub,
             _ => Format::Txt,
         }
     }
@@ -50,6 +55,7 @@ enum Parser {
     Txt(Txt),
     Md(Md),
     Fb2(Fb2),
+    Xhtml(Xhtml),
 }
 
 impl Parser {
@@ -58,6 +64,7 @@ impl Parser {
             Parser::Txt(p) => p.char(c, ev),
             Parser::Md(p) => p.char(c, ev),
             Parser::Fb2(p) => p.char(c, ev),
+            Parser::Xhtml(p) => p.char(c, ev),
         }
     }
 
@@ -66,6 +73,7 @@ impl Parser {
             Parser::Txt(p) => p.finish(ev),
             Parser::Md(p) => p.finish(ev),
             Parser::Fb2(p) => p.finish(ev),
+            Parser::Xhtml(p) => p.finish(ev),
         }
     }
 }
@@ -75,7 +83,117 @@ impl Parser {
 /// 48 characters, a paragraph and a style byte, a list number).
 pub const ROOM: usize = 256;
 
-/// The converter's state (≈ 400 bytes; the FB2 parser is the largest).
+/// Contents entries a part's anchors may resolve at once (EPUB).
+pub const WATCH: usize = 16;
+
+/// EPUB contents entries waiting for the anchor (an element's id) they
+/// point at in the part being converted: the first one found gives the
+/// entry its offset ([`Watch::take_hit`]).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Watch {
+    /// (fragment hash, contents entry), in contents order.
+    slots: [(u32, u32); WATCH],
+    n: u8,
+    hit: Option<(u32, u32)>,
+    last: Option<(u32, u32)>,
+}
+
+impl Watch {
+    pub fn clear(&mut self) {
+        *self = Watch::default();
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        usize::from(self.n)
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.n == 0
+    }
+
+    /// Watch for `frag` on behalf of contents entry `toc`; false if full.
+    pub fn add(&mut self, frag: u32, toc: u32) -> bool {
+        let Some(s) = self.slots.get_mut(usize::from(self.n)) else { return false };
+        *s = (frag, toc);
+        self.n += 1;
+        true
+    }
+
+    fn anchor(&mut self, id: u32, at: u32) {
+        if self.hit.is_none() {
+            self.last = Some((id, at));
+            self.find();
+        }
+    }
+
+    fn find(&mut self) {
+        let Some((id, at)) = self.last else { return };
+        let n = usize::from(self.n);
+        match self.slots[..n].iter().position(|s| s.0 == id) {
+            Some(k) => {
+                self.hit = Some((self.slots[k].1, at));
+                self.slots.copy_within(k + 1..n, k);
+                self.n -= 1;
+            }
+            None => self.last = None,
+        }
+    }
+
+    /// A resolved entry: (contents entry, offset). Others watching the
+    /// same anchor follow on the next calls.
+    pub fn take_hit(&mut self) -> Option<(u32, u32)> {
+        let h = self.hit.take();
+        if h.is_some() {
+            self.find();
+        }
+        h
+    }
+
+    /// An entry still watched (its anchor not found), taken out.
+    pub fn pop_unresolved(&mut self) -> Option<u32> {
+        if self.n == 0 {
+            return None;
+        }
+        let toc = self.slots[0].1;
+        self.slots.copy_within(1..usize::from(self.n), 0);
+        self.n -= 1;
+        Some(toc)
+    }
+}
+
+/// The parser's events with anchors told to the watch (if any).
+struct Watched<'a> {
+    e: Emit<'a>,
+    watch: Option<&'a mut Watch>,
+}
+
+impl Events for Watched<'_> {
+    fn para(&mut self, kind: Kind) {
+        self.e.para(kind);
+    }
+    fn end_para(&mut self) {
+        self.e.end_para();
+    }
+    fn style(&mut self, flags: u8) {
+        self.e.style(flags);
+    }
+    fn text(&mut self, c: char) {
+        self.e.text(c);
+    }
+    fn title(&mut self, open: bool) {
+        self.e.title(open);
+    }
+    fn anchor(&mut self, id: u32) {
+        let at = self.e.w.anchor_at();
+        if let Some(w) = self.watch.as_deref_mut() {
+            w.anchor(id, at);
+        }
+    }
+}
+
+/// The converter's state (≈ 400 bytes; the XHTML parser is the largest).
 #[derive(Clone, Copy, Debug)]
 pub struct Converter {
     dec: Decoder,
@@ -83,6 +201,9 @@ pub struct Converter {
     w: Writer,
     /// Bytes of a byte-order mark still to skip.
     skip: u8,
+    /// The part's encoding was named (a byte-order mark, the XML
+    /// declaration): a `<meta>` does not change it.
+    named: bool,
     pub format: Format,
 }
 
@@ -113,14 +234,61 @@ impl Converter {
             }
             Format::Md => Parser::Md(Md::new()),
             Format::Fb2 => Parser::Fb2(Fb2::new()),
+            Format::Epub => Parser::Xhtml(Xhtml::new()),
         };
         Converter {
             dec: Decoder::new(enc),
             parser,
             w: Writer::new(),
             skip: u8::try_from(bom).unwrap_or(0),
+            named: true,
             format,
         }
+    }
+
+    /// EPUB: the next content document starts (`head`: its first bytes;
+    /// the whole of it if `complete`). The writer goes on: one stream.
+    pub fn begin_part(&mut self, head: &[u8], complete: bool) {
+        let (enc, mark) = detect(head, complete);
+        self.dec = Decoder::new(enc);
+        self.skip = u8::try_from(mark).unwrap_or(0);
+        self.named = bom(head).is_some()
+            || xml_declared(head).is_some()
+            || matches!(enc, Encoding::Utf16Le | Encoding::Utf16Be);
+        // The watch was loaded for this part before its first bytes.
+        self.parser = Parser::Xhtml(Xhtml::new());
+    }
+
+    /// EPUB: the content document ends (the sink needs [`ROOM`] bytes
+    /// free).
+    pub fn end_part(&mut self, out: &mut dyn Sink) {
+        let (dec, parser, w) = (&mut self.dec, &mut self.parser, &mut self.w);
+        let mut ev = Watched { e: Emit { w, out }, watch: None };
+        dec.finish(&mut |c| parser.char(c, &mut ev));
+        parser.finish(&mut ev);
+        ev.end_para();
+    }
+
+    /// A paragraph of its own in italics (EPUB: `[damaged]` where a part
+    /// could not be read); the sink needs [`ROOM`] bytes free.
+    pub fn note(&mut self, text: &str, out: &mut dyn Sink) {
+        self.w.para(out, Kind::Body);
+        self.w.style(ITALIC);
+        for c in text.chars() {
+            self.w.text(out, c);
+        }
+        self.w.end_para(out);
+    }
+
+    /// Headings make contents entries (on unless the book has its own).
+    pub fn headings(&mut self, on: bool) {
+        self.w.collect = on;
+    }
+
+    /// Where an anchor here points (EPUB: a part's start).
+    #[must_use]
+    pub fn anchor_at(&self) -> u32 {
+        self.w.anchor_at()
     }
 
     #[must_use]
@@ -138,9 +306,15 @@ impl Converter {
     /// has less than [`ROOM`] bytes free or a contents entry waits for
     /// [`Converter::take_toc`].
     pub fn feed(&mut self, input: &[u8], out: &mut dyn Sink) -> usize {
+        self.feed_watched(input, out, None)
+    }
+
+    /// [`Converter::feed`], anchors told to `watch` (EPUB): stops early
+    /// when one resolves an entry ([`Watch::take_hit`]).
+    pub fn feed_watched(&mut self, input: &[u8], out: &mut dyn Sink, mut watch: Option<&mut Watch>) -> usize {
         let mut used = 0;
         for &b in input {
-            if out.room() < ROOM || self.w.done.is_some() {
+            if out.room() < ROOM || self.w.done.is_some() || watch.as_ref().is_some_and(|w| w.hit.is_some()) {
                 break;
             }
             used += 1;
@@ -149,8 +323,16 @@ impl Converter {
                 continue;
             }
             let (dec, parser, w) = (&mut self.dec, &mut self.parser, &mut self.w);
-            let mut ev = Emit { w, out: &mut *out };
+            let mut ev = Watched { e: Emit { w, out: &mut *out }, watch: watch.as_deref_mut() };
             dec.feed(&[b], &mut |c| parser.char(c, &mut ev));
+            if let Parser::Xhtml(x) = parser
+                && let Some(e) = x.take_charset()
+                && !self.named
+            {
+                // `<meta charset>`: the bytes after the tag in its encoding.
+                self.dec = Decoder::new(e);
+                self.named = true;
+            }
         }
         used
     }
@@ -238,7 +420,9 @@ impl MetaReader {
     /// Whether more of the file could still tell more.
     #[must_use]
     pub fn wants_more(&self) -> bool {
-        (self.fed as usize) < META_HEAD
+        // EPUB's title is in its package document ([`crate::epub`]).
+        self.format != Format::Epub
+            && (self.fed as usize) < META_HEAD
             && (self.front == 1
                 || self.meta.title.is_empty()
                 || (self.format != Format::Md && self.meta.author.is_empty()))
@@ -272,8 +456,7 @@ impl MetaReader {
             self.line_done();
         }
         if self.format == Format::Fb2 {
-            self.meta.title = self.fb2.title;
-            self.meta.author = self.fb2.author;
+            (self.meta.title, self.meta.author) = self.fb2.meta();
         }
         self.meta
     }
@@ -281,6 +464,9 @@ impl MetaReader {
     fn char(&mut self, c: char) {
         if self.format == Format::Fb2 {
             self.fb2.char(c, &mut Nothing);
+            return;
+        }
+        if self.format == Format::Epub {
             return;
         }
         if c == '\n' || c == '\r' {
@@ -422,7 +608,8 @@ mod tests {
         assert_eq!(Format::from_name("a.TXT"), Some(Format::Txt));
         assert_eq!(Format::from_name("b.markdown"), Some(Format::Md));
         assert_eq!(Format::from_name("War.fb2"), Some(Format::Fb2));
-        assert_eq!(Format::from_name("x.epub"), None);
+        assert_eq!(Format::from_name("x.EPUB"), Some(Format::Epub));
+        assert_eq!(Format::from_u8(3), Format::Epub);
         assert_eq!(Format::from_name("noext"), None);
     }
 
@@ -454,5 +641,54 @@ mod tests {
         );
         assert_eq!(meta(Format::Md, b"Intro\n\n# The Heading\n"), ("The Heading".into(), String::new()));
         assert_eq!(meta(Format::Txt, b"just text"), (String::new(), String::new()));
+    }
+
+    /// BOOK-2, 2026-11-25: `begin_part` cleared the watch the EPUB job had
+    /// loaded for the part just before its first bytes: every contents
+    /// entry with a fragment pointed at its chapter's start instead of
+    /// its heading.
+    #[test]
+    fn regress_epub_watch_survives_part_start() {
+        let mut c = Converter::new(Format::Epub, &[], false);
+        c.headings(false);
+        let mut out = Vec::new();
+        let mut watch = Watch::default();
+        let page = b"<html><body><p>Intro.</p><h2 id=\"s2\">Two</h2><p>Text.</p></body></html>";
+        assert!(watch.add(crate::xml::hash32(b"s2"), 7));
+        c.begin_part(page, true);
+        let mut at = 0;
+        let mut hit = None;
+        while at < page.len() {
+            at += c.feed_watched(&page[at..], &mut out, Some(&mut watch));
+            hit = hit.or(watch.take_hit());
+        }
+        c.end_part(&mut out);
+        assert_eq!(show(&out), "¶0Intro.¶2Two¶0Text.");
+        assert_eq!(hit, Some((7, 7)), "entry 7 at the heading's paragraph byte");
+    }
+
+    /// A `<meta>` charset switches the decoder after the tag when nothing
+    /// named the encoding before; a byte-order mark or the XML
+    /// declaration wins.
+    #[test]
+    fn meta_charset_switch() {
+        let run = |page: &[u8]| {
+            let mut c = Converter::new(Format::Epub, &[], false);
+            let mut out = Vec::new();
+            c.begin_part(page, true);
+            let mut at = 0;
+            while at < page.len() {
+                at += c.feed(&page[at..], &mut out);
+            }
+            c.end_part(&mut out);
+            show(&out)
+        };
+        let mut p = b"<head><meta charset=\"windows-1251\"/></head><body><p>".to_vec();
+        p.extend_from_slice(&[0xCC, 0xE8, 0xF0]);
+        p.extend_from_slice(b"</p></body>");
+        assert_eq!(run(&p), "¶0Мир");
+        let mut q = b"<?xml version=\"1.0\" encoding=\"iso-8859-1\"?>".to_vec();
+        q.extend_from_slice(&p);
+        assert_eq!(run(&q), "¶0Ìèð");
     }
 }

@@ -1,4 +1,4 @@
-//! M15 Books (BOOK-1): the Books app over the simulator's card
+//! M15 Books (BOOK-1, BOOK-2): the Books app over the simulator's card
 //! (`sim/src/books.rs`, the books of `sim/src/card.rs`): the library,
 //! reading every page through the reader's keys, position and bookmarks
 //! across a restart, a re-layout keeping the position, the card work in
@@ -26,7 +26,8 @@ fn sim(script: &str) -> AppSim {
 const LIB: &str = "set:books=on goto:Books wait:50 expect-screen:Books";
 
 /// Open the book of library row `row` (by title: Alice, A Tale of Two
-/// Cities, Moby-Dick, Война и мир, Пиковая дама, 枕草子).
+/// Cities, Moby-Dick, The Lighthouse Keeper (EPUB), Война и мир, Пиковая
+/// дама, 枕草子).
 fn open(row: usize) -> String {
     format!("{LIB} down*{row} ok wait:50 expect-screen:Reader")
 }
@@ -47,6 +48,7 @@ fn library_lists_the_books_folder_by_title() {
             "Alice's Adventures in Wonderland",
             "A Tale of Two Cities",
             "Moby-Dick; or, The Whale",
+            "The Lighthouse Keeper",
             "Война и мир",
             "Пиковая дама",
             "枕草子"
@@ -54,8 +56,9 @@ fn library_lists_the_books_folder_by_title() {
     );
     assert_eq!(lib.row(0).unwrap().author.as_str(), "Lewis Carroll", "Markdown front matter");
     assert_eq!(lib.row(2).unwrap().author.as_str(), "Herman Melville", "UTF-16 Gutenberg header");
-    assert_eq!(lib.row(4).unwrap().author.as_str(), "Александр Пушкин", "FB2 in Windows-1251");
-    assert!((0..6).all(|i| lib.row(i).unwrap().progress == PROGRESS_NEW));
+    assert_eq!(lib.row(3).unwrap().author.as_str(), "Orpheus Project", "EPUB package document");
+    assert_eq!(lib.row(5).unwrap().author.as_str(), "Александр Пушкин", "FB2 in Windows-1251");
+    assert!((0..7).all(|i| lib.row(i).unwrap().progress == PROGRESS_NEW));
     // Lyrics.lrc, pictures and the rest of the card are not books.
 }
 
@@ -64,7 +67,7 @@ fn library_lists_the_books_folder_by_title() {
 /// Prev walks back to the first.
 #[test]
 fn every_page_by_next_and_back_by_prev() {
-    let mut s = sim(&open(4));
+    let mut s = sim(&open(5));
     let total = s.sys.books().book.pages;
     assert!(s.sys.books().book.complete && total > 3, "{total} pages");
     for k in 0..total {
@@ -105,7 +108,7 @@ fn position_and_bookmarks_survive_a_restart() {
 /// view's top is the same text, and its page in the new index holds it.
 #[test]
 fn relayout_keeps_the_position() {
-    let mut s = sim(&format!("{} next*6 wait:20 down down wait:20", open(3)));
+    let mut s = sim(&format!("{} next*6 wait:20 down down wait:20", open(4)));
     let top = s.sys.books().book.top;
     let pages = s.sys.books().book.pages;
     for size in 1..=3 {
@@ -122,7 +125,7 @@ fn relayout_keeps_the_position() {
 /// book is still being laid out.
 #[test]
 fn layout_in_steps_keeps_the_reader_answering() {
-    let mut s = sim(&format!("{LIB} set:booksteps=2 down*3 ok"));
+    let mut s = sim(&format!("{LIB} set:booksteps=2 down*4 ok"));
     for _ in 0..500 {
         let b = &s.sys.books().book;
         if b.phase == Phase::Ready && b.window().is_some() {
@@ -154,10 +157,11 @@ fn books_are_never_written() {
         "/Books/Война и мир.txt",
         "/Books/Пиковая дама.fb2",
         "/Books/枕草子.txt",
+        orpheus_sim::card::EPUB_PATH,
     ];
     let mut s = sim(LIB);
     let before: Vec<_> = names.iter().map(|n| read(&mut s.sys.media, n).unwrap()).collect();
-    for row in 0..6 {
+    for row in 0..7 {
         run(&mut s, &format!("down*{row} ok wait:50 next next menu ok wait:20 back wait:50 up*6"));
     }
     let after: Vec<_> = names.iter().map(|n| read(&mut s.sys.media, n).unwrap()).collect();
@@ -171,7 +175,52 @@ fn books_are_never_written() {
 fn find_books_in_from_the_menu() {
     let s = sim(&format!("{LIB} menu down ok down ok back back wait:50"));
     assert_eq!(s.sys.settings.get(orpheus_apps::books::id::FIND_IN), 1);
-    assert_eq!(titles(&s).len(), 8);
+    assert_eq!(titles(&s).len(), 9);
+}
+
+/// BOOK-2: the EPUB on the card. Its contents are the navigation
+/// document's (nested), each entry opens at its heading or anchor; every
+/// page by Next; the text of all three chapters, the image skipped.
+#[test]
+fn epub_contents_and_pages() {
+    let mut s = sim(&open(3));
+    let b = &s.sys.books().book;
+    assert_eq!(b.format, orpheus_books::convert::Format::Epub);
+    assert_eq!(b.toc_count, 5);
+    assert!(b.complete && b.pages > 3, "{} pages", b.pages);
+    let total = b.pages;
+    // Contents › the second entry (The Log, an anchor in chapter I).
+    run(&mut s, "ok wait:50 ok wait:50 expect-screen:BookContents down ok wait:50 expect-screen:Reader");
+    let b = &s.sys.books().book;
+    let (base, w, _) = b.window().unwrap();
+    let at = (b.top.offset - base) as usize;
+    let text: String = String::from_utf8_lossy(&w[at..at + 12]).chars().filter(|c| !c.is_control()).collect();
+    assert!(text.starts_with("The Log"), "{text:?}");
+    // Every page from the start.
+    let mut s = sim(&open(3));
+    for k in 0..total {
+        assert_eq!(s.sys.books().book.page_no, Some(k));
+        run(&mut s, "next wait:20");
+    }
+    let id = s.sys.books().book.id;
+    let cache = read(&mut s.sys.media, &format!("/.orpheus/cache/books/{id:08x}.txt")).unwrap();
+    let text = String::from_utf8_lossy(&cache);
+    for words in ["hundred and twelve steps", "Then the glass fell.", "All well.", "showing no flag"] {
+        assert!(text.contains(words), "{words}");
+    }
+}
+
+/// BOOK-2: without the scratch (music playing on the player) an EPUB
+/// waits in "Preparing"; lent, it converts.
+#[test]
+fn epub_waits_for_the_scratch() {
+    // (Off before the library is read, its title would be the file name.)
+    let mut s = sim(&format!("{LIB} set:bookscratch=off down*3 ok wait:200"));
+    let b = &s.sys.books().book;
+    assert_eq!(b.phase, Phase::Converting);
+    assert!(b.waiting);
+    run(&mut s, "set:bookscratch=on wait:50 expect-screen:Reader");
+    assert_eq!(s.sys.books().book.phase, Phase::Ready);
 }
 
 /// Auto page turn: with 10 s, the page turns after 10 s without a key.
@@ -216,7 +265,7 @@ mod settings_effects {
     }
 
     fn reader() -> Vec<String> {
-        vec![open(1), open(4), format!("{} ok wait:50 expect-screen:BookMenu down*8", open(1))]
+        vec![open(1), open(5), format!("{} ok wait:50 expect-screen:BookMenu down*8", open(1))]
     }
 
     fn library() -> Vec<String> {
@@ -282,7 +331,7 @@ mod settings_effects {
         shows_only_in(0x0F07, 1, 0, &library(), &reader()[..1]);
         let card = sim(&format!("set:0x0f07=1 {LIB}"));
         let t = titles(&card);
-        assert_eq!(t.len(), 8, "{t:?}");
+        assert_eq!(t.len(), 9, "{t:?}");
         assert!(t.contains(&"README".to_string()));
     }
 }

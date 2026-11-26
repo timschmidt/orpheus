@@ -928,6 +928,7 @@ dependencies = [
 name = "orpheus-books"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "orpheus-fs",
 ]
 
@@ -1176,6 +1177,7 @@ dependencies = [
  "anyhow",
  "embassy-futures",
  "minifb",
+ "miniz_oxide 0.9.1",
  "orpheus-apps",
  "orpheus-audio",
  "orpheus-books",

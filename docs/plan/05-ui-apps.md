@@ -1373,6 +1373,96 @@ yet: feature `orpheus-apps/books`, see docs/STATUS.md).**
   golden (the simulator's card always has /Books), translations of the
   Books strings.
 
+**As built (BOOK-2, 2026-11-25; host and simulator; not in the firmware,
+as BOOK-1).** EPUB 2 and 3 convert into the same normalised stream and
+`.toc` file, so layout, positions, bookmarks and every screen are BOOK-1's.
+* **Zip** (`zip`): the end record searched from the file's end back over a
+  comment (512-byte reads overlapping by 21 bytes, at most 64 KiB + 22);
+  self-extractor stubs (an offset bias) taken; zip64 (fields 0xFFFF…/the
+  zip64 locator) and multi-disk archives refused. The central directory is
+  walked as a stream for each look-up (nothing of it is kept): entries are
+  matched by an FNV-1a 64 hash of their name (ASCII folded, `\` read as
+  `/`). Stored and deflated entries only; encrypted (flag bit 0), other
+  methods and zip64-sized entries are refused per entry. CRC-32 and the
+  declared size are checked at each entry's end.
+* **Inflate** (`inflate`): a `no_std` streaming DEFLATE decoder, input in
+  any pieces, at most `max` bytes out per call, resumable at any byte. Its
+  state is 48 B; the **window (32 KiB) and Huffman tables (2,304 B) are a
+  lent scratch** (`inflate::SCRATCH` = 35,072 B) — on the player the
+  card task's decoder arena (64 KiB) while no track is loaded (this
+  section's "Memory" design). The output is read from the window itself
+  (no output buffer). A smaller window (any power of two from 1 KiB)
+  decodes streams whose distances stay inside it and refuses the others
+  (`Error::Window`); the EPUB job asks for the full one. Caps: an entry
+  stops at its declared size (a bomb is cut within one step's 4 KiB),
+  parts over 16 MiB and package documents over 4 MiB are not read,
+  64 MiB per book in all.
+* **Package** (`opf`, over the XML tokenizer split out of FB2 into `xml`:
+  names lower-cased without prefix, attribute values with references
+  decoded and an FNV-1a hash of the whole value, unquoted values, 204
+  named HTML references and numeric ones, `&#128;`–`&#159;` as
+  Windows-1252): `META-INF/container.xml` → the package path (if missing
+  or naming a missing file: the first `*.opf` in the archive); metadata
+  (first `dc:title`, first `dc:creator`, `dc:language`); manifest and
+  spine (non-linear items read in place: no text lost). EPUB 3's
+  `<nav epub:type="toc">` (nested `ol` → levels 1–3; `span` headings
+  without links left out) is the contents, else the NCX (`navMap`,
+  `navPoint` nesting, label and `content src` in either order), else the
+  headings h1–h3 as for the other formats. hrefs are resolved against
+  their document's folder (percent-decoding, `.`/`..`, query dropped,
+  links with a scheme ignored).
+* **XHTML** (`xhtml`): blocks are paragraphs; `h1` H1, `h2` H2, `h3`–`h6`
+  H3 (a heading's lines split by `<br/>` are one contents entry);
+  `blockquote`/`dd` quotes, `center` centred, `pre` one paragraph per
+  line, `li` items with "•" or the number (`ol start`), `br` a new
+  paragraph of the same kind, `hr` a break; `em i cite dfn var` italic,
+  `strong b` bold. Not shown: `head`, `script`, `style`, `template`,
+  `svg`, `video`, `audio`, `object`, `rt`/`rp`; images skipped without a
+  marker; CSS not read. HTML soup: void elements, unclosed `p`/`li`, a
+  `head` never closed, stray end tags, nesting deeper than 32 counted.
+  Encodings: byte-order mark, the XML declaration, else `<meta charset>`
+  or `<meta http-equiv content="…; charset=…">` switches the decoder after
+  the tag (the head's detection — UTF-8, else Windows-1251/KOI8-R/Latin-1
+  — until then).
+* **Contents positions**: before each spine item the job loads the
+  contents entries pointing into it (in reading order from where the last
+  item's ended; out-of-order contents found by one wrap-around look) into
+  a 16-entry watch, refilled as entries resolve. Every element's `id` (and
+  `<a name>`) is an anchor; an entry takes the offset of the paragraph
+  its anchor is in or starts (always a paragraph byte), its item's start
+  without a fragment or when the anchor never comes, and entries never
+  reached take their predecessor's offset (a last pass).
+* **Card work** (`epub::Epub::step` under `Shelf::step_with`): one
+  512-byte read of the book per step at most, a few small scratch-table
+  writes (`/.orpheus/cache/books/epub.man|.spn|.tgt`: manifest 16 B,
+  spine 4 B, targets 16 B per record; contents patched in place), at most
+  4 KiB inflated and parsed. Measured on FAT32 (512-byte clusters) and
+  exFAT images: ≤ 16 sectors read, ≤ 12 written per step (as BOOK-1).
+  Unreadable parts become a one-line italic note (`[damaged]`,
+  `[encrypted]`, `[unsupported]`, `[too large]`) and reading goes on;
+  archives that are not zip, zip64, multi-disk, or without a package or
+  spine fail to open. The library search reads an EPUB's title and author
+  from its package document when the scratch is lent (else the file name,
+  replaced by the package's title when the book is first converted).
+* **The scratch**: `Shelf::needs_scratch()` says when; `step_with(…,
+  Some(scratch))` lends it, unchanged, for every step while it says so. A
+  deflated entry without it waits (`Book::waiting`, the reader shows
+  "Preparing"); taken away in the middle of an entry, the conversion
+  starts again. `Book::lang` (and the cache header) keep the first bytes
+  of `dc:language` for read aloud (BOOK-3).
+* Files a job leaves (given up when another book opens or the layout
+  changes, failed, or the EPUB tables) have their directory entries
+  written in the next steps before other work: before BOOK-2 a conversion
+  or layout given up lost its clusters on FAT
+  (`regress_abandoned_job_loses_no_clusters`).
+* Not done: images (and their `alt` text), CSS (`display:none`, page
+  breaks), footnote pop-ups (notes are read where the spine has them),
+  tables beyond one paragraph per cell, MathML, right-to-left and
+  vertical writing, fixed-layout EPUBs (read as reflowable); DRM (Adobe
+  ADEPT, LCP: `META-INF/encryption.xml`) is not detected — its encrypted
+  parts come out as `[damaged]` or as unreadable characters; font
+  obfuscation does not matter (fonts are not read).
+
 ### 7.16 Sequencer (drum machine and synth; M17; owner's requirement 2026-11-25)
 
 A step sequencer on `orpheus-synth` (04 §9): drum and synth tracks in

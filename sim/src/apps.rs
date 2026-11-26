@@ -954,6 +954,7 @@ impl Host for HostServices {
                 self.events.push(Event::Service(ServiceEvent::SettingChanged(id::HOME_APPS.0)));
             }
             "booksteps" => self.books.per_step = v.parse()?,
+            "bookscratch" => self.books.lend = on,
             _ if {
                 let (t, b, so) = (
                     orpheus_apps::games::tiles_config(self),

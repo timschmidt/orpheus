@@ -33,3 +33,17 @@ path = "fuzz_targets/books_layout.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "books_zip"
+path = "fuzz_targets/books_zip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "books_epub"
+path = "fuzz_targets/books_epub.rs"
+test = false
+doc = false
+bench = false

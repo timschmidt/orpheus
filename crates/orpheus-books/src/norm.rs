@@ -192,6 +192,9 @@ pub trait Events {
     /// A heading of several paragraphs (FB2 `<title>`) starts or ends:
     /// its paragraphs make one contents entry.
     fn title(&mut self, open: bool);
+    /// An element with this id (its [`crate::xml::hash32`]) is here (EPUB:
+    /// contents entries point at ids).
+    fn anchor(&mut self, _id: u32) {}
 }
 
 /// Turns parser events into the normalised stream: collapses white space,
@@ -220,6 +223,11 @@ pub struct Writer {
     pub done: Option<TocEntry>,
     /// Paragraphs written.
     pub paragraphs: u32,
+    /// Headings make contents entries (off when the book has its own
+    /// contents: EPUB's navigation document).
+    pub collect: bool,
+    /// Where the open paragraph's byte is.
+    para_at: u32,
 }
 
 impl Default for Writer {
@@ -244,7 +252,16 @@ impl Writer {
             in_title: false,
             done: None,
             paragraphs: 0,
+            collect: true,
+            para_at: 0,
         }
+    }
+
+    /// The offset an anchor here points at: the open paragraph's byte, or
+    /// the next paragraph's (none open yet).
+    #[must_use]
+    pub fn anchor_at(&self) -> u32 {
+        if self.open { self.para_at } else { self.offset }
     }
 
     fn put(&mut self, out: &mut dyn Sink, b: &[u8]) {
@@ -324,8 +341,9 @@ impl Writer {
             let at = self.offset;
             self.put(out, &[PARA + self.kind as u8]);
             self.open = true;
+            self.para_at = at;
             self.paragraphs += 1;
-            if let Some(level) = self.kind.level() {
+            if let Some(level) = self.kind.level().filter(|_| self.collect) {
                 if self.collecting && self.in_title {
                     // The next paragraph of a multi-paragraph title.
                     self.toc.push_str(". ");

@@ -14,6 +14,9 @@
 //! * `/.orpheus/books/<id>.pos`: position and bookmarks ([`BookState`]).
 //! * `/.orpheus/books/library.bin`: the library ([`LibHeader`], the sorted
 //!   order, [`LibRecord`]s).
+//! * `/.orpheus/cache/books/epub.man|.spn|.tgt`: the EPUB job's scratch
+//!   tables (manifest, spine, contents targets; [`EPUB_TABLES`]), made
+//!   again by every EPUB conversion.
 //!
 //! `<id>` is [`book_id`] of the book's path, as eight hex digits.
 
@@ -25,6 +28,10 @@ use crate::norm::{Kind, TITLE_MAX, TocEntry};
 pub const BOOKS_DIR: &str = "/.orpheus/books";
 pub const CACHE_DIR: &str = "/.orpheus/cache/books";
 pub const LIBRARY_PATH: &str = "/.orpheus/books/library.bin";
+/// The EPUB job's scratch tables: manifest, spine, contents targets
+/// ([`crate::epub::Table`]).
+pub const EPUB_TABLES: [&str; 3] =
+    ["/.orpheus/cache/books/epub.man", "/.orpheus/cache/books/epub.spn", "/.orpheus/cache/books/epub.tgt"];
 /// Folders made, in order, before a file under them is created.
 pub const DIRS: [&str; 4] = ["/.orpheus", "/.orpheus/books", "/.orpheus/cache", "/.orpheus/cache/books"];
 
@@ -145,6 +152,9 @@ pub struct NormHeader {
     pub src_stamp: u32,
     pub text_len: u32,
     pub toc_count: u32,
+    /// The book's language tag, its first 4 bytes (EPUB's `dc:language`;
+    /// zeros: not known).
+    pub lang: [u8; 4],
 }
 
 impl NormHeader {
@@ -160,6 +170,7 @@ impl NormHeader {
         wr32(&mut b, 12, self.src_stamp);
         wr32(&mut b, 16, self.text_len);
         wr32(&mut b, 20, self.toc_count);
+        b[24..28].copy_from_slice(&self.lang);
         let sum = b[..28].iter().fold(0u32, |a, &x| a.wrapping_mul(31).wrapping_add(u32::from(x)));
         wr32(&mut b, 28, sum);
         b
@@ -184,6 +195,7 @@ impl NormHeader {
             src_stamp: rd32(b, 12),
             text_len: rd32(b, 16),
             toc_count: rd32(b, 20),
+            lang: [b[24], b[25], b[26], b[27]],
         })
     }
 }
@@ -375,6 +387,20 @@ pub const LIB_RECORD: usize = 384;
 pub const PATH_MAX: usize = 255;
 /// Where a record's progress is (rewritten when a book is closed).
 pub const LIB_PROGRESS_AT: usize = 380;
+/// Where a record's title and author are (rewritten when an EPUB's
+/// package names them).
+pub const LIB_NAMES_AT: usize = 256;
+
+/// A record's title and author as stored at [`LIB_NAMES_AT`].
+#[must_use]
+pub fn encode_names(title: &MetaText<64>, author: &MetaText<48>) -> [u8; 114] {
+    let mut b = [0u8; 114];
+    b[0] = title.len;
+    b[1..65].copy_from_slice(&title.buf);
+    b[65] = author.len;
+    b[66..].copy_from_slice(&author.buf);
+    b
+}
 
 /// Byte offset of record `i` in the library file.
 #[must_use]
@@ -541,6 +567,7 @@ mod tests {
             src_stamp: 0xDEAD_BEEF,
             text_len: 99_999,
             toc_count: 42,
+            lang: *b"en-G",
         };
         assert_eq!(NormHeader::decode(&h.encode()), Some(h));
         let mut bad = h.encode();
