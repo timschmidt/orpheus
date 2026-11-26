@@ -83,6 +83,16 @@ pub enum Param {
     ChorusSend,
     /// Send to the reverb, 0–1.
     ReverbSend,
+    /// Drum hits of the part from now on: pitch offset, semitones (−48 to
+    /// 48), added to the kit entry's or drum patch's tune. The Sequencer's
+    /// per-step locks (SEQ-2) set it just before a note-on and back to 0
+    /// just after, at the same sample. Sounding hits do not change.
+    DrumTune,
+    /// Drum hits from now on: decay scale (0.05–20), multiplying the
+    /// entry's (1: unchanged).
+    DrumDecay,
+    /// Drum hits from now on: tone offset (−1 to 1), added to the entry's.
+    DrumTone,
 }
 
 /// An effect parameter changed by [`EventKind::Fx`].
@@ -223,7 +233,13 @@ struct Part {
     held: [u8; HELD],
     n_held: u8,
     last_note: Option<f32>,
+    /// Drum hit offsets: tune (semitones), decay scale, tone
+    /// ([`Param::DrumTune`] …).
+    drum: [f32; 3],
 }
+
+/// Neutral drum offsets.
+const DRUM_NEUTRAL: [f32; 3] = [0.0, 1.0, 0.0];
 
 impl Part {
     fn new(rate: f32) -> Self {
@@ -239,6 +255,7 @@ impl Part {
             held: [0; HELD],
             n_held: 0,
             last_note: None,
+            drum: DRUM_NEUTRAL,
         }
     }
 
@@ -282,6 +299,23 @@ struct Bus {
     r: [f32; CONTROL_PERIOD],
     send: [[f32; CONTROL_PERIOD]; 3],
     voice: [f32; CONTROL_PERIOD],
+}
+
+/// `d` with a part's drum offsets (unchanged, bit for bit, when they are
+/// neutral).
+fn drum_offset(d: DrumParams, off: [f32; 3]) -> DrumParams {
+    if off == DRUM_NEUTRAL {
+        return d;
+    }
+    DrumParams { tune: d.tune + off[0], decay: d.decay * off[1], tone: d.tone + off[2], ..d }.sanitized()
+}
+
+/// A sample hit with a part's drum offsets.
+fn hit_offset(h: HitParams, off: [f32; 3]) -> HitParams {
+    if off == DRUM_NEUTRAL {
+        return h;
+    }
+    HitParams { tune: h.tune + off[0], decay: h.decay * off[1], tone: h.tone + off[2], ..h }.sanitized()
 }
 
 /// The synthesis engine. All memory is inside this value
@@ -365,6 +399,7 @@ impl Engine {
             p.sustain = false;
             p.n_held = 0;
             p.last_note = None;
+            p.drum = DRUM_NEUTRAL;
         }
         self.clock = 0;
         self.stamp = 0;
@@ -564,6 +599,17 @@ impl Engine {
         }
         let Some(p) = self.parts.get_mut(usize::from(part)) else { return };
         let v = value;
+        // Drum offsets act at the next note-on only: no voice changes.
+        let drum = match param {
+            Param::DrumTune => Some((0, clampf(v, -48.0, 48.0))),
+            Param::DrumDecay => Some((1, clampf(v, 0.05, 20.0))),
+            Param::DrumTone => Some((2, clampf(v, -1.0, 1.0))),
+            _ => None,
+        };
+        if let Some((i, x)) = drum {
+            p.drum[i] = x;
+            return;
+        }
         match param {
             Param::Volume => p.volume = clampf(v, 0.0, 1.0),
             Param::Pan => {
@@ -581,6 +627,7 @@ impl Engine {
             Param::DelaySend => p.sends[0] = clampf(v, 0.0, 1.0),
             Param::ChorusSend => p.sends[1] = clampf(v, 0.0, 1.0),
             Param::ReverbSend => p.sends[2] = clampf(v, 0.0, 1.0),
+            Param::DrumTune | Param::DrumDecay | Param::DrumTone => {}
             Param::Sustain => {
                 let down = v >= 0.5;
                 p.sustain = down;
@@ -656,16 +703,19 @@ impl Engine {
         if note > 127 {
             return;
         }
+        let off = p.drum;
         match p.patch.kind {
-            Kind::Drum(d) => self.drum_on(part, Ok(&d), note, velocity, 0, 0.0),
+            Kind::Drum(d) => self.drum_on(part, Ok(&drum_offset(d, off)), note, velocity, 0, 0.0),
             Kind::Kit(slot) => {
                 let Some(e) = self.kits.get(usize::from(slot)).and_then(|k| k.find(note)).copied() else {
                     return;
                 };
                 match e.decode() {
-                    Some(KitSound::Drum(d)) => self.drum_on(part, Ok(&d), note, velocity, e.choke, e.pan_f()),
+                    Some(KitSound::Drum(d)) => {
+                        self.drum_on(part, Ok(&drum_offset(d, off)), note, velocity, e.choke, e.pan_f());
+                    }
                     Some(KitSound::Sample(h)) => {
-                        self.drum_on(part, Err(&h), note, velocity, e.choke, e.pan_f());
+                        self.drum_on(part, Err(&hit_offset(h, off)), note, velocity, e.choke, e.pan_f());
                     }
                     None => {}
                 }

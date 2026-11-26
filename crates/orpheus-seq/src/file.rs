@@ -5,27 +5,38 @@
 //! file    = "OSQ1" version:u16 flags:u16 record* crc:u32
 //! record  = tag:u8 len:u16 body[len]                 (unknown tags skipped)
 //! tag 1   = project: name[16] tempo:u16 swing:u8 current:u8 mode:u8 seed:u32
-//! tag 2   = tracks:  n:u8 (note:u8 level:u8 flags:u8)[n]      flags: 1 mute, 2 solo
-//! tag 3   = pattern: index:u8 len:u8 tracks:u8 n:u8 (step:3 bytes)[tracks × n]  (track-major;
-//!           n ≥ len: steps past the length are kept, as the model keeps them)
+//!           v2: scale:u8 root:u8 fill:u8 drum_delay:u8 drum_reverb:u8
+//! tag 2   = tracks:  n:u8 (note:u8 level:u8 flags:u8)[n]      flags: 1 mute, 2 solo, 4 kit B (v2)
+//! tag 3   = pattern: index:u8 len:u8 tracks:u8 n:u8 (step:3 bytes)[tracks × n]  (the drum
+//!           tracks, track-major; n ≥ len: steps past the length are kept, as the model
+//!           keeps them; v2: tracks 0 when only the synth tracks have steps)
 //! tag 4   = song:    n:u8 (pattern:u8 repeats:u8)[n]
-//! tag 5   = kit:     an `OSB1` sound bank (orpheus_synth::bank) holding one kit record
+//! tag 5   = kit A:   an `OSB1` sound bank (orpheus_synth::bank) holding one kit record
+//! tag 6   = (v2) pattern tracks of a kind: index:u8 kind:u8 tracks:u8 n:u8 transpose:i8
+//!           (step)[tracks × n]; kind 1: the synth tracks, 4-byte steps
+//!           ([`crate::model::SynthStep`]); unknown kinds skipped
+//! tag 7   = (v2) kit B:  as tag 5
+//! tag 8   = (v2) synth track: index:u8 level:u8 flags:u8 delay:u8 reverb:u8, then an `OSB1`
+//!           bank holding its patch (the record's name is the sound's)   flags: 1 mute, 2 solo
+//! tag 9   = (v2) locks:  index:u8 n:u8 (step:u8 track:u8 param:u8 value:u8)[n]
 //! crc     = CRC-32 (IEEE 802.3, reflected, as zip and PNG) of every byte before it
 //! ```
 //!
 //! Numbers are little-endian. Only patterns that differ from an empty
-//! 16-step pattern are written (a new project is about 400 bytes, a full
-//! one at most [`MAX_FILE`]). Steps keep their three bytes
-//! ([`crate::model::Step`]).
+//! 16-step pattern are written (a new project is about 1.1 KB with its
+//! two kits and two patches, a full one at most [`MAX_FILE`]). Steps keep
+//! their three or four bytes.
 //!
-//! **Versions and migration.** `version` is [`VERSION`] (1). A reader
-//! takes every version up to its own: a record body longer than the
-//! fields it knows is fine (later versions append fields), a shorter one
-//! keeps the defaults of the fields it lacks, unknown tags are skipped; a
-//! file of a newer version than the reader is refused
-//! ([`FileError::TooNew`]) so it is never overwritten by an older
-//! firmware's save. [`migrate`] is where a version-2 reader would turn
-//! version-1 values into its own.
+//! **Versions and migration.** `version` is [`VERSION`] (2; SEQ-1 wrote
+//! 1). A reader takes every version up to its own: a record body longer
+//! than the fields it knows is fine (later versions append fields), a
+//! shorter one keeps the defaults of the fields it lacks, unknown tags
+//! and pattern kinds are skipped; a file of a newer version than the
+//! reader is refused ([`FileError::TooNew`]) so it is never overwritten by
+//! an older firmware's save. [`migrate`] turns older values into this
+//! version's: a version-1 file (drum tracks only) loads unchanged, with a
+//! new project's synth tracks (silent), kit B, chromatic scale, no fill,
+//! no sends and no locks.
 //!
 //! **Nothing is trusted.** The CRC is checked first; then every count is
 //! bounded by the record, every index and value is clamped or the record
@@ -35,12 +46,15 @@
 
 use orpheus_synth::bank::{self, NAME_LEN, Name, Record};
 
-use crate::model::{MAX_STEPS, PATTERNS, PlayMode, Project, SONG_LEN, Step, TRACKS};
+use crate::model::{
+    ALL_TRACKS, KITS, LockParam, MAX_STEPS, PATTERNS, PlayMode, Project, SONG_LEN, SYNTH_NOTES, SYNTH_TRACKS,
+    Step, SynthStep, TRACKS,
+};
 
 /// File magic.
 pub const MAGIC: [u8; 4] = *b"OSQ1";
 /// The format version this crate writes and the newest it reads.
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 2;
 /// Record tags.
 pub const TAG_PROJECT: u8 = 1;
 /// Tracks record.
@@ -49,18 +63,32 @@ pub const TAG_TRACKS: u8 = 2;
 pub const TAG_PATTERN: u8 = 3;
 /// The song.
 pub const TAG_SONG: u8 = 4;
-/// The kit (an embedded sound bank).
+/// Kit A (an embedded sound bank).
 pub const TAG_KIT: u8 = 5;
+/// Pattern tracks of another kind (the synth tracks).
+pub const TAG_PATTERN_KIND: u8 = 6;
+/// Kit B.
+pub const TAG_KIT_B: u8 = 7;
+/// A synth track.
+pub const TAG_SYNTH: u8 = 8;
+/// A pattern's locks.
+pub const TAG_LOCKS: u8 = 9;
+/// Pattern kind of the synth tracks.
+pub const KIND_SYNTH: u8 = 1;
 /// Header bytes (magic, version, flags).
 pub const HEADER: usize = 8;
 /// Largest file a project makes: header, project, tracks, every pattern
 /// at 64 steps, a full song, a 32-entry kit, the CRC.
 pub const MAX_FILE: usize = HEADER
-    + (3 + NAME_LEN + 9)
+    + (3 + NAME_LEN + 14)
     + (3 + 1 + 3 * TRACKS)
-    + PATTERNS * (3 + 4 + 3 * TRACKS * MAX_STEPS)
+    + PATTERNS
+        * ((3 + 4 + 3 * TRACKS * MAX_STEPS)
+            + (3 + 5 + 4 * SYNTH_TRACKS * MAX_STEPS)
+            + (3 + 2 + 4 * crate::model::LOCKS))
     + (3 + 1 + 2 * SONG_LEN)
-    + (3 + 4 + 3 + NAME_LEN + 1 + 9 * orpheus_synth::kit::KIT_ENTRIES)
+    + 2 * (3 + 4 + 3 + NAME_LEN + 1 + 9 * orpheus_synth::kit::KIT_ENTRIES)
+    + SYNTH_TRACKS * (3 + 5 + 4 + 3 + NAME_LEN + bank::PATCH_MAX)
     + 4;
 
 /// Why a file was not loaded or saved.
@@ -157,30 +185,63 @@ pub fn save(p: &Project, buf: &mut [u8]) -> Result<usize, FileError> {
             PlayMode::Pattern => 0,
             PlayMode::Song => 1,
         })?;
-        o.bytes(&p.seed.to_le_bytes())
+        o.bytes(&p.seed.to_le_bytes())?;
+        let (scale, root) = p.scale();
+        let ds = p.drum_sends();
+        o.bytes(&[scale.code(), root, p.fill_raw(), ds[0], ds[1]])
     })?;
     o.record(TAG_TRACKS, |o| {
         o.u8(TRACKS as u8)?;
         for t in p.tracks() {
-            o.bytes(&[t.note, t.level, u8::from(t.mute) | (u8::from(t.solo) << 1)])?;
+            o.bytes(&[t.note, t.level, u8::from(t.mute) | (u8::from(t.solo) << 1) | ((t.kit & 1) << 2)])?;
         }
         Ok(())
     })?;
+    for st in 0..SYNTH_TRACKS {
+        let s = p.synth(st);
+        o.record(TAG_SYNTH, |o| {
+            o.bytes(&[st as u8, s.level, u8::from(s.mute) | (u8::from(s.solo) << 1), s.delay, s.reverb])?;
+            bank_into(o, |w| w.patch(s.name.as_str(), &s.patch))
+        })?;
+    }
     for i in 0..PATTERNS {
         let pat = p.pattern(i);
         if pat.is_blank() {
             continue;
         }
-        let n = pat.stored();
+        let (tracks, n) = if pat.drums_blank() { (0, pat.len()) } else { (TRACKS, pat.stored()) };
         o.record(TAG_PATTERN, |o| {
-            o.bytes(&[i as u8, pat.len() as u8, TRACKS as u8, n as u8])?;
-            for t in 0..TRACKS {
+            o.bytes(&[i as u8, pat.len() as u8, tracks as u8, n as u8])?;
+            for t in 0..tracks {
                 for s in &pat.track(t)[..n] {
                     o.bytes(&s.to_bytes())?;
                 }
             }
             Ok(())
         })?;
+        let synth_steps = (0..SYNTH_TRACKS)
+            .any(|st| pat.synth_track(st).iter().any(|s| *s != SynthStep::off(SYNTH_NOTES[st])));
+        if synth_steps || pat.transpose() != 0 {
+            let n = pat.synth_stored();
+            o.record(TAG_PATTERN_KIND, |o| {
+                o.bytes(&[i as u8, KIND_SYNTH, SYNTH_TRACKS as u8, n as u8, pat.transpose() as u8])?;
+                for st in 0..SYNTH_TRACKS {
+                    for s in &pat.synth_track(st)[..n] {
+                        o.bytes(&s.to_bytes())?;
+                    }
+                }
+                Ok(())
+            })?;
+        }
+        if !pat.locks.is_empty() {
+            o.record(TAG_LOCKS, |o| {
+                o.bytes(&[i as u8, pat.locks.len() as u8])?;
+                for l in pat.locks.items() {
+                    o.bytes(&[l.step, l.track, l.param.code(), l.value])?;
+                }
+                Ok(())
+            })?;
+        }
     }
     if !p.song.is_empty() {
         o.record(TAG_SONG, |o| {
@@ -191,16 +252,23 @@ pub fn save(p: &Project, buf: &mut [u8]) -> Result<usize, FileError> {
             Ok(())
         })?;
     }
-    o.record(TAG_KIT, |o| {
-        let rest = o.buf.get_mut(o.n..).ok_or(FileError::Full)?;
-        let mut w = bank::Writer::new(rest).map_err(|_| FileError::Full)?;
-        w.kit(p.kit_name(), p.kit()).map_err(|_| FileError::Full)?;
-        o.n += w.len();
-        Ok(())
-    })?;
+    o.record(TAG_KIT, |o| bank_into(o, |w| w.kit(p.kit_name_of(0), p.kit_of(0))))?;
+    o.record(TAG_KIT_B, |o| bank_into(o, |w| w.kit(p.kit_name_of(1), p.kit_of(1))))?;
     let crc = crc32(0, &o.buf[..o.n]);
     o.bytes(&crc.to_le_bytes())?;
     Ok(o.n)
+}
+
+/// An embedded sound bank written by `f` at the end of `o`.
+fn bank_into(
+    o: &mut Out<'_>,
+    f: impl FnOnce(&mut bank::Writer<'_>) -> Result<(), bank::BankError>,
+) -> Result<(), FileError> {
+    let rest = o.buf.get_mut(o.n..).ok_or(FileError::Full)?;
+    let mut w = bank::Writer::new(rest).map_err(|_| FileError::Full)?;
+    f(&mut w).map_err(|_| FileError::Full)?;
+    o.n += w.len();
+    Ok(())
 }
 
 /// Check the header and the CRC; returns the version and the records'
@@ -254,7 +322,7 @@ pub fn peek_name(d: &[u8]) -> Result<Name, FileError> {
 pub fn load_into(p: &mut Project, d: &[u8]) -> Result<(), FileError> {
     let (version, mut r) = check(d)?;
     p.reset();
-    let mut kit_seen = false;
+    let mut kit_seen = [false; KITS];
     while !r.is_empty() {
         let h = r.get(..3).ok_or(FileError::Short)?;
         let (tag, len) = (h[0], usize::from(u16::from_le_bytes([h[1], h[2]])));
@@ -265,10 +333,16 @@ pub fn load_into(p: &mut Project, d: &[u8]) -> Result<(), FileError> {
             TAG_TRACKS => tracks(p, body),
             TAG_PATTERN => pattern(p, body)?,
             TAG_SONG => song(p, body),
-            TAG_KIT if !kit_seen => {
-                kit_seen = true;
-                kit(p, body)?;
+            TAG_KIT | TAG_KIT_B => {
+                let k = usize::from(tag == TAG_KIT_B);
+                if !kit_seen[k] {
+                    kit_seen[k] = true;
+                    kit(p, k, body, tag)?;
+                }
             }
+            TAG_PATTERN_KIND => pattern_kind(p, body)?,
+            TAG_SYNTH => synth(p, body)?,
+            TAG_LOCKS => locks(p, body)?,
             _ => {}
         }
     }
@@ -276,8 +350,15 @@ pub fn load_into(p: &mut Project, d: &[u8]) -> Result<(), FileError> {
     Ok(())
 }
 
-/// Turn the values of an older `version` into this version's. Version 1
-/// is the first: nothing to do.
+/// Turn the values of an older `version` into this version's.
+///
+/// Version 1 (SEQ-1) knew drum tracks only; everything it stored means
+/// the same in version 2 (the project, tracks, drum patterns, song and
+/// kit records are read by the same code), and what it lacks keeps a new
+/// project's defaults from [`load_into`]'s reset: the synth tracks with
+/// their presets and no steps, kit B the analog kit (no track plays it),
+/// the chromatic scale, no fill pattern, no sends, no locks. So there is
+/// nothing to convert; the hook stays for the next version.
 pub fn migrate(_p: &mut Project, version: u16) {
     debug_assert!(version <= VERSION);
 }
@@ -292,6 +373,7 @@ fn project(p: &mut Project, b: &[u8]) -> Result<(), FileError> {
     if let Some(s) = b.get(NAME_LEN + 5..NAME_LEN + 9) {
         p.seed = u32::from_le_bytes([s[0], s[1], s[2], s[3]]);
     }
+    p.set_extra_raw(at(9, 0), at(10, 0), at(11, crate::model::NO_FILL), [at(12, 0), at(13, 0)]);
     Ok(())
 }
 
@@ -303,6 +385,7 @@ fn tracks(p: &mut Project, b: &[u8]) {
         tr.level = x[1].min(100);
         tr.mute = x[2] & 1 != 0;
         tr.solo = x[2] & 2 != 0;
+        tr.kit = (x[2] >> 2) & 1;
     }
 }
 
@@ -310,7 +393,7 @@ fn pattern(p: &mut Project, b: &[u8]) -> Result<(), FileError> {
     let bad = FileError::BadRecord(TAG_PATTERN);
     let h = b.get(..4).ok_or(bad)?;
     let (i, len, tracks, n) = (usize::from(h[0]), usize::from(h[1]), usize::from(h[2]), usize::from(h[3]));
-    if i >= PATTERNS || len == 0 || len > MAX_STEPS || tracks == 0 || n < len || n > MAX_STEPS {
+    if i >= PATTERNS || len == 0 || len > MAX_STEPS || n < len || n > MAX_STEPS {
         return Err(bad);
     }
     let steps = b.get(4..4 + 3 * tracks * n).ok_or(bad)?;
@@ -334,19 +417,96 @@ fn song(p: &mut Project, b: &[u8]) {
     }
 }
 
-fn kit(p: &mut Project, b: &[u8]) -> Result<(), FileError> {
-    let recs = bank::records(b).map_err(|_| FileError::BadRecord(TAG_KIT))?;
+fn kit(p: &mut Project, k: usize, b: &[u8], tag: u8) -> Result<(), FileError> {
+    let recs = bank::records(b).map_err(|_| FileError::BadRecord(tag))?;
     for r in recs {
         match r {
             Ok(Record::Kit(name, kit)) => {
-                p.set_kit_raw(clean(&name.0), kit);
+                p.set_kit_raw(k, clean(&name.0), kit);
                 return Ok(());
             }
             Ok(Record::Patch(..)) => {}
-            Err(_) => return Err(FileError::BadRecord(TAG_KIT)),
+            Err(_) => return Err(FileError::BadRecord(tag)),
         }
     }
     // No kit in the bank: the default kit stays.
+    Ok(())
+}
+
+fn pattern_kind(p: &mut Project, b: &[u8]) -> Result<(), FileError> {
+    let bad = FileError::BadRecord(TAG_PATTERN_KIND);
+    let h = b.get(..5).ok_or(bad)?;
+    let (i, kind, tracks, n) = (usize::from(h[0]), h[1], usize::from(h[2]), usize::from(h[3]));
+    if kind != KIND_SYNTH {
+        // A kind of a later version.
+        return Ok(());
+    }
+    if i >= PATTERNS || n > MAX_STEPS {
+        return Err(bad);
+    }
+    let steps = b.get(5..5 + 4 * tracks * n).ok_or(bad)?;
+    let pat = p.pattern_mut(i);
+    pat.set_transpose_raw(h[4] as i8);
+    if n == 0 {
+        return Ok(());
+    }
+    // Tracks past this version's are skipped.
+    for (st, row) in steps.chunks_exact(4 * n).take(SYNTH_TRACKS).enumerate() {
+        for (s, x) in row.chunks_exact(4).enumerate() {
+            pat.set_synth_raw(st, s, SynthStep::from_bytes([x[0], x[1], x[2], x[3]]));
+        }
+    }
+    Ok(())
+}
+
+fn synth(p: &mut Project, b: &[u8]) -> Result<(), FileError> {
+    let bad = FileError::BadRecord(TAG_SYNTH);
+    let h = b.get(..5).ok_or(bad)?;
+    let st = usize::from(h[0]);
+    if st >= SYNTH_TRACKS {
+        // A track of a later version.
+        return Ok(());
+    }
+    let recs = bank::records(&b[5..]).map_err(|_| bad)?;
+    let s = p.synth_mut(st);
+    s.level = h[1].min(100);
+    s.mute = h[2] & 1 != 0;
+    s.solo = h[2] & 2 != 0;
+    s.delay = h[3].min(100);
+    s.reverb = h[4].min(100);
+    for r in recs {
+        match r {
+            Ok(Record::Patch(name, patch)) => {
+                s.patch = patch;
+                s.name = clean(&name.0);
+                return Ok(());
+            }
+            Ok(Record::Kit(..)) => {}
+            Err(_) => return Err(bad),
+        }
+    }
+    Ok(())
+}
+
+fn locks(p: &mut Project, b: &[u8]) -> Result<(), FileError> {
+    let bad = FileError::BadRecord(TAG_LOCKS);
+    let h = b.get(..2).ok_or(bad)?;
+    let i = usize::from(h[0]);
+    if i >= PATTERNS {
+        return Err(bad);
+    }
+    let n = usize::from(h[1]);
+    let items = b.get(2..2 + 4 * n).ok_or(bad)?;
+    let pat = p.pattern_mut(i);
+    for x in items.chunks_exact(4) {
+        // Impossible locks (a step or track out of range, a parameter of
+        // the other kind of track) are dropped; past the store's room too.
+        if let Some(param) = LockParam::from_code(x[2])
+            && usize::from(x[1]) < ALL_TRACKS
+        {
+            pat.locks.set(usize::from(x[0]), usize::from(x[1]), param, x[3]);
+        }
+    }
     Ok(())
 }
 

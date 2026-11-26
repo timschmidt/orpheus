@@ -58,7 +58,7 @@ pub use radio::{PresetsScreen, RadioScreen};
 pub use recorder::RecorderScreen;
 pub use rows::{MAX_ROWS, RowData, Rows};
 #[cfg(feature = "seq")]
-pub use seq::{GridScreen, SeqEdit, SeqEditScreen, SeqListScreen};
+pub use seq::{GridScreen, KeysScreen, LiveScreen, SeqEdit, SeqEditScreen, SeqListScreen, SongScreen};
 pub use steps::{DAY_SHORT, StepsScreen, push_distance, push_energy, push_grouped, steps_hint};
 pub use system::{BootScreen, ChargingScreen, GoodbyeScreen, LockScreen, Notice, NoticeScreen};
 pub use text::TextScreen;
@@ -211,6 +211,23 @@ pub const SEQ_TRACK: ScreenId = ScreenId(66);
 /// Every track's mute, solo and level.
 #[cfg(feature = "seq")]
 pub const SEQ_MIXER: ScreenId = ScreenId(67);
+/// A track's sound (SEQ-2): a drum's kit entry or a synth patch. Arg: the
+/// track.
+#[cfg(feature = "seq")]
+pub const SEQ_SOUND: ScreenId = ScreenId(68);
+/// Note entry and live recording on a one-octave strip. Arg: track << 8 |
+/// step.
+#[cfg(feature = "seq")]
+pub const SEQ_KEYS: ScreenId = ScreenId(69);
+/// Playing live: fill while OK is held, the next pattern, the tempo.
+#[cfg(feature = "seq")]
+pub const SEQ_LIVE: ScreenId = ScreenId(70);
+/// The song: its chain of patterns.
+#[cfg(feature = "seq")]
+pub const SEQ_SONG: ScreenId = ScreenId(71);
+/// The Sequencer's settings.
+#[cfg(feature = "seq")]
+pub const SEQ_SETTINGS: ScreenId = ScreenId(72);
 
 /// One variant per screen. Only the top screen exists, so the enum's size
 /// (its largest variant, the list screen) is the UI's screen RAM.
@@ -261,6 +278,12 @@ pub enum AppScreen {
     SeqGrid(GridScreen),
     #[cfg(feature = "seq")]
     SeqEdit(SeqEditScreen),
+    #[cfg(feature = "seq")]
+    SeqSong(SongScreen),
+    #[cfg(feature = "seq")]
+    SeqKeys(KeysScreen),
+    #[cfg(feature = "seq")]
+    SeqLive(LiveScreen),
 }
 
 macro_rules! each {
@@ -311,6 +334,12 @@ macro_rules! each {
             AppScreen::SeqGrid($s) => $e,
             #[cfg(feature = "seq")]
             AppScreen::SeqEdit($s) => $e,
+            #[cfg(feature = "seq")]
+            AppScreen::SeqSong($s) => $e,
+            #[cfg(feature = "seq")]
+            AppScreen::SeqKeys($s) => $e,
+            #[cfg(feature = "seq")]
+            AppScreen::SeqLive($s) => $e,
         }
     };
 }
@@ -453,6 +482,16 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             SEQ_TRACK => AppScreen::SeqEdit(SeqEditScreen::new(SeqEdit::Track)),
             #[cfg(feature = "seq")]
             SEQ_MIXER => AppScreen::SeqEdit(SeqEditScreen::new(SeqEdit::Mixer)),
+            #[cfg(feature = "seq")]
+            SEQ_SOUND => AppScreen::SeqEdit(SeqEditScreen::new(SeqEdit::Sound)),
+            #[cfg(feature = "seq")]
+            SEQ_SETTINGS => AppScreen::SeqEdit(SeqEditScreen::new(SeqEdit::Settings)),
+            #[cfg(feature = "seq")]
+            SEQ_SONG => AppScreen::SeqSong(SongScreen::default()),
+            #[cfg(feature = "seq")]
+            SEQ_KEYS => AppScreen::SeqKeys(KeysScreen::default()),
+            #[cfg(feature = "seq")]
+            SEQ_LIVE => AppScreen::SeqLive(LiveScreen::default()),
             _ => AppScreen::Home(HomeScreen::default()),
         }
     }
@@ -510,6 +549,12 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             AppScreen::SeqGrid(_) => SEQ_GRID,
             #[cfg(feature = "seq")]
             AppScreen::SeqEdit(e) => e.screen_id(),
+            #[cfg(feature = "seq")]
+            AppScreen::SeqSong(_) => SEQ_SONG,
+            #[cfg(feature = "seq")]
+            AppScreen::SeqKeys(_) => SEQ_KEYS,
+            #[cfg(feature = "seq")]
+            AppScreen::SeqLive(_) => SEQ_LIVE,
         }
     }
 
@@ -566,6 +611,12 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             AppScreen::SeqGrid(_) => "SeqGrid",
             #[cfg(feature = "seq")]
             AppScreen::SeqEdit(e) => e.name(),
+            #[cfg(feature = "seq")]
+            AppScreen::SeqSong(_) => "SeqSong",
+            #[cfg(feature = "seq")]
+            AppScreen::SeqKeys(_) => "SeqKeys",
+            #[cfg(feature = "seq")]
+            AppScreen::SeqLive(_) => "SeqLive",
         }
     }
 

@@ -274,6 +274,10 @@ impl orpheus_apps::seq::SeqService for HostServices {
             SeqRequest::Open(no) => self.seq.open(&mut self.media, no),
             SeqRequest::Save => self.seq.save(&mut self.media),
             SeqRequest::Delete(no) => self.seq.delete(&mut self.media, no),
+            SeqRequest::ExportWav | SeqRequest::ExportMidi => {
+                let step_len = orpheus_apps::seq::options(self).step_len;
+                self.seq.export(&mut self.media, r == SeqRequest::ExportWav, step_len)
+            }
         };
         self.events.push(Event::Service(ServiceEvent::Other { kind: services::other::SEQ, value: 0 }));
     }
@@ -736,13 +740,19 @@ impl System for HostServices {
     }
 
     fn key_click(&mut self) {
-        if services::key_click(self.settings.get(id::KEY_CLICK), &self.recorder()) {
+        // SEQ-2: no click while the Sequencer plays (unless its setting
+        // says so).
+        if services::key_click(self.settings.get(id::KEY_CLICK), &self.recorder())
+            && orpheus_apps::seq::key_click_allowed(self)
+        {
             self.clicks += 1;
         }
     }
 
     fn key_hold_click(&mut self) {
-        if services::hold_click(self.settings.get(id::KEY_CLICK), &self.recorder()) {
+        if services::hold_click(self.settings.get(id::KEY_CLICK), &self.recorder())
+            && orpheus_apps::seq::key_click_allowed(self)
+        {
             self.clicks += 1;
             self.hold_clicks += 1;
         }
@@ -1085,8 +1095,27 @@ impl Host for HostServices {
                     bail!("seqdemo: the card is full of projects");
                 }
             }
+            "seqsong" => {
+                if self.seq.add_song(&mut self.media).is_none() {
+                    bail!("seqsong: the card is full of projects");
+                }
+            }
             "seqcapture" => self.seq.capture = on.then(Vec::new),
             "seqfail" => self.seq.fail = on,
+            "seqdry" => self.seq.dry = on,
+            // Fill the current pattern's lock store (steps 40–63 of the
+            // kick, past a 16-step pattern): the next lock is refused.
+            "seqlocksfull" => {
+                let p = &mut self.seq.studio.project;
+                let cur = p.current();
+                for k in 0..orpheus_seq::model::LOCKS {
+                    p.set_lock(cur, 40 + k, 0, orpheus_seq::LockParam::Tone, 50);
+                }
+            }
+            "seqnote" => {
+                let p = &self.seq.studio.project;
+                self.seq.noted = Some(format!("{} {} {}", p.kit_name(), p.pattern(0).len(), p.swing()));
+            }
             "booksteps" => self.books.per_step = v.parse()?,
             "bookscratch" => self.books.lend = on,
             _ if {

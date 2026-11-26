@@ -214,6 +214,53 @@ fn seq_cases(add: &mut dyn FnMut(String, String)) {
         let script = &journeys.iter().find(|(n, _)| *n == name).expect("journey").1;
         add(format!("seq_{name}_amber"), format!("@apps theme:amber {script}"));
     }
+    seq2_cases(add);
+}
+
+/// M17 Sequencer, SEQ-2: the demo song "Tram Lights" (`set:seqsong=1`:
+/// two kits, bass and lead, locks, the fill): its grid (the drums, and the
+/// synth tracks scrolled in), a synth step and the locks of a synth and a
+/// drum step, the transport's new rows, a synth track, the mixer of ten
+/// tracks, the sound screens (a drum's kit entry, a synth patch), the
+/// keys (and recording), the live screen with the fill held, the song and
+/// its menu, the Sequencer's settings and a choice, the export's toast.
+/// Dark and Light, two in Amber.
+fn seq2_cases(add: &mut dyn FnMut(String, String)) {
+    let song = "set:seq=on set:seqsong=1 goto:Sequencer wait:50 down ok wait:50 expect-screen:SeqGrid";
+    let settings = "set:seq=on goto:Sequencer wait:50 menu ok wait:50 expect-screen:SeqSettings";
+    let journeys: &[(&str, String)] = &[
+        ("song_grid", song.into()),
+        ("grid_synth", format!("{song} down*9 next*2")),
+        ("step_synth", format!("{song} down*8 hold:ok wait:50 expect-screen:SeqStep")),
+        ("step_locks", format!("{song} menu down*4 ok down*8 next*4 hold:ok wait:50 down*11")),
+        (
+            "step_drum_locks",
+            format!("{song} menu down*4 ok menu down*4 ok menu down*4 ok down hold:ok wait:50 down*8"),
+        ),
+        ("transport_song", format!("{song} menu down ok wait:50 down*12")),
+        ("track_synth", format!("{song} down*9 menu down*3 ok wait:50 expect-screen:SeqTrack")),
+        ("mixer_all", format!("{song} menu down*2 ok wait:50 down*9 expect-screen:SeqMixer")),
+        ("sound_drum", format!("{song} menu down*9 ok wait:50 expect-screen:SeqSound")),
+        ("sound_synth", format!("{song} down*9 menu down*9 ok wait:50 expect-screen:SeqSound")),
+        ("sound_synth_more", format!("{song} down*9 menu down*9 ok wait:50 down*9")),
+        ("keys", format!("{song} down*8 menu down*10 ok wait:50 expect-screen:SeqKeys")),
+        ("keys_record", format!("{song} down*8 menu down*10 ok wait:50 menu ok menu down ok back wait:600")),
+        ("live_fill", format!("{song} menu down*11 ok ok wait:50 menu ok wait:300 press:ok wait:700")),
+        ("song", format!("{song} menu down*11 ok down ok wait:50 expect-screen:SeqSong")),
+        ("song_menu", format!("{song} menu down*11 ok down ok wait:50 down*2 menu")),
+        ("settings", settings.into()),
+        ("settings_choice", format!("{settings} ok wait:50")),
+        ("exported", format!("{song} menu down*11 ok down*3 ok wait:100")),
+    ];
+    for t in ["dark", "light"] {
+        for (name, script) in journeys {
+            add(format!("seq_{name}_{t}"), format!("@apps theme:{t} {script}"));
+        }
+    }
+    for name in ["song_grid", "keys"] {
+        let script = &journeys.iter().find(|(n, _)| *n == name).expect("journey").1;
+        add(format!("seq_{name}_amber"), format!("@apps theme:amber {script}"));
+    }
 }
 
 /// M15 Books (BOOK-1, BOOK-2): the library, the reader in each format and

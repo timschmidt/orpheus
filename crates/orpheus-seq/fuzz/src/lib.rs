@@ -8,14 +8,19 @@
 //! bytes are replaced by the right CRC (so the record decoder is reached).
 //! Oracles: no panic; a file that loads saves into at most `MAX_FILE`
 //! bytes, and that save loads back into the same project and saves the
-//! same bytes; the loaded project plays (a dry run of 4 s at 8 kHz and a
-//! short render): hits in frame order, notes ≤ 127, velocities 1–127,
-//! nothing dropped, every sample finite.
+//! same bytes; the loaded project plays (a dry run of 4 s at 8 kHz — with
+//! the metronome, a count-in, the fill key held and another step length
+//! when bit 2 is set — and a short render): hits in frame order, notes
+//! ≤ 127, velocities 1–127 (0 only for a synth track's note-off), every
+//! synth note ended once after a stop, nothing dropped, every sample
+//! finite; the MIDI export of the project parses (bit 3).
 
 #![forbid(unsafe_code)]
 
 use orpheus_seq::file::{MAX_FILE, crc32};
-use orpheus_seq::{Project, Sequencer, load_into, save};
+use orpheus_seq::model::{ALL_TRACKS, TRACKS};
+use orpheus_seq::player::CLICK;
+use orpheus_seq::{Options, Project, Sequencer, StepLen, load_into, save};
 
 /// Bytes the body looks at (larger inputs are cut).
 pub const MAX_INPUT: usize = 64 * 1024;
@@ -48,16 +53,42 @@ pub fn seq_load(data: &[u8]) {
 
 fn play(p: &Project, opt: u8) {
     let mut s = Sequencer::new(8_000);
+    if opt & 4 != 0 {
+        let step_len =
+            [StepLen::Sixteenth, StepLen::Eighth, StepLen::ThirtySecond][usize::from(opt >> 6) % 3];
+        s.set_options(Options { metronome: true, count_in: 1, step_len });
+        s.set_fill(true);
+    }
     s.play();
     let mut last = 0;
-    let mut n = 0u32;
-    s.run_dry(p, 4 * 8_000, |h| {
+    let mut sounding = std::collections::BTreeSet::new();
+    let mut check = |h: orpheus_seq::Hit| {
         assert!(h.frame >= last, "hits in order");
         last = h.frame;
-        assert!(h.note <= 127 && (1..=127).contains(&h.velocity));
-        n += 1;
-    });
+        assert!(h.note <= 127);
+        let t = usize::from(h.track);
+        assert!(t < ALL_TRACKS || h.track == CLICK);
+        if h.velocity == 0 {
+            assert!((TRACKS..ALL_TRACKS).contains(&t), "offs are synth notes'");
+            assert!(sounding.remove(&(t, h.note)), "an off of a sounding note");
+        } else {
+            assert!(h.velocity <= 127);
+            if (TRACKS..ALL_TRACKS).contains(&t) {
+                sounding.insert((t, h.note));
+            }
+        }
+    };
+    s.run_dry(p, 4 * 8_000, &mut check);
+    s.stop();
+    s.run_dry(p, 1, &mut check);
+    assert!(sounding.is_empty(), "a stop ends every synth note");
     assert_eq!(s.dropped(), 0);
+    if opt & 8 != 0 {
+        let mut buf = vec![0u8; 1 << 22];
+        if let Ok(n) = orpheus_seq::export::midi(p, StepLen::Sixteenth, &mut buf) {
+            assert!(buf[..n].starts_with(b"MThd"));
+        }
+    }
     if opt & 2 != 0 {
         let mut e = Box::new(orpheus_synth::Engine::new(8_000, 1));
         let mut s = Sequencer::new(8_000);

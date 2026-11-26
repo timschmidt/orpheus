@@ -1,6 +1,6 @@
 [package]
 name = "orpheus-seq"
-description = "The Sequencer's project model (patterns of drum steps, tracks, songs), its versioned binary file with CRC, and the step player that drives orpheus-synth with sample-accurate timing at any tempo and swing (05-ui-apps §7.16, WP SEQ-1)"
+description = "The Sequencer's project model (patterns of drum and synth steps, parameter locks, scales, tracks, songs), its versioned binary file with CRC and migration, the step player that drives orpheus-synth with sample-accurate timing at any tempo and swing, and the song's export to WAV and MIDI (05-ui-apps §7.16, WPs SEQ-1, SEQ-2)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 orpheus-synth = { path = "../orpheus-synth" }
+orpheus-midi = { path = "../orpheus-midi" }
 
 [lints]
 workspace = true

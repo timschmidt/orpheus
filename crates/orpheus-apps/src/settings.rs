@@ -5,7 +5,7 @@
 //! Every stored value is an `i16` (toggle 0/1, choice index, range value,
 //! bit mask, or a two-letter language code) encoded as 2 bytes
 //! little-endian under its `SettingId` (the `orpheus-settings` u16 key,
-//! `0x0101..=0x10FF`: group or list in the high byte). Decoding validates against
+//! `0x0101..=0x11FF`: group or list in the high byte). Decoding validates against
 //! the item's kind and falls back to the default, so a corrupt or
 //! out-of-range record never reaches the UI. Ids are never reused.
 
@@ -627,8 +627,10 @@ pub fn all() -> impl Iterator<Item = &'static Setting> {
 
 /// The item lists by the high byte of their keys: groups `0x01..=0x0C`
 /// in [`GROUPS`]' order, the apps' items `0x0D`, the games' `0x0E`, the
-/// reading settings `0x0F` (Books), Accessibility `0x10` (a test holds every key to its list's
-/// byte). Plain slices, so a lookup touches one list and no closure.
+/// reading settings `0x0F` (Books), Accessibility `0x10`, the Sequencer's
+/// `0x11` (with the `seq` feature only: the firmware's tables stay as
+/// they were) (a test holds every key to its list's byte). Plain slices,
+/// so a lookup touches one list and no closure.
 static LISTS: [&[Setting]; LIST_COUNT] = {
     #[cfg(feature = "games")]
     let games: &'static [Setting] = &crate::games::SETTINGS;
@@ -655,11 +657,13 @@ static LISTS: [&[Setting]; LIST_COUNT] = {
         games,
         books,
         ACCESSIBILITY,
+        #[cfg(feature = "seq")]
+        &crate::seq::SETTINGS,
     ]
 };
 
 /// Number of lists (high bytes `0x01..=LIST_COUNT`).
-const LIST_COUNT: usize = 16;
+const LIST_COUNT: usize = 16 + cfg!(feature = "seq") as usize;
 
 /// Stored items before each list (the cache index of its first stored
 /// item), computed at build time.
@@ -721,8 +725,13 @@ pub fn def(id: SettingId) -> Option<&'static Setting> {
 }
 
 /// Number of stored items (the games' settings with the `games` feature,
-/// the reading settings' word with `books`).
-pub const STORED: usize = 99 + GAMES_STORED + BOOKS_STORED;
+/// the reading settings' word with `books`, the Sequencer's word with
+/// `seq`).
+pub const STORED: usize = 99 + GAMES_STORED + BOOKS_STORED + SEQ_STORED;
+#[cfg(feature = "seq")]
+const SEQ_STORED: usize = crate::seq::STORED_SETTINGS;
+#[cfg(not(feature = "seq"))]
+const SEQ_STORED: usize = 0;
 #[cfg(feature = "games")]
 const GAMES_STORED: usize = crate::games::STORED_SETTINGS;
 #[cfg(not(feature = "games"))]
@@ -952,7 +961,9 @@ impl SettingsCache {
     /// Back to defaults; every item is marked for writing.
     pub fn reset(&mut self) {
         *self = SettingsCache::new();
-        self.dirty = (1u128 << STORED) - 1;
+        // Every stored item (all 128 bits when the store is full: games,
+        // Books and the Sequencer together, SEQ-2).
+        self.dirty = if STORED >= 128 { u128::MAX } else { (1u128 << (STORED % 128)) - 1 };
     }
 
     /// Pending writes as (store key, bytes); clears the marks.
@@ -1367,7 +1378,7 @@ mod persistence {
             let rec: Vec<_> = old.take_dirty().collect();
             let mut c = SettingsCache::new();
             // Keys of no setting (removed items, the old key ranges).
-            for k in [0x0000u16, 0x00FF, 0x0110, 0x0D2F, 0x0EFF, 0x10FF, 0x1101, 0xFFFF] {
+            for k in [0x0000u16, 0x00FF, 0x0110, 0x0D2F, 0x0EFF, 0x10FF, 0x11FF, 0x1201, 0xFFFF] {
                 assert!(def(SettingId(k)).is_none());
                 c.load(k, &encode(1));
             }
@@ -1404,7 +1415,7 @@ mod persistence {
     fn persist_homeapps() {
         persist("homeapps");
     }
-    #[cfg(any(feature = "salvo", feature = "bricks", feature = "books"))]
+    #[cfg(any(feature = "salvo", feature = "bricks", feature = "books", feature = "seq"))]
     #[test]
     fn persist_packed() {
         persist("packed");
@@ -1429,7 +1440,7 @@ mod persistence {
     fn default_homeapps() {
         default("homeapps");
     }
-    #[cfg(any(feature = "salvo", feature = "bricks", feature = "books"))]
+    #[cfg(any(feature = "salvo", feature = "bricks", feature = "books", feature = "seq"))]
     #[test]
     fn default_packed() {
         default("packed");
@@ -1463,7 +1474,7 @@ mod persistence {
     fn clamp_homeapps() {
         clamp("homeapps");
     }
-    #[cfg(any(feature = "salvo", feature = "bricks", feature = "books"))]
+    #[cfg(any(feature = "salvo", feature = "bricks", feature = "books", feature = "seq"))]
     #[test]
     fn clamp_packed() {
         clamp("packed");
@@ -1488,7 +1499,7 @@ mod persistence {
     fn migrate_homeapps() {
         migrate("homeapps");
     }
-    #[cfg(any(feature = "salvo", feature = "bricks", feature = "books"))]
+    #[cfg(any(feature = "salvo", feature = "bricks", feature = "books", feature = "seq"))]
     #[test]
     fn migrate_packed() {
         migrate("packed");

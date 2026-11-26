@@ -1,5 +1,6 @@
-//! `orpheus-seq`: the Sequencer's project model, its file and the step
-//! player (docs/plan/05-ui-apps.md §7.16; WP SEQ-1).
+//! `orpheus-seq`: the Sequencer's project model, its file, the step
+//! player and the song's export (docs/plan/05-ui-apps.md §7.16; WPs
+//! SEQ-1, SEQ-2).
 //!
 //! ```ignore
 //! use orpheus_seq::{Project, Sequencer, Step};
@@ -15,17 +16,24 @@
 //! ```
 //!
 //! * [`model`]: [`Project`] — 16 patterns × 1–64 steps × 8 drum tracks
-//!   (velocity, probability, ratchet 1–4, micro-timing delay, accent per
-//!   step), track note/level/mute/solo, the kit, a song of pattern chains,
-//!   tempo 40–240 BPM, swing 50–75 %.
-//! * [`player`]: [`Sequencer`] — exact step timing, pattern chaining, live
-//!   edits at the next step, rendering into `orpheus-synth` (or a dry run
-//!   of the hits) without any UI: what the firmware's synth task calls
-//!   with the screen off.
-//! * [`file`]: the `OSQ1` project file (versioned records, CRC-32).
+//!   and 2 synth tracks (velocity, probability, ratchet 1–4, micro-timing
+//!   delay, accent per step; note, gate and chord on the synth tracks),
+//!   parameter locks per step, track note/kit/level/mute/solo, two kits,
+//!   the synth tracks' patches and sends, the scale lock, the fill
+//!   pattern, a song of pattern chains, tempo 40–240 BPM, swing 50–75 %.
+//! * [`scale`]: scales and their chords.
+//! * [`player`]: [`Sequencer`] — exact step and note timing, pattern
+//!   chaining, live edits at the next step, fill, metronome and count-in,
+//!   notes from the keys, rendering into `orpheus-synth` (or a dry run of
+//!   the notes) without any UI: what the firmware's synth task calls with
+//!   the screen off.
+//! * [`file`]: the `OSQ1` project file (versioned records, CRC-32,
+//!   migration of SEQ-1's version 1).
+//! * [`export`]: the song as a WAV file (offline render) and a Standard
+//!   MIDI File.
 //! * [`Studio`]: what the app's service holds: the open project, the
 //!   player, the list of saved projects.
-//! * [`demo`]: a beat of our own (the example WAV, the simulator's card).
+//! * [`demo`]: songs of our own (the example WAVs, the simulator's card).
 //!
 //! `no_std`, no allocation, no `unsafe`, no floating point outside the
 //! synthesis engine.
@@ -37,16 +45,20 @@
 extern crate std;
 
 pub mod demo;
+pub mod export;
 pub mod file;
 pub mod model;
 pub mod player;
+pub mod scale;
 pub mod tap;
 
 pub use orpheus_synth;
 
 pub use file::{FileError, load_into, save};
-pub use model::{PlayMode, Project, Song, SongEntry, Step, Track};
-pub use player::{Hit, Position, Sequencer};
+pub use model::{
+    Chord, LockParam, PlayMode, Project, Scale, Song, SongEntry, Step, SynthStep, SynthTrack, Track,
+};
+pub use player::{Hit, Options, Position, Sequencer, StepLen};
 pub use tap::TapTempo;
 
 use orpheus_synth::bank::Name;
@@ -54,6 +66,22 @@ use orpheus_synth::bank::Name;
 /// The folder of the project files on the card (CLAUDE.md rule 5: the
 /// player writes only under `/.orpheus/`).
 pub const DIR: &str = "/.orpheus/seq";
+/// The file name of project file `no`'s WAV export (`SEQ01.WAV`).
+#[must_use]
+pub fn wav_name(no: u8) -> [u8; 9] {
+    let mut n = file_name(no);
+    n[6..].copy_from_slice(b"WAV");
+    n
+}
+
+/// The file name of project file `no`'s MIDI export (`SEQ01.MID`).
+#[must_use]
+pub fn midi_name(no: u8) -> [u8; 9] {
+    let mut n = file_name(no);
+    n[6..].copy_from_slice(b"MID");
+    n
+}
+
 /// Projects the list holds (file numbers 1–99; the list shows 32).
 pub const MAX_PROJECTS: usize = 32;
 /// Highest file number.
@@ -156,7 +184,8 @@ impl ProjectList {
 /// What the Sequencer's service holds (everything but the 62 KB synth
 /// engine, which lives where the decoder arena is on the player): the open
 /// project, the player and the project list. The screens read and edit
-/// it; the synth task (or the simulator) calls [`Studio::render_i16`].
+/// it; the synth task (or the simulator) calls [`Studio::render_i16`]
+/// while [`Sequencer::busy`].
 #[derive(Clone, Debug)]
 pub struct Studio {
     /// The open project.
@@ -223,6 +252,43 @@ impl Studio {
             self.seq.play();
         }
     }
+
+    /// Track `t`'s note `note` played from the keys now: heard (a synth
+    /// note for a step), and while playing with `record` written into the
+    /// step nearest to `frame` (the press, on the player's clock: the
+    /// DAC's frame) — quantised. Returns the (pattern, step) written.
+    pub fn key_note(
+        &mut self,
+        t: usize,
+        note: u8,
+        velocity: u8,
+        record: bool,
+        frame: u64,
+    ) -> Option<(u8, u8)> {
+        if t >= model::ALL_TRACKS {
+            return None;
+        }
+        self.seq.live(t as u8, note, velocity);
+        if !record {
+            return None;
+        }
+        let (pat, step) = self.seq.quantize(frame)?;
+        let (pat_i, step_i) = (usize::from(pat), usize::from(step));
+        if t < model::TRACKS {
+            let s = self.project.pattern(pat_i).step(t, step_i).with_on(true).with_velocity(velocity);
+            self.project.set_step(pat_i, t, step_i, s);
+        } else {
+            let st = t - model::TRACKS;
+            let s = self.project.pattern(pat_i).synth_step(st, step_i);
+            self.project.set_synth_step(
+                pat_i,
+                st,
+                step_i,
+                s.with_note(note).with_on(true).with_velocity(velocity),
+            );
+        }
+        Some((pat, step))
+    }
 }
 
 /// RAM of the parts, bytes (`size_of`, this build).
@@ -258,6 +324,36 @@ pub mod ram {
     pub fn studio() -> usize {
         size_of::<crate::Studio>()
     }
+
+    /// One synth step.
+    #[must_use]
+    pub fn synth_step() -> usize {
+        size_of::<crate::SynthStep>()
+    }
+
+    /// A pattern's lock store.
+    #[must_use]
+    pub fn locks() -> usize {
+        size_of::<crate::model::LockStore>()
+    }
+
+    /// One synth track (its patch, level, sends).
+    #[must_use]
+    pub fn synth_track() -> usize {
+        size_of::<crate::SynthTrack>()
+    }
+
+    /// One kit (each project holds two).
+    #[must_use]
+    pub fn kit() -> usize {
+        size_of::<orpheus_synth::Kit>()
+    }
+
+    /// A WAV export's own state.
+    #[must_use]
+    pub fn wav_export() -> usize {
+        size_of::<crate::export::WavExport>()
+    }
 }
 
 #[cfg(test)]
@@ -266,6 +362,8 @@ mod tests {
 
     #[test]
     fn file_names() {
+        assert_eq!(&wav_name(7), b"SEQ07.WAV");
+        assert_eq!(&midi_name(12), b"SEQ12.MID");
         assert_eq!(&file_name(7), b"SEQ07.OSQ");
         assert_eq!(&file_name(99), b"SEQ99.OSQ");
         assert_eq!(parse_file_name("seq07.osq"), Some(7));

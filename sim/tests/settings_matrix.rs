@@ -180,8 +180,34 @@ fn service_scripts() -> Vec<(&'static str, &'static str, Probe)> {
         ("volume", "set:volume=29 vol+ vol+", |s| format!("{}", s.sys.volume)),
         // Keys on Home and in a list: the clicks the sound output got.
         ("key-click", "next prev ok wait:100 down up back wait:100", |s| format!("{}", s.sys.clicks)),
+        // SEQ-2: the Sequencer — a new project (its kit, length, swing),
+        // then the demo beat played 2.5 s from the grid (the notes only:
+        // `seqdry`) and two keys pressed while it plays (with Key click
+        // on): the steps played, the metronome's clicks, the count-in
+        // left, the first note's frame, the key clicks.
+        ("seq-play", SEQ_PLAY, |s| {
+            let st = &s.sys.seq.studio;
+            let clicks_metro =
+                s.sys.seq.notes.iter().filter(|h| h.track == orpheus_seq::player::CLICK).count();
+            let first =
+                s.sys.seq.notes.iter().find(|h| h.track != orpheus_seq::player::CLICK).map(|h| h.frame);
+            format!(
+                "{} | {} {} {:?} {} | {}",
+                s.sys.seq.noted.clone().unwrap_or_default(),
+                st.seq.steps(),
+                clicks_metro,
+                first,
+                st.seq.counting_in(),
+                s.sys.clicks
+            )
+        }),
     ]
 }
+
+/// The `seq-play` journey (see `service_scripts`).
+const SEQ_PLAY: &str = "set:0x0108=1 set:seq=on set:seqdry=on set:seqdemo=1 goto:Sequencer wait:50 ok wait:50 \
+     expect-screen:SeqGrid set:seqnote=1 back wait:50 down ok wait:50 expect-screen:SeqGrid menu ok wait:2500 down up \
+     wait:50";
 
 fn run(s: &mut AppSim, script: &str) {
     s.run_script(script).unwrap_or_else(|e| panic!("{script}: {e:#}"));
@@ -1613,5 +1639,33 @@ mod matrix {
     #[test]
     fn s1003() {
         row(0x1003);
+    }
+    #[test]
+    fn s1101() {
+        row(0x1101);
+    }
+    #[test]
+    fn s1102() {
+        row(0x1102);
+    }
+    #[test]
+    fn s1103() {
+        row(0x1103);
+    }
+    #[test]
+    fn s1104() {
+        row(0x1104);
+    }
+    #[test]
+    fn s1105() {
+        row(0x1105);
+    }
+    #[test]
+    fn s1106() {
+        row(0x1106);
+    }
+    #[test]
+    fn s1107() {
+        row(0x1107);
     }
 }

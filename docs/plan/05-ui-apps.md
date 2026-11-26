@@ -1722,6 +1722,93 @@ Module docs are the reference; in short:
   export, fill while held, count-in, metronome, the settings of the
   list above; no new setting was added.
 
+**As built (SEQ-2, 2026-11-26): synth tracks, locks, song, export;
+host and simulator.** Still off in the firmware (SYN-3). Module docs of
+`orpheus-seq` are the reference; in short:
+
+* **Synth tracks**: tracks 8 and 9 (bass, lead) after the 8 drum tracks.
+  A `SynthStep` is 4 bytes: the drum step's on/velocity/probability/
+  ratchet/accent/delay (delay 0–12/24 in 4 bits), a note 0–127, a gate of
+  ¼–64 steps (16 codes) and a chord (single, triad, seventh — stacked in
+  the project's scale —, power). A chord plays once (its ratchet
+  ignored); a ratcheted note's gate is cut to the ratchet's length. Each
+  synth track has its own engine part with a patch (a factory preset or
+  edited: "custom"), level (the part's volume), delay and reverb sends,
+  mute and solo (solo is across all ten tracks). Note-offs are computed
+  with the note and kept per track (8 sounding notes); an off is on the
+  first sample of a render piece before that sample's note-ons (a gate of
+  one step re-attacks, a longer one overlaps: a mono legato patch
+  glides); Stop ends every synth note at the next render. Pattern
+  transpose ±24 (applied before the chord is built); **scale lock**: 10
+  scales (chromatic, major, minor, the five other modes, major and minor
+  pentatonic) on any root; note entry snaps and walks the scale.
+* **Parameter locks**: per pattern a sorted store of 24 locks (4 bytes:
+  step, track, parameter, value); a lock beyond is refused (the model's
+  `set_lock` returns false, the step screen says "No room for more locks
+  in this pattern", nothing changes). Drum tracks lock tune, decay and
+  tone (in the kit entry's units; played as the engine part's new drum
+  offsets `Param::DrumTune/DrumDecay/DrumTone`, set before the hit and
+  back after — bit-identical to the entry changed by hand), synth tracks
+  cutoff (log 20 Hz–20 kHz in 128 steps), resonance and glide (the part's
+  parameters, the patch's own values back at the next unlocked note).
+* **Two kits** per project (A, B; each drum track chooses), kit B on the
+  engine's second kit slot and part. **Fill**: a project's fill pattern;
+  while the fill key is held its steps play (from the next step, at the
+  same position within its length). **Metronome** (a clave on its own
+  part, accented each bar) and **count-in** (1–2 bars) are player
+  options; **step length** 1/16, 1/8 or 1/32 scales the step clock
+  exactly. **Live record**: `Studio::key_note` plays a note now and, when
+  recording, writes it into the step nearest the press (the step it falls
+  in, the next from its middle on, with swing).
+* **File** `OSQ1` **version 2**: new records 6 (pattern tracks of a kind:
+  the synth steps with the transpose), 7 (kit B), 8 (a synth track with
+  its patch as an `OSB1` bank), 9 (a pattern's locks); the project record
+  gains scale, root, fill and drum sends, the track flags the kit; a
+  pattern with only synth content writes its drum record with 0 tracks.
+  **Migration**: SEQ-1's version-1 files load unchanged (tested against
+  the files SEQ-1 saved, `crates/orpheus-seq/tests/data/`), saved again
+  as version 2. A new project is 924 B, the demo song 3.6 KB, at most
+  `MAX_FILE` (36,041 B; SEQ-1's demo beat is 2,708 B as version 2).
+* **Export** (`orpheus_seq::export`): one pass (the song once, or the
+  current pattern) with the step length, without metronome or count-in.
+  *WAV*: 16-bit stereo at the engine rate rendered offline through its own
+  player (`WavExport`, any piece size, the song then 2 s of tails).
+  *MIDI*: format 1, 600 ticks a step (2,400 a quarter for 1/16): every
+  hit, delay, ratchet and gate on an exact tick; tracks: tempo/name/4/4,
+  drums on channel 10, bass and lead on 1 and 2 with a GM program near
+  the preset and the level as CC 7. Written to `/.orpheus/seq/SEQnn.WAV`
+  and `SEQnn.MID` next to the project (CLAUDE.md rule 5).
+* **Screens** (`screens::seq`): the grid shows 8 of the 10 tracks (the
+  synth tracks scroll in below; their cells as drums', chords dotted,
+  locked steps with a green corner; the footer adds a synth step's note);
+  its menu adds Sound, Keys and More › Live, Song, Export WAV, Export
+  MIDI (a menu holds 12 items). *Step* adds note, length and chord for
+  synth tracks and the three lock rows (◀▶ lock from the track's own
+  value, OK clears). *Sound* (drum: tune, decay, tone, snap, level, pan
+  of its kit entry, the drum sends; synth: preset, wave, cutoff,
+  resonance, filter envelope, ADSR, vibrato, glide, voices 1/4, sends).
+  *Keys*: a one-octave strip (theme-independent white and black keys,
+  the scale's keys bright), ◀▶ walk the scale, ▲▼ an octave, OK plays and
+  enters at the step cursor (held: takes the last note back), Menu ›
+  Record: OK while playing writes quantised. *Live*: OK held = fill, ◀▶
+  the next pattern, ▲▼ tempo, the count-in counted down. *Song*: the
+  entries, ◀▶ pattern, OK one more repeat, Add pattern, Menu › Insert a
+  copy, Delete, Play the song. *Transport* adds kit B, scale, root,
+  transpose, fill pattern; *Track* adds the drum track's kit; *Mixer* all
+  ten tracks. The list's Menu › Settings opens the Sequencer's settings.
+  SEQ-2's strings are English and behind the `seq` feature (the
+  firmware's stack margin cannot take their read-only data).
+* **Settings** (Sequencer › Menu › Settings, word `0x1180`): default kit,
+  default pattern length, default swing (of new projects), metronome,
+  count-in, step length, key clicks in play (off: "key click off while
+  playing"). MIDI clock out over USB is not built (with M16). With games,
+  Books and the Sequencer the settings store is full: 128 of 128 keys.
+* **RAM** (`size_of` on the host): project 35,808 B (SEQ-1:
+  25,092; a pattern 2,147 B: drum steps 1,536, synth steps 512, locks 97),
+  player 3,784 B (SEQ-1: 1,880: a 128-hit queue of 24-byte hits, the
+  sounding-note tables), studio 40,144 B, a WAV export's own player
+  3,808 B. Kit B costs 289 B + 16 B of names. The engine grew by the drum offsets of its 16 parts: 62,320 → 62,512 B.
+
 ### 7.17 Signal generator (M18; owner's requirement 2026-11-25)
 
 Configurable reference signals on the headphone output (and, if chosen,
