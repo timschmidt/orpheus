@@ -36,6 +36,7 @@ use orpheus_sim::AppSim;
 const PLAY: &str = "set:queue=takk set:track=1 set:pos=47000";
 const STOPWATCH: &str = "next*7 ok wait:100 expect-screen:Stopwatch";
 const BOOKS: &str = "set:books=on goto:Books wait:50 expect-screen:Books";
+const SEQ: &str = "set:seq=on set:seqdemo=1 goto:Sequencer wait:50 expect-screen:Sequencer";
 
 /// Screen context → journey from a fresh simulator at Home.
 fn context_scripts() -> Vec<(&'static str, String)> {
@@ -92,6 +93,8 @@ fn context_scripts() -> Vec<(&'static str, String)> {
         ("Reader", format!("{BOOKS} down ok wait:50 expect-screen:Reader")),
         // Scrolled to its end: every reading setting's row shows.
         ("BookMenu", format!("{BOOKS} down ok wait:50 expect-screen:Reader ok wait:50 expect-screen:BookMenu down*8")),
+        ("Sequencer", SEQ.into()),
+        ("SeqGrid", format!("{SEQ} down ok wait:50 expect-screen:SeqGrid")),
     ];
     for (g, name) in [
         "Settings.Sound",

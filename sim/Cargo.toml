@@ -13,7 +13,7 @@ window = ["dep:minifb"]
 
 [dependencies]
 orpheus-ui = { path = "../crates/orpheus-ui" }
-orpheus-apps = { path = "../crates/orpheus-apps", features = ["games", "salvo", "bricks", "books", "midi"] }
+orpheus-apps = { path = "../crates/orpheus-apps", features = ["games", "salvo", "bricks", "books", "midi", "seq"] }
 orpheus-books = { path = "../crates/orpheus-books" }
 orpheus-games = { path = "../crates/orpheus-games", features = ["salvo", "bricks"] }
 orpheus-power = { path = "../crates/orpheus-power" }
@@ -23,6 +23,9 @@ orpheus-meta = { path = "../crates/orpheus-meta" }
 orpheus-audio = { path = "../crates/orpheus-audio" }
 # MIDI files in Files and Music: duration, title, karaoke lyrics (MIDI-1).
 orpheus-midi = { path = "../crates/orpheus-midi" }
+# The Sequencer's model, files and player, and the synth it plays on (SEQ-1).
+orpheus-seq = { path = "../crates/orpheus-seq" }
+orpheus-synth = { path = "../crates/orpheus-synth" }
 orpheus-img = { path = "../crates/orpheus-img" }
 orpheus-index = { path = "../crates/orpheus-index" }
 orpheus-library = { path = "../crates/orpheus-library" }

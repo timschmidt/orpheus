@@ -910,6 +910,7 @@ dependencies = [
  "orpheus-otp",
  "orpheus-power",
  "orpheus-rec",
+ "orpheus-seq",
  "orpheus-steps",
  "orpheus-ui",
  "orpheus-update",
@@ -1171,6 +1172,13 @@ name = "orpheus-sdcard"
 version = "0.1.0"
 
 [[package]]
+name = "orpheus-seq"
+version = "0.1.0"
+dependencies = [
+ "orpheus-synth",
+]
+
+[[package]]
 name = "orpheus-settings"
 version = "0.1.0"
 dependencies = [
@@ -1204,7 +1212,9 @@ dependencies = [
  "orpheus-power",
  "orpheus-proto",
  "orpheus-rec",
+ "orpheus-seq",
  "orpheus-steps",
+ "orpheus-synth",
  "orpheus-ui",
  "orpheus-update",
  "orpheus-usb",

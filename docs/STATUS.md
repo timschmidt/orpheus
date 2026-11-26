@@ -72,8 +72,112 @@ of every session. Newest entries first in §3.
 | GAME-6 Bricks (M14) | **built (host + simulator + firmware), not yet run on the player** | Brick breaker of our own: integer physics with one-pixel sub-steps (no tunnelling at any speed, no floating point), paddle angles, 1–3-hit and unbreakable bricks, 8 hand-made + generated levels, five power-ups, lives, scores, saves; 7 settings packed into 1 word; 47 goldens; fuzz `bricks_keys`. In the firmware (`orpheus-apps/bricks`): stack margin 4,116 B unchanged. Lead: session entry 2026-11-25 "GAME-6" |
 | BOOK-2 | **done (host + simulator)**; not in the firmware (as BOOK-1; the scratch is the decoder arena, see session entry) | EPUB 2/3 in `orpheus-books`: zip (end record, streamed central directory, CRC, zip64/encrypted/method refusals), `no_std` inflate (48 B state; 32 KiB window + 2,304 B tables lent: 35,072 B), container/OPF/nav/NCX, XHTML reduction over the XML tokenizer split out of FB2, contents positions from anchors, all in bounded steps into BOOK-1's stream; library titles from the package; 12 new goldens; fuzz targets `books_zip`, `books_epub` (session entry 2026-11-25 "BOOK-2") |
 | MIDI-1 | **done (host + simulator)**; not in the firmware (SYN-3); **user check: listen to the three MIDI renders** | `orpheus-midi`: Standard MIDI File parser (formats 0/1/2, running status, meta and SysEx, SMPTE, RMID) streamed through 64 track cursors of 64-byte windows that ask for bytes (`Need`/`supply`), nothing trusted; exact tick→frame clock through tempo changes; sequencer (CC 1/6/7/10/11/38/64/91/93/96–101/120–127, RPN bend range, pressure, programs, kits on channel 10, mute/solo); own GM set of 32 sounds for the 128 programs (`data/gm-sounds.osb`); `MidiPlayer`: open/scan, render, bounded-step seek (bit-exact where nothing sounds across the target), duration/position, `.kar`/lyric events; Files plays `.mid`/`.kar` in the simulator with Now Playing lyrics; player 70,224 B; estimate ≈ 117 MHz at 48 kHz for a 10–11-voice song: High clock (session entry 2026-11-25 "MIDI-1") |
+| SEQ-1 | **done (host + simulator)**; not in the firmware (SYN-3); **user check: listen to the demo beat** | `orpheus-seq`: project model (16 patterns × 1–64 steps × 8 drum tracks; velocity, chance, ratchet, delay, accent per step; mute/solo/level; songs; 40–240 BPM, swing 50–75 %), exact integer step timing (any tempo and swing, an hour without drift), edits heard at the next step, render without UI (`Studio::render_i16`), `OSQ1` files with CRC under `/.orpheus/seq/`; Sequencer app (feature `orpheus-apps/seq`): list, grid, transport, step, track, mixer; 38 goldens, 8 journeys, fuzz `seq_load`; project 25,092 B (session entry 2026-11-26 "SEQ-1") |
 
 ## 3. Session log
+
+### 2026-11-26 — SEQ-1: the Sequencer on the host and in the simulator (worker, no hardware)
+
+New crate `crates/orpheus-seq` (`no_std`, no `alloc`, no `unsafe`, no
+`core::fmt`, no floating point outside the synth) on `orpheus-synth`;
+feature `seq` of `orpheus-apps` (on in the simulator and the browser
+build, **off in the firmware**: no synth there until SYN-3). Full "as
+built" in 05 §7.16; in short:
+
+* **Model**: 16 patterns × 1–64 steps × 8 drum tracks; a step is 3 bytes
+  (on, velocity, probability in sixteenths, ratchet 1–4, accent, a
+  micro-timing *delay* 0–12/24 step); tracks with kit note, level, mute,
+  solo; one kit (`Kind::Kit(0)`, one engine part: choke groups work across
+  tracks); tempo 40–240 BPM (1/100 BPM), swing 50–75 %; play modes Pattern
+  (switch at the pattern end) and Song (chain of ≤ 64 pattern × repeats).
+  Synth tracks are SEQ-2.
+* **Player**: exact step timing in integer units (a step pair = 57,600
+  units; frame = anchor + ⌊units·rate·5/(tempo·96)⌋): every hit on the
+  floor of its exact time at any tempo, swing, delay and ratchet, an hour
+  without drift; tempo re-anchors at the next step; a step is read when it
+  starts, so **every edit is heard from the next step** (the reason
+  micro-timing only delays). Block-size independent; the audio equals the
+  engine fed the same notes by hand; seeded probability, so a saved song
+  renders bit for bit.
+* **Screen-off API**: `Studio::render_i16(&mut Engine, &mut [i16])` is all
+  the synth task needs; the UI edits the project between blocks and reads
+  `Sequencer::position_at(dac_frame)` (the playhead from the audio clock).
+* **File**: `/.orpheus/seq/SEQnn.OSQ`, `OSQ1` v1 records + CRC-32, the kit
+  as an embedded `OSB1` bank; new project 383 B, the demo 2,167 B, at most
+  25,203 B; older versions load (longer/shorter records, unknown tags),
+  newer refused.
+* **Screens**: project list, grid (full screen, 16 × 8 cells of 7 × 12
+  px, playhead, header, page footer), transport (play, tempo, swing, tap
+  tempo, mode, pattern, length, kit), step, track, mixer (mute/solo/level).
+  On Home only with `set:seq=on` in the simulator (like Books), so no
+  existing golden moved. Strings English (appended to the table).
+* **RAM**: step 3 B, pattern 1,537 B, project 25,092 B, player 1,880 B,
+  studio 27,528 B (+ the 62,320 B engine). On the player the project
+  cannot live in `.bss` (≈ 1.5 KB left): with the synth in the decoder
+  arena (62.3 of 72 KiB), the project fits the idle 32 KiB stream ring
+  (no music plays while the synth does) — SYN-3/SEQ firmware decision.
+* **Settings**: none added. The Home-screen mask's default is now 16383
+  (14 apps with the feature; manifest updated); new matrix contexts
+  `Sequencer` (list) and `SeqGrid` (grid), placed as Books and the
+  reader are (Theme and Accent change the grid; status-bar settings the
+  list): `settings-matrix --check` 11,090 / 11,138 cells, 0 errors.
+* **Tests**: `orpheus-seq` (lib 3, `timing` 6, `play` 18, `file` 7, fuzz
+  corpus 2; `orpheus-apps` 1 for the tempo text): timing exactness, swing, micro/ratchet, an hour, tempo at the
+  next step, hand-placed audio, block sizes, chaining (song with repeats,
+  empty song, pattern switch at the end), edits/mute/solo/swing/length at
+  the next step, levels/accents, seeded probability, the densest pattern
+  (no hit dropped), saved song bit-identical, screen-off render and
+  playhead, stop/play, kits, every factory kit on every track, clamping,
+  RAM; round trips (demo, 40 random projects), sizes, every truncation and
+  byte flip refused, newer version, impossible records, forward
+  compatibility, names. Fuzz target `seq_load` (`crates/orpheus-seq/fuzz`,
+  10 seeds in `tests/fuzz-corpus/seq_load/`): 252,331 runs in 150 s with
+  `nightly-2026-11-05` under ASan, no finding. Simulator: 38
+  goldens `seq_*` (looked at), journeys `sim/tests/seq.rs` (8: make a beat
+  by keys, hear it, save, restart, open; grid keys; mixer mute/solo while
+  playing; transport incl. tap tempo; step editing; track sound/level;
+  12 s with the screen off: frames and steps advance; delete and a failed
+  save).
+* **WAV for the owner** (made through the model: `cargo run --release -p
+  orpheus-seq --example render -- <dir>`): `night-bus.wav` ("Night Bus",
+  98 BPM, swing 56 %, punch kit, A A B B A C B D, 24 s, 220 hits, peak
+  −2.8 dBFS) and its project file `SEQ01.OSQ` in the session scratchpad
+  `seq1/` (not committed).
+* **Gate**: `cargo fmt --all --check`; `cargo clippy --workspace
+  --all-targets -D warnings`; `cargo clippy -p orpheus-apps --all-targets
+  -D warnings` with no features, `seq`, `seq,games`, `seq,books`,
+  `games,salvo,bricks` and all; `cargo test --workspace` (1,910 passed,
+  0 failed, 13 ignored; was 1,865); `cargo xtask settings-matrix --check`
+  (above); `cargo xtask build`, `size --check`, `check-resident`,
+  `stack --check`: pass. **Firmware** (the `seq` feature is off there;
+  only the 40 appended strings reach it): resident 81,155 → 81,203 B
+  (+48: code generation of the rebuilt crates), `.bss` 125,408 B
+  unchanged, `.rodata` +648 B (the strings) moved `__stack_bottom` by
+  688 B across one 256 B step: stack usable 19,456 → 19,200 B, **margin
+  4,560 → 4,304 B** (budget 4,096). **Not run**: `xtask test all` beyond
+  these, `brand`/`site --check`, every `xtask dev` step (no hardware;
+  the brief forbids `xtask dev`).
+* **User check**: listen to `night-bus.wav` (swing feel, ratchets and the
+  fill, the levels of the punch kit). In the browser build/simulator:
+  `set:seq=on`, make a beat with the keys.
+* **For SEQ-2**: synth tracks (2 × monophonic/4-voice with note per step:
+  a second step type with a note byte, the file's pattern record gains a
+  track kind), sound screens and parameter locks (per-step locks need
+  storage: a sparse lock pool per pattern), note entry/scale lock, live
+  record, song editing screen, WAV export (`Studio` render offline is
+  ready) and MIDI export (`Sequencer::run_dry` gives every hit with its
+  frame), fill while held, count-in/metronome and the Sequencer settings
+  of 05 §7.16 (each with VER-13 entries), early micro-timing (needs a
+  half-step lookahead), more kits per project (2 engine kit slots).
+* **For SYN-3 (and the firmware Sequencer)**: the engine (62 KB) in the
+  decoder arena, the 25 KB project in the idle stream ring (or a smaller
+  project), `Studio::render_i16` from the synth task into the DAC ring,
+  the UI reading `position_at(clock − ring latency)`; a lock (BASEPRI
+  critical section) around project edits vs a render block, or edits sent
+  as messages; card I/O of `SEQnn.OSQ` in the card task (≤ 25,203 B file:
+  read in pieces or into the ring); the clock floor High for drum patterns
+  (SYN-2: 48–77 MHz + reverb); turn `seq` on in the firmware and put the
+  app on the player's Home (`App::on_player`).
 
 ### 2026-11-26 — settings rounds 2 and 3, MIDI-1, SYN-2, BOOK-2 merged; screen lock vs tests (lead)
 

@@ -25,6 +25,8 @@ mod recorder;
 mod rows;
 #[cfg(feature = "salvo")]
 mod salvo;
+#[cfg(feature = "seq")]
+mod seq;
 #[cfg(feature = "games")]
 mod solitaire;
 mod steps;
@@ -55,6 +57,8 @@ pub use player::{EqualiserScreen, NowPlayingScreen};
 pub use radio::{PresetsScreen, RadioScreen};
 pub use recorder::RecorderScreen;
 pub use rows::{MAX_ROWS, RowData, Rows};
+#[cfg(feature = "seq")]
+pub use seq::{GridScreen, SeqEdit, SeqEditScreen, SeqListScreen};
 pub use steps::{DAY_SHORT, StepsScreen, push_distance, push_energy, push_grouped, steps_hint};
 pub use system::{BootScreen, ChargingScreen, GoodbyeScreen, LockScreen, Notice, NoticeScreen};
 pub use text::TextScreen;
@@ -189,6 +193,24 @@ pub const BOOK_MARKS: ScreenId = ScreenId(60);
 /// Go to a per cent of the book.
 #[cfg(feature = "books")]
 pub const BOOK_GOTO: ScreenId = ScreenId(61);
+/// The Sequencer (05 §7.16, SEQ-1; feature `seq`): the project list.
+#[cfg(feature = "seq")]
+pub const SEQ: ScreenId = ScreenId(62);
+/// The grid of the open project.
+#[cfg(feature = "seq")]
+pub const SEQ_GRID: ScreenId = ScreenId(63);
+/// Transport: play, tempo, swing, tap tempo, mode, pattern, length, kit.
+#[cfg(feature = "seq")]
+pub const SEQ_TRANSPORT: ScreenId = ScreenId(64);
+/// A step's parameters. Arg: track << 8 | step.
+#[cfg(feature = "seq")]
+pub const SEQ_STEP: ScreenId = ScreenId(65);
+/// A track's sound, level, mute and solo. Arg: the track.
+#[cfg(feature = "seq")]
+pub const SEQ_TRACK: ScreenId = ScreenId(66);
+/// Every track's mute, solo and level.
+#[cfg(feature = "seq")]
+pub const SEQ_MIXER: ScreenId = ScreenId(67);
 
 /// One variant per screen. Only the top screen exists, so the enum's size
 /// (its largest variant, the list screen) is the UI's screen RAM.
@@ -233,6 +255,12 @@ pub enum AppScreen {
     Reader(ReaderScreen),
     #[cfg(feature = "books")]
     BookGoto(GotoScreen),
+    #[cfg(feature = "seq")]
+    SeqList(SeqListScreen),
+    #[cfg(feature = "seq")]
+    SeqGrid(GridScreen),
+    #[cfg(feature = "seq")]
+    SeqEdit(SeqEditScreen),
 }
 
 macro_rules! each {
@@ -277,6 +305,12 @@ macro_rules! each {
             AppScreen::Reader($s) => $e,
             #[cfg(feature = "books")]
             AppScreen::BookGoto($s) => $e,
+            #[cfg(feature = "seq")]
+            AppScreen::SeqList($s) => $e,
+            #[cfg(feature = "seq")]
+            AppScreen::SeqGrid($s) => $e,
+            #[cfg(feature = "seq")]
+            AppScreen::SeqEdit($s) => $e,
         }
     };
 }
@@ -407,6 +441,18 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             BOOK_READ => AppScreen::Reader(ReaderScreen::default()),
             #[cfg(feature = "books")]
             BOOK_GOTO => AppScreen::BookGoto(GotoScreen::default()),
+            #[cfg(feature = "seq")]
+            SEQ => AppScreen::SeqList(SeqListScreen::default()),
+            #[cfg(feature = "seq")]
+            SEQ_GRID => AppScreen::SeqGrid(GridScreen::default()),
+            #[cfg(feature = "seq")]
+            SEQ_TRANSPORT => AppScreen::SeqEdit(SeqEditScreen::new(SeqEdit::Transport)),
+            #[cfg(feature = "seq")]
+            SEQ_STEP => AppScreen::SeqEdit(SeqEditScreen::new(SeqEdit::Step)),
+            #[cfg(feature = "seq")]
+            SEQ_TRACK => AppScreen::SeqEdit(SeqEditScreen::new(SeqEdit::Track)),
+            #[cfg(feature = "seq")]
+            SEQ_MIXER => AppScreen::SeqEdit(SeqEditScreen::new(SeqEdit::Mixer)),
             _ => AppScreen::Home(HomeScreen::default()),
         }
     }
@@ -458,6 +504,12 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             AppScreen::Reader(_) => BOOK_READ,
             #[cfg(feature = "books")]
             AppScreen::BookGoto(_) => BOOK_GOTO,
+            #[cfg(feature = "seq")]
+            AppScreen::SeqList(_) => SEQ,
+            #[cfg(feature = "seq")]
+            AppScreen::SeqGrid(_) => SEQ_GRID,
+            #[cfg(feature = "seq")]
+            AppScreen::SeqEdit(e) => e.screen_id(),
         }
     }
 
@@ -508,6 +560,12 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             AppScreen::Reader(_) => "Reader",
             #[cfg(feature = "books")]
             AppScreen::BookGoto(_) => "BookGoTo",
+            #[cfg(feature = "seq")]
+            AppScreen::SeqList(_) => "Sequencer",
+            #[cfg(feature = "seq")]
+            AppScreen::SeqGrid(_) => "SeqGrid",
+            #[cfg(feature = "seq")]
+            AppScreen::SeqEdit(e) => e.name(),
         }
     }
 

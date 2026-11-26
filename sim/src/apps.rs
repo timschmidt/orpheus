@@ -43,6 +43,7 @@ use crate::games::SimGames;
 use crate::media::Media;
 use crate::radio::SimRadio;
 use crate::recorder::SimRecorder;
+use crate::seq::SimSeq;
 use crate::steps::FakeSteps;
 use crate::{Host, packs};
 
@@ -124,6 +125,10 @@ pub struct HostServices {
     pub books: SimBooks,
     /// Books on Home: off (not on the player yet); `set:books=on`.
     pub books_on_home: bool,
+    /// The Sequencer (M17, SEQ-1): the studio, the synth, its files.
+    pub seq: SimSeq,
+    /// The Sequencer on Home: off (not on the player yet); `set:seq=on`.
+    pub seq_on_home: bool,
     /// Key clicks the sound output got (Settings › Sound › Key click, 05
     /// §3; the firmware mixes each into its output).
     pub clicks: u32,
@@ -204,6 +209,8 @@ impl HostServices {
             games_on_home: true,
             books: SimBooks::default(),
             books_on_home: false,
+            seq: SimSeq::default(),
+            seq_on_home: false,
             clicks: 0,
             timer_hold: Some(services::TimerHold::default()),
             drift: services::ClockDrift::new(),
@@ -241,6 +248,34 @@ impl orpheus_apps::books::BooksService for HostServices {
 
     fn books_request(&mut self, r: orpheus_books::shelf::Req) {
         self.books.shelf.request(r);
+    }
+}
+
+impl orpheus_apps::seq::SeqService for HostServices {
+    fn seq(&self) -> &orpheus_seq::Studio {
+        &self.seq.studio
+    }
+
+    fn seq_mut(&mut self) -> &mut orpheus_seq::Studio {
+        &mut self.seq.studio
+    }
+
+    fn seq_request(&mut self, r: orpheus_apps::seq::SeqRequest) {
+        use orpheus_apps::seq::{SeqRequest, SeqResult};
+        self.seq.result = match r {
+            SeqRequest::List => {
+                self.seq.list(&mut self.media);
+                SeqResult::Done
+            }
+            SeqRequest::Open(no) => self.seq.open(&mut self.media, no),
+            SeqRequest::Save => self.seq.save(&mut self.media),
+            SeqRequest::Delete(no) => self.seq.delete(&mut self.media, no),
+        };
+        self.events.push(Event::Service(ServiceEvent::Other { kind: services::other::SEQ, value: 0 }));
+    }
+
+    fn seq_result(&self) -> orpheus_apps::seq::SeqResult {
+        self.seq.result
     }
 }
 
@@ -647,6 +682,7 @@ impl SystemService for HostServices {
         match app {
             App::Games => self.games_on_home,
             App::Books => self.books_on_home,
+            App::Sequencer => self.seq_on_home,
             _ => true,
         }
     }
@@ -1020,6 +1056,20 @@ impl Host for HostServices {
                 // Home looks again even when the mask had the bit already.
                 self.events.push(Event::Service(ServiceEvent::SettingChanged(id::HOME_APPS.0)));
             }
+            "seq" => {
+                self.seq_on_home = on;
+                let mask = self.settings.get(id::HOME_APPS);
+                let bit = 1 << (App::Sequencer as u8);
+                self.set_setting(id::HOME_APPS, if on { mask | bit } else { mask & !bit });
+                self.events.push(Event::Service(ServiceEvent::SettingChanged(id::HOME_APPS.0)));
+            }
+            "seqdemo" => {
+                if self.seq.add_demo(&mut self.media).is_none() {
+                    bail!("seqdemo: the card is full of projects");
+                }
+            }
+            "seqcapture" => self.seq.capture = on.then(Vec::new),
+            "seqfail" => self.seq.fail = on,
             "booksteps" => self.books.per_step = v.parse()?,
             "bookscratch" => self.books.lend = on,
             _ if {
@@ -1081,6 +1131,12 @@ impl Host for HostServices {
             "BookContents" => screens::BOOK_TOC,
             "BookBookmarks" => screens::BOOK_MARKS,
             "BookGoTo" => screens::BOOK_GOTO,
+            "Sequencer" => screens::SEQ,
+            "SeqGrid" => screens::SEQ_GRID,
+            "SeqTransport" => screens::SEQ_TRANSPORT,
+            "SeqStep" => screens::SEQ_STEP,
+            "SeqTrack" => screens::SEQ_TRACK,
+            "SeqMixer" => screens::SEQ_MIXER,
             _ => return None,
         })
     }
@@ -1181,6 +1237,9 @@ impl Host for HostServices {
         self.rec_events();
         self.drive.advance(ms, &mut self.media);
         self.drive_events();
+        // The Sequencer plays on whatever the screen shows (or whether it
+        // is on): the firmware's synth task.
+        self.seq.advance(ms);
         self.update.advance(ms);
         self.now_ms += ms;
         if self.clock_run {

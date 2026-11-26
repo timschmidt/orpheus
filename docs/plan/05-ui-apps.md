@@ -1575,6 +1575,81 @@ patterns, chained into songs.
   the project exactly, render of a saved song is bit-identical); a long
   soak scenario playing a song while editing.
 
+**As built (SEQ-1, 2026-11-26): drum tracks, host and simulator.** New
+crate `crates/orpheus-seq` (`no_std`, no `alloc`, no `unsafe`, no
+floating point outside the synth); feature `seq` of `orpheus-apps` (on in
+the simulator and the browser build, off in the firmware until SYN-3).
+Module docs are the reference; in short:
+
+* **Model** (`model`): a `Project` of 16 patterns × 1–64 steps × **8 drum
+  tracks** (synth tracks are SEQ-2); a `Step` is 3 bytes: on, velocity
+  1–127 (kept while off), probability in sixteenths, ratchet 1–4, accent
+  (+32 velocity), micro-timing as a **delay** of 0–12/24 step (no early
+  push: a step is read when it starts, so every edit is heard at the next
+  step; an early push needs a lookahead, SEQ-2 if wanted). Tracks: kit
+  note, level 0–100 %, mute, solo (any solo: only soloed, unmuted tracks
+  sound). One kit per project (an `orpheus_synth::Kit`, a factory kit by
+  name in SEQ-1), all tracks on one engine part so the kit's choke groups
+  work across tracks. Tempo 40–240 BPM in 1/100 BPM, swing 50–75 %, play
+  mode Pattern (the current pattern loops; another chosen while playing
+  starts at the pattern's end) or Song (a chain of ≤ 64 entries of a
+  pattern × 1–16 repeats, round again at its end; song editing is SEQ-2).
+  Every setter clamps; `rev()` counts changes (autosave, redraws).
+  Shortening a pattern keeps its later steps. RAM: project 25,092 B
+  (patterns 16 × 1,537), player 1,880 B, studio (project, player, list of
+  32 projects) 27,528 B; `reset`/`clear` work in place (assigning the
+  `NEW`/`EMPTY` constants put a 25 KB image of them in read-only data).
+  Code (thumbv7em, opt "s", no LTO): 15.5 KB with the demo and the
+  writer; the play path (`segment`, render, `units_to_frames` with its
+  128-bit division per step) ≈ 4.2 KB.
+* **Timing** (`player`): units of 1/57,600 of a step pair; a step at local
+  index *i* lasts 576·swing (even) or 576·(100 − swing) (odd) units,
+  delays 1,200 per 1/24, ratchet hit *j* of *r* at *j*·len/*r* — all whole
+  numbers; frame = anchor + ⌊units·rate·5 / (tempo·96)⌋. Every hit on the
+  floor of its exact time (tested against an independent rational
+  computation at 8/44.1/48 kHz, 40–240 BPM, swing 50–75 %, odd pattern
+  lengths, every delay and ratchet, and for an hour without drift). A
+  tempo change re-anchors at the next step. Hits are note-ons on part 0
+  at their sample; blocks are cut at step starts and when 64 hits are due;
+  any block size renders the same samples; the audio equals the engine fed
+  the same notes by hand. Probability draws are a hash of the project
+  seed, the step count and the track: a saved song renders bit for bit.
+* **Screen-off API**: `Studio::render_i16(&mut Engine, &mut [i16])` (or
+  `Sequencer::render_*`, `run_dry` for the hits alone) is all the synth
+  task calls; the UI only edits the project between blocks and reads
+  `Sequencer::position_at(dac_frame)` — the playhead from the audio's own
+  clock, less the output latency (16 latched steps remembered).
+* **File** (`file`): `/.orpheus/seq/SEQnn.OSQ` (8.3 names, 1–99; CLAUDE.md
+  rule 5 instead of the `/Sequencer/` above): `OSQ1`, version 1, records
+  (project, tracks, non-empty patterns with their steps past the length,
+  song, the kit as an embedded `OSB1` bank record), CRC-32 at the end. A
+  new project 383 B, the demo 2,167 B, at most 25,203 B (`MAX_FILE`). Older versions
+  load (longer records keep their known prefix, shorter ones keep
+  defaults, unknown tags are skipped; `migrate` is the hook); newer ones
+  are refused so an older firmware never overwrites them. Fuzz target
+  `seq_load` (10 seeds).
+* **Screens** (`screens::seq`): *Sequencer* — "New project" (named
+  "Beat n", saved at once) and the saved projects (a playing one marked;
+  Menu › Delete project). *Grid* (full screen) — header: pattern, the
+  track's sound, tempo, play/stop; 8 rows of 16 cells of 7 × 12 px with
+  lower-case labels (two capitals of the UI font do not fit 16 px): on
+  white, accent in the accent colour, ghost (velocity < 64) grey,
+  chance < 100 % hollow, ratchets split; the playhead column lighter;
+  footer: pages, step/length and the step's velocity. Keys as above (held
+  Prev/Next: by pages), Menu: Play/Stop, Transport, Mixer, Track,
+  Next/Previous pattern, Copy to next pattern, Clear pattern, Save; Back
+  saves (if changed) and returns to the list; leaving the app stops.
+  *Transport* (play, tempo ±1 BPM — held ±10 —, swing, tap tempo (mean of
+  the last 4 taps), play mode, pattern, length, kit), *Step* (on,
+  velocity, chance, ratchet, delay, accent; hold OK on the grid), *Track*
+  (sound among the kit's notes, level, mute, solo), *Mixer* (every track:
+  OK mute, hold OK solo, Prev/Next level). Strings English in every
+  language until the packs have them.
+* **Not in SEQ-1** (SEQ-2): synth tracks, sound screens and parameter
+  locks, note entry and scale lock, live record, song editing, WAV/MIDI
+  export, fill while held, count-in, metronome, the settings of the
+  list above; no new setting was added.
+
 ### 7.17 Signal generator (M18; owner's requirement 2026-11-25)
 
 Configurable reference signals on the headphone output (and, if chosen,

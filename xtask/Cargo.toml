@@ -31,7 +31,7 @@ flate2 = "1"
 # (expected frames), key indices of the developer channel, reply checks.
 orpheus-sim = { path = "../sim" }
 # VER-13: the settings tree with every feature (the matrix tool).
-orpheus-apps = { path = "../crates/orpheus-apps", features = ["games", "salvo", "bricks", "books"] }
+orpheus-apps = { path = "../crates/orpheus-apps", features = ["games", "salvo", "bricks", "books", "seq"] }
 orpheus-input = { path = "../crates/orpheus-input" }
 regex = { version = "1", default-features = false, features = ["std", "unicode-perl"] }
 # TTS-1: the speech engine's lexicon tool.
