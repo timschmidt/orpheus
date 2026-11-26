@@ -199,17 +199,23 @@ impl<F: Nor, const N: usize, const K: usize> Store<F, N, K> {
     /// default settings until the next restart (2026-11-26: `store=none`
     /// once, the owner's settings intact in NOR and mounted on the next
     /// boot). A read error never formats or writes anything. Returns the
-    /// store and the number of failed tries before it.
+    /// store and, if tries failed before it, how many and the last one's
+    /// error (for the log: which NOR error it was).
     pub async fn mount_retrying(
         mut make: impl FnMut() -> F,
         tries: u8,
-    ) -> Result<(Self, u8), Error<F::Error>> {
-        let mut failed = 0u8;
+    ) -> Result<(Self, Option<(u8, Error<F::Error>)>), Error<F::Error>> {
+        let mut failed = None;
         loop {
             match Self::mount(make()).await {
                 Ok(s) => return Ok((s, failed)),
-                Err(e) if failed.saturating_add(1) >= tries.max(1) => return Err(e),
-                Err(_) => failed += 1,
+                Err(e) => {
+                    let n = failed.map_or(1, |(n, _): (u8, _)| n.saturating_add(1));
+                    if n >= tries.max(1) {
+                        return Err(e);
+                    }
+                    failed = Some((n, e));
+                }
             }
         }
     }
@@ -606,11 +612,16 @@ mod tests {
         let erases_before = nor.ops;
         nor.fail_reads.set(1);
         let (mut s, failed) = block_on(S::mount_retrying(|| nor.clone(), 3)).unwrap();
-        assert_eq!(failed, 1);
+        assert_eq!(failed, Some((1, Error::Nor(Cut))));
         assert_eq!(get(&mut s, 0x0701), Some(vec![1, 0]));
         assert_eq!(s.nor.ops, erases_before, "a retried mount wrote to NOR");
         nor.fail_reads.set(5);
         assert!(block_on(S::mount_retrying(|| nor.clone(), 3)).is_err());
+        nor.fail_reads.set(2);
+        let (_, failed) = block_on(S::mount_retrying(|| nor.clone(), 3)).unwrap();
+        assert_eq!(failed, Some((2, Error::Nor(Cut))), "two failed tries, the last one's error");
+        nor.fail_reads.set(0);
+        assert_eq!(block_on(S::mount_retrying(|| nor.clone(), 3)).unwrap().1, None);
     }
 
     /// 2026-11-26 (VER-4, found while making the index smaller): a value

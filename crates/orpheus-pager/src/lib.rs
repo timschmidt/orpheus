@@ -45,6 +45,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+pub mod bus;
 #[cfg(feature = "sim")]
 pub mod sim;
 

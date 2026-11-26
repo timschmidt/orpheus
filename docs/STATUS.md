@@ -79,6 +79,71 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-26 — HW: the boot-time settings read error is SPI0 shared with the pager; thread-mode NOR reads masked (worker, no hardware)
+
+* **Cause (from the code, not yet seen on the player)**: `nor::read` (the
+  settings store's, the vault's) ran with interrupts open, while the RT
+  executor's task bodies are paged by design (resident.toml) and at boot
+  the audio task mounts the card in parallel with the UI task's
+  `mount_store`. A page fault there runs the pager's line read
+  (`nor::read_dma`) on the same SPI0 in the middle of the thread's
+  transaction: CS toggles (the chip drops the READ), `BC` is rewritten and
+  `CTL &= 0x7FFF_EFBC` clears the mode bits. Cut in the data phase, the RX
+  FIFO stays empty and `recv` times out (the error we saw); cut between
+  command and data, bytes are clocked with no command and come back as
+  0xFF **with no error** — `get` reads values without their CRC and a
+  scan reading a bad header stops early, so settings could also have read
+  wrong silently. An RT task's `clock::set_level` (the audio clock floor)
+  switched SPI0's clock under such a read as the same race. Why some boots
+  only: it needs an RT fault inside one of the mount's short reads; boots
+  that resume playback or after an update (cold pages) fault the most. The
+  installer's reads already masked themselves for exactly this reason;
+  nothing else did. Ruled out: a NOR program/erase still running at boot
+  (the driver cannot see chip busy on a read: it would return garbage, not
+  an error), the JEDEC/mode set-up (only at `nor::init`, before any task),
+  `Refused` (deterministic).
+* **Fix**: `orpheus_pager::bus::read` (host crate, resident): every
+  thread-mode read is a series of transactions of at most 256 bytes, each
+  inside `critical_section` (BASEPRI, levels 1–3; faults stay live and
+  only the reader's own resident code can fault then). An epoch counter
+  bumped by `read_dma` and `set_clock` turns a transaction another SPI0
+  user ran during into `Error::Read(Interleaved)` instead of data.
+  `nor::Error::Timeout` for reads is now `Error::Read(Command | Data |
+  Interleaved)`. `recv` stops at the first empty FIFO (it polled 200,000
+  times per remaining byte: up to ~1 s per 64-byte piece with the main
+  executor blocked). The installer's own masking is gone (the HAL does
+  it). Masked time per transaction: a 256 B byte-polled READ ≈ one pager
+  line read (~175 µs at `0x200`); the store's reads are 12–64 B.
+* **Instrumentation**: `settings: store mounted after N read errors, last
+  nor read/data` (or `…/command`, `…/cut`, `nor timeout`, …; also on
+  `store not mounted`); `Store::mount_retrying` returns the last error.
+  Counters `nor::read_errors()` (command, data, cut) in the `settings
+  test-session` reply as ` nor=C/D/I`; `dev suite` fails when any is
+  non-zero (`regress_suite_sees_a_hidden_nor_read_error`).
+* **Tests**: `regress_store_read_cut_by_a_page_fault` (a model of the
+  controller takes the pager's line read after every register step of a
+  two-transaction read: right bytes and the pager served; fails without
+  the mask), `an_unmaskable_cut_is_reported_not_returned`,
+  `transactions_are_masked_chunks_in_order`,
+  `a_failed_transaction_ends_the_read`; `regress_mount_survives_a_read_error`
+  extended (last error, count).
+* **Numbers**: resident 81,388 → 81,583 B (of 81,920); paged code
+  1,047,958 → 1,048,246 B in the 128-page window (330 B left); `.bss`
+  124,200 → 124,216 B; stack margin 5,440 B unchanged. A first try with a
+  separate `nor errors` command overflowed the code window (129 pages);
+  the counters went into the session reply instead.
+* **On-device check (lead)**: after `dev update`, `cargo xtask dev cmd
+  "settings test-session"` → `… nor=0/0/0`. Then 20 boots (`dev reboot`),
+  half with a track playing before the reboot (resume at start-up mounts
+  the card in parallel), each followed by the same command and a log
+  check for `settings: store`: expect no line and `nor=0/0/0` every time.
+  Run `dev suite` once (it now fails on a non-zero counter). If an error
+  still appears, its kind is in the line: `cut` means a SPI0 user the
+  mask does not hold off; `data`/`command` with `cut` 0 means a cause not
+  in the code (U-NOR-4).
+* Open: U-NOR-4 (what the controller really returns when cut; answered
+  only if the old firmware is run with the counters, not needed).
+
 ### 2026-11-26 — settings store 192 keys and SYN-3 on the player; MIDI trips the watchdog (lead)
 
 * Merged VER-4 store widening (`efad6eff`): index 128 → 192 keys, same

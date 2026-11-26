@@ -444,6 +444,13 @@ exactly, with host tests replaying recorded traces, 07 §3.1).
    SFDP table and by test (01, U-NOR-2). If it is not available: settings
    writes are deferred to moments when audio is stopped, and the firmware
    pre-faults the code it needs and blocks the RT executor for the duration.
+   **Reads too** (2026-11-26): RT-executor task bodies are paged, so a fault
+   there runs the pager's line read on SPI0 in the middle of whatever
+   thread mode was reading. Thread-mode reads (`nor::read`) are therefore
+   transactions of at most 256 bytes with BASEPRI raised
+   (`orpheus_pager::bus`; the boot-time settings read error); a
+   transaction during which another SPI0 user ran anyway is an error, never
+   data.
 6. **Watch the working set.** Four code slots hold at most 32 lines. A loop
    that alternates between more hot lines than fit thrashes at 180 µs per
    miss. Hot loops are either resident (§3.4) or packed together by profile

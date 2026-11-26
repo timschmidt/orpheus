@@ -54,19 +54,15 @@ pub enum Op {
     Install(u8),
 }
 
-/// The NOR as the installer sees it: reads in 256-byte pieces with
-/// interrupts masked (a page fault elsewhere must not cut into the
-/// transaction), erase and program through the HAL (each masks itself).
+/// The NOR as the installer sees it, through the HAL: reads are masked
+/// 256-byte transactions there (a page fault elsewhere must not cut into
+/// one; `orpheus_pager::bus`), erase and program mask themselves.
 struct Nor;
 
 impl Flash for Nor {
     type Error = nor::Error;
     fn read(&mut self, addr: u32, buf: &mut [u8]) -> Result<(), nor::Error> {
-        for (i, c) in buf.chunks_mut(256).enumerate() {
-            let a = addr + (i * 256) as u32;
-            critical_section::with(|_| nor::read(a, c))?;
-        }
-        Ok(())
+        nor::read(addr, buf)
     }
     fn erase_sector(&mut self, addr: u32) -> Result<(), nor::Error> {
         nor::erase_sector(addr)

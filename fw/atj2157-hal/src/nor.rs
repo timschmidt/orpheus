@@ -5,13 +5,21 @@
 //!
 //! * Reads: READ (0x03) byte-polled, or FAST READ (0x0B) with the RX FIFO
 //!   drained by DMA channel 0 (mode `0x00200088`) as the mask ROM does [HW].
+//!   A thread-mode [`read`] is a series of transactions of at most 256
+//!   bytes, each with interrupts masked (BASEPRI): the pager's line read
+//!   from a page fault in an RT task would otherwise reprogram SPI0 in the
+//!   middle of it (`orpheus_pager::bus`, the boot-time settings read error
+//!   of 2026-11-26). [`read_errors`] counts failed reads by kind.
 //! * Program/erase: WREN, PP (0x02, ≤ 256 bytes within a page), SE (0x20,
 //!   4 KiB), status polling. Every write path checks
 //!   `orpheus_proto::layout::dual_writable` — nothing below `0x762000` or in
 //!   the boot sector region outside the free area is ever written.
 
+use core::sync::atomic::{AtomicU32, Ordering};
+
 use atj2157_pac::spi::spi0;
 use atj2157_pac::{Reg, cmu, rmu};
+use orpheus_pager::bus::{self, ReadFault};
 use orpheus_proto::layout::{dual_writable, full_writable};
 
 /// Set once the firmware runs from a full-layout slot (or a payload works
@@ -59,10 +67,36 @@ const DMA_MODE_SPI_RX: u32 = 0x0020_0088;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
+    /// Program/erase: the chip stayed busy, or the controller did not take
+    /// the data; a DMA read did not finish.
     Timeout,
     /// Address outside the writable region.
     Refused,
     Verify,
+    /// A thread-mode [`read`] failed, and how.
+    Read(ReadFault),
+}
+
+/// Turns of the SPI0 users that can preempt a thread-mode read (the
+/// pager's line reads, clock switches): `orpheus_pager::bus::Bus::epoch`.
+static EPOCH: AtomicU32 = AtomicU32::new(0);
+/// Failed thread-mode reads by [`ReadFault`] kind since start.
+static READ_ERRORS: [AtomicU32; bus::KINDS] = [const { AtomicU32::new(0) }; bus::KINDS];
+
+/// Failed thread-mode reads since start: command phase, data phase, cut
+/// into by another SPI0 user (`nor errors` on the developer channel).
+#[must_use]
+pub fn read_errors() -> [u32; bus::KINDS] {
+    // Constant indices: no bounds check (no panic path in resident code).
+    let [c, d, i] = &READ_ERRORS;
+    [c.load(Ordering::Relaxed), d.load(Ordering::Relaxed), i.load(Ordering::Relaxed)]
+}
+
+#[inline(always)]
+fn bump_epoch() {
+    // Only from a fault handler or with interrupts masked: no other writer
+    // runs between the load and the store.
+    EPOCH.store(EPOCH.load(Ordering::Relaxed).wrapping_add(1), Ordering::Relaxed);
 }
 
 #[unsafe(link_section = ".text.resident.nor")]
@@ -109,19 +143,23 @@ fn send(bytes: &[u8]) -> bool {
 #[unsafe(link_section = ".text.resident.nor")]
 #[inline(never)]
 fn recv(dst: &mut [u8]) -> bool {
-    let mut ok = true;
     for chunk in dst.chunks_mut(0x1000) {
         CTL.clear_bits(0x30);
         CTL.set_bits(0x30);
         BC.write(chunk.len() as u32);
         mode(1);
         for b in chunk.iter_mut() {
-            ok &= wait(4, 0);
+            // The first empty FIFO ends it: polling on for every byte left
+            // stalled the caller for up to a second per 64 bytes.
+            if !wait(4, 0) {
+                mode(0);
+                return false;
+            }
             *b = RX.read() as u8;
         }
         mode(0);
     }
-    ok
+    true
 }
 
 /// SPI0 set-up as the boot ROM does it (port `nor_init`) [HW].
@@ -151,6 +189,8 @@ pub fn init() {
 // chip is busy must be this resident copy.
 #[inline(never)]
 pub fn set_clock(word: u32) {
+    // Called with interrupts masked (`clock::set_level`).
+    bump_epoch();
     cmu::SPI0CLK.modify(|v| (v & !0x3FF) | (word & 0x3FF));
 }
 
@@ -183,13 +223,49 @@ pub fn jedec_id() -> u32 {
     if ok { u32::from(id[0]) | u32::from(id[1]) << 8 | u32::from(id[2]) << 16 } else { 0 }
 }
 
-/// Byte-polled READ (0x03).
+/// SPI0 for a thread-mode reader (`orpheus_pager::bus`).
+struct Spi0;
+
+impl bus::Bus for Spi0 {
+    #[inline(always)]
+    fn masked<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        critical_section::with(|_| f(self))
+    }
+    #[inline(always)]
+    fn epoch(&self) -> u32 {
+        EPOCH.load(Ordering::Relaxed)
+    }
+    #[inline(always)]
+    fn transaction(&mut self, addr: u32, dst: &mut [u8]) -> Result<(), ReadFault> {
+        let r = if !send(&[0x03, (addr >> 16) as u8, (addr >> 8) as u8, addr as u8]) {
+            Err(ReadFault::Command)
+        } else if !recv(dst) {
+            Err(ReadFault::Data)
+        } else {
+            Ok(())
+        };
+        cs_high();
+        r
+    }
+}
+
+/// Byte-polled READ (0x03), from thread mode or a critical section (never
+/// from the pager): transactions of at most 256 bytes with interrupts
+/// masked (`orpheus_pager::bus::read`).
 #[unsafe(link_section = ".text.resident.nor")]
 #[inline(never)]
 pub fn read(addr: u32, dst: &mut [u8]) -> Result<(), Error> {
-    let ok = send(&[0x03, (addr >> 16) as u8, (addr >> 8) as u8, addr as u8]) && recv(dst);
-    cs_high();
-    if ok { Ok(()) } else { Err(Error::Timeout) }
+    bus::read(&mut Spi0, addr, dst).map_err(|k| {
+        // A match, not `k as usize`: no bounds check (and no panic path)
+        // in resident code.
+        let c = match k {
+            ReadFault::Command => &READ_ERRORS[0],
+            ReadFault::Data => &READ_ERRORS[1],
+            ReadFault::Interleaved => &READ_ERRORS[2],
+        };
+        c.fetch_add(1, Ordering::Relaxed);
+        Error::Read(k)
+    })
 }
 
 /// FAST READ (0x0B) drained by DMA channel 0 into `dst` (a CPU address in
@@ -202,6 +278,8 @@ pub fn read(addr: u32, dst: &mut [u8]) -> Result<(), Error> {
 #[unsafe(link_section = ".text.resident.nor")]
 #[inline(never)]
 pub unsafe fn read_dma(addr: u32, dst: u32, len: u32, poll: Option<fn()>) -> Result<(), Error> {
+    // From the MemManage handler (nothing preempts it) or a payload.
+    bump_epoch();
     let mut ok = true;
     cs_low();
     mode(0);

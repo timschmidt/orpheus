@@ -847,6 +847,11 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     if let Some(note) = idle_home_check(p) {
         notes.push(note);
     }
+    // No failed NOR read since the start (2026-11-26: the settings store's
+    // boot-time read cut by a page fault).
+    if let Some(note) = super::fuzz::nor_errors(p).and_then(super::fuzz::nor_errors_note) {
+        notes.push(note);
+    }
     // Oracles over the whole run: no reset, no new fault record.
     match (p.health(), p.fault()) {
         (Ok(h1), Ok(f1)) => {

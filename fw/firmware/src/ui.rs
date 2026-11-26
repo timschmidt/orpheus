@@ -624,6 +624,12 @@ fn session_reply() {
             r.u(u64::from(keys));
         }
         r.s(b" crc=").h(STORE_CRC.load(core::sync::atomic::Ordering::Relaxed));
+        // Failed NOR reads since the start: command phase, data phase, cut
+        // into (`nor::read_errors`; 2026-11-26). One loop: `u` once.
+        let [c, d, i] = atj2157_hal::nor::read_errors();
+        for (k, n) in [(b" nor=".as_slice(), c), (b"/", d), (b"/", i)] {
+            r.s(k).u(u64::from(n));
+        }
     });
 }
 
@@ -804,20 +810,42 @@ fn mount_store() -> &'static mut Option<Store<NorRegion, 4>> {
     // A NOR read error at boot must not leave the player on defaults
     // (2026-11-26: `store=none` once): retried, and logged.
     let r = embassy_futures::block_on(Store::<NorRegion, 4>::mount_retrying(NorRegion::settings, 3));
-    let mut l = atj2157_hal::log::LineBuf::new();
-    match &r {
-        Ok((_, 0)) => {}
-        Ok((_, n)) => {
-            l.push_str("settings: store mounted after ").push_u32(u32::from(*n)).push_str(" read errors");
-            l.emit();
+    // `settings: store mounted after 1 read errors, last nor read/data`, or
+    // `settings: store not mounted, defaults this start: nor read/data`.
+    let fail = match &r {
+        Ok((_, None)) => None,
+        Ok((_, Some((n, e)))) => Some((*n, e)),
+        Err(e) => Some((0, e)),
+    };
+    if let Some((n, e)) = fail {
+        let mut l = atj2157_hal::log::LineBuf::new();
+        if n > 0 {
+            l.push_str("settings: store mounted after ")
+                .push_u32(u32::from(n))
+                .push_str(" read errors, last ");
+        } else {
+            l.push_str("settings: store not mounted, defaults this start: ");
         }
-        Err(_) => {
-            l.push_str("settings: store not mounted (read errors): defaults this start");
-            l.emit();
-        }
+        l.push_str(store_error_name(e)).emit();
     }
     *slot = r.ok().map(|(s, _)| s);
     slot
+}
+
+/// The store error for the log, by NOR error kind (`nor errors` counts
+/// them since start; `orpheus_pager::bus`).
+fn store_error_name(e: &orpheus_settings::Error<atj2157_hal::nor::Error>) -> &'static str {
+    use atj2157_hal::nor::Error as N;
+    use orpheus_pager::bus::ReadFault as R;
+    match e {
+        orpheus_settings::Error::Nor(N::Read(R::Command)) => "nor read/command",
+        orpheus_settings::Error::Nor(N::Read(R::Data)) => "nor read/data",
+        orpheus_settings::Error::Nor(N::Read(R::Interleaved)) => "nor read/cut",
+        orpheus_settings::Error::Nor(N::Timeout) => "nor timeout",
+        orpheus_settings::Error::Nor(N::Refused) => "nor refused",
+        orpheus_settings::Error::Nor(N::Verify) => "nor verify",
+        _ => "store",
+    }
 }
 
 /// Once, from the UI task.

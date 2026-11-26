@@ -181,6 +181,37 @@ pub fn store_mounted(p: &mut dyn Player) -> Option<bool> {
     r.contains(" store=").then(|| !store_unmounted(&r))
 }
 
+/// The NOR read error counters in a `settings test-session` reply
+/// (` nor=C/D/I`): failed thread-mode reads in the command phase, the data
+/// phase, and cut into by another SPI0 user (`None`: no such field).
+pub fn parse_nor_errors(r: &str) -> Option<[u32; 3]> {
+    let f = r.split(' ').find_map(|w| w.strip_prefix("nor="))?;
+    let mut out = [0u32; 3];
+    let mut it = f.split('/');
+    for o in &mut out {
+        *o = it.next()?.parse().ok()?;
+    }
+    it.next().is_none().then_some(out)
+}
+
+/// Ask the player for its NOR read error counters since the start
+/// (`None`: no answer, or a firmware that does not report them).
+pub fn nor_errors(p: &mut dyn Player) -> Option<[u32; 3]> {
+    let re = regex::Regex::new("^test-session").ok()?;
+    parse_nor_errors(&player::command(p, "settings test-session", Some(&re), 3000).ok()?)
+}
+
+/// The suite's note on the NOR read error counters: a failure if any read
+/// failed since the start (the settings store's mount retries hide one).
+pub fn nor_errors_note(e: [u32; 3]) -> Option<String> {
+    (e != [0; 3]).then(|| {
+        format!(
+            "FAIL: NOR reads failed since the start (command {}, data {}, cut {}): see `settings: store mounted after` in the log",
+            e[0], e[1], e[2]
+        )
+    })
+}
+
 /// What an oracle found.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -752,6 +783,23 @@ mod tests {
     fn regress_suite_sees_an_unmounted_settings_store() {
         assert!(store_unmounted("test-session off held=0 store=none keys=0 crc=00"));
         assert!(!store_unmounted("test-session on held=0 store=ok keys=25 crc=acff8170"));
+    }
+
+    /// 2026-11-26: the boot-time NOR read error was hidden by the store's
+    /// mount retry (`settings: store mounted after 1 read errors` only in
+    /// the log); the suite now fails on any failed NOR read since the
+    /// start.
+    #[test]
+    fn regress_suite_sees_a_hidden_nor_read_error() {
+        let r = "test-session off held=0 store=ok keys=25 crc=acff8170 nor=0/1/0";
+        assert_eq!(parse_nor_errors(r), Some([0, 1, 0]));
+        assert!(nor_errors_note([0, 1, 0]).is_some_and(|n| n.starts_with("FAIL")));
+        let ok = parse_nor_errors("test-session on held=0 store=ok keys=25 crc=acff8170 nor=0/0/0").unwrap();
+        assert_eq!(nor_errors_note(ok), None);
+        // Older firmware: no field, no verdict.
+        assert_eq!(parse_nor_errors("test-session on held=0 store=ok keys=25 crc=acff8170"), None);
+        assert_eq!(parse_nor_errors("test-session on nor=0/x/0"), None);
+        assert_eq!(parse_nor_errors("test-session on nor=0/0"), None);
     }
 
     /// firmware confirms its RAM-only settings session.
