@@ -79,6 +79,24 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-26 — synth governor round 3 on the player (lead)
+
+* Merged `82b61a1e` (each file starts at High unshed, pin re-evaluated per
+  plan, net calm-time restore, rests wait for the ring, key tick off the
+  render's lines). On the player (`7f26ae50`, Automatic, cable),
+  `playdir /.orpheus/test/suite/midi`:
+  * Etude: `clk=288/288`, `lvl=3/3`, `vlim` 6–9 (was 4–7), `pg=` 5–10.
+  * Hill Song: **now raised to 288 before shedding** (`clk=288/288`),
+    still `lvl=3/3` at Max with `vlim` 9–10 (was 7 at 144), `pg=` 12–16.
+  * Sound tour: full quality (`lvl=0/0`, `vlim=16`, `fx=7`), the clock
+    moving 144 ↔ 192 ↔ 288 (log `synth: clock …` at `lvl=0`).
+  * All three to the end (`frames=2469600`); no reset; no `gave up`.
+  * **Underruns 20 in ≈ 107 s** (was 18), all in Etude and Hill Song, at a
+    `load=` of only 25–40 %: not the CPU budget. Labels `ub=synth:render:5–
+    10ms` and one `ub=synth:rest:5ms`. Open: find what empties the ring at
+    low load (piece length vs ring size, paging spikes up to 16 %, card
+    reads, the outer part every 4,096 frames).
+
 ### 2026-11-26 — MIDI plays to the end on the player (lead)
 
 * Merged the synth working-set fix (`4e1e9a49`). On the player
