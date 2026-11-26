@@ -223,22 +223,25 @@ fn toast_over_own_strip_is_repainted() {
     assert_eq!(strip(&fresh.fb), strip(&s.fb));
 }
 
-/// D-4: Settings › System › Performance is a Normal / Maximum choice,
-/// stored like any other setting.
+/// PWR-5 (2026-11-26): Settings › System › Performance (0x0C07) is gone:
+/// System has no choice row, and the key is retired (an old store's value
+/// is skipped).
 #[test]
-fn performance_choice() {
-    let s = sim("prev ok down*11 ok down*6 ok expect-screen:Choice down ok expect-screen:SettingsGroup");
-    assert_eq!(s.sys.settings.get(id::PERFORMANCE), 1);
-    let d = settings::def(id::PERFORMANCE).unwrap();
-    assert_eq!((d.default, d.validate(2)), (0, 0), "Normal by default, out of range is Normal");
+fn system_has_no_performance_row() {
+    let system = settings::GROUPS.iter().find(|g| g.label == orpheus_apps::strings::Str::GSystem).unwrap();
+    assert!(system.items.iter().all(|s| s.id.0 != 0x0C07));
+    assert!(settings::def(settings::SettingId(0x0C07)).is_none());
+    assert!(settings::RETIRED.contains(&0x0C07));
 }
 
 /// PWR-5: the Developer row is hidden until OK is pressed five times in
 /// About; it starts and stops the battery logger.
 #[test]
 fn developer_rows_unlock_and_logger() {
-    // Without the unlock the last System row is Performance.
-    let mut s = sim("prev ok down*11 ok up ok expect-screen:Choice");
+    // Without the unlock the last System row is Recovery mode (it asks
+    // first).
+    let mut s = sim("prev ok down*11 ok up ok");
+    assert!(s.shell.dialog_open(), "Recovery mode asks first");
     assert!(!s.sys.developer);
     run(&mut s, "back back ok ok expect-screen:Info ok*4");
     assert!(!s.sys.developer, "four presses are not enough");

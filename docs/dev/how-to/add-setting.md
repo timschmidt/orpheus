@@ -8,24 +8,25 @@ the NOR settings store (`orpheus-settings`, at `0x7DA000`).
 1. **Pick a key.** Keys are `u16`, the group in the high byte
    (`0x0101..=0x0CFF`; System is `0x0C..`). Take the next free one in the
    group and **never reuse** a key, even of a removed setting: old stores
-   on players still hold it.
+   on players still hold it (a removed setting's key goes into
+   `settings::RETIRED`, as Performance `0x0C07` did).
 2. **Add the item** to the group's list, for example a choice:
 
    ```rust
-   c(0x0C07, Str::Performance, ch![S(Str::PerfNormal), S(Str::PerfMaximum)], 0),
+   c(0x0401, Str::PowerMode, ch![S(Str::Auto), S(Str::BatterySaver), S(Str::HighPerformance)], 0),
    ```
 
    Kinds: `Toggle`, `Choice`, `Range` (with a unit), `Action`, `Info`,
    plus the special `Language` and `HomeApps`. Every stored
    value is an `i16`; decoding validates it against the kind and falls back
    to the default, so a corrupt record never reaches the UI.
-3. **Name it** with `pub const NAME: SettingId = SettingId(0x0C07);` in the
+3. **Name it** with `pub const NAME: SettingId = SettingId(0x0401);` in the
    `id` module, so code refers to it by name.
 4. **Strings**: append the label and choice names to `strings.rs`, with
    translations in `sim/src/packs.rs`.
 5. **Use it.** In the firmware, read it with `settings.get(id::NAME)` where
-   the behaviour lives (for example the governor reads
-   `id::PERFORMANCE`). If the setting must act at once, handle its change in
+   the behaviour lives (for example the UI publishes for the governor
+   `id::POWER_MODE`). If the setting must act at once, handle its change in
    the service that applies settings. The simulator stores it the same way.
 6. **Factory reset** sets every item back to its default with no extra
    code.

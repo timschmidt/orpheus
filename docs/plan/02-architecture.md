@@ -670,13 +670,41 @@ path that saves the resume record and settings and unmounts the card.
 
 ### 5.4 Power modes offered to the user
 
-* **Automatic** (default): governor as above.
-* **Battery saver**: animations off, backlight capped, UI level capped at
-  `Base`, decoders at their minimum level, spectrum/meters off, Bluetooth
-  transmit power reduced where controllable, library scan only on USB power.
-* **High performance**: minimum level `High` while the screen is on, largest
-  read-ahead, used for the USB storage and disk-emulation personalities
-  automatically.
+The owner's definitions (2026-11-26) decide the clock; the rest of each
+mode is as planned. Built as `orpheus_power::governor` (03 §2.4).
+
+* **Automatic** (default): "all functionality at minimum battery cost /
+  maximum lifetime possible given the performance required to keep up with
+  activities" — the cheapest level of the power model that keeps up with
+  the measured demand, never below the audio floor (up to `Max`: the synth
+  sheds only at `Max`) or the peripherals' minimum; idle at that minimum.
+* **Battery saver**: "the lowest clocked performance level which is
+  functional for required peripherals" — pinned at the highest minimum of
+  the peripherals in use (`PERIPHERAL_MIN`: USB while connected, card,
+  display, DAC/audio, pager, keys; each with its source; `Low` 24 MHz, USB
+  `Base` until U-PWR-5), whatever the load; audio floors do not raise it,
+  so playback may stutter or stop and the synth may shed. Also animations
+  off (built); planned: backlight capped, spectrum/meters off, Bluetooth
+  transmit power reduced where controllable, library scan only on USB
+  power.
+* **High performance**: the clock pinned at `Max` (288 MHz, 1.3 V)
+  whatever the load, screen on or off; planned: largest read-ahead.
+* A host test (test look, test session, test mailbox) runs under Automatic
+  whatever the owner chose, so a suite's result does not depend on it.
+
+**Why steady loads do not race to sleep.** The governor steps once a
+second, far coarser than an audio block, so racing a steady stream means
+sitting at `Max` with the core mostly in WFI. In the model a cycle costs
+∝ V² (1.0 V up to 144 MHz, 1.3 V at 288 MHz: 1.69× per cycle) and a
+level's standing power (leakage, COREPLL, clock tree) grows with its voltage
+and clock, so a demand a 1.0 V level carries is cheapest at the lowest such
+level; racing pays only where finishing sooner buys enough time in a much
+cheaper state, which the model does not show. A saturated level climbs
+(at least doubling the clock each second, `Max` only from a saturated
+`Turbo`) because its demand is unknown until a level carries it. The
+datasheet gives no current per level or in WFI (U-PWR-6): the figures in
+`governor::COST` are estimates and M13's measured drain replaces them; the
+decision is that one host-tested function.
 
 ### 5.5 Battery and charging
 

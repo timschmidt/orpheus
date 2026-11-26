@@ -22,32 +22,13 @@ pub fn rom_state() {
     crate::delay::set_core_hz(48_000_000);
 }
 
-/// Core performance levels (03-hal-drivers §2.1). Rows of the vendor's own
-/// table (system.md §1.4); never interpolated.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Level {
-    /// 24 MHz from HOSC, COREPLL off.
-    Low,
-    /// 48 MHz, COREPLL N = 8.
-    Base,
-    /// 96 MHz, N = 16.
-    Mid,
-    /// 144 MHz, N = 24.
-    High,
-    /// 192 MHz, N = 32, core supply 1.1 V.
-    Turbo,
-    /// 288 MHz, N = 48, core supply 1.3 V, `SYSCLK` bit 8 — the vendor's
-    /// level 29. An option the user chooses (decision D-4, WP PWR-5); the
-    /// governor never selects it on its own.
-    Max,
-}
+/// Core performance levels (03-hal-drivers §2.1), their clocks and supply
+/// codes, and the order of a switch: host-tested in `orpheus_power::clock`.
+pub use orpheus_power::clock::Level;
 
 struct Row {
-    hz: u32,
     /// COREPLL N (6 MHz steps); 0 = PLL off, core from HOSC.
     n: u32,
-    /// Core voltage code `VOUT_CTL[4:0]` (0x0C = 1.0 V, 0x10 = 1.1 V).
-    vdd: u32,
     /// SPI0 clock word keeping the NOR at ≤ 48 MHz from COREPLL, or CK24M
     /// when the PLL is off (divider code n ≥ 2 divides by 2n).
     spi: u32,
@@ -56,45 +37,27 @@ struct Row {
     sys: u32,
 }
 
+/// Rows of the vendor's own table (system.md §1.4); never interpolated.
+/// Clock and supply code: `Level::hz`, `Level::vdd_code`.
 const fn row(l: Level) -> Row {
     match l {
-        Level::Low => Row { hz: 24_000_000, n: 0, vdd: 0x0C, spi: 0x100, sys: 0 },
-        Level::Base => Row { hz: 48_000_000, n: 8, vdd: 0x0C, spi: 0x200, sys: 0 },
-        Level::Mid => Row { hz: 96_000_000, n: 16, vdd: 0x0C, spi: 0x201, sys: 0 },
-        Level::High => Row { hz: 144_000_000, n: 24, vdd: 0x0C, spi: 0x202, sys: 0 },
-        Level::Turbo => Row { hz: 192_000_000, n: 32, vdd: 0x10, spi: 0x202, sys: 0 },
+        Level::Low => Row { n: 0, spi: 0x100, sys: 0 },
+        Level::Base => Row { n: 8, spi: 0x200, sys: 0 },
+        Level::Mid => Row { n: 16, spi: 0x201, sys: 0 },
+        Level::High => Row { n: 24, spi: 0x202, sys: 0 },
+        Level::Turbo => Row { n: 32, spi: 0x202, sys: 0 },
         // VERBATIM(vendor KERNEL.DRV level table, level 29: N 0x30, VDD
         // 0x18, CMU_SYSCLK 0x0102; system.md §1.4). NOR ÷6 = 48 MHz.
-        Level::Max => Row { hz: 288_000_000, n: 48, vdd: 0x18, spi: 0x203, sys: 0x100 },
+        Level::Max => Row { n: 48, spi: 0x203, sys: 0x100 },
     }
 }
-
-/// Voltage codes this firmware may write (vendor table rows only).
-const ALLOWED_VDD: [u32; 3] = [0x0C, 0x10, 0x18];
 
 static CURRENT: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(1);
 static SWITCHES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
-impl Level {
-    #[must_use]
-    pub const fn hz(self) -> u32 {
-        row(self).hz
-    }
-    const fn from_u8(v: u8) -> Self {
-        match v {
-            0 => Level::Low,
-            2 => Level::Mid,
-            3 => Level::High,
-            4 => Level::Turbo,
-            5 => Level::Max,
-            _ => Level::Base,
-        }
-    }
-}
-
 #[must_use]
 pub fn current() -> Level {
-    Level::from_u8(CURRENT.load(core::sync::atomic::Ordering::Relaxed))
+    Level::from_index(CURRENT.load(core::sync::atomic::Ordering::Relaxed))
 }
 
 #[must_use]
@@ -108,23 +71,28 @@ pub fn vdd_code() -> u32 {
     pmu::VOUT_CTL.read() & 0x1F
 }
 
-fn set_vdd(code: u32) {
-    if !ALLOWED_VDD.contains(&code) {
-        return;
+/// The one writer of the core supply code: clamped to
+/// `orpheus_power::clock::VDD_MAX` (`0x18`, 1.3 V; [DS] §2.1 absolute
+/// maximum 1.35 V, §2.2 recommended 0.9–1.35 V) and only a code of the
+/// vendor table (`vdd_write`).
+fn set_vdd(code: u8) {
+    if let Some(c) = orpheus_power::clock::vdd_write(u32::from(code)) {
+        pmu::VOUT_CTL.modify(|v| (v & !0x1F) | c);
     }
-    pmu::VOUT_CTL.modify(|v| (v & !0x1F) | code);
 }
 
 /// Switch the core clock (and supply) to `to`. Runs with interrupts masked
-/// (BASEPRI); detours through HOSC while the PLL is reprogrammed.
+/// (BASEPRI); detours through HOSC while the PLL is reprogrammed. The
+/// supply goes up before the clock and down after it
+/// (`orpheus_power::clock::switch`).
 pub fn set_level(to: Level) {
     critical_section::with(|_| {
         let from = current();
         let r = row(to);
-        let up_v = r.vdd > vdd_code();
-        if up_v {
+        let s = orpheus_power::clock::switch(vdd_code() as u8, to);
+        if let Some(v) = s.before {
             // Voltage first when going up, then wait for it to settle.
-            set_vdd(r.vdd);
+            set_vdd(v);
             crate::delay::spin_us(150);
         }
         // Core on HOSC (SPI0 on CK24M meanwhile so it never overclocks).
@@ -138,10 +106,10 @@ pub fn set_level(to: Level) {
             crate::delay::spin_us(100);
             cmu::SYSCLK.modify(|v| (v & !0x133) | 2 | r.sys);
         }
-        crate::delay::set_core_hz(r.hz);
+        crate::delay::set_core_hz(to.hz());
         crate::nor::set_clock(r.spi);
-        if !up_v && r.vdd != vdd_code() {
-            set_vdd(r.vdd);
+        if let Some(v) = s.after {
+            set_vdd(v);
         }
         CURRENT.store(to as u8, core::sync::atomic::Ordering::Relaxed);
         if from != to {

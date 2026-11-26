@@ -936,9 +936,10 @@ impl PowerService for Fw {
         crate::drain::shared().stay_pref.store(stay, Ordering::Relaxed);
         let d = crate::drain::info();
         if on && !d.on {
-            // Labelled by the Performance setting: one file per run.
-            let max = self.settings.get(id::PERFORMANCE) == 1;
-            crate::drain::start(if max { b"max" } else { b"normal" }, stay);
+            // Labelled with the Power mode the governor follows: one file
+            // per run.
+            const LABEL: [&[u8]; 3] = [b"auto", b"saver", b"high"];
+            crate::drain::start(LABEL[crate::power_mode() as usize], stay);
         } else if !on && d.on {
             crate::drain::stop();
         } else {

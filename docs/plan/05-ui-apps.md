@@ -775,7 +775,7 @@ settings service (debounced write).
 | Sound | Equaliser · Balance · Bass · Crossfeed · Channel mode · ReplayGain · Volume limit · Key click · Fade on pause |
 | Playback | Shuffle · Repeat · Gapless · Resume at start-up · Seek step · Speed · Auto-bookmark long files · Tag code page |
 | Display | Brightness · Backlight time-out (5 s … always) · Screen-off lock delay · Theme · Accent · Wallpaper · Screen saver (off / clock) · Animations · Rotation 180° · Clock in status bar · **List roll-around (on / off)** · Home screen (order, hide) |
-| Power | Mode (Automatic / Battery saver / High performance) · Sleep timer · Auto power-off when idle (off, 5 … 60 min) · Keys when locked (none / volume / volume + transport) · Battery (percent, voltage, state, cycles if tracked) |
+| Power | Mode (Automatic / Battery saver / High performance: the clock, 02 §5.4; `docs/user/power.md`) · Sleep timer · Auto power-off when idle (off, 5 … 60 min) · Keys when locked (none / volume / volume + transport) · Battery (percent, voltage, state, cycles if tracked) |
 | Date and time | Set time · Set date · 24-hour clock · Date format · UTC offset · Correction (s/day) · Set from radio (RDS) |
 | Bluetooth | Same content as the Bluetooth app's settings rows |
 | Radio | Region · Force mono · Seek sensitivity |
@@ -783,7 +783,7 @@ settings service (debounced write).
 | USB | When connected (Ask / Charge only / File transfer / Keyboard / last image) · Read-only card reader · Developer channel (on in development builds) |
 | Language | English · (packs found on the card) |
 | Storage | Card info · Rebuild library · Clear caches · Check card · Format card… |
-| System | About (version, build id, serial, hardware, licences) · Update firmware… · Diagnostics · Start original firmware (dual-boot layout) · Factory reset… · Recovery mode · Performance (Normal / Maximum, D-4; `docs/user/performance.md`) · Developer (hidden until OK is pressed five times in About: battery logger, PWR-5) |
+| System | About (version, build id, serial, hardware, licences) · Update firmware… · Diagnostics · Start original firmware (dual-boot layout) · Factory reset… · Recovery mode · Developer (hidden until OK is pressed five times in About: battery logger, PWR-5) |
 
 *As built (VER-13 follow-up, 2026-11-26):* Display › Brightness offers the
 stock firmware's levels 1–11, default 6, and writes the stock PWM4 duty of

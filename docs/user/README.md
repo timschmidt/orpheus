@@ -25,7 +25,7 @@ Home shows the apps that work on the player:
 | Pictures | [pictures.md](pictures.md) | JPEG, PNG, BMP, QOI viewer and slideshow |
 | Bluetooth | [bluetooth.md](bluetooth.md) | Send music to Bluetooth headphones or a speaker |
 | Settings | [settings.md](settings.md) | Sound, playback, display, language, storage, system |
-| Performance | [performance.md](performance.md) | Normal or Maximum processor speed |
+| Power mode | [power.md](power.md) | Processor speed: automatic, battery saver, high performance |
 | USB Drive | [usb-drive.md](usb-drive.md) | **In progress**: start a computer from an ISO or disk image on the card |
 
 Radio, Recorder, Steps, Stopwatch, Authenticator and the Bluetooth

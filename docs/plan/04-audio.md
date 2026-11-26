@@ -1404,8 +1404,8 @@ cost.
   over the budget past the first two seconds (bursts between two plans)
   and under 1 % of its PCM halves above 62 % of real time (one in "Hill
   Song"); the reverb is off for most of each song and the mean voice
-  limit is 2.2 / 4.2 / 6.1. At **288 MHz** (Settings › System ›
-  Performance: Maximum; the governor follows the clock) "Sound tour" plays
+  limit is 2.2 / 4.2 / 6.1. At **288 MHz** (then Settings › System ›
+  Performance: Maximum, removed by PWR-5: the governor reaches it by itself; the load governor follows the clock) "Sound tour" plays
   as the host renders it for 91 % of its length, "Hill Song" keeps all
   16 voices (reverb on 17 %), "Etude" 7.7.
 * **Half rate** (22.05 kHz; the DAC plays it natively, no resampler is

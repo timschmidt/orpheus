@@ -207,11 +207,6 @@ impl Ui {
                 crate::media::publish_sound(snd);
             }
         }
-        // Settings › System › Performance for the governor (D-4).
-        crate::drain::shared().perf_max.store(
-            self.fw.settings.get(orpheus_apps::settings::id::PERFORMANCE) == 1,
-            core::sync::atomic::Ordering::Relaxed,
-        );
         publish_settings(self.fw);
         // Screen on/off follows the gate; the screen saver keeps the panel
         // lit (VER-13).
@@ -390,7 +385,10 @@ fn turn_for_panel(fb: &mut [u16], y0: u32, y1: u32, rotated: bool) -> u32 {
 #[inline(never)]
 fn publish_settings(fw: &Fw) {
     use core::sync::atomic::Ordering::Relaxed;
-    POWER_MODE.store(fw.settings.get(orpheus_apps::settings::id::POWER_MODE).clamp(0, 2) as u8, Relaxed);
+    // Automatic while a host test runs (the owner's mode must not change a
+    // suite's result).
+    let pm = fw.settings.get(orpheus_apps::settings::id::POWER_MODE);
+    POWER_MODE.store(orpheus_power::governor::PowerMode::for_governor(pm, dev_channel_held()) as u8, Relaxed);
     UTC_OFFSET_S.store(services::utc_offset_s(fw), Relaxed);
     let dev = services::developer_channel(fw, dev_channel_held());
     if DEV_CHANNEL.swap(dev, Relaxed) != dev && crate::usbdev::CURRENT.load(Relaxed) == 0 {
@@ -569,7 +567,8 @@ pub fn set_test_look(on: bool) {
 
 /// The value `sid` reads as under the test look, if it is one of its
 /// settings: Display 0x0304–0x030C (theme … roll round), language,
-/// Now Playing view.
+/// Now Playing view, Power mode (Automatic: the clock governor and the
+/// marquees of a test do not follow the owner's mode).
 pub fn test_look(sid: orpheus_apps::settings::SettingId) -> Option<i16> {
     // A11Y-2: text size, hold delay and key repeat too (a test's keys and
     // shots assume the defaults), and Brightness (its value shows in
@@ -577,7 +576,7 @@ pub fn test_look(sid: orpheus_apps::settings::SettingId) -> Option<i16> {
     // them.
     let armed = look_armed_bit(sid.0)
         .is_some_and(|b| LOOK_ARMED.load(core::sync::atomic::Ordering::Relaxed) & b == 0);
-    let look = (0x0304..=0x030C).contains(&sid.0) || sid.0 == 0x0A01 || sid.0 == 0x0D03 || armed;
+    let look = (0x0304..=0x030C).contains(&sid.0) || matches!(sid.0, 0x0401 | 0x0A01 | 0x0D03) || armed;
     (look && TEST_LOOK.load(core::sync::atomic::Ordering::Relaxed))
         .then(|| orpheus_apps::settings::def(sid).map_or(0, |d| d.default))
 }
@@ -637,12 +636,12 @@ pub(crate) fn session_on() -> bool {
 }
 
 /// Settings a session may set from the host: Sound, Playback, Display
-/// (not the Home apps), Language, Performance, Files sort and hidden
+/// (not the Home apps), Language, Files sort and hidden
 /// files, Now Playing's view, Accessibility (A11Y-2). Never Bluetooth, power, clock, USB, storage,
 /// alarms or the radio's station (CLAUDE.md rules 4 and 6).
 fn session_settable(id: u16) -> bool {
     (matches!(id >> 8, 0x01 | 0x02 | 0x03 | 0x0A) && id != 0x030B)
-        || matches!(id, 0x0C07 | 0x0D01..=0x0D03 | 0x1001..=0x1003)
+        || matches!(id, 0x0D01..=0x0D03 | 0x1001..=0x1003)
 }
 
 fn session_reply() {

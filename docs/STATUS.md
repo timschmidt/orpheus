@@ -27,8 +27,8 @@ of every session. Newest entries first in §3.
 | LCD-1, INPUT-1, PWR-2, AU-0 | done pending user checks 7, 8, 9, 10 | |
 | SD-1, FM-0, USB-1, USB-3, PWR-1 | done | |
 | SYS-1 | done (first cut) | Firmware: tasks, settings in NOR, developer channel, watchdog task fed only on RT + main + UI progress (verified: a hung main executor resets in ≈ 3 s), test safety window |
-| PWR-2 governor | first cut | 48 ↔ 96 ↔ 144 MHz from main-executor idle share; decision now `orpheus_power::governor` (host-tested) |
-| PWR-5 (D-4) | Max level verified on the player; **Performance setting, battery logger, `xtask drain report` built (not yet run on the player)** | Settings › System › Performance (Normal/Maximum: the governor's step above High is 288 MHz); battery logger to `/.orpheus/test/drain-<n>-<label>.csv` (`drain start/stop/status`, hidden System › Developer row); user check 19 (unplugged drain runs) |
+| PWR-2 governor | superseded by PWR-5 (2026-11-26) | `orpheus_power::governor` (host-tested): Power mode as the owner defined it, 24–288 MHz |
+| PWR-5 (D-4) | Max level verified on the player (2026-11-24); **D-4 revision built 2026-11-26 (host + firmware build), not yet run on the player**: Settings › System › Performance removed (key `0x0C07` retired), the governor reaches 288 MHz by itself, Power mode as the owner defined it; battery logger and `xtask drain report` built (not yet run) | Lead's checks in the session entry "PWR-5: Performance removed …"; U-PWR-5 (USB at 24 MHz), U-PWR-6 (power per level, M13); user check 19 (drain per Power mode, unplugged) |
 | PWR-3a | mostly done (device) | Power-off: card flushed, Bluetooth 0x24, screen off, vendor PMU sequence (wake on long press or USB plug-in); in test mode a reboot instead (verified). Auto-off (setting, no key, nothing playing, no cable) and low-battery off (< 3.30 V for 10 s, no cable) through the same path — not testable with the cable in: user checks 11 and 15. Alarm wake not done |
 | RTC-1 | done (device) | set/read over the developer channel (`xtask dev time [--set]`); alarm untested; once lost after a ymon reset (U-RTC open) |
 | USB-4 | done (device) | Card-reader personality: card handed between the card task and USB; write-protected test mode; mid-track switch and hand-back verified. 2.3 MB/s read (open) |
@@ -78,6 +78,119 @@ of every session. Newest entries first in §3.
 | VER-4 (settings store keys) | **done (host + firmware built), not yet run on the player** | Store index 128 → 192 keys at 4 B a slot (was 8), same NOR format both ways (fixture from the old code, byte-equal images); cache write marks unlimited; 131 keys in use with every app (61 free), firmware 129; sector ceiling ≈ 209 settings keys (256 cannot fit one sector); .bss −1,248 B, stack margin 5,664 B; compaction no longer re-blesses a rotted value (session entry 2026-11-26 "VER-4: settings store index") |
 
 ## 3. Session log
+
+### 2026-11-26 — PWR-5: Performance removed; the governor reaches 288 MHz by itself; Power mode as the owner defined it (worker, no hardware)
+
+D-4 as revised by the owner ("Dynamically clock up to 288mhz if required.
+Remove the manual 'performance' setting …") and the owner's Power mode
+definitions of the same day. Nothing run on the player.
+
+* **Removed**: Settings › System › Performance (`0x0C07`) — the setting,
+  its three strings (en/ru/ja), `id::PERFORMANCE`, `governor::Performance`
+  and the governor's `perf` input, `drain::Shared::perf_max` and the UI's
+  store into it, the drain log header's `perf=` field (`xtask drain report`
+  still reads it from older files; the table's column is now the label),
+  the soak's `Perf` pick, the session whitelist entry, the matrix row
+  `s0c07`, the manifest entry, 12 goldens and their doc screenshot,
+  `docs/user/performance.md` (now `docs/user/power.md`, Power mode). The
+  key is **retired** (`settings::RETIRED`): never reused, an old store's
+  record is skipped; store keys in use stay 131 of 192 (the stored tree is
+  one smaller, the retired list one longer).
+* **Freed** (firmware, `cargo xtask size` and `llvm-nm` against
+  `e3866cc4` built the same way): what the removal took out (the
+  Performance strings −24 B rodata, the drain header's `perf=` −80 B code,
+  the UI's per-loop publication, the old `Governor::step` 166 B) is spent
+  again by the new policy (power model, peripheral minimums, floors to
+  Max, `raise_to_floor` 60 B; the watchdog task's poll, where the step is
+  inlined, +336 B). Overall: paged code **+40 B** (1,010,038 → 1,010,078 B
+  in sections, still 125/128 pages), paged rodata +40 B (26/48 pages),
+  resident +8 B (81,623 → 81,631 B), bss unchanged (124,232 B), SRAM3
+  `drain::Shared` one byte less. Stack: 14,492 B nested worst case, margin
+  5,476 B. `dsp_clock_floor` is out of line (inlined into its callers it
+  cost 44 B more).
+* **Governor** (`orpheus_power::governor`, 02 §5.4, 03 §2.4):
+  * **Automatic**: never below the audio floor (`CODEC_FLOOR` /
+    `CLOCK_FLOOR` now 0 Base, 1 Mid, 2 High, 3 Turbo, 4 Max — the old
+    values unchanged; nothing playing and 0 = no floor) or the peripherals'
+    minimum. Saturated (idle < 25 %) → `climb`: Low → Base → Mid → Turbo,
+    Max only from a saturated Turbo. Otherwise `steady`: the level of
+    least modelled power (`COST`, estimates, U-PWR-6) that carries the
+    measured demand (busy % × MHz; the current level up to 75 % full,
+    another up to 60 %); down after 2 calm steps to the highest level asked
+    in them. Idle → Low (24 MHz, PLL off) — new: the old governor never
+    went below Base.
+  * **Battery saver**: pinned at `peripheral_min(active)` (USB `Base`
+    while VBUS is present, until U-PWR-5; card, display, audio, pager,
+    keys `Low`, each with its source in `PERIPHERAL_MIN`'s doc); audio
+    floors and the vault's key derivation do not raise it
+    (`raise_for_floor`).
+  * **High performance**: pinned at Max (288 MHz, 1.3 V), screen on or off.
+  * Under a host test (test look, session, mailbox) the governor follows
+    Automatic (`PowerMode::for_governor`); the test look also reads Power
+    mode as Automatic (marquees).
+* **Supply**: `orpheus_power::clock` now holds the levels (the HAL
+  re-exports `Level`), their supply codes and `switch` (supply before the
+  clock going up, after it going down: the existing HAL order, now
+  host-tested over every pair) and `vdd_write`, the HAL's one writer of
+  `VOUT_CTL[4:0]`: clamped to `VDD_MAX` = `0x18` (1.3 V; [DS] §2.1 absolute
+  max 1.35 V, §2.2 recommended 0.9–1.35 V) with a const assertion that no
+  level maps above it. 01 §7 and §9 (U-PWR-5, U-PWR-6) updated.
+* **Floor API for the synth worker** (stable, extended): store 0…4 into
+  `audio::CODEC_FLOOR` and call `dsp_clock_floor(..)` as before; 3 = Turbo
+  and 4 = Max now take effect (raised at once in Automatic through
+  `crate::raise_to_floor`, held by the governor; ignored in Battery saver,
+  already there in High performance). `crate::CLOCK_FLOOR` keeps the same
+  encoding.
+* **SPI0 / paging at Low** (lead's item 2): not changed. At `Low` the HAL
+  already puts SPI0 on CK24M (`0x100`, 24 Mbit/s); at the PLL levels it
+  runs from COREPLL at 48 MHz. So page loads take about twice as long at
+  24 MHz (≈ 340 µs per 1 KiB line). Moving SPI0 to DEVPLL would make it
+  independent of the level but keep DEVPLL running (vendor: 180 MHz,
+  always on), which costs power in every mode and needs U-PWR-3 settled;
+  not cheap, not done.
+* **Tests** (host): `clock::tests::switch_order_keeps_the_clock_within_the_supply`,
+  `no_supply_above_1_3_v`, `levels`; `governor::tests::saturated_work_climbs_and_comes_back`,
+  `max_only_for_sustained_demand_above_turbo`, `steady_demand_runs_at_the_cheapest_level`,
+  `floor_holds_up_to_max`, `no_max_with_the_screen_off_and_nothing_demanding_it`,
+  `peripheral_minimum`, `power_mode_setting_values` (the 0x0401 differential
+  test), `regress_tests_follow_automatic_whatever_the_owner_chose`;
+  `sim/tests/apps.rs::system_has_no_performance_row`.
+* **Gate**: host fmt, clippy `-D warnings`, `cargo test --workspace`,
+  `settings-matrix --check` (0 errors), `site --check`; fw fmt, clippy,
+  `cargo xtask build`, `check-resident`, `size --check`, `stack --check`:
+  all pass. `dev hil smoke` **not run** (no hardware in this session).
+  Goldens re-blessed and looked at: System's list and the dialogs over it
+  differ only in the scroll thumb (6 rows instead of 7); the suite's
+  expected `settings/system.png` likewise.
+
+**Lead's checks on the player** (`xtask dev stats` prints `clock level N
+(M switches)`: 0 Low 24, 1 Base 48, 2 Mid 96, 3 High 144, 4 Turbo 192,
+5 Max 288 MHz). The developer channel itself runs under the test rules
+(Automatic), and with the cable in Automatic never goes below Base:
+
+1. **U-PWR-5 first** (USB at 24 MHz): `dev cmd 'gov off'`, `dev cmd
+   'clock 24'`, then `dev stats` (level 0), a screenshot, a file-transfer
+   read of 1 MiB; `dev cmd 'clock 48'`, `dev cmd 'gov on'`. If any fails,
+   leave `PERIPHERAL_MIN[USB]` at Base (the player would otherwise restart
+   on the cable in Battery saver); if all pass it can become `Low`.
+2. **Idle** (screen on, nothing playing, cable in): `stats` twice 10 s
+   apart: level 1 (Base, the USB minimum), switches not rising.
+3. **MP3** (`playdir` an MP3 folder): level 1–2 after the first seconds,
+   switches settle (no flapping: under ~1 a second on average after the
+   first 5 s), 0 underruns.
+4. **MIDI** (a demo song): level 3 (High, floor 2) or higher if the synth
+   worker's floors ask; with a heavy song the synth should reach 5 (Max)
+   before shedding. `status` `syn:` shed count 0 at Max where it was > 0
+   at 144 MHz.
+5. **Busy UI** (scroll a long list continuously for 10 s): the level rises
+   step by step (1 → 2 → 4 → 5 only if still saturated at 192 MHz), then
+   falls within ~2 s of stopping.
+6. **Supply order**: `dev ram clocks --test clocks` (the 2026-11-24
+   level self-test; it now runs through the shared `switch`/`vdd_write`)
+   must still PASS with the VDD read-back `0x0C` at 24–144, `0x10` at
+   192 and `0x18` at 288 MHz.
+7. **Power modes** need the owner (not in the session's whitelist): user
+   check 19 and the Power mode lines of the Display/Power user check.
 
 ### 2026-11-26 — restart saves the place; synth governor on the player (lead)
 

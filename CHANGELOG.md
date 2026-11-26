@@ -47,7 +47,9 @@ replaced).
   reconnect automatically, forget devices, send audio.
 - **System**: Home, Settings (sound, playback, display, power, date and
   time, Bluetooth, USB, storage, system), quick settings, lock screen,
-  power menu, Performance setting (Normal 144 MHz / Maximum 288 MHz),
+  power menu, Power mode (Automatic: the cheapest clock that keeps up, up
+  to 288 MHz by itself; Battery saver: the lowest clock the peripherals
+  allow; High performance: 288 MHz),
   power-off (auto-off and low-battery switch-off are built and await
   checks unplugged).
 - **USB**: card reader for a computer; developer channel in every USB

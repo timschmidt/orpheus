@@ -73,6 +73,7 @@ impl Row {
 pub struct DrainLog {
     pub name: String,
     pub label: String,
+    /// `perf=` of files written before PWR-5 (2026-11-26); empty since.
     pub perf: String,
     pub rows: Vec<Row>,
     /// `# lost N rows` notes, summed.
@@ -251,7 +252,9 @@ pub fn report(logs: &[DrainLog]) -> String {
     let mut o = String::new();
     let sums: Vec<Summary> = logs.iter().map(summarise).collect();
     for (l, s) in logs.iter().zip(&sums) {
-        let _ = writeln!(o, "{}  (label {}, perf {})", l.name, or_dash(&l.label), or_dash(&l.perf));
+        // `perf=` only in files of the firmware before PWR-5 (2026-11-26).
+        let perf = if l.perf.is_empty() { String::new() } else { format!(", perf {}", l.perf) };
+        let _ = writeln!(o, "{}  (label {}{perf})", l.name, or_dash(&l.label));
         let _ = writeln!(
             o,
             "  duration   {} h:min ({} rows{}{})",
@@ -302,7 +305,7 @@ pub fn report(logs: &[DrainLog]) -> String {
     let _ = writeln!(
         o,
         "{:<28} {:<8} {:>7} {:>7} {:>8} {:>8} {:>6} {:>7} {:>7} {:>7}",
-        "file", "perf", "h:min", "drop mV", "mV/h", "fit mV/h", "r²", "@288 %", "@144 %", "play %"
+        "file", "label", "h:min", "drop mV", "mV/h", "fit mV/h", "r²", "@288 %", "@144 %", "play %"
     );
     for (l, s) in logs.iter().zip(&sums) {
         let name: String = l.name.chars().take(28).collect();
@@ -310,7 +313,7 @@ pub fn report(logs: &[DrainLog]) -> String {
             o,
             "{:<28} {:<8} {:>7} {:>7} {:>8} {:>8} {:>6} {:>7.1} {:>7.1} {:>7.1}",
             name,
-            or_dash(&l.perf),
+            or_dash(&l.label),
             hm(s.duration_s),
             i64::from(s.mv_first) - i64::from(s.mv_last),
             opt(s.mv_per_h, 1),
@@ -405,7 +408,7 @@ mod tests {
             r.lines().skip_while(|l| !l.starts_with("file ")).take_while(|l| !l.is_empty()).collect();
         assert_eq!(table.len(), 3, "{r}");
         assert!(table[1].starts_with("drain-1-normal.csv"));
-        assert!(table[2].contains("maximum"));
+        assert!(table[2].contains(" max "));
     }
 
     #[test]
@@ -425,7 +428,7 @@ mod tests {
         let one = parse("x.csv", &synth("one", "", 1, 60.0, 1, 0)).unwrap();
         let s = summarise(&one);
         assert_eq!((s.mv_per_h, s.fit_mv_per_h), (None, None));
-        assert!(report(&[one]).contains("perf -"));
+        assert!(report(&[one]).contains("(label one)"));
     }
 
     /// The firmware's own formatter (`orpheus_power::drain`) into this
@@ -436,7 +439,7 @@ mod tests {
         use orpheus_power::drain::{self as d, End, Log, Sample};
         use orpheus_power::governor::Level;
         let mut log = Log::new();
-        log.start(b"Max", false, true);
+        log.start(b"High", false);
         log.file = 7;
         let mut text = vec![0u8; d::HEADER_MAX];
         let n = log.header(&mut text);
@@ -470,8 +473,8 @@ mod tests {
         }
         let k = d::format_end(End::PowerOff, &mut buf);
         text.extend_from_slice(&buf[..k]);
-        let l = parse("drain-7-max.csv", std::str::from_utf8(&text).unwrap()).unwrap();
-        assert_eq!((l.label.as_str(), l.perf.as_str()), ("max", "maximum"));
+        let l = parse("drain-7-high.csv", std::str::from_utf8(&text).unwrap()).unwrap();
+        assert_eq!((l.label.as_str(), l.perf.as_str()), ("high", ""));
         assert_eq!(l.rows.len(), 31, "30 full rows and the partial one");
         assert_eq!(l.rows[30].len(), 25);
         assert_eq!(l.end.as_deref(), Some("power-off"));

@@ -154,7 +154,7 @@ fn drain_sample(
         percent,
         charge,
         cable: i.cable,
-        level: governor::Level::from_index(clock::current() as u8),
+        level: clock::current(),
         playing: audio::PLAYING.load(Relaxed),
         backlight: drain::shared().backlight.load(Relaxed),
         screen: drain::shared().screen_on.load(Relaxed),
@@ -182,47 +182,44 @@ async fn watchdog() {
     }
 }
 
-/// Lowest clock level the governor may choose (0 = Base, 1 = Mid, 2 =
-/// High, 3 = Turbo, 4 = Max). The audio task sets it from the codec and the
-/// DSP chain: at Base, Vorbis/Opus, or MP3 + DSP, plus the UI overload the
-/// CPU (paging included) and starve thread mode; 3 and 4 only the synth's
-/// load governor while a MIDI file needs them (D-4, 2026-11-26).
+/// Lowest clock level the audio task allows while something plays or a
+/// picture decodes: 0 Base, 1 Mid, 2 High, 3 Turbo, 4 Max
+/// (`governor::Level::from_floor`). The audio task sets it from the codec,
+/// the DSP chain and the synth: at Base, Vorbis/Opus, or MP3 + DSP, plus
+/// the UI overload the CPU (paging included) and starve thread mode. With
+/// 0 and nothing playing there is no floor (the governor may go to Low).
 pub static CLOCK_FLOOR: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
 /// Governor on/off (test command `gov on|off`).
 pub static GOV_ON: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
 
-/// Clock governor (PWR-2, PWR-5): from the main executor's idle share over
-/// the last second, one level up when idle < 25 %, one level down after
-/// three seconds above 70 % (`orpheus_power::governor`, host-tested).
-/// Range Base (48 MHz) .. High (144 MHz), or .. Max (288 MHz) with
-/// Performance = Maximum.
+/// Settings › Power › Power mode as the governor follows it (Automatic
+/// under a host test, `ui::POWER_MODE`).
+pub fn power_mode() -> governor::PowerMode {
+    governor::PowerMode::from_setting(i16::from(
+        crate::ui::POWER_MODE.load(core::sync::atomic::Ordering::Relaxed),
+    ))
+}
+
+/// Raise the clock at once to the audio floor `floor` (0 Base … 4 Max)
+/// unless the mode pins it (`governor::raise_for_floor`; Battery saver
+/// stays at its minimum, and nothing changes with the governor off).
+pub fn raise_to_floor(floor: u8) {
+    if !GOV_ON.load(core::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    if let Some(l) = governor::raise_for_floor(power_mode(), clock::current(), Level::from_floor(floor)) {
+        clock::set_level(l);
+    }
+}
+
+/// Clock governor (PWR-2, PWR-5): once a second, from the main executor's
+/// idle share, the audio floor, the peripherals in use and the power mode
+/// (`orpheus_power::governor`, host-tested).
 struct Governor {
     last_idle: u32,
     last_t: u64,
     g: governor::Governor,
-}
-
-const fn policy_level(l: Level) -> governor::Level {
-    match l {
-        Level::Low => governor::Level::Low,
-        Level::Base => governor::Level::Base,
-        Level::Mid => governor::Level::Mid,
-        Level::High => governor::Level::High,
-        Level::Turbo => governor::Level::Turbo,
-        Level::Max => governor::Level::Max,
-    }
-}
-
-const fn hal_level(l: governor::Level) -> Level {
-    match l {
-        governor::Level::Low => Level::Low,
-        governor::Level::Base => Level::Base,
-        governor::Level::Mid => Level::Mid,
-        governor::Level::High => Level::High,
-        governor::Level::Turbo => Level::Turbo,
-        governor::Level::Max => Level::Max,
-    }
 }
 
 impl Governor {
@@ -232,27 +229,32 @@ impl Governor {
 
     fn step(&mut self) {
         use core::sync::atomic::Ordering::Relaxed;
+        use governor::periph;
         let idle = executor::idle_us();
         let t = hal::time::now_us();
         let idle_pct = governor::idle_percent(u64::from(idle.wrapping_sub(self.last_idle)), t - self.last_t);
         self.last_idle = idle;
         self.last_t = t;
-        // Settings › System › Performance (D-4), published by the UI.
-        let perf = if drain::shared().perf_max.load(Relaxed) {
-            governor::Performance::Maximum
-        } else {
-            governor::Performance::Normal
-        };
+        let f = CLOCK_FLOOR.load(Relaxed);
+        let playing = audio::PLAYING.load(Relaxed);
+        let mut active = periph::ALWAYS;
+        if hal::usb::vbus_present() {
+            active |= periph::USB;
+        }
+        if drain::shared().screen_on.load(Relaxed) {
+            active |= periph::DISPLAY;
+        }
+        if playing {
+            active |= periph::AUDIO;
+        }
         let input = governor::Input {
             idle_pct,
-            current: policy_level(clock::current()),
-            floor: CLOCK_FLOOR.load(Relaxed),
-            perf,
+            current: clock::current(),
+            floor: if f == 0 && !playing { Level::Low } else { Level::from_floor(f) },
+            active,
         };
-        // Settings › Power › Power mode (VER-13), published by the UI.
-        let mode = governor::PowerMode::from_setting(i16::from(crate::ui::POWER_MODE.load(Relaxed)));
-        if let Some(l) = self.g.step_in(input, mode, drain::shared().screen_on.load(Relaxed)) {
-            clock::set_level(hal_level(l));
+        if let Some(l) = self.g.step(input, power_mode()) {
+            clock::set_level(l);
         }
     }
 }

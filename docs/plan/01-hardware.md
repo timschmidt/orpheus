@@ -220,6 +220,15 @@ Core supply: an on-chip buck converter (switchable to LDO mode), 0.7–1.35 V.
 | `0x16` | 1.250 V | 240–276 MHz |
 | `0x18` | 1.300 V | 288–300 MHz |
 
+**Ceiling `0x18`** (PWR-5, 2026-11-26): VDD's absolute maximum is 1.35 V
+[DS §2.1] and its recommended range 0.9–1.35 V (typ. 1.2 V) [DS §2.2];
+codes `0x19`/`0x1A` (1.325/1.35 V) would sit at that limit, and 288 MHz,
+the chip's rated maximum ("Up to 288MHz M4F processor Core", [DS §1.2]),
+needs no more than `0x18`. Orpheus never writes a code above `0x18` and no
+level above 288 MHz (`orpheus_power::clock::VDD_MAX`, a const assertion and
+a clamp in the HAL's one writer of `VOUT_CTL[4:0]`; host test
+`no_supply_above_1_3_v`).
+
 So the Rockbox port's 48 MHz at the reset default runs the core at 1.2 V where
 the stock firmware uses 1.0 V: lowering the code to `0x0C` is the first and
 largest power saving, and it is a vendor-used value. Bits [9:5] set VDD for
@@ -302,6 +311,8 @@ dev poke/peek` sessions; anything needing instruments or the case open is a
 | U-PWR-2 | `CMU_SYSCLK` bit 8 and [25:24] | Bus clock at high levels | system.md T2 | PWR-1 |
 | U-PWR-3 | SPI0 clock source/divisor encoding | Pager read speed at each configuration | system.md T3 | PG-1 |
 | U-PWR-4 | Can DEVPLL / COREPLL be off, HOSC divided, 32 kHz selected, with what wake-up | Deep idle | Stepwise in a bring-up image with timer wake; current needs a meter (**user check**), software proxy = battery ADC slope | PWR-3b |
+| U-PWR-5 | Do USB (controller, developer channel, file transfer), the card's DMA and the DAC's DMA work with the core at `Low` (24 MHz, PLL off)? USB has its own UTMI+ PHY clock (`0xC0001100`) but [DS] states no minimum core/AHB clock for the controller; Orpheus's USB has only run at ≥ 48 MHz [HW]; the vendor's UDISK requests 108 MHz at entry and 24 MHz in one path [code]. Card (CK24M), display (CK24M DMA blit), keys (HOSC) and the pager (SPI0 on CK24M at `Low`, NOR DMA CRC passed in the 2026-11-24 clock self-test [HW]) take their clocks from outside the core ([DS] §4.3) | Battery saver's level and Automatic's idle level with a cable (`governor::PERIPHERAL_MIN`: USB assumed `Base` until answered, because a dead controller trips the USB liveness watchdog and the player would restart on the cable) | `xtask dev cmd 'gov off'`, `cmd 'clock 24'`, then `stats`, a screenshot and a 1 MiB file-transfer read; `clock 48`, `gov on` after. If all pass, USB's entry becomes `Low` | PWR-5 |
+| U-PWR-6 | Battery current per level (core busy and in WFI) and per supply code: [DS] has no current figures for any level or for WFI/sleep, so whether racing to `Max` and sleeping beats running steady at a lower level cannot be derived | The power model `governor::COST` (estimates: dynamic ∝ V², standing ∝ V² plus PLL) decides Automatic's level | M13 drain runs per level (`gov off`, `clock N`, the battery logger); replace `COST` with the measured figures | M13 |
 | U-PMU-1 | ~~Charge current per code~~ **Answered [DS]** (code 4 = 200 mA, code 1 = 50 mA). Remaining: end-voltage field (`CHG_VLOT`, `STOPV`) values the stock firmware leaves; behaviour of `CHG_DET` during a full charge | Safety, UI | Dump `CHG_CTL`/`CHG_DET` under the stock firmware while charging (boot stock, then ADFU read is not possible — read them from Orpheus right after a stock session with charger running, or decode the vendor writes); log a full charge cycle | PWR-2 |
 | U-PMU-2 | **S3 standby** (`POWER_CTL` bit 1, `VOUT_CTL[9:5]`): does RAM survive; does the SoC resume in place or restart through the ROM; which wake sources work; current drawn | Standby with alarms, background step counting, instant resume | Bring-up image: write a RAM pattern and a mailbox marker, arm the RTC alarm 10 s ahead with `WKEN_CTL` bit 4, enter S3 (clear `EN_S1` with `EN_S3` set — derive the exact sequence from the datasheet text first), observe over USB what comes back and whether the pattern survived. Needs a person only if nothing wakes it (reset pinhole) | PWR-3c |
 | U-PMU-3 | Wake from **off**: bits are documented (§7); confirm DC5V-insert, alarm and key wake on this board | Alarms, charging screen, unattended tests | Alarm case is fully automatic (arm alarm, power off, watch USB re-enumerate); DC5V case needs a re-plug (**user check**) | PWR-3a |

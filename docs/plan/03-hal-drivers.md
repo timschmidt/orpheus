@@ -44,7 +44,7 @@ peripheral clock derivations).
 | `Mid` | 96 MHz | COREPLL N = 16 | `0x0C` | after the level self-test |
 | `High` | 144 MHz | COREPLL N = 24 | `0x0C` | after the level self-test |
 | `Turbo` | 192 MHz | COREPLL N = 32 | `0x10` (1.1 V) | after the level self-test |
-| `Max` | 288 MHz | COREPLL N = 48, `CMU_SYSCLK` bit 8 set | `0x18` (1.3 V) | an option the user can choose (decision D-4, 2026-11-24; WP PWR-5): with Settings › System › Performance = Maximum the governor's step above High is `Max` (§2.4). **Verified 2026-11-24**: self-test PASS, NOR ÷6 (`0x203`) = 48 MHz, compute 1.93–1.94× High, decode bit-identical; battery drain not yet characterised (battery logger, user check 19) |
+| `Max` | 288 MHz | COREPLL N = 48, `CMU_SYSCLK` bit 8 set | `0x18` (1.3 V) | the governor's top level (decision D-4 as revised 2026-11-26; WP PWR-5): chosen when the load needs it, pinned by High performance (§2.4). `0x18` is the hard ceiling of every supply write ([DS] §2.1 absolute maximum 1.35 V, §2.2 recommended 0.9–1.35 V; 288 MHz is the rated maximum, [DS] §1.2). **Verified 2026-11-24**: self-test PASS, NOR ÷6 (`0x203`) = 48 MHz, compute 1.93–1.94× High, decode bit-identical; battery drain not yet characterised (battery logger, user check 19) |
 
 Voltage codes per the datasheet (01 §7): `0x0C` = 1.0 V, `0x10` = 1.1 V,
 `0x14` = 1.2 V (the reset default), `0x18` = 1.3 V. All values are rows of the
@@ -53,8 +53,8 @@ lower the core supply from the reset default of 1.2 V to 1.0 V** (code
 `0x0C`), which the stock firmware uses for everything up to 144 MHz. `Turbo`
 is still below the reset-default voltage. `Max` raises the supply above the
 default (within the regulator's documented range and the datasheet's 288 MHz
-rating) and is what stock does for UI bursts and recording; Orpheus should
-not need it.
+rating) and is what stock does for UI bursts and recording; Orpheus uses it
+when nothing slower keeps up (§2.4).
 
 ### 2.2 Level change (resident, interrupts masked with BASEPRI)
 
@@ -101,17 +101,34 @@ pub fn stats() -> ClockStats;                  // seconds per level, seconds in 
 The governor runs the maximum of all requests (not the vendor's sum of
 votes), with 200 ms hysteresis on the way down. Policy numbers: 02 §5.1.
 
-**As built (PWR-2 first cut, PWR-5)**: the decision is a pure function,
-`orpheus_power::governor::Governor::step` (host-tested), run once a second
-by the firmware: idle share of the main executor below 25 % → one level up
-(Base → Mid → High); above 70 % for three steps in a row → one level down,
-never below the audio task's clock floor. The Performance setting
-(Settings › System › Performance, store key `0x0C07`) decides what lies
-above High: **Normal** (default) nothing — the governor never selects `Max`,
-and a `Max` it finds (a test pin with the governor on, or the setting just
-switched off) goes to High at the next step; **Maximum**: `Max` (288 MHz),
-with the same hysteresis on the way down (`Max` → High → Mid → Base).
-`Turbo` is still only reachable by a test pin.
+**As built (PWR-2 first cut; PWR-5, 2026-11-26)**: the decision is a pure
+function, `orpheus_power::governor::Governor::step` (host-tested), run once
+a second by the firmware (`main.rs` `Governor`) under Settings › Power ›
+Power mode (02 §5.4; the only setting it follows — Settings › System ›
+Performance, key `0x0C07`, was removed and its key retired):
+
+* **Automatic** (default): never below the audio task's clock floor
+  (`CLOCK_FLOOR`/`CODEC_FLOOR`, 0 Base … 4 Max; none when nothing plays)
+  or the peripherals' minimum (`PERIPHERAL_MIN`). Idle share below 25 %
+  (saturated) → climb: Low → Base → Mid → Turbo, and `Max` only from a
+  saturated Turbo; otherwise the level the power model (`COST`, estimates
+  until M13, U-PWR-6) says carries the measured demand (busy share × MHz)
+  for the least power — the current level while it fills ≤ 75 %, another
+  only if it fills ≤ 60 % — after two steps in a row asking for less.
+  Nothing to do → the peripherals' minimum (`Low`, 24 MHz; `Base` with
+  USB connected until U-PWR-5 is answered).
+* **Battery saver**: pinned at the peripherals' minimum whatever the load;
+  audio floors do not raise it.
+* **High performance**: pinned at `Max`.
+* Under a host test (test look, test session, test mailbox) the governor
+  follows Automatic (`PowerMode::for_governor`).
+
+The audio task raises the clock to its floor at once
+(`firmware::raise_to_floor`, `governor::raise_for_floor`: Automatic only;
+up to `Max`). The supply order of a switch (`orpheus_power::clock::switch`,
+host-tested against every pair of levels) is the vendor's: up, the voltage
+code first and 150 µs to settle; down, the clock first and the code last.
+The one writer of `VOUT_CTL[4:0]` clamps to `0x18` (`clock::vdd_write`).
 
 **WP-PWR-1** delivers levels `Low`/`Base`, then `Mid`/`High` through the
 self-test, the request API, statistics, and the SPI/LCM handling above.
