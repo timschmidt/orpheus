@@ -79,6 +79,22 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-26 — MIDI plays to the end on the player (lead)
+
+* Merged the synth working-set fix (`4e1e9a49`). On the player
+  (Automatic, cable): `playdir /.orpheus/test/suite/midi` — **all three
+  songs played to their end** (Sound tour `frames=2469600`, exact), no
+  `synth: gave up`, no reset; `pg=` 3–15 % (was ≈ 250 %); `ratio=` 76–92;
+  the clock moves 144 ↔ 192 ↔ 288 (`synth: clock … ` log lines).
+* Open (a worker fixes them): Hill Song ran **shed at 144 MHz**
+  (`lvl=3/3`, `vlim=7`, `load` 30–43 %) — the shed state carries over from
+  Etude and the clock came down without restoring quality (D-4: in
+  Automatic, shed only at Max); 18 underruns over ≈ 107 s, several
+  `ub=synth:rest:4ms` (a rest started with too little in the ring); `pg=`
+  10–15 % at times against the model's 2–5 %.
+* Idle with the cable: Base 48 MHz. The owner's own screen timers lock the
+  player outside tests; `ui test-look on` frees it (as the tools do).
+
 ### 2026-11-26 — SYN-3: the steady MIDI working set fits the code cache; a paused track releases its clock floor (worker, no hardware)
 
 The lead's run of build `8240f128`: `ratio=` 100–108 and the clock at
