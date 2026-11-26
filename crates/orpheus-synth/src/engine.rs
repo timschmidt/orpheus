@@ -378,6 +378,15 @@ impl Engine {
         self.misses = 0;
     }
 
+    /// [`Engine::reset`], then set the sample clock to `clock`: a player
+    /// that restarts from silence at frame `clock` of a piece (a MIDI seek)
+    /// keeps the control ticks on the same samples as a render from the
+    /// start, so the two outputs agree once the state they carry agrees.
+    pub fn reset_at(&mut self, seed: u32, clock: u64) {
+        self.reset(seed);
+        self.clock = clock;
+    }
+
     /// Sample rate, Hz.
     #[must_use]
     pub fn rate(&self) -> u32 {

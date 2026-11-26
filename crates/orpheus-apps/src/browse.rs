@@ -65,6 +65,15 @@ pub const AUDIO_EXTS: &[&str] = &[
     "wv", "ape", "wma", "au",
 ];
 
+/// MIDI extensions, audio with the `midi` feature (MIDI-1).
+pub const MIDI_EXTS: &[&str] = &["mid", "midi", "kar", "rmi"];
+
+/// Whether `name` is an audio file the player opens.
+#[must_use]
+pub fn is_audio_name(name: &str) -> bool {
+    ext_is(name, AUDIO_EXTS) || (cfg!(feature = "midi") && ext_is(name, MIDI_EXTS))
+}
+
 /// Classify an entry by its name.
 #[must_use]
 pub fn kind_of(name: &str, is_dir: bool) -> EntryKind {
@@ -72,7 +81,7 @@ pub fn kind_of(name: &str, is_dir: bool) -> EntryKind {
         EntryKind::Dir
     } else if name.eq_ignore_ascii_case("otpauth.txt") || name.eq_ignore_ascii_case("otp-import.txt") {
         EntryKind::OtpImport
-    } else if ext_is(name, AUDIO_EXTS) {
+    } else if is_audio_name(name) {
         EntryKind::Audio
     } else if ext_is(name, &["m3u", "m3u8", "pls"]) {
         EntryKind::Playlist
@@ -180,6 +189,9 @@ mod tests {
         assert_eq!(kind_of("orpheus-0.2.0.ofw", false), EntryKind::Firmware);
         assert_eq!(kind_of("noext", false), EntryKind::Other);
         assert_eq!(kind_of("dir.mp3", true), EntryKind::Dir);
+        let midi = if cfg!(feature = "midi") { EntryKind::Audio } else { EntryKind::Other };
+        assert_eq!(kind_of("Song.KAR", false), midi);
+        assert_eq!(kind_of("tune.mid", false), midi);
     }
 
     #[test]

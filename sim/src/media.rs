@@ -4,7 +4,9 @@
 //! order, sorted shortly after; rows outside the window are not
 //! available until `want` + `Event::Data`), text windows, and a fake player
 //! that reads real ID3 tags and `.lrc` files from the card and advances
-//! with simulated time.
+//! with simulated time. MIDI files (`.mid`, `.kar`; MIDI-1) get their real
+//! duration and title from `orpheus-midi`'s scan, and a karaoke file's
+//! lyrics become timed lines for Now Playing.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
@@ -609,6 +611,74 @@ impl Media {
 
     // ------------------------------------------------------------ player
 
+    /// Write the MIDI demo songs to `/Music/MIDI` (once) and return the
+    /// folder (`set:queue=midi`). The built card has no MIDI files, so the
+    /// other journeys and goldens do not see them.
+    pub fn add_midi_demo(&mut self) -> &'static str {
+        const DIR: &str = "/Music/MIDI";
+        type Song = fn(&mut [u8]) -> Option<usize>;
+        let songs: [(&str, Song); 3] = [
+            ("Etude.mid", orpheus_midi::demo::etude),
+            ("Hill Song.kar", orpheus_midi::demo::karaoke),
+            ("Sound tour.mid", orpheus_midi::demo::tour),
+        ];
+        let vol = self.volume();
+        if !block_on(vol.exists(DIR)).unwrap_or(false) {
+            let _ = block_on(vol.create_dir(DIR));
+            for (name, song) in songs {
+                let mut buf = vec![0u8; 64 * 1024];
+                let n = song(&mut buf).unwrap_or(0);
+                let path = format!("{DIR}/{name}");
+                if let Ok(mut f) = block_on(vol.open(&path, OpenMode::CreateNew)) {
+                    let _ = block_on(vol.write(&mut f, &buf[..n]));
+                    let _ = block_on(vol.close(f));
+                }
+            }
+            self.refresh();
+        }
+        DIR
+    }
+
+    /// Duration, title and karaoke lines of a MIDI file (MIDI-1).
+    fn load_midi(item: &mut QItem, data: &[u8], kar: bool) {
+        let text = |b: &[u8]| match std::str::from_utf8(b) {
+            Ok(s) => s.to_string(),
+            Err(_) => b.iter().map(|&c| char::from(c)).collect(), // Latin-1
+        };
+        let mut lines: Vec<(Option<u32>, String)> = Vec::new();
+        let mut cur: Option<(u32, String)> = None;
+        let r = orpheus_midi::summary(&mut orpheus_midi::SliceSource::new(data), 8000, kar, |l| {
+            let ms = u32::try_from(l.frame * 1000 / 8000).unwrap_or(u32::MAX);
+            if l.before != orpheus_midi::kar::Break::None
+                && let Some((t, s)) = cur.take()
+                && !s.trim().is_empty()
+            {
+                lines.push((Some(t), s.trim_end().to_string()));
+            }
+            let (_, s) = cur.get_or_insert_with(|| (ms, String::new()));
+            s.push_str(&text(l.text()));
+            if l.after != orpheus_midi::kar::Break::None
+                && let Some((t, s)) = cur.take()
+            {
+                lines.push((Some(t), s.trim_end().to_string()));
+            }
+        });
+        let Ok((info, _)) = r else {
+            item.duration = 0;
+            return;
+        };
+        if let Some((t, s)) = cur.take()
+            && !s.trim().is_empty()
+        {
+            lines.push((Some(t), s.trim_end().to_string()));
+        }
+        item.duration = u32::try_from(info.duration_ms()).unwrap_or(u32::MAX);
+        if !info.title().is_empty() {
+            item.title = text(info.title());
+        }
+        item.lyrics = lines;
+    }
+
     fn load_item(&mut self, file: FileRef, path: &str) -> QItem {
         let data = self.read_file(path);
         let stem = path.rsplit('/').next().unwrap_or(path);
@@ -626,6 +696,11 @@ impl Media {
             lyrics: Vec::new(),
             art: None,
         };
+        if let Some(kar) = orpheus_midi::extension(path) {
+            item.size = data.len() as u64;
+            Self::load_midi(&mut item, &data, kar);
+            return item;
+        }
         if let Some(probe) = self.duration_probe {
             item.size = data.len() as u64;
             item.duration = probe(&data, path).unwrap_or(0);
@@ -991,6 +1066,23 @@ impl Media {
 
     pub fn track(&self) -> Option<TrackInfo<'_>> {
         let q = self.current()?;
+        if orpheus_midi::extension(&q.path).is_some() {
+            // Synthesised at the DAC rate; no bit rate, no ReplayGain.
+            return Some(TrackInfo {
+                title: &q.title,
+                artist: &q.artist,
+                album: &q.album,
+                file: q.file,
+                path: &q.path,
+                size: q.size,
+                codec: "MIDI",
+                sample_rate: 48_000,
+                bits: 16,
+                channels: 2,
+                bitrate_kbps: 0,
+                gain_cdb: None,
+            });
+        }
         Some(TrackInfo {
             title: &q.title,
             artist: &q.artist,

@@ -135,6 +135,9 @@ fn media_cases(add: &mut dyn FnMut(String, String)) {
             "set:0x0d03=2 set:queue={album} set:track={lyr} set:pos=25000 goto:NowPlaying wait:100",
         ),
         ("np_upnext", "set:0x0d03=3 set:queue={album} goto:NowPlaying wait:100 down"),
+        // MIDI-1: a karaoke file's lyrics in Now Playing (the demo songs are
+        // written to /Music/MIDI by `set:queue=midi`; Hill Song is track 1).
+        ("np_kar_lyrics", "set:0x0d03=2 set:queue=midi set:track=1 set:pos=8200 goto:NowPlaying wait:100"),
         ("np_details", "set:0x0d03=4 set:queue={album} set:track=1 goto:NowPlaying wait:100"),
         ("np_levels", "set:0x0d03=5 set:queue={album} set:pos=12000 goto:NowPlaying wait:100"),
         ("np_menu", "set:queue={album} goto:NowPlaying wait:100 menu"),

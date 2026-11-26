@@ -955,11 +955,13 @@ impl Host for HostServices {
                 evs.push(Event::Service(ServiceEvent::Other { kind: services::other::LIBRARY, value: 0 }));
             }
             "queue" => {
-                // Start an album: takk, kino, yoasobi, podcast.
+                // Start an album: takk, kino, yoasobi, podcast; midi writes
+                // the MIDI demo songs to /Music/MIDI first (MIDI-1).
                 let path = match v {
                     "kino" => "/Music/Кино/Звезда по имени Солнце",
                     "yoasobi" => "/Music/YOASOBI/THE BOOK",
                     "podcast" => "/Music/Podcasts",
+                    "midi" => self.media.add_midi_demo(),
                     _ => "/Music/Sigur Rós/Takk…",
                 };
                 self.media.learn(path);

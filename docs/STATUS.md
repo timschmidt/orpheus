@@ -71,6 +71,7 @@ of every session. Newest entries first in §3.
 | VER-13 (Display, Power, Date & time, USB) | **built (host + simulator + firmware), not yet run on the player** | Backlight timeout, Lock delay, Screen saver, Animations, Rotate (software 180°), Power mode, Keys when locked (transport to playback), Time zone, Correction, Set from RDS (group 4A), Read-only card, Developer channel (held on under any host test; the session refuses it) have their effects; journeys `settings_screen_timers`, `settings_screen_saver`; Brightness (missing stock duty values, U-PWM-3) and Wallpaper (Set as wallpaper not built) left; stack margin 4,568 B, .bss 125,352 B. User check 30 (session entry 2026-11-26 "VER-13: Display, Power, Date & time and USB") |
 | GAME-6 Bricks (M14) | **built (host + simulator + firmware), not yet run on the player** | Brick breaker of our own: integer physics with one-pixel sub-steps (no tunnelling at any speed, no floating point), paddle angles, 1–3-hit and unbreakable bricks, 8 hand-made + generated levels, five power-ups, lives, scores, saves; 7 settings packed into 1 word; 47 goldens; fuzz `bricks_keys`. In the firmware (`orpheus-apps/bricks`): stack margin 4,116 B unchanged. Lead: session entry 2026-11-25 "GAME-6" |
 | BOOK-2 | **done (host + simulator)**; not in the firmware (as BOOK-1; the scratch is the decoder arena, see session entry) | EPUB 2/3 in `orpheus-books`: zip (end record, streamed central directory, CRC, zip64/encrypted/method refusals), `no_std` inflate (48 B state; 32 KiB window + 2,304 B tables lent: 35,072 B), container/OPF/nav/NCX, XHTML reduction over the XML tokenizer split out of FB2, contents positions from anchors, all in bounded steps into BOOK-1's stream; library titles from the package; 12 new goldens; fuzz targets `books_zip`, `books_epub` (session entry 2026-11-25 "BOOK-2") |
+| MIDI-1 | **done (host + simulator)**; not in the firmware (SYN-3); **user check: listen to the three MIDI renders** | `orpheus-midi`: Standard MIDI File parser (formats 0/1/2, running status, meta and SysEx, SMPTE, RMID) streamed through 64 track cursors of 64-byte windows that ask for bytes (`Need`/`supply`), nothing trusted; exact tick→frame clock through tempo changes; sequencer (CC 1/6/7/10/11/38/64/91/93/96–101/120–127, RPN bend range, pressure, programs, kits on channel 10, mute/solo); own GM set of 32 sounds for the 128 programs (`data/gm-sounds.osb`); `MidiPlayer`: open/scan, render, bounded-step seek (bit-exact where nothing sounds across the target), duration/position, `.kar`/lyric events; Files plays `.mid`/`.kar` in the simulator with Now Playing lyrics; player 70,224 B; estimate ≈ 117 MHz at 48 kHz for a 10–11-voice song: High clock (session entry 2026-11-25 "MIDI-1") |
 
 ## 3. Session log
 
@@ -283,6 +284,130 @@ wiring; `effects.toml` entries without `gap` (12 of 14 settings).
   package's manifest edits to its own entries; a one-line sed after the
   Sound/Playback merge). Power mode on the player (governor statistics)
   has no journey: not in the session whitelist.
+### 2026-11-25 — MIDI-1: MIDI files on the host and in the simulator (worker, no hardware)
+
+New crate `crates/orpheus-midi` (`no_std`, no `alloc`, no `unsafe`, no
+`core::fmt`), on `orpheus-synth`. Not in the firmware (SYN-3). The full
+"as built" is in 04 §9; in short:
+
+**Parser** (`smf`): formats 0, 1 (merged by tick, ties by track) and 2
+(patterns one after the other, tempo reset at each); running status;
+tempo, time and key signature, the seven text kinds (48 bytes kept),
+end of track; SysEx and other metas skipped by length; SMPTE 24/25/29.97/30;
+`RIFF RMID`. **Bounded streaming**: ≤ 64 track cursors of 64-byte windows
+(≈ 97 B each, 6.2 KB in all); a call that needs bytes answers
+`Need { offset, len }` and consumes nothing, the caller `supply`s (an
+`async` card task can answer; `MidiSource` + `SliceSource` drive it
+synchronously); each `next_event` parses ≤ one delta per track and one
+event. **Adversarial**: no length trusted (chunks clamped to the file,
+≤ 320 chunks walked, header track count ignored), > 64 tracks refused
+(`TooManyTracks`, "MIDI file has more than 64 tracks"), 5-byte numbers,
+stray data bytes, undefined status bytes end only their track, a missing
+end of track is synthesised, 64-bit saturating ticks, songs cut at 24 h.
+
+**Timing** (`timing`): frame = ⌊(acc + Δtick·µs·rate) / (tpq·10⁶)⌋ with the
+exact accumulator carried across tempo changes (128-bit): every event is on
+the floor of its exact time, however many tempo changes. A first version
+re-anchored on the floored frame and drifted up to a frame per change
+(`regress_tempo_changes_drifted_by_a_frame_each`, caught by the test before
+commit). `TempoMap` (128 points) for tick/BPM views.
+
+**Sequencer** (`seq`): part = channel; volume·expression with the GM
+40 log₁₀ curve, pan, sustain, modulation and channel pressure as vibrato on
+top of the patch's, RPN 0 bend range (patches installed with ±24, `Bend`
+scaled), reverb/chorus sends, reset all controllers (RP-015), all notes /
+sound off; program changes install a sound only when it changes; channel
+10 → kit slot 0, its program picks the factory kit. State can be scanned
+silently and `restore`d at once (seek and start share it).
+
+**GM sound set** (`gm`): 32 sounds of our own for 128 programs (table in
+04 §9 and the module doc): 9 reuse SYN presets (5 with levels adjusted),
+23 new (piano FM 3-op, harpsichord, bell, mallet, church and reed organs,
+nylon/steel/drive guitars, bass, slap bass, solo strings, harp, timpani,
+horn, sax, reed, square lead, warm pad, noise fx, chirp). Levels balanced
+by the tour's per-bar RMS (−22 … −30 dBFS, the noise swell −33). Written as
+an `OSB1` bank (`data/gm-sounds.osb`, 7,312 B: 32 patches + the 5 factory
+kits; a test keeps it current and decodes it back bit for bit).
+
+**Player** (`MidiPlayer`, ≈ 70 KB): open = header + tracks + a silent scan
+(duration = last event + 2 s, channels, notes, title from `@T` or track
+0's name, lyric mode) in bounded steps; `render`/`render_f32` (blocks cut
+at program changes and a full 32-event buffer; any block size gives the
+same samples); `seek` = rewind + silent scan to the target in ≤ budget
+events per `step`, `Engine::reset_at(seed, target)` (new: the control grid
+stays on the samples of a render from the start), state `restore`d, held
+melodic notes re-struck; pause = not calling; `set_mute`/`set_solo`;
+lyric pieces queued with their frames (`pop_lyric`); `summary()` for
+duration, title, tempo map and lyrics without an engine. Master gain 0.5:
+a fff six-note chord on any program stays below full scale (one program,
+tuba, touches the limiter at −0.5 dB).
+
+**Simulator**: `orpheus-apps` feature `midi` (on in the simulator only)
+makes `.mid`, `.midi`, `.kar`, `.rmi` audio in Files and the library; the
+simulated player takes duration and title from the scan and turns `.kar`
+lyrics into timed Now Playing lines; `set:queue=midi` writes the three demo
+songs to `/Music/MIDI` (the built card is unchanged, so no other golden
+moved). New goldens `media_np_kar_lyrics_*` (6; looked at: the current
+line "the river runs, the air is still." highlighted at 0:08.2), journey
+test `midi_files_play_from_files`.
+
+**Tests** (38 in the crate): parser (16: formats, running status, metas,
+SysEx, long and empty texts, SMPTE incl. 29.97, RMID, header errors, too
+many tracks, untrusted lengths, every truncation of a file, huge deltas,
+corrupt bytes, bounded steps); playback (16: tempo changes exact to the
+sample — event frames against an independent rational computation at
+44.1/48 kHz and the render bit-identical to the same notes placed by hand;
+golden hashes of 4 renders, also in a release build `--check`; block-size
+independence; GM sweep of 128 programs × extremes + chords and 5 kits ×
+47 notes: finite, below full scale, audible; seek bit-exact into a silence
+at frame offsets 0/17/31, into a phrase (held notes re-struck) bit-exact
+from the next phrase, a real song within 1 dB without drums / 3 dB with;
+bounded seek steps; `.kar` and lyric-event timing exact, the player's
+queue equal to the summary; mute/solo; duration and position; programs and
+kits; reopen; RAM ≤ 72 KiB; the bank); fuzz target `midi_parse` (parser,
+summary, player with odd blocks and seeks; 11 seeds in
+`tests/fuzz-corpus/midi_parse/`) run 120 s with `nightly-2026-11-05`
+under ASan: 70,882 runs, no finding.
+
+**RAM**: player 70,224 B (engine 62,320, parser 6,216, sequencer 376,
+event buffer, lyric queue) — fits the 72 KiB decoder arena, asserted.
+**Code** (thumbv7em, opt "s", no LTO): the play path ≈ 10 KB (`Smf::next_event`
+1.35 KB, render 1.0 KB, sequencer 2.3 KB, clock 0.8 KB, restore/step/new
+2.4 KB); the GM table 9.6 KB read-only; the rest of the crate's 39 KB is
+the demo writer and its sort (not linked by a player). 0 fused
+multiply-add instructions.
+
+**CPU estimate** (`cargo run --release -p orpheus-midi --example
+estimate`: the demos' real voice mix, per voice SYN-1/2's disassembly
+cycles by sound, ±30 %; engine + limiter 135 and reverb 290 per sample):
+the etude (mean 10.6 voices, max 20 with tails) ≈ 2,430 cycles/sample
+mean: **≈ 107 MHz at 44.1 kHz, 117 MHz at 48 kHz, worst block ≈ 186/203
+MHz**; the karaoke song (5.5 voices) ≈ 60/65 MHz; parser + clock ≈ 22–66
+ns per event on the host (a few thousand M4 cycles at most; < 1 MHz at
+hundreds of events per second). **A typical 8–12-voice GM file needs the
+High clock (144 MHz)**; full 16-voice peaks need Turbo (192) or Max (288,
+D-4), or a voice limit of ≈ 12 at High.
+
+Gate: fmt, clippy `-D warnings` (workspace, all targets), `cargo test
+--workspace` (1,822 passed, 12 ignored, 0 failed): pass; release `render
+--check` 4 scenarios, 0 mismatches; firmware unchanged (the `midi` feature
+is off there): `xtask build` ok (resident 81,076 B), `xtask size --check`
+within budgets. No settings added (settings matrix not affected). Not run:
+HIL (no hardware), `xtask test all` beyond the steps listed.
+
+**User check**: listen to the three renders (etude, karaoke song, sound-set
+tour) — balance between the 32 sounds and the kits, and whether the piano
+(FM, 3 operators) is acceptable as the most used program.
+
+**Open / for SYN-3**: (1) a card source for the parser's `Need`s (64-byte
+reads at arbitrary offsets: a sector cache in front, ≤ 64 tracks); (2)
+the player value (70 KB) in the decoder arena; `render` into the DAC ring;
+(3) the clock floor High while MIDI plays, a voice limit or Max for the
+peaks (estimate above, to be measured); (4) the `midi` feature on in the
+firmware (Files, library) once it plays; Now Playing lyrics from
+`pop_lyric`; a mute/solo and tempo view; (5) SF2: not done (stretch; the
+sample cache and `Kind::Sample` are the way in; SF2 parsing, zones and
+modulators are a package of their own).
 
 ### 2026-11-26 — VER-13 merged; `settings_shuffle` on the player (lead)
 

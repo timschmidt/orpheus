@@ -13,7 +13,7 @@ window = ["dep:minifb"]
 
 [dependencies]
 orpheus-ui = { path = "../crates/orpheus-ui" }
-orpheus-apps = { path = "../crates/orpheus-apps", features = ["games", "salvo", "bricks", "books"] }
+orpheus-apps = { path = "../crates/orpheus-apps", features = ["games", "salvo", "bricks", "books", "midi"] }
 orpheus-books = { path = "../crates/orpheus-books" }
 orpheus-games = { path = "../crates/orpheus-games", features = ["salvo", "bricks"] }
 orpheus-power = { path = "../crates/orpheus-power" }
@@ -21,6 +21,8 @@ orpheus-fm = { path = "../crates/orpheus-fm", features = ["fake"] }
 orpheus-fs = { path = "../crates/orpheus-fs", features = ["std"] }
 orpheus-meta = { path = "../crates/orpheus-meta" }
 orpheus-audio = { path = "../crates/orpheus-audio" }
+# MIDI files in Files and Music: duration, title, karaoke lyrics (MIDI-1).
+orpheus-midi = { path = "../crates/orpheus-midi" }
 orpheus-img = { path = "../crates/orpheus-img" }
 orpheus-index = { path = "../crates/orpheus-index" }
 orpheus-library = { path = "../crates/orpheus-library" }

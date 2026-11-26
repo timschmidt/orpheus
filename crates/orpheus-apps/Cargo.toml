@@ -45,6 +45,10 @@ bricks = ["games", "orpheus-games/bricks"]
 # fuzzer; off in the firmware until there is static RAM and stack for it
 # (docs/STATUS.md, BOOK-1).
 books = ["dep:orpheus-books", "orpheus-ui/book-fonts"]
+# MIDI files (MIDI-1, 04 §9): `.mid`, `.midi`, `.kar`, `.rmi` are audio in
+# Files and the library. On in the simulator (which plays them through
+# `orpheus-midi`); off in the firmware until SYN-3 plays them there.
+midi = []
 
 [lints]
 workspace = true

@@ -1080,6 +1080,147 @@ multiply-accumulate). Module docs are the reference; in short:
   drum track is a part with `Kind::Kit(slot)` (2 slots: more kits per
   project need more slots, 289 B each).
 
+**As built (MIDI-1, 2026-11-25): MIDI files; host and simulator.** New
+crate `crates/orpheus-midi` (`no_std`, no `alloc`, `#![forbid(unsafe_code)]`,
+no `core::fmt`), on `orpheus-synth`. Module docs are the reference; in
+short:
+
+* **Parser** (`smf`). `MThd` (also inside `RIFF RMID`), formats 0, 1, 2;
+  running status (cancelled by meta and SysEx); tempo, time and key
+  signatures, the seven text kinds (the first 48 bytes kept), end of
+  track; SysEx (`F0`/`F7`) and other metas skipped by their length; SMPTE
+  divisions 24, 25, 29.97 (30000/1001) and 30 fps. Format 0/1 tracks are
+  merged by tick (ties by track number, then file order); format 2
+  patterns play one after the other from where the previous ended, with a
+  `Pattern` event (the tempo resets to 120 BPM there). A format-0 file
+  with several tracks plays like format 1.
+* **Bounded streaming.** `Smf` holds ≤ 64 track cursors, each a 64-byte
+  window onto its track (≈ 97 B; 6,216 B in all) and never the file. A call
+  that needs bytes answers `Pull::Need { offset, len ≤ 64 }` and consumes
+  nothing; the caller reads them and calls `supply` (an `async` card task
+  can answer; `MidiSource`/`SliceSource` drive it synchronously). Each
+  `next_event` parses at most one delta time per live track and one event.
+  **Nothing is trusted**: chunk lengths are clamped to the file (≤ 320
+  chunks walked, the header's track count ignored); more than 64 `MTrk`
+  chunks are refused (`MidiError::TooManyTracks`, message "MIDI file has
+  more than 64 tracks"); meta/SysEx lengths are clamped to the track; a
+  variable-length number of 5 bytes, a data byte without running status, a
+  data byte ≥ 0x80 and the status bytes `F1`–`FE` end their track (the
+  rest of the file plays); a track without an end-of-track ends where its
+  bytes do (a synthetic `EndOfTrack`); ticks add in 64 bits, saturating.
+* **Timing** (`timing`). `frame(t) = ⌊(acc₀ + (t − t₀)·mul) / den⌋` with
+  `den` fixed by the division (tpq·10⁶, or the SMPTE frame rate) and `acc₀`
+  the exact time of the last tempo change in 1/`den` frames (128-bit): every
+  event lands on the floor of its exact time however many tempo changes
+  precede it (tested against an independent rational computation, and the
+  audio against the same notes placed by hand). A song ends at the first
+  event after 24 h (huge deltas). `TempoMap` (128 points) converts frames
+  back to ticks and BPM for a tempo view.
+* **Sequencer** (`seq`). Channel *n* = engine part *n*. Note on/off
+  (velocity 0 = off; muted channels drop note-ons); program change →
+  the GM sound, installed (`set_patch`, bend range ±24) only when the
+  sound changes; CC 7 × 11 → `Volume` = (v/127)²(e/127)² (the GM 40 log₁₀
+  curve); CC 10 → `Pan`; CC 64 → `Sustain`; CC 1 and channel pressure →
+  `LfoPitch` = the patch's vibrato + 0.6 semitone × max/127; RPN 0 (CC
+  101/100, 6/38, 96/97) → bend range in semitones and cents, `Bend` scaled
+  to the ±24 of the installed patch; CC 91/93 → reverb/chorus sends (option
+  `effects`); CC 121 resets per RP-015 (volume and pan stay); CC 120,
+  123–127 → `AllNotesOff` of the part (it lifts the pedal). Channel 10 →
+  `Patch::KIT` on kit slot 0; its program picks the factory kit (16–23
+  `punch`, 24–31 `analog`, 32–47 `tight`, else `standard`). Polyphonic
+  pressure ignored. The state can be kept without emitting (a seek scan,
+  remembering ≤ 32 held notes) and emitted at once (`restore`).
+* **General MIDI sound set** (`gm`): 32 sounds of our own for the 128
+  programs, families kept (bass stays bass, plucked stays plucked), CPU in
+  mind (one or two oscillators through the filter, 2–3 operator FM; four
+  operators only for the e-piano):
+
+  | # | Sound | GM programs (0-based) | # | Sound | GM programs |
+  |---|---|---|---|---|---|
+  | 0 | piano (FM, 3 op) | 0–3 | 16 | solo strings | 40–43, 110 |
+  | 1 | e-piano (FM, 4 op) | 4, 5 | 17 | strings | 44, 48–51 |
+  | 2 | harpsichord | 6, 7 | 18 | harp | 45, 46 |
+  | 3 | bell (FM 1:3.5) | 8–10, 14, 31, 98, 112 | 19 | timpani | 47, 116–118 |
+  | 4 | mallet (FM 1:4) | 11–13, 108, 113–115 | 20 | choir | 52–54, 85, 91, 101 |
+  | 5 | pluck | 15, 104–107 | 21 | brass | 55–59, 61 |
+  | 6 | organ | 16–18 | 22 | horn | 60, 62, 63 |
+  | 7 | church organ | 19 | 23 | sax | 64–67 |
+  | 8 | reed organ | 20–23, 109 | 24 | reed | 68–71, 111 |
+  | 9 | nylon guitar | 24 | 25 | flute | 72–79, 82, 83 |
+  | 10 | steel guitar | 25–28 | 26 | square lead | 80 |
+  | 11 | drive guitar | 29, 30, 84 | 27 | saw lead | 81, 86, 87 |
+  | 12 | bass | 32–35 | 28 | pad (PWM) | 88, 90, 93, 95, 99, 100, 103 |
+  | 13 | slap bass | 36, 37 | 29 | warm pad | 89, 92, 94, 96, 97, 102 |
+  | 14 | synth bass (acid) | 38 | 30 | noise fx | 119–122, 125–127 |
+  | 15 | synth bass 2 (FM) | 39 | 31 | chirp | 123, 124 |
+
+  Nine reuse SYN presets (e-piano, pluck, organ, synth bass 2 and flute
+  with their levels adjusted), 23 are new. Levels were balanced on the
+  tour's per-bar RMS (−22 … −30 dBFS; the noise swell −33). The set is an
+  `OSB1` bank, `crates/orpheus-midi/data/gm-sounds.osb` (7,312 B: the 32
+  patches in this order, then the 5 factory kits), kept current and
+  decoded back bit for bit by a test.
+* **Player** (`MidiPlayer`, 70,224 B with the engine; the decoder-like
+  source). `open(len, kar)` then `step(budget)` until ready: header,
+  tracks, and one silent scan of the whole file (duration = last event +
+  2 s, channels and notes, title from `@T` or track 0's name, the lyric
+  mode), then a seek to 0. `render(&mut [i16])`/`render_f32`: interleaved
+  stereo at the engine rate; engine events at their frame offsets, the
+  block cut at program changes (a patch is installed between engine
+  calls) and when the 32-event buffer is full; any block size gives the
+  same samples. `seek(frame)` + `step`: rewind, silent scan to the target
+  in ≤ budget events per step, `Engine::reset_at(seed, target)` (new in
+  `orpheus-synth`: the control grid stays on the samples of a render from
+  the start), the whole channel state installed, the melodic notes held
+  at the target re-struck (option `chase`). Starting is a seek to 0, so a
+  seek leaves the engine as playing from the start would, except what
+  sounds across the target, the noise seeds and the voice slots' free-
+  running LFO phases: **bit-exact after a seek into a silence** on patches
+  without noise and LFO (tested at frame offsets 0, 17, 31 and from the
+  next phrase after a seek into a phrase); with drums and effects the
+  levels follow within 1–3 dB. Pause = not calling `render`. `position()`,
+  `duration()`, `bpm()`; `set_mute`/`set_solo` (note-ons dropped, sounding
+  notes released); lyric pieces queued with their frames (`pop_lyric`);
+  `summary()` gives duration, title, tempo map and every lyric piece
+  without an engine. Master gain 0.5: a fff six-note chord stays below
+  full scale on every program (only the tuba reaches the limiter, −0.5 dB).
+* **Lyrics** (`kar`). Karaoke files (`@K`/`@T` headers or a `.kar` name):
+  text events not starting with `@`, `\` = new paragraph, `/` = new line;
+  else lyric events (CR/LF and `/`/`\` as breaks). Bytes are passed on (the
+  simulator decodes UTF-8, else Latin-1).
+* **Simulator.** Feature `midi` of `orpheus-apps` (simulator only; off in
+  the firmware) makes `.mid`, `.midi`, `.kar`, `.rmi` audio in Files and
+  the library; the simulated player takes duration and title from the scan
+  and shows `.kar` lyrics as timed lines in Now Playing (golden
+  `media_np_kar_lyrics_*`); `set:queue=midi` writes the demo songs to
+  `/Music/MIDI`. The built card image is unchanged.
+* **Tests**: `tests/parse.rs` (16), `tests/play.rs` (16: exact tempo
+  timing, golden hashes in `tests/goldens.txt` — also checked in a release
+  build by `cargo run --release -p orpheus-midi --example render --
+  --check` —, block-size independence, the GM sweep without NaN or full
+  scale, seeks, `.kar` timing, mute/solo, duration/position, RAM ≤ 72 KiB,
+  the bank), fuzz target `midi_parse` (`crates/orpheus-midi/fuzz`; 11
+  seeds replayed by `tests/fuzz_corpus.rs`; 70,882 runs under ASan, no
+  finding). `--example render <dir>` writes the three demo songs of our
+  own (`demo`: an etude, a karaoke song, a tour of the sound set) as
+  `.mid`/`.kar` and WAV.
+* **Code** (thumbv7em, opt "s", no LTO): the play path ≈ 10 KB, the GM
+  table 9.6 KB read-only; 0 fused multiply-add.
+* **CPU estimate** (`--example estimate`: the demos' real voice mix ×
+  SYN-1/2's per-voice disassembly cycles by sound, ±30 %, + engine/limiter
+  135 and reverb 290 per sample): a 10–11-voice song ≈ 2,430 cycles/sample
+  = **≈ 107 MHz at 44.1 kHz, 117 MHz at 48 kHz** (worst block, 16 voices +
+  4 tails, ≈ 186/203 MHz); a 5–6-voice song ≈ 60–65 MHz; parser, clock
+  and sequencer < 1 MHz. **MIDI needs the High clock (144 MHz)**; full
+  polyphony peaks need Turbo/Max or a voice limit of ≈ 12 at High.
+* **Left for SYN-3**: a card source answering the parser's `Need`s
+  (64-byte reads at arbitrary offsets: a sector cache), the player in the
+  decoder arena, `render` into the DAC ring, the clock floor and voice
+  limit (measured), the `midi` feature in the firmware, lyrics and a
+  mute/solo/tempo view in Now Playing. **SF2** (stretch): not done; the
+  sample cache and `Kind::Sample` are the way in, but SoundFont parsing
+  (RIFF, presets, zones, generators, modulators) is a package of its own.
+
 ## 10. Work packages
 
 * **WP-AU-1 Pipeline core**: rings, pool leases, `ByteSource`, `Decoder`
