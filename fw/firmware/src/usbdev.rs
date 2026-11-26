@@ -502,6 +502,13 @@ pub async fn supervisor() {
             t => {
                 Timer::after_millis(50).await;
                 log::line(b"usb: reboot requested");
+                if t == dc::REBOOT_NORMAL {
+                    // Through the UI's restart (saves the place, the game,
+                    // the recording); rebooted below if it has not happened
+                    // within 3 s.
+                    crate::ui::request_restart();
+                    Timer::after_millis(3000).await;
+                }
                 // RAM survives a reboot into the ROM's USB mode: no
                 // authenticator key may be left in it (06 §5.2).
                 crate::vault::wipe_secrets();

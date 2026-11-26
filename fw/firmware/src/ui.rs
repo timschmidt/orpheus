@@ -93,6 +93,10 @@ impl Ui {
     }
 
     async fn after(&mut self, fb: &mut [u16]) {
+        // The developer channel's normal reboot: through the same saves.
+        if RESTART_REQ.swap(false, core::sync::atomic::Ordering::AcqRel) {
+            self.restart().await;
+        }
         self.settle();
         // The Authenticator (OTP-2): key derivation, vault changes with the
         // frame buffer as scratch, import file, typing results.
@@ -167,7 +171,7 @@ impl Ui {
             }
             if let Action::Power(p) = a {
                 match p {
-                    PowerRequest::Restart => atj2157_hal::wdt::reboot(atj2157_hal::wdt::Target::Normal),
+                    PowerRequest::Restart => self.restart().await,
                     PowerRequest::Recovery => {
                         // RAM survives the ROM's USB mode: no key in it.
                         crate::vault::wipe_secrets();
@@ -231,6 +235,27 @@ impl Ui {
             atj2157_hal::log::line(b"power-off in a test: rebooting instead");
             atj2157_hal::wdt::reboot(atj2157_hal::wdt::Target::Adfu);
         }
+        self.save_for_shutdown().await;
+        self.bl.set(None);
+        crate::drain::shared().backlight.store(0, core::sync::atomic::Ordering::Relaxed);
+        self.disp.sleep(true);
+        Timer::after_millis(50).await;
+        // Bluetooth module: shutdown command 0x24 when it is up, bounded
+        // wait, enable line low (owner decision 2026-11-24, BT-2).
+        crate::bt::shutdown_for_power_off().await;
+        // The tuner into standby (FM-1), at most 300 ms.
+        crate::fm::stop_for_power_off().await;
+        // An armed RTC alarm wakes the player only once PWR-3c has shown it
+        // works (`services::ALARM_WAKE_FROM_OFF`, off).
+        atj2157_hal::pmu::power_off(crate::services::ALARM_WAKE_FROM_OFF && self.fw.rtc_alarm.is_some())
+    }
+
+    /// What power-off and a restart save first: the recording, the game in
+    /// progress, the battery log's last row, and the player's place (the
+    /// card task's shutdown). A restart used to reboot at once, so Resume
+    /// at start-up reopened the track at its start (2026-11-26).
+    #[inline(never)]
+    async fn save_for_shutdown(&mut self) {
         // A recording is stopped and saved first (AU-13).
         crate::rec::stop_for_power_off().await;
         // The game in progress goes to its save file (05 §7.13).
@@ -245,18 +270,15 @@ impl Ui {
             }
             Timer::after_millis(10).await;
         }
-        self.bl.set(None);
-        crate::drain::shared().backlight.store(0, core::sync::atomic::Ordering::Relaxed);
-        self.disp.sleep(true);
-        Timer::after_millis(50).await;
-        // Bluetooth module: shutdown command 0x24 when it is up, bounded
-        // wait, enable line low (owner decision 2026-11-24, BT-2).
-        crate::bt::shutdown_for_power_off().await;
-        // The tuner into standby (FM-1), at most 300 ms.
-        crate::fm::stop_for_power_off().await;
-        // An armed RTC alarm wakes the player only once PWR-3c has shown it
-        // works (`services::ALARM_WAKE_FROM_OFF`, off).
-        atj2157_hal::pmu::power_off(crate::services::ALARM_WAKE_FROM_OFF && self.fw.rtc_alarm.is_some())
+    }
+
+    /// Restart (the power menu, or the developer channel's normal reboot):
+    /// save as for power-off, then reboot.
+    #[inline(never)]
+    async fn restart(&mut self) {
+        self.save_for_shutdown().await;
+        atj2157_hal::log::line(b"ui: restart");
+        atj2157_hal::wdt::reboot(atj2157_hal::wdt::Target::Normal)
     }
 
     /// Save the game in progress and wait (at most `max_ms`) until the
@@ -519,6 +541,15 @@ pub fn top_reply() {
 /// bar, lists roll round, no rotation, English, Now Playing's first view)
 /// so screenshots match the simulator; the settings store is not written.
 /// A RAM flag: cleared by `off` and by every reboot (`.bss`).
+/// A normal reboot asked for over the developer channel: the UI task
+/// saves (as for power-off) and reboots; the USB task reboots itself if
+/// that has not happened within 3 s.
+static RESTART_REQ: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+pub fn request_restart() {
+    RESTART_REQ.store(true, core::sync::atomic::Ordering::Release);
+}
+
 static TEST_LOOK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 /// Set by `ui test-look on`: the screen timers may have locked the keys
 /// before a test tool arrived (2026-11-26).
