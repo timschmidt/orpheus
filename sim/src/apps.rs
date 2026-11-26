@@ -1233,6 +1233,11 @@ impl Host for HostServices {
         Some(services::key_timing(self))
     }
 
+    fn backlight(&self, lit: bool, now_ms: u64) -> Option<u8> {
+        services::backlight(self, lit, self.tools.ringing().is_some(), now_ms)
+            .map(orpheus_power::backlight::Duty::get)
+    }
+
     fn advance(&mut self, ms: u64) {
         let repeat = self.settings.get(id::REPEAT);
         self.media_options();

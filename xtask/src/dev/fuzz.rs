@@ -791,6 +791,7 @@ mod tests {
             locked: false,
             screen_on: true,
             saver: false,
+            bl: None,
         }
     }
 

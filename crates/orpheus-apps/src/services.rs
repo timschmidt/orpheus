@@ -1387,6 +1387,23 @@ pub fn list_roll_around<S: SettingsService + ?Sized>(s: &S) -> bool {
 
 // ------------------------------------------------ Display, Power, USB (VER-13)
 
+/// Settings › Display › Brightness (0x030D) on the backlight: `None` the
+/// panel dark, else the stock duty of the level (U-PWM-3). `lit`: the
+/// screen on or the screen saver on the panel; `ringing`: an alert rings,
+/// which flashes the backlight (bright, the stock maximum 15, and dim
+/// every 500 ms; the level does not matter then). The firmware's UI task
+/// and the simulator both take the backlight from here.
+pub fn backlight<S: SettingsService + ?Sized>(
+    s: &S,
+    lit: bool,
+    ringing: bool,
+    now_ms: u64,
+) -> Option<orpheus_power::backlight::Duty> {
+    use orpheus_power::backlight as bl;
+    let flash = if ringing { Some(bl::flash_phase(now_ms)) } else { None };
+    bl::light(s.setting(id::BRIGHTNESS), lit, flash)
+}
+
 /// Settings › Display › Backlight timeout (0x0302), Lock delay (0x0303)
 /// and Screen saver (0x0307) as the screen timers take them
 /// (`orpheus_ui::input::ScreenTimer`, 05 §6.3).
@@ -2358,6 +2375,29 @@ mod setting_effects {
             assert_eq!((t.screen_off_ms, t.saver), (d.screen_off_ms, d.saver));
         }
         assert!(screen_timeouts(&with(&[(id::SCREEN_SAVER, 1)])).saver);
+    }
+
+    /// Brightness (0x030D): every level lights the panel at its stock
+    /// duty (1 → 3 … 10 → 13, 11 → 15; default 6 → 8); dark when the
+    /// panel is off; an alert flashes 15 / 3 whatever the level. No other
+    /// setting moves the backlight.
+    #[test]
+    fn brightness_values() {
+        use orpheus_power::backlight::{Duty, LEVEL_DUTY};
+        let duty = |s: &S, lit, ring, t| backlight(s, lit, ring, t).map(Duty::get);
+        assert_eq!(duty(&with(&[]), true, false, 0), Some(8), "default level 6");
+        for lvl in 1..=11i16 {
+            let s = with(&[(id::BRIGHTNESS, lvl)]);
+            assert_eq!(duty(&s, true, false, 0), Some(LEVEL_DUTY[lvl as usize]), "level {lvl}");
+            assert_eq!(duty(&s, false, false, 0), None, "level {lvl}, panel dark");
+            assert_eq!(duty(&s, true, true, 100), Some(15), "level {lvl}, alert bright");
+            assert_eq!(duty(&s, true, true, 600), Some(3), "level {lvl}, alert dim");
+        }
+        for d in crate::settings::all().filter(|d| d.stored() && d.id != id::BRIGHTNESS) {
+            let other = d.step(d.default, 1);
+            let s = with(&[(d.id, other)]);
+            assert_eq!(duty(&s, true, false, 0), Some(8), "{:#06x} moved the backlight", d.id.0);
+        }
     }
 
     /// A host test holds the timers until its session sets one to another

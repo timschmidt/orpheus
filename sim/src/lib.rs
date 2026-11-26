@@ -133,6 +133,13 @@ pub trait Host: System + Default + Sized {
     fn rotated(&self) -> Option<bool> {
         None
     }
+    /// The backlight's PWM4 duty with the panel `lit` at `now_ms`
+    /// (Settings › Display › Brightness and the alert flash, as the
+    /// firmware's UI task takes them: `orpheus_apps::services::backlight`);
+    /// `None` dark. Without such settings: the stock default while lit.
+    fn backlight(&self, lit: bool, _now_ms: u64) -> Option<u8> {
+        lit.then_some(orpheus_power::backlight::Duty::DEFAULT.get())
+    }
 }
 
 /// The simulator: frame buffer, input mapper, shell and fake services.
@@ -230,6 +237,15 @@ impl<H: Host> Sim<H> {
             p.reverse();
         }
         p
+    }
+
+    /// The panel's backlight as the firmware would drive it: the PWM4
+    /// duty (of 16), 0 dark (VER-13: Settings › Display › Brightness is
+    /// observable; the firmware's `ui top` says `bl=`).
+    #[must_use]
+    pub fn backlight(&self) -> u8 {
+        let g = &self.shell.gate;
+        self.sys.backlight(g.screen_on || g.saver, self.now.0).unwrap_or(0)
     }
 
     /// Run the shell's draw pass.

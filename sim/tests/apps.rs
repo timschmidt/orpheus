@@ -64,7 +64,9 @@ fn choice_applies_immediately_and_restyles() {
 #[test]
 fn slider_is_live() {
     let s = sim("prev ok down*2 ok ok expect-screen:Slider up*3");
-    assert_eq!(s.sys.settings.get(id::BRIGHTNESS), 13);
+    assert_eq!(s.sys.settings.get(id::BRIGHTNESS), 9);
+    let s = sim("prev ok down*2 ok ok up*20");
+    assert_eq!(s.sys.settings.get(id::BRIGHTNESS), 11, "clamped at the stock maximum");
     let s = sim("prev ok down*2 ok ok down*20");
     assert_eq!(s.sys.settings.get(id::BRIGHTNESS), 1, "clamped at the minimum");
 }
@@ -79,13 +81,13 @@ fn toggles_flip_in_place() {
 #[test]
 fn factory_reset_asks_with_safe_focus() {
     let mut s = sim("prev ok down*2 ok ok up*3 back back");
-    assert_eq!(s.sys.settings.get(id::BRIGHTNESS), 13);
+    assert_eq!(s.sys.settings.get(id::BRIGHTNESS), 9);
     run(&mut s, "down*9 ok down*4 ok");
     assert!(s.shell.dialog_open());
     run(&mut s, "ok");
-    assert_eq!(s.sys.settings.get(id::BRIGHTNESS), 13, "OK on the safe button resets nothing");
+    assert_eq!(s.sys.settings.get(id::BRIGHTNESS), 9, "OK on the safe button resets nothing");
     run(&mut s, "ok next ok");
-    assert_eq!(s.sys.settings.get(id::BRIGHTNESS), 10);
+    assert_eq!(s.sys.settings.get(id::BRIGHTNESS), 6);
     assert!(s.sys.log.contains(&Logged::FactoryReset));
 }
 
@@ -143,7 +145,7 @@ fn power_menu_actions() {
 #[test]
 fn quick_panel_changes_values_in_row() {
     let s = sim("hold:menu expect-screen:QuickPanel down*4 next next");
-    assert_eq!(s.sys.settings.get(id::BRIGHTNESS), 12);
+    assert_eq!(s.sys.settings.get(id::BRIGHTNESS), 8);
     let s = sim("hold:menu down*2 prev");
     assert_eq!(s.sys.settings.get(id::OUTPUT), 1, "choices wrap");
     let s = sim("hold:menu down ok");

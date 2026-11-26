@@ -785,6 +785,15 @@ settings service (debounced write).
 | Storage | Card info · Rebuild library · Clear caches · Check card · Format card… |
 | System | About (version, build id, serial, hardware, licences) · Update firmware… · Diagnostics · Start original firmware (dual-boot layout) · Factory reset… · Recovery mode · Performance (Normal / Maximum, D-4; `docs/user/performance.md`) · Developer (hidden until OK is pressed five times in About: battery logger, PWR-5) |
 
+*As built (VER-13 follow-up, 2026-11-26):* Display › Brightness offers the
+stock firmware's levels 1–11, default 6, and writes the stock PWM4 duty of
+the level at once as the slider (or the quick panel's row) moves
+(01-hardware §9 U-PWM-3; `orpheus_power::backlight`); store key `0x030D`
+(the earlier `0x0301`, 1–16, did nothing and is retired, so the player
+starts at 6). Timer and alarm alerts flash the backlight at 15 / 3, the
+stock maximum, whatever the level. There is no dim state before the
+screen goes off (not asked for here; the stock firmware's is duty 2).
+
 Diagnostics (also the bring-up aid for workers): key test (shows raw ladder
 values and decoded keys), display test (colour bars, gradients, pixel grid),
 audio test (1 kHz tone left/right, sweep), sensor live view, card speed test

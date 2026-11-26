@@ -469,6 +469,28 @@ expect-screen:Home shot:home_after
 """
 
 [[journey]]
+name = "settings_brightness"
+about = "Brightness (0x030D, U-PWM-3) through the RAM-only test session (VER-13): under the test look it reads as its default (level 6: ui top bl=8, the backlight's PWM4 duty); level 1 lights the panel at duty 3, level 11 at 15 (the stock maximum, never 16), and the Brightness slider shows 11 (the look reads the session's value once it set one); set back to 6 (bl=8)"
+script = """
+expect-screen:Home
+cmd: settings test-session ~ ^test-session on
+cmd: ui top ~ screen=1 .*bl=8$
+cmd: settings test-set 0x030D 1 ~ ^test-set 781=1 ok
+cmd: ui top ~ bl=3$
+cmd: settings test-set 0x030D 11 ~ ^test-set 781=11 ok
+sim: set:0x030d=11
+cmd: ui top ~ bl=15$
+prev ok expect-screen:Settings down*2 ok expect-screen:SettingsGroup
+ok expect-screen:Slider wait:300 shot:slider_11
+back wait:300 expect-screen:SettingsGroup back wait:300 expect-screen:Settings back wait:300
+expect-screen:Home
+cmd: settings test-set 0x030D 6 ~ ^test-set 781=6 ok
+sim: set:0x030d=6
+cmd: ui top ~ screen=1 .*bl=8$
+expect-screen:Home shot:home_after
+"""
+
+[[journey]]
 name = "settings_accessibility"
 about = "Accessibility (A11Y-2) through the RAM-only test session: with Hold delay 2 s a 0.7 s Menu press is a tap (Home's menu) and only a 2.3 s one opens the quick panel; Text size Large shows Settings in the 16 px face with four rows; Key click Presses and holds clicks twice for each held key (two long Backs on Home: at least three of the four clicks, so the hold clicks sounded; status clicks=); all set back to their defaults (the test look reads them as defaults until a session sets them)"
 script = """

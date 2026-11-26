@@ -11,7 +11,7 @@ use orpheus_ui::gfx::{DirtySet, Gfx};
 use orpheus_ui::input::{KeyMapper, ScreenTimer};
 use orpheus_ui::nav::Arg;
 use orpheus_ui::shell::{Requests, Shell, TICK_MS};
-use yoton_bsp::display::{self, Backlight, Display};
+use yoton_bsp::display::{self, Backlight, Display, Duty};
 use yoton_bsp::settings::{NorRegion, Store};
 
 use crate::services::{Action, Fw};
@@ -215,15 +215,13 @@ impl Ui {
         if on != self.screen_on {
             self.screen_on = on;
             self.disp.sleep(!on);
-            let level: u8 = if on { 12 } else { 0 };
-            self.bl.set(u32::from(level));
-            let sh = crate::drain::shared();
-            sh.backlight.store(level, core::sync::atomic::Ordering::Relaxed);
-            sh.screen_on.store(on, core::sync::atomic::Ordering::Relaxed);
+            crate::drain::shared().screen_on.store(on, core::sync::atomic::Ordering::Relaxed);
             if on {
                 self.shell.invalidate();
             }
         }
+        // Brightness, the panel's state and the alert's flash (U-PWM-3).
+        apply_backlight(self);
     }
 
     /// PWR-3a: flush the card, screen off, power off. A firmware started by
@@ -247,7 +245,8 @@ impl Ui {
             }
             Timer::after_millis(10).await;
         }
-        self.bl.set(0);
+        self.bl.set(None);
+        crate::drain::shared().backlight.store(0, core::sync::atomic::Ordering::Relaxed);
         self.disp.sleep(true);
         Timer::after_millis(50).await;
         // Bluetooth module: shutdown command 0x24 when it is up, bounded
@@ -329,6 +328,26 @@ impl Ui {
             self.fw.pic_after_overlay = true;
         }
         self.fw.lend_picture(fb, now().0);
+    }
+}
+
+/// Settings › Display › Brightness on the backlight (VER-13, U-PWM-3):
+/// the stock duty of the level while the panel is lit (screen on or the
+/// screen saver), dark when it is off, and an alert's flash (15 / 3 every
+/// 500 ms) while one rings — `services::backlight`, the same function the
+/// simulator uses; never a duty outside the stock table (`Duty`). Written
+/// only when the duty changes (by the vendor's stop/start, `Backlight::set`)
+/// and published for `ui top` (`bl=`) and the battery log.
+#[inline(never)]
+fn apply_backlight(ui: &mut Ui) {
+    use core::sync::atomic::Ordering::Relaxed;
+    let ringing = ui.fw.tools.ringing().is_some();
+    let want = services::backlight(&*ui.fw, ui.screen_on, ringing, now().0);
+    let duty = want.map_or(0, Duty::get);
+    let sh = crate::drain::shared();
+    if sh.backlight.load(Relaxed) != duty {
+        ui.bl.set(want);
+        sh.backlight.store(duty, Relaxed);
     }
 }
 
@@ -458,7 +477,8 @@ fn publish_top(ui: &Ui) {
 }
 
 /// Developer `ui top` (VER-7): `top ID NAME depth=D dialog=0|1 overlay=0|1
-/// locked=0|1 screen=0|1 look=0|1 saver=0|1`, answered at once.
+/// locked=0|1 screen=0|1 look=0|1 saver=0|1 bl=DUTY`, answered at once
+/// (`bl`: the backlight's PWM4 duty of 16, 0 dark; VER-13 Brightness).
 pub fn top_reply() {
     let w = TOP.load(core::sync::atomic::Ordering::Relaxed);
     let p = TOP_NAME.load(core::sync::atomic::Ordering::Relaxed);
@@ -488,7 +508,9 @@ pub fn top_reply() {
             .s(b" look=")
             .u(u64::from(TEST_LOOK.load(core::sync::atomic::Ordering::Relaxed)))
             .s(b" saver=")
-            .u(bit(31));
+            .u(bit(31))
+            .s(b" bl=")
+            .u(u64::from(crate::drain::shared().backlight.load(core::sync::atomic::Ordering::Relaxed)));
     });
 }
 
@@ -519,10 +541,12 @@ pub fn set_test_look(on: bool) {
 /// Now Playing view.
 pub fn test_look(sid: orpheus_apps::settings::SettingId) -> Option<i16> {
     // A11Y-2: text size, hold delay and key repeat too (a test's keys and
-    // shots assume the defaults), unless this session set them.
-    let a11y = (0x1001..=0x1003).contains(&sid.0)
-        && A11Y_ARMED.load(core::sync::atomic::Ordering::Relaxed) & (1 << (sid.0 & 3)) == 0;
-    let look = (0x0304..=0x030C).contains(&sid.0) || sid.0 == 0x0A01 || sid.0 == 0x0D03 || a11y;
+    // shots assume the defaults), and Brightness (its value shows in
+    // Settings › Display and the quick panel), unless this session set
+    // them.
+    let armed = look_armed_bit(sid.0)
+        .is_some_and(|b| LOOK_ARMED.load(core::sync::atomic::Ordering::Relaxed) & b == 0);
+    let look = (0x0304..=0x030C).contains(&sid.0) || sid.0 == 0x0A01 || sid.0 == 0x0D03 || armed;
     (look && TEST_LOOK.load(core::sync::atomic::Ordering::Relaxed))
         .then(|| orpheus_apps::settings::def(sid).map_or(0, |d| d.default))
 }
@@ -532,10 +556,20 @@ pub fn test_look(sid: orpheus_apps::settings::SettingId) -> Option<i16> {
 /// they run only while armed.
 static TIMER_HOLD: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
-/// The accessibility settings (0x1001–0x1003, bit `id & 3`) a session set
-/// with `settings test-set` (RAM, cleared by every reboot): the test look
-/// reads them as their defaults until then (A11Y-2).
-static A11Y_ARMED: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+/// The settings a session set with `settings test-set` that the test look
+/// otherwise reads as their defaults (RAM, cleared by every reboot): the
+/// accessibility settings (A11Y-2) and Brightness ([`look_armed_bit`]).
+static LOOK_ARMED: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+/// `LOOK_ARMED`'s bit of `id`: Text size, Hold delay, Key repeat
+/// (0x1001–0x1003, bit `id & 3`), Brightness (bit 4).
+fn look_armed_bit(id: u16) -> Option<u8> {
+    match id {
+        0x1001..=0x1003 => Some(1 << (id & 3)),
+        _ if id == orpheus_apps::settings::id::BRIGHTNESS.0 => Some(1 << 4),
+        _ => None,
+    }
+}
 
 fn test_look_on() -> bool {
     TEST_LOOK.load(core::sync::atomic::Ordering::Relaxed)
@@ -748,8 +782,8 @@ fn session_set_hooks(ui: &mut Ui, sid: orpheus_apps::settings::SettingId, want: 
     let was = h.bits();
     h.test_set(sid, want);
     TIMER_HOLD.store(h.bits(), Relaxed);
-    if (0x1001..=0x1003).contains(&sid.0) {
-        A11Y_ARMED.fetch_or(1 << (sid.0 & 3), Relaxed);
+    if let Some(b) = look_armed_bit(sid.0) {
+        LOOK_ARMED.fetch_or(b, Relaxed);
     }
     if was != 0 && h.bits() == 0 {
         ui.shell.gate.screen_on = true;
@@ -826,7 +860,8 @@ pub async fn ui() {
     let Some(fb) = display::take_framebuffer() else { return };
     // SAFETY: DMA channel 1 is the display's (01-hardware §6).
     let disp = Display::new(unsafe { dma::Channel::steal(1) });
-    let bl = Backlight::new(12);
+    // The stock default until the settings are read (U-PWM-3).
+    let bl = Backlight::new(Duty::DEFAULT);
     // `Fw` (1.5 KB), the settings store (1 KB) and `Ui` (≈ 5 KB) live in
     // statics, built by non-inlined constructors: built by value here they
     // made this task's poll frame 6 KB, reserved on every poll under the RT
@@ -884,6 +919,8 @@ pub async fn ui() {
     fw.auth_boot(now().0);
     let ui = new_ui(fw, store, disp, bl, now());
     enter_root(ui);
+    // The stored Brightness at once (not after the first event).
+    apply_backlight(ui);
     ui.shell.invalidate();
     let fb = fb.as_mut_slice();
     ui.draw(fb).await;
@@ -892,7 +929,6 @@ pub async fn ui() {
     // Auto-off / low-battery timers (ms since boot).
     let mut last_key_ms = now().0;
     let mut low_since = 0u64;
-    let mut flashing = false;
     let mut seen_look = false;
     loop {
         let t = now();
@@ -1046,19 +1082,6 @@ pub async fn ui() {
             } else {
                 low_since = 0;
             }
-        }
-        // The alert flashes the backlight (bright / dim every 500 ms).
-        let flash = ui.screen_on && ui.fw.tools.ringing().is_some();
-        if flash || flashing {
-            let level: u32 = match (flash, (now().0 / 500) % 2 == 0) {
-                (true, true) => 16,
-                (true, false) => 3,
-                // Over: the normal level, or dark if the screen went off.
-                (false, _) if ui.screen_on => 12,
-                (false, _) => 0,
-            };
-            ui.bl.set(level);
-            flashing = flash;
         }
         ui.draw(fb).await;
         publish_top(ui);

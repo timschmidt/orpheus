@@ -31,10 +31,14 @@ pub struct Top {
     pub screen_on: bool,
     /// The screen saver on the panel (VER-13; firmware `ui top` `saver=`).
     pub saver: bool,
+    /// The backlight's PWM4 duty of 16, 0 dark (VER-13 Brightness;
+    /// firmware `ui top` `bl=`; `None` from a firmware without it).
+    pub bl: Option<u8>,
 }
 
 impl Top {
-    /// `top ID NAME depth=D dialog=0|1 overlay=0|1 locked=0|1 screen=0|1`.
+    /// `top ID NAME depth=D dialog=0|1 overlay=0|1 locked=0|1 screen=0|1
+    /// look=0|1 saver=0|1 bl=DUTY`.
     pub fn parse(s: &str) -> Option<Top> {
         let mut w = s.split_whitespace();
         if w.next()? != "top" {
@@ -51,6 +55,7 @@ impl Top {
             locked: false,
             screen_on: true,
             saver: false,
+            bl: None,
         };
         for kv in w {
             let (k, v) = kv.split_once('=')?;
@@ -62,6 +67,7 @@ impl Top {
                 "locked" => t.locked = n != 0,
                 "screen" => t.screen_on = n != 0,
                 "saver" => t.saver = n != 0,
+                "bl" => t.bl = Some(n),
                 _ => {}
             }
         }
@@ -69,7 +75,7 @@ impl Top {
     }
 
     pub fn text(&self) -> String {
-        format!(
+        let mut t = format!(
             "top {} {} depth={} dialog={} overlay={} locked={} screen={} saver={}",
             self.id,
             self.name,
@@ -79,7 +85,11 @@ impl Top {
             u8::from(self.locked),
             u8::from(self.screen_on),
             u8::from(self.saver)
-        )
+        );
+        if let Some(bl) = self.bl {
+            t.push_str(&format!(" bl={bl}"));
+        }
+        t
     }
 }
 
@@ -453,6 +463,7 @@ pub fn sim_top(sim: &AppSim) -> Top {
         locked: sim.shell.gate.locked,
         screen_on: sim.shell.gate.screen_on,
         saver: sim.shell.gate.saver && !sim.shell.gate.screen_on,
+        bl: Some(sim.backlight()),
     }
 }
 
@@ -634,13 +645,19 @@ mod tests {
             locked: false,
             screen_on: true,
             saver: false,
+            bl: Some(8),
         };
-        assert_eq!(Top::parse(&t.text()), Some(t));
+        assert_eq!(Top::parse(&t.text()), Some(t.clone()));
+        assert_eq!(Top::parse(&Top { bl: None, ..t }.text()).map(|t| t.bl), Some(None));
         // The firmware's reply (fw/firmware/src/ui.rs `top_reply`).
         let f = Top::parse("top 1 Home depth=1 dialog=0 overlay=0 locked=0 screen=1").unwrap();
         assert_eq!((f.id, f.name.as_str(), f.depth, f.screen_on), (1, "Home", 1, true));
         let f = Top::parse("top 1 Home depth=1 dialog=0 overlay=0 locked=1 screen=0 look=1 saver=1").unwrap();
         assert!(f.locked && !f.screen_on && f.saver);
+        assert_eq!(f.bl, None, "a firmware without bl=");
+        let f = Top::parse("top 1 Home depth=1 dialog=0 overlay=0 locked=0 screen=1 look=1 saver=0 bl=15")
+            .unwrap();
+        assert_eq!(f.bl, Some(15));
         assert_eq!(Top::parse("idle frames=0"), None);
     }
 

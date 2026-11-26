@@ -479,7 +479,7 @@ pub fn valid_values(id: u16) -> Vec<i16> {
 
 const SOUND_IDS: [u16; 6] = [0x0101, 0x0102, 0x0103, 0x0104, 0x0105, 0x0106];
 const PLAYBACK_IDS: [u16; 4] = [0x0201, 0x0202, 0x0203, 0x0205];
-const DISPLAY_IDS: [u16; 3] = [0x0301, 0x0308, 0x030A];
+const DISPLAY_IDS: [u16; 3] = [0x030D, 0x0308, 0x030A];
 /// Settings › Display › List roll-around (UI-8).
 const LIST_ROLL: u16 = 0x030C;
 /// Theme, accent, language, list roll-around, clock in the bar.

@@ -140,3 +140,30 @@ Settings › Display › Theme).
   "Presses": one click as before.
 
 Report anything that does not match, and which text size you would use.
+
+## 32. Brightness against the reference player (VER-13 follow-up, U-PWM-3, 2026-11-26)
+
+After the next install, both players side by side in the same light (the
+reference player on its own battery, **never** on the workstation's USB,
+CLAUDE.md rule 9). Changing the reference player's brightness through its
+own menu is your choice (the tools never touch it); if you would rather
+not, compare only at the level it has now, with Orpheus at the same level.
+Orpheus starts at level 6, the original firmware's default; a brightness
+chosen in Orpheus before this install is not carried over.
+
+* Open Settings › Display › Brightness on Orpheus and the original
+  firmware's brightness setting on the reference player. Set both to the
+  same level and compare by eye, for **every level 1 to 11**: the two
+  screens should look equally bright at each level (Orpheus uses the
+  original firmware's own PWM values: 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15
+  of 16). Note any level that looks brighter or darker on one of them,
+  any flicker, and whether a step changes the light at once (it should,
+  while you hold the slider) or only on leaving.
+* Set an alarm or a 1-minute timer on Orpheus and let it ring: the
+  backlight flashes bright/dim every half second. The bright phase should
+  look like level 11 (the original firmware's maximum), not brighter.
+* Set Orpheus to the level you like; the reference player back to how it
+  was.
+
+Report the levels that differ (which player looks brighter), and anything
+else that does not match.

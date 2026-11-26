@@ -4,7 +4,8 @@
 //! For each setting of `tests/settings/effects.toml` the same journey to
 //! each context runs with the setting at a value under test and at its
 //! default (`set:KEY=…` first, then the journey). Screen contexts (the
-//! manifest's `@screens` group) compare the frame; service contexts
+//! manifest's `@screens` group) compare the frame and the backlight's
+//! duty (`Sim::backlight`); service contexts
 //! (`@services`) compare what the simulated services did (the queue, the
 //! tuner's register writes, the recorded file, the keyboard reports, …).
 //! The observation must differ in exactly the contexts the manifest
@@ -300,9 +301,11 @@ fn observe(prefix: &str, c: &Ctx) -> String {
     match c.probe {
         Some(p) => p(&mut s),
         None => {
-            // What the panel shows (turned when the display is rotated).
+            // What the panel shows (turned when the display is rotated),
+            // and how bright: the backlight's duty (Brightness, the alert
+            // flash, the panel dark).
             s.draw();
-            format!("{:016x}", fnv(s.panel().into_iter()))
+            format!("{:016x} bl={}", fnv(s.panel().into_iter()), s.backlight())
         }
     }
 }
@@ -841,6 +844,36 @@ mod effects {
         assert_eq!(s.screen(), "Home", "the waking key does nothing else");
     }
 
+    /// Display › Brightness (0x030D, U-PWM-3): the lit panel's backlight
+    /// is the stock duty of the level (default 6 → 8; 1 → 3, 11 → 15),
+    /// on every screen; dark after Power whatever the level; an alert
+    /// flashes 15 and 3 every 500 ms whatever the level (never 16).
+    #[test]
+    fn brightness_lights_the_panel_at_its_level() {
+        use orpheus_power::backlight::LEVEL_DUTY;
+        assert_eq!(sim("wait:10").backlight(), 8, "the stock default");
+        for lvl in 1..=11i16 {
+            let want = LEVEL_DUTY[lvl as usize];
+            assert_eq!(sim(&format!("set:0x030d={lvl} wait:10")).backlight(), want, "Home, level {lvl}");
+            let s = sim(&format!("set:0x030d={lvl} prev ok wait:100 expect-screen:Settings"));
+            assert_eq!(s.backlight(), want, "Settings, level {lvl}");
+            assert_eq!(sim(&format!("set:0x030d={lvl} power")).backlight(), 0, "dark, level {lvl}");
+        }
+        let alert = "set:0x0d32=1 set:clock=06:59:58 set:clockrun=1 wait:3000 expect-screen:Alert";
+        for lvl in [1i16, 6, 11] {
+            let mut s = sim(&format!("set:0x030d={lvl} {alert}"));
+            let mut seen = std::collections::BTreeSet::new();
+            for _ in 0..8 {
+                run(&mut s, "wait:250");
+                seen.insert(s.backlight());
+            }
+            assert_eq!(seen.into_iter().collect::<Vec<_>>(), [3, 15], "alert at level {lvl}");
+        }
+        // The slider applies each step at once (live), as the stock one.
+        let s = sim("prev ok down*2 ok ok expect-screen:Slider up");
+        assert_eq!(s.backlight(), LEVEL_DUTY[7]);
+    }
+
     /// Display › Lock delay (0x0303): after the backlight timeout (5 s
     /// here) the keys lock at once, or 5, 30, 60 s later; Never: not by the
     /// timer. A key before then only wakes the screen and keeps them free.
@@ -1047,8 +1080,8 @@ mod matrix {
         row(0x0208);
     }
     #[test]
-    fn s0301() {
-        row(0x0301);
+    fn s030d() {
+        row(0x030D);
     }
     #[test]
     fn s0302() {

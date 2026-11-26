@@ -12,7 +12,7 @@ or changes, Back goes up a level.
 |---|---|---|
 | **Sound** | Equaliser (Flat, Rock, Pop, Jazz, Classical, Electronic, Hip-hop, Bass boost, Vocal, two custom curves), balance, bass, crossfeed, channel mode (stereo, mono, swapped), volume limit | Works |
 | **Playback** | Shuffle, repeat, gapless, ReplayGain, resume at start, seek step | Works; speed and fades are **in progress** |
-| **Display** | Brightness, backlight time, lock delay, screen saver (a dim clock), animations, rotation by 180°, theme (Dark, Light, Amber), accent colour, clock in the status bar, list roll-around, Home screen apps | Works; brightness and wallpaper are **in progress** |
+| **Display** | Brightness, backlight time, lock delay, screen saver (a dim clock), animations, rotation by 180°, theme (Dark, Light, Amber), accent colour, clock in the status bar, list roll-around, Home screen apps | Works; wallpaper is **in progress** |
 | **Power** | Power mode (automatic, battery saver, high performance), sleep timer, auto-off, keys when locked (none, volume, volume and track keys), battery | Auto-off and low-battery switch-off are **being checked** on the player |
 | **Date & time** | Time, date, 24-hour clock, date format, time zone, correction (seconds a day), set from the radio (RDS) | Works; the clock has stopped after some restarts (known issue: set it again) |
 | **Bluetooth** | Device list, reconnect | See [Bluetooth](bluetooth.md) |
@@ -25,6 +25,12 @@ Radio and Recording groups belong to apps that are not built yet; their
 settings are stored but do nothing.
 
 ![Display](../shots/app_display_dark_latin.png)
+
+**Brightness** has the original firmware's levels, 1 to 11 (6 at first,
+as on a new player): each step changes the backlight at once, so you can
+see it while you choose. An alarm or timer flashes the backlight whatever
+the level. A brightness chosen before this version is not carried over:
+the player starts at 6.
 
 **List roll-around** (on at first): in every list, Down on the last row
 goes to the first and Up on the first row to the last; Prev and Next jump

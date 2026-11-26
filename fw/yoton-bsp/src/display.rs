@@ -177,32 +177,43 @@ impl Display {
     }
 }
 
-/// Backlight on PWM4.
+/// The stock backlight duties (U-PWM-3): a [`Duty`] is always one of
+/// `orpheus_power::backlight::LEVEL_DUTY`.
+pub use orpheus_power::backlight::Duty;
+
+/// Backlight on PWM4 (`DUTYMAX` 16, `CMU_PWM4CLK` 0x20F; U-PWM-3).
 pub struct Backlight {
     pwm: Pwm,
 }
 
-pub const BACKLIGHT_STEPS: u32 = 16;
+pub const BACKLIGHT_STEPS: u32 = orpheus_power::backlight::DUTY_MAX as u32;
 
 impl Backlight {
     #[must_use]
-    pub fn new(level: u32) -> Self {
+    pub fn new(duty: Duty) -> Self {
         let pwm = Pwm::new(pins::BACKLIGHT_PWM, BACKLIGHT_STEPS);
         let b = Self { pwm };
-        b.set(level);
+        b.set(Some(duty));
         b
     }
 
-    /// Level 0 (off) ..= 16.
-    pub fn set(&self, level: u32) {
+    /// `None`: off (the pad back to GPIO, driven low; the channel keeps
+    /// running). `Some`: the duty written by the stock firmware's
+    /// stop/start ([`Pwm::set_duty_restart`], VERBATIM), the channel
+    /// started and the pad on PWM4. Only a stock duty can be asked for:
+    /// [`Duty`] holds nothing else (never 1, 12, 14 or 16).
+    pub fn set(&self, duty: Option<Duty>) {
         let pin = usize::from(pins::BACKLIGHT);
-        if level == 0 {
-            pgpio::mfp(pin).modify(|v| (v & !0x1F) | pgpio::mfp_bits::OUT_EN);
-            let _ = Output::new(pins::BACKLIGHT, false);
-        } else {
-            self.pwm.set_duty(level.min(BACKLIGHT_STEPS));
-            self.pwm.enable();
-            pgpio::mfp(pin).modify(|v| (v & !0xDF) | pins::BACKLIGHT_PWM_FUNC);
+        match duty {
+            None => {
+                pgpio::mfp(pin).modify(|v| (v & !0x1F) | pgpio::mfp_bits::OUT_EN);
+                let _ = Output::new(pins::BACKLIGHT, false);
+            }
+            Some(d) => {
+                self.pwm.set_duty_restart(u32::from(d.get()));
+                self.pwm.enable();
+                pgpio::mfp(pin).modify(|v| (v & !0xDF) | pins::BACKLIGHT_PWM_FUNC);
+            }
         }
     }
 }

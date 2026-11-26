@@ -54,7 +54,7 @@ async fn run(test_id: u32, secs: u32) {
     let fb = display::take_framebuffer().unwrap_or_else(|| wdt::reboot(wdt::Target::Adfu));
     // SAFETY: channel 1 is the display's.
     let mut disp = Display::new(unsafe { dma::Channel::steal(1) });
-    let _bl = Backlight::new(8);
+    let _bl = Backlight::new(display::Duty::DEFAULT);
     charger::init();
     let mut c = Charger::new();
     let raw0 = charger::battery_raw();

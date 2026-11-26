@@ -22,7 +22,8 @@
 //!   spent at each level since the last row (sampled once a second, so
 //!   they add up to the row's length).
 //! * `playing_s`: seconds of the row with audio playing.
-//! * `backlight` (0–16), `screen` (0/1), `bt` (the Bluetooth app's state
+//! * `backlight` (the PWM4 duty of 16: 0 off, else a stock duty of
+//!   `backlight::LEVEL_DUTY`), `screen` (0/1), `bt` (the Bluetooth app's state
 //!   word): at the row's end.
 //! * `card_io`: card read/write operations since the last row.
 //! * Lines starting with `#` are comments: the header, rows lost while the

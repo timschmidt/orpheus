@@ -84,7 +84,7 @@ async fn run(test_id: u32, secs: u32) {
     let fb = display::take_framebuffer().unwrap_or_else(|| wdt::reboot(wdt::Target::Adfu));
     // SAFETY: channel 1 is the display's.
     let mut disp = Display::new(unsafe { dma::Channel::steal(1) });
-    let _bl = Backlight::new(12);
+    let _bl = Backlight::new(yoton_bsp::display::Duty::DEFAULT);
     keys::init();
     Timer::after_millis(20).await;
     let s0 = keys::sample();

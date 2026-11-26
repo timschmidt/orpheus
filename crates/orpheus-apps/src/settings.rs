@@ -202,6 +202,15 @@ pub const SLEEP: &[Choice] =
     ch![S(Str::Off), Mins(15), Mins(30), Mins(45), Mins(60), Mins(90), S(Str::EndOfTrack)];
 pub const OUTPUT: &[Choice] = ch![S(Str::Headphones), S(Str::AppBluetooth)];
 
+/// Keys of settings that were removed or whose stored meaning changed:
+/// never used again (a store written by an older firmware may still hold
+/// them; they are skipped when it loads).
+///
+/// * `0x0301`: Brightness 1–16 (default 10) until 2026-11-26; it drove
+///   nothing (the firmware lit the panel at a fixed duty 12). Now
+///   [`id::BRIGHTNESS`] (`0x030D`), the stock levels.
+pub const RETIRED: &[u16] = &[0x0301];
+
 /// Store keys used by code outside the Settings screens.
 pub mod id {
     use super::SettingId;
@@ -217,7 +226,12 @@ pub mod id {
     pub const RESUME_AT_START: SettingId = SettingId(0x0204);
     pub const SEEK_STEP: SettingId = SettingId(0x0205);
     pub const AUTO_BOOKMARK: SettingId = SettingId(0x0207);
-    pub const BRIGHTNESS: SettingId = SettingId(0x0301);
+    /// Settings › Display › Brightness: the stock backlight level 1–11
+    /// (default 6; `orpheus_power::backlight`, U-PWM-3). Key `0x030D`
+    /// since 2026-11-26: `0x0301` held a 1–16 value that drove nothing
+    /// and is retired ([`RETIRED`]), so an old store reads the stock
+    /// default instead of a level of another scale.
+    pub const BRIGHTNESS: SettingId = SettingId(0x030D);
     pub const BACKLIGHT: SettingId = SettingId(0x0302);
     pub const LOCK_DELAY: SettingId = SettingId(0x0303);
     pub const THEME: SettingId = SettingId(0x0304);
@@ -353,7 +367,16 @@ const PLAYBACK: &[Setting] = &[
 pub const HOME_ALL: i16 = (1 << crate::App::COUNT) - 1;
 
 const DISPLAY: &[Setting] = &[
-    r(0x0301, Str::Brightness, 1, 16, 1, Unit::None, 10),
+    // The stock levels (U-PWM-3); 0x0301 (1–16) is retired.
+    r(
+        0x030D,
+        Str::Brightness,
+        orpheus_power::backlight::MIN_LEVEL,
+        orpheus_power::backlight::MAX_LEVEL,
+        1,
+        Unit::None,
+        orpheus_power::backlight::DEFAULT_LEVEL,
+    ),
     c(
         0x0302,
         Str::BacklightTimeout,
@@ -1179,11 +1202,53 @@ mod tests {
         }
         assert_eq!(d.get(id::BRIGHTNESS), 4);
         d.load(id::BRIGHTNESS.0, &[0xFF]);
-        assert_eq!(d.get(id::BRIGHTNESS), 10, "short record: default");
+        assert_eq!(d.get(id::BRIGHTNESS), 6, "short record: default");
         d.load(id::UTC_OFFSET.0, &encode(7));
         assert_eq!(d.get(id::UTC_OFFSET), 0, "not on the 15-minute grid");
         d.reset();
         assert_eq!(d.take_dirty().count(), STORED);
+    }
+
+    /// Display › Brightness offers the stock levels 1–11, default 6
+    /// (U-PWM-3), and every value it can hold is a stock duty.
+    #[test]
+    fn brightness_is_the_stock_levels() {
+        let d = def(id::BRIGHTNESS).unwrap();
+        assert!(matches!(d.kind, Kind::Range { min: 1, max: 11, step: 1, .. }), "{:?}", d.kind);
+        assert_eq!(d.default, 6);
+        assert_eq!(d.label, Str::Brightness);
+        let display: Vec<u16> = DISPLAY.iter().map(|s| s.id.0).collect();
+        assert_eq!(display[0], id::BRIGHTNESS.0, "still the first Display row");
+        for v in i16::MIN..=i16::MAX {
+            let lvl = d.validate(v);
+            assert!((1..=11).contains(&lvl), "{v} → {lvl}");
+            let duty = orpheus_power::backlight::Duty::of_level(lvl).get();
+            assert!(orpheus_power::backlight::LEVEL_DUTY[1..].contains(&duty));
+        }
+    }
+
+    /// A store of the firmware before 2026-11-26 holds Brightness under
+    /// `0x0301` on a 1–16 scale (default 10; it lit nothing). That key is
+    /// retired: the old record is skipped and Brightness reads the stock
+    /// default 6 (duty 8), whatever the old value; a retired key is no
+    /// setting and none reuses it.
+    #[test]
+    fn old_brightness_record_reads_the_stock_default() {
+        for old in [1i16, 6, 10, 11, 12, 16, -1] {
+            let mut c = SettingsCache::new();
+            c.load(0x0301, &encode(old));
+            assert_eq!(c.get(id::BRIGHTNESS), 6, "old 0x0301={old}");
+            assert!(!c.is_dirty(), "nothing written");
+        }
+        // Beside a new record, the new one wins whatever the order.
+        let mut c = SettingsCache::new();
+        c.load(id::BRIGHTNESS.0, &encode(9));
+        c.load(0x0301, &encode(16));
+        assert_eq!(c.get(id::BRIGHTNESS), 9);
+        for k in RETIRED {
+            assert!(def(SettingId(*k)).is_none(), "{k:#06x} reused");
+            assert!(all().all(|s| s.id.0 != *k && s.pack.is_none_or(|p| p.0.0 != *k)), "{k:#06x}");
+        }
     }
 
     #[test]

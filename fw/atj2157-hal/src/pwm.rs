@@ -13,6 +13,9 @@ const fn duty(n: usize) -> Reg {
     Reg::at(0xC019_0018 + 0x100 * n)
 }
 
+/// `CTL` bit 4: the channel runs (`CH_START`, datasheet §9.2.6.1).
+const CTL_CH_START: u32 = 1 << 4;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Pwm {
     n: usize,
@@ -35,8 +38,25 @@ impl Pwm {
         Self { n }
     }
 
+    /// Write `DUTY[15:0]` as it is. Whether a write to a running channel
+    /// takes effect is unmeasured (U-PWM-1): to change a running channel's
+    /// duty use [`Pwm::set_duty_restart`].
     pub fn set_duty(self, d: u32) {
         duty(self.n).modify(|v| (v & !0xFFFF) | (d & 0xFFFF));
+    }
+
+    /// Change the duty as the stock firmware does (`DRV_LCD.DRV` bank 1,
+    /// LCD API 1; U-PWM-1, U-PWM-3): `CTL` bit 4 (`CH_START`) cleared,
+    /// `DUTY[15:0]` written, `CH_START` set again, with no wait between.
+    ///
+    /// VERBATIM(vendor DRV_LCD API 1): the purpose of the stop/start is not
+    /// understood — the datasheet says `CH_START` = 0 takes effect only
+    /// after the current period (§9.2.6.1) — and whether a plain `DUTY`
+    /// write to a running channel would do (U-PWM-1) is unmeasured.
+    pub fn set_duty_restart(self, d: u32) {
+        ctl(self.n).clear_bits(CTL_CH_START);
+        duty(self.n).modify(|v| (v & !0xFFFF) | (d & 0xFFFF));
+        ctl(self.n).set_bits(CTL_CH_START);
     }
 
     /// Start output (control word `0x1C` as the port [HW]).

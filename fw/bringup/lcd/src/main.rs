@@ -68,7 +68,7 @@ async fn run(test_id: u32) {
     r.set(8, disp.lcm_ctl());
     let id = disp.read_id();
     r.set(0, u32::from_le_bytes(id));
-    let bl = Backlight::new(12);
+    let bl = Backlight::new(display::Duty::DEFAULT);
 
     let t0 = time::now_us();
     disp.fill_pio(0, 0, 128, 128, rgb(0, 0, 128));

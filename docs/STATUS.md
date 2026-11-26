@@ -73,8 +73,82 @@ of every session. Newest entries first in §3.
 | BOOK-2 | **done (host + simulator)**; not in the firmware (as BOOK-1; the scratch is the decoder arena, see session entry) | EPUB 2/3 in `orpheus-books`: zip (end record, streamed central directory, CRC, zip64/encrypted/method refusals), `no_std` inflate (48 B state; 32 KiB window + 2,304 B tables lent: 35,072 B), container/OPF/nav/NCX, XHTML reduction over the XML tokenizer split out of FB2, contents positions from anchors, all in bounded steps into BOOK-1's stream; library titles from the package; 12 new goldens; fuzz targets `books_zip`, `books_epub` (session entry 2026-11-25 "BOOK-2") |
 | MIDI-1 | **done (host + simulator)**; not in the firmware (SYN-3); **user check: listen to the three MIDI renders** | `orpheus-midi`: Standard MIDI File parser (formats 0/1/2, running status, meta and SysEx, SMPTE, RMID) streamed through 64 track cursors of 64-byte windows that ask for bytes (`Need`/`supply`), nothing trusted; exact tick→frame clock through tempo changes; sequencer (CC 1/6/7/10/11/38/64/91/93/96–101/120–127, RPN bend range, pressure, programs, kits on channel 10, mute/solo); own GM set of 32 sounds for the 128 programs (`data/gm-sounds.osb`); `MidiPlayer`: open/scan, render, bounded-step seek (bit-exact where nothing sounds across the target), duration/position, `.kar`/lyric events; Files plays `.mid`/`.kar` in the simulator with Now Playing lyrics; player 70,224 B; estimate ≈ 117 MHz at 48 kHz for a 10–11-voice song: High clock (session entry 2026-11-25 "MIDI-1") |
 | A11Y-2 | **built (host + simulator + firmware), not yet run on the player**; journey `settings_accessibility` and user check 31 | Settings › Accessibility (Text size Normal/Large/Extra large, Hold delay 0.5–2 s, Key repeat Normal/Slow/Slower; packed in `0x0D60`), Themes White on black / Black on white (≥ 7:1), reduced motion = Animations off (spinner still, blinks lit), Key click Presses and holds (hold confirmation); 63 `a11y_*` goldens (session entry 2026-11-26 "A11Y-2") |
+| VER-13 Brightness (U-PWM-3) | **built (host + simulator + firmware), not yet run on the player**; journey `settings_brightness` and user check 32 | Settings › Display › Brightness = the stock levels 1–11 (default 6) on the stock PWM4 duties, live; key `0x030D` (old `0x0301` retired); alert flash 15 / 3 (never 16); `ui top` `bl=` |
 
 ## 3. Session log
+
+### 2026-11-26 — VER-13 follow-up: Brightness on the stock levels, alert flash capped at 15 (worker, no hardware)
+
+* **Brightness works** (U-PWM-3): `orpheus_power::backlight` holds the
+  stock table (level 0–11 → duty 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15 of
+  `DUTYMAX` 16). `Duty` can only hold a value of it (`Duty::of_level`
+  clamps any `i16`; host test over every `i16`:
+  `every_level_maps_into_the_stock_table`), and the BSP's
+  `Backlight::set(Option<Duty>)` takes nothing else, so no duty outside
+  the table can reach PWM4. Settings › Display › Brightness is 1–11,
+  default 6 (duty 8, the stock default; 05 §7.11 gives no range), applied
+  at once while the slider or the quick panel's row moves.
+* **Old stored value**: the setting was `0x0301`, 1–16 default 10, and
+  drove nothing (fixed duty 12). Its value cannot be told apart from a
+  new level under the same key, and after a factory reset every player
+  stores 10 there — which would have read as level 10 (duty 13) and shown
+  in `settings changed`. So the key is **retired** (`settings::RETIRED`,
+  never reused) and Brightness is **`0x030D`**: an old store reads the
+  stock default 6 and nothing is written (test
+  `old_brightness_record_reads_the_stock_default`, old values 1, 6, 10,
+  11, 12, 16, −1). The stale `0x0301` record stays in NOR, skipped at
+  load (the store's key count and CRC at boot are unchanged by it).
+  **Every reference to "Brightness 0x0301" is now 0x030D** (manifest,
+  matrix test `s030d`, fuzz and soak id lists).
+* **Duty writes use the vendor's stop/start** (U-PWM-1 still unmeasured):
+  `atj2157_hal::pwm::Pwm::set_duty_restart` (CTL bit 4 cleared, DUTY,
+  bit 4 set, no wait; VERBATIM), then `enable` and the pad mux as before.
+  Off stays the pad driven low. The 20 ms wait before muxing the pad is
+  still not copied (it never was).
+* **Alert flash capped at 15** (bright) / 3 (dim): the flash is part of
+  `orpheus_power::backlight::light`, one function for the firmware and
+  the simulator (`services::backlight`); `regress_alert_flash_never_drives_16`.
+  The firmware's backlight is now set in one place (`ui.rs`
+  `apply_backlight`, every loop, written only on change; boot at the
+  stock default, the stored level right after the settings load).
+* **Dim**: not built. 05 asks for no dim state before off (§6.3's saver
+  "dim clock" is drawn dim, as built); Battery saver's "backlight capped"
+  (02 §5.4) is still open — the Power mode entry's `backlight` reason now
+  says so.
+* **Effects**: `Sim::backlight()` (the duty, 0 dark); the matrix compares
+  it beside every screen context's frame, so Brightness shows in every
+  lit screen context except Alert (the flash ignores the level) and leaks
+  nowhere; no other setting moved it. Manifest `0x030D`: no `gap`;
+  `backlight` covered by `effects::brightness_lights_the_panel_at_its_level`,
+  `services::setting_effects::brightness_values`, the power test and
+  `suite:settings_brightness`. `settings-matrix --check`: 166 settings,
+  11,542/11,590 cells (99.6 %), 3 settings without an effect (was 4),
+  0 errors.
+* **Player observable**: `ui top` ends in `bl=<duty>` (0 dark; the same
+  atomic the battery log's `backlight` column reads, now a duty);
+  `xtask` `Top::bl`. Journey **`settings_brightness`** (RAM-only session):
+  `bl=8` under the test look, `test-set 0x030D 1` → `bl=3`, `11` → `bl=15`
+  and the slider shows 11 (shot `slider_11`), back to 6 → `bl=8`. The test
+  look reads Brightness as its default until a session sets it
+  (`LOOK_ARMED`, which replaces `A11Y_ARMED`: bits 1–3 the accessibility
+  settings, bit 4 Brightness; no new RAM).
+* Goldens: 19 re-blessed (Display group and slider, 10 → 6 / 13 → 9;
+  looked at), `docs/shots/app_display_dark_latin.png`, suite
+  `settings/display.png`, new `settings_brightness/{slider_11,home_after}`.
+  User docs (`docs/user/settings.md`), 05 §7.11 as-built, 01-hardware §9
+  U-PWM-1/U-PWM-3 updated. **User check 32**: each level by eye against the
+  reference player.
+* Gate: fmt (host, fw), clippy `-D warnings` (host, fw), `cargo test
+  --workspace` 1,932 passed, `settings-matrix --check`, `site --check`;
+  fw `xtask build`, `check-resident` (ok, none paged), `size --check`
+  (resident 81,235 B of 81,920; `.bss` 125,448 B of 126,976, unchanged),
+  `stack --check` (margin 4,304 B, unchanged). Not run: `xtask dev`
+  anything (no hardware).
+* **For the lead on the player**: `suite settings_brightness`; then look:
+  Settings › Display › Brightness steps change the light at once (the
+  stop/start sequence), the alert flash, and that the owner's player now
+  starts at level 6 (darker than the old fixed 12). Open: U-PWM-1 (is the
+  stop/start needed), the vendor's 20 ms before the pad mux.
 
 ### 2026-11-26 — Speed hidden, U-PWM-3, A11Y-2 and SEQ-1 merged; USB cable fault (lead)
 
