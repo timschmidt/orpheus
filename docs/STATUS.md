@@ -79,6 +79,29 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-26 — restart saves the place; synth governor on the player (lead)
+
+* Owner 2026-11-26: "Reopen the track paused after a reboot". It already
+  opened paused (`status`'s first word says `playing` for a loaded track;
+  frames stay at 0), but the power menu's Restart and the developer
+  channel's normal reboot rebooted without the card task's shutdown, so it
+  reopened at the last saved place. Fix (`3f8d7803`): both go through
+  `Ui::save_for_shutdown` (recording, game, battery log, the player's
+  place) like power-off; the USB task reboots itself if that has not
+  happened in 3 s. On the player: playing at 15.0 s → `dev reboot` → back
+  **paused at 17.4 s** (frames 0), log `ui: restart`, `audio: resuming
+  paused`. (Code window was 30 B over: the USB branch shares the reboot
+  code.)
+* Merged the synth governor (`1cdb7181`, `78b316b5`): bounded pieces with
+  rests, shedding order chorus → reverb → voices, labelled underruns; code
+  pages 125/128 (SHA-2 compact rounds). On the player: **no reset** in
+  3 min of MIDI and the UI alive (the watchdog finding is fixed), underruns
+  labelled `ub=synth:render:…`; `synth bench 32/29` 1,408/750 (reverb ≈ 658).
+  But **every song stops after ~200 ms**: `ratio=400` (the clamp), `lvl=3/3`,
+  `vlim=2`, then the "too slow" stop — at High 144 MHz, where the bench
+  matches the table, so the playback-time ratio is mis-measured. A worker
+  fixes the measurement and the stop rule. The resume point is an MP3.
+
 ### 2026-11-26 — NOR read race fixed; 20 boots clean (lead)
 
 * Merged `b7a4cb04` (thread-mode NOR reads masked against the pager,
