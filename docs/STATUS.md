@@ -70,6 +70,24 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-26 — VER-13 merged; `settings_shuffle` on the player (lead)
+
+* Merged VER-13 (`6a2dff67`): `cargo xtask settings-matrix --check`
+  (162 settings, 9,365/9,412 cells, 99.5 %, 69 reviewed exclusions, 0
+  errors); 1,712 host tests.
+* The new journey `settings_shuffle` on the player: `status shuf=` follows
+  Shuffle 0 → 1 → 0 through the RAM-only session (0 underruns); its shot
+  failed (the simulator kept a now-playing strip after `stop` that the
+  player clears, and before that Home's label strip): the Playback group
+  is now shot first, before anything plays. Passes on the player; the
+  owner's stored settings unchanged (`settings changed` before and after:
+  `d50=9500`).
+* Owner decisions from the VER-13 findings (not changed): 22 settings
+  have no effect yet (list in the VER-13 entry); ReplayGain Auto = Album;
+  Tag code page only distinguishes Cyrillic; Output is never read by the
+  firmware; games and Books strings are English only; Files › Sort is not
+  applied to folder queues in the simulator (07 §5.12 asks for it).
+
 ### 2026-11-26 — VER-13: setting → effect coverage, tool and gaps (worker, no hardware)
 
 * **Tool**: `cargo xtask settings-matrix [--check] [--strict] [--manifest

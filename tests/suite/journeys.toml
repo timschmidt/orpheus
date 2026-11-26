@@ -326,9 +326,11 @@ rects = [
 # `status` follows it (0 → 1 → 0, whatever the owner's value was).
 [[journey]]
 name = "settings_shuffle"
-about = "Shuffle (0x0201) through the RAM-only test session: status shuf= follows it; set back to Off"
+about = "Shuffle (0x0201) through the RAM-only test session: status shuf= follows it; set back to Off (the Playback group is shot first, before anything plays: the simulator keeps a now-playing strip after `stop`, the player does not)"
 setup = true
 script = """
+prev ok expect-screen:Settings down ok expect-screen:SettingsGroup wait:500 shot:playback back back
+expect-screen:Home
 cmd: settings test-session ~ ^test-session on
 cmd: playdir /.orpheus/test/suite/music ~ ^playdir ok
 sim: set:queue=takk
@@ -344,5 +346,4 @@ dev: wait:1000
 cmd: status ~ ^playing .*shuf=0
 cmd: stop
 sim: set:playing=0
-prev ok expect-screen:Settings down ok expect-screen:SettingsGroup shot:playback
 """
