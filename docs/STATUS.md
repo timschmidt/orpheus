@@ -76,6 +76,37 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-26 — Speed hidden, U-PWM-3, A11Y-2 and SEQ-1 merged; USB cable fault (lead)
+
+* **Speed off the menu** (owner 2026-11-26: "take speed off the menu for
+  now"; `7cd85f89`): `settings::hidden` — Speed (0x0206) is kept (key and
+  stored value) but offered neither in Now Playing's menu nor in Settings ›
+  Playback; the library goldens that counted Now Playing's menu rows now
+  count one fewer.
+* **U-PWM-3 answered** (`077829db`, from the stock `DRV_LCD.DRV` and the
+  apps' common UI code): duty table 2,3,4,5,6,7,8,9,10,11,13,15 of
+  DUTYMAX 16 for levels 0–11, default level 6 (duty 8), dim = duty 2; the
+  vendor stops the channel around a duty write (VERBATIM; U-PWM-1 still
+  unmeasured). The stock firmware never writes 16: cap Orpheus's alert
+  flash at 15. Brightness (0x0301) can now be built.
+* **USB link fault (hardware)**: from 21:57 the player kept dropping off
+  USB — descriptor reads failing with -71, the host resetting the link,
+  the firmware's USB-W1 recovery (`recover-reset`, setups 0) running as
+  designed; workstation port 11 then port 7 both failed. The owner swapped
+  the cable: since then no unexpected disconnects. Not a firmware fault.
+* Merged A11Y-2 (`b7479505`: Accessibility group, Text size, Hold delay,
+  Key repeat, high-contrast themes, reduced motion, hold click) and SEQ-1
+  (`7565f73b`: `orpheus-seq`, the Sequencer app in the simulator). Manifest
+  conflicts merged as unions of the context lists; Text size declared on
+  the Sequencer's project list (`s1001` caught it). 1,924 host tests;
+  `settings-matrix --check` 166 settings, 99.6 %, 0 errors; fw: resident
+  81,235 B, `.bss` 125,448 B, stack margin 4,304 B.
+* Suite on `0aa98981`: **22/22**; idle Home 871 line loads/s (limit
+  1,500); stack free ≥ 6,544 B; owner's stored settings unchanged (the
+  owner's own radio change, Region 1 and 104.7 MHz, is the new baseline).
+  One intermittent `settings` journey failure earlier (first key not taken
+  right after a reboot; passed twice alone): watch.
+
 ### 2026-11-26 — A11Y-2: large text, high contrast, reduced motion, hold and repeat, key confirmation (worker, no hardware)
 
 * **Where**: a thirteenth Settings group, **Accessibility** (keys
