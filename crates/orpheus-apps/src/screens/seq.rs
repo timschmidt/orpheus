@@ -1250,7 +1250,7 @@ impl SeqEditScreen {
                 step.with_velocity(by(step.velocity(), if fast { 8 * d } else { d }, 1, 127)),
             ),
             T_CHANCE => {
-                p.set_any_step(cur, t, s, step.with_prob(by(step.prob(), d, 1, i32::from(PROB_LEVELS))))
+                p.set_any_step(cur, t, s, step.with_prob(by(step.prob(), d, 1, i32::from(PROB_LEVELS))));
             }
             T_RATCHET => {
                 p.set_any_step(
@@ -1261,7 +1261,7 @@ impl SeqEditScreen {
                 );
             }
             T_DELAY => {
-                p.set_any_step(cur, t, s, step.with_micro(by(step.micro(), d, 0, i32::from(MICRO_MAX))))
+                p.set_any_step(cur, t, s, step.with_micro(by(step.micro(), d, 0, i32::from(MICRO_MAX))));
             }
             T_NOTE => {
                 let ss = p.pattern(cur).synth_step(st, s);
@@ -1345,22 +1345,22 @@ impl SeqEditScreen {
                 x.filter.cutoff = lock_value(LockParam::Cutoff, c.clamp(0, 127) as u8);
             }),
             S_RES => {
-                p.edit_patch(st, |x| x.filter.resonance = byf(x.filter.resonance, 0.05 * d as f32, 0.0, 1.0))
+                p.edit_patch(st, |x| x.filter.resonance = byf(x.filter.resonance, 0.05 * d as f32, 0.0, 1.0));
             }
             S_ENV => p.edit_patch(st, |x| {
-                x.filter.env_amount = byf(x.filter.env_amount, 0.5 * d as f32, -8.0, 8.0)
+                x.filter.env_amount = byf(x.filter.env_amount, 0.5 * d as f32, -8.0, 8.0);
             }),
             S_ATTACK => {
-                p.edit_patch(st, |x| x.amp_env.attack = byf(x.amp_env.attack, 0.01 * d as f32, 0.0, 2.0))
+                p.edit_patch(st, |x| x.amp_env.attack = byf(x.amp_env.attack, 0.01 * d as f32, 0.0, 2.0));
             }
             S_ADECAY => {
-                p.edit_patch(st, |x| x.amp_env.decay = byf(x.amp_env.decay, 0.05 * d as f32, 0.0, 4.0))
+                p.edit_patch(st, |x| x.amp_env.decay = byf(x.amp_env.decay, 0.05 * d as f32, 0.0, 4.0));
             }
             S_SUSTAIN => {
-                p.edit_patch(st, |x| x.amp_env.sustain = byf(x.amp_env.sustain, 0.05 * d as f32, 0.0, 1.0))
+                p.edit_patch(st, |x| x.amp_env.sustain = byf(x.amp_env.sustain, 0.05 * d as f32, 0.0, 1.0));
             }
             S_RELEASE => {
-                p.edit_patch(st, |x| x.amp_env.release = byf(x.amp_env.release, 0.05 * d as f32, 0.0, 4.0))
+                p.edit_patch(st, |x| x.amp_env.release = byf(x.amp_env.release, 0.05 * d as f32, 0.0, 4.0));
             }
             S_VIBRATO => p.edit_patch(st, |x| x.lfo.pitch = byf(x.lfo.pitch, 0.05 * d as f32, 0.0, 1.0)),
             S_GLIDE => p.edit_patch(st, |x| x.glide = byf(x.glide, 0.01 * d as f32, 0.0, 1.0)),
