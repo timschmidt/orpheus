@@ -3,7 +3,7 @@
 //! drew last; rows are asked for while drawing and never copied.
 
 use crate::event::{Event, Instant, Key, KeyPhase};
-use crate::font::FontId;
+use crate::font::{FontId, TextSize};
 use crate::geom::Rect;
 use crate::gfx::{Align, Gfx};
 use crate::icons::{self, Icon};
@@ -15,6 +15,20 @@ pub const ROW_H: i16 = 19;
 /// Baseline of the UI font inside a row: caps are vertically centred and a
 /// 16 px fallback glyph still fits.
 pub const ROW_BASELINE: i16 = 14;
+
+/// Row pitch and text baseline at a text size (A11Y-2, 05 §7.14 "lists with
+/// fewer rows"): 19/14 (five rows in the 96 px content area), 24/18 with
+/// the 16 px face (four rows), 32/25 with the UI font at twice the size
+/// (three rows). Caps stay centred; a 16 px fallback glyph (twice that at
+/// the largest size) still fits.
+#[must_use]
+pub const fn row_metrics(size: TextSize) -> (i16, i16) {
+    match size {
+        TextSize::Normal => (ROW_H, ROW_BASELINE),
+        TextSize::Large => (24, 18),
+        TextSize::ExtraLarge => (32, 25),
+    }
+}
 
 /// Right-hand decoration of a row.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -189,6 +203,10 @@ pub enum ListAction {
 #[derive(Clone, Copy, Debug, Default)]
 struct Drawn {
     valid: bool,
+    /// Rows the last draw showed (0: not drawn yet). A key is handled
+    /// with at most these, so a screen that counts rows of the normal size
+    /// pages and scrolls by what large text shows.
+    rows: u8,
     focus: u32,
     top: u32,
     len: u32,
@@ -251,7 +269,7 @@ impl ListView {
             overflow: 0,
             jump: None,
             repeats: 0,
-            drawn: Drawn { valid: false, focus: 0, top: 0, len: 0, marquee: 0, jump: None },
+            drawn: Drawn { valid: false, rows: 0, focus: 0, top: 0, len: 0, marquee: 0, jump: None },
         }
     }
 
@@ -427,6 +445,7 @@ impl ListView {
     /// time and the roll-around setting ([`Cx::list`](crate::nav::Cx::list)).
     pub fn handle(&mut self, src: &dyn ListSource, ev: &Event, rows: u32, lc: ListCx) -> ListAction {
         let Event::Key(k, p) = *ev else { return ListAction::None };
+        let rows = if self.drawn.rows == 0 { rows } else { rows.min(u32::from(self.drawn.rows)) };
         let now = lc.now;
         let moved = match (k, p) {
             (Key::Up | Key::Down, KeyPhase::Down) => {
@@ -490,8 +509,14 @@ impl ListView {
     /// Draw into the whole current area of `g` on background `bg`.
     pub fn draw(&mut self, src: &dyn ListSource, g: &mut Gfx<'_>, dirty: Dirty, now: Instant, bg: Role) {
         let (w, h) = g.size();
-        let rows = Self::rows_for(h);
+        let (row_h, _) = row_metrics(g.text);
+        let rows = u32::try_from((h / row_h).max(1)).unwrap_or(1);
         let n = src.len();
+        // Fewer rows than the screen counted (large text): keep the focus
+        // in view.
+        if self.focus >= self.top + rows {
+            self.top = self.focus + 1 - rows;
+        }
         let scroll = n > rows;
         let row_w = if scroll { w - 4 } else { w };
         let marquee = if g.motion { marquee_offset(now.since(self.focus_since), self.overflow) } else { 0 };
@@ -521,8 +546,15 @@ impl ListView {
         if let Some(l) = self.jump {
             draw_letter_box(g, l);
         }
-        self.drawn =
-            Drawn { valid: true, focus: self.focus, top: self.top, len: n, marquee, jump: self.jump };
+        self.drawn = Drawn {
+            valid: true,
+            rows: u8::try_from(rows).unwrap_or(u8::MAX),
+            focus: self.focus,
+            top: self.top,
+            len: n,
+            marquee,
+            jump: self.jump,
+        };
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -536,8 +568,10 @@ impl ListView {
         marquee: i16,
         bg: Role,
     ) {
-        let y = i16::try_from(slot).unwrap_or(0) * ROW_H;
-        let rect = Rect::new(0, y, w, ROW_H);
+        let (row_h, base) = row_metrics(g.text);
+        let (mut font, bold) = (g.ui(false), g.ui(true));
+        let y = i16::try_from(slot).unwrap_or(0) * row_h;
+        let rect = Rect::new(0, y, w, row_h);
         g.fill_role(rect, bg);
         if i >= src.len() {
             return;
@@ -547,21 +581,21 @@ impl ListView {
             Row::Header(t) => {
                 let c = g.c(Role::Accent);
                 let c = if g.pal.is_dark() || bg != Role::Bg { blend_text(g, c) } else { c };
-                g.text_in(7, y + ROW_BASELINE, w - 14, t, FontId::UiBold, c, Align::Left);
+                g.text_in(7, y + base, w - 14, t, bold, c, Align::Left);
             }
             Row::Pending => {
                 let pw = 36 + i16::try_from((i * 37) % 48).unwrap_or(0);
                 let c = if focused {
-                    g.fill_round(Rect::new(2, y + 1, w - 4, ROW_H - 2), 4, g.c(Role::Accent));
+                    g.fill_round(Rect::new(2, y + 1, w - 4, row_h - 2), 4, g.c(Role::Accent));
                     g.pal.mix(Role::Accent, Role::OnAccent, 90)
                 } else {
                     g.pal.mix(bg, Role::TextDim, 70)
                 };
-                g.fill_round(Rect::new(7, y + 6, pw.min(w - 20), 7), 3, c);
+                g.fill_round(Rect::new(7, y + (row_h - 7) / 2, pw.min(w - 20), 7), 3, c);
             }
             Row::Item(it) => {
                 let (fg, dim) = if focused {
-                    g.fill_round(Rect::new(2, y + 1, w - 4, ROW_H - 2), 4, g.c(Role::Accent));
+                    g.fill_round(Rect::new(2, y + 1, w - 4, row_h - 2), 4, g.c(Role::Accent));
                     (g.c(Role::OnAccent), g.pal.mix(Role::Accent, Role::OnAccent, 200))
                 } else if it.dim {
                     (g.c(Role::TextDim), g.c(Role::TextDim))
@@ -570,42 +604,55 @@ impl ListView {
                 };
                 let mut x = 7;
                 if let Some(ic) = it.icon {
-                    let iy = y + (ROW_H - i16::from(ic.h)) / 2;
+                    let iy = y + (row_h - i16::from(ic.h)) / 2;
                     g.icon(6, iy, ic, if focused { fg } else { dim });
                     x = 22;
                 }
                 let mut right = w - 7;
-                right = draw_accessory(g, it.accessory, right, y, focused);
+                // Accessories keep their size, centred in a taller row.
+                right = draw_accessory(g, it.accessory, right, y + (row_h - ROW_H) / 2, focused);
                 if let Some(v) = it.value {
                     // The value takes what the label leaves, and at least
-                    // half the row when both are long.
+                    // half the row when both are long. With large text
+                    // (A11Y-2) the label comes first: the value gets at
+                    // least a third, and at the extra large size it is
+                    // drawn in the 16 px face.
+                    let vf = if g.text == TextSize::ExtraLarge { FontId::Large } else { font };
                     let avail = right - x - 6;
-                    let (tw, vfull) = (g.measure(it.text, FontId::Ui), g.measure(v, FontId::Ui));
+                    let (mut tw, vfull) = (g.measure(it.text, font), g.measure(v, vf));
+                    if g.text == TextSize::ExtraLarge && tw + vfull > avail {
+                        // Label and value do not fit at twice the size:
+                        // the label in the 16 px face as well.
+                        font = FontId::Large;
+                        tw = g.measure(it.text, font);
+                    }
                     let vw = if tw + vfull <= avail {
                         vfull
                     } else if it.wide_value {
                         vfull.min(avail - tw.min(avail / 3))
+                    } else if g.text != TextSize::Normal {
+                        vfull.min((avail - tw).max(avail / 3))
                     } else {
                         vfull.min((avail - tw).max((right - x) / 2))
                     };
-                    g.text_in(right - vw, y + ROW_BASELINE, vw, v, FontId::Ui, dim, Align::Right);
+                    g.text_in(right - vw, y + base, vw, v, vf, dim, Align::Right);
                     right -= vw + 6;
                 }
                 let avail = right - x;
                 if focused {
-                    let tw = g.measure(it.text, FontId::Ui);
+                    let tw = g.measure(it.text, font);
                     self.overflow = (tw - avail).max(0);
                     let off = marquee.min(self.overflow);
                     if off > 0 {
-                        let clip = Rect::new(x, y, avail, ROW_H);
-                        g.with_clip(clip, |g| g.text(x - off, y + ROW_BASELINE, it.text, FontId::Ui, fg));
+                        let clip = Rect::new(x, y, avail, row_h);
+                        g.with_clip(clip, |g| g.text(x - off, y + base, it.text, font, fg));
                     } else {
                         // At rest (before the marquee starts) long text
                         // ends in an ellipsis like unfocused rows.
-                        g.text_in(x, y + ROW_BASELINE, avail, it.text, FontId::Ui, fg, Align::Left);
+                        g.text_in(x, y + base, avail, it.text, font, fg, Align::Left);
                     }
                 } else {
-                    g.text_in(x, y + ROW_BASELINE, avail, it.text, FontId::Ui, fg, Align::Left);
+                    g.text_in(x, y + base, avail, it.text, font, fg, Align::Left);
                 }
             }
         }

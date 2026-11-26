@@ -9,7 +9,9 @@ use embedded_graphics_core::pixelcolor::{IntoStorage, Rgb565};
 use embedded_graphics_core::primitives::Rectangle;
 
 use crate::color::{Color, blend};
-use crate::font::{FALLBACK_RECORD, FontId, Glyph, GlyphCache, GlyphSource, UI, fallback_glyph};
+use crate::font::{
+    FALLBACK_RECORD, FontId, Glyph, GlyphCache, GlyphSource, Style, TextSize, UI, fallback_glyph,
+};
 use crate::geom::Rect;
 use crate::icons::Icon;
 use crate::text::{for_each_visual, is_cjk, no_line_start};
@@ -175,7 +177,13 @@ pub struct Gfx<'a> {
     /// Animations (Settings › Display, and off in Battery saver; 05 §4
     /// "Motion"): with false, long focused text and the mini-player's title
     /// do not scroll (the marquee stays at rest). Set by the shell's draw.
+    /// Off is also **reduced motion** (A11Y-2, 05 §7.14): the spinner
+    /// stands still and blinking marks stay lit.
     pub motion: bool,
+    /// UI text size (Settings › Accessibility › Text size, A11Y-2): the
+    /// size lists, menus, dialogs, the strip and Now Playing draw in
+    /// ([`Gfx::ui`]). Set by the shell's draw.
+    pub text: TextSize,
     org_x: i16,
     org_y: i16,
     area: Rect,
@@ -191,7 +199,24 @@ impl<'a> Gfx<'a> {
         pal: Palette,
         fallback: Option<Fallback<'a>>,
     ) -> Self {
-        Gfx { px, dirty, fallback, pal, motion: true, org_x: 0, org_y: 0, area: SCREEN, clip: SCREEN }
+        Gfx {
+            px,
+            dirty,
+            fallback,
+            pal,
+            motion: true,
+            text: TextSize::Normal,
+            org_x: 0,
+            org_y: 0,
+            area: SCREEN,
+            clip: SCREEN,
+        }
+    }
+
+    /// The UI face (bold or not) at the text size ([`Gfx::text`]).
+    #[must_use]
+    pub fn ui(&self, bold: bool) -> FontId {
+        (if bold { FontId::UiBold } else { FontId::Ui }).sized(self.text)
     }
 
     /// Whether anything drawn through this `Gfx` so far touched `r`
@@ -482,7 +507,7 @@ impl<'a> Gfx<'a> {
         self.dirty.add(a);
     }
 
-    // ----- reading text (Books; feature `book-fonts`) ------------------
+    // ----- reading text (Books) and the large UI faces ----------------
 
     /// The glyph `ch` is drawn with in `face` (else the UI font, else the
     /// fallback font), or what to draw instead.
@@ -511,7 +536,6 @@ impl<'a> Gfx<'a> {
     /// Blit `g` scaled `st.scale` times, slanted (a quarter pixel per row
     /// above the baseline) and emboldened (drawn again one pixel right) as
     /// `st` says.
-    #[cfg(feature = "book-fonts")]
     fn blit_styled(&mut self, ax: i16, ay: i16, g: &Glyph<'_>, c: Color, st: crate::font::Style) -> Rect {
         let s = i16::from(st.scale.clamp(1, 4));
         let x0 = ax + i16::from(g.x) * s;
@@ -600,7 +624,7 @@ impl<'a> Gfx<'a> {
         if let Some(g) = font.font().glyph(ch) {
             return Resolved::Static(g);
         }
-        if font != FontId::Ui
+        if !matches!(font, FontId::Ui | FontId::XLarge)
             && let Some(g) = UI.glyph(ch)
         {
             return Resolved::Static(g);
@@ -620,12 +644,14 @@ impl<'a> Gfx<'a> {
     }
 
     fn advance_of(&mut self, ch: char, font: FontId) -> i16 {
-        match self.resolve(ch, font) {
+        let st = font.style();
+        let adv = match self.resolve(ch, font) {
             Resolved::Static(g) => i16::from(g.adv),
             Resolved::Fallback(rec, b) => fallback_glyph(&rec, b).map_or(0, |g| i16::from(g.adv)),
             Resolved::Missing => 8,
-            Resolved::Skip => 0,
-        }
+            Resolved::Skip => return 0,
+        };
+        adv * i16::from(st.scale) + i16::from(st.bold)
     }
 
     /// True if any character of `s` comes from the 16 px fallback font;
@@ -636,10 +662,27 @@ impl<'a> Gfx<'a> {
     }
 
     /// Line pitch for wrapped text in `font`: 14 px, or 16 px if the text
-    /// uses the fallback font.
+    /// uses the fallback font; the large faces 18 px (16 px face) and 28
+    /// or 32 px (twice the UI font).
     #[must_use]
     pub fn line_pitch(&self, s: &str, font: FontId) -> i16 {
-        if self.needs_fallback(s, font) { 16 } else { 14 }
+        match font {
+            FontId::Large | FontId::LargeBold => 18,
+            FontId::XLarge | FontId::XLargeBold => {
+                if self.needs_fallback(s, font) {
+                    32
+                } else {
+                    28
+                }
+            }
+            _ => {
+                if self.needs_fallback(s, font) {
+                    16
+                } else {
+                    14
+                }
+            }
+        }
     }
 
     /// Width of `s` in pixels.
@@ -681,6 +724,10 @@ impl<'a> Gfx<'a> {
     }
 
     fn draw_char(&mut self, ax: i16, ay: i16, ch: char, font: FontId, c: Color) -> (i16, Rect) {
+        let st = font.style();
+        if st.scale != 1 || st.bold {
+            return self.draw_char_styled(ax, ay, ch, font, c, st);
+        }
         match self.resolve(ch, font) {
             Resolved::Static(g) => (i16::from(g.adv), self.blit_glyph(ax, ay, &g, c)),
             Resolved::Fallback(rec, b) => match fallback_glyph(&rec, b) {
@@ -699,6 +746,42 @@ impl<'a> Gfx<'a> {
                     }
                 }
                 (8, r2)
+            }
+            Resolved::Skip => (0, Rect::EMPTY),
+        }
+    }
+
+    /// A character of a scaled or emboldened face (the large UI text):
+    /// its advance and what it covered.
+    #[inline(never)]
+    fn draw_char_styled(
+        &mut self,
+        ax: i16,
+        ay: i16,
+        ch: char,
+        font: FontId,
+        c: Color,
+        st: Style,
+    ) -> (i16, Rect) {
+        let s = i16::from(st.scale);
+        let extra = i16::from(st.bold);
+        match self.resolve(ch, font) {
+            Resolved::Static(g) => (i16::from(g.adv) * s + extra, self.blit_styled(ax, ay, &g, c, st)),
+            Resolved::Fallback(rec, b) => match fallback_glyph(&rec, b) {
+                Some(g) => (i16::from(g.adv) * s + extra, self.blit_styled(ax, ay, &g, c, st)),
+                None => (0, Rect::EMPTY),
+            },
+            Resolved::Missing => {
+                let r = Rect::new(ax + s, ay - 9 * s, 6 * s, 9 * s);
+                let r2 = r.intersect(&self.clip);
+                for px in r2.x..r2.right() {
+                    for py in r2.y..r2.bottom() {
+                        if px < r.x + s || px >= r.right() - s || py < r.y + s || py >= r.bottom() - s {
+                            self.put_abs(px, py, c, 160);
+                        }
+                    }
+                }
+                (8 * s + extra, r2)
             }
             Resolved::Skip => (0, Rect::EMPTY),
         }

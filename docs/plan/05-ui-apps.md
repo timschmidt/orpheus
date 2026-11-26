@@ -140,7 +140,9 @@ option).
   text, text-dim, accent, on-accent, warning, good. Ship: Dark (default),
   Light, Black-and-amber (high contrast), plus accent variants Blue, Green,
   Pink, Red, Grey, matching the stock firmware's colour choices. All drawing goes
-  through palette roles, never literal colours.
+  through palette roles, never literal colours. *As built (A11Y-2):* two more themes,
+  White on black and Black on white, at 7:1 or better for every text
+  pairing (§7.14).
 * **Motion**: list scrolling is by whole rows (no pixel smooth-scroll). Screen
   changes: 120 ms horizontal slide of the content area only (8 steps), skipped
   when disabled, in Battery-saver mode, or when audio buffers are low. Marquee,
@@ -1326,6 +1328,76 @@ build, not yet run on the player).**
   reduced motion (no marquee or animations; long names are spoken
   instead), longer hold thresholds and slower repeat, key-press
   confirmation sound.
+
+**As built (A11Y-2, 2026-11-26; host, simulator and firmware).**
+Settings › Accessibility (a thirteenth group, keys `0x1001–0x1003` packed
+into the word `0x0D60`; ids by high byte `0x10`). Only the settings the
+spec names that had no home elsewhere are there: high contrast is two
+Themes, reduced motion is Animations off, the confirmation sound is Key
+click.
+* **Text size** (`0x1001`: Normal, Large, Extra large;
+  `orpheus_ui::font::TextSize`, `System::text_size`, `Gfx::text`,
+  `Gfx::ui`). Large is the 16 px reading face (DejaVu Sans Condensed,
+  `BOOK16`, now always built: 14,468 B of paged rodata; bold drawn
+  emboldened); Extra large is the UI font at twice the size (pixel-doubled,
+  no rodata; the spec's "UI font at twice the size"). Lists
+  (`widgets::list::row_metrics`): rows 19 / 24 / 32 px, five / four /
+  three in the content area; section headers in the bold face; with a
+  value the label keeps at least two thirds, and at Extra large a row
+  whose label and value do not fit draws both in the 16 px face; a key
+  pages by the rows the last draw showed (`ListView` remembers them, so
+  screens that count normal rows need no change) and the focus is kept
+  in view. Menu sheets: fewer rows so the sheet stays ≤ 110 px. The
+  strip (hints, mini player) and dialogs use the 16 px face at both large
+  sizes (their lines have a fixed height): a dialog's title may take two
+  lines, its text up to four, the card over the status bar when it needs
+  the height, the last line cut with an ellipsis. Now Playing's Standard
+  view drops the art and the codec badge: the title over the whole width
+  (the largest face in which no word breaks, two lines, the second cut),
+  artist and album in the 16 px face, the queue place, the times in the
+  16 px face; its idle view loses the icon. Unchanged: the status bar
+  (14 px), big numerals, games, pictures, the reader (its own font size),
+  Steps, the Authenticator, the Equaliser, lock and charging screens, and
+  lists a screen draws itself (Up next, the Authenticator's codes, alarms).
+* **High contrast** (Theme `0x0304` values 3 and 4: "White on black",
+  "Black on white"; `Theme::ContrastDark/ContrastLight`, the accent
+  setting ignored). Every pairing the toolkit draws text in (text, dim
+  text, on-accent, warning, good, a focused row's value, section
+  headers, dialog button labels; blends as drawn in RGB565) is at least
+  7:1 (WCAG AAA), lowest 7.3:1 and 7.8:1 (`theme::tests::
+  high_contrast_themes_reach_7_to_1`; `contrast_table` prints every
+  theme). Found on the way: in Dark and Light a focused row's value
+  (3.6 / 4.3:1) and a destructive dialog button's unfocused label
+  (3.7:1) are below 4.5:1 (not changed here).
+* **Reduced motion** = Animations (`0x0308`) off, as before for the
+  marquees, now also: the spinner is a still ring
+  (`widgets::misc::draw_spinner`), the paused recorder's dot and the alarm
+  alert's icon stay lit. There are no screen slides to stop (not built)
+  and no blinking text cursor; the screen saver's clock still moves once
+  a minute (05 §6.3: against burn-in; a jump, not an animation). Games
+  keep their own motion (4096 has its own Animations).
+* **Hold delay** (`0x1002`: 0.5, 0.75, 1, 1.5, 2 s) and **Key repeat**
+  (`0x1003`: Normal 8 → 30/s, Slow 4 → 10/s, Slower 2/s without
+  acceleration): `input::Timing::accessible`, set on the key mapper by the
+  firmware's UI loop (`apply_settings`) and the simulator at each key
+  edge. Power's menu needs 1.5 s or the delay when longer; power-off stays
+  at 4 s.
+* **Key confirmation sound**: the spec's key-press sound is Key click
+  (05 §3); what a longer hold needs beyond it is to know when a hold
+  registered, so Key click (`0x0108`) became a choice: Off, Presses,
+  Presses and holds (a second click when a held key reaches its hold
+  delay; `System::key_hold_click`, `services::hold_click`, the same
+  microphone and radio rules; stored 0/1 keep their meaning).
+* Tests: the matrix rows `s1001–s1003` and the dedicated tests in
+  `sim/tests/settings_matrix.rs` `effects` (pages by rows shown, holds at
+  each delay, repeats, hold clicks, blinks); `input.rs`
+  `accessible_hold_and_repeat`; `font.rs` `sized_faces`; `misc.rs`
+  `spinner_stands_still_with_reduced_motion`; 63 goldens `a11y_*` (Home,
+  Home playing, Files, its menu, Settings, Display, Now Playing, Nothing
+  playing, a dialog × large / extra large / high contrast in Latin,
+  Cyrillic and Japanese) and `app_group12_*`; suite journey
+  `settings_accessibility` (the test look reads the three settings as
+  their defaults until a session sets them).
 
 ### 7.15 Books (reader; M15; owner's requirement 2026-11-25)
 

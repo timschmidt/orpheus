@@ -392,7 +392,8 @@ pub static SET_WRITES: core::sync::atomic::AtomicU32 = core::sync::atomic::Atomi
 pub static SET_LAST: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// The Display, Power and Date & time settings the UI loop carries out
-/// (VER-13): Rotate (the key map and the panel), Keys when locked, the
+/// (VER-13): Rotate (the key map and the panel), the key timing (A11Y-2),
+/// Keys when locked, the
 /// backlight timeout and lock delay (held under a host test unless its
 /// session armed them), Correction (the RTC stepped by whole seconds; not
 /// during a test session).
@@ -401,6 +402,8 @@ fn apply_settings(ui: &mut Ui) {
     let t = now().0;
     let rot = services::rotated(&*ui.fw);
     ui.mapper.rotated = rot;
+    // Settings › Accessibility › Hold delay, Repeat speed (A11Y-2).
+    ui.mapper.timing = services::key_timing(&*ui.fw);
     if rot != ui.rotated {
         ui.rotated = rot;
         ui.shell.invalidate();
@@ -515,7 +518,11 @@ pub fn set_test_look(on: bool) {
 /// settings: Display 0x0304–0x030C (theme … roll round), language,
 /// Now Playing view.
 pub fn test_look(sid: orpheus_apps::settings::SettingId) -> Option<i16> {
-    let look = (0x0304..=0x030C).contains(&sid.0) || sid.0 == 0x0A01 || sid.0 == 0x0D03;
+    // A11Y-2: text size, hold delay and key repeat too (a test's keys and
+    // shots assume the defaults), unless this session set them.
+    let a11y = (0x1001..=0x1003).contains(&sid.0)
+        && A11Y_ARMED.load(core::sync::atomic::Ordering::Relaxed) & (1 << (sid.0 & 3)) == 0;
+    let look = (0x0304..=0x030C).contains(&sid.0) || sid.0 == 0x0A01 || sid.0 == 0x0D03 || a11y;
     (look && TEST_LOOK.load(core::sync::atomic::Ordering::Relaxed))
         .then(|| orpheus_apps::settings::def(sid).map_or(0, |d| d.default))
 }
@@ -524,6 +531,11 @@ pub fn test_look(sid: orpheus_apps::settings::SettingId) -> Option<i16> {
 /// bits; RAM, cleared by every reboot): under the test look or a host test
 /// they run only while armed.
 static TIMER_HOLD: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+/// The accessibility settings (0x1001–0x1003, bit `id & 3`) a session set
+/// with `settings test-set` (RAM, cleared by every reboot): the test look
+/// reads them as their defaults until then (A11Y-2).
+static A11Y_ARMED: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
 fn test_look_on() -> bool {
     TEST_LOOK.load(core::sync::atomic::Ordering::Relaxed)
@@ -561,10 +573,11 @@ pub(crate) fn session_on() -> bool {
 
 /// Settings a session may set from the host: Sound, Playback, Display
 /// (not the Home apps), Language, Performance, Files sort and hidden
-/// files, Now Playing's view. Never Bluetooth, power, clock, USB, storage,
+/// files, Now Playing's view, Accessibility (A11Y-2). Never Bluetooth, power, clock, USB, storage,
 /// alarms or the radio's station (CLAUDE.md rules 4 and 6).
 fn session_settable(id: u16) -> bool {
-    (matches!(id >> 8, 0x01 | 0x02 | 0x03 | 0x0A) && id != 0x030B) || matches!(id, 0x0C07 | 0x0D01..=0x0D03)
+    (matches!(id >> 8, 0x01 | 0x02 | 0x03 | 0x0A) && id != 0x030B)
+        || matches!(id, 0x0C07 | 0x0D01..=0x0D03 | 0x1001..=0x1003)
 }
 
 fn session_reply() {
@@ -735,6 +748,9 @@ fn session_set_hooks(ui: &mut Ui, sid: orpheus_apps::settings::SettingId, want: 
     let was = h.bits();
     h.test_set(sid, want);
     TIMER_HOLD.store(h.bits(), Relaxed);
+    if (0x1001..=0x1003).contains(&sid.0) {
+        A11Y_ARMED.fetch_or(1 << (sid.0 & 3), Relaxed);
+    }
     if was != 0 && h.bits() == 0 {
         ui.shell.gate.screen_on = true;
         ui.shell.gate.locked = false;

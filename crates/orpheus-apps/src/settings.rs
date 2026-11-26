@@ -5,7 +5,7 @@
 //! Every stored value is an `i16` (toggle 0/1, choice index, range value,
 //! bit mask, or a two-letter language code) encoded as 2 bytes
 //! little-endian under its `SettingId` (the `orpheus-settings` u16 key,
-//! `0x0101..=0x0CFF`: group in the high byte). Decoding validates against
+//! `0x0101..=0x10FF`: group or list in the high byte). Decoding validates against
 //! the item's kind and falls back to the default, so a corrupt or
 //! out-of-range record never reaches the UI. Ids are never reused.
 
@@ -207,6 +207,8 @@ pub mod id {
     use super::SettingId;
     pub const EQUALISER: SettingId = SettingId(0x0101);
     pub const VOLUME_LIMIT: SettingId = SettingId(0x0107);
+    /// Settings › Sound › Key click: 0 off, 1 presses, 2 presses and holds
+    /// (A11Y-2: a second click when a held key reaches its hold delay).
     pub const KEY_CLICK: SettingId = SettingId(0x0108);
     pub const FADE_ON_PAUSE: SettingId = SettingId(0x0109);
     pub const SHUFFLE: SettingId = SettingId(0x0201);
@@ -291,7 +293,20 @@ pub mod id {
     pub const ALARM0: SettingId = SettingId(0x0D30);
     /// Timer presets: the last five durations (seconds), newest first.
     pub const TIMER_PRESET0: SettingId = SettingId(0x0D40);
+    /// Settings › Accessibility (A11Y-2, 05 §7.14), packed into
+    /// [`A11Y_WORD`]: text size (0 normal, 1 large, 2 extra large), hold
+    /// delay (index of [`super::HOLD_DELAY_MS`]), repeat speed (0 normal,
+    /// 1 slow, 2 slower).
+    pub const TEXT_SIZE: SettingId = SettingId(0x1001);
+    pub const HOLD_DELAY: SettingId = SettingId(0x1002);
+    pub const REPEAT_SPEED: SettingId = SettingId(0x1003);
+    /// The word the accessibility settings are packed into (one cache
+    /// slot: the cache holds at most 128).
+    pub const A11Y_WORD: SettingId = SettingId(0x0D60);
 }
+
+/// Settings › Accessibility › Hold delay choices, ms (A11Y-2).
+pub const HOLD_DELAY_MS: [u32; 5] = [500, 750, 1000, 1500, 2000];
 
 const SOUND: &[Setting] = &[
     c(0x0101, Str::Equaliser, EQ_PRESETS, 0),
@@ -301,7 +316,7 @@ const SOUND: &[Setting] = &[
     c(0x0105, Str::ChannelMode, ch![S(Str::Stereo), S(Str::Mono), S(Str::SwapLr)], 0),
     c(0x0106, Str::ReplayGain, ch![S(Str::Off), S(Str::Track), S(Str::Album), S(Str::Auto)], 0),
     r(0x0107, Str::VolumeLimit, 10, 30, 1, Unit::None, 30),
-    t(0x0108, Str::KeyClick, 0),
+    c(0x0108, Str::KeyClick, ch![S(Str::Off), S(Str::ClickPresses), S(Str::ClickHolds)], 0),
     t(0x0109, Str::FadeOnPause, 1),
 ];
 
@@ -346,7 +361,18 @@ const DISPLAY: &[Setting] = &[
         2,
     ),
     c(0x0303, Str::LockDelay, ch![S(Str::Immediately), Secs(5), Secs(30), Secs(60), S(Str::Never)], 0),
-    c(0x0304, Str::Theme, ch![S(Str::ThemeDark), S(Str::ThemeLight), S(Str::ThemeAmber)], 0),
+    c(
+        0x0304,
+        Str::Theme,
+        ch![
+            S(Str::ThemeDark),
+            S(Str::ThemeLight),
+            S(Str::ThemeAmber),
+            S(Str::ThemeContrastDark),
+            S(Str::ThemeContrastLight)
+        ],
+        0,
+    ),
     c(0x0305, Str::Accent, ch![S(Str::Blue), S(Str::Green), S(Str::Pink), S(Str::Red), S(Str::Grey)], 0),
     c(0x0306, Str::Wallpaper, ch![S(Str::None_)], 0),
     c(0x0307, Str::ScreenSaver, ch![S(Str::Off), S(Str::Clock)], 0),
@@ -444,6 +470,19 @@ const STORAGE: &[Setting] = &[
     a(0x0B05, Str::FormatCard, Action::FormatCard),
 ];
 
+/// Settings › Accessibility (A11Y-2, 05 §7.14 "vision and motor
+/// settings"): packed into one word ([`id::A11Y_WORD`], in [`APP_ITEMS`]).
+/// High contrast is two Themes (Display), reduced motion is Animations off
+/// (Display), the key confirmation sound is Key click (Sound).
+const ACCESSIBILITY: &[Setting] = &[
+    c(0x1001, Str::TextSize, ch![S(Str::TextNormal), S(Str::TextLarge), S(Str::TextExtraLarge)], 0)
+        .packed(0x0D60, 0, 2),
+    c(0x1002, Str::HoldDelay, ch![Lit("0.5 s"), Lit("0.75 s"), Lit("1 s"), Lit("1.5 s"), Lit("2 s")], 0)
+        .packed(0x0D60, 2, 3),
+    c(0x1003, Str::RepeatSpeed, ch![S(Str::RepeatNormal), S(Str::RepeatSlow), S(Str::RepeatSlower)], 0)
+        .packed(0x0D60, 5, 2),
+];
+
 const SYSTEM: &[Setting] = &[
     i(0x0C01, Str::About, Info::About),
     a(0x0C02, Str::UpdateFirmware, Action::UpdateFirmware),
@@ -532,6 +571,8 @@ pub const APP_ITEMS: &[Setting] = &[
     r(0x0D42, Str::TabTimer, 0, 32400, 1, Unit::None, 300),
     r(0x0D43, Str::TabTimer, 0, 32400, 1, Unit::None, 600),
     r(0x0D44, Str::TabTimer, 0, 32400, 1, Unit::None, 1500),
+    // The accessibility settings' word (A11Y-2): every field's default is 0.
+    r(0x0D60, Str::GAccessibility, i16::MIN, i16::MAX, 1, Unit::None, 0),
 ];
 
 /// The five band gains (dB) of equaliser preset `preset` (an
@@ -559,8 +600,9 @@ pub struct Group {
     pub items: &'static [Setting],
 }
 
-/// The twelve groups in the order of 05 §7.11.
-pub static GROUPS: [Group; 12] = [
+/// The twelve groups in the order of 05 §7.11, then Accessibility
+/// (A11Y-2, 05 §7.14).
+pub static GROUPS: [Group; 13] = [
     Group { label: Str::GSound, items: SOUND },
     Group { label: Str::GPlayback, items: PLAYBACK },
     Group { label: Str::GDisplay, items: DISPLAY },
@@ -573,6 +615,7 @@ pub static GROUPS: [Group; 12] = [
     Group { label: Str::GLanguage, items: LANGUAGE },
     Group { label: Str::GStorage, items: STORAGE },
     Group { label: Str::GSystem, items: SYSTEM },
+    Group { label: Str::GAccessibility, items: ACCESSIBILITY },
 ];
 
 /// Every item, group by group, then the apps' own and (with the `games`
@@ -584,7 +627,7 @@ pub fn all() -> impl Iterator<Item = &'static Setting> {
 
 /// The item lists by the high byte of their keys: groups `0x01..=0x0C`
 /// in [`GROUPS`]' order, the apps' items `0x0D`, the games' `0x0E`, the
-/// reading settings `0x0F` (Books) (a test holds every key to its list's
+/// reading settings `0x0F` (Books), Accessibility `0x10` (a test holds every key to its list's
 /// byte). Plain slices, so a lookup touches one list and no closure.
 static LISTS: [&[Setting]; LIST_COUNT] = {
     #[cfg(feature = "games")]
@@ -596,13 +639,27 @@ static LISTS: [&[Setting]; LIST_COUNT] = {
     #[cfg(not(feature = "books"))]
     let books: &'static [Setting] = &[];
     [
-        SOUND, PLAYBACK, DISPLAY, POWER, DATE_TIME, BLUETOOTH, RADIO, RECORDING, USB, LANGUAGE, STORAGE,
-        SYSTEM, APP_ITEMS, games, books,
+        SOUND,
+        PLAYBACK,
+        DISPLAY,
+        POWER,
+        DATE_TIME,
+        BLUETOOTH,
+        RADIO,
+        RECORDING,
+        USB,
+        LANGUAGE,
+        STORAGE,
+        SYSTEM,
+        APP_ITEMS,
+        games,
+        books,
+        ACCESSIBILITY,
     ]
 };
 
 /// Number of lists (high bytes `0x01..=LIST_COUNT`).
-const LIST_COUNT: usize = 15;
+const LIST_COUNT: usize = 16;
 
 /// Stored items before each list (the cache index of its first stored
 /// item), computed at build time.
@@ -665,7 +722,7 @@ pub fn def(id: SettingId) -> Option<&'static Setting> {
 
 /// Number of stored items (the games' settings with the `games` feature,
 /// the reading settings' word with `books`).
-pub const STORED: usize = 98 + GAMES_STORED + BOOKS_STORED;
+pub const STORED: usize = 99 + GAMES_STORED + BOOKS_STORED;
 #[cfg(feature = "games")]
 const GAMES_STORED: usize = crate::games::STORED_SETTINGS;
 #[cfg(not(feature = "games"))]
@@ -929,8 +986,11 @@ mod tests {
                 assert_eq!(usize::from(s.id.0 >> 8), l + 1, "key {:#06x}", s.id.0);
             }
         }
-        for (g, list) in GROUPS.iter().zip(LISTS) {
-            assert!(core::ptr::eq(g.items, list));
+        // The twelve groups are lists 1..=12; Accessibility (A11Y-2) is
+        // list 0x10, after the apps', games' and Books' lists.
+        for (g, grp) in GROUPS.iter().enumerate() {
+            let l = if g < 12 { g } else { 15 };
+            assert!(core::ptr::eq(grp.items, LISTS[l]), "group {g}");
         }
     }
 
@@ -958,6 +1018,34 @@ mod tests {
     use std::collections::BTreeSet;
     use std::vec::Vec;
 
+    /// A11Y-2: Text size, Hold delay and Key repeat live in bits 0–1, 2–4
+    /// and 5–6 of the word 0x0D60 (default 0: every field's default), are
+    /// set and read through it without touching each other, and the group
+    /// shows them in this order.
+    #[test]
+    fn accessibility_packed() {
+        let grp = GROUPS.iter().find(|g| g.label == Str::GAccessibility).unwrap();
+        let ids: Vec<u16> = grp.items.iter().map(|s| s.id.0).collect();
+        assert_eq!(ids, [0x1001, 0x1002, 0x1003]);
+        for s in grp.items {
+            assert_eq!(s.pack.map(|p| p.0), Some(id::A11Y_WORD), "{:#06x}", s.id.0);
+            assert_eq!(s.default, 0);
+        }
+        assert_eq!(def(id::A11Y_WORD).unwrap().default, 0);
+        let mut c = SettingsCache::new();
+        assert!(c.set(id::TEXT_SIZE, 2));
+        assert!(c.set(id::HOLD_DELAY, 4));
+        assert!(c.set(id::REPEAT_SPEED, 1));
+        assert_eq!(c.get(id::A11Y_WORD), 2 | (4 << 2) | (1 << 5));
+        assert_eq!((c.get(id::TEXT_SIZE), c.get(id::HOLD_DELAY), c.get(id::REPEAT_SPEED)), (2, 4, 1));
+        c.set(id::HOLD_DELAY, 7);
+        assert_eq!(c.get(id::HOLD_DELAY), 0, "out of range: the default");
+        assert_eq!((c.get(id::TEXT_SIZE), c.get(id::REPEAT_SPEED)), (2, 1), "the others untouched");
+        assert_eq!(HOLD_DELAY_MS.len(), 5);
+        let written: Vec<u16> = c.take_dirty().map(|(k, _)| k).collect();
+        assert_eq!(written, [id::A11Y_WORD.0], "one record");
+    }
+
     /// Regression: the M7 merge gave the radio frequency the step goal's
     /// store key 0x0D20 (2026-11-24; the radio's moved to 0x0D50): every
     /// table id is unique (with `id_tests` for the named ids).
@@ -967,7 +1055,8 @@ mod tests {
         for (g, grp) in GROUPS.iter().enumerate() {
             for s in grp.items {
                 assert!(ids.insert(s.id), "duplicate id {:#06x}", s.id.0);
-                assert_eq!(usize::from(s.id.0 >> 8), g + 1, "id {:#06x} in group {g}", s.id.0);
+                let byte = if g < 12 { g + 1 } else { 0x10 };
+                assert_eq!(usize::from(s.id.0 >> 8), byte, "id {:#06x} in group {g}", s.id.0);
                 assert_eq!(s.validate(s.default), s.default, "default of {:#06x} invalid", s.id.0);
             }
         }
@@ -1278,7 +1367,7 @@ mod persistence {
             let rec: Vec<_> = old.take_dirty().collect();
             let mut c = SettingsCache::new();
             // Keys of no setting (removed items, the old key ranges).
-            for k in [0x0000u16, 0x00FF, 0x0110, 0x0D2F, 0x0EFF, 0x1001, 0xFFFF] {
+            for k in [0x0000u16, 0x00FF, 0x0110, 0x0D2F, 0x0EFF, 0x10FF, 0x1101, 0xFFFF] {
                 assert!(def(SettingId(k)).is_none());
                 c.load(k, &encode(1));
             }

@@ -19,6 +19,7 @@
 use core::marker::PhantomData;
 
 use crate::event::{Event, Instant, Key, KeyPhase, UiEvent};
+use crate::font::TextSize;
 use crate::geom::Rect;
 use crate::gfx::{CONTENT, Gfx, SCREEN, STATUS_BAR, STRIP};
 use crate::input::{Gate, KeyGate};
@@ -48,6 +49,17 @@ pub trait System {
     /// may click (05 §3: "every press may produce a key click … mixed into
     /// the audio output"; Settings › Sound › Key click).
     fn key_click(&mut self) {}
+    /// A key was held past its hold threshold (and the key gate passed
+    /// it): the system may sound the hold confirmation (Settings › Sound
+    /// › Key click = Presses and holds, A11Y-2: with longer hold
+    /// thresholds the hand needs to know when a hold registered).
+    fn key_hold_click(&mut self) {}
+    /// **Text size** (Settings › Accessibility, A11Y-2; 05 §7.14 "large
+    /// text"): what lists, menus, dialogs, the strip and the screens that
+    /// read [`Gfx::text`] draw in. Read at each draw.
+    fn text_size(&self) -> TextSize {
+        TextSize::Normal
+    }
     /// **Animations** (Settings › Display, off in Battery saver; 05 §4
     /// "Motion"): false keeps marquees at rest. Read at each draw.
     fn animations(&self) -> bool {
@@ -134,6 +146,8 @@ pub struct Shell<T, S: ?Sized> {
     underlay_at: Instant,
     /// The screen saver's clock as drawn (`None`: not on the panel).
     saver_drawn: Option<(u8, u8)>,
+    /// The text size of the last draw (a change redraws everything).
+    text: TextSize,
     _svc: PhantomData<fn(&mut S)>,
 }
 
@@ -181,6 +195,7 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
             roll: svc.list_roll_around(),
             underlay_at: now,
             saver_drawn: None,
+            text: svc.text_size(),
             _svc: PhantomData,
         };
         s.stack.push(NavEntry { id: root, arg, resume: Default::default() });
@@ -266,8 +281,12 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
         self.roll = svc.list_roll_around();
         let mut req = Requests::default();
         let gate = self.gate.filter(k, p);
-        if p == KeyPhase::Down && !matches!(gate, Gate::Drop) {
-            svc.key_click();
+        if !matches!(gate, Gate::Drop) {
+            match p {
+                KeyPhase::Down => svc.key_click(),
+                KeyPhase::Hold => svc.key_hold_click(),
+                _ => {}
+            }
         }
         match gate {
             Gate::Pass(k, p) => self.key_pass(svc, k, p, now, &mut req),
@@ -586,6 +605,12 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
             self.invalidate();
         }
         g.motion = svc.animations();
+        let text = svc.text_size();
+        if text != self.text {
+            self.text = text;
+            self.invalidate();
+        }
+        g.text = text;
         let now = self.now;
         let wants = self.top.wants();
         let modal = self.sheet.is_some() || self.dialog.is_some();

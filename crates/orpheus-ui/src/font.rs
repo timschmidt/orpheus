@@ -109,19 +109,21 @@ pub static NUM28: Font = Font::parse(include_bytes!("../fonts/num28.yfnt"));
 /// Secondary numerals, 16 px digits (Fira Sans Condensed Medium).
 pub static NUM16: Font = Font::parse(include_bytes!("../fonts/num16.yfnt"));
 
-/// Reading fonts (Books, 05 §7.15; feature `book-fonts`): DejaVu Sans
-/// Condensed 16 px and 20 px, 2 bits per pixel, Latin, Latin-1,
-/// Extended-A, Cyrillic and punctuation (450 glyphs each; anything else
-/// comes from the UI font, then the fallback font).
-#[cfg(feature = "book-fonts")]
+/// Reading fonts (Books, 05 §7.15): DejaVu Sans Condensed 16 px and 20
+/// px, 2 bits per pixel, Latin, Latin-1, Extended-A, Cyrillic and
+/// punctuation (450 glyphs each; anything else comes from the UI font,
+/// then the fallback font). The 16 px face is also the **Large** UI text
+/// (A11Y-2; 14,468 B of rodata, paged on the player: under the 16 KiB
+/// group size); the 20 px face only with feature `book-fonts` (over 16
+/// KiB, it would be resident).
 pub static BOOK16: Font = Font::parse(include_bytes!("../fonts/book16.yfnt"));
 #[cfg(feature = "book-fonts")]
 pub static BOOK20: Font = Font::parse(include_bytes!("../fonts/book20.yfnt"));
 
-/// How [`Gfx::char_styled`](crate::Gfx::char_styled) draws a character:
-/// pixel-scaled (1 or 2), emboldened (drawn again a pixel to the right,
-/// one pixel wider) and slanted (italic emphasis without an italic face).
-#[cfg(feature = "book-fonts")]
+/// How a character is drawn ([`Gfx::char_styled`](crate::Gfx::char_styled),
+/// and the large UI faces): pixel-scaled (1 or 2), emboldened (drawn
+/// again a pixel to the right, one pixel wider) and slanted (italic
+/// emphasis without an italic face).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Style {
     pub scale: u8,
@@ -129,10 +131,46 @@ pub struct Style {
     pub slant: bool,
 }
 
-#[cfg(feature = "book-fonts")]
 impl Default for Style {
     fn default() -> Self {
         Style { scale: 1, bold: false, slant: false }
+    }
+}
+
+/// UI text size (Settings › Accessibility › Text size, A11Y-2; 05 §7.14
+/// "large text"): lists, their headers, menus, dialogs, the strip and Now
+/// Playing draw their text in [`FontId::sized`] faces.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum TextSize {
+    /// The 12 px UI font.
+    #[default]
+    Normal,
+    /// The 16 px face ([`BOOK16`]; bold drawn emboldened).
+    Large,
+    /// The UI font at twice the size (24 px, pixel-doubled): the spec's
+    /// "UI font at twice the size". Where a line has a fixed height that
+    /// cannot hold it (the strip, dialogs) [`TextSize::Large`] is used.
+    ExtraLarge,
+}
+
+impl TextSize {
+    /// From the setting's value (0 Normal, 1 Large, 2 Extra large).
+    #[must_use]
+    pub const fn from_setting(v: i16) -> TextSize {
+        match v {
+            1 => TextSize::Large,
+            2 => TextSize::ExtraLarge,
+            _ => TextSize::Normal,
+        }
+    }
+
+    /// At most `Large` (lines of a fixed height: the strip, dialogs).
+    #[must_use]
+    pub const fn at_most_large(self) -> TextSize {
+        match self {
+            TextSize::ExtraLarge => TextSize::Large,
+            s => s,
+        }
     }
 }
 
@@ -144,17 +182,56 @@ pub enum FontId {
     UiBold,
     Num28,
     Num16,
+    /// Large text (A11Y-2): the 16 px face.
+    Large,
+    /// Large text, bold: the 16 px face emboldened.
+    LargeBold,
+    /// Extra large text: the UI font at twice the size.
+    XLarge,
+    /// Extra large text, bold: the bold UI font at twice the size.
+    XLargeBold,
 }
 
 impl FontId {
+    /// The face's glyph data (a scaled face: its 1× data).
     #[must_use]
     pub fn font(self) -> &'static Font {
         match self {
-            FontId::Ui => &UI,
-            FontId::UiBold => &UI_BOLD,
+            FontId::Ui | FontId::XLarge => &UI,
+            FontId::UiBold | FontId::XLargeBold => &UI_BOLD,
             FontId::Num28 => &NUM28,
             FontId::Num16 => &NUM16,
+            FontId::Large | FontId::LargeBold => &BOOK16,
         }
+    }
+
+    /// How the face's glyphs are drawn: scale and emboldening.
+    #[must_use]
+    pub const fn style(self) -> Style {
+        match self {
+            FontId::LargeBold => Style { scale: 1, bold: true, slant: false },
+            FontId::XLarge | FontId::XLargeBold => Style { scale: 2, bold: false, slant: false },
+            _ => Style { scale: 1, bold: false, slant: false },
+        }
+    }
+
+    /// The UI face (`Ui` or `UiBold`) at text size `size`; other faces
+    /// unchanged.
+    #[must_use]
+    pub const fn sized(self, size: TextSize) -> FontId {
+        match (self, size) {
+            (FontId::Ui, TextSize::Large) => FontId::Large,
+            (FontId::UiBold, TextSize::Large) => FontId::LargeBold,
+            (FontId::Ui, TextSize::ExtraLarge) => FontId::XLarge,
+            (FontId::UiBold, TextSize::ExtraLarge) => FontId::XLargeBold,
+            (f, _) => f,
+        }
+    }
+
+    /// Cap height as drawn (baseline to the top of `H`).
+    #[must_use]
+    pub fn ascent(self) -> i16 {
+        i16::from(self.font().ascent) * i16::from(self.style().scale)
     }
 }
 
@@ -259,6 +336,20 @@ mod tests {
             assert!(f.glyph('Ω').is_none(), "Greek from the UI font");
             assert!(f.glyph('m').unwrap().adv > UI.glyph('m').unwrap().adv);
         }
+    }
+
+    /// A11Y-2: the large faces and their sizes.
+    #[test]
+    fn sized_faces() {
+        assert_eq!(FontId::Ui.sized(TextSize::Normal), FontId::Ui);
+        assert_eq!(FontId::UiBold.sized(TextSize::Large), FontId::LargeBold);
+        assert_eq!(FontId::Ui.sized(TextSize::ExtraLarge), FontId::XLarge);
+        assert_eq!(FontId::Num28.sized(TextSize::ExtraLarge), FontId::Num28);
+        assert_eq!(FontId::Ui.ascent(), 9);
+        assert_eq!(FontId::Large.ascent(), 12);
+        assert_eq!(FontId::XLarge.ascent(), 18, "twice the UI font");
+        assert_eq!(TextSize::from_setting(2).at_most_large(), TextSize::Large);
+        assert!(BOOK16.glyph('Ж').is_some() && BOOK16.size_bytes() < 16 * 1024);
     }
 
     #[test]

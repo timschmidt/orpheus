@@ -3,13 +3,13 @@
 //! one open [`MenuSheet`].
 
 use crate::event::{Event, Instant, Key, KeyPhase};
-use crate::font::FontId;
+use crate::font::{FontId, TextSize};
 use crate::geom::Rect;
 use crate::gfx::{Align, Gfx, SCREEN_H, SCREEN_W};
 use crate::nav::Dirty;
 use crate::text::StrBuf;
 use crate::theme::Role;
-use crate::widgets::list::{Accessory, Item, ListAction, ListCx, ListSource, ListView, ROW_H, Row};
+use crate::widgets::list::{Accessory, Item, ListAction, ListCx, ListSource, ListView, Row, row_metrics};
 
 /// Most items in one menu level.
 pub const MENU_MAX: usize = 12;
@@ -183,12 +183,26 @@ impl MenuSheet {
         self.frame_drawn = false;
     }
 
-    /// Height of the sheet for the current level.
+    /// Title band and rows shown at text size `size`: up to
+    /// [`SHEET_ROWS`], fewer with large text (A11Y-2) so that the sheet
+    /// stays below the status bar's band (at most 110 px high).
+    fn layout(&self, size: TextSize) -> (i16, i16) {
+        let head = match (self.items.title.is_some(), size) {
+            (false, _) => 10,
+            (true, TextSize::Normal) => 20,
+            (true, _) => 24,
+        };
+        let (row_h, _) = row_metrics(size);
+        let fit = u32::try_from((110 - head - 4) / row_h).unwrap_or(1).max(1);
+        let rows = i16::try_from(self.items.len().min(SHEET_ROWS).min(fit)).unwrap_or(1);
+        (head, rows)
+    }
+
+    /// Height of the sheet for the current level at text size `size`.
     #[must_use]
-    pub fn height(&self) -> i16 {
-        let rows = i16::try_from(self.items.len().min(SHEET_ROWS)).unwrap_or(1);
-        let head = if self.items.title.is_some() { 20 } else { 10 };
-        head + rows * ROW_H + 4
+    pub fn height(&self, size: TextSize) -> i16 {
+        let (head, rows) = self.layout(size);
+        head + rows * row_metrics(size).0 + 4
     }
 
     pub fn handle(&mut self, ev: &Event, lc: ListCx) -> SheetResult {
@@ -259,7 +273,8 @@ impl MenuSheet {
 
     /// Draw over the whole screen (`g` at panel coordinates).
     pub fn draw(&mut self, g: &mut Gfx<'_>, now: Instant) {
-        let h = self.height();
+        let size = g.text;
+        let h = self.height(size);
         let y = SCREEN_H - h;
         let dirty = if self.frame_drawn { Dirty::Changed } else { Dirty::All };
         if !self.frame_drawn {
@@ -269,7 +284,12 @@ impl MenuSheet {
             match self.items.title {
                 Some(t) => {
                     let c = g.c(Role::TextDim);
-                    g.text_in(8, y + 14, SCREEN_W - 16, t, FontId::UiBold, c, Align::Center);
+                    // The title band holds the 16 px face at most.
+                    let (f, b) = match size {
+                        TextSize::Normal => (FontId::UiBold, 14),
+                        _ => (FontId::LargeBold, 17),
+                    };
+                    g.text_in(8, y + b, SCREEN_W - 16, t, f, c, Align::Center);
                 }
                 None => {
                     let c = g.pal.mix(Role::Surface, Role::TextDim, 120);
@@ -278,9 +298,8 @@ impl MenuSheet {
             }
             self.frame_drawn = true;
         }
-        let head = if self.items.title.is_some() { 20 } else { 10 };
-        let rows = i16::try_from(self.items.len().min(SHEET_ROWS)).unwrap_or(1);
-        let area = Rect::new(2, y + head, SCREEN_W - 4, rows * ROW_H);
+        let (head, rows) = self.layout(size);
+        let area = Rect::new(2, y + head, SCREEN_W - 4, rows * row_metrics(size).0);
         let items = &self.items;
         let list = &mut self.list;
         g.with_area(area, |g| list.draw(items, g, dirty, now, Role::Surface));

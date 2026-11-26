@@ -458,7 +458,8 @@ impl Action {
 /// `settings test-set` accepts these (the firmware's `session_settable`,
 /// fw/firmware/src/ui.rs; a host test keeps the generator inside it).
 pub fn session_settable(id: u16) -> bool {
-    (matches!(id >> 8, 0x01 | 0x02 | 0x03 | 0x0A) && id != 0x030B) || matches!(id, 0x0C07 | 0x0D01..=0x0D03)
+    (matches!(id >> 8, 0x01 | 0x02 | 0x03 | 0x0A) && id != 0x030B)
+        || matches!(id, 0x0C07 | 0x0D01..=0x0D03 | 0x1001..=0x1003)
 }
 
 /// The values a setting takes (`orpheus_apps::settings`).
@@ -3724,9 +3725,11 @@ mod tests {
             }
         }
         // The firmware's whitelist is the same function.
+        // (Compared with the whitespace folded: rustfmt may break it.)
         let fw = std::fs::read_to_string(root().join("fw/firmware/src/ui.rs")).unwrap();
+        let fw: String = fw.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(fw.contains(
-            "(matches!(id >> 8, 0x01 | 0x02 | 0x03 | 0x0A) && id != 0x030B) || matches!(id, 0x0C07 | 0x0D01..=0x0D03)"
+            "(matches!(id >> 8, 0x01 | 0x02 | 0x03 | 0x0A) && id != 0x030B) || matches!(id, 0x0C07 | 0x0D01..=0x0D03 | 0x1001..=0x1003)"
         ));
         assert!(!session_settable(0x0601) && !session_settable(0x0901) && !session_settable(0x0402));
     }

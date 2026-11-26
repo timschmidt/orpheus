@@ -27,7 +27,7 @@ pub mod widgets;
 
 pub use color::Color;
 pub use event::{Event, Instant, Key, KeyPhase, ServiceEvent, UiEvent};
-pub use font::{FontId, GlyphCache, GlyphSource};
+pub use font::{FontId, GlyphCache, GlyphSource, TextSize};
 pub use geom::Rect;
 pub use gfx::{Align, DirtySet, Fallback, Gfx};
 pub use input::{KeyGate, KeyMapper};

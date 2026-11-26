@@ -1907,8 +1907,20 @@ impl System for Fw {
             crate::audio::click(self.player.source != orpheus_ui::event::Source::Playing);
         }
     }
+    /// Key click = Presses and holds (A11Y-2): a second click when a held
+    /// key reaches its hold delay.
+    fn key_hold_click(&mut self) {
+        if orpheus_apps::services::hold_click(self.settings.get(id::KEY_CLICK), &self.recorder())
+            && !self.radio.phase.is_on()
+        {
+            crate::audio::click(self.player.source != orpheus_ui::event::Source::Playing);
+        }
+    }
     fn animations(&self) -> bool {
         services::animations(self)
+    }
+    fn text_size(&self) -> orpheus_ui::font::TextSize {
+        services::text_size(self)
     }
     // Not inlined: a player command's frame in the UI task's poll frame.
     #[inline(never)]

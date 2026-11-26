@@ -880,6 +880,14 @@ pub fn key_click(setting: i16, rec: &RecInfo) -> bool {
     setting != 0 && !(rec.phase != RecPhase::Off && rec.source == RecSource::Mic)
 }
 
+/// Whether a held key clicks again when it reaches its hold delay (A11Y-2,
+/// 05 §7.14 "key-press confirmation sound"): Key click = Presses and holds
+/// (2), under the same microphone rule as [`key_click`].
+#[must_use]
+pub fn hold_click(setting: i16, rec: &RecInfo) -> bool {
+    setting == 2 && key_click(setting, rec)
+}
+
 /// Why a recording ended by itself.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RecEnd {
@@ -1330,11 +1338,7 @@ pub fn mini_player<S: PlaybackService + ?Sized>(s: &S) -> Option<MiniPlayer<'_>>
 
 /// The palette chosen in Settings → Display.
 pub fn palette<S: SettingsService + ?Sized>(s: &S) -> Palette {
-    let theme = match s.setting(id::THEME) {
-        1 => Theme::Light,
-        2 => Theme::Amber,
-        _ => Theme::Dark,
-    };
+    let theme = Theme::from_setting(s.setting(id::THEME));
     let accent = match s.setting(id::ACCENT) {
         1 => Accent::Green,
         2 => Accent::Pink,
@@ -1343,6 +1347,24 @@ pub fn palette<S: SettingsService + ?Sized>(s: &S) -> Palette {
         _ => Accent::Blue,
     };
     theme.palette(accent)
+}
+
+/// Settings › Accessibility › Text size (A11Y-2): what
+/// `orpheus_ui::shell::System::text_size` answers.
+pub fn text_size<S: SettingsService + ?Sized>(s: &S) -> orpheus_ui::font::TextSize {
+    orpheus_ui::font::TextSize::from_setting(s.setting(id::TEXT_SIZE))
+}
+
+/// Settings › Accessibility › Hold delay and Repeat speed (A11Y-2): the
+/// key mapper's timing (`orpheus_ui::input::Timing::accessible`).
+pub fn key_timing<S: SettingsService + ?Sized>(s: &S) -> orpheus_ui::input::Timing {
+    let ms = usize::try_from(s.setting(id::HOLD_DELAY))
+        .ok()
+        .and_then(|i| crate::settings::HOLD_DELAY_MS.get(i))
+        .copied()
+        .unwrap_or(500);
+    let repeat = u8::try_from(s.setting(id::REPEAT_SPEED)).unwrap_or(0);
+    orpheus_ui::input::Timing::accessible(ms, repeat)
 }
 
 /// Settings → Display → List roll-around (UI-8): what

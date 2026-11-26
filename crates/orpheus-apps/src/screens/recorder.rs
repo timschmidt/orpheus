@@ -435,7 +435,8 @@ impl<S: Services + ?Sized> Screen<S> for RecorderScreen {
             source: info.source,
             fm_khz: info.fm_khz,
             secs: info.elapsed_ms / 1000,
-            blink: (cx.now.0 / 500) % 2 == 0,
+            // Reduced motion (Animations off, A11Y-2): the dot stays lit.
+            blink: !g.motion || (cx.now.0 / 500) % 2 == 0,
             lang: self.lang.code(),
         };
         if self.head != Some(head) {

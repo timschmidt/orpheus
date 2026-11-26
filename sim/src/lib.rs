@@ -18,7 +18,7 @@
 //! | `wait:300` | let 300 ms pass |
 //! | `shot:name` | capture the frame buffer as `name` |
 //! | `expect-screen:Name` | fail unless the top screen is `Name` |
-//! | `theme:dark`, `accent:green`, `lang:cyrillic` | appearance and language |
+//! | `theme:dark`, `theme:contrast-light`, `accent:green`, `lang:cyrillic` | appearance and language |
 //! | `set:battery=8`, `set:usb=host` … | simulated system state (per host) |
 //! | `set:timers=run` | the backlight timeout and lock delay run with their settings (held by default, as under the firmware's test look) |
 //! | `goto:Library` | push a screen directly |
@@ -52,7 +52,7 @@ use anyhow::{Context, Result, bail};
 use orpheus_ui::event::Event;
 use orpheus_ui::font::{GlyphCache, GlyphSource};
 use orpheus_ui::gfx::{DirtySet, FB_PIXELS, Fallback, Gfx};
-use orpheus_ui::input::{KeyGate, KeyMapper, ScreenTimer, Timeouts};
+use orpheus_ui::input::{KeyGate, KeyMapper, ScreenTimer, Timeouts, Timing};
 use orpheus_ui::nav::{Arg, Nav, ScreenId, ScreenSet};
 use orpheus_ui::shell::{Requests, Shell, System};
 use orpheus_ui::theme::{Accent, Palette, Theme};
@@ -117,6 +117,12 @@ pub trait Host: System + Default + Sized {
     /// saver); held (none runs) unless the host has settings for them.
     fn timeouts(&self) -> Timeouts {
         Timeouts::HELD
+    }
+    /// The key mapper's hold and repeat timing (Settings › Accessibility,
+    /// A11Y-2); `None`: the host has no such settings (the mapper's timing
+    /// is left as a test set it).
+    fn key_timing(&self) -> Option<Timing> {
+        None
     }
     /// The display rotated by 180° (Settings › Display › Rotate): the key
     /// mapper swaps Up/Down and Prev/Next and [`Sim::panel`] turns the
@@ -353,11 +359,15 @@ impl<H: Host> Sim<H> {
         self.draw();
     }
 
-    /// A key edge: the screen timers restart; the mapper follows Rotate.
+    /// A key edge: the screen timers restart; the mapper follows Rotate
+    /// and the hold and repeat settings.
     fn key_edge(&mut self) {
         self.timer.key(self.now.0);
         if let Some(r) = self.sys.rotated() {
             self.mapper.rotated = r;
+        }
+        if let Some(t) = self.sys.key_timing() {
+            self.mapper.timing = t;
         }
     }
 
@@ -438,7 +448,9 @@ impl<H: Host> Sim<H> {
                         "dark" => Theme::Dark,
                         "light" => Theme::Light,
                         "amber" => Theme::Amber,
-                        _ => bail!("theme: dark, light, amber"),
+                        "contrast-dark" => Theme::ContrastDark,
+                        "contrast-light" => Theme::ContrastLight,
+                        _ => bail!("theme: dark, light, amber, contrast-dark, contrast-light"),
                     };
                     self.set_theme(t, self.accent);
                 }

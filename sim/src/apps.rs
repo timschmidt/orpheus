@@ -127,6 +127,9 @@ pub struct HostServices {
     /// Key clicks the sound output got (Settings › Sound › Key click, 05
     /// §3; the firmware mixes each into its output).
     pub clicks: u32,
+    /// Of those, the hold confirmations (Key click = Presses and holds,
+    /// A11Y-2).
+    pub hold_clicks: u32,
     /// The screen timers held as under the firmware's test look (the
     /// simulator stands in for the player there: goldens, `xtask dev
     /// suite`, the fuzzers): `Some` (the default), armed by a session's
@@ -205,6 +208,7 @@ impl HostServices {
             books: SimBooks::default(),
             books_on_home: false,
             clicks: 0,
+            hold_clicks: 0,
             timer_hold: Some(services::TimerHold::default()),
             drift: services::ClockDrift::new(),
             rds_set: None,
@@ -701,6 +705,17 @@ impl System for HostServices {
         }
     }
 
+    fn key_hold_click(&mut self) {
+        if services::hold_click(self.settings.get(id::KEY_CLICK), &self.recorder()) {
+            self.clicks += 1;
+            self.hold_clicks += 1;
+        }
+    }
+
+    fn text_size(&self) -> orpheus_ui::font::TextSize {
+        services::text_size(self)
+    }
+
     fn animations(&self) -> bool {
         services::animations(self)
     }
@@ -730,6 +745,8 @@ impl Host for HostServices {
             Theme::Dark => 0,
             Theme::Light => 1,
             Theme::Amber => 2,
+            Theme::ContrastDark => 3,
+            Theme::ContrastLight => 4,
         };
         let a = match accent {
             Accent::Blue => 0,
@@ -1154,6 +1171,10 @@ impl Host for HostServices {
 
     fn rotated(&self) -> Option<bool> {
         Some(services::rotated(self))
+    }
+
+    fn key_timing(&self) -> Option<orpheus_ui::input::Timing> {
+        Some(services::key_timing(self))
     }
 
     fn advance(&mut self, ms: u64) {

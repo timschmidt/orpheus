@@ -766,7 +766,8 @@ impl<S: Services + ?Sized> Screen<S> for AlertScreen {
 
     fn draw(&mut self, cx: &Cx<'_, S>, g: &mut Gfx<'_>, dirty: Dirty) {
         let (w, _) = g.size();
-        let on = (cx.now.0 / 500) % 2 == 0;
+        // Reduced motion (Animations off, A11Y-2): the icon stays lit.
+        let on = !g.motion || (cx.now.0 / 500) % 2 == 0;
         if dirty == Dirty::Changed && self.blink == Some(on) {
             return;
         }

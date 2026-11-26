@@ -467,3 +467,36 @@ cmd: ui test-look on ~ ^test-look on
 cmd: ui top ~ locked=0 screen=1
 expect-screen:Home shot:home_after
 """
+
+[[journey]]
+name = "settings_accessibility"
+about = "Accessibility (A11Y-2) through the RAM-only test session: with Hold delay 2 s a 0.7 s Menu press is a tap (Home's menu) and only a 2.3 s one opens the quick panel; Text size Large shows Settings in the 16 px face with four rows; Key click Presses and holds clicks twice for each held key (two long Backs on Home: at least three of the four clicks, so the hold clicks sounded; status clicks=); all set back to their defaults (the test look reads them as defaults until a session sets them)"
+script = """
+expect-screen:Home
+cmd: settings test-session ~ ^test-session on
+cmd: settings test-set 0x1002 4 ~ ^test-set 4098=4 ok
+sim: set:0x1002=4
+hold:menu
+expect-screen:Home
+back wait:300
+hold:menu:2300 expect-screen:QuickPanel
+back wait:300 expect-screen:Home
+cmd: settings test-set 0x1002 0 ~ ^test-set 4098=0 ok
+sim: set:0x1002=0
+cmd: settings test-set 0x1001 1 ~ ^test-set 4097=1 ok
+sim: set:0x1001=1
+wait:300
+prev ok expect-screen:Settings wait:500 shot:settings_large
+back wait:300 expect-screen:Home
+cmd: settings test-set 0x1001 0 ~ ^test-set 4097=0 ok
+sim: set:0x1001=0
+cmd: settings test-set 0x0108 2 ~ ^test-set 264=2 ok
+sim: set:0x0108=2
+dev: wait:500
+hold:back:700 wait:300 hold:back:700
+dev: wait:1000
+cmd: status ~ clicks=([3-9]|[1-9][0-9])
+cmd: settings test-set 0x0108 0 ~ ^test-set 264=0 ok
+sim: set:0x0108=0
+expect-screen:Home shot:home_after
+"""
