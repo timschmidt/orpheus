@@ -171,13 +171,14 @@ fn media_cases(add: &mut dyn FnMut(String, String)) {
     books_cases(add);
 }
 
-/// M15 Books (BOOK-1): the library, the reader in each format and font
-/// size, its palettes and settings, the reader menu, contents, bookmarks
-/// and Go to, over the simulator's books in /Books (`sim/src/card.rs`:
-/// public-domain excerpts). The library lists by title: Alice's
-/// Adventures in Wonderland, A Tale of Two Cities, Moby-Dick, Война и
-/// мир, Пиковая дама, 枕草子. Book strings are English in every language
-/// until the packs have them: Dark and Light in English, two in Amber.
+/// M15 Books (BOOK-1, BOOK-2): the library, the reader in each format and
+/// font size, its palettes and settings, the reader menu, contents,
+/// bookmarks and Go to, over the simulator's books in /Books
+/// (`sim/src/card.rs`: public-domain excerpts, and an EPUB of our own).
+/// The library lists by title: Alice's Adventures in Wonderland, A Tale
+/// of Two Cities, Moby-Dick, The Lighthouse Keeper (EPUB), Война и мир,
+/// Пиковая дама, 枕草子. Book strings are English in every language until
+/// the packs have them: Dark and Light in English, two in Amber.
 fn books_cases(add: &mut dyn FnMut(String, String)) {
     let lib = "set:books=on goto:Books wait:50 expect-screen:Books";
     let open = |row: usize| format!("{lib} down*{row} ok wait:50 expect-screen:Reader");
@@ -188,21 +189,32 @@ fn books_cases(add: &mut dyn FnMut(String, String)) {
         ("library_searching", "set:books=on set:booksteps=12 goto:Books wait:10".into()),
         ("library_menu", format!("{lib} menu")),
         ("library_progress", format!("{} next next back wait:50 down*2", open(0))),
-        ("preparing", format!("{lib} down*3 set:booksteps=1 ok")),
+        ("preparing", format!("{lib} down*4 set:booksteps=1 ok")),
         ("alice", open(0)),
         ("alice_page2", format!("{} next wait:50", open(0))),
         ("alice_line_down", format!("{} next wait:50 down down wait:50", open(0))),
         ("alice_line_up", format!("{} next wait:50 up wait:50", open(0))),
         ("tale", open(1)),
         ("moby", open(2)),
-        ("war", open(3)),
-        ("queen", open(4)),
-        ("queen_page2", format!("{} next wait:50", open(4))),
-        ("pillow", open(5)),
+        ("war", open(4)),
+        ("queen", open(5)),
+        ("queen_page2", format!("{} next wait:50", open(5))),
+        ("pillow", open(6)),
+        // BOOK-2: the EPUB (navigation contents, an anchor, emphasis,
+        // a list and a quote; its image skipped).
+        ("epub", open(3)),
+        ("epub_page2", format!("{} next wait:50", open(3))),
+        ("epub_contents", format!("{} ok wait:50 ok wait:50 expect-screen:BookContents", open(3))),
+        ("epub_anchor", format!("{} ok wait:50 ok wait:50 down ok wait:50 expect-screen:Reader", open(3))),
+        (
+            "epub_list",
+            format!("{} ok wait:50 ok wait:50 down ok wait:50 expect-screen:Reader next wait:50", open(3)),
+        ),
+        ("epub_medium", format!("set:0x0f01=1 {}", open(3))),
         ("chapter_next", format!("{} hold:next wait:50", open(0))),
-        ("end", format!("{} set:0x0f80=16 next*30 wait:50", open(5))),
+        ("end", format!("{} set:0x0f80=16 next*30 wait:50", open(6))),
         ("medium", format!("set:0x0f01=1 {}", open(0))),
-        ("large", format!("set:0x0f01=2 {}", open(3))),
+        ("large", format!("set:0x0f01=2 {}", open(4))),
         ("xlarge", format!("set:0x0f01=3 {}", open(0))),
         ("narrow", format!("set:0x0f02=0 {}", open(1))),
         ("wide", format!("set:0x0f02=2 {}", open(1))),
@@ -210,12 +222,12 @@ fn books_cases(add: &mut dyn FnMut(String, String)) {
         ("relaxed", format!("set:0x0f03=2 {}", open(1))),
         ("justify", format!("set:0x0f04=1 {}", open(1))),
         ("sepia", format!("set:0x0f05=3 {}", open(0))),
-        ("paper", format!("set:0x0f05=1 {}", open(4))),
-        ("night", format!("set:0x0f05=2 {}", open(4))),
+        ("paper", format!("set:0x0f05=1 {}", open(5))),
+        ("night", format!("set:0x0f05=2 {}", open(5))),
         ("menu", format!("{} ok wait:50 expect-screen:BookMenu", open(0))),
         ("menu_settings", format!("{} ok wait:50 down*8", open(0))),
         ("menu_font", format!("{} ok wait:50 down*4 ok expect-screen:Choice", open(0))),
-        ("contents", format!("{} ok wait:50 ok wait:50 expect-screen:BookContents", open(4))),
+        ("contents", format!("{} ok wait:50 ok wait:50 expect-screen:BookContents", open(5))),
         ("contents_alice", format!("{} ok wait:50 ok wait:50 down", open(0))),
         ("contents_go", format!("{} ok wait:50 ok wait:50 down*2 ok wait:50 expect-screen:Reader", open(0))),
         (
@@ -226,10 +238,10 @@ fn books_cases(add: &mut dyn FnMut(String, String)) {
             ),
         ),
         ("bookmark_toast", format!("{} menu ok wait:100", open(1))),
-        ("goto", format!("{} ok wait:50 down*3 ok expect-screen:BookGoTo", open(3))),
-        ("goto_set", format!("{} ok wait:50 down*3 ok up*7 next*2", open(3))),
-        ("goto_done", format!("{} ok wait:50 down*3 ok next*5 ok wait:50 expect-screen:Reader", open(3))),
-        ("quick_menu", format!("{} menu", open(3))),
+        ("goto", format!("{} ok wait:50 down*3 ok expect-screen:BookGoTo", open(4))),
+        ("goto_set", format!("{} ok wait:50 down*3 ok up*7 next*2", open(4))),
+        ("goto_done", format!("{} ok wait:50 down*3 ok next*5 ok wait:50 expect-screen:Reader", open(4))),
+        ("quick_menu", format!("{} menu", open(4))),
         ("find_in_card", format!("set:0x0f07=1 {lib} wait:50 down*5")),
         ("find_in_menu", format!("{lib} menu down ok")),
         ("find_in_chosen", format!("{lib} menu down ok down ok back back wait:50 down*4")),

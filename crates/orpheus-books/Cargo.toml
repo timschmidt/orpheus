@@ -12,6 +12,8 @@ orpheus-fs = { path = "../orpheus-fs" }
 
 [dev-dependencies]
 orpheus-fs = { path = "../orpheus-fs", features = ["std"] }
+# Reference compressor for the inflate and EPUB tests (host only).
+flate2 = "1"
 
 [lints]
 workspace = true

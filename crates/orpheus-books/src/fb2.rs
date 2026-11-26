@@ -1,5 +1,5 @@
-//! FictionBook 2 (05 §7.15): an XML tokenizer over `char`s and the
-//! elements that matter for reading. Sections nest into heading levels;
+//! FictionBook 2 (05 §7.15): the elements that matter for reading, over
+//! the shared XML tokenizer ([`crate::xml`]). Sections nest into heading levels;
 //! `<title>` paragraphs become headings (one contents entry per title),
 //! `<subtitle>`, `<epigraph>`/`<cite>`/`<annotation>`, `<v>` (verse),
 //! `<text-author>`, `<empty-line/>` their paragraph kinds; `<emphasis>` and
@@ -10,10 +10,10 @@
 //! and `<binary>` data are skipped without being kept.
 
 use crate::norm::{BOLD, Events, ITALIC, Kind};
+use crate::xml::{Handler, Xml};
 
 /// Elements nested deeper than this are counted but not told apart.
 const DEPTH: usize = 24;
-const NAME: usize = 16;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
@@ -74,31 +74,6 @@ fn element(name: &[u8]) -> El {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum St {
-    Text,
-    /// After `<`.
-    Open,
-    /// In a tag's name (`close`: `</name`).
-    Name {
-        close: bool,
-    },
-    /// In a tag after its name; `q` the open quote of a value; `slash`: a
-    /// `/` was the last thing (self-closing).
-    Attrs {
-        close: bool,
-        q: char,
-        slash: bool,
-    },
-    /// `<!` and what follows: comment, CDATA or a declaration.
-    Bang,
-    Comment,
-    Cdata,
-    Decl,
-    Pi,
-    Entity,
-}
-
 /// Short text in a fixed buffer (titles, authors, snippets).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MetaText<const N: usize> {
@@ -153,17 +128,19 @@ impl<const N: usize> MetaText<N> {
     }
 }
 
-/// The FB2 parser: one character at a time.
+/// The FB2 parser: one character at a time, over the shared tokenizer
+/// ([`crate::xml`]).
 #[derive(Clone, Copy, Debug)]
 pub struct Fb2 {
-    st: St,
-    name: [u8; NAME],
-    name_n: u8,
-    /// Attribute name and value being read (`body name="notes"`).
-    attr: [u8; 8],
-    attr_n: u8,
-    val: [u8; 8],
-    val_n: u8,
+    xml: Xml<8>,
+    p: Parse,
+}
+
+/// The parser's state between tokens.
+#[derive(Clone, Copy, Debug)]
+struct Parse {
+    /// The start tag being read, and whether it is `<body name="notes">`.
+    cur: El,
     notes_attr: bool,
     stack: [El; DEPTH],
     depth: u8,
@@ -174,13 +151,9 @@ pub struct Fb2 {
     in_notes: bool,
     bold: u8,
     italic: u8,
-    /// `<!`-construct and comment end matching.
-    mark: u8,
-    ent: [u8; 10],
-    ent_n: u8,
     /// Collect the title and the first author (description).
-    pub title: MetaText<64>,
-    pub author: MetaText<48>,
+    title: MetaText<64>,
+    author: MetaText<48>,
     authors: u8,
     last_name: MetaText<24>,
 }
@@ -191,36 +164,87 @@ impl Default for Fb2 {
     }
 }
 
+/// The tokenizer's events with the parser's state and the output.
+struct On<'a, E: Events> {
+    p: &'a mut Parse,
+    ev: &'a mut E,
+}
+
+impl<E: Events> Handler for On<'_, E> {
+    fn start(&mut self, name: &[u8]) {
+        self.p.cur = element(name);
+        self.p.notes_attr = false;
+    }
+
+    fn attr(&mut self, name: &[u8], v: &[u8], _: u32) {
+        if name == b"name" {
+            // `footnotes` is cut to the 8 bytes kept.
+            self.p.notes_attr = v == b"notes" || v == b"comments" || v.starts_with(b"footnote");
+        }
+    }
+
+    fn start_end(&mut self, empty: bool) {
+        let el = self.p.cur;
+        self.p.open(el, empty, self.ev);
+        self.p.notes_attr = false;
+    }
+
+    fn end(&mut self, name: &[u8]) {
+        self.p.end_tag(element(name), self.ev);
+    }
+
+    fn text(&mut self, c: char) {
+        self.p.text(c, self.ev);
+    }
+}
+
 impl Fb2 {
     #[must_use]
     pub fn new() -> Fb2 {
         Fb2 {
-            st: St::Text,
-            name: [0; NAME],
-            name_n: 0,
-            attr: [0; 8],
-            attr_n: 0,
-            val: [0; 8],
-            val_n: 0,
-            notes_attr: false,
-            stack: [El::Other; DEPTH],
-            depth: 0,
-            body: 0,
-            sections: 0,
-            titles: 0,
-            in_notes: false,
-            bold: 0,
-            italic: 0,
-            mark: 0,
-            ent: [0; 10],
-            ent_n: 0,
-            title: MetaText::default(),
-            author: MetaText::default(),
-            authors: 0,
-            last_name: MetaText::default(),
+            xml: Xml::new(),
+            p: Parse {
+                cur: El::Other,
+                notes_attr: false,
+                stack: [El::Other; DEPTH],
+                depth: 0,
+                body: 0,
+                sections: 0,
+                titles: 0,
+                in_notes: false,
+                bold: 0,
+                italic: 0,
+                title: MetaText::default(),
+                author: MetaText::default(),
+                authors: 0,
+                last_name: MetaText::default(),
+            },
         }
     }
 
+    /// The book's title and first author (`<title-info>`), as far as read.
+    #[must_use]
+    pub fn meta(&self) -> (MetaText<64>, MetaText<48>) {
+        (self.p.title, self.p.author)
+    }
+
+    pub fn char(&mut self, c: char, ev: &mut impl Events) {
+        self.xml.char(c, &mut On { p: &mut self.p, ev });
+    }
+
+    pub fn finish(&mut self, ev: &mut impl Events) {
+        self.xml.finish(&mut On { p: &mut self.p, ev });
+        let p = &mut self.p;
+        while p.depth > 0 {
+            let top = p.top();
+            p.depth -= 1;
+            p.close(top, ev);
+        }
+        ev.end_para();
+    }
+}
+
+impl Parse {
     fn inside(&self, el: El) -> bool {
         let d = usize::from(self.depth).min(DEPTH);
         self.stack[..d].contains(&el)
@@ -388,255 +412,6 @@ impl Fb2 {
             }
         }
     }
-
-    fn entity(&mut self, semi: bool, ev: &mut impl Events) {
-        let n = usize::from(self.ent_n);
-        let name = &self.ent[..n];
-        let c = match name {
-            b"amp" => Some('&'),
-            b"lt" => Some('<'),
-            b"gt" => Some('>'),
-            b"quot" => Some('"'),
-            b"apos" => Some('\''),
-            b"nbsp" => Some('\u{A0}'),
-            b"mdash" => Some('—'),
-            b"ndash" => Some('–'),
-            b"hellip" => Some('…'),
-            b"laquo" => Some('«'),
-            b"raquo" => Some('»'),
-            b"copy" => Some('©'),
-            [b'#', b'x' | b'X', hex @ ..] => core::str::from_utf8(hex)
-                .ok()
-                .and_then(|h| u32::from_str_radix(h, 16).ok())
-                .and_then(char::from_u32),
-            [b'#', dec @ ..] => {
-                core::str::from_utf8(dec).ok().and_then(|d| d.parse::<u32>().ok()).and_then(char::from_u32)
-            }
-            _ => None,
-        };
-        match c {
-            Some(c) => self.text(c, ev),
-            None => {
-                // Not an entity: the text as it was.
-                self.text('&', ev);
-                let ent = self.ent;
-                for &b in &ent[..n] {
-                    self.text(char::from(b), ev);
-                }
-                if semi {
-                    self.text(';', ev);
-                }
-            }
-        }
-        self.ent_n = 0;
-    }
-
-    fn tag_done(&mut self, close: bool, slash: bool, ev: &mut impl Events) {
-        let el = element(&self.name[..usize::from(self.name_n)]);
-        if close {
-            self.end_tag(el, ev);
-        } else {
-            self.open(el, slash, ev);
-        }
-        self.notes_attr = false;
-        self.st = St::Text;
-    }
-
-    fn attr_value_done(&mut self) {
-        if &self.attr[..usize::from(self.attr_n)] == b"name" {
-            let v = &self.val[..usize::from(self.val_n)];
-            self.notes_attr = v == b"notes" || v == b"comments" || v == b"footnot";
-        }
-        self.attr_n = 0;
-        self.val_n = 0;
-    }
-
-    pub fn char(&mut self, c: char, ev: &mut impl Events) {
-        match self.st {
-            St::Text => match c {
-                '<' => self.st = St::Open,
-                '&' => {
-                    self.ent_n = 0;
-                    self.st = St::Entity;
-                }
-                c => self.text(c, ev),
-            },
-            St::Entity => {
-                if c == ';' {
-                    self.st = St::Text;
-                    self.entity(true, ev);
-                } else if c.is_ascii_alphanumeric() || c == '#' {
-                    if let Some(slot) = self.ent.get_mut(usize::from(self.ent_n)) {
-                        *slot = c as u8;
-                        self.ent_n += 1;
-                    } else {
-                        self.st = St::Text;
-                        self.entity(false, ev);
-                        self.char(c, ev);
-                    }
-                } else {
-                    self.st = St::Text;
-                    self.entity(false, ev);
-                    self.char(c, ev);
-                }
-            }
-            St::Open => match c {
-                '/' => {
-                    self.name_n = 0;
-                    self.st = St::Name { close: true };
-                }
-                '!' => {
-                    self.mark = 0;
-                    self.st = St::Bang;
-                }
-                '?' => {
-                    self.mark = 0;
-                    self.st = St::Pi;
-                }
-                c if c.is_alphabetic() || c == '_' => {
-                    self.name_n = 0;
-                    self.st = St::Name { close: false };
-                    self.char(c, ev);
-                }
-                c => {
-                    // A stray `<`.
-                    self.st = St::Text;
-                    self.text('<', ev);
-                    self.char(c, ev);
-                }
-            },
-            St::Name { close } => match c {
-                '>' => self.tag_done(close, false, ev),
-                '/' => self.st = St::Attrs { close, q: '\0', slash: true },
-                c if c.is_whitespace() => {
-                    self.attr_n = 0;
-                    self.val_n = 0;
-                    self.st = St::Attrs { close, q: '\0', slash: false };
-                }
-                c => {
-                    if let Some(slot) = self.name.get_mut(usize::from(self.name_n)) {
-                        *slot = if c.is_ascii() { c.to_ascii_lowercase() as u8 } else { b'?' };
-                        self.name_n += 1;
-                    }
-                }
-            },
-            St::Attrs { close, q, slash } => {
-                if q != '\0' {
-                    if c == q {
-                        self.attr_value_done();
-                        self.st = St::Attrs { close, q: '\0', slash: false };
-                    } else if let Some(slot) = self.val.get_mut(usize::from(self.val_n)) {
-                        *slot = if c.is_ascii() { c as u8 } else { b'?' };
-                        self.val_n += 1;
-                    }
-                    return;
-                }
-                match c {
-                    '>' => self.tag_done(close, slash, ev),
-                    '/' => self.st = St::Attrs { close, q, slash: true },
-                    '"' | '\'' => {
-                        self.val_n = 0;
-                        self.st = St::Attrs { close, q: c, slash: false };
-                    }
-                    '=' => {}
-                    c if c.is_whitespace() => {
-                        if self.val_n == 0 && self.attr_n > 0 && slash {
-                            self.st = St::Attrs { close, q, slash: false };
-                        }
-                    }
-                    c => {
-                        if self.attr_n > 0 && self.val_n > 0 {
-                            self.attr_n = 0;
-                        }
-                        if let Some(slot) = self.attr.get_mut(usize::from(self.attr_n)) {
-                            *slot = if c.is_ascii() { c.to_ascii_lowercase() as u8 } else { b'?' };
-                            self.attr_n += 1;
-                        }
-                        self.st = St::Attrs { close, q, slash: false };
-                    }
-                }
-            }
-            St::Bang => {
-                // `<!--`, `<![CDATA[`, else a declaration.
-                self.mark += 1;
-                match (self.mark, c) {
-                    (1, '-') => {}
-                    (2, '-') => {
-                        self.mark = 0;
-                        self.st = St::Comment;
-                    }
-                    (1, '[') => {}
-                    (2..=7, c) if "CDATA[".chars().nth(usize::from(self.mark) - 2) == Some(c) => {
-                        if self.mark == 7 {
-                            self.mark = 0;
-                            self.st = St::Cdata;
-                        }
-                    }
-                    (_, '>') => self.st = St::Text,
-                    _ => self.st = St::Decl,
-                }
-            }
-            St::Comment => {
-                // Ends at `-->`.
-                self.mark = match (self.mark, c) {
-                    (0, '-') => 1,
-                    (1, '-') | (2, '-') => 2,
-                    (2, '>') => {
-                        self.st = St::Text;
-                        0
-                    }
-                    _ => 0,
-                };
-            }
-            St::Cdata => {
-                // Ends at `]]>`; its text is text.
-                match (self.mark, c) {
-                    (0, ']') => self.mark = 1,
-                    (1, ']') => self.mark = 2,
-                    (2, ']') => self.text(']', ev),
-                    (2, '>') => {
-                        self.mark = 0;
-                        self.st = St::Text;
-                    }
-                    (m, c) => {
-                        for _ in 0..m {
-                            self.text(']', ev);
-                        }
-                        self.mark = 0;
-                        self.text(c, ev);
-                    }
-                }
-            }
-            St::Decl => {
-                if c == '>' {
-                    self.st = St::Text;
-                }
-            }
-            St::Pi => {
-                self.mark = match (self.mark, c) {
-                    (_, '?') => 1,
-                    (1, '>') => {
-                        self.st = St::Text;
-                        0
-                    }
-                    _ => 0,
-                };
-            }
-        }
-    }
-
-    pub fn finish(&mut self, ev: &mut impl Events) {
-        if self.st == St::Entity {
-            self.st = St::Text;
-            self.entity(false, ev);
-        }
-        while self.depth > 0 {
-            let top = self.top();
-            self.depth -= 1;
-            self.close(top, ev);
-        }
-        ev.end_para();
-    }
 }
 
 #[cfg(test)]
@@ -711,8 +486,9 @@ pub(crate) mod tests {
                 (1, "Notes".to_string())
             ]
         );
-        assert_eq!(p.title.as_str(), "War & Peace");
-        assert_eq!(p.author.as_str(), "Lev N. Tolstoy");
+        let (title, author) = p.meta();
+        assert_eq!(title.as_str(), "War & Peace");
+        assert_eq!(author.as_str(), "Lev N. Tolstoy");
     }
 
     #[test]
@@ -733,5 +509,19 @@ pub(crate) mod tests {
         );
         assert_eq!((s.as_str(), toc[0].level), ("¶3Deep", 3));
         assert_eq!(convert("<body><p>a < b && c > d</p>").0, "¶0a < b && c > d");
+    }
+
+    /// BOOK-2, 2026-11-25: `<body name="footnotes">` was not taken for a
+    /// notes body (the 8-byte attribute buffer held `footnote`, compared
+    /// with `footnot`): its footnote titles became chapters in the
+    /// contents.
+    #[test]
+    fn regress_fb2_footnotes_body() {
+        let (s, toc, _) = convert(
+            "<body><section><title><p>One</p></title><p>Text.</p></section></body>\
+             <body name=\"footnotes\"><section><title><p>1</p></title><p>A note.</p></section></body>",
+        );
+        assert_eq!(s, "¶1One¶0Text.¶41¶0A note.");
+        assert_eq!(toc.len(), 1, "the note's number is not a chapter");
     }
 }

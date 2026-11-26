@@ -4,10 +4,14 @@
 //! reading every page through the reader's own path, jumps, bookmarks
 //! and position kept across a reopen, a re-layout keeping the position,
 //! card work bounded per step, writes only under `/.orpheus`, and a clean
-//! file system after.
+//! file system after. BOOK-2: the same for EPUB books, with the scratch
+//! lent or not.
 
 use std::path::PathBuf;
 use std::process::Command;
+
+#[path = "common/epubkit.rs"]
+mod kit;
 
 use orpheus_books::files::{self, CACHE_DIR, LibRecord, NORM_HEADER, PROGRESS_NEW};
 use orpheus_books::layout::{self, Line, Mark, Metrics, Params, Skip};
@@ -44,6 +48,12 @@ fn have(tool: &str) -> bool {
     Command::new("sh").arg("-c").arg(format!("command -v {tool}")).output().is_ok_and(|o| o.status.success())
 }
 
+/// The running test's name (its image files are its own: the tests run
+/// in parallel).
+fn test_name() -> String {
+    std::thread::current().name().unwrap_or("test").replace("::", "-")
+}
+
 fn dir() -> PathBuf {
     let d = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("orpheus-books-shelf");
     std::fs::create_dir_all(&d).unwrap();
@@ -56,7 +66,7 @@ fn image(exfat: bool) -> Option<RamDisk> {
         eprintln!("{tool} missing: skipped");
         return None;
     }
-    let p = dir().join(if exfat { "exfat.img" } else { "fat32.img" });
+    let p = dir().join(format!("{}-{}", test_name(), if exfat { "exfat.img" } else { "fat32.img" }));
     let f = std::fs::File::create(&p).unwrap();
     f.set_len(64 << 20).unwrap();
     drop(f);
@@ -75,7 +85,8 @@ fn fsck(disk: &RamDisk, exfat: bool) {
     if !have(tool) {
         return;
     }
-    let p = dir().join(if exfat { "check-exfat.img" } else { "check-fat32.img" });
+    let p =
+        dir().join(format!("{}-{}", test_name(), if exfat { "check-exfat.img" } else { "check-fat32.img" }));
     std::fs::write(&p, &disk.data).unwrap();
     let o = Command::new(tool).arg("-n").arg(&p).output().unwrap();
     assert!(
@@ -500,4 +511,241 @@ fn changed_book_is_converted_again() {
     assert_eq!(view_lines(&shelf).0, ["Second, longer", "version."]);
     let _ = Mark::START;
     let _ = Skip::None;
+}
+
+/// Steps with the scratch lent (or not) until `done` (one step at least:
+/// a request takes effect in a step); the most sectors any one step read
+/// and wrote, and the steps.
+fn run_lent(
+    shelf: &mut Shelf,
+    vol: &mut Vol<'_>,
+    mut scratch: Option<&mut [u8]>,
+    mut done: impl FnMut(&Shelf) -> bool,
+) -> (u64, u64, u32) {
+    let (mut r, mut w, mut n) = (0, 0, 0);
+    for _ in 0..400_000 {
+        if n > 0 && done(shelf) {
+            return (r, w, n);
+        }
+        let (r0, w0) = (vol.device().reads, vol.device().writes);
+        block_on(shelf.step_with(vol, &Mono, scratch.as_deref_mut()));
+        r = r.max(vol.device().reads - r0);
+        w = w.max(vol.device().writes - w0);
+        n += 1;
+    }
+    panic!("never done");
+}
+
+fn idle_lent(shelf: &mut Shelf, vol: &mut Vol<'_>, mut scratch: Option<&mut [u8]>) {
+    for _ in 0..400_000 {
+        if !block_on(shelf.step_with(vol, &Mono, scratch.as_deref_mut())) {
+            return;
+        }
+    }
+    panic!("never idle");
+}
+
+fn epub_books(exfat: bool) {
+    let Some(disk) = image(exfat) else { return };
+    let mut cache = vec![CacheSlot::EMPTY; 8];
+    let dev = Counting { disk, reads: 0, writes: 0 };
+    let mut vol: Vol<'_> = block_on(Volume::mount(dev, &mut cache, MountOptions::default())).unwrap();
+    block_on(vol.create_dir("/Books")).unwrap();
+    let (e3, e2) = (kit::epub3(), kit::epub2());
+    put(&mut vol, "/Books/lighthouse.epub", &e3);
+    put(&mut vol, "/Books/winter.epub", &e2);
+    put(&mut vol, "/Books/broken.epub", b"Not an archive at all.");
+    block_on(vol.flush()).unwrap();
+    vol.set_write_prefix(Some("/.orpheus"));
+    let mut scratch = vec![0u8; orpheus_books::inflate::SCRATCH];
+
+    // The search without the scratch: EPUB titles are the file names.
+    let mut shelf = Shelf::new();
+    {
+        // The step futures (card task frames on the player; host sizes).
+        let a = core::mem::size_of_val(&shelf.step(&mut vol, &Mono));
+        let b = core::mem::size_of_val(&shelf.step_with(&mut vol, &Mono, None));
+        eprintln!("Shelf::step future {a} B, step_with {b} B");
+    }
+    shelf.request(Req::Library(Scope::BooksFolder));
+    run_lent(&mut shelf, &mut vol, None, |s| s.lib.phase == LibPhase::Ready);
+    shelf.request(Req::Rows(0));
+    idle_lent(&mut shelf, &mut vol, None);
+    let names: Vec<String> = (0..3).map(|i| shelf.lib.row(i).unwrap().title.as_str().to_string()).collect();
+    assert_eq!(names, ["broken", "lighthouse", "winter"]);
+
+    // With it: from the package documents.
+    shelf.request(Req::Rescan(Scope::BooksFolder));
+    let (r, w, _) = run_lent(&mut shelf, &mut vol, Some(&mut scratch), |s| {
+        s.lib.phase == LibPhase::Ready && s.lib.count == 3
+    });
+    assert!(r <= 16 && w <= 12, "library search step: {r} read, {w} written");
+    let t = titles(&mut shelf, &mut vol);
+    assert_eq!(
+        t,
+        [
+            ("broken".into(), String::new()),
+            ("The Lighthouse Keeper".into(), "Orpheus Tests".into()),
+            ("Winter Harbour".into(), "Orpheus Tests".into()),
+        ]
+    );
+
+    // Opening waits for the scratch, then converts in bounded steps.
+    shelf.request(Req::Params(P));
+    let row = row_of(&shelf, "The Lighthouse Keeper");
+    shelf.request(Req::Open(row));
+    idle_lent(&mut shelf, &mut vol, None);
+    assert_eq!(shelf.book.phase, Phase::Converting);
+    assert!(shelf.book.waiting && shelf.needs_scratch());
+    let (r, w, n) = run_lent(&mut shelf, &mut vol, Some(&mut scratch), |s| {
+        s.book.phase == Phase::Ready && s.book.complete
+    });
+    assert!(r <= 16 && w <= 12, "EPUB open step: {r} read, {w} written ({n} steps)");
+    assert!(!shelf.needs_scratch());
+    let b = &shelf.book;
+    assert_eq!(b.toc_count, 7);
+    assert_eq!(&b.lang[..2], b"en");
+    let text = read_file(&mut vol, &{
+        let mut p = files::PathBuf::new();
+        p.file(CACHE_DIR, b.id, "txt").to_string()
+    });
+    let text = &text[NORM_HEADER..];
+    assert_eq!(kit::paragraphs(text), kit::epub3_paras(), "no text lost");
+
+    // Every page through the reader: every word once, in order.
+    let mut all = String::new();
+    let mut pages = 0;
+    loop {
+        idle_lent(&mut shelf, &mut vol, None);
+        let (lines, info) = view_lines(&shelf);
+        assert_eq!(shelf.book.page_no, Some(pages));
+        for l in &lines {
+            all.extend(l.chars().filter(|c| *c != ' '));
+        }
+        pages += 1;
+        match info.next {
+            Some(m) => shelf.request(Req::Show(m)),
+            None => break,
+        }
+    }
+    assert_eq!(pages, shelf.book.pages);
+    assert_eq!(all, words(text));
+
+    // The contents: rows, jumps to each entry, the next chapter.
+    shelf.request(Req::TocRows(0));
+    idle_lent(&mut shelf, &mut vol, None);
+    assert_eq!(shelf.book.toc_row(1).unwrap().title(), "The Lamp");
+    for (i, first) in [(1, "The Lamp"), (2, "Before the mark, “quoted”"), (5, "Глава 3")] {
+        shelf.request(Req::Toc(i));
+        idle_lent(&mut shelf, &mut vol, None);
+        let (l, _) = view_lines(&shelf);
+        assert!(l[0].starts_with(first) || first.starts_with(&l[0]), "entry {i}: {:?}", l[0]);
+    }
+    shelf.request(Req::Toc(0));
+    idle_lent(&mut shelf, &mut vol, None);
+    shelf.request(Req::Chapter(true));
+    idle_lent(&mut shelf, &mut vol, None);
+    assert_eq!(view_lines(&shelf).0[0], "The Lamp");
+    shelf.request(Req::Close);
+    idle_lent(&mut shelf, &mut vol, None);
+
+    // Opened again: from the cache, no scratch wanted.
+    shelf.request(Req::Open(row));
+    let before = shelf.steps;
+    run_lent(&mut shelf, &mut vol, None, |s| s.book.phase == Phase::Ready && s.book.window().is_some());
+    assert!(shelf.steps - before < 10, "cached");
+    shelf.request(Req::Close);
+    idle_lent(&mut shelf, &mut vol, None);
+
+    // The EPUB 2 book; the broken one fails.
+    shelf.request(Req::Open(row_of(&shelf, "Winter Harbour")));
+    run_lent(&mut shelf, &mut vol, Some(&mut scratch), |s| s.book.phase == Phase::Ready && s.book.complete);
+    assert_eq!(shelf.book.toc_count, 3);
+    assert_eq!(view_lines(&shelf).0[0], "I. The Ice");
+    shelf.request(Req::Close);
+    idle_lent(&mut shelf, &mut vol, None);
+    shelf.request(Req::Open(row_of(&shelf, "broken")));
+    run_lent(&mut shelf, &mut vol, Some(&mut scratch), |s| s.book.phase == Phase::Failed);
+    // (Its files' entries are written in the steps after.)
+    idle_lent(&mut shelf, &mut vol, None);
+
+    // A book first listed by its file name gets its title on opening.
+    let mut other = Shelf::new();
+    other.request(Req::Rescan(Scope::BooksFolder));
+    run_lent(&mut other, &mut vol, None, |s| s.lib.phase == LibPhase::Ready && s.lib.count == 3);
+    other.request(Req::Params(P));
+    titles(&mut other, &mut vol);
+    // Its cache gone (converted again on opening).
+    let row = row_of(&other, "lighthouse");
+    let id = files::book_id("/Books/lighthouse.epub");
+    block_on(vol.remove(files::PathBuf::new().file(CACHE_DIR, id, "txt"))).unwrap();
+    other.request(Req::Open(row));
+    run_lent(&mut other, &mut vol, Some(&mut scratch), |s| s.book.phase == Phase::Ready);
+    idle_lent(&mut other, &mut vol, Some(&mut scratch));
+    assert_eq!(other.lib.row(row).unwrap().title.as_str(), "The Lighthouse Keeper");
+    assert_eq!(other.book.title.as_str(), "The Lighthouse Keeper");
+
+    // The books are as they were; the file system is clean.
+    vol.set_write_prefix(None);
+    assert_eq!(read_file(&mut vol, "/Books/lighthouse.epub"), e3);
+    assert_eq!(read_file(&mut vol, "/Books/winter.epub"), e2);
+    block_on(vol.flush()).unwrap();
+    let (dev, _) = block_on(vol.unmount());
+    fsck(&dev.disk, exfat);
+}
+
+#[test]
+fn epub_on_fat32() {
+    epub_books(false);
+}
+
+#[test]
+fn epub_on_exfat() {
+    epub_books(true);
+}
+
+/// BOOK-2, 2026-11-25: a conversion or a layout given up (another book
+/// opened during it, the layout changed while it ran) dropped its files
+/// without writing their directory entries: the clusters it had written
+/// were lost for good (fsck.fat: "Reclaimed N unused clusters"), on every
+/// such change. The EPUB job's scratch tables were never written back at
+/// all.
+#[test]
+fn regress_abandoned_job_loses_no_clusters() {
+    let Some(disk) = image(false) else { return };
+    let mut cache = vec![CacheSlot::EMPTY; 8];
+    let dev = Counting { disk, reads: 0, writes: 0 };
+    let mut vol: Vol<'_> = block_on(Volume::mount(dev, &mut cache, MountOptions::default())).unwrap();
+    block_on(vol.create_dir("/Books")).unwrap();
+    put(&mut vol, "/Books/a.txt", &tale());
+    put(&mut vol, "/Books/b.txt", &tale());
+    put(&mut vol, "/Books/c.epub", &kit::epub3());
+    let mut scratch = vec![0u8; orpheus_books::inflate::SCRATCH];
+    let mut shelf = Shelf::new();
+    shelf.request(Req::Library(Scope::BooksFolder));
+    shelf.request(Req::Params(P));
+    idle(&mut shelf, &mut vol);
+    // A conversion given up half way.
+    shelf.request(Req::Open(0));
+    for _ in 0..30 {
+        block_on(shelf.step(&mut vol, &Mono));
+    }
+    assert_eq!(shelf.book.phase, Phase::Converting);
+    // An EPUB's conversion given up half way.
+    shelf.request(Req::Open(2));
+    for _ in 0..60 {
+        block_on(shelf.step_with(&mut vol, &Mono, Some(&mut scratch)));
+    }
+    assert_eq!(shelf.book.phase, Phase::Converting);
+    // A layout given up half way, by another layout.
+    shelf.request(Req::Open(1));
+    run(&mut shelf, &mut vol, |s| s.book.phase == Phase::Ready && s.book.pages > 3);
+    assert!(!shelf.book.complete);
+    shelf.request(Req::Params(Params { width: 90, ..P }));
+    run(&mut shelf, &mut vol, |s| s.book.complete);
+    shelf.request(Req::Close);
+    idle(&mut shelf, &mut vol);
+    block_on(vol.flush()).unwrap();
+    let (dev, _) = block_on(vol.unmount());
+    fsck(&dev.disk, false);
 }

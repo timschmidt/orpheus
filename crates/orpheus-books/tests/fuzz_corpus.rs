@@ -5,6 +5,8 @@
 
 #[path = "../fuzz/src/lib.rs"]
 mod bodies;
+#[path = "common/epubkit.rs"]
+mod kit;
 #[path = "../../../tests/replay.rs"]
 mod replay;
 
@@ -18,6 +20,101 @@ fn books_convert_corpus() {
 fn books_layout_corpus() {
     let n = replay::replay("books_layout", bodies::books_layout);
     assert!(n >= 4, "{n} inputs");
+}
+
+#[test]
+fn books_zip_corpus() {
+    let n = replay::replay("books_zip", bodies::books_zip);
+    assert!(n >= 6, "{n} inputs");
+}
+
+#[test]
+fn books_epub_corpus() {
+    let n = replay::replay("books_epub", bodies::books_epub);
+    assert!(n >= 8, "{n} inputs");
+}
+
+/// BOOK-2 seeds: the sample EPUBs whole, damaged and odd; zips and
+/// DEFLATE streams (`ORPHEUS_WRITE_SEEDS=1` rewrites them).
+#[test]
+fn epub_seeds() {
+    use kit::{Part, zip};
+    let with = |f: &dyn Fn(&mut Vec<Part>)| {
+        let mut p = kit::epub3_parts();
+        f(&mut p);
+        zip(&p, b"")
+    };
+    let mut z64 = kit::epub3();
+    let n = z64.len();
+    z64[n - 12..n - 8].copy_from_slice(&u32::MAX.to_le_bytes());
+    let deep = format!(
+        "<html><body>{}<p>deep</p>{}<P>unclosed<P>&bogus; &#x41;<div><span>x</div></span><p>end",
+        "<div><blockquote><i>".repeat(300),
+        "</i></blockquote></div>".repeat(299)
+    );
+    let no_nav = kit::OPF3.replace(" properties=\"nav\"", "");
+    let epub: Vec<(String, Vec<u8>)> = vec![
+        ("epub3".into(), kit::epub3()),
+        ("epub2".into(), kit::epub2()),
+        (
+            "epub3-stored".into(),
+            with(&|p| {
+                p.truncate(6);
+                for x in p.iter_mut() {
+                    x.deflate = false;
+                }
+            }),
+        ),
+        ("epub3-no-container".into(), with(&|p| drop(p.remove(1)))),
+        ("epub3-encrypted".into(), with(&|p| p[5].flags = 1)),
+        ("epub3-bad-crc".into(), with(&|p| p[6].crc = Some(7))),
+        (
+            "epub3-truncated-part".into(),
+            with(&|p| {
+                let z = kit::deflate(&p[5].data, 9);
+                p[5].raw = Some(z[..z.len() / 3].to_vec());
+            }),
+        ),
+        (
+            "epub3-bomb".into(),
+            with(&|p| {
+                p[5].raw = Some(kit::deflate(&vec![b'<'; 3 << 20], 9));
+                p[5].usize = Some(5000);
+            }),
+        ),
+        ("epub3-no-nav".into(), with(&|p| p[2] = Part::new("OEBPS/content.opf", no_nav.as_bytes(), true))),
+        ("epub3-deep".into(), with(&|p| p[5] = Part::new("OEBPS/Text/ch1.xhtml", deep.as_bytes(), true))),
+        ("epub3-comment".into(), zip(&kit::epub3_parts(), &[b'#'; 2000])),
+        ("zip64".into(), z64),
+        ("truncated".into(), kit::epub2()[..2000].to_vec()),
+    ];
+    let text = kit::ch1().xhtml.into_bytes();
+    let piece = |p: u8, z: Vec<u8>| {
+        let mut v = vec![p];
+        v.extend(z);
+        v
+    };
+    let deflated = kit::deflate(&text, 9);
+    let zips: Vec<(String, Vec<u8>)> = vec![
+        ("epub2".into(), piece(7, kit::epub2())),
+        ("deflate9".into(), piece(0, deflated.clone())),
+        ("deflate1".into(), piece(31, kit::deflate(&text, 1))),
+        ("stored".into(), piece(100, kit::deflate(&text[..3000], 0))),
+        ("truncated".into(), piece(255, deflated[..deflated.len() / 2].to_vec())),
+        ("garbage".into(), piece(3, (0..600u32).map(|i| (i * 167 % 251) as u8).collect())),
+        ("far".into(), piece(5, kit::deflate(&[text.clone(), text.clone()].concat(), 9))),
+        ("fixed".into(), piece(1, vec![0x4B, 0x4C, 0x4C, 0x04, 0x02, 0x00])),
+    ];
+    replay::write_seeds("books_epub", &epub);
+    replay::write_seeds("books_zip", &zips);
+    for (n, v) in &epub {
+        eprintln!("seed books_epub/{n}");
+        bodies::books_epub(v);
+    }
+    for (n, v) in &zips {
+        eprintln!("seed books_zip/{n}");
+        bodies::books_zip(v);
+    }
 }
 
 const FB2: &str = r##"<?xml version="1.0" encoding="UTF-8"?>

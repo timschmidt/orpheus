@@ -21,10 +21,16 @@
 
 pub mod convert;
 pub mod enc;
+pub mod epub;
 pub mod fb2;
 pub mod files;
+pub mod inflate;
 pub mod layout;
 pub mod md;
 pub mod norm;
+pub mod opf;
 pub mod shelf;
 pub mod txt;
+pub mod xhtml;
+pub mod xml;
+pub mod zip;

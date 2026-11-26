@@ -6,7 +6,8 @@
 //! Contents: music in Latin, Cyrillic and Japanese folders with ID3v2 tags
 //! and `.lrc` lyrics, a 5000-file folder, text files, books for the Books
 //! app (public-domain excerpts in Markdown, UTF-16 text with a Gutenberg
-//! header, and a Windows-1251 FB2 with contents), other file types the
+//! header, and a Windows-1251 FB2 with contents; an EPUB 3 of our own
+//! text, named to sort last in Files), other file types the
 //! browser recognises (pictures that decode, and two that do not), an
 //! 8.3-only name, hidden entries.
 
@@ -183,6 +184,130 @@ fn cp1251(s: &str) -> Vec<u8> {
         .collect()
 }
 
+/// The EPUB 3 sample for Books (BOOK-2): our own short text, in a zip with
+/// `mimetype` stored first and the rest deflated (miniz_oxide), a
+/// navigation document with nested entries, three chapters (headings,
+/// emphasis, a list, a quote, an anchor the contents point at), a style
+/// sheet and an image the reader skips.
+pub const EPUB_PATH: &str = "/Books/灯台守.epub";
+
+const EPUB_OPF: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="uid">urn:uuid:5e1a7c00-0000-4000-8000-000000000001</dc:identifier>
+    <dc:title>The Lighthouse Keeper</dc:title>
+    <dc:creator>Orpheus Project</dc:creator>
+    <dc:language>en</dc:language>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="css" href="css/book.css" media-type="text/css"/>
+    <item id="c1" href="text/lamp.xhtml" media-type="application/xhtml+xml"/>
+    <item id="c2" href="text/storm.xhtml" media-type="application/xhtml+xml"/>
+    <item id="c3" href="text/morning.xhtml" media-type="application/xhtml+xml"/>
+    <item id="pic" href="images/lens.png" media-type="image/png"/>
+  </manifest>
+  <spine><itemref idref="c1"/><itemref idref="c2"/><itemref idref="c3"/></spine>
+</package>"#;
+
+const EPUB_NAV: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<head><title>Contents</title></head>
+<body><nav epub:type="toc"><h1>Contents</h1><ol>
+<li><a href="text/lamp.xhtml">I. The Lamp</a><ol><li><a href="text/lamp.xhtml#log">The Log</a></li></ol></li>
+<li><a href="text/storm.xhtml">II. The Storm</a><ol><li><a href="text/storm.xhtml#glass">The glass falls</a></li></ol></li>
+<li><a href="text/morning.xhtml">III. Morning</a></li>
+</ol></nav></body></html>"#;
+
+fn epub_page(title: &str, body: &str) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE html>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\">\n<head><title>{title}</title><link rel=\"stylesheet\" href=\"../css/book.css\"/></head>\n<body><section epub:type=\"chapter\">\n{body}\n</section></body></html>"
+    )
+}
+
+const EPUB_LAMP: &str = "<h1>I. The Lamp</h1>
+<p>The keeper climbed the hundred and twelve steps every evening at dusk, counting them under his breath as his father had done before him. At the top the great lens waited in its brass cage, cold and patient, and he polished it with a soft cloth until the last of the daylight shone through it like water.</p>
+<p><em>Light the lamp</em>, his father used to say, <em>and the sea will tell you the rest.</em></p>
+<p>He trimmed the wick, filled the reservoir with oil and struck the match. The flame caught, steadied, and the lens took it up and threw it out across the bay in a long white arm that swept the dark once every twenty seconds.</p>
+<p class=\"figure\"><img src=\"../images/lens.png\" alt=\"The lens\"/></p>
+<h2 id=\"log\">The Log</h2>
+<p>In the log he wrote the date, the wind, the state of the sea and the ships he saw:</p>
+<ul><li>the <i>Margaret</i>, a schooner, bound north;</li><li>two fishing boats from the harbour;</li><li>a steamer, far out, showing no flag.</li></ul>
+<blockquote><p>Wind north-west, fresh. Sea moderate. All well.</p></blockquote>";
+
+const EPUB_STORM: &str = "<h1>II. The Storm</h1>
+<p>The wind backed to the south in the night and began to rise. By midnight the whole tower hummed with it, a low note felt in the teeth more than heard, and the rain came against the gallery glass in handfuls.</p>
+<p id=\"glass\"><strong>Then the glass fell.</strong> He tapped the barometer twice with his knuckle and watched the needle sink, slow and sure, past <i>Rain</i>, past <i>Stormy</i>, to a place on the dial he had never seen it go.</p>
+<p>He did not sleep. Every hour he climbed the steps to wipe the salt from the windows and to see that the flame stood straight, and every hour the sea was higher on the rocks below.</p>
+<hr/>
+<p>Near four o&#8217;clock a light showed to the south&#8212;low, red, and much too close to the reef.</p>";
+
+const EPUB_MORNING: &str = "<h1>III. Morning</h1>
+<p>The ship was the <i>Margaret</i>, come back from the north with her mainmast gone. She had seen the light, her captain said afterwards, in the one moment the rain had lifted, and had put her helm over in time.</p>
+<p>The keeper wrote it in the log in his small square hand, under the date and the wind, and then, because there was no column for it, in the margin: <em>All well.</em></p>";
+
+/// A zip of `(name, data, deflate)` entries.
+fn zip(parts: &[(&str, &[u8], bool)]) -> Vec<u8> {
+    let mut z = Vec::new();
+    let mut cd = Vec::new();
+    for &(name, data, deflate) in parts {
+        let body = if deflate { miniz_oxide::deflate::compress_to_vec(data, 9) } else { data.to_vec() };
+        let local = u32::try_from(z.len()).unwrap_or(0);
+        let mut h = Vec::new();
+        h.extend_from_slice(&20u16.to_le_bytes());
+        h.extend_from_slice(&0u16.to_le_bytes());
+        h.extend_from_slice(&(if deflate { 8u16 } else { 0 }).to_le_bytes());
+        h.extend_from_slice(&[0, 0, 0x21, 0x5B]);
+        h.extend_from_slice(&orpheus_books::zip::crc32(0, data).to_le_bytes());
+        h.extend_from_slice(&u32::try_from(body.len()).unwrap_or(0).to_le_bytes());
+        h.extend_from_slice(&u32::try_from(data.len()).unwrap_or(0).to_le_bytes());
+        h.extend_from_slice(&u16::try_from(name.len()).unwrap_or(0).to_le_bytes());
+        h.extend_from_slice(&0u16.to_le_bytes());
+        z.extend_from_slice(b"PK\x03\x04");
+        z.extend_from_slice(&h);
+        z.extend_from_slice(name.as_bytes());
+        z.extend_from_slice(&body);
+        cd.extend_from_slice(b"PK\x01\x02\x14\x03");
+        cd.extend_from_slice(&h);
+        // Comment length, disk, internal and external attributes.
+        cd.extend_from_slice(&[0; 10]);
+        cd.extend_from_slice(&local.to_le_bytes());
+        cd.extend_from_slice(name.as_bytes());
+    }
+    let at = u32::try_from(z.len()).unwrap_or(0);
+    let n = u16::try_from(parts.len()).unwrap_or(0);
+    z.extend_from_slice(&cd);
+    z.extend_from_slice(b"PK\x05\x06\0\0\0\0");
+    z.extend_from_slice(&n.to_le_bytes());
+    z.extend_from_slice(&n.to_le_bytes());
+    z.extend_from_slice(&u32::try_from(cd.len()).unwrap_or(0).to_le_bytes());
+    z.extend_from_slice(&at.to_le_bytes());
+    z.extend_from_slice(&0u16.to_le_bytes());
+    z
+}
+
+/// The sample EPUB's bytes.
+#[must_use]
+pub fn epub() -> Vec<u8> {
+    let container = "<?xml version=\"1.0\"?>\n<container version=\"1.0\" xmlns=\"urn:oasis:names:tc:opendocument:xmlns:container\"><rootfiles><rootfile full-path=\"OEBPS/content.opf\" media-type=\"application/oebps-package+xml\"/></rootfiles></container>";
+    let (lamp, storm, morning) = (
+        epub_page("The Lamp", EPUB_LAMP),
+        epub_page("The Storm", EPUB_STORM),
+        epub_page("Morning", EPUB_MORNING),
+    );
+    zip(&[
+        ("mimetype", b"application/epub+zip", false),
+        ("META-INF/container.xml", container.as_bytes(), true),
+        ("OEBPS/content.opf", EPUB_OPF.as_bytes(), true),
+        ("OEBPS/nav.xhtml", EPUB_NAV.as_bytes(), true),
+        ("OEBPS/css/book.css", b"p { text-indent: 1.2em; margin: 0 }\nh1 { text-align: center }", true),
+        ("OEBPS/text/lamp.xhtml", lamp.as_bytes(), true),
+        ("OEBPS/text/storm.xhtml", storm.as_bytes(), true),
+        ("OEBPS/text/morning.xhtml", morning.as_bytes(), true),
+        ("OEBPS/images/lens.png", b"\x89PNG\r\n\x1a\n(not drawn)", false),
+    ])
+}
+
 fn build() -> Vec<u8> {
     let img = mkfs_fat16(SECTORS);
     let mut cache: Vec<CacheSlot> = vec![CacheSlot::EMPTY; 32];
@@ -261,6 +386,7 @@ fn build() -> Vec<u8> {
     moby.extend(MOBY.repeat(3).encode_utf16().flat_map(u16::to_le_bytes));
     write(&mut vol, "/Books/Moby Dick.txt", &moby);
     write(&mut vol, "/Books/Пиковая дама.fb2", &cp1251(QUEEN));
+    write(&mut vol, EPUB_PATH, &epub());
     write(&mut vol, "/Pictures/Iceland.jpg", &[0xFF, 0xD8, 0xFF, 0xE0]);
     #[cfg(not(target_arch = "wasm32"))]
     {

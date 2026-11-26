@@ -33,7 +33,9 @@ orpheus-usb = { path = "../crates/orpheus-usb" }
 orpheus-update = { path = "../crates/orpheus-update", features = ["std"] }
 orpheus-proto = { path = "../crates/orpheus-proto" }
 anyhow = "1"
-minifb = { version = "0.29", optional = true, default-features = false, features = ["x11"] }
+# Deflates the simulated card's EPUB (BOOK-2); pure Rust, builds for the browser too.
+miniz_oxide = "0.9"
+minifb ={ version = "0.29", optional = true, default-features = false, features = ["x11"] }
 
 # PNG export and the card's PNG picture. Not in the browser build (WEB-2,
 # `sim/web`): orpheus-host also carries the USB transport.
