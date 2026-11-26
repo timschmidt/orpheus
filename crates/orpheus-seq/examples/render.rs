@@ -1,33 +1,54 @@
-//! Render the demo beat (`orpheus_seq::demo::beat`, a song of four
-//! patterns made through the model) as a WAV for listening, and save its
-//! project file: `cargo run --release -p orpheus-seq --example render --
-//! <dir> [rate]` writes `<dir>/night-bus.wav` and `<dir>/SEQ01.OSQ`.
+//! Render the demo songs for listening through the WAV export, and save
+//! their project and MIDI files: `cargo run --release -p orpheus-seq
+//! --example render -- <dir> [rate]` writes, for "Night Bus"
+//! (`orpheus_seq::demo::beat`, SEQ-1's drums) and "Tram Lights"
+//! (`demo::song`, SEQ-2: two kits, bass and lead with chords, locks, the
+//! fill), `<dir>/<name>.wav`, `.mid` and `.osq`.
 
 use std::path::Path;
 use std::process::ExitCode;
 
-use orpheus_seq::{Project, Sequencer, demo, file};
+use orpheus_seq::export::{self, WavExport};
+use orpheus_seq::{Project, StepLen, demo, file};
 use orpheus_synth::Engine;
 
-fn wav(path: &Path, rate: u32, samples: &[i16]) -> std::io::Result<()> {
-    let mut b = Vec::with_capacity(44 + samples.len() * 2);
-    let data = (samples.len() * 2) as u32;
-    b.extend_from_slice(b"RIFF");
-    b.extend_from_slice(&(36 + data).to_le_bytes());
-    b.extend_from_slice(b"WAVEfmt ");
-    b.extend_from_slice(&16u32.to_le_bytes());
-    b.extend_from_slice(&1u16.to_le_bytes());
-    b.extend_from_slice(&2u16.to_le_bytes());
-    b.extend_from_slice(&rate.to_le_bytes());
-    b.extend_from_slice(&(rate * 4).to_le_bytes());
-    b.extend_from_slice(&4u16.to_le_bytes());
-    b.extend_from_slice(&16u16.to_le_bytes());
-    b.extend_from_slice(b"data");
-    b.extend_from_slice(&data.to_le_bytes());
-    for s in samples {
-        b.extend_from_slice(&s.to_le_bytes());
+fn one(dir: &Path, stem: &str, p: &Project, rate: u32) {
+    let mut x = WavExport::new(p, rate, StepLen::Sixteenth);
+    let mut e = Box::new(Engine::new(rate, 1));
+    let mut b = x.header().to_vec();
+    let mut block = vec![0i16; 2 * 1024];
+    let (mut peak, mut sum, mut n) = (0u16, 0f64, 0u64);
+    while !x.finished() {
+        let k = x.render(p, &mut e, &mut block);
+        for s in &block[..2 * k] {
+            peak = peak.max(s.unsigned_abs());
+            sum += f64::from(*s) * f64::from(*s);
+            n += 1;
+            b.extend_from_slice(&s.to_le_bytes());
+        }
     }
-    std::fs::write(path, b)
+    let wav = dir.join(format!("{stem}.wav"));
+    std::fs::write(&wav, &b).expect("write wav");
+    let mut m = vec![0u8; 1 << 20];
+    let mlen = export::midi(p, StepLen::Sixteenth, &mut m).expect("midi");
+    std::fs::write(dir.join(format!("{stem}.mid")), &m[..mlen]).expect("write midi");
+    let mut buf = vec![0u8; file::MAX_FILE];
+    let flen = file::save(p, &mut buf).expect("save");
+    std::fs::write(dir.join(format!("{stem}.osq")), &buf[..flen]).expect("write project");
+    let db = |v: f64| 20.0 * (v.max(1.0) / 32768.0).log10();
+    println!(
+        "{}: \"{}\", {} steps at {} BPM, swing {} %, {:.1} s, peak {:.1} dBFS, RMS {:.1} dBFS; MIDI {} B, project {} B",
+        wav.display(),
+        p.name(),
+        export::song_steps(p),
+        f64::from(p.tempo()) / 100.0,
+        p.swing(),
+        x.total_frames() as f64 / f64::from(rate),
+        db(f64::from(peak)),
+        db((sum / n.max(1) as f64).sqrt()),
+        mlen,
+        flen
+    );
 }
 
 fn main() -> ExitCode {
@@ -41,38 +62,8 @@ fn main() -> ExitCode {
     std::fs::create_dir_all(dir).expect("dir");
     let mut p = Box::new(Project::NEW);
     demo::beat(&mut p);
-    let steps = demo::song_steps(&p) as u64;
-    // A step is 15 / BPM s; the song once, then 2 s for the tails.
-    let frames = (steps * 15 * 100 * u64::from(rate) / u64::from(p.tempo()) + 2 * u64::from(rate)) as usize;
-    let mut e = Box::new(Engine::new(rate, 1));
-    let mut s = Sequencer::new(rate);
-    s.play();
-    let mut out = vec![0i16; 2 * frames];
-    let song_end = frames - 2 * rate as usize;
-    for (k, block) in out.chunks_mut(2 * 1024).enumerate() {
-        if k * 1024 >= song_end && s.playing() {
-            s.stop();
-        }
-        s.render_i16(&p, &mut e, block);
-    }
-    let peak = out.iter().map(|x| x.unsigned_abs()).max().unwrap_or(0);
-    let wav_path = dir.join("night-bus.wav");
-    wav(&wav_path, rate, &out).expect("write wav");
-    let mut buf = vec![0u8; file::MAX_FILE];
-    let n = file::save(&p, &mut buf).expect("save");
-    std::fs::write(dir.join("SEQ01.OSQ"), &buf[..n]).expect("write project");
-    println!(
-        "{}: \"{}\", {} steps at {} BPM, swing {} %, kit {}, {:.1} s, {} hits, peak {:.1} dBFS; project file {} B",
-        wav_path.display(),
-        p.name(),
-        steps,
-        f64::from(p.tempo()) / 100.0,
-        p.swing(),
-        p.kit_name(),
-        frames as f64 / f64::from(rate),
-        s.hits(),
-        20.0 * (f64::from(peak.max(1)) / 32768.0).log10(),
-        n
-    );
+    one(dir, "night-bus", &p, rate);
+    demo::song(&mut p);
+    one(dir, "tram-lights", &p, rate);
     ExitCode::SUCCESS
 }

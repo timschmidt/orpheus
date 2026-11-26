@@ -125,6 +125,7 @@
 "sleep" = "the sleep timer (minutes left, the stop)"
 "volume" = "the volume the keys reach"
 "key-click" = "the key clicks the sound output gets for a few key presses on Home and in Music (05 §3)"
+"seq-play" = "the Sequencer: a new project's kit, length and swing, then the demo beat played 2.5 s from its grid (its notes, the metronome, the count-in) and the key clicks of two keys pressed while it plays (SEQ-2)"
 # Host-crate contexts (a host test of the crate that does it).
 "audio" = "the rendered sound of music (EQ, bass, balance, crossfeed, channels, ReplayGain): the settings → chain mapping of the browser build (sim/web Sound::from_settings) over the real orpheus-dsp chain; the pause fade and the key click of orpheus-dsp (VER-13)"
 "governor" = "the CPU clock level the governor picks (orpheus-power governor)"
@@ -154,7 +155,7 @@ screens = [
 ]
 services = [
     "playback", "radio-tuner", "recording", "usb-keyboard", "usb-host", "bt-module", "steps-counter",
-    "alarms", "sleep", "volume", "key-click",
+    "alarms", "sleep", "volume", "key-click", "seq-play",
 ]
 host = ["audio", "governor"]
 device = [
@@ -564,10 +565,10 @@ name = "Settings › Display › Rotate"
 scope = "global"
 values = ["off", "on"]
 default = 0
-contexts = ["@screens", "radio-tuner", "recording"]
+contexts = ["@screens", "radio-tuner", "recording", "seq-play"]
 unaffected = ["@services", "audio"]
 na = { "governor" = "review: the governor's setting inputs are Performance 0x0C07 and Power mode 0x0401 (orpheus-power Governor::step_in)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's setting inputs are Performance 0x0C07 and Power mode 0x0401 (fw main.rs Governor)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight follows the screen state (fw ui.rs: 12 on, 0 off), which only Backlight timeout 0x0302 and Screen saver 0x0307 drive", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date, Correction 0x0506 and Set from RDS 0x0507", "keys" = "review: which keys work while locked follows Keys when locked 0x0404 (KeyGate), and Lock delay 0x0303 locks them" }
-oracle = "Every screen: the panel shows the frame turned by 180° (simulator: Sim::panel; firmware: each flushed band turned and sent to the mirrored rows, the frame buffer stays upright) and Up/Down, Prev/Next swap (05 §4 \"Rotation\"): journeys by keys land elsewhere (the radio and recorder journeys open other apps). Held off under a host test's look."
+oracle = "Every screen: the panel shows the frame turned by 180° (simulator: Sim::panel; firmware: each flushed band turned and sent to the mirrored rows, the frame buffer stays upright) and Up/Down, Prev/Next swap (05 §4 \"Rotation\"): journeys by keys land elsewhere (the radio and recorder journeys open other apps, the Sequencer's opens another project). Held off under a host test's look."
 tests = ["sim/tests/settings_matrix.rs::matrix::s0309", "crates/orpheus-ui/src/gfx.rs::tests::rotated_bands_make_the_frame_turned", "sim/tests/shell.rs::rotation_swaps_keys", "crates/orpheus-apps/src/services.rs::setting_effects::keys_rotation_animations_power_mode", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
 cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0309"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0309"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
@@ -2343,3 +2344,103 @@ contexts = ["Settings.Accessibility"]
 oracle = "Not shown: holds the bits of Text size, Hold delay and Key repeat; each of those has its own entry and tests."
 tests = ["crates/orpheus-apps/src/settings.rs::tests::accessibility_packed"]
 cover = { "Settings.Accessibility" = ["crates/orpheus-apps/src/settings.rs::tests::accessibility_packed"] }
+
+# ---------------------------------------------------------------- Sequencer
+# SEQ-2 (05 §7.16 "Settings"): Sequencer › list › Menu › Settings, seven
+# fields packed into the word 0x1180 (with the `seq` feature: not in the
+# firmware yet). MIDI clock out over USB is not a setting yet (M16).
+
+[[setting]]
+id = "0x1101"
+name = "Sequencer › Menu › Settings › Default kit"
+scope = "local"
+values = ["standard", "analog", "punch", "tight", "percussion"]
+default = 0
+contexts = ["seq-play"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "seq-play: a new project's kit A is that factory kit (the standard kit otherwise; kit B stays the analog kit); projects already made keep theirs."
+tests = ["sim/tests/settings_matrix.rs::matrix::s1101", "sim/tests/seq.rs::settings_effects::default_kit", "crates/orpheus-apps/src/seq.rs::tests::settings_table", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s1101"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s1101"], "seq-play" = ["sim/tests/settings_matrix.rs::matrix::s1101", "sim/tests/seq.rs::settings_effects::default_kit"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x1102"
+name = "Sequencer › Menu › Settings › Default length"
+scope = "local"
+values = ["16", "32", "48", "64"]
+default = 0
+contexts = ["seq-play"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "seq-play: every pattern of a new project has that many steps (16 otherwise); projects already made keep their lengths."
+tests = ["sim/tests/settings_matrix.rs::matrix::s1102", "sim/tests/seq.rs::settings_effects::default_length", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s1102"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s1102"], "seq-play" = ["sim/tests/settings_matrix.rs::matrix::s1102", "sim/tests/seq.rs::settings_effects::default_length"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x1103"
+name = "Sequencer › Menu › Settings › Default swing"
+scope = "local"
+values = ["Off", "54 %", "58 %", "62 %", "66 %", "70 %", "75 %"]
+default = 0
+contexts = ["seq-play"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "seq-play: a new project's swing (50 % = straight otherwise); projects already made keep theirs."
+tests = ["sim/tests/settings_matrix.rs::matrix::s1103", "sim/tests/seq.rs::settings_effects::default_swing", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s1103"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s1103"], "seq-play" = ["sim/tests/settings_matrix.rs::matrix::s1103", "sim/tests/seq.rs::settings_effects::default_swing"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x1104"
+name = "Sequencer › Menu › Settings › Metronome"
+scope = "local"
+values = ["off", "on"]
+default = 0
+contexts = ["seq-play"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "seq-play: while the Sequencer plays, a click (a clave on its own engine part, accented on the first beat of a bar) on every beat from the play's start; never in an export. Taken at Play (orpheus-seq Options)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s1104", "sim/tests/seq.rs::settings_effects::metronome", "crates/orpheus-seq/tests/synth.rs::metronome_count_in_and_step_length", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s1104"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s1104"], "seq-play" = ["sim/tests/settings_matrix.rs::matrix::s1104", "sim/tests/seq.rs::settings_effects::metronome", "crates/orpheus-seq/tests/synth.rs::metronome_count_in_and_step_length"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x1105"
+name = "Sequencer › Menu › Settings › Count-in"
+scope = "local"
+values = ["Off", "1 bar", "2 bars"]
+default = 0
+contexts = ["seq-play"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "seq-play: Play first clicks one or two bars of beats (the live screen counts them down), then the first step plays; no step, playhead or live recording during it."
+tests = ["sim/tests/settings_matrix.rs::matrix::s1105", "sim/tests/seq.rs::settings_effects::count_in", "crates/orpheus-seq/tests/synth.rs::metronome_count_in_and_step_length", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s1105"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s1105"], "seq-play" = ["sim/tests/settings_matrix.rs::matrix::s1105", "sim/tests/seq.rs::settings_effects::count_in", "crates/orpheus-seq/tests/synth.rs::metronome_count_in_and_step_length"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x1106"
+name = "Sequencer › Menu › Settings › Step length"
+scope = "local"
+values = ["1/16", "1/8", "1/32"]
+default = 0
+contexts = ["seq-play"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "seq-play: a step is a sixteenth, an eighth or a thirty-second note at the project's tempo (steps last 1×, 2× or ½×; the metronome's beat is 4, 2 or 8 steps), from the next step while playing; the WAV and MIDI exports follow it (the MIDI file's division is 2,400, 1,200 or 4,800 ticks a quarter)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s1106", "sim/tests/seq.rs::settings_effects::step_length", "crates/orpheus-seq/tests/synth.rs::metronome_count_in_and_step_length", "crates/orpheus-seq/tests/export.rs::midi_ticks_are_exact", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s1106"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s1106"], "seq-play" = ["sim/tests/settings_matrix.rs::matrix::s1106", "sim/tests/seq.rs::settings_effects::step_length", "crates/orpheus-seq/tests/synth.rs::metronome_count_in_and_step_length"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x1107"
+name = "Sequencer › Menu › Settings › Key clicks in play"
+scope = "local"
+values = ["off", "on"]
+default = 0
+contexts = ["seq-play"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "seq-play: off (05 §7.16 \"key click off while playing\"), a key press clicks (Key click 0x0108 on) only while the Sequencer is stopped; on, it clicks while it plays too. Nothing changes while it is stopped."
+tests = ["sim/tests/settings_matrix.rs::matrix::s1107", "sim/tests/seq.rs::settings_effects::key_clicks_in_play", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s1107"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s1107"], "seq-play" = ["sim/tests/settings_matrix.rs::matrix::s1107", "sim/tests/seq.rs::settings_effects::key_clicks_in_play"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x1180"
+name = "(storage) the Sequencer's settings, packed"
+scope = "local"
+values = ["bit fields of the Sequencer settings above"]
+default = 0
+contexts = ["seq-play"]
+oracle = "Not shown: holds the bits of the Sequencer's settings packed into it; each of those has its own entry and tests."
+tests = ["crates/orpheus-apps/src/seq.rs::tests::settings_table"]
+cover = { "seq-play" = ["crates/orpheus-apps/src/seq.rs::tests::settings_table"] }

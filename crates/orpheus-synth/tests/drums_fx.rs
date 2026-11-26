@@ -358,3 +358,44 @@ fn regress_reverb_truncation_shortened_the_decay() {
     let rt60 = -60.0 / ((k * sxy - sx * sy) / (k * sxx - sx * sx));
     assert!((rt60 / f64::from(decay) - 1.0).abs() < 0.1, "measured RT60 {rt60} for {decay}");
 }
+
+/// SEQ-2's per-step locks: the drum offsets of a part change the next
+/// hits only (a tune and decay offset is the kit entry retuned by hand,
+/// bit for bit), setting them back does not touch a sounding hit, and
+/// they stay until set back.
+#[test]
+fn drum_offsets_change_the_next_hits_only() {
+    let p = |param, value| EventKind::Param { part: 0, param, value };
+    let entries =
+        [KitEntry::drum(38, DrumKind::Snare).tune(8).decay(60), KitEntry::drum(40, DrumKind::Snare)];
+    let kit = Kit::new(&entries);
+    let retuned = Kit::new(&[KitEntry::drum(38, DrumKind::Snare).tune(20).decay(30)]);
+    let fresh = |k: &Kit| {
+        let mut e = Box::new(Engine::new(48_000, 3));
+        e.set_kit(0, k);
+        e.set_patch(0, &Patch::KIT);
+        e
+    };
+    // Tune +3 semitones (12 quarters), decay × 0.5.
+    let locked = render(
+        &mut fresh(&kit),
+        9000,
+        &[(100, p(Param::DrumTune, 3.0)), (100, p(Param::DrumDecay, 0.5)), (100, on(0, 38, 100))],
+        5,
+    );
+    let by_hand = render(&mut fresh(&retuned), 9000, &[(100, on(0, 38, 100))], 6);
+    assert_eq!(locked, by_hand, "an offset is the entry changed");
+    let plain = render(&mut fresh(&kit), 9000, &[(100, on(0, 38, 100))], 7);
+    assert_ne!(locked, plain);
+    // Reset at the note-on's sample: the sounding hit keeps its tone.
+    let set = [(10, p(Param::DrumTone, 0.4)), (10, on(0, 38, 90))];
+    let a = render(&mut fresh(&kit), 6000, &[set[0], set[1], (10, p(Param::DrumTone, 0.0))], 8);
+    let b = render(&mut fresh(&kit), 6000, &set, 9);
+    assert_eq!(a, b, "setting back leaves the sounding hit alone");
+    // The next hit: plain after the reset, offset without it.
+    let next = (3000, on(0, 40, 90));
+    let reset = render(&mut fresh(&kit), 9000, &[set[0], set[1], (10, p(Param::DrumTone, 0.0)), next], 10);
+    let kept = render(&mut fresh(&kit), 9000, &[set[0], set[1], next], 11);
+    assert_eq!(reset[..6000], kept[..6000]);
+    assert_ne!(reset[6000..], kept[6000..], "the offset stays until set back");
+}

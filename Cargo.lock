@@ -1175,6 +1175,7 @@ version = "0.1.0"
 name = "orpheus-seq"
 version = "0.1.0"
 dependencies = [
+ "orpheus-midi",
  "orpheus-synth",
 ]
 

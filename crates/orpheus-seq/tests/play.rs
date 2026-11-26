@@ -413,19 +413,55 @@ fn model_edits_clamp_and_bump_the_revision() {
 }
 
 /// RAM of the parts (printed; `--nocapture`), and bounds: the project
-/// stays under 26 KiB, the player under 2.5 KiB.
+/// stays under 35 KiB (SEQ-1: 24.5 KiB; SEQ-2 added the synth steps, 1 KB
+/// a pattern, the lock stores, 0.1 KB a pattern, kit B and the patches),
+/// the player under 4 KiB.
 #[test]
 fn ram_table() {
     use orpheus_seq::ram;
     std::println!(
-        "step {} B, pattern {} B, project {} B, sequencer {} B, studio {} B",
+        "step {} B, synth step {} B, locks {} B, pattern {} B, kit {} B, synth track {} B, project {} B, \
+         sequencer {} B, studio {} B, WAV export {} B",
         ram::step(),
+        ram::synth_step(),
+        ram::locks(),
         ram::pattern(),
+        ram::kit(),
+        ram::synth_track(),
         ram::project(),
         ram::sequencer(),
-        ram::studio()
+        ram::studio(),
+        ram::wav_export()
     );
     assert_eq!(ram::step(), 3);
-    assert!(ram::project() <= 26 * 1024, "{}", ram::project());
-    assert!(ram::sequencer() <= 2560, "{}", ram::sequencer());
+    assert_eq!(ram::synth_step(), 4);
+    assert!(ram::project() <= 35 * 1024, "{}", ram::project());
+    assert!(ram::sequencer() <= 4096, "{}", ram::sequencer());
+}
+
+/// Every track at its densest (drum ratchets, synth chords, the longest
+/// delays) at 240 BPM, 75 % swing, with the metronome: the queue never
+/// overflows.
+#[test]
+fn the_hit_queue_holds_every_track_at_its_densest() {
+    use orpheus_seq::{Chord, SynthStep};
+    let mut p = project();
+    p.set_tempo(24_000);
+    p.set_swing(75);
+    for k in 0..16 {
+        for t in 0..TRACKS {
+            p.set_step(0, t, k, Step::hit(100).with_ratchet(4).with_micro(12));
+        }
+        for st in 0..2 {
+            let s = SynthStep::note(50, 100).with_chord(Chord::Seventh).with_gate(15);
+            p.set_synth_step(0, st, k, s.with_common(s.common().with_micro(12)));
+        }
+    }
+    let mut s = Sequencer::new(8_000);
+    s.set_options(orpheus_seq::Options { metronome: true, ..Default::default() });
+    s.play();
+    let mut n = 0;
+    s.run_dry(&p, 8_000 * 4, |_| n += 1);
+    assert_eq!(s.dropped(), 0);
+    assert!(n >= (8 * 4 + 2 * 4) * 60, "{n}");
 }

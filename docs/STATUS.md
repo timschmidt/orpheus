@@ -172,6 +172,130 @@ of every session. Newest entries first in §3.
   stop/start sequence), the alert flash, and that the owner's player now
   starts at level 6 (darker than the old fixed 12). Open: U-PWM-1 (is the
   stop/start needed), the vendor's 20 ms before the pad mux.
+| SEQ-2 | **done (host + simulator)**; not in the firmware (SYN-3); **user check: listen to "Tram Lights"** | `orpheus-seq`: 2 synth tracks (note, gate, chord in the scale; transpose; scale lock), per-step parameter locks (24 a pattern, refused when full), kit B, fill while held, metronome, count-in, step length, live record quantised; `OSQ1` v2 with SEQ-1 migration; WAV export (offline) and MIDI export (exact ticks); Sound, Keys, Live and Song screens, Sequencer settings (7, word `0x1180`); project 35,808 B (session entry 2026-11-26 "SEQ-2") |
+
+## 3. Session log
+
+### 2026-11-26 — SEQ-2: synth tracks, locks, song, export on the host and in the simulator (worker, no hardware)
+
+Host and simulator only; the `seq` feature stays off in the firmware
+(SYN-3). Full "as built" in 05 §7.16 ("As built (SEQ-2 …)"); in short:
+
+* **Model** (`orpheus-seq`): tracks 8–9 are synth tracks (bass, lead):
+  4-byte `SynthStep` (the drum step's fields + note, gate ¼–64 steps,
+  chord single/triad/seventh/power built in the scale; a chord plays
+  once), per-track patch (preset or edited), level, sends, mute/solo
+  (solo across all ten tracks); pattern transpose ±24; scale lock (10
+  scales × 12 roots); per-pattern lock store of 24 locks (drums: tune,
+  decay, tone; synth: cutoff, resonance, glide) that refuses the 25th and
+  changes nothing; kit B (each drum track picks A or B); the fill pattern;
+  song editing API (insert, set, remove, move).
+* **Player**: synth note-offs computed with the note, kept per track (8
+  sounding notes), always on the first sample of a render piece before its
+  note-ons; Stop ends every synth note; drum locks through three new
+  engine parameters `Param::DrumTune/DrumDecay/DrumTone` (offsets for the
+  part's next hits, `orpheus-synth`), synth locks through the part's
+  cutoff/resonance/glide (only changes sent); metronome (own part), count-
+  in 1–2 bars, step length 1/16·1/8·1/32 (exact), fill while held, notes
+  from the keys (`Sequencer::live`, `Studio::key_note` with live record
+  quantised to the nearest step), `quantize`. More than 64 events in a
+  piece are rendered in turns (an empty render applies events).
+* **File** `OSQ1` version 2 (records 6–9: synth steps with transpose, kit
+  B, synth tracks with their patch as `OSB1`, locks); SEQ-1's version-1
+  files load unchanged (tested against the files SEQ-1's code saved, kept
+  in `crates/orpheus-seq/tests/data/`), in the app too (a v1 file on the
+  card opens and saves as v2). New project 924 B, demo song 3,567 B,
+  `MAX_FILE` 36,041 B.
+* **Export**: `export::WavExport` (offline, its own player, any piece size,
+  song + 2 s) and `export::midi` (SMF type 1, 600 ticks a step so every
+  position is an exact tick; drums ch 10, bass/lead ch 1/2 with GM
+  programs and CC 7) → `/.orpheus/seq/SEQnn.WAV` / `.MID` (rule 5).
+* **Screens**: grid with 10 tracks (8 rows, the synth tracks scroll in;
+  chords dotted, locked steps marked, the note in the footer), its menu
+  (+ Sound, Keys, More › Live, Song, Export WAV, Export MIDI: a menu holds
+  12), step (+ note, length, chord, three lock rows), Sound (drum kit
+  entry / synth patch), Keys (one-octave strip, scale lock, step entry,
+  hold OK = undo, Record), Live (hold OK = fill, ◀▶ next pattern, ▲▼
+  tempo, count-in shown), Song (entries, ◀▶ pattern, OK +1 repeat, Add,
+  Insert/Delete/Play the song), Sequencer settings (list › Menu ›
+  Settings). New strings (55) are English and behind the `seq` feature,
+  appended last in `Str` (strings added later go above them).
+* **Settings** (VER-13): Default kit, Default length, Default swing,
+  Metronome, Count-in, Step length, Key clicks in play (word `0x1180`,
+  list `0x11`, only with `seq`: the firmware's tables are unchanged).
+  New service context `seq-play` (a new project's defaults; the demo beat
+  played 2.5 s dry; key clicks while playing); Rotate 0x0309 declared
+  there too (its swapped keys open another project). `settings-matrix
+  --check`: 174 settings, 12,148 / 12,196 cells, 0 errors. **The settings
+  store is now full with games + Books + Sequencer: 128 of 128 keys**
+  (firmware: 126); the cache's "reset" mask handles 128.
+* **RAM** (host `size_of`): project 35,808 B (SEQ-1 25,092; pattern
+  2,147 B), player 3,784 B (1,880), studio 40,144 B, WAV export 3,808 B,
+  kit B 289 B; engine 62,320 → 62,512 B (drum offsets of 16 parts).
+* **Tests**: `orpheus-seq` lib 6, `file` 11 (v1 migration against SEQ-1's
+  files, synth/locks round trips, impossible v2 records, a full lock store
+  refuses), `synth` 11 (synth note on/off frames exact against seconds at
+  8/44.1/48 kHz × 40–240 BPM × swing, no drift over 650 loops, chords /
+  transpose / ratchets, sounding-note table, locks at their step dry and
+  as sound — drum locks bit-identical to the entry changed by hand, synth
+  locks equal to the engine fed by hand —, live record quantisation with
+  swing and across the pattern end, fill, metronome, count-in, step
+  length, kit B), `export` 6 (WAV header/length, any piece size = Play,
+  **hash of the demo song WAV at 22,050 Hz `0xf3cd9d8f0d176097`**, MIDI
+  ticks exact at each step length, MIDI parsed back by `orpheus-midi`
+  equal to the dry run, bounds), `play` 19 (+ densest every-track queue),
+  `timing` 6, fuzz corpus (17 seeds incl. SEQ-1's v1 files; oracle now
+  checks every synth note ends once after a stop, metronome/count-in/
+  fill/step length options, MIDI export): `cargo +nightly-2026-11-05 fuzz
+  run seq_load` 543,072 runs in 151 s, no finding; `orpheus-synth`
+  `drum_offsets_change_the_next_hits_only`; `orpheus-apps` settings table.
+  Simulator: 16 new journeys in `sim/tests/seq.rs` (note entry, scale
+  lock, live record, locks from the step screen incl. full store, sound
+  screens, song editing, fill on the live screen, WAV/MIDI export and a
+  failing card, a SEQ-1 file opens, 7 `settings_effects`); 40 new goldens
+  `seq_*` (SEQ-2 journeys, Dark/Light, 2 Amber) and 17 SEQ-1 goldens
+  re-blessed (scroll bars of longer lists, the list menu's Settings, the
+  track screen's Kit row, the grid menu's last item) — all looked at.
+* **WAV for the owner**: `tram-lights.wav` ("Tram Lights", 104 BPM, swing
+  54 %, A minor, punch + percussion kits, acid bass, FM piano chords with
+  delay/reverb, bass cutoff locks, snare tune locks in the fill pattern;
+  A A B B C C A B D, 27.4 s, peak −0.7 dBFS) with `.mid` and `.osq`, and
+  `night-bus.wav` (SEQ-1's beat through the WAV export: 24.0 s, peak −2.8
+  dBFS as before) in the session scratchpad `seq2/` (not committed):
+  `cargo run --release -p orpheus-seq --example render -- <dir>`.
+* **Gate**: `cargo fmt --all --check`; `cargo clippy --workspace
+  --all-targets -D warnings`; `cargo clippy -p orpheus-apps --all-targets
+  -D warnings` with no features, `seq`, `seq,games`, `seq,books`,
+  `games,salvo,bricks`, all; `cargo test --workspace` 1,974 passed, 0
+  failed, 13 ignored (was 1,910); `cargo xtask settings-matrix --check`
+  (above); `cargo xtask build`, `size --check` (resident 81,235 B, bss
+  125,448 B), `check-resident`, `stack --check`: pass, **margin 4,304 B
+  unchanged** (no new firmware strings or tables). **Not run**: `xtask
+  test all` beyond these, `brand`/`site --check`, every `xtask dev` step
+  (the brief forbids them).
+* **User check**: listen to `tram-lights.wav` (bass line and its filter
+  opening in B, the piano chords, the breakdown, the fill's rising snare);
+  open `tram-lights.mid` in a DAW (tempo, 4 tracks, channel 10 drums). In
+  the simulator: `set:seq=on`, Menu › Keys on a synth track, More › Live.
+* **Open**: USB MIDI clock out (optional, M16); early micro-timing (a
+  lookahead) still not built; the lead may want the settings store's last
+  key back (pack the Sequencer word elsewhere or widen the store).
+* **For SYN-3 (the Sequencer on the player)**: the engine (62.5 KB) in the
+  decoder arena; the project is now **35.8 KB — 3 KB more than the idle
+  32 KiB stream ring**: split it (e.g. synth steps and locks, 9.8 KB, into
+  the arena's remaining ≈ 9.5 KiB) or shrink it (patterns or lock
+  capacity); the player 3.8 KB; `render_i16` from the synth task while
+  `Sequencer::busy()` (live notes sound while stopped), its 64-event
+  buffer (1 KB) on that task's stack; `key_note` with the DAC frame
+  (clock − ring latency) for quantisation; `seq::key_click_allowed` in the
+  firmware's `key_click`; a BASEPRI lock (or messages) around project
+  edits vs a render block; WAV export in the card task through
+  `WavExport` pieces with the engine borrowed while stopped (faster than
+  real time to be measured); MIDI export needs a streaming writer (track
+  lengths patched after) or the stream ring as its buffer (the demo song's
+  file is 4.3 KB); turning `seq` on brings SEQ-1's and SEQ-2's strings
+  (≈ 2 KB read-only data: the stack margin needs a 256-B step of room)
+  and the settings word (127 keys without Books).
 
 ### 2026-11-26 — Speed hidden, U-PWM-3, A11Y-2 and SEQ-1 merged; USB cable fault (lead)
 
