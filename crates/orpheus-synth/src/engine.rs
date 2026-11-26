@@ -32,6 +32,7 @@
 use crate::drum::DrumParams;
 use crate::fx::{Chorus, ChorusParams, Delay, DelayParams, Limiter, Reverb, ReverbParams};
 use crate::kit::{KIT_SLOTS, Kit, KitSound};
+use crate::load::{Costs, Estimate, FX_ALL};
 use crate::math::{Rng, clampf, to_i16};
 use crate::patch::{Kind, Patch, PatchCoef};
 use crate::sample::{HitParams, SampleCache, Want};
@@ -330,6 +331,23 @@ struct Bus {
     r: [f32; CONTROL_PERIOD],
     send: [[f32; CONTROL_PERIOD]; 3],
     voice: [f32; CONTROL_PERIOD],
+    /// An effect fading out renders here first ([`Engine::set_fx_enabled`]).
+    wet: [[f32; CONTROL_PERIOD]; 2],
+}
+
+/// Samples over which an effect switched off fades out.
+pub const FX_FADE: u16 = 256;
+
+/// Add `wl`/`wr` to `l`/`r` with a gain falling from `fade` / [`FX_FADE`]
+/// by one step per sample; returns the samples of the fade left.
+fn add_fading_wet(wl: &[f32], wr: &[f32], l: &mut [f32], r: &mut [f32], mut fade: u16) -> u16 {
+    for (((l, r), a), b) in l.iter_mut().zip(r.iter_mut()).zip(wl).zip(wr) {
+        let g = f32::from(fade) * (1.0 / f32::from(FX_FADE));
+        *l += a * g;
+        *r += b * g;
+        fade = fade.saturating_sub(1);
+    }
+    fade
 }
 
 /// `d` with a part's drum offsets (unchanged, bit for bit, when they are
@@ -375,6 +393,10 @@ pub struct Engine {
     limiter: Limiter,
     kits: [Kit; KIT_SLOTS],
     misses: u32,
+    /// The effects enabled (`load::FX_*`; the load governor switches them).
+    fx_on: u8,
+    /// Samples left of an effect's fade-out after it was switched off.
+    fx_fade: [u16; 3],
 }
 
 impl Engine {
@@ -421,6 +443,9 @@ impl Engine {
             s.fill(0.0);
         }
         self.bus.voice.fill(0.0);
+        for w in &mut self.bus.wet {
+            w.fill(0.0);
+        }
         self.out.fill([0.0; 2]);
         self.delay.init();
         self.chorus.init();
@@ -430,6 +455,8 @@ impl Engine {
             *k = Kit::new(crate::kit::STANDARD);
         }
         self.misses = 0;
+        self.fx_on = FX_ALL;
+        self.fx_fade = [0; 3];
         self.delay.set(&DelayParams::DEFAULT, rate_f, self.tempo);
         self.chorus.set(&ChorusParams::DEFAULT, rate_f);
         self.reverb.set_rate(rate_f);
@@ -457,6 +484,8 @@ impl Engine {
         self.master_cur = self.master;
         self.master_ramp = 0;
         self.misses = 0;
+        self.fx_on &= !self.fading();
+        self.fx_fade = [0; 3];
     }
 
     /// [`Engine::reset`], then set the sample clock to `clock`: a player
@@ -539,6 +568,94 @@ impl Engine {
     /// Use at most `n` voice slots (1–16). Voices above the limit play out.
     pub fn set_voice_limit(&mut self, n: usize) {
         self.voice_limit = n.clamp(1, MAX_VOICES);
+    }
+
+    /// Enable the send effects of `mask` (`load::FX_*`) and switch the
+    /// others off (the load governor, [`crate::load`]). One switched off
+    /// fades out over [`FX_FADE`] samples and is then cleared, and its
+    /// sends are ignored while it is off; one switched on starts silent.
+    /// With every effect on (the default) the render is unchanged.
+    pub fn set_fx_enabled(&mut self, mask: u8) {
+        for i in 0..3 {
+            let bit = 1u8 << i;
+            let on = self.fx_on & bit != 0 && self.fx_fade[i] == 0;
+            if mask & bit != 0 && !on {
+                // Back on (also in the middle of its fade: the rest of
+                // the tail plays at full level).
+                self.fx_on |= bit;
+                self.fx_fade[i] = 0;
+            } else if mask & bit == 0 && on {
+                self.fx_fade[i] = FX_FADE;
+            }
+        }
+    }
+
+    /// The effects enabled and not fading out (`load::FX_*`).
+    #[must_use]
+    pub fn fx_enabled(&self) -> u8 {
+        self.fx_on & !self.fading()
+    }
+
+    /// The effects fading out.
+    fn fading(&self) -> u8 {
+        (0..3).filter(|&i| self.fx_fade[i] != 0).fold(0, |m, i| m | 1 << i)
+    }
+
+    /// What rendering costs now by the table `c` (cycles per frame): the
+    /// sounding voices by class, the effects that run (enabled, and fed by
+    /// a sounding voice's part or still ringing).
+    #[must_use]
+    pub fn estimate(&self, c: &Costs) -> Estimate {
+        let mut e = Estimate { base: c.empty, fx: c.fx, ..Estimate::default() };
+        let mut fed = 0u8;
+        for v in self.voices.iter().chain(&self.tails).filter(|v| v.active) {
+            let p = &self.parts[pi(v.part)];
+            let cost = c.voice(v.class(&p.patch));
+            e.voices += cost;
+            e.n += 1;
+            if v.fade > 0 {
+                e.fading += cost;
+                e.n_fading += 1;
+            }
+            for (i, s) in p.sends.iter().enumerate() {
+                if *s > 0.0 {
+                    fed |= 1 << i;
+                }
+            }
+        }
+        let ringing = u8::from(!self.delay.is_idle())
+            | u8::from(!self.chorus.is_idle()) << 1
+            | u8::from(!self.reverb.is_idle()) << 2;
+        e.wanted = fed | ringing;
+        if !cfg!(feature = "delay") {
+            e.wanted &= !crate::load::FX_DELAY;
+        }
+        // (An effect fading out still costs.)
+        e.running = e.wanted & self.fx_on;
+        e
+    }
+
+    /// Fade out voices until at most `keep` sound (not counting those
+    /// fading already): released ones first, oldest first, then the
+    /// oldest held ones. Returns how many it faded (the load governor).
+    pub fn shed(&mut self, keep: usize) -> usize {
+        let mut cut = 0;
+        loop {
+            let live = self.voices.iter().filter(|v| v.active && v.fade == 0);
+            if live.count() <= keep {
+                return cut;
+            }
+            let pick = self
+                .voices
+                .iter()
+                .enumerate()
+                .filter(|(_, v)| v.active && v.fade == 0)
+                .min_by_key(|(_, v)| (!v.released, v.stamp))
+                .map(|(i, _)| i);
+            let Some(i) = pick else { return cut };
+            self.voices[vi(i)].cut();
+            cut += 1;
+        }
     }
 
     /// Delay settings.
@@ -969,15 +1086,48 @@ impl Engine {
                 v.active = false;
             }
         }
-        let Bus { l, r, send, .. } = &mut self.bus;
+        let Self { bus, delay, chorus, reverb, fx_on, fx_fade, .. } = self;
+        let Bus { l, r, send, wet, .. } = bus;
         if tick {
-            self.delay.flush();
-            self.reverb.flush();
+            delay.flush();
+            reverb.flush();
             self.limiter.flush();
         }
-        self.delay.process(&send[0][..n], &mut l[..n], &mut r[..n]);
-        self.chorus.process(&send[1][..n], &mut l[..n], &mut r[..n]);
-        self.reverb.process(&send[2][..n], &mut l[..n], &mut r[..n]);
+        // The effects in order; one switched off renders into `wet` and is
+        // added fading ([`Engine::set_fx_enabled`]); with all on and none
+        // fading this is the plain sum, bit for bit.
+        let [wl, wr] = wet;
+        for (i, (fade, send)) in fx_fade.iter_mut().zip(send.iter()).enumerate() {
+            let bit = 1u8 << i;
+            if *fx_on & bit == 0 {
+                continue;
+            }
+            let (dl, dr) = if *fade > 0 {
+                wl[..n].fill(0.0);
+                wr[..n].fill(0.0);
+                (&mut wl[..n], &mut wr[..n])
+            } else {
+                (&mut l[..n], &mut r[..n])
+            };
+            let input = &send[..n];
+            match i {
+                0 => delay.process(input, dl, dr),
+                1 => chorus.process(input, dl, dr),
+                _ => reverb.process(input, dl, dr),
+            }
+            if *fade > 0 {
+                *fade = add_fading_wet(&wl[..n], &wr[..n], &mut l[..n], &mut r[..n], *fade);
+                if *fade == 0 {
+                    *fx_on &= !bit;
+                    match i {
+                        0 => delay.clear(),
+                        1 => chorus.clear(),
+                        _ => reverb.clear(),
+                    }
+                }
+            }
+        }
+        let Bus { l, r, .. } = &self.bus;
         for ((o, l), r) in self.out[..n].iter_mut().zip(&l[..n]).zip(&r[..n]) {
             if self.master_ramp > 0 {
                 self.master_cur += self.master_step;

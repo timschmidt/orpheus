@@ -72,7 +72,7 @@ of every session. Newest entries first in §3.
 | GAME-6 Bricks (M14) | **built (host + simulator + firmware), not yet run on the player** | Brick breaker of our own: integer physics with one-pixel sub-steps (no tunnelling at any speed, no floating point), paddle angles, 1–3-hit and unbreakable bricks, 8 hand-made + generated levels, five power-ups, lives, scores, saves; 7 settings packed into 1 word; 47 goldens; fuzz `bricks_keys`. In the firmware (`orpheus-apps/bricks`): stack margin 4,116 B unchanged. Lead: session entry 2026-11-25 "GAME-6" |
 | BOOK-2 | **done (host + simulator)**; not in the firmware (as BOOK-1; the scratch is the decoder arena, see session entry) | EPUB 2/3 in `orpheus-books`: zip (end record, streamed central directory, CRC, zip64/encrypted/method refusals), `no_std` inflate (48 B state; 32 KiB window + 2,304 B tables lent: 35,072 B), container/OPF/nav/NCX, XHTML reduction over the XML tokenizer split out of FB2, contents positions from anchors, all in bounded steps into BOOK-1's stream; library titles from the package; 12 new goldens; fuzz targets `books_zip`, `books_epub` (session entry 2026-11-25 "BOOK-2") |
 | MIDI-1 | **done (host + simulator)**; on the player since SYN-3; **user check: listen to the three MIDI renders** | `orpheus-midi`: Standard MIDI File parser (formats 0/1/2, running status, meta and SysEx, SMPTE, RMID) streamed through 64 track cursors of 64-byte windows that ask for bytes (`Need`/`supply`), nothing trusted; exact tick→frame clock through tempo changes; sequencer (CC 1/6/7/10/11/38/64/91/93/96–101/120–127, RPN bend range, pressure, programs, kits on channel 10, mute/solo); own GM set of 32 sounds for the 128 programs (`data/gm-sounds.osb`); `MidiPlayer`: open/scan, render, bounded-step seek (bit-exact where nothing sounds across the target), duration/position, `.kar`/lyric events; Files plays `.mid`/`.kar` in the simulator with Now Playing lyrics; player 70,224 B; estimate ≈ 117 MHz at 48 kHz for a 10–11-voice song: High clock (session entry 2026-11-25 "MIDI-1") |
-| SYN-3 | **done (firmware build; not run on the player)**; **lead: bench, MIDI fixtures, underruns** | The synthesiser on the player: a synth source beside the codecs (`orpheus_audio::synth`), the engine and the MIDI player built in place in the pool (stream ring + decoder arena, 80,816 B; MIDI state 71,640 B), the MIDI file through a 13-block card cache (`orpheus_midi::cache`), 44.1 kHz into the DAC ring through the DSP chain, clock floor High, load governor on the voice limit; `.mid`/`.kar` play from Files and Music with seek and pause; `synth bench` (36 loads, cycles, host hashes); 128/128 code pages, stack margin 4,336 B (session entry 2026-11-26 "SYN-3") |
+| SYN-3 | **done (firmware build)**; bench run on the player 2026-11-26 (costs measured); **load governor built, not yet run on the player: lead's checks in the session entry 2026-11-26 "SYN-3: load governor"**; owner decision: half rate for heavy MIDI files (04 §9) | The synthesiser on the player: a synth source beside the codecs (`orpheus_audio::synth`), the engine and the MIDI player built in place in the pool (stream ring + decoder arena, 80,816 B; MIDI state 71,640 B), the MIDI file through a 13-block card cache (`orpheus_midi::cache`), 44.1 kHz into the DAC ring through the DSP chain, clock floor High, budget-aware load governor (`orpheus_synth::load`: 55 % of real time; chorus, delay, reverb, then voices shed) with 4 ms pieces and pace-rule rests (thread mode always runs); `.mid`/`.kar` play from Files and Music with seek and pause; `synth bench` (36 loads, cycles, host hashes); 125/128 code pages, stack margin 5,772 B (session entries 2026-11-26 "SYN-3" and "SYN-3: load governor") |
 | A11Y-2 | **built (host + simulator + firmware), not yet run on the player**; journey `settings_accessibility` and user check 31 | Settings › Accessibility (Text size Normal/Large/Extra large, Hold delay 0.5–2 s, Key repeat Normal/Slow/Slower; packed in `0x0D60`), Themes White on black / Black on white (≥ 7:1), reduced motion = Animations off (spinner still, blinks lit), Key click Presses and holds (hold confirmation); 63 `a11y_*` goldens (session entry 2026-11-26 "A11Y-2") |
 | VER-13 Brightness (U-PWM-3) | **built (host + simulator + firmware), not yet run on the player**; journey `settings_brightness` and user check 32 | Settings › Display › Brightness = the stock levels 1–11 (default 6) on the stock PWM4 duties, live; key `0x030D` (old `0x0301` retired); alert flash 15 / 3 (never 16); `ui top` `bl=` |
 | VER-4 (settings store keys) | **done (host + firmware built), not yet run on the player** | Store index 128 → 192 keys at 4 B a slot (was 8), same NOR format both ways (fixture from the old code, byte-equal images); cache write marks unlimited; 131 keys in use with every app (61 free), firmware 129; sector ceiling ≈ 209 settings keys (256 cannot fit one sector); .bss −1,248 B, stack margin 5,664 B; compaction no longer re-blesses a rotted value (session entry 2026-11-26 "VER-4: settings store index") |
@@ -186,6 +186,111 @@ of every session. Newest entries first in §3.
   governor. Do not play MIDI files on the player until then.
 * The boot-time NOR read error recurred: `settings: store mounted after 1
   read errors` (the retry worked). Cause open.
+### 2026-11-26 — SYN-3: load governor; MIDI playback can no longer starve thread mode (worker, no hardware)
+
+The lead's run of build `1fda608d`: `playdir /.orpheus/test/suite/midi`
+underran (`ub=-`) and the watchdog reset the player (last sample in
+`Chorus::process`, IRQ 9); `synth bench` measured 1.7–3.7 × the SYN-1/2
+estimates. Firmware build and host tests; **nothing run on the player**
+(no `xtask dev`: the brief). Full "as built" in 04 §9 ("As built (SYN-3
+load governor …)"); in short:
+
+* **Cause**: the render ran on the real-time executor in 256-frame blocks
+  and yielded only when the PCM ring was full; a song the CPU cannot keep
+  up with never fills it, so thread mode (UI, USB, the watchdog's feeder)
+  never ran. The old governor (−1 voice per late block, ≥ 4) could not
+  recover the effects' fixed cost.
+* **By construction now**: each piece is bounded (as many frames as the
+  prediction fits in 4 ms, 32–256; bit-exact: the engine's output does not
+  depend on the cut), and the pace rule rests 4 ms before a piece that
+  would end 8 ms after the last rest or ring wait ≥ 4 ms
+  (`orpheus_power::pace`, `audio::synth::pace_rest`): thread mode gets ≥ ⅓
+  of any busy stretch whatever the song, the misestimate or the
+  governor's state.
+* **Governor** (`orpheus_synth::load`, host crate): per piece, the
+  engine's estimate (`Engine::estimate`: voices by class, fading ones
+  apart, effects that run) × the measured ratio (real/estimated, µs ×
+  MHz) against **55 % of real time** (1,795 cycles a frame at 144 MHz);
+  sheds the **chorus, the delay, the reverb, then voices** (limit for new
+  notes; released voices fade first, oldest first; floor 2); effects fade
+  out over 256 samples (`Engine::set_fx_enabled`); voices back after 1 s,
+  effects after 3 s under 50 %. Order and reasons in 04 §9. Clock-aware:
+  at 288 MHz (Performance: Maximum) the budget doubles. `synth gov off`
+  for CRC checks.
+* **Measured costs** in `orpheus_synth::load::PLAYER` and budgets.toml
+  `[synth]` (replacing the estimates): empty 245, subtractive 155–308
+  (table 280), FM 2-op 288 / 4-op 453, drums 159–737, **reverb 671,
+  chorus 194** — the lead's 1,073/519 included the sine voice and its
+  line loads (402); raw table `crates/orpheus-synth/tests/bench-player-1fda608d.txt`.
+  The reverb is compute (+0.4 line loads a block), already half rate; a
+  step-wise rewrite (bit-exact, −15 % on the host) has more instructions a
+  frame on thumbv7em (313 vs 255) and was not kept: **no reverb speed-up**.
+* **Paging**: `MidiPlayer::timed` and `Sequencer::handle` sat inside the
+  render's physical lines (≥ 2 line loads, ≈ 180 µs each, per piece): new
+  clusters `synth-midi` (lines 8–16: the governor's `plan_piece`/
+  `after_piece`, the rest, `timed`, `handle`) and `synth-cold` (open/scan/
+  seek, inits, patch install: fills lines 1–7 instead of padding).
+* **Demo songs on the host model** (`orpheus-midi` `tests/governor.rs`):
+  unshed 4,951 / 2,714 / 1,859 cycles a frame (Etude / Hill Song / Sound
+  tour); at 144 MHz all three need the governor: reverb off most of the
+  time, mean voice limit 2.2 / 4.2 / 6.1, < 1 % of PCM halves above 62 %
+  of real time (one in Hill Song). At 288 MHz: Sound tour 91 % at full
+  quality (bit-exact), Hill Song all 16 voices. Half rate (22.05 kHz,
+  native DAC rate) would give the 288 MHz numbers at 144 MHz: considered,
+  not built (rate-dependent engine state, a DAC rate change stops the
+  ring; would be chosen at open) — **owner decision** (the top octave goes).
+* **Logs**: `pcm: head … ub=synth:render:Nms` / `synth:rest` /
+  `synth:read` (was `ub=-`); `status` `syn:` adds `lvl=now/max fx= load=
+  ratio= rests= shed= gov=`.
+* **Code room**: SHA-256/512 compact rounds in the firmware
+  (`sha2_backend_soft="compact"`; the unrolled SHA-512 was 30.6 KB):
+  **125/128 code pages** (was 128/128); `play_midi`'s poll kept within
+  its 7-line hole (governor work in two `#[inline(never)]` functions, the
+  rest an `Apart` future).
+* **Numbers** (thumbv7em): resident **81,427 B** (+40 of 81,920), .bss
+  **124,208 B** (+8: three `syn:` words), MIDI state **71,936 B** (+296:
+  the effects' fade buffers 256, governor 40 vs 8), 13 cache blocks, 2,224
+  B spare; engine 62,624 B; `MidiPlayer` 70,528 B; **stack margin 5,772 B**
+  (14,452 of 20,224 B; was 5,440); `synth-render` 25 of 26 lines.
+* **Tests**: `regress_synth_render_starved_thread_mode` (the loop model
+  with today's figures: sustainable after 10 pieces, thread mode ≥ 44 % of
+  every 100 ms, pieces ≤ 5.2 ms, busy ≤ 7.1 ms, 0 underruns), an
+  unfixable overload still ≥ 30 % thread mode, governor order/restore/
+  bounds/ratio/edge tests; `regress_synth_underruns_are_labelled`; engine:
+  all-on is bit-exact, fade-out then exactly dry, `shed` order, estimate
+  classes; `orpheus-midi` `tests/governor.rs` (the three songs at 144 and
+  288 MHz, half rate, a 1.5 × misestimate). All synth/MIDI goldens and
+  play CRCs unchanged.
+* **Gate**: fmt (host, fw); clippy `-D warnings` (host workspace all
+  targets, fw workspace); `cargo test --workspace` 2,035 passed, 0
+  failed, 13 ignored; `settings-matrix --check` (174 settings, 0 errors);
+  fw `xtask build` (ok, 125 code + 26 rodata pages, no cluster warnings),
+  `check-resident` (ok, none paged), `size --check` (resident 81,427 B,
+  .bss 124,208 B), `stack --check` (14,452 of 20,224 B, margin 5,772 B;
+  `synth-render` 25 of 26 lines). Not run: any `xtask dev` step (the
+  brief), `brand`/`site --check`, fuzzing beyond the corpus replay.
+* **For the lead on the player** (`playdir` etc. as below):
+  1. `synth bench 32` and `synth bench 29` — the reverb and its dry
+     baseline, to confirm 671 (the hashes must equal
+     `goldens-bench-player.txt`: the engine is unchanged with all effects
+     on).
+  2. `playdir /.orpheus/test/suite/midi`, then `status` every ~20 s for
+     3 minutes: **no reset**; `syn: lvl=` mostly 2–3 at 144 MHz, `rests=`
+     growing only while the ring is short, `ratio=` near 100 (the table
+     fits; ≫ 100 means paging or patches the table underrates),
+     `underruns` 0 or a burst at a song's start only, `ub:` labels
+     `synth:…` if any; the UI responds throughout (Now Playing, menus,
+     `xtask dev shot`).
+  3. CRC: `synth gov off`, `dsp off`, `crc on`, then `play
+     "/.orpheus/test/suite/midi/Etude.mid"` (and the other two): `frames=`
+     and `crc=` must equal `crates/orpheus-midi/tests/goldens-play.txt`
+     (Etude 1131268 / 54821393, Hill Song 1146600 / 1777526454, Sound
+     tour 2469600 / 4099842480) — with the governor off these stay
+     bit-exact; it plays slower than real time (underruns expected, no
+     reset, UI alive). With `synth gov on` (the default) **no song stays
+     bit-exact at 144 MHz** (the governor acts on all three); at
+     Performance: Maximum "Sound tour" is at full quality for 91 % of its
+     length, also not bit-exact as a whole.
 
 ### 2026-11-26 — VER-4: settings store index 128 → 192 keys, same NOR format (worker, no hardware)
 

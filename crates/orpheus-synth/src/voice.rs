@@ -321,6 +321,17 @@ impl Voice {
         }
     }
 
+    /// What this voice plays (part patch `p`), for the cost model.
+    pub fn class(&self, p: &Patch) -> crate::load::Class {
+        use crate::load::Class;
+        match (&self.src, &p.kind) {
+            (Source::Drum(d), _) => Class::Drum(d.kind() as u8),
+            (Source::Sample(_) | Source::Hit(_), _) => Class::Sample,
+            (Source::Fm(_), Kind::Fm(f)) => Class::Fm(f.ops),
+            _ => Class::Sub,
+        }
+    }
+
     /// Fade out over [`FADE`] samples and stop.
     pub fn cut(&mut self) {
         if self.fade == 0 {

@@ -403,6 +403,18 @@ impl MidiPlayer {
         self.engine.set_voice_limit(n);
     }
 
+    /// Enable the send effects of `mask` (`orpheus_synth::load::FX_*`),
+    /// the others fade out (the load governor; `Engine::set_fx_enabled`).
+    pub fn set_fx_enabled(&mut self, mask: u8) {
+        self.engine.set_fx_enabled(mask);
+    }
+
+    /// Fade out voices until at most `keep` sound, released ones first
+    /// (the load governor; `Engine::shed`); how many it faded.
+    pub fn shed(&mut self, keep: usize) -> usize {
+        self.engine.shed(keep)
+    }
+
     /// The channel state.
     #[must_use]
     pub fn sequencer(&self) -> &Sequencer {

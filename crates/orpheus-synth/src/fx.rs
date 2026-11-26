@@ -450,6 +450,13 @@ impl Chorus {
         self.zero_run = CHORUS_LEN;
     }
 
+    /// Whether the line holds only zeros (the next silent input costs
+    /// nothing).
+    #[must_use]
+    pub fn is_idle(&self) -> bool {
+        self.zero_run >= CHORUS_LEN
+    }
+
     #[inline]
     fn tap(&self, d: f32) -> f32 {
         let d = clampf(d, 1.0, (CHORUS_LEN - 2) as f32);
