@@ -75,6 +75,34 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-26 — settings rounds 2 and 3, MIDI-1, SYN-2, BOOK-2 merged; screen lock vs tests (lead)
+
+* Merged SYN-2 (`f7b756c9`), BOOK-2 (`65cb2602`), the Sound/Playback
+  settings (`4c3d51a6`), the Display/Power/Time/USB settings (`69333b38`,
+  conflicts in the Shell trait, `HostServices`, the firmware services and
+  the journeys: both sides kept, three blocks closed by hand) and MIDI-1
+  (`25d338d6`). 1,865 host tests; `settings-matrix --check`: 10,786 /
+  10,834 cells (99.6 %), **4 settings without an effect** (Speed:
+  WSOLA not built; Brightness: U-PWM-3; Wallpaper: Pictures › Set as
+  wallpaper not built; Monitor: not in the firmware), 52 exclusions, 0
+  errors. fw: resident 81,155 B, `.bss` 125,408 B, stack margin 4,560 B.
+* **Found on the player:** with Backlight timeout and Lock delay in
+  effect, the player locks itself ≈ 20 s after a reboot (defaults), and
+  the suite stopped at its first journey ("the player's keys are locked:
+  unlocking needs the Power key"); `ui test-look on` held the timers but
+  left the lock. Fix (`b26c29e8`): `ui test-look on` wakes the screen and
+  frees the keys (`KeyGate::wake_for_test`,
+  `regress_test_look_wakes_a_locked_player`). On the player: locked=1 →
+  test-look on → locked=0 screen=1.
+* Suite on `b26c29e8`: **21/21** (new: `settings_sound`,
+  `settings_playback`, `settings_screen_timers`, `settings_screen_saver`),
+  idle Home 615 line loads/s, stack free ≥ 6,800 B; the owner's stored
+  settings unchanged (`settings changed` before/after).
+* Owner decisions pending: Speed (take it off Now Playing's menu until the
+  time stretch, or label it); Brightness needs U-PWM-3 (stock duty
+  values) from the `DRV_LCD.DRV` disassembly; Developer channel off/on
+  only with the owner present.
+
 ### 2026-11-26 — VER-13 second round: six settings get their effect (worker, no hardware)
 
 * **Key click** (0x0108): `orpheus_ui::shell::System::key_click` on every
