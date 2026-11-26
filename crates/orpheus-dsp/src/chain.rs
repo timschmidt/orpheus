@@ -109,6 +109,10 @@ impl Pcm for i32 {
     }
 }
 
+/// Length of the pause and resume fades (05 §7.1: "OK play/pause (60 ms
+/// fade)"; 04 §5.1: 5–60 ms ramps).
+pub const PAUSE_FADE_MS: u32 = 60;
+
 /// The DSP chain. `E` runs the equaliser's sections ([`SoftCascade`] by
 /// default; the hardware IIR engine of WP DSP-1 when it exists).
 ///
@@ -377,6 +381,29 @@ impl<E: BiquadCascade> Chain<E> {
     pub fn fade_in(&mut self, ms: u32) {
         self.settled = None;
         self.fade.to(UNITY, ms);
+    }
+
+    /// A pause (Settings › Sound › Fade on pause, 0x0109). With `fade` the
+    /// output fades to silence over [`PAUSE_FADE_MS`]: the caller keeps
+    /// feeding blocks until [`Chain::fade_done`], lets them play out and
+    /// then stops the output. Without, it stops the output at once (the
+    /// chain is left as it is). Returns whether to keep feeding.
+    pub fn begin_pause(&mut self, fade: bool) -> bool {
+        if fade {
+            self.fade_out(PAUSE_FADE_MS);
+        }
+        fade
+    }
+
+    /// Playing again after a pause: with `fade` from silence up over
+    /// [`PAUSE_FADE_MS`], else at full level at once.
+    pub fn end_pause(&mut self, fade: bool) {
+        if fade {
+            self.fade_to(0, 0);
+            self.fade_in(PAUSE_FADE_MS);
+        } else {
+            self.fade_to(UNITY, 0);
+        }
     }
 
     /// The last fade has finished.

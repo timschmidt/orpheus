@@ -439,13 +439,20 @@ impl Player for SimPlayer {
             "status" => {
                 use orpheus_apps::services::PlaybackService;
                 // `shuf=`: the queue follows Settings › Playback › Shuffle
-                // (VER-13 journey `settings_shuffle`).
+                // (VER-13 journey `settings_shuffle`); `fade=`, `gapless=`,
+                // `clicks=` as the firmware's (journey `settings_playback`).
                 let shuf = self.sim.sys.settings.get(orpheus_apps::settings::id::SHUFFLE);
+                let m = &self.sim.sys.media;
+                let fade = m.last_fade.map_or("-".to_string(), |f| f.to_string());
+                let gapless = m.last_change.map_or("-", |g| if g { "1" } else { "0" });
+                let tail = format!("fade={fade} gapless={gapless} clicks={}", self.sim.sys.clicks);
+                // The firmware says "playing" while a track is open (also
+                // paused).
                 match self.sim.sys.playing().map(|p| p.source) {
-                    Some(orpheus_ui::event::Source::Playing) => {
-                        format!("playing frames=44100 rate=44100 underruns=0 corrupt=0 shuf={shuf}")
+                    Some(orpheus_ui::event::Source::Playing | orpheus_ui::event::Source::Paused) => {
+                        format!("playing frames=44100 rate=44100 underruns=0 corrupt=0 shuf={shuf} {tail}")
                     }
-                    _ => "idle frames=0 rate=0 underruns=0 corrupt=0".into(),
+                    _ => format!("idle frames=0 rate=0 underruns=0 corrupt=0 {tail}"),
                 }
             }
             // VER-12/13: the RAM-only settings session and its settings.

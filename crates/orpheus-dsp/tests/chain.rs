@@ -628,3 +628,43 @@ fn settled_stage_mask_follows_every_change() {
     assert_eq!(c.settled_mask(), Some(c.active()));
     assert_ne!(c.active() & (1 << StageId::Tone as u16), 0);
 }
+
+/// Settings › Sound › Fade on pause (0x0109, VER-13): on, a pause fades the
+/// output to silence over 60 ms and playing again fades in from
+/// silence over 60 ms; off, the chain is left alone (the player stops the
+/// output at once) and playing again is at full level.
+#[test]
+fn pause_fades_out_and_in_over_60_ms() {
+    let x = sine16(44_100, 1000.0, 0.5, 44_100.0);
+    let frames_60ms = 44_100 * orpheus_dsp::PAUSE_FADE_MS as usize / 1000;
+    let peak = |s: &[i16]| s.iter().map(|v| u32::from(v.unsigned_abs())).max().unwrap_or(0);
+    // On.
+    let mut c = Chain::new(OutWidth::Bits16, false);
+    c.set_format(FMT16).unwrap();
+    assert_eq!(run16(&mut c, &x[..2 * 4410], 441), &x[..2 * 4410], "flat before the pause");
+    assert!(c.begin_pause(true));
+    assert!(!c.fade_done());
+    let out = run16(&mut c, &x[..2 * (frames_60ms + 441)], 441);
+    assert!(c.fade_done());
+    // The first 6 ms near the full level, the middle about half, the end
+    // silent.
+    let full = peak(&x[..2 * 4410]);
+    assert!(peak(&out[..2 * 265]) > full * 9 / 10);
+    let mid = peak(&out[2 * (frames_60ms / 2 - 100)..2 * (frames_60ms / 2 + 100)]);
+    assert!(mid > full * 4 / 10 && mid < full * 6 / 10, "mid {mid} of {full}");
+    assert!(out[2 * frames_60ms..].iter().all(|&v| v.abs() <= 2), "silent (within the dither) after 60 ms");
+    // Playing again: from silence up over 60 ms, then full again (and
+    // bit-exact once the fade is over).
+    c.end_pause(true);
+    let back = run16(&mut c, &x[..2 * (frames_60ms + 4410)], 441);
+    assert!(peak(&back[..2 * 26]) < full / 10, "starts near silence");
+    assert_eq!(&back[2 * (frames_60ms + 441)..], &x[2 * (frames_60ms + 441)..2 * (frames_60ms + 4410)]);
+    // Off: nothing to feed, the chain unchanged, full level after.
+    let mut c = Chain::new(OutWidth::Bits16, false);
+    c.set_format(FMT16).unwrap();
+    assert!(!c.begin_pause(false));
+    assert_eq!(c.active(), 0);
+    c.end_pause(false);
+    assert_eq!(c.active(), 0);
+    assert_eq!(run16(&mut c, &x[..2 * 4410], 441), &x[..2 * 4410]);
+}

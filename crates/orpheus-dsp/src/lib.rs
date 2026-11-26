@@ -68,6 +68,7 @@ extern crate std;
 
 pub mod biquad;
 pub mod chain;
+pub mod click;
 pub mod cost;
 pub mod crossfeed;
 pub mod decimate;
@@ -82,7 +83,7 @@ pub mod matrix;
 pub mod meter;
 
 pub use biquad::{BiquadCascade, Coeffs, Shape, SoftCascade};
-pub use chain::{CHUNK, Chain, EqPreamp, Format, OutWidth};
+pub use chain::{CHUNK, Chain, EqPreamp, Format, OutWidth, PAUSE_FADE_MS};
 pub use cost::{Cost, StageId};
 pub use crossfeed::CrossfeedParams;
 pub use dither::DitherMode;

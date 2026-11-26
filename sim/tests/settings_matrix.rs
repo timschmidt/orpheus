@@ -121,17 +121,24 @@ type Probe = fn(&mut AppSim) -> String;
 fn service_scripts() -> Vec<(&'static str, &'static str, Probe)> {
     vec![
         ("playback", "set:queue=takk wait:500", |s| {
-            // The queue's order, then the end of the last track.
+            // The queue's order, a track's end in the middle of the queue
+            // (the next track's place 500 ms on: Gapless), then the end of
+            // the last track.
             let st = s.sys.media.state();
             let order: Vec<String> = (0..st.queue_len)
                 .filter_map(|i| s.sys.media.queue_entry(i).map(|e| e.title.to_string()))
                 .collect();
+            run(s, &format!("set:pos={} wait:1000", st.duration_ms.saturating_sub(500)));
+            let mid = s.sys.media.state();
             let last = st.queue_len.saturating_sub(1);
             run(s, &format!("set:track={last} wait:100"));
             let d = s.sys.media.state().duration_ms;
             run(s, &format!("set:pos={} wait:4000", d.saturating_sub(1000)));
             let end = s.sys.media.state();
-            format!("{order:?} {:?} {} {}", end.source, end.queue_pos, end.position_ms)
+            format!(
+                "{order:?} {} {} {:?} {} {}",
+                mid.queue_pos, mid.position_ms, end.source, end.queue_pos, end.position_ms
+            )
         }),
         ("radio-tuner", "set:radio=94700 next*2 ok wait:1100 hold:next wait:1500", |s| {
             format!("{:?} {:?}", s.sys.radio.radio.info(), s.sys.radio.chip.writes)
@@ -165,6 +172,8 @@ fn service_scripts() -> Vec<(&'static str, &'static str, Probe)> {
         ("alarms", "set:clock=06:59:58 set:clockrun=1 wait:3000", |s| s.screen().to_string()),
         ("sleep", "set:queue=takk wait:200", |s| format!("{:?}", s.sys.sleep_left)),
         ("volume", "set:volume=29 vol+ vol+", |s| format!("{}", s.sys.volume)),
+        // Keys on Home and in a list: the clicks the sound output got.
+        ("key-click", "next prev ok wait:100 down up back wait:100", |s| format!("{}", s.sys.clicks)),
     ]
 }
 
@@ -405,7 +414,7 @@ fn contexts_are_the_manifest_screens_and_services() {
 /// Effects the matrix's fixed journeys cannot show: they need a second
 /// setting (pairwise), time to pass, or a file to look into.
 mod effects {
-    use super::{AppSim, fnv, run};
+    use super::{AppSim, PLAY, fnv, run};
     use orpheus_apps::services::ToolsService;
     use orpheus_apps::tools::Alert;
 
@@ -438,6 +447,110 @@ mod effects {
         a.sort();
         b.sort();
         assert_eq!(a, b, "the same tracks");
+    }
+
+    /// Settings › Playback › Seek step (0x0205): Next held on Now Playing
+    /// seeks by the setting's step first (2, 5, 10 or 30 s), then faster;
+    /// the place shows on Now Playing and in the player.
+    #[test]
+    fn seek_step_sets_the_first_steps_of_a_held_key() {
+        let held = |v: i16| {
+            let mut s = sim(&format!("set:0x0205={v} {PLAY} goto:NowPlaying wait:100 hold:next:550 wait:50"));
+            let at = s.sys.media.state().position_ms;
+            s.draw();
+            (at, fnv(s.fb.iter().copied()))
+        };
+        let (base, base_frame) = held(1);
+        // The steps the hold made (the same for every value), from 2 s.
+        let n = (i64::from(base) - i64::from(held(0).0)) / 3000;
+        assert!(n >= 1, "{n} steps");
+        for (v, step) in [(0i16, 2000u32), (2, 10_000), (3, 30_000)] {
+            let (at, f) = held(v);
+            assert_ne!(f, base_frame, "value {v}: Now Playing shows another place");
+            // The same steps and time played: they differ by the steps.
+            assert_eq!(i64::from(at) - i64::from(base), n * (i64::from(step) - 5000), "value {v}");
+        }
+        assert!(base > 52_000, "5 s (default) from 47 s: {base} ms");
+    }
+
+    /// Settings › Playback › Resume at start-up (0x0204): a start-up with a
+    /// resume point opens it paused at its place (05 §6.1: Home shows the
+    /// paused track, Music offers Now Playing); off, Music offers
+    /// "Resume ‹title›" and nothing is loaded.
+    #[test]
+    fn resume_at_start_opens_the_saved_place_paused() {
+        let on = sim("set:resume=1 wait:100");
+        let st = on.sys.media.state();
+        assert_eq!((st.source, st.position_ms), (orpheus_ui::event::Source::Paused, 83_000));
+        assert!(on.sys.media.resume_title().is_none());
+        let off = sim("set:0x0204=0 set:resume=1 wait:100");
+        assert_eq!(off.sys.media.state().queue_len, 0, "off: nothing loaded");
+        assert!(off.sys.media.resume_title().is_some(), "off: Music offers Resume");
+        let music = |v: i16| frame(&format!("set:0x0204={v} set:resume=1 ok wait:100 expect-screen:Music"));
+        assert_ne!(music(1), music(0), "Music: Now Playing or Resume");
+        let home = |v: i16| frame(&format!("set:0x0204={v} set:resume=1 wait:100"));
+        assert_ne!(home(1), home(0), "Home: the paused track in the strip");
+        // Play continues at the saved place either way.
+        let play = |v: i16| sim(&format!("set:0x0204={v} set:resume=1 ok ok wait:100")).sys.media.state();
+        assert!(play(1).position_ms >= 83_000 && play(0).position_ms >= 83_000);
+    }
+
+    /// Settings › Playback › Gapless (0x0203): off, a track that ends is
+    /// followed by the next after a short silence (the firmware stops the
+    /// DAC and opens the next file fresh); on, at once.
+    #[test]
+    fn gapless_off_leaves_a_silence_between_tracks() {
+        let after = |v: i16| {
+            let s = sim(&format!("set:0x0203={v} set:queue=takk wait:200"));
+            let d = s.sys.media.state().duration_ms;
+            let mut s = s;
+            run(&mut s, &format!("set:pos={} wait:1000", d - 500));
+            let st = s.sys.media.state();
+            (st.queue_pos, st.position_ms, s.sys.media.last_change)
+        };
+        let (on, off) = (after(1), after(0));
+        assert_eq!((on.0, on.2, off.0, off.2), (1, Some(true), 1, Some(false)));
+        assert_eq!(on.1 - off.1, orpheus_sim::media::GAP_MS, "{on:?} {off:?}");
+    }
+
+    /// Settings › Playback › Auto-bookmark long files (0x0207): a podcast
+    /// (over 20 min) left part-way continues there when played again from
+    /// its start; off, it starts at 0. A song (under 20 min) never does.
+    #[test]
+    fn auto_bookmark_continues_a_long_file() {
+        let again = |v: i16, queue: &str| {
+            let s = sim(&format!(
+                "set:0x0207={v} set:queue={queue} set:pos=600000 wait:1000 set:queue=takk wait:500                  set:queue={queue} wait:100"
+            ));
+            s.sys.media.state().position_ms
+        };
+        assert!((601_000..601_300).contains(&again(1, "podcast")), "{}", again(1, "podcast"));
+        assert!(again(0, "podcast") < 200, "off: from the start");
+        assert!(again(1, "kino") < 200, "a song: from the start");
+        let marks = sim("set:queue=podcast set:pos=600000 wait:31000 ok").sys.media.auto_marks().len();
+        assert_eq!(marks, 1, "noted while playing");
+    }
+
+    /// Settings › Sound › Key click (0x0108): every key press clicks, not
+    /// while the microphone is live (the recorder open, its meters on).
+    #[test]
+    fn key_click_on_every_press_not_with_the_microphone() {
+        let clicks = |script: &str| sim(script).sys.clicks;
+        assert_eq!(clicks("set:0x0108=0 next prev ok back"), 0);
+        assert_eq!(clicks("set:0x0108=1 next prev ok back"), 4);
+        assert_eq!(clicks("set:0x0108=1 hold:menu"), 1, "a held key clicks once");
+        let rec = clicks("set:0x0108=1 next*4 ok wait:200 expect-screen:Recorder down up");
+        assert_eq!(rec, 5, "no click once the recorder listens");
+    }
+
+    /// Settings › Sound › Fade on pause (0x0109): the player's `status`
+    /// reports the last pause's fade (60 ms, or 0 when it stopped at
+    /// once); the fade itself is the chain's (orpheus-dsp
+    /// `pause_fades_out_and_in_over_60_ms`) and the browser build's.
+    #[test]
+    fn fade_on_pause_is_reported() {
+        let fade = |v: i16| sim(&format!("set:0x0109={v} {PLAY} set:pause=1 wait:100")).sys.media.last_fade;
+        assert_eq!((fade(1), fade(0)), (Some(60), Some(0)));
     }
 
     /// Equaliser › Custom 1/2 bands (0x0D10–0x0D19): the equaliser screen

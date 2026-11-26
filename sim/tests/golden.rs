@@ -123,7 +123,7 @@ fn media_cases(add: &mut dyn FnMut(String, String)) {
         ("text_page", "next ok ok wait:100 down*{book} ok wait:200 next wait:200 next wait:200"),
         ("music", "ok wait:100 expect-screen:Music"),
         ("music_playing", "set:queue={album} ok wait:100"),
-        ("music_resume", "set:resume=1 ok wait:100"),
+        ("music_resume", "set:0x0204=0 set:resume=1 ok wait:100"),
         ("music_folders", "ok down*8 ok wait:100 expect-screen:Folders"),
         ("bookmarks", "set:queue={album} set:pos=61000 set:bookmark=1 ok down*10 ok wait:100"),
         ("np", "set:queue={album} set:track=1 set:pos=47000 goto:NowPlaying wait:100"),

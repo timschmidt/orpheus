@@ -16,6 +16,17 @@
 //! decoder in the same arena (inspect → open) while the PCM ring drains —
 //! no fade, no silence inserted.
 //!
+//! Settings › Playback › Gapless off ([`Command::Gapless`]): nothing is
+//! read ahead, so a track that ends is followed by `Open { gapless: false }`
+//! — the firmware plays out the PCM ring, stops the DAC and starts the next
+//! file fresh: a short silence between the tracks.
+//!
+//! Automatic bookmarks (05 §7.1, [`Command::AutoBookmark`]): a file longer
+//! than 20 min keeps its place ([`AutoMarks`], the last three) when it is
+//! paused, left (Next, Prev, a jump, a new queue, a bookmark, Stop), every
+//! 30 s of play and at shutdown; opened again from its start it continues
+//! there (`Seek` after `Opened`). Played to its end it forgets the place.
+//!
 //! Resume (04 §2.2): a [`ResumeRecord`] (track locator, frame, queue
 //! position and identity, shuffle seed, repeat) is written through
 //! [`PlayerStore`] at pause, stop, track change, every
@@ -24,7 +35,7 @@
 //! previous record.
 //!
 //! `no_std`, no `alloc`, no `unsafe`, no floating point. `Player` is 752
-//! bytes.
+//! bytes (bookmarks packed to 28 B pay for the automatic ones).
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -39,7 +50,8 @@ pub mod store;
 
 pub use shuffle::Shuffle;
 pub use store::{
-    Bookmark, Bookmarks, Key, PlayerStore, Repeat, ResumeRecord, TrackRef, load_resume, name_hash,
+    AutoMark, AutoMarks, Bookmark, Bookmarks, Key, PlayerStore, Repeat, ResumeRecord, TrackRef, load_resume,
+    name_hash,
 };
 
 /// User commands.
@@ -80,6 +92,12 @@ pub enum Command {
     SleepAfterMs(u32),
     /// Stop at the end of the current track.
     SleepAfterTrack,
+    /// Settings › Playback › Gapless (on by default): off, the next file
+    /// is not read ahead and each track starts fresh after the last one
+    /// played out.
+    Gapless(bool),
+    /// Settings › Playback › Auto-bookmark long files (on by default).
+    AutoBookmark(bool),
     /// The firmware edited the queue (Up next: remove, move; Play next, Add
     /// to queue): it now has `len` items in play order (a shuffled order
     /// was written into the queue first, so it plays unshuffled), identity
@@ -268,7 +286,18 @@ pub struct Player {
     ticks: u32,
     bookmarks: Bookmarks,
     loaded: Option<ResumeRecord>,
+    /// Settings › Playback › Gapless and Auto-bookmark long files.
+    gapless: bool,
+    auto_bm: bool,
+    auto: AutoMarks,
 }
+
+/// Files longer than this keep their place (05 §7.1: 20 min).
+pub const LONG_MS: u64 = 20 * 60 * 1000;
+/// Their place is noted this often while playing (05 §7.1: 30 s).
+pub const MARK_EVERY_MS: u32 = 30_000;
+/// Left this close to its end, a long file counts as finished.
+pub const MARK_END_MS: u64 = 10_000;
 
 impl Player {
     /// A stopped player; reads the last resume record and the bookmarks.
@@ -280,6 +309,13 @@ impl Player {
         } else {
             Bookmarks::default()
         };
+        // The same buffer for the (smaller) automatic bookmarks.
+        let mut auto = AutoMarks::default();
+        if let Some(b) = bm.first_chunk_mut::<{ store::AUTO_MARKS_LEN }>()
+            && store.read(Key::AutoMarks, b) == b.len()
+        {
+            auto = AutoMarks::decode(b).unwrap_or_default();
+        }
         Self {
             cfg,
             state: State::Stopped,
@@ -300,6 +336,50 @@ impl Player {
             ticks: 0,
             bookmarks,
             loaded: loaded.map(|(r, _)| r),
+            gapless: true,
+            auto_bm: true,
+            auto,
+        }
+    }
+
+    /// The automatic bookmarks of long files.
+    #[must_use]
+    pub fn auto_marks(&self) -> &AutoMarks {
+        &self.auto
+    }
+
+    /// Settings › Playback › Gapless as the player has it.
+    #[must_use]
+    pub fn gapless(&self) -> bool {
+        self.gapless
+    }
+
+    /// The current track is long enough for an automatic bookmark.
+    fn long(c: &Current) -> bool {
+        c.rate != 0 && c.frames.is_some_and(|n| n > LONG_MS * u64::from(c.rate) / 1000)
+    }
+
+    /// Note the current long file's place (or forget it when it is at its
+    /// start or end), if automatic bookmarks are on.
+    fn auto_mark(&mut self, store: &mut dyn PlayerStore) {
+        let Some(c) = self.cur.filter(|c| self.auto_bm && Self::long(c)) else { return };
+        let Some(t) = c.track else { return };
+        let end = c.frames.unwrap_or(0).saturating_sub(MARK_END_MS * u64::from(c.rate) / 1000);
+        let changed = match u32::try_from(c.frame) {
+            Ok(f) if f > 0 && c.frame < end => self.auto.set(t, f),
+            _ => self.auto.remove(t),
+        };
+        if changed {
+            store.write(Key::AutoMarks, &self.auto.encode());
+        }
+    }
+
+    /// The current file played to its end: its place is forgotten.
+    fn auto_done(&mut self, store: &mut dyn PlayerStore) {
+        if let Some(t) = self.cur.filter(|_| self.auto_bm).and_then(|c| c.track)
+            && self.auto.remove(t)
+        {
+            store.write(Key::AutoMarks, &self.auto.encode());
         }
     }
 
@@ -509,6 +589,8 @@ impl Player {
         let prefetched = if failed { None } else { self.prefetch.take() };
         if failed {
             self.cancel_prefetch(out);
+        } else {
+            self.auto_done(store);
         }
         // Repeat-one after a failure would retry the same broken file.
         let next = prefetched.or_else(|| if failed { self.next_pos(false) } else { self.next_pos(true) });
@@ -581,6 +663,13 @@ impl Player {
                 }
                 self.failures = 0;
                 self.state = if self.open_paused { State::Paused } else { State::Playing };
+                // A long file opened at its start continues where it was
+                // left.
+                if self.cur.is_some_and(|c| self.auto_bm && c.frame == 0 && Self::long(&c))
+                    && let Some(f) = self.auto.get(track)
+                {
+                    self.seek_to(u64::from(f), out);
+                }
                 self.save(store);
             }
             Event::OpenFailed => {
@@ -596,6 +685,7 @@ impl Player {
             Event::Position { frame } => self.position(frame, out),
             Event::ReaderAtEnd => {
                 if self.prefetch.is_none()
+                    && self.gapless
                     && matches!(self.state, State::Playing | State::Paused)
                     && !self.sleep_after_track
                     && let Some(p) = self.next_pos(true)
@@ -618,13 +708,18 @@ impl Player {
                 if self.state != State::Playing {
                     return;
                 }
+                let before = self.ticks;
                 self.ticks = self.ticks.wrapping_add(ms);
                 self.since_save = self.since_save.saturating_add(ms);
+                if before / MARK_EVERY_MS != self.ticks / MARK_EVERY_MS {
+                    self.auto_mark(store);
+                }
                 if let Some(left) = self.sleep_ms {
                     if left <= ms {
                         self.sleep_ms = None;
                         self.state = State::Paused;
                         out.push(Action::Pause);
+                        self.auto_mark(store);
                         self.save(store);
                         return;
                     }
@@ -634,13 +729,17 @@ impl Player {
                     self.save(store);
                 }
             }
-            Event::Shutdown => self.save(store),
+            Event::Shutdown => {
+                self.auto_mark(store);
+                self.save(store);
+            }
         }
     }
 
     fn command(&mut self, c: Command, store: &mut dyn PlayerStore, out: &mut Actions) {
         match c {
             Command::PlayQueue { id, len, start } => {
+                self.auto_mark(store);
                 self.cancel_prefetch(out);
                 self.queue_id = id;
                 self.len = len;
@@ -681,6 +780,7 @@ impl Player {
                 State::Playing => {
                     self.state = State::Paused;
                     out.push(Action::Pause);
+                    self.auto_mark(store);
                     self.save(store);
                 }
                 State::Opening => self.open_paused = true,
@@ -698,6 +798,7 @@ impl Player {
             }
             Command::Stop => {
                 if self.state != State::Stopped {
+                    self.auto_mark(store);
                     self.cancel_prefetch(out);
                     self.state = State::Stopped;
                     out.push(Action::Stop);
@@ -708,6 +809,7 @@ impl Player {
                 if self.cur.is_none() {
                     return;
                 }
+                self.auto_mark(store);
                 self.cancel_prefetch(out);
                 let paused = self.state == State::Paused;
                 match self.next_pos(false) {
@@ -724,6 +826,7 @@ impl Player {
                 let restart = c.rate != 0 && c.frame >= self.ms_to_frames(u64::from(self.cfg.restart_ms));
                 match self.prev_pos() {
                     Some(p) if !restart => {
+                        self.auto_mark(store);
                         self.cancel_prefetch(out);
                         let paused = self.state == State::Paused;
                         self.open(p, 0, false, paused, out);
@@ -733,6 +836,7 @@ impl Player {
             }
             Command::JumpTo(item) => {
                 if item < self.len {
+                    self.auto_mark(store);
                     self.cancel_prefetch(out);
                     let pos = self.pos_of(item);
                     self.open(pos, 0, false, false, out);
@@ -796,6 +900,7 @@ impl Player {
                 if self.cur.and_then(|c| c.track) == Some(b.track) && self.state != State::Stopped {
                     self.seek_to(b.frame, out);
                 } else {
+                    self.auto_mark(store);
                     self.cancel_prefetch(out);
                     let pos = self.cur.map_or(0, |c| c.pos);
                     self.cur = Some(Current {
@@ -825,6 +930,16 @@ impl Player {
                 self.sleep_after_track = true;
                 self.cancel_prefetch(out);
             }
+            Command::Gapless(on) => {
+                if on != self.gapless {
+                    self.gapless = on;
+                    // Off: what was read ahead is not used.
+                    if !on {
+                        self.cancel_prefetch(out);
+                    }
+                }
+            }
+            Command::AutoBookmark(on) => self.auto_bm = on,
             Command::Requeue { id, len, pos } => {
                 self.cancel_prefetch(out);
                 self.queue_id = id;

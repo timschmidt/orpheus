@@ -67,7 +67,7 @@ fn image(shuffle: bool, bookmarks: u32) -> Vec<u8> {
     ev(&mut p, &mut img, Event::Tick { ms: 70_000 });
     ev(&mut p, &mut img, Event::Shutdown);
     let mut bin = [0u8; IMAGE_LEN];
-    img.image(p.bookmarks(), &mut bin);
+    img.image(p.bookmarks(), p.auto_marks(), &mut bin);
     bin.to_vec()
 }
 

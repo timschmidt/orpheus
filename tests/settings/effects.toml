@@ -121,8 +121,9 @@
 "alarms" = "an alarm ringing at its time"
 "sleep" = "the sleep timer (minutes left, the stop)"
 "volume" = "the volume the keys reach"
+"key-click" = "the key clicks the sound output gets for a few key presses on Home and in Music (05 §3)"
 # Host-crate contexts (a host test of the crate that does it).
-"audio" = "the rendered sound of music (EQ, bass, balance, crossfeed, channels, ReplayGain): the settings → chain mapping of the browser build (sim/web Sound::from_settings) over the real orpheus-dsp chain"
+"audio" = "the rendered sound of music (EQ, bass, balance, crossfeed, channels, ReplayGain): the settings → chain mapping of the browser build (sim/web Sound::from_settings) over the real orpheus-dsp chain; the pause fade and the key click of orpheus-dsp (VER-13)"
 "governor" = "the CPU clock level the governor picks (orpheus-power governor)"
 # Player-only contexts (the firmware's own code or the hardware).
 "audio-player" = "the player's rendered sound (fw ui.rs publishes media::Sound, the audio task applies it)"
@@ -149,7 +150,7 @@ screens = [
 ]
 services = [
     "playback", "radio-tuner", "recording", "usb-keyboard", "usb-host", "bt-module", "steps-counter",
-    "alarms", "sleep", "volume",
+    "alarms", "sleep", "volume", "key-click",
 ]
 host = ["audio", "governor"]
 device = [
@@ -312,10 +313,14 @@ name = "Settings › Sound › Key click"
 scope = "global"
 values = ["off", "on"]
 default = 0
-contexts = []
-oracle = "None yet."
-tests = ["sim/tests/settings_matrix.rs::matrix::s0108", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
-gap = "not wired: no code reads 0x0108 (there is no click sound); only its Settings row shows the value"
+contexts = ["key-click", "audio", "audio-player"]
+unaffected = ["@screens", "@services"]
+na = { "governor" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max → Governor::step)", "governor-player" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight level follows the screen state only (fw ui.rs: 12 on, 0 off); no setting reads into it", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date; no setting reads into the time keeping", "keys" = "review: the locked-keys rule is fixed (orpheus-ui KeyGate::new: volume keys); no setting reads into it" }
+oracle = "Key click (VER-13, 05 §3): every key press that the key gate passes clicks — a 3 ms 2.5 kHz burst (orpheus-dsp click) mixed into the music while it plays, else sounded alone with the DAC started for it — never while the microphone is live (the recorder listening; orpheus-apps services::key_click) nor over the radio (its sound bypasses the DAC). key-click: the clicks the simulator's output got. audio: the click and its mixing (orpheus-dsp). On the player: `status` clicks= counts the clicks sounded (suite journey settings_sound, RAM-only test session)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0108", "sim/tests/settings_matrix.rs::effects::key_click_on_every_press_not_with_the_microphone", "crates/orpheus-apps/src/services.rs::bt_tests::key_click_follows_the_setting_and_the_microphone", "crates/orpheus-dsp/src/click.rs::tests::a_short_decaying_burst", "crates/orpheus-dsp/src/click.rs::tests::mixing_adds_the_click_once_and_saturates"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0108"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0108"], "key-click" = ["sim/tests/settings_matrix.rs::matrix::s0108", "sim/tests/settings_matrix.rs::effects::key_click_on_every_press_not_with_the_microphone"], "audio" = ["crates/orpheus-dsp/src/click.rs::tests::a_short_decaying_burst", "crates/orpheus-dsp/src/click.rs::tests::mixing_adds_the_click_once_and_saturates"], "audio-player" = ["suite:settings_sound"] }
+device = true
+checks = ["suite:settings_sound"]
 
 [[setting]]
 id = "0x0109"
@@ -323,10 +328,14 @@ name = "Settings › Sound › Fade on pause"
 scope = "global"
 values = ["off", "on"]
 default = 1
-contexts = []
-oracle = "None yet."
-tests = ["sim/tests/settings_matrix.rs::matrix::s0109", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
-gap = "not wired: no code reads 0x0109 (pause does not consult it); only its Settings row shows the value"
+contexts = ["audio", "audio-player"]
+unaffected = ["@screens", "@services"]
+na = { "governor" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max → Governor::step)", "governor-player" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight level follows the screen state only (fw ui.rs: 12 on, 0 off); no setting reads into it", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date; no setting reads into the time keeping", "keys" = "review: the locked-keys rule is fixed (orpheus-ui KeyGate::new: volume keys); no setting reads into it" }
+oracle = "Fade on pause (VER-13, 05 §7.1 \"OK play/pause (60 ms fade)\"): on, a pause fades the output to silence over 60 ms (orpheus-dsp Chain::begin_pause; the firmware decodes on until the fade is done and lets the faded end play out before the DAC stops) and playing again fades in over 60 ms; off, the DAC stops at once and playing again is at full level. audio: the chain's fades and the browser build's pause. On the player: `status` fade= is the last pause's fade in ms, 60 or 0 (suite journey settings_sound)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0109", "crates/orpheus-dsp/tests/chain.rs::pause_fades_out_and_in_over_60_ms", "sim/web/src/audio.rs::tests::fade_on_pause", "sim/tests/settings_matrix.rs::effects::fade_on_pause_is_reported"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0109"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0109"], "audio" = ["crates/orpheus-dsp/tests/chain.rs::pause_fades_out_and_in_over_60_ms", "sim/web/src/audio.rs::tests::fade_on_pause", "sim/tests/settings_matrix.rs::effects::fade_on_pause_is_reported"], "audio-player" = ["suite:settings_sound"] }
+device = true
+checks = ["suite:settings_sound"]
 
 # ---------------------------------------------------------------- Playback
 
@@ -362,10 +371,13 @@ name = "Settings › Playback › Gapless"
 scope = "local"
 values = ["off", "on"]
 default = 1
-contexts = ["Settings.Playback"]
-oracle = "None yet."
-tests = ["sim/tests/settings_matrix.rs::matrix::s0203", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
-gap = "not wired: no code reads 0x0203 (the player always joins tracks gaplessly); only its Settings row shows the value"
+contexts = ["Settings.Playback", "playback"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Gapless (VER-13, 04 §2.2): on, the next file is read ahead and handed over with the DAC running (no inserted samples); off, nothing is read ahead (orpheus-player Command::Gapless) and a track that ends is followed by a fresh start: the PCM ring plays out, the DAC stops, the next file opens (a short silence; 200 ms in the simulator). playback: the next track's place after a track's end. On the player: `status` gapless= says whether the last track change at a track's end was gapless (1) or a fresh start (0) (suite journey settings_playback)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0203", "sim/tests/settings_matrix.rs::effects::gapless_off_leaves_a_silence_between_tracks", "crates/orpheus-player/src/tests.rs::gapless_off_starts_each_track_fresh", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0203"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0203"], "playback" = ["sim/tests/settings_matrix.rs::matrix::s0203", "sim/tests/settings_matrix.rs::effects::gapless_off_leaves_a_silence_between_tracks", "crates/orpheus-player/src/tests.rs::gapless_off_starts_each_track_fresh", "suite:settings_playback"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+device = true
+checks = ["suite:settings_playback"]
 
 [[setting]]
 id = "0x0204"
@@ -373,10 +385,11 @@ name = "Settings › Playback › Resume at start"
 scope = "local"
 values = ["off", "on"]
 default = 1
-contexts = ["Settings.Playback"]
-oracle = "None yet."
-tests = ["sim/tests/settings_matrix.rs::matrix::s0204", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
-gap = "not wired: no code reads 0x0204; only its Settings row shows the value"
+contexts = ["Settings.Playback", "Home", "Music"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Resume at start-up (VER-13, 05 §6.1): on, a start-up with a resume point opens it paused at its place (fw audio.rs resume_at_start once the UI published its settings): Home's strip shows the paused track and Music offers Now Playing; off, nothing is loaded and Music offers \"Resume ‹title›\". Home and Music: after a simulated start-up with a resume point (`set:resume=1`). Only a restart shows it on the player, which the RAM-only test session does not survive: no suite journey (an owner check)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0204", "sim/tests/settings_matrix.rs::effects::resume_at_start_opens_the_saved_place_paused", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0204"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0204"], "Home" = ["sim/tests/settings_matrix.rs::effects::resume_at_start_opens_the_saved_place_paused"], "Music" = ["sim/tests/settings_matrix.rs::effects::resume_at_start_opens_the_saved_place_paused"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
 [[setting]]
 id = "0x0205"
@@ -384,10 +397,13 @@ name = "Settings › Playback › Seek step"
 scope = "local"
 values = ["2 s", "5 s", "10 s", "30 s"]
 default = 1
-contexts = []
-oracle = "None yet."
-tests = ["sim/tests/settings_matrix.rs::matrix::s0205", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
-gap = "not wired: no code reads 0x0205 (seeking uses fixed steps)"
+contexts = ["NowPlaying", "playback"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Seek step (VER-13, 05 §7.1): Prev/Next held on Now Playing seeks by the setting's step first (2, 5, 10 or 30 s), one rung up the ladder 2/5/10/30 s after 6, 12 and 20 repeats (orpheus-apps seek_step_ms; the firmware runs the same screen). NowPlaying and playback: the place after Next held. On the player: suite journey settings_playback seeks a 30 s track to its end with the 30 s step."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0205", "sim/tests/settings_matrix.rs::effects::seek_step_sets_the_first_steps_of_a_held_key", "crates/orpheus-apps/src/screens/player.rs::tests::seek_steps_start_at_the_setting", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0205"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0205"], "NowPlaying" = ["sim/tests/settings_matrix.rs::effects::seek_step_sets_the_first_steps_of_a_held_key"], "playback" = ["sim/tests/settings_matrix.rs::effects::seek_step_sets_the_first_steps_of_a_held_key", "crates/orpheus-apps/src/screens/player.rs::tests::seek_steps_start_at_the_setting", "suite:settings_playback"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+device = true
+checks = ["suite:settings_playback"]
 
 [[setting]]
 id = "0x0206"
@@ -398,7 +414,7 @@ default = 3
 contexts = []
 oracle = "None yet."
 tests = ["sim/tests/settings_matrix.rs::matrix::s0206", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
-gap = "not wired: Now Playing's menu shows the value, but neither the player nor the firmware reads 0x0206 (no time-stretch in the chain)"
+gap = "not built: 04 §5.1 defines Speed as a pitch-kept time stretch (WSOLA, 20 ms windows, 4 KiB of state, < 15 % CPU), the last step of WP-AU-6 (\"then speed control\"); no time stretch exists, the 4 KiB have no home (static RAM is within 104 B of the next stack step, the decoder arena's spare is 2 KiB and Opus leaves < 4 KiB), and 2× doubles the decoder's rate. A resampling speed change would alter the pitch (not the spec). VER-13 (2026-11-26) proposes: hide Speed from Now Playing's menu until the time-stretch package, or state it as such in 05 §7.1. Now Playing's menu shows the value only"
 
 [[setting]]
 id = "0x0207"
@@ -406,10 +422,11 @@ name = "Settings › Playback › Auto bookmark"
 scope = "local"
 values = ["off", "on"]
 default = 1
-contexts = []
-oracle = "None yet."
-tests = ["sim/tests/settings_matrix.rs::matrix::s0207", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
-gap = "not wired: no code reads 0x0207"
+contexts = ["playback"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Auto-bookmark long files (VER-13, 05 §7.1): a file over 20 min keeps its place (orpheus-player AutoMarks, the last three, in player.bin) when paused, left (Next, Prev, a jump, a new queue, a bookmark, Stop), every 30 s of play and at shutdown; opened again from its start it continues there (a Seek after Opened); played to its end it forgets it. Off: long files start at 0 and nothing is kept. playback: a podcast (75 min in the simulator) played again after another queue. On the player the same orpheus-player code runs (host-tested; no 20-minute fixture on the suite's card)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0207", "sim/tests/settings_matrix.rs::effects::auto_bookmark_continues_a_long_file", "crates/orpheus-player/src/tests.rs::auto_bookmark_continues_long_files", "crates/orpheus-player/src/image.rs::tests::auto_marks_round_trip_through_the_file", "crates/orpheus-player/src/store.rs::tests::auto_marks_keep_the_most_recent_and_round_trip", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0207"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0207"], "playback" = ["sim/tests/settings_matrix.rs::effects::auto_bookmark_continues_a_long_file", "crates/orpheus-player/src/tests.rs::auto_bookmark_continues_long_files"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
 [[setting]]
 id = "0x0208"

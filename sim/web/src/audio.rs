@@ -6,7 +6,9 @@
 //! The simulator's player decides what plays and where (queue, position,
 //! pause, seek, A–B, next track); the engine follows it: a new track, a
 //! pause, or a position that jumps away from what was decoded restarts the
-//! decoder there (and tells the page to drop what it buffered). The decode
+//! decoder there (and tells the page to drop what it buffered). A pause
+//! with Settings › Sound › Fade on pause on fades out over 60 ms first, as
+//! the firmware does (`Chain::begin_pause`). The decode
 //! loop is an `async` block polled on demand: it owns the file, the codec
 //! arena and the decoder that borrows them, without `unsafe`.
 
@@ -107,6 +109,8 @@ struct Shared {
     error: Option<&'static str>,
     sound: Sound,
     sound_gen: u32,
+    /// Paused with Fade on pause: the loop fades out, then ends.
+    pausing: bool,
     /// Codec and stream, for the developer panel.
     desc: String,
     arena: usize,
@@ -124,6 +128,8 @@ pub struct Engine {
     flush: bool,
     sound: Sound,
     sound_gen: u32,
+    /// Settings › Sound › Fade on pause.
+    fade: bool,
     /// Tracks started and errors seen (developer panel, tests).
     pub started: u32,
     pub last_error: Option<&'static str>,
@@ -151,6 +157,7 @@ impl Engine {
             flush: false,
             sound: Sound::default(),
             sound_gen: 0,
+            fade: true,
             started: 0,
             last_error: None,
         }
@@ -167,6 +174,11 @@ impl Engine {
         }
     }
 
+    /// Settings › Sound › Fade on pause (on by default).
+    pub fn set_fade_on_pause(&mut self, on: bool) {
+        self.fade = on;
+    }
+
     /// The position (ms) of the next frame the engine hands out.
     fn decoded_ms(&self) -> i64 {
         let sh = self.sh.borrow();
@@ -177,10 +189,17 @@ impl Engine {
     /// Follow the player. `read` gives a file's bytes.
     pub fn sync(&mut self, now: Option<NowAudio>, read: impl FnOnce(&str) -> Vec<u8>) {
         let Some(now) = now.filter(|n| n.playing) else {
-            if self.job.is_some() {
-                // Paused or stopped: silence now.
+            if self.job.is_some() && !self.sh.borrow().pausing {
+                // Paused or stopped: silence now, or after a 60 ms fade
+                // (the loop ends then).
                 self.flush = true;
-                self.job = None;
+                if self.fade {
+                    let mut sh = self.sh.borrow_mut();
+                    sh.pausing = true;
+                    sh.pcm.clear();
+                } else {
+                    self.job = None;
+                }
             }
             self.cur = None;
             return;
@@ -361,6 +380,7 @@ async fn decode(
     }
     let ch = usize::from(info.channels);
     let mut corrupt = 0;
+    let mut fading = false;
     loop {
         while {
             let s = sh.borrow();
@@ -374,6 +394,12 @@ async fn decode(
                 sgen = s.sound_gen;
                 s.sound.apply(&mut chain);
             }
+            if s.pausing && !fading {
+                fading = chain.begin_pause(true);
+            }
+        }
+        if fading && chain.fade_done() {
+            return Ok(());
         }
         match dec.decode(&mut src) {
             Ok(Step::Pcm(mut b)) => {
@@ -493,7 +519,8 @@ mod tests {
         let _ = e.pull(100);
         let (_, _, ms) = e.describe();
         assert!((19_500..20_500).contains(&ms), "{ms}");
-        // Pause: silence.
+        // Pause (Fade on pause off; `fade_on_pause` has it on): silence.
+        e.set_fade_on_pause(false);
         e.sync(now(t.path, 20_000, false), |_| unreachable!());
         assert!(e.take_flush());
         assert!(e.pull(100).is_empty());
@@ -677,6 +704,40 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Settings › Sound › Fade on pause (VER-13): on, a pause gives 60 ms
+    /// more of the track fading to silence (the page drops what it had);
+    /// off, nothing more.
+    #[test]
+    fn fade_on_pause() {
+        let t = &synth::TRACKS[0];
+        let data = demo::ENCODED[0];
+        let tail = |fade: bool| {
+            let mut e = Engine::new();
+            e.set_fade_on_pause(fade);
+            e.sync(now(t.path, 0, true), |_| data.to_vec());
+            let _ = e.pull(22_050);
+            e.sync(now(t.path, 500, false), |_| unreachable!());
+            assert!(e.take_flush());
+            let mut out = Vec::new();
+            for _ in 0..100 {
+                let p = e.pull(1024);
+                if p.is_empty() {
+                    break;
+                }
+                out.extend(p);
+            }
+            out
+        };
+        assert!(tail(false).is_empty(), "off: silence at once");
+        let on = tail(true);
+        let frames = on.len() / 2;
+        let fade = 44_100 * orpheus_dsp::PAUSE_FADE_MS as usize / 1000;
+        assert!((fade..fade + 4096).contains(&frames), "{frames} frames");
+        let peak = |s: &[f32]| s.iter().fold(0f32, |m, x| m.max(x.abs()));
+        assert!(peak(&on[..441]) > 0.05, "starts at the music's level");
+        assert!(peak(&on[2 * (fade - 50)..2 * fade]) < 0.01, "silent at 60 ms");
     }
 
     #[test]

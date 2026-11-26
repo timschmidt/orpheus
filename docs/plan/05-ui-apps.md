@@ -79,6 +79,18 @@ Rules that follow from the grammar:
 * Every press may produce a key click (off by default) mixed into the audio
   output; never when recording from the microphone.
 
+**As built (VER-13, 2026-11-26): key click.** Settings › Sound › Key click
+(0x0108): every key that goes down and is not dropped by the key gate
+(`orpheus_ui::shell::System::key_click`) clicks — a 3 ms burst of a 2.5 kHz
+triangle under a linear decay, ≈ −15 dBFS (`orpheus_dsp::click`) — unless
+the microphone is live (the recorder listening for its meters or
+recording from it: `orpheus_apps::services::key_click`). While music plays
+the click is mixed into the output after the DSP chain; with nothing
+playing (or paused) the card task sounds it alone, the DAC started for it
+(as the alert tone), and drops it when card work is waiting rather than
+delay that work. Not over the radio (its sound bypasses the DAC). The
+player's `status` counts the clicks sounded (`clicks=`).
+
 Power-menu content: Power off · Sleep timer · Lock keys only · Restart ·
 (dual-boot layout) Start original firmware · Recovery mode (ADFU; developer
 option).
@@ -251,6 +263,18 @@ resources).
   connected"), backlight off after 10 s; Power starts the player.
 * Low battery: toast at 15 % and 10 %; at 5 % a dialog; at the cut-off voltage
   the firmware saves state, stops audio with a fade and powers off.
+**As built (VER-13, 2026-11-26): Resume at start-up** (Settings ›
+Playback, 0x0204, on by default). Once the card is mounted and the state
+loaded, and the UI has published its settings (at most 2 s), the saved
+place opens **paused** (`firmware::audio::resume_at_start` →
+`Server::resume_at_start`, the player's `resume(…, play = false)`): Home's
+strip shows the paused track, Music offers Now Playing, OK plays on. It
+always opens paused (the record's "was playing" is not used: a user's
+power-off and the battery's cannot be told apart yet). The screen stack
+is not restored. Off: nothing is loaded; Music offers "Resume ‹title›".
+While the track is open (paused) the idle-only background work (the
+library build, directory indexes) waits, as during any pause.
+
 * Shutdown: save resume state and settings, flush the card, fade audio, "Goodbye"
   for 300 ms, PMU off.
 
@@ -382,6 +406,38 @@ band, Up/Down change gain; pre-amp row avoids clipping automatically).
 shuffle, repeat, gapless, ReplayGain (off/track/album/auto, pre-amp), fade on
 pause/skip, seek step, speed, EQ, balance, bass, crossfeed, channel mode
 (stereo/mono/swap), volume limit, resume on start-up, tag code page.
+
+**As built (VER-13, 2026-11-26).**
+
+* **Seek step** (0x0205: 2, 5, 10, 30 s; 5 s by default) is the first rung
+  of the held-key ladder 2 / 5 / 10 / 30 s: the first steps of Prev/Next
+  held are the setting's, one rung up after 6, 12 and 20 repeats, at most
+  30 s (`orpheus_apps::screens::player::seek_step_ms`; "2 s" is the ladder
+  above from its start).
+* **Fade on pause** (Settings › Sound, 0x0109, on by default): a pause
+  fades the output to silence over 60 ms (the decoder runs on until the
+  chain's fade is done, the faded end plays out, then the DAC stops);
+  playing again fades in over 60 ms. Off: the DAC stops at once, playing
+  again is at full level. The fade around a skip (05 §7.1 "fade on
+  pause/skip") is not built: a skip stops and restarts the output.
+* **Gapless** (0x0203, on): off, nothing is read ahead and each track that
+  ends is followed by a fresh start (the PCM ring plays out, the DAC
+  stops, the next file opens: a short silence). The decoders still trim
+  their encoder delay and padding.
+* **Auto-bookmark long files** (0x0207, on): a file longer than 20 min
+  keeps its place (`orpheus_player::AutoMarks`, the last three, in
+  `player.bin` after the bookmarks) when it is paused, left (Next, Prev, a
+  jump, a new queue, a bookmark, Stop), every 30 s of play and at
+  shutdown; opened again from its start it continues there; played to its
+  end it forgets the place. The 30-second places reach the card at the
+  next save (pause, stop, track change, power-off), not while playing.
+  They are not shown in Bookmarks.
+* **Speed** (Now Playing's menu, 0x0206) has no effect: 04 §5.1 specifies a
+  pitch-kept time stretch (WSOLA, 4 KiB of state, < 15 % CPU) that is not
+  built, and RAM for it has no home yet (VER-13 entry in
+  `tests/settings/effects.toml`). Proposal (owner/lead): take Speed off
+  Now Playing's menu until the time-stretch package lands, or mark it
+  "not built" there.
 
 **Acceptance**: every list reachable; 3000-entry lists scroll without stalls;
 track change by end-of-track and by Next keeps the display consistent; resume

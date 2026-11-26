@@ -935,6 +935,8 @@ pub struct Server {
     /// saved one).
     repeat: Repeat,
     can_resume: bool,
+    /// The next resume opens paused (the start-up's, `resume_at_start`).
+    start_paused: bool,
     sleep_fired: u16,
     bm_gen: u32,
     /// Album art of the current track (in the art cache), and its
@@ -981,6 +983,7 @@ impl Server {
             store: StoreImage::new(),
             repeat: Repeat::Off,
             can_resume: false,
+            start_paused: false,
             sleep_fired: 0,
             bm_gen: 0,
             art: None,
@@ -2335,15 +2338,28 @@ impl Server {
         self.feed(cmd(Command::PlayQueue { id, len, start }))
     }
 
-    /// Continue at the record loaded at start-up.
+    /// Start-up with Settings › Playback › Resume at start-up on (05
+    /// §6.1): the saved place, if any, is opened paused (by the idle loop,
+    /// as a `Resume` request). True if there is one.
+    pub fn resume_at_start(&mut self) -> bool {
+        if self.can_resume && self.player.as_ref().is_some_and(|p| p.saved().is_some()) {
+            self.start_paused = true;
+            self.pending_play = Some(PlayReq::Resume);
+        }
+        self.start_paused
+    }
+
+    /// Continue at the record loaded at start-up (paused for the start-up's
+    /// own resume).
     fn resume_saved(&mut self) -> Flow {
         let (qid, qlen, rp) = (self.queue_id, self.qlen, self.repeat);
+        let play = !core::mem::take(&mut self.start_paused);
         if !self.can_resume {
             return Flow::default();
         }
         let Some(pl) = self.player.as_mut() else { return Flow::default() };
         let mut out = Actions::default();
-        if !pl.resume(qid, qlen, true, &mut out) {
+        if !pl.resume(qid, qlen, play, &mut out) {
             return Flow::default();
         }
         // The setting wins over the saved repeat mode.
@@ -2418,7 +2434,9 @@ impl Default for Server {
 // ------------------------------------------------------------- sound
 
 /// The Sound settings the audio task applies to its DSP chain (published
-/// by the UI when they change; `SOUND_GEN` tells the audio task to look).
+/// by the UI when they change; `SOUND_GEN` tells the audio task to look),
+/// and the playback options it reads at a pause and at start-up
+/// ([`opt`]; in the struct's padding: no RAM of their own).
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub struct Sound {
     /// Five EQ band gains, dB (presets resolved by the UI).
@@ -2433,6 +2451,26 @@ pub struct Sound {
     pub channels: u8,
     /// Off, track, album, auto.
     pub replaygain: u8,
+    /// [`opt`] bits (not the chain's: [`Sound::chain_default`] ignores
+    /// them).
+    pub opts: u8,
+}
+
+/// [`Sound::opts`]: Settings › Sound › Fade on pause (0x0109) and
+/// Settings › Playback › Resume at start-up (0x0204), and that the UI has
+/// published them at all (the start-up waits for it).
+pub mod opt {
+    pub const FADE: u8 = 1;
+    pub const RESUME: u8 = 2;
+    pub const VALID: u8 = 0x80;
+}
+
+impl Sound {
+    /// The chain's settings are all at their defaults (no DSP work).
+    #[must_use]
+    pub fn chain_default(&self) -> bool {
+        Sound { opts: 0, ..*self } == Sound::default()
+    }
 }
 
 pub static SOUND: Mutex<RefCell<Sound>> = Mutex::new(RefCell::new(Sound {
@@ -2442,7 +2480,14 @@ pub static SOUND: Mutex<RefCell<Sound>> = Mutex::new(RefCell::new(Sound {
     crossfeed: 0,
     channels: 0,
     replaygain: 0,
+    opts: 0,
 }));
+
+/// The published [`opt`] bits.
+#[must_use]
+pub fn opts() -> u8 {
+    critical_section::with(|cs| SOUND.borrow(cs).borrow().opts)
+}
 pub static SOUND_GEN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// Publish new Sound settings (no-op when unchanged).

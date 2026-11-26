@@ -871,6 +871,15 @@ impl RecPhase {
     }
 }
 
+/// Whether a key press clicks (05 §3, Settings › Sound › Key click 0x0108):
+/// the setting on, and the microphone not live (05 §7.5: "the key click is
+/// forced off while the microphone is live": the recorder capturing from
+/// it, for its meters or a recording).
+#[must_use]
+pub fn key_click(setting: i16, rec: &RecInfo) -> bool {
+    setting != 0 && !(rec.phase != RecPhase::Off && rec.source == RecSource::Mic)
+}
+
 /// Why a recording ended by itself.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RecEnd {
@@ -1978,6 +1987,25 @@ pub trait PictureService {
 #[cfg(test)]
 mod bt_tests {
     use super::*;
+
+    /// Settings › Sound › Key click (VER-13): off no click; on a click,
+    /// except while the microphone is live (armed or recording), not while
+    /// the radio or the line input is recorded.
+    #[test]
+    fn key_click_follows_the_setting_and_the_microphone() {
+        let rec = |phase, source| RecInfo { phase, source, ..RecInfo::default() };
+        let idle = RecInfo::default();
+        assert!(!key_click(0, &idle));
+        assert!(key_click(1, &idle));
+        for phase in
+            [RecPhase::Armed, RecPhase::Recording, RecPhase::Paused, RecPhase::Waiting, RecPhase::Saving]
+        {
+            assert!(!key_click(1, &rec(phase, RecSource::Mic)), "{phase:?} from the microphone");
+            assert!(key_click(1, &rec(phase, RecSource::Fm)), "{phase:?} from the radio");
+            assert!(key_click(1, &rec(phase, RecSource::Line)), "{phase:?} from the line input");
+            assert!(!key_click(0, &rec(phase, RecSource::Fm)));
+        }
+    }
 
     #[test]
     fn unix_time_of_dates() {

@@ -208,8 +208,13 @@ pub mod id {
     pub const EQUALISER: SettingId = SettingId(0x0101);
     pub const VOLUME_LIMIT: SettingId = SettingId(0x0107);
     pub const KEY_CLICK: SettingId = SettingId(0x0108);
+    pub const FADE_ON_PAUSE: SettingId = SettingId(0x0109);
     pub const SHUFFLE: SettingId = SettingId(0x0201);
     pub const REPEAT: SettingId = SettingId(0x0202);
+    pub const GAPLESS: SettingId = SettingId(0x0203);
+    pub const RESUME_AT_START: SettingId = SettingId(0x0204);
+    pub const SEEK_STEP: SettingId = SettingId(0x0205);
+    pub const AUTO_BOOKMARK: SettingId = SettingId(0x0207);
     pub const BRIGHTNESS: SettingId = SettingId(0x0301);
     pub const BACKLIGHT: SettingId = SettingId(0x0302);
     pub const THEME: SettingId = SettingId(0x0304);

@@ -144,8 +144,12 @@ impl ResumeRecord {
     }
 }
 
-/// A saved position in a track.
+/// A saved position in a track. Packed to 4-byte alignment (28 B, not
+/// 32 B): the player keeps 16 of them in RAM, and the 64 B saved pay for
+/// the automatic bookmarks ([`AutoMarks`], VER-13). Read the fields by
+/// value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(C, packed(4))]
 pub struct Bookmark {
     pub track: TrackRef,
     pub frame: u64,
@@ -238,6 +242,101 @@ impl Bookmarks {
     }
 }
 
+/// Automatic bookmarks kept (Settings › Playback › Auto-bookmark long
+/// files; the least recently left dropped first).
+pub const MAX_AUTO_MARKS: usize = 3;
+pub const AUTO_MARKS_LEN: usize = 8 + MAX_AUTO_MARKS * AM_ENTRY + 4;
+const AM_ENTRY: usize = 20;
+const AM_MAGIC: [u8; 4] = *b"YAM1";
+
+/// Where a long file was left (05 §7.1: "automatic bookmarks for files
+/// longer than 20 min … resuming such a file asks nothing, it just
+/// continues").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct AutoMark {
+    pub track: TrackRef,
+    /// Sample frame (a long file's place past 2³² frames, 24 h at 48 kHz,
+    /// is not kept).
+    pub frame: u32,
+}
+
+/// The automatic bookmarks, most recently left last.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct AutoMarks {
+    items: [AutoMark; MAX_AUTO_MARKS],
+    n: u8,
+}
+
+impl AutoMarks {
+    #[must_use]
+    pub fn as_slice(&self) -> &[AutoMark] {
+        &self.items[..usize::from(self.n)]
+    }
+
+    /// The place `track` was left at, if any.
+    #[must_use]
+    pub fn get(&self, track: TrackRef) -> Option<u32> {
+        self.as_slice().iter().find(|m| m.track == track).map(|m| m.frame)
+    }
+
+    /// Forget `track`'s place. True if there was one.
+    pub fn remove(&mut self, track: TrackRef) -> bool {
+        let n = usize::from(self.n);
+        let Some(i) = self.as_slice().iter().position(|m| m.track == track) else { return false };
+        self.items.copy_within(i + 1..n, i);
+        self.items[n - 1] = AutoMark::default();
+        self.n -= 1;
+        true
+    }
+
+    /// Keep `track`'s place (it becomes the most recent; the oldest goes
+    /// when full). True if anything changed.
+    pub fn set(&mut self, track: TrackRef, frame: u32) -> bool {
+        if self.as_slice().last() == Some(&AutoMark { track, frame }) {
+            return false;
+        }
+        self.remove(track);
+        if usize::from(self.n) == MAX_AUTO_MARKS {
+            self.items.copy_within(1.., 0);
+            self.n -= 1;
+        }
+        self.items[usize::from(self.n)] = AutoMark { track, frame };
+        self.n += 1;
+        true
+    }
+
+    #[must_use]
+    pub fn encode(&self) -> [u8; AUTO_MARKS_LEN] {
+        let mut b = [0u8; AUTO_MARKS_LEN];
+        b[..4].copy_from_slice(&AM_MAGIC);
+        b[4] = self.n;
+        for (i, m) in self.as_slice().iter().enumerate() {
+            let o = 8 + AM_ENTRY * i;
+            m.track.put(&mut b[o..o + 16]);
+            b[o + 16..o + 20].copy_from_slice(&m.frame.to_le_bytes());
+        }
+        let crc = crc32(&b[..AUTO_MARKS_LEN - 4]);
+        b[AUTO_MARKS_LEN - 4..].copy_from_slice(&crc.to_le_bytes());
+        b
+    }
+
+    #[must_use]
+    pub fn decode(b: &[u8; AUTO_MARKS_LEN]) -> Option<Self> {
+        let t = AUTO_MARKS_LEN - 4;
+        let crc = u32::from_le_bytes([b[t], b[t + 1], b[t + 2], b[t + 3]]);
+        if b[..4] != AM_MAGIC || crc32(&b[..t]) != crc || usize::from(b[4]) > MAX_AUTO_MARKS {
+            return None;
+        }
+        let mut m = Self { n: b[4], ..Self::default() };
+        for i in 0..usize::from(m.n) {
+            let o = 8 + AM_ENTRY * i;
+            let frame = u32::from_le_bytes([b[o + 16], b[o + 17], b[o + 18], b[o + 19]]);
+            m.items[i] = AutoMark { track: TrackRef::get(&b[o..o + 16]), frame };
+        }
+        Some(m)
+    }
+}
+
 /// What the player persists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
@@ -245,6 +344,8 @@ pub enum Key {
     ResumeA,
     ResumeB,
     Bookmarks,
+    /// The automatic bookmarks of long files ([`AutoMarks`]).
+    AutoMarks,
 }
 
 /// Persistence for the player. `write` stores `data` under `key` (the
@@ -303,8 +404,34 @@ mod tests {
             m.push(Bookmark { track: TrackRef::default(), frame: f, rate: 44_100 });
         }
         assert_eq!(m.as_slice().len(), MAX_BOOKMARKS);
-        assert_eq!(m.as_slice()[0].frame, 4);
+        assert_eq!({ m.as_slice()[0].frame }, 4);
         assert!(m.remove(0));
         assert_eq!(Bookmarks::decode(&m.encode()), Some(m));
+        assert_eq!(core::mem::size_of::<Bookmark>(), 28);
+    }
+
+    #[test]
+    fn auto_marks_keep_the_most_recent_and_round_trip() {
+        let t = |i: u32| TrackRef { serial: 1, dir: 2, index: i, name_hash: i ^ 7 };
+        let mut m = AutoMarks::default();
+        assert!(m.set(t(1), 10));
+        assert!(m.set(t(2), 20));
+        assert!(!m.set(t(2), 20), "unchanged");
+        assert!(m.set(t(1), 11), "moved to the end with its new place");
+        assert_eq!(m.as_slice().iter().map(|x| x.frame).collect::<std::vec::Vec<_>>(), [20, 11]);
+        assert!(m.set(t(3), 30));
+        assert!(m.set(t(4), 40), "full: the least recent (2) goes");
+        assert_eq!(m.get(t(2)), None);
+        assert_eq!((m.get(t(1)), m.get(t(3)), m.get(t(4))), (Some(11), Some(30), Some(40)));
+        let b = m.encode();
+        assert_eq!(AutoMarks::decode(&b), Some(m));
+        for i in 0..AUTO_MARKS_LEN {
+            let mut d = b;
+            d[i] ^= 0x10;
+            assert_eq!(AutoMarks::decode(&d), None, "byte {i}");
+        }
+        assert!(m.remove(t(3)));
+        assert!(!m.remove(t(3)));
+        assert_eq!(m.as_slice().len(), 2);
     }
 }

@@ -94,6 +94,11 @@ pub trait Decoder {
   holds, the governor is raised to the top level for the hand-over; the HIL
   suite measures the join (zero inserted samples is the pass criterion for
   MP3, FLAC, WAV, Opus; Vorbis is reported and must be < 30 ms if not zero).
+  Settings › Playback › Gapless off (VER-13, 2026-11-26): the player reads
+  nothing ahead (`orpheus_player::Command::Gapless`), so every track that
+  ends is followed by a fresh start (the PCM ring plays out, the DAC stops,
+  the next file opens and fills the ring: a short silence). `status`
+  `gapless=1|0|-` says how the last track change at a track's end went.
 * **Seek**: by time. MP3: Xing/VBRI table, else bisection with frame-header
   resync, bit reservoir primed by decoding one discarded frame. FLAC: seek
   table, else bisection on frame headers with CRC check. Ogg: bisection on
@@ -266,7 +271,19 @@ once to a 56 × 56 RGB565 thumbnail cached under `.orpheus/cache/art/`.
 | Decimator (> 48 kHz sources) | Half-band FIR, 2 stages | < 8 % |
 | Dither | TPDF when reducing word length | < 1 % |
 | Fades | 5–60 ms linear ramps for pause, seek, skip, underrun | — |
+| Key click | 3 ms 2.5 kHz triangle, linear decay, added after the chain (VER-13) | — |
 | Tap for meters/spectrum | Peak detector always; 256-point FFT at ≤ 15 Hz only while the Levels view is visible | — |
+
+**As built (VER-13, 2026-11-26).** The pause fade is the chain's fade stage:
+`Chain::begin_pause(fade)` / `end_pause(fade)` (`PAUSE_FADE_MS` = 60, 05
+§7.1), driven by Settings › Sound › Fade on pause. The firmware decodes on
+after a pause until the fade is done, lets the faded end play out
+(`PcmOut::finish`) and then stops the DAC; `status` `fade=` is the last
+pause's fade (60, or 0 when it stopped at once). Fades around seek, skip and
+underrun are not built. The key click (`orpheus_dsp::click`) is mixed into
+each piece after the chain only while it sounds. Speed (the WSOLA row) is
+not built: Now Playing's Speed has no effect (05 §7.1 "As built
+(VER-13)").
 
 Fixed point first; the FPU where the benchmark says so. The DAC path itself
 has no EQ, tone or rate-conversion hardware (audio.md §7), but the SoC has an

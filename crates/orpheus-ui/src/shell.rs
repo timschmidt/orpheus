@@ -44,6 +44,10 @@ pub trait System {
     fn list_roll_around(&self) -> bool {
         true
     }
+    /// A key went down and was not dropped by the key gate: the system
+    /// may click (05 §3: "every press may produce a key click … mixed into
+    /// the audio output"; Settings › Sound › Key click).
+    fn key_click(&mut self) {}
 }
 
 /// Things only the caller can do, returned from event handling.
@@ -225,7 +229,11 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
         self.now = now;
         self.roll = svc.list_roll_around();
         let mut req = Requests::default();
-        match self.gate.filter(k, p) {
+        let gate = self.gate.filter(k, p);
+        if p == KeyPhase::Down && !matches!(gate, Gate::Drop) {
+            svc.key_click();
+        }
+        match gate {
             Gate::Pass(k, p) => self.key_pass(svc, k, p, now, &mut req),
             Gate::Wake => req.wake = true,
             Gate::LockNotice => {
