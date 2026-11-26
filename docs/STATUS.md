@@ -79,6 +79,23 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-26 — rests end when thread mode sleeps: fewer underruns (lead)
+
+* Merged `b694ac61` (the soft I2C masks nothing; a rest ends when thread
+  mode goes to sleep; `syn: cut= late=`). On the player (`b694ac61`,
+  Automatic, cable, test look on), `playdir /.orpheus/test/suite/midi`:
+  * underruns per song: Etude 18 (was 28), Hill Song 3 (was 15), Sound
+    tour 9 (was 14+); all three to the end (`frames=2469600`), no reset,
+    clock back at Base after.
+  * `cut=` ≈ 50 % of `rests=` (the worker expected ≥ 80 %: thread mode is
+    busy in half the rests); `late=` 1.1–1.8 ms (RT wake-up latency, fine);
+    `pg=` 4–11 %; `load=` 24–46 % at 288 MHz; Etude and Hill Song still
+    shed at Max (`lvl=3/3`, `vlim` 6–10).
+* Open: the remaining underruns in Etude are RT time, not budget. Next
+  candidates: the main executor's loop on the render's cache lines
+  (≈ 3 % of real time, the worker's open item), a lower governor budget
+  for heavy songs, and what thread mode does during half the rests.
+
 ### 2026-11-26 — SYN-3: a rest ends when thread mode sleeps; the soft I2C masks nothing (worker, no hardware)
 
 The lead's run of `7f26ae50` (Automatic, cable in, `playdir
