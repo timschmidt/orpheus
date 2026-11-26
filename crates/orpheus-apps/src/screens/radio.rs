@@ -342,7 +342,9 @@ impl<S: Services + ?Sized> Screen<S> for RadioScreen {
             0
         };
         let spinning = matches!(info.phase, RadioPhase::Starting | RadioPhase::Seeking);
-        let spin = spinning.then(|| u8::try_from((cx.now.0 / 125) % 8).unwrap_or(0));
+        // Reduced motion (A11Y-2): the spinner is drawn once, still.
+        let spin =
+            spinning.then(|| if g.motion { u8::try_from((cx.now.0 / 125) % 8).unwrap_or(0) } else { 0 });
         self.scanning = info.phase == RadioPhase::Scanning;
         // Ticks while something moves (the firmware's UI loop also picks
         // up the radio's progress on them).

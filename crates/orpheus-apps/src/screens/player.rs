@@ -4,7 +4,7 @@
 //! equaliser screen.
 
 use orpheus_ui::event::{Event, Instant, Key, KeyPhase, ServiceEvent, Source, UiEvent};
-use orpheus_ui::font::FontId;
+use orpheus_ui::font::{FontId, TextSize};
 use orpheus_ui::geom::Rect;
 use orpheus_ui::gfx::{Align, Gfx};
 use orpheus_ui::icons as ui_icons;
@@ -278,20 +278,32 @@ impl NowPlayingScreen {
     fn draw_idle(&self, g: &mut Gfx<'_>) {
         let (w, _) = g.size();
         let dim = g.c(Role::TextDim);
-        g.icon2((w - 24) / 2, 10, &icons::MUSIC, dim);
         let text = g.c(Role::Text);
         let title = self.lang.get(Str::NothingPlaying);
+        // Large text (A11Y-2): the 16 px face at most (the lines below the
+        // icon have no room for more).
+        let size = g.text.at_most_large();
+        let (bold, regular) = (FontId::UiBold.sized(size), FontId::Ui.sized(size));
         let mut y = 52;
-        let tp = g.line_pitch(title, FontId::UiBold);
-        g.wrap(title, FontId::UiBold, w - 12, |g, line| {
-            g.text_in(6, y, w - 12, line, FontId::UiBold, text, Align::Center);
+        if size == TextSize::Normal {
+            g.icon2((w - 24) / 2, 10, &icons::MUSIC, dim);
+        } else {
+            // No icon: the words need the room.
+            y = 20;
+        }
+        let tp = g.line_pitch(title, bold);
+        g.wrap(title, bold, w - 12, |g, line| {
+            g.text_in(6, y, w - 12, line, bold, text, Align::Center);
             y += tp;
         });
         y += 2;
         let action = self.lang.get(Str::NothingPlayingAction);
-        let pitch = g.line_pitch(action, FontId::Ui);
-        g.wrap(action, FontId::Ui, w - 12, |g, line| {
-            g.text_in(6, y, w - 12, line, FontId::Ui, dim, Align::Center);
+        // In the large face only if every line fits above the strip.
+        let n = i16::try_from(g.wrap(action, regular, w - 12, |_, _| {})).unwrap_or(9);
+        let regular = if y + g.line_pitch(action, regular) * (n - 1) <= 110 { regular } else { FontId::Ui };
+        let pitch = g.line_pitch(action, regular);
+        g.wrap(action, regular, w - 12, |g, line| {
+            g.text_in(6, y, w - 12, line, regular, dim, Align::Center);
             y += pitch;
         });
     }
@@ -315,20 +327,87 @@ impl NowPlayingScreen {
             g.fill(Rect::new(x, bar.y - 2, 1, bar.h + 4), c);
         }
         let text = g.c(Role::Text);
+        // Large text (A11Y-2): the times in the 16 px face.
+        let (f, base, iy) =
+            if g.text == TextSize::Normal { (FontId::Ui, 100, 91) } else { (FontId::Large, 103, 93) };
         let mut a = StrBuf::<12>::new();
         push_time(&mut a, p.position_ms);
-        g.text(6, 100, a.as_str(), FontId::Ui, text);
+        g.text(6, base, a.as_str(), f, text);
         let mut b = StrBuf::<12>::new();
         b.push('-');
         // From the whole elapsed seconds, so both times change together at
         // the once-a-second redraw (VER-4 finding F-UI-3).
         push_time(&mut b, p.duration_ms.saturating_sub(p.position_ms / 1000 * 1000));
-        g.text_in(w - 56, 100, 50, b.as_str(), FontId::Ui, text, Align::Right);
+        g.text_in(w - 56, base, 50, b.as_str(), f, text, Align::Right);
         let ic = if p.source == Source::Playing { &ui_icons::PLAY } else { &ui_icons::PAUSE };
-        g.icon((w - 10) / 2, 91, ic, text);
+        g.icon((w - 10) / 2, iy, ic, text);
+    }
+
+    /// The Standard view with large text (A11Y-2, 05 §7.14): no art; the
+    /// title over the whole width in the large bold face (two lines, the
+    /// second cut with an ellipsis), the artist (and the album when there is
+    /// room) in the 16 px face, the queue place (Large only); the times in
+    /// the 16 px face. The codec badge and the art are in Details and Big art.
+    fn draw_standard_large<S: Services + ?Sized>(&mut self, svc: &S, g: &mut Gfx<'_>) {
+        let (w, _) = g.size();
+        let Some(t) = svc.track() else { return };
+        let p = svc.player();
+        self.art_pending = false;
+        let xl = g.text == TextSize::ExtraLarge;
+        let tw = w - 12;
+        // Bold unless a word would have to be broken; then regular.
+        // The largest face in which no word has to be broken: bold, else
+        // regular, else (extra large) the 16 px bold face.
+        let mut bold = FontId::LargeBold;
+        for f in [g.ui(true), g.ui(false)] {
+            if t.title.split(' ').all(|wd| crate::strings_fit(g, wd, f, tw)) {
+                bold = f;
+                break;
+            }
+        }
+        let xl = xl && matches!(bold, FontId::XLarge | FontId::XLargeBold);
+        let (first, pitch) = if xl { (22, 26) } else { (17, 19) };
+        let text = g.c(Role::Text);
+        let dim = g.c(Role::TextDim);
+        let title = t.title;
+        let base = title.as_ptr() as usize;
+        let total = g.wrap(title, bold, tw, |_, _| {});
+        let mut i = 0i16;
+        g.wrap(title, bold, tw, |g, line| {
+            let y = first + pitch * i;
+            if i == 1 && total > 2 {
+                // More follows: the rest on the second line, cut.
+                let rest = title.get(line.as_ptr() as usize - base..).unwrap_or(line);
+                g.text_in(6, y, tw, rest, bold, text, Align::Left);
+            } else if i < 2 {
+                g.text_in(6, y, tw, line, bold, text, Align::Left);
+            }
+            i += 1;
+        });
+        let mut y = first + pitch * (i.min(2) - 1) + if xl { 24 } else { 20 };
+        for s in [t.artist, t.album] {
+            if !s.is_empty() && y <= if xl { 72 } else { 58 } {
+                g.text_in(6, y, tw, s, FontId::Large, dim, Align::Left);
+                y += 19;
+            }
+        }
+        // The queue place under the names (not with the extra large title:
+        // no room).
+        if !xl {
+            let mut qp = StrBuf::<16>::new();
+            qp.push_u32(p.queue_pos + 1);
+            qp.push_str(" / ");
+            qp.push_u32(p.queue_len);
+            g.text_in(6, 74, tw, qp.as_str(), FontId::Large, dim, Align::Right);
+        }
+        self.draw_progress_rows(svc, g);
     }
 
     fn draw_standard<S: Services + ?Sized>(&mut self, svc: &S, g: &mut Gfx<'_>) {
+        if g.text != TextSize::Normal {
+            self.draw_standard_large(svc, g);
+            return;
+        }
         let (w, _) = g.size();
         let Some(t) = svc.track() else { return };
         let p = svc.player();

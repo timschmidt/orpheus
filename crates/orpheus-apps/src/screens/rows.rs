@@ -6,8 +6,9 @@ use orpheus_ui::icons::Icon;
 use orpheus_ui::text::StrBuf;
 use orpheus_ui::widgets::list::{Accessory, Item, ListSource, Row};
 
-/// Most rows a list screen shows (header + the longest list: 12 groups or 11 presets).
-pub const MAX_ROWS: usize = 13;
+/// Most rows a list screen shows (header + the longest list: 13 groups
+/// with Accessibility, A11Y-2; 12 Display settings; 11 presets).
+pub const MAX_ROWS: usize = 14;
 
 #[derive(Clone, Copy, Debug)]
 pub struct RowData {
@@ -42,6 +43,11 @@ pub struct Rows {
 }
 
 impl Default for Rows {
+    // Not inlined (A11Y-2): with 14 rows, built inline into every screen
+    // constructor `AppScreen::create` and the firmware's `new_ui` held
+    // 1,256 B more stack (the UI task's deepest path; margin 3,048 B, under
+    // the 4,096 B budget); out of line the path is as it was with 13.
+    #[inline(never)]
     fn default() -> Self {
         Rows { rows: [RowData::EMPTY; MAX_ROWS], n: 0 }
     }

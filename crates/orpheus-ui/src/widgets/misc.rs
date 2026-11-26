@@ -26,14 +26,16 @@ pub fn draw_progress(g: &mut Gfx<'_>, r: Rect, value: u16, buffered: Option<u16>
 }
 
 /// Indeterminate spinner: eight dots around a circle in a 14 × 14 box, the
-/// head chosen by time (8 steps per second).
+/// head chosen by time (8 steps per second). With reduced motion
+/// ([`Gfx::motion`] off, A11Y-2) a still ring of equal dots.
 pub fn draw_spinner(g: &mut Gfx<'_>, x: i16, y: i16, now: Instant, bg: Role) {
     const DOTS: [(i16, i16); 8] = [(5, 0), (9, 1), (10, 5), (9, 9), (5, 10), (1, 9), (0, 5), (1, 1)];
     g.fill_role(Rect::new(x, y, 14, 14), bg);
     let head = usize::try_from((now.0 / 125) % 8).unwrap_or(0);
+    let still = !g.motion;
     for (i, (dx, dy)) in DOTS.iter().enumerate() {
         let age = (head + 8 - i) % 8;
-        let a = 255u8.saturating_sub(u8::try_from(age * 30).unwrap_or(255));
+        let a = if still { 170 } else { 255u8.saturating_sub(u8::try_from(age * 30).unwrap_or(255)) };
         let c = g.pal.mix(bg, Role::Text, a.max(40));
         g.fill_disc(Rect::new(x + dx, y + dy, 4, 4), c);
     }
@@ -140,4 +142,30 @@ pub fn draw_slider(g: &mut Gfx<'_>, r: Rect, value: i32, min: i32, max: i32, bg:
     g.fill_disc(Rect::new(kx, ky, knob, knob), acc);
     let on = g.c(Role::OnAccent);
     g.fill_disc(Rect::new(kx + 4, ky + 4, knob - 8, knob - 8), on);
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use super::*;
+    use crate::gfx::{DirtySet, FB_PIXELS};
+    use crate::theme::{Accent, Theme};
+
+    fn spinner_at(motion: bool, ms: u64) -> std::vec::Vec<u16> {
+        let mut fb = std::vec![0u16; FB_PIXELS];
+        let mut dirty = DirtySet::new();
+        let mut g = Gfx::new(&mut fb, &mut dirty, Theme::Dark.palette(Accent::Blue), None);
+        g.motion = motion;
+        draw_spinner(&mut g, 10, 10, Instant(ms), Role::Bg);
+        fb
+    }
+
+    /// A11Y-2 (05 §7.14 "reduced motion"): with Animations off the spinner
+    /// is a still ring; on, its head moves every 125 ms.
+    #[test]
+    fn spinner_stands_still_with_reduced_motion() {
+        assert_ne!(spinner_at(true, 0), spinner_at(true, 130));
+        assert_eq!(spinner_at(false, 0), spinner_at(false, 130));
+        assert_eq!(spinner_at(false, 0), spinner_at(false, 777));
+    }
 }

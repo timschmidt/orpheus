@@ -12,9 +12,11 @@ publish = false
 # firmware until it has the Games app: the check costs the key handler 8 B
 # of stack, and the firmware's static stack margin is 204 B.
 menu-key = []
-# The Books reader's fonts (16 and 20 px reading faces, 35 KB of rodata)
-# and `Gfx::char_styled` (scaled, bold and slanted reading text): the
-# Books app (BOOK-1) turns it on; off in the firmware until Books is in it.
+# The Books reader's 20 px face (20 KB of rodata: over the 16 KiB group
+# size, so resident on the player) and `Gfx::char_styled` (scaled, bold
+# and slanted reading text): the Books app (BOOK-1) turns it on; off in
+# the firmware until Books is in it. The 16 px face is always built: it is
+# the Large UI text of A11Y-2 (14,468 B, paged).
 book-fonts = []
 
 [dependencies]

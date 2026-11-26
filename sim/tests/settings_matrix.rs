@@ -106,6 +106,7 @@ fn context_scripts() -> Vec<(&'static str, String)> {
         "Settings.Language",
         "Settings.Storage",
         "Settings.System",
+        "Settings.Accessibility",
     ]
     .into_iter()
     .enumerate()
@@ -544,6 +545,107 @@ mod effects {
         assert_eq!(clicks("set:0x0108=1 hold:menu"), 1, "a held key clicks once");
         let rec = clicks("set:0x0108=1 next*4 ok wait:200 expect-screen:Recorder down up");
         assert_eq!(rec, 5, "no click once the recorder listens");
+    }
+
+    /// Key click = Presses and holds (0x0108 = 2, A11Y-2 "key-press
+    /// confirmation sound"): a held key clicks again when it reaches its
+    /// hold delay (with any Hold delay 0x1002), a tap clicks once; never
+    /// while the microphone is live.
+    #[test]
+    fn key_click_confirms_holds() {
+        let s = |script: &str| {
+            let s = sim(script);
+            (s.sys.clicks, s.sys.hold_clicks)
+        };
+        assert_eq!(s("set:0x0108=2 next prev"), (2, 0), "taps click once");
+        assert_eq!(s("set:0x0108=2 hold:back"), (2, 1), "a hold clicks twice");
+        assert_eq!(s("set:0x0108=1 hold:back"), (1, 0), "Presses: once");
+        assert_eq!(s("set:0x0108=2 set:0x1002=4 hold:back:1000"), (1, 0), "not held long enough");
+        assert_eq!(s("set:0x0108=2 set:0x1002=4 hold:back:2100"), (2, 1), "held past 2 s");
+        let rec = s("set:0x0108=2 next*4 ok wait:200 expect-screen:Recorder hold:up");
+        assert_eq!(rec, (5, 0), "no click once the recorder listens");
+    }
+
+    /// Settings › Accessibility › Hold delay (0x1002): a key held shorter
+    /// than the delay is a tap (Menu on Home opens Home's menu, not the
+    /// quick panel), held past it a hold; Power's menu needs at least the
+    /// delay (1.5 s, or 2 s at the longest).
+    #[test]
+    fn hold_delay_moves_every_hold() {
+        let top = |script: &str| sim(script).screen().to_string();
+        for (v, ms) in [(0i16, 500u64), (1, 750), (2, 1000), (3, 1500), (4, 2000)] {
+            assert_eq!(top(&format!("set:0x1002={v} hold:menu:{}", ms - 60)), "Home", "{v}: a tap");
+            assert_eq!(top(&format!("set:0x1002={v} hold:menu:{}", ms + 60)), "QuickPanel", "{v}: a hold");
+        }
+        assert_eq!(top("set:0x1002=4 hold:power:1600"), "Home", "2 s: Power's menu waits");
+        assert_eq!(top("set:0x1002=4 hold:power:2100"), "PowerMenu");
+        assert_eq!(top("set:0x1002=2 hold:power:1600"), "PowerMenu", "1 s: Power at 1.5 s as before");
+    }
+
+    /// Settings › Accessibility › Key repeat (0x1003): Down held for 3 s in
+    /// Settings › Display (13 rows) moves the focus row by row at 8 → 30
+    /// per second (it reaches the end), 4 → 10 (slow) or 2 per second
+    /// (slower).
+    #[test]
+    fn key_repeat_slows_a_held_key() {
+        let moved = |v: i16| {
+            let mut s =
+                sim(&format!("set:0x030C=0 set:0x1003={v} prev ok down*2 ok expect-screen:SettingsGroup"));
+            run(&mut s, "press:down wait:2000 release:down");
+            s.draw();
+            fnv(s.fb.iter().copied())
+        };
+        let (normal, slow, slower) = (moved(0), moved(1), moved(2));
+        assert!(normal != slow && slow != slower && normal != slower);
+        // Repeats counted on the mapper itself: orpheus-ui input.rs
+        // `accessible_hold_and_repeat`.
+    }
+
+    /// Animations off is reduced motion too (A11Y-2, 05 §7.14): the alarm
+    /// alert's icon and the paused recorder's dot stop blinking; with
+    /// Animations on they change between two frames half a second apart.
+    #[test]
+    fn reduced_motion_stops_blinks_and_spinners() {
+        // The pixels of `(x, y, w, h)` (the blinking or spinning mark only:
+        // the recorder's meters move with the sound).
+        let area = |s: &AppSim, (x, y, w, h): (usize, usize, usize, usize)| {
+            fnv((y..y + h).flat_map(|r| (x..x + w).map(move |c| (r, c))).map(|(r, c)| s.fb[r * 128 + c]))
+        };
+        let pair = |v: i16, script: &str, gap: u64, r| {
+            let mut s = sim(&format!("set:0x0308={v} {script}"));
+            s.draw();
+            let a = area(&s, r);
+            run(&mut s, &format!("wait:{gap}"));
+            s.draw();
+            (a, area(&s, r))
+        };
+        let alert = "set:0x0d32=1 set:clock=06:59:58 set:clockrun=1 wait:3000 expect-screen:Alert";
+        let paused = "set:recsignal=tone next*4 ok wait:200 ok wait:1000 ok wait:300 expect-screen:Recorder";
+        // The spinner (radio, Bluetooth, update): orpheus-ui misc.rs
+        // `spinner_stands_still_with_reduced_motion`.
+        for (what, script, gap, r) in
+            [("alert", alert, 500, (52, 22, 24, 24)), ("recorder", paused, 500, (4, 18, 8, 8))]
+        {
+            let (a, b) = pair(1, script, gap, r);
+            assert_ne!(a, b, "{what}: moves with Animations on");
+            let (a, b) = pair(0, script, gap, r);
+            assert_eq!(a, b, "{what}: still with Animations off");
+        }
+    }
+
+    /// Settings › Accessibility › Text size (0x1001): lists show fewer,
+    /// taller rows and a key pages by what shows (Settings › Display,
+    /// Next pages by 5 rows normally, 4 at Large, 3 at Extra large), and
+    /// the focus stays on the panel.
+    #[test]
+    fn text_size_pages_by_the_rows_shown() {
+        let focus = |v: i16| {
+            let s = sim(&format!(
+                "set:0x030C=0 set:0x1001={v} prev ok down*2 ok expect-screen:SettingsGroup next"
+            ));
+            orpheus_ui::nav::Screen::<orpheus_sim::apps::HostServices>::save(s.shell.top()).focus
+        };
+        assert_eq!((focus(0), focus(1), focus(2)), (6, 5, 4));
     }
 
     /// Settings › Sound › Fade on pause (0x0109): the player's `status`
@@ -1496,5 +1598,17 @@ mod matrix {
     #[test]
     fn s0f07() {
         row(0x0F07);
+    }
+    #[test]
+    fn s1001() {
+        row(0x1001);
+    }
+    #[test]
+    fn s1002() {
+        row(0x1002);
+    }
+    #[test]
+    fn s1003() {
+        row(0x1003);
     }
 }

@@ -72,8 +72,105 @@ of every session. Newest entries first in §3.
 | GAME-6 Bricks (M14) | **built (host + simulator + firmware), not yet run on the player** | Brick breaker of our own: integer physics with one-pixel sub-steps (no tunnelling at any speed, no floating point), paddle angles, 1–3-hit and unbreakable bricks, 8 hand-made + generated levels, five power-ups, lives, scores, saves; 7 settings packed into 1 word; 47 goldens; fuzz `bricks_keys`. In the firmware (`orpheus-apps/bricks`): stack margin 4,116 B unchanged. Lead: session entry 2026-11-25 "GAME-6" |
 | BOOK-2 | **done (host + simulator)**; not in the firmware (as BOOK-1; the scratch is the decoder arena, see session entry) | EPUB 2/3 in `orpheus-books`: zip (end record, streamed central directory, CRC, zip64/encrypted/method refusals), `no_std` inflate (48 B state; 32 KiB window + 2,304 B tables lent: 35,072 B), container/OPF/nav/NCX, XHTML reduction over the XML tokenizer split out of FB2, contents positions from anchors, all in bounded steps into BOOK-1's stream; library titles from the package; 12 new goldens; fuzz targets `books_zip`, `books_epub` (session entry 2026-11-25 "BOOK-2") |
 | MIDI-1 | **done (host + simulator)**; not in the firmware (SYN-3); **user check: listen to the three MIDI renders** | `orpheus-midi`: Standard MIDI File parser (formats 0/1/2, running status, meta and SysEx, SMPTE, RMID) streamed through 64 track cursors of 64-byte windows that ask for bytes (`Need`/`supply`), nothing trusted; exact tick→frame clock through tempo changes; sequencer (CC 1/6/7/10/11/38/64/91/93/96–101/120–127, RPN bend range, pressure, programs, kits on channel 10, mute/solo); own GM set of 32 sounds for the 128 programs (`data/gm-sounds.osb`); `MidiPlayer`: open/scan, render, bounded-step seek (bit-exact where nothing sounds across the target), duration/position, `.kar`/lyric events; Files plays `.mid`/`.kar` in the simulator with Now Playing lyrics; player 70,224 B; estimate ≈ 117 MHz at 48 kHz for a 10–11-voice song: High clock (session entry 2026-11-25 "MIDI-1") |
+| A11Y-2 | **built (host + simulator + firmware), not yet run on the player**; journey `settings_accessibility` and user check 31 | Settings › Accessibility (Text size Normal/Large/Extra large, Hold delay 0.5–2 s, Key repeat Normal/Slow/Slower; packed in `0x0D60`), Themes White on black / Black on white (≥ 7:1), reduced motion = Animations off (spinner still, blinks lit), Key click Presses and holds (hold confirmation); 63 `a11y_*` goldens (session entry 2026-11-26 "A11Y-2") |
 
 ## 3. Session log
+
+### 2026-11-26 — A11Y-2: large text, high contrast, reduced motion, hold and repeat, key confirmation (worker, no hardware)
+
+* **Where**: a thirteenth Settings group, **Accessibility** (keys
+  `0x1001–0x1003`, high byte `0x10`, packed into the word `0x0D60`: one
+  cache slot, 126 of 128 with every feature). High contrast is two more
+  Themes (Display), reduced motion is Animations off (Display), the key
+  confirmation sound is Key click (Sound) — no duplicate rows. As built in
+  05 §7.14.
+* **Text size** (`0x1001`): `orpheus_ui::font::TextSize`, `FontId::{Large,
+  LargeBold, XLarge, XLargeBold}`, `Gfx::text`/`Gfx::ui`,
+  `System::text_size`. Large = the Books 16 px face (`BOOK16`, now always
+  built, bold emboldened); Extra large = the UI font doubled (the spec's
+  "twice the size", no rodata). BOOK20 stays behind `book-fonts`: at 20 KB
+  it is over the 16 KiB rodata group and would be resident (765 B left).
+  Lists 19/24/32 px rows (5/4/3 rows), headers bold, label keeps ≥ 2/3
+  beside a value, at Extra large a row that does not fit draws in 16 px;
+  keys page by the rows drawn (`ListView` remembers them: no screen
+  changed) and the focus stays visible; menu sheets ≤ 110 px; strip and
+  dialogs in 16 px at both sizes (dialog: two-line title, up to four text
+  lines, over the status bar when needed); Now Playing Standard without
+  art, title over the width (largest face without broken words), artist,
+  album, queue place, times in 16 px; idle view without its icon.
+  Unchanged: status bar, big numerals, games, pictures, reader, Steps,
+  Authenticator, Equaliser, lock/charging, self-drawn lists.
+* **High contrast**: `Theme::ContrastDark` ("White on black") and
+  `ContrastLight` ("Black on white"), accent ignored. Test over every
+  pairing the toolkit draws text in, as drawn after RGB565 and blends
+  (`theme::tests::high_contrast_themes_reach_7_to_1`): lowest 7.30:1 and
+  7.76:1. **Finding** (`contrast_table`): in Dark/Light a focused row's
+  value (3.6/4.3:1) and an unfocused destructive dialog button (3.7:1) are
+  under 4.5:1; not changed here (would move every golden).
+* **Reduced motion** (Animations off): spinner a still ring, the paused
+  recorder's dot and the alarm alert's icon stay lit, the radio's spinner
+  is drawn once. No screen slide exists; no blinking cursor exists; the
+  saver clock still jumps once a minute (burn-in, 05 §6.3). Games keep
+  their own motion.
+* **Hold delay / Key repeat** (`0x1002`, `0x1003`): `Timing::accessible`
+  (Power's menu at 1.5 s or the delay if longer, power-off 4 s; repeat
+  8→30/s, 4→10/s, 2/s flat). Firmware: `apply_settings` sets the UI
+  task's mapper each loop; simulator: at each key edge
+  (`Host::key_timing`).
+* **Key confirmation sound**: 05 §3's key click already is the key-press
+  sound; what longer holds add is not knowing when a hold registered, so
+  Key click became Off / Presses / Presses and holds (0/1 keep their
+  meaning in stores): `System::key_hold_click` → `services::hold_click`
+  (same microphone/radio rules) → `audio::click` in the firmware.
+* **Test safety**: the firmware's test look reads `0x1001–0x1003` as
+  their defaults until a session sets one (`A11Y_ARMED`, RAM), so the
+  suite, fuzzers and soak keep their key timing and shots whatever the
+  owner chose; the session whitelist (firmware and xtask) gains them.
+* **Tests**: matrix rows `s1001–s1003`; `effects::{text_size_pages_by_the_
+  rows_shown, hold_delay_moves_every_hold, key_repeat_slows_a_held_key,
+  key_click_confirms_holds, reduced_motion_stops_blinks_and_spinners}`;
+  `input.rs accessible_hold_and_repeat`, `font.rs sized_faces`, `misc.rs
+  spinner_stands_still_with_reduced_motion`, `settings.rs
+  accessibility_packed`, the two theme tests. Manifest: new entries
+  `0x1001–0x1003`, `0x0D60`; Key click, Theme, Animations updated; new
+  context `Settings.Accessibility` (nine status-bar settings declared on
+  it). Goldens: 63 `a11y_*` (Home, Home playing, Files, its menu, Settings,
+  Display, Now Playing, Nothing playing, a dialog × large and extra large
+  in Latin/Cyrillic/Japanese, both contrast themes, contrast + large),
+  `app_group12_*`, Theme choice and Settings root (scroll thumb) changed —
+  all looked at. Journey `settings_accessibility` (hold delay 2 s: 0.7 s
+  Menu = menu, 2.3 s = quick panel; Large Settings shot; hold clicks ≥ 3
+  of 4 via `status clicks=`), expected frames written from the simulator;
+  `settings/settings.png` changed (scroll thumb).
+* **Firmware** (before → after): resident 81,155 → 81,187 B (+32:
+  mergeable constants); `.bss` 125,408 → 125,448 B (+40: a settings cache
+  slot, the 14th row of the list screen in the UI's static, a byte each
+  in the shell and the dialog); stack nested worst case 15,152 → 14,896 B,
+  usable 19,712 → 19,200 B (`__stack_bottom` 0x132730: two 256 B steps,
+  .data/.bss moved), **margin 4,560 → 4,304 B** (budget 4,096). The 14th
+  row (13 groups + title) first cost the UI task 1,256 B (`new_ui` →
+  `AppScreen::create` with `Rows::default()` inlined in every arm: margin
+  3,048 B); `Rows::default` out of line brought it back. Rodata pages
+  20 → 22 of 48 (paged rodata 160,922 → 176,009 B: BOOK16 14,468 B plus
+  strings); code 121/128 pages (970,780 → 974,924 B). `check-resident`
+  ok. **Not measured**: idle Home line loads (the shell reads the text
+  size each draw, `apply_settings` the key timing each loop: two small
+  settings lookups; was 615/s, limit 1,500).
+* **Gate**: host `cargo fmt --all --check`, `cargo clippy --workspace
+  --all-targets -D warnings`, `cargo clippy -p orpheus-apps --all-targets
+  -D warnings`, `cargo test --workspace` (1,879 passed, 0 failed, 12
+  ignored), `cargo xtask settings-matrix --check` (166 settings, 11,157/11,205 cells, 0 errors); firmware `fmt
+  --check`, `clippy --workspace -D warnings`, `cargo xtask build`,
+  `check-resident`, `size --check`, `stack --check`: pass. **Not run**:
+  `xtask test all` beyond these, `brand`/`site --check`, every `xtask
+  dev` step (no hardware).
+* **Lead, on the player**: `cargo xtask dev suite settings_accessibility`
+  (and the whole suite: the test look now covers the three settings);
+  idle Home line loads; user check 31.
+* **Open**: A11Y-1 (screen reader) will want the same group; reduced
+  motion's "long names are spoken instead" is A11Y-1's; dialogs whose text
+  needs more than four 16 px lines lose the rest to an ellipsis at large
+  sizes; the Dark/Light contrast finding above.
 
 ### 2026-11-26 — settings rounds 2 and 3, MIDI-1, SYN-2, BOOK-2 merged; screen lock vs tests (lead)
 

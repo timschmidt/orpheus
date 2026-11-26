@@ -111,3 +111,32 @@ to how you had it afterwards.
   again, they find it at once.
 
 Report anything that does not match.
+
+## 31. Accessibility: large text, high contrast, reduced motion, hold and repeat, key confirmation (A11Y-2, 2026-11-26)
+
+After the next install. Each setting goes back to how you had it
+afterwards (Settings › Accessibility is the last group; the themes are in
+Settings › Display › Theme).
+
+* **Text size** Large, then Extra large: Settings, Files, Music and their
+  menus show four (Large) or three (Extra large) taller rows; Next/Prev
+  page by what shows; long names end in "…" and scroll when focused (with
+  Animations on). Home's app name and the mini player in the bottom strip,
+  dialogs (e.g. Settings › System › Factory reset…, then Cancel) and Now
+  Playing (title, artist, times) are larger too. Say whether the extra
+  large letters (the normal font doubled, a little blocky) read well on
+  the panel, and whether anything is cut that should not be.
+* **Theme** White on black and Black on white: text, focus bar and
+  buttons crisp and readable in daylight and in the dark.
+* **Animations** off (reduced motion): no scrolling names; the recorder's
+  dot stays lit while paused; an alarm's icon stays lit while ringing.
+* **Hold delay** 1 s and 2 s: a short Menu press opens the menu, only a
+  long one the quick panel; holding Down in a list starts repeating only
+  after the delay; Power's menu needs 2 s at the 2 s setting.
+* **Key repeat** Slow and Slower: holding Down in Settings moves the
+  focus clearly slower (Slower: two rows a second); Normal as before.
+* **Key click** "Presses and holds": a click at each press and a second
+  click when a held key reaches its hold delay (try with Hold delay 2 s);
+  "Presses": one click as before.
+
+Report anything that does not match, and which text size you would use.

@@ -1,7 +1,7 @@
 //! Status bar and bottom strip (05 §4).
 
 use crate::event::{BtState, Source};
-use crate::font::FontId;
+use crate::font::{FontId, TextSize};
 use crate::geom::Rect;
 use crate::gfx::{Align, Gfx, STRIP};
 use crate::icons::{self, Icon};
@@ -130,6 +130,15 @@ pub struct MiniPlayer<'a> {
     pub progress: u16,
 }
 
+/// The strip's face and baseline at the text size (A11Y-2): the 16 px
+/// face for both large sizes (the 18 px strip holds no more).
+fn strip_font(g: &Gfx<'_>) -> (FontId, i16) {
+    match g.text {
+        TextSize::Normal => (FontId::Ui, 13),
+        _ => (FontId::Large, 14),
+    }
+}
+
 /// Draw a hint line into the current area (128 × 18).
 pub fn draw_hint(g: &mut Gfx<'_>, hint: &str) {
     let (w, h) = g.size();
@@ -137,7 +146,8 @@ pub fn draw_hint(g: &mut Gfx<'_>, hint: &str) {
     let rule = g.pal.mix(Role::Bg, Role::TextDim, 60);
     g.hline(0, 0, w, rule);
     let c = g.c(Role::TextDim);
-    g.text_in(4, 13, w - 8, hint, FontId::Ui, c, Align::Center);
+    let (f, base) = strip_font(g);
+    g.text_in(4, base, w - 8, hint, f, c, Align::Center);
 }
 
 /// Blank strip.
@@ -150,7 +160,8 @@ const MINI_X: i16 = 18;
 /// Pixels by which a mini-player title overflows its space.
 pub fn mini_player_overflow(g: &mut Gfx<'_>, title: &str) -> i16 {
     let avail = STRIP.w - MINI_X - 4;
-    (g.measure(title, FontId::Ui) - avail).max(0)
+    let (f, _) = strip_font(g);
+    (g.measure(title, f) - avail).max(0)
 }
 
 /// Draw the mini-player into the current area (128 × 18), the title
@@ -166,11 +177,13 @@ pub fn draw_mini_player(g: &mut Gfx<'_>, m: &MiniPlayer<'_>, scroll: i16) {
     let text = g.c(Role::Text);
     g.icon(4, 6, if m.playing { &icons::PLAY } else { &icons::PAUSE }, text);
     let avail = w - MINI_X - 4;
+    // Baseline 14 in both sizes: the 16 px face's descenders end on the
+    // strip's last row.
+    let (f, _) = strip_font(g);
+    let base = 14;
     if scroll > 0 {
-        g.with_clip(Rect::new(MINI_X, 2, avail, h - 2), |g| {
-            g.text(MINI_X - scroll, 14, m.title, FontId::Ui, text)
-        });
+        g.with_clip(Rect::new(MINI_X, 2, avail, h - 2), |g| g.text(MINI_X - scroll, base, m.title, f, text));
     } else {
-        g.text_in(MINI_X, 14, avail, m.title, FontId::Ui, text, Align::Left);
+        g.text_in(MINI_X, base, avail, m.title, f, text, Align::Left);
     }
 }

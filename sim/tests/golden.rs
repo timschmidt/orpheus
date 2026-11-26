@@ -882,7 +882,7 @@ fn app_cases(add: &mut dyn FnMut(String, String)) {
         }
     }
     // Every Settings group once (Dark, English) and in Light Japanese.
-    for g in 0..12 {
+    for g in 0..13 {
         add(format!("app_group{g:02}_dark_latin"), format!("@apps prev ok down*{g} ok"));
         add(format!("app_group{g:02}_light_cjk"), format!("@apps theme:light lang:cjk prev ok down*{g} ok"));
     }
@@ -905,6 +905,41 @@ fn app_cases(add: &mut dyn FnMut(String, String)) {
     add("app_amber_home".into(), "@apps theme:amber".into());
     add("app_amber_settings".into(), "@apps theme:amber prev ok".into());
     add("app_accent_red_home".into(), "@apps accent:red".into());
+    a11y_cases(add);
+}
+
+/// A11Y-2 (05 §7.14): large text (16 px face, `large`; the UI font at
+/// twice the size, `xlarge`) and the high-contrast themes on the main
+/// screens: Home (and with music playing: the mini player), a list
+/// (Files), its menu, Settings and a group of it, Now Playing and a
+/// dialog.
+fn a11y_cases(add: &mut dyn FnMut(String, String)) {
+    const PLAY: &str = "set:queue=takk set:track=1 set:pos=47000";
+    let screens: [(&str, String); 9] = [
+        ("home", "wait:10".into()),
+        ("home_playing", format!("{PLAY} wait:100")),
+        ("files", "next ok wait:100 expect-screen:Files down*3".into()),
+        ("files_menu", "next ok wait:100 expect-screen:Files menu".into()),
+        ("settings", "prev ok expect-screen:Settings".into()),
+        ("display", "prev ok down*2 ok expect-screen:SettingsGroup down*3".into()),
+        ("now_playing", format!("{PLAY} goto:NowPlaying wait:100")),
+        ("nothing_playing", "goto:NowPlaying wait:100".into()),
+        ("dialog", "prev ok down*11 ok down*4 ok".into()),
+    ];
+    let looks = [
+        ("large_dark_latin", "theme:dark lang:latin set:0x1001=1"),
+        ("xlarge_dark_latin", "theme:dark lang:latin set:0x1001=2"),
+        ("large_light_cjk", "theme:light lang:cjk set:0x1001=1"),
+        ("xlarge_light_cyrillic", "theme:light lang:cyrillic set:0x1001=2"),
+        ("contrast_dark", "theme:contrast-dark"),
+        ("contrast_light", "theme:contrast-light"),
+        ("contrast_dark_large", "theme:contrast-dark set:0x1001=1"),
+    ];
+    for (look, set) in looks {
+        for (name, script) in &screens {
+            add(format!("a11y_{name}_{look}"), format!("@apps {set} {script}"));
+        }
+    }
 }
 
 /// Outcome of comparing one frame.

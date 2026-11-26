@@ -975,6 +975,21 @@ strings! {
     BooksFolder = "Books folder",
     BooksWholeCard = "Whole card",
     BooksHintGoTo = "◀▶ 10 % · ▲▼ 1 %",
+    // Accessibility (A11Y-2, 05 §7.14).
+    GAccessibility = "Accessibility",
+    TextSize = "Text size",
+    TextNormal = "Normal",
+    TextLarge = "Large",
+    TextExtraLarge = "Extra large",
+    HoldDelay = "Hold delay",
+    RepeatSpeed = "Key repeat",
+    RepeatNormal = "Normal",
+    RepeatSlow = "Slow",
+    RepeatSlower = "Slower",
+    ClickPresses = "Presses",
+    ClickHolds = "Presses and holds",
+    ThemeContrastDark = "White on black",
+    ThemeContrastLight = "Black on white",
 }
 
 /// Number of strings.

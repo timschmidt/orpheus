@@ -2,7 +2,7 @@
 //! destructive dialogs focus the safe button (05 §2.6, §5.2).
 
 use crate::event::{DIALOG_CANCELLED, Event, Key, KeyPhase};
-use crate::font::FontId;
+use crate::font::{FontId, TextSize};
 use crate::geom::Rect;
 use crate::gfx::{Align, Gfx, SCREEN_H, SCREEN_W, STATUS_BAR};
 use crate::text::StrBuf;
@@ -93,6 +93,8 @@ pub struct Dialog {
     drawn_focus: Option<u8>,
     frame_drawn: bool,
     buttons_y: i16,
+    /// The text size the card was laid out in (the buttons follow it).
+    size: TextSize,
 }
 
 /// Result of a key on an open dialog.
@@ -111,7 +113,7 @@ impl Dialog {
     #[must_use]
     pub fn new(spec: DialogSpec) -> Dialog {
         let focus = spec.focus.min(spec.n_buttons.saturating_sub(1));
-        Dialog { spec, focus, drawn_focus: None, frame_drawn: false, buttons_y: 0 }
+        Dialog { spec, focus, drawn_focus: None, frame_drawn: false, buttons_y: 0, size: TextSize::Normal }
     }
 
     pub fn invalidate(&mut self) {
@@ -143,52 +145,95 @@ impl Dialog {
 
     /// Draw (panel coordinates). The first draw lays out the card; later
     /// draws only repaint the buttons when focus moves.
+    ///
+    /// Large text (A11Y-2): title, text and buttons in the 16 px face (the
+    /// extra large size too: the card's lines have fixed room), the card
+    /// over the status bar when it needs the height, and at most as many
+    /// lines as fit on the panel (the last cut with an ellipsis).
     pub fn draw(&mut self, g: &mut Gfx<'_>) {
         let x0 = (SCREEN_W - CARD_W) / 2;
         let inner = CARD_W - 2 * PAD;
         if !self.frame_drawn {
+            let size = g.text.at_most_large();
+            self.size = size;
+            // Normal: the card as 05 §5.2 draws it. Large text (A11Y-2):
+            // tighter margins, a title of up to two lines.
+            let large = size != TextSize::Normal;
+            let (body, bold) =
+                if large { (FontId::Large, FontId::LargeBold) } else { (FontId::Ui, FontId::UiBold) };
+            let (top, title_pitch, title_base, gap, btn_h, bottom) =
+                if large { (4, 18, 13, 6, 24, 3) } else { (9, 18, 10, 9, 19, 7) };
+            let title = self.spec.title;
+            // Bold if it fits (large: if every word fits its line), else
+            // regular weight before any ellipsis or break.
+            let fits = if large {
+                title.split(' ').all(|w| g.measure(w, bold) <= inner)
+            } else {
+                g.measure(title, bold) <= inner
+            };
+            let tf = if fits { bold } else { body };
+            let title_lines = if title.is_empty() {
+                0
+            } else if large {
+                g.wrap(title, tf, inner, |_, _| {}).clamp(1, 2)
+            } else {
+                1
+            };
+            let title_h = title_pitch * i16::try_from(title_lines).unwrap_or(0);
             let text = self.spec.text;
             let s = text.as_str();
-            let total = g.wrap(s, FontId::Ui, inner, |_, _| {});
-            let lines = total.min(MAX_LINES);
+            let total = g.wrap(s, body, inner, |_, _| {});
+            let pitch = g.line_pitch(s, body);
+            let room = (SCREEN_H - (top + title_h + gap + btn_h + bottom)) / pitch;
+            let max_lines = usize::try_from(room).unwrap_or(1).clamp(1, if large { 4 } else { MAX_LINES });
+            let lines = total.min(max_lines);
             let lines_i = i16::try_from(lines).unwrap_or(0);
-            let title_h = if self.spec.title.is_empty() { 0 } else { 18 };
-            let pitch = g.line_pitch(s, FontId::Ui);
             let text_h = if lines == 0 { 0 } else { pitch * lines_i };
-            let h = 9 + title_h + text_h + 9 + 19 + 7;
+            let h = top + title_h + text_h + gap + btn_h + bottom;
             let region = SCREEN_H - STATUS_BAR.h;
-            let y0 = STATUS_BAR.h + (region - h) / 2;
+            let y0 = if h <= region { STATUS_BAR.h + (region - h) / 2 } else { (SCREEN_H - h).max(0) / 2 };
             let surf = g.c(Role::Surface);
             g.fill_round(Rect::new(x0, y0, CARD_W, h), 8, surf);
-            let mut y = y0 + 9;
-            if !self.spec.title.is_empty() {
+            let mut y = y0 + top;
+            if title_lines > 0 {
                 let c = g.c(Role::Text);
-                // Bold if it fits, else regular weight before any ellipsis.
-                let tf = if g.measure(self.spec.title, FontId::UiBold) <= inner {
-                    FontId::UiBold
+                if title_lines == 1 {
+                    g.text_in(x0 + PAD, y + title_base, inner, title, tf, c, Align::Center);
                 } else {
-                    FontId::Ui
-                };
-                g.text_in(x0 + PAD, y + 10, inner, self.spec.title, tf, c, Align::Center);
+                    let tbase = title.as_ptr() as usize;
+                    let mut ty = y + title_base;
+                    let mut n = 0;
+                    g.wrap(title, tf, inner, |g, line| {
+                        if n == 1 {
+                            // The rest on the second line, cut if longer.
+                            let rest = title.get(line.as_ptr() as usize - tbase..).unwrap_or(line);
+                            g.text_in(x0 + PAD, ty, inner, rest, tf, c, Align::Center);
+                        } else if n == 0 {
+                            g.text_in(x0 + PAD, ty, inner, line, tf, c, Align::Center);
+                        }
+                        ty += title_pitch;
+                        n += 1;
+                    });
+                }
                 y += title_h;
             }
             let c = g.c(if self.spec.title.is_empty() { Role::Text } else { Role::TextDim });
             let mut i = 0usize;
             let base = s.as_ptr() as usize;
-            g.wrap(s, FontId::Ui, inner, |g, line| {
-                if i < MAX_LINES {
+            g.wrap(s, body, inner, |g, line| {
+                if i < max_lines {
                     let ly = y + pitch - 4 + pitch * i16::try_from(i).unwrap_or(0);
-                    if i == MAX_LINES - 1 && total > MAX_LINES {
-                        // More text follows: cut the third line with an ellipsis.
+                    if i == max_lines - 1 && total > max_lines {
+                        // More text follows: cut the last line with an ellipsis.
                         let rest = s.get(line.as_ptr() as usize - base..).unwrap_or(line);
-                        g.text_in(x0 + PAD, ly, inner, rest, FontId::Ui, c, Align::Left);
+                        g.text_in(x0 + PAD, ly, inner, rest, body, c, Align::Left);
                     } else {
-                        g.text_in(x0 + PAD, ly, inner, line, FontId::Ui, c, Align::Center);
+                        g.text_in(x0 + PAD, ly, inner, line, body, c, Align::Center);
                     }
                 }
                 i += 1;
             });
-            self.buttons_y = y + text_h + 9;
+            self.buttons_y = y + text_h + gap;
             self.frame_drawn = true;
             self.drawn_focus = None;
         }
@@ -204,9 +249,13 @@ impl Dialog {
         let total = CARD_W - 2 * PAD;
         let bw = (total - gap * (n - 1)) / n;
         let y = self.buttons_y;
+        let (body, bold, bh, base) = match self.size {
+            TextSize::Normal => (FontId::Ui, FontId::UiBold, 19, 14),
+            _ => (FontId::Large, FontId::LargeBold, 24, 18),
+        };
         for i in 0..n {
             let bx = x0 + PAD + i * (bw + gap);
-            let r = Rect::new(bx, y, bw, 19);
+            let r = Rect::new(bx, y, bw, bh);
             let idx = u8::try_from(i).unwrap_or(0);
             let focused = idx == self.focus;
             let danger = self.spec.danger == Some(idx);
@@ -220,12 +269,8 @@ impl Dialog {
             g.fill_round(r, 6, bg);
             let label = self.spec.buttons.get(usize::from(idx)).copied().unwrap_or("");
             // Bold only if it fits; a label never loses letters to the weight.
-            let font = if focused && g.measure(label, FontId::UiBold) <= bw - 4 {
-                FontId::UiBold
-            } else {
-                FontId::Ui
-            };
-            g.text_in(bx + 2, y + 14, bw - 4, label, font, fg, Align::Center);
+            let font = if focused && g.measure(label, bold) <= bw - 4 { bold } else { body };
+            g.text_in(bx + 2, y + base, bw - 4, label, font, fg, Align::Center);
         }
     }
 }

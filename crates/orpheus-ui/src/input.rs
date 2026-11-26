@@ -38,6 +38,27 @@ impl Timing {
     };
 }
 
+impl Timing {
+    /// The key grammar with a longer hold threshold and slower repeat
+    /// (Settings › Accessibility › Hold delay and Repeat speed, A11Y-2; 05
+    /// §7.14 "longer hold thresholds and slower repeat"). `hold_ms` is the
+    /// hold threshold of every key but Power; Power's menu needs at least
+    /// as long a hold (1.5 s, or `hold_ms` when that is longer); power-off
+    /// stays at 4 s. `repeat`: 0 the default (8 → 30 repeats/s after 1 s),
+    /// 1 slow (4 → 10/s), 2 slower (2/s, no acceleration).
+    #[must_use]
+    pub const fn accessible(hold_ms: u32, repeat: u8) -> Timing {
+        let d = Timing::DEFAULT;
+        let (repeat_slow, repeat_fast) = match repeat {
+            1 => (250, 100),
+            2 => (500, 500),
+            _ => (d.repeat_slow, d.repeat_fast),
+        };
+        let power_hold = if hold_ms > d.power_hold { hold_ms } else { d.power_hold };
+        Timing { hold: hold_ms, power_hold, repeat_slow, repeat_fast, ..d }
+    }
+}
+
 impl Default for Timing {
     fn default() -> Self {
         Timing::DEFAULT
@@ -495,6 +516,55 @@ mod tests {
         assert!((29..=31).contains(&count_fast), "{count_fast}");
         m.release(Key::Down, Instant(4000));
         assert_eq!(drain(&mut m, 4000).last(), Some(&(Key::Down, KeyPhase::Up { held: true })));
+    }
+
+    /// Repeats a held Down produces from `from` to `to` ms (1 ms polls),
+    /// and when its Hold came.
+    fn held(t: Timing, from: u64, to: u64) -> (Option<u64>, usize) {
+        let mut m = KeyMapper::new();
+        m.timing = t;
+        m.press(Key::Down, Instant(0));
+        let (mut hold_at, mut n) = (None, 0);
+        for now in 0..to {
+            for (_, p) in drain(&mut m, now) {
+                if p == KeyPhase::Hold {
+                    hold_at = Some(now);
+                }
+                if p == KeyPhase::Repeat && now >= from {
+                    n += 1;
+                }
+            }
+        }
+        (hold_at, n)
+    }
+
+    /// A11Y-2 (05 §7.14 "longer hold thresholds and slower repeat"): the
+    /// hold delay moves every key's hold (and Power's menu when longer
+    /// than 1.5 s); repeat speeds slow, slower.
+    #[test]
+    fn accessible_hold_and_repeat() {
+        assert_eq!(held(Timing::accessible(500, 0), 0, 600).0, Some(500), "the default");
+        assert_eq!(held(Timing::accessible(1000, 0), 0, 1200).0, Some(1000));
+        assert_eq!(held(Timing::accessible(2000, 0), 0, 2100).0, Some(2000));
+        let p = Timing::accessible(2000, 0);
+        assert_eq!((p.power_hold, p.power_long), (2000, 4000));
+        assert_eq!(Timing::accessible(750, 0).power_hold, 1500);
+        // Repeats per second at the start and after the ramp.
+        let (_, n) = held(Timing::accessible(500, 0), 501, 1500);
+        assert!((7..=9).contains(&n), "normal start {n}");
+        let (_, n) = held(Timing::accessible(500, 1), 501, 1500);
+        assert!((3..=4).contains(&n), "slow start {n}");
+        let (_, n) = held(Timing::accessible(500, 1), 3000, 4000);
+        assert!((9..=11).contains(&n), "slow at speed {n}");
+        let (_, n) = held(Timing::accessible(500, 2), 3000, 4000);
+        assert_eq!(n, 2, "slower: 2 per second, no acceleration");
+        let d = Timing::accessible(500, 0);
+        let e = Timing::DEFAULT;
+        assert_eq!(
+            (d.hold, d.power_hold, d.power_long, d.repeat_slow, d.repeat_fast),
+            (e.hold, e.power_hold, e.power_long, e.repeat_slow, e.repeat_fast),
+            "the defaults are the grammar of 05 §3"
+        );
     }
 
     #[test]
