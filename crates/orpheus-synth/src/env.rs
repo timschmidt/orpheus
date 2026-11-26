@@ -21,7 +21,8 @@
 use crate::math::{clampf, exp2, log2};
 
 /// Segment shape.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum Curve {
     /// Straight lines.
     Linear,
@@ -30,7 +31,7 @@ pub enum Curve {
 }
 
 /// Envelope settings.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]
 pub struct Adsr {
     /// Attack time, seconds.
     pub attack: f32,
@@ -81,7 +82,7 @@ const RA: f32 = 0.3;
 const RD: f32 = 1.0e-4;
 
 /// The coefficients of one step (one sample, or one control period).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, Default, PartialEq)]
 struct Step {
     a_mul: f32,
     a_add: f32,
@@ -129,7 +130,7 @@ impl Step {
 
 /// Coefficients of an [`Adsr`] at one sample rate, per sample and per
 /// control period.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, Default, PartialEq)]
 pub struct EnvCoef {
     linear: bool,
     sustain: f32,
@@ -171,7 +172,8 @@ impl EnvCoef {
 }
 
 /// Envelope stage.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u8)]
 pub enum Stage {
     /// Finished (or never started): level 0.
     #[default]
@@ -187,7 +189,7 @@ pub enum Stage {
 }
 
 /// Per-voice envelope state.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, Default, PartialEq)]
 pub struct Env {
     stage: Stage,
     level: f32,

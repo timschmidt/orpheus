@@ -167,3 +167,33 @@ chosen in Orpheus before this install is not carried over.
 
 Report the levels that differ (which player looks brighter), and anything
 else that does not match.
+
+## 33. MIDI files on the player (SYN-3, 2026-11-26)
+
+After the next install and the lead's `xtask dev suite --setup midi` (it
+puts three short songs of ours under `/.orpheus/test/suite/midi/`), with
+headphones at a low volume:
+
+* The lead starts the folder (`cargo xtask dev cmd 'playdir
+  /.orpheus/test/suite/midi'`: Files hides `.orpheus`), or copy the three
+  files (the lead can give them to you) to a folder of your music in card
+  reader mode and open it in Files: it plays as a queue (Etude, Hill Song,
+  Sound tour).
+  Listen through all three: piano, strings, bass and drums in the etude,
+  a flute melody in Hill Song, every instrument of the sound set in Sound
+  tour. Expect clean sound — no clicks, dropouts, stuck notes or sudden
+  silences — and the same music as the WAVs the lead can render on the
+  computer (`cargo run --release -p orpheus-midi --example render --
+  DIR`).
+* Now Playing shows the title, `MIDI` and the duration. Pause and resume
+  (Fade on pause applies), seek forward and back a few times (a short
+  silence while it finds the place is expected; the notes held there
+  start again), skip to the next and previous song.
+* While a song plays, browse Files and Music for a minute: the music must
+  not stutter.
+* If you have your own `.mid` or `.kar` files on the card, try a few
+  (they play with our own sound set, not the original instruments; lyrics
+  are not shown yet).
+
+Report anything that sounds wrong (which song, roughly when), and how
+seeking and pausing behave.

@@ -142,7 +142,7 @@ pub fn to_i16(x: f32) -> i16 {
 
 /// Marsaglia's xorshift32: the deterministic noise and random source. One
 /// per voice (seeded from the engine's at note-on) and one in the engine.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rng(u32);
 
 impl Rng {

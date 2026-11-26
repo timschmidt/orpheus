@@ -456,10 +456,33 @@ pub fn sound_of(program: u8) -> u8 {
     SOUND_OF[usize::from(program & 0x7F)]
 }
 
+/// The patches of [`SET`] without their names (a reference into `SET`
+/// links the names too; on the player they would be resident strings).
+static PATCHES: [Patch; SOUNDS] = {
+    let mut a = [Patch::INIT; SOUNDS];
+    let mut i = 0;
+    while i < SOUNDS {
+        a[i] = SET[i].1;
+        i += 1;
+    }
+    a
+};
+
+/// The factory kits' entries without their names (as [`PATCHES`]).
+static KIT_ENTRIES: [&[orpheus_synth::KitEntry]; FACTORY.len()] = {
+    let mut a: [&[orpheus_synth::KitEntry]; FACTORY.len()] = [&[]; FACTORY.len()];
+    let mut i = 0;
+    while i < FACTORY.len() {
+        a[i] = FACTORY[i].1;
+        i += 1;
+    }
+    a
+};
+
 /// Sound `i`'s patch (`i` < [`SOUNDS`], else the piano).
 #[must_use]
 pub fn patch(i: u8) -> &'static Patch {
-    &SET.get(usize::from(i)).unwrap_or(&SET[0]).1
+    PATCHES.get(usize::from(i)).unwrap_or(&PATCHES[0])
 }
 
 /// The factory kit (index into `orpheus_synth::kit::FACTORY`) for a
@@ -477,7 +500,7 @@ pub fn kit_for(program: u8) -> u8 {
 /// Factory kit `i` (index into `FACTORY`, else `standard`).
 #[must_use]
 pub fn kit(i: u8) -> Kit {
-    Kit::new(FACTORY.get(usize::from(i)).unwrap_or(&FACTORY[0]).1)
+    Kit::new(KIT_ENTRIES.get(usize::from(i)).copied().unwrap_or(KIT_ENTRIES[0]))
 }
 
 /// Write the set as an `OSB1` sound bank: the 32 sounds, then the factory

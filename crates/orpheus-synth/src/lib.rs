@@ -33,6 +33,15 @@
 //! * [`bank`]: patches and kits in a compact binary format (sound banks).
 //! * [`engine`]: [`PARTS`] parts, [`MAX_VOICES`] voices with stealing, mono
 //!   legato with glide, sample-accurate events, mixing and rendering.
+//! * [`bench`](mod@bench): the fixed loads of the player's `synth bench` (SYN-3).
+//!
+//! # Features
+//!
+//! `samples` (sample playback) and `delay` (the delay effect), both on by
+//! default. The player's firmware builds without them (SYN-3: no card
+//! sample source yet, no MIDI controller feeds the delay, and the code
+//! window is full): sample notes then do not start, and the delay keeps its
+//! settings and adds nothing.
 //!
 //! # Determinism
 //!
@@ -47,7 +56,10 @@
 //!
 //! # Memory
 //!
-//! All state lives in [`Engine`]; no allocation, no `unsafe`. Sample data
+//! All state lives in [`Engine`]; no allocation, no `unsafe`. An all-zero
+//! `Engine` is a valid value (`bytemuck::Zeroable`) and [`Engine::init`]
+//! builds it in place, so the player puts it in its decoder pool without
+//! passing 62 KB through a task's stack. Sample data
 //! lives in a [`SampleCache`] over memory the caller lends; the engine reads
 //! it only during `render_*_with`. [`ram`] gives the sizes (the `ram_table`
 //! test prints them).
@@ -59,6 +71,7 @@
 extern crate std;
 
 pub mod bank;
+pub mod bench;
 pub mod demo;
 pub mod drum;
 pub mod engine;

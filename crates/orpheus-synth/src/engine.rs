@@ -52,8 +52,27 @@ pub const RATE_RANGE: (u32, u32) = (8000, 48_000);
 /// Held notes a mono part remembers.
 pub const HELD: usize = 8;
 
+// The index helpers below mask with these (identity for the values every
+// caller has checked already): the compiler then sees the bounds, and the
+// player's image has no panic path here (its location data would be
+// resident, SYN-3).
+const _: () = assert!(PARTS.is_power_of_two() && MAX_VOICES.is_power_of_two() && TAILS.is_power_of_two());
+
+/// Part index of a checked part number.
+#[inline(always)]
+fn pi(part: u8) -> usize {
+    usize::from(part) & (PARTS - 1)
+}
+
+/// A voice slot index from `alloc` (< the limit ≤ [`MAX_VOICES`]).
+#[inline(always)]
+fn vi(i: usize) -> usize {
+    i & (MAX_VOICES - 1)
+}
+
 /// A per-part parameter changed by [`EventKind::Param`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum Param {
     /// Part volume, 0–1.
     Volume,
@@ -96,7 +115,8 @@ pub enum Param {
 }
 
 /// An effect parameter changed by [`EventKind::Fx`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum FxParam {
     /// Delay time, seconds (sets beats to 0).
     DelayTime,
@@ -125,7 +145,8 @@ pub enum FxParam {
 }
 
 /// What an event does.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]
+#[repr(u8)]
 pub enum EventKind {
     /// Start a note (velocity 0 is a note-off).
     NoteOn {
@@ -173,7 +194,7 @@ pub enum EventKind {
 }
 
 /// An event at a sample offset within a render block.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]
 pub struct Event {
     /// Sample (frame) offset from the start of the block.
     pub offset: u32,
@@ -220,7 +241,7 @@ pub struct VoiceInfo {
     pub stamp: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]
 struct Part {
     patch: Patch,
     coef: PatchCoef,
@@ -232,7 +253,9 @@ struct Part {
     sustain: bool,
     held: [u8; HELD],
     n_held: u8,
-    last_note: Option<f32>,
+    /// The last note played (glide start), [`NO_NOTE`] for none (a
+    /// plain byte: the engine is valid all-zero, see [`Engine::init`]).
+    last_note: u8,
     /// Drum hit offsets: tune (semitones), decay scale, tone
     /// ([`Param::DrumTune`] …).
     drum: [f32; 3],
@@ -240,23 +263,29 @@ struct Part {
 
 /// Neutral drum offsets.
 const DRUM_NEUTRAL: [f32; 3] = [0.0, 1.0, 0.0];
+/// No last note (`Part::last_note`).
+const NO_NOTE: u8 = 0xFF;
 
 impl Part {
-    fn new(rate: f32) -> Self {
-        Self {
-            patch: Patch::INIT,
-            coef: PatchCoef::new(&Patch::INIT, rate),
-            volume: 0.8,
-            pan: 0.0,
-            pan_g: pan_gains(0.0),
-            bend: 0.0,
-            sends: [0.0; 3],
-            sustain: false,
-            held: [0; HELD],
-            n_held: 0,
-            last_note: None,
-            drum: DRUM_NEUTRAL,
-        }
+    /// A part holding [`Patch::INIT`], in place.
+    fn init(&mut self, rate: f32) {
+        self.patch = Patch::INIT;
+        self.coef = PatchCoef::new(&Patch::INIT, rate);
+        self.volume = 0.8;
+        self.pan = 0.0;
+        self.pan_g = pan_gains(0.0);
+        self.bend = 0.0;
+        self.sends = [0.0; 3];
+        self.sustain = false;
+        self.held = [0; HELD];
+        self.n_held = 0;
+        self.last_note = NO_NOTE;
+        self.drum = DRUM_NEUTRAL;
+    }
+
+    /// The last note played, if any (glide start).
+    fn last(&self) -> Option<f32> {
+        (self.last_note != NO_NOTE).then(|| f32::from(self.last_note))
     }
 
     fn view(&self) -> PartView<'_> {
@@ -276,24 +305,26 @@ impl Part {
             self.held.copy_within(1.., 0);
             self.n_held -= 1;
         }
-        self.held[usize::from(self.n_held)] = note;
+        self.held[usize::from(self.n_held) & (HELD - 1)] = note;
         self.n_held += 1;
     }
 
     fn unhold(&mut self, note: u8) {
-        let n = usize::from(self.n_held);
-        if let Some(i) = self.held[..n].iter().position(|&h| h == note) {
-            self.held.copy_within(i + 1..n, i);
+        let n = usize::from(self.n_held).min(HELD);
+        if let Some(i) = self.held.iter().take(n).position(|&h| h == note) {
+            for k in i + 1..n {
+                self.held[(k - 1) & (HELD - 1)] = self.held[k & (HELD - 1)];
+            }
             self.n_held -= 1;
         }
     }
 
     fn top(&self) -> Option<u8> {
-        self.n_held.checked_sub(1).map(|i| self.held[usize::from(i)])
+        self.n_held.checked_sub(1).and_then(|i| self.held.get(usize::from(i)).copied())
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug)]
 struct Bus {
     l: [f32; CONTROL_PERIOD],
     r: [f32; CONTROL_PERIOD],
@@ -320,7 +351,7 @@ fn hit_offset(h: HitParams, off: [f32; 3]) -> HitParams {
 
 /// The synthesis engine. All memory is inside this value
 /// ([`crate::ram`] lists it): no allocation, no global state.
-#[derive(Clone, Debug)]
+#[derive(bytemuck::Zeroable, Clone, Debug)]
 pub struct Engine {
     rate: u32,
     rate_f: f32,
@@ -350,55 +381,70 @@ impl Engine {
     /// An engine at `rate` Hz (clamped to [`RATE_RANGE`]) whose random
     /// sources (noise, sample-and-hold) start from `seed`. Every part holds
     /// [`Patch::INIT`]; the effects have their defaults with no sends.
+    ///
+    /// The value is about 62 KB: on the player use [`Engine::init`] on
+    /// memory that holds an engine already, or on zeroed memory (an
+    /// all-zero `Engine` is a valid value: `bytemuck::Zeroable`).
     #[must_use]
     pub fn new(rate: u32, seed: u32) -> Self {
+        let mut e = <Self as bytemuck::Zeroable>::zeroed();
+        e.init(rate, seed);
+        e
+    }
+
+    /// Make this engine what [`Engine::new`]`(rate, seed)` returns, in
+    /// place: field by field, no temporary larger than a part (≈ 1 KiB),
+    /// so the player can build it in the decoder arena (zeroed first) from
+    /// a task's small stack. `new` is this on a zeroed value: one code path.
+    pub fn init(&mut self, rate: u32, seed: u32) {
         let rate = rate.clamp(RATE_RANGE.0, RATE_RANGE.1);
         let rate_f = rate as f32;
-        let mut e = Self {
-            rate,
-            rate_f,
-            parts: [Part::new(rate_f); PARTS],
-            voices: [Voice::IDLE; MAX_VOICES],
-            tails: [Voice::IDLE; TAILS],
-            voice_limit: MAX_VOICES,
-            clock: 0,
-            stamp: 0,
-            rng: Rng::new(seed),
-            tempo: 120.0,
-            master: 1.0,
-            master_cur: 1.0,
-            master_step: 0.0,
-            master_ramp: 0,
-            bus: Bus {
-                l: [0.0; CONTROL_PERIOD],
-                r: [0.0; CONTROL_PERIOD],
-                send: [[0.0; CONTROL_PERIOD]; 3],
-                voice: [0.0; CONTROL_PERIOD],
-            },
-            out: [[0.0; 2]; CONTROL_PERIOD],
-            delay: Delay::new(),
-            chorus: Chorus::new(),
-            reverb: Reverb::new(),
-            limiter: Limiter::new(rate_f),
-            kits: [Kit::new(crate::kit::STANDARD); KIT_SLOTS],
-            misses: 0,
-        };
-        e.delay.set(&DelayParams::DEFAULT, rate_f, e.tempo);
-        e.chorus.set(&ChorusParams::DEFAULT, rate_f);
-        e.reverb.set_rate(rate_f);
-        e
+        self.rate = rate;
+        self.rate_f = rate_f;
+        for p in &mut self.parts {
+            p.init(rate_f);
+        }
+        self.voices.fill(Voice::IDLE);
+        self.tails.fill(Voice::IDLE);
+        self.voice_limit = MAX_VOICES;
+        self.clock = 0;
+        self.stamp = 0;
+        self.rng = Rng::new(seed);
+        self.tempo = 120.0;
+        self.master = 1.0;
+        self.master_cur = 1.0;
+        self.master_step = 0.0;
+        self.master_ramp = 0;
+        self.bus.l.fill(0.0);
+        self.bus.r.fill(0.0);
+        for s in &mut self.bus.send {
+            s.fill(0.0);
+        }
+        self.bus.voice.fill(0.0);
+        self.out.fill([0.0; 2]);
+        self.delay.init();
+        self.chorus.init();
+        self.reverb.init();
+        self.limiter = Limiter::new(rate_f);
+        for k in &mut self.kits {
+            *k = Kit::new(crate::kit::STANDARD);
+        }
+        self.misses = 0;
+        self.delay.set(&DelayParams::DEFAULT, rate_f, self.tempo);
+        self.chorus.set(&ChorusParams::DEFAULT, rate_f);
+        self.reverb.set_rate(rate_f);
     }
 
     /// Silence everything and restart the clock and the random sources from
     /// `seed`; patches, part volumes, pans, sends and effect settings stay.
     pub fn reset(&mut self, seed: u32) {
-        self.voices = [Voice::IDLE; MAX_VOICES];
-        self.tails = [Voice::IDLE; TAILS];
+        self.voices.fill(Voice::IDLE);
+        self.tails.fill(Voice::IDLE);
         for p in &mut self.parts {
             p.bend = 0.0;
             p.sustain = false;
             p.n_held = 0;
-            p.last_note = None;
+            p.last_note = NO_NOTE;
             p.drum = DRUM_NEUTRAL;
         }
         self.clock = 0;
@@ -741,7 +787,7 @@ impl Engine {
         group: u8,
         pan: f32,
     ) {
-        let p = &self.parts[usize::from(part)];
+        let p = &self.parts[pi(part)];
         let g = Self::vel_gain(&p.patch, velocity);
         if group != 0 {
             for v in self.voices.iter_mut().chain(self.tails.iter_mut()) {
@@ -753,18 +799,18 @@ impl Engine {
         let i = self.alloc(part, note);
         let stamp = self.next_stamp();
         let seed = self.rng.next_u32();
-        self.voices[i].start_drum(part, sound, note, g, group, pan, stamp, seed, self.rate_f);
+        self.voices[vi(i)].start_drum(part, sound, note, g, group, pan, stamp, seed, self.rate_f);
     }
 
     fn poly_on(&mut self, part: u8, note: u8, velocity: u8) {
-        let p = &self.parts[usize::from(part)];
-        let from = if p.patch.glide > 0.0 { p.last_note } else { None };
+        let p = &self.parts[pi(part)];
+        let from = if p.patch.glide > 0.0 { p.last() } else { None };
         let i = self.alloc(part, note);
         let stamp = self.next_stamp();
         let seed = self.rng.next_u32();
-        let p = &mut self.parts[usize::from(part)];
-        self.voices[i].start(part, &p.patch, note, velocity, from, stamp, seed, self.rate_f);
-        p.last_note = Some(f32::from(note));
+        let p = &mut self.parts[pi(part)];
+        self.voices[vi(i)].start(part, &p.patch, note, velocity, from, stamp, seed, self.rate_f);
+        p.last_note = note;
     }
 
     fn mono_voice(&self, part: u8) -> Option<usize> {
@@ -773,13 +819,13 @@ impl Engine {
 
     fn mono_on(&mut self, part: u8, note: u8, velocity: u8) {
         let rate = self.rate_f;
-        let had_held = self.parts[usize::from(part)].n_held > 0;
-        self.parts[usize::from(part)].hold(note);
+        let had_held = self.parts[pi(part)].n_held > 0;
+        self.parts[pi(part)].hold(note);
         let found = self.mono_voice(part);
-        let p = &self.parts[usize::from(part)];
+        let p = &self.parts[pi(part)];
         let glide = p.patch.glide > 0.0;
         if let Some(i) = found {
-            let v = &mut self.voices[i];
+            let v = &mut self.voices[vi(i)];
             if p.patch.legato && had_held && !v.released {
                 v.change_note(&p.patch, note, None, false, glide, rate);
             } else {
@@ -788,14 +834,14 @@ impl Engine {
             v.stamp = self.stamp + 1;
             self.stamp += 1;
         } else {
-            let from = if glide && !p.patch.legato { p.last_note } else { None };
+            let from = if glide && !p.patch.legato { p.last() } else { None };
             let i = self.alloc(part, note);
             let stamp = self.next_stamp();
             let seed = self.rng.next_u32();
-            let p = &self.parts[usize::from(part)];
-            self.voices[i].start(part, &p.patch, note, velocity, from, stamp, seed, rate);
+            let p = &self.parts[pi(part)];
+            self.voices[vi(i)].start(part, &p.patch, note, velocity, from, stamp, seed, rate);
         }
-        self.parts[usize::from(part)].last_note = Some(f32::from(note));
+        self.parts[pi(part)].last_note = note;
     }
 
     fn note_off(&mut self, part: u8, note: u8) {
@@ -812,15 +858,15 @@ impl Engine {
             else {
                 return;
             };
-            let p = &self.parts[usize::from(part)];
-            let v = &mut self.voices[i];
+            let p = &self.parts[pi(part)];
+            let v = &mut self.voices[vi(i)];
             if v.note != note {
                 return;
             }
             match top {
                 Some(t) => {
                     v.change_note(&p.patch, t, None, !p.patch.legato, p.patch.glide > 0.0, rate);
-                    self.parts[usize::from(part)].last_note = Some(f32::from(t));
+                    self.parts[pi(part)].last_note = t;
                 }
                 None if p.sustain => v.sustained = true,
                 None => v.release(&p.coef),
@@ -843,20 +889,21 @@ impl Engine {
         let j = self.tails.iter().position(|t| !t.active).unwrap_or_else(|| {
             let mut best = 0;
             for (k, t) in self.tails.iter().enumerate() {
-                if t.fade < self.tails[best].fade {
+                if t.fade < self.tails[best & (TAILS - 1)].fade {
                     best = k;
                 }
             }
             best
         });
-        self.tails[j] = self.voices[i];
+        let j = j & (TAILS - 1);
+        self.tails[j] = self.voices[vi(i)];
         self.tails[j].cut();
-        self.voices[i].active = false;
+        self.voices[vi(i)].active = false;
     }
 
     /// A slot for a new note on `part`/`note` (see the module docs).
     fn alloc(&mut self, part: u8, note: u8) -> usize {
-        let lim = self.voice_limit;
+        let lim = self.voice_limit.min(MAX_VOICES);
         if let Some(i) = self.voices[..lim]
             .iter()
             .position(|v| v.active && v.fade == 0 && v.part == part && v.note == note)
@@ -891,6 +938,7 @@ impl Engine {
 
     /// Render one segment of `n` ≤ [`CONTROL_PERIOD`] frames into `self.out`.
     fn segment(&mut self, n: usize, cache: Option<&SampleCache<'_>>) {
+        let n = n.min(CONTROL_PERIOD);
         let tick = self.clock % CONTROL_PERIOD as u64 == 0;
         let ahead = (CONTROL_PERIOD - (self.clock % CONTROL_PERIOD as u64) as usize) as u32;
         let ctx = Ctx { cache, rate: self.rate_f, tempo: self.tempo, ahead, tick };
@@ -904,7 +952,7 @@ impl Engine {
             if !v.active {
                 continue;
             }
-            let part = &parts[usize::from(v.part)];
+            let part = &parts[pi(v.part)];
             let buf = &mut bus.voice[..n];
             let alive = v.render(&part.view(), &ctx, tick, buf);
             v.mix(buf, &mut bus.l[..n], &mut bus.r[..n]);
@@ -968,7 +1016,7 @@ impl Engine {
             let next = events.get(ei).map_or(frames, |e| (e.offset as usize).min(frames));
             let to_tick = CONTROL_PERIOD - (self.clock % CONTROL_PERIOD as u64) as usize;
             let end = next.min(pos + to_tick);
-            let n = end - pos;
+            let n = (end - pos).min(CONTROL_PERIOD);
             self.segment(n, cache);
             for (i, f) in self.out[..n].iter().enumerate() {
                 sink(pos + i, *f);
@@ -1008,8 +1056,10 @@ impl Engine {
             out[out.len() - 1] = 0.0;
         }
         self.run(frames, events, cache, |i, [l, r]| {
-            out[2 * i] = l;
-            out[2 * i + 1] = r;
+            if let Some([a, b]) = out.get_mut(2 * i..2 * i + 2) {
+                *a = l;
+                *b = r;
+            }
         });
     }
 
@@ -1019,8 +1069,10 @@ impl Engine {
             out[out.len() - 1] = 0;
         }
         self.run(frames, events, cache, |i, [l, r]| {
-            out[2 * i] = to_i16(l);
-            out[2 * i + 1] = to_i16(r);
+            if let Some([a, b]) = out.get_mut(2 * i..2 * i + 2) {
+                *a = to_i16(l);
+                *b = to_i16(r);
+            }
         });
     }
 }

@@ -16,7 +16,7 @@ use crate::presets;
 pub const SCORE_MAX: usize = 512;
 
 /// An event at an absolute frame.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]
 pub struct Timed {
     /// Frame from the start.
     pub at: u64,
@@ -26,7 +26,7 @@ pub struct Timed {
 
 /// Events at absolute times, kept sorted (stable: equal times keep their
 /// insertion order).
-#[derive(Clone, Debug)]
+#[derive(bytemuck::Zeroable, Clone, Debug)]
 pub struct Score {
     ev: [Timed; SCORE_MAX],
     n: usize,
@@ -37,7 +37,17 @@ impl Score {
     /// An empty score at `rate` Hz.
     #[must_use]
     pub fn new(rate: u32) -> Self {
-        Self { ev: [Timed { at: 0, kind: EventKind::AllSoundOff }; SCORE_MAX], n: 0, rate: rate as f32 }
+        let mut s = <Self as bytemuck::Zeroable>::zeroed();
+        s.clear(rate);
+        s
+    }
+
+    /// [`Score::new`] in place (the score is 12 KB: the player's bench
+    /// keeps it in the decoder arena).
+    pub fn clear(&mut self, rate: u32) {
+        self.ev.fill(Timed { at: 0, kind: EventKind::AllSoundOff });
+        self.n = 0;
+        self.rate = rate as f32;
     }
 
     /// Add `kind` at `at` frames (dropped when full).
@@ -146,12 +156,22 @@ impl Scenario {
     /// A fresh engine (seed 1) set up for the scenario, and its score.
     #[must_use]
     pub fn build(&self) -> (Engine, Score) {
-        let mut e = Engine::new(self.rate, 1);
-        let mut s = Score::new(self.rate);
+        let mut e = <Engine as bytemuck::Zeroable>::zeroed();
+        let mut s = <Score as bytemuck::Zeroable>::zeroed();
+        self.setup(&mut e, &mut s);
+        (e, s)
+    }
+
+    /// [`Scenario::build`] in place: `e` and `s` (any engine and score,
+    /// zeroed ones included) become the scenario's (the player's `synth
+    /// golden` keeps both in the decoder arena).
+    pub fn setup(&self, e: &mut Engine, s: &mut Score) {
+        e.init(self.rate, 1);
+        s.clear(self.rate);
         match self.setup {
             Setup::Melodic(i) => {
                 e.set_patch(0, &presets::MELODIC[i].1);
-                phrase(&mut s, 0);
+                phrase(s, 0);
             }
             Setup::Drum(i) => {
                 e.set_patch(0, &Patch::drum(presets::DRUMS[i].1));
@@ -165,14 +185,13 @@ impl Scenario {
                 e.set_reverb(&ReverbParams { decay: 1.1, damp: 0.5, level: 0.5 });
                 s.param(0.0, 9, Param::ReverbSend, 0.12);
                 if name == "percussion" {
-                    percussion_beat(&mut s);
+                    percussion_beat(s);
                 } else {
-                    kit_beat(&mut s);
+                    kit_beat(s);
                 }
             }
-            Setup::Custom(f) => f(&mut e, &mut s),
+            Setup::Custom(f) => f(e, s),
         }
-        (e, s)
     }
 
     /// Render to interleaved `i16` in blocks of `block` frames.
@@ -536,12 +555,36 @@ pub const SCENARIOS: [Scenario; 45] = [
 /// FNV-1a (64-bit) of the samples' little-endian bytes: the golden hash.
 #[must_use]
 pub fn hash_i16(samples: &[i16]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for s in samples {
-        for b in s.to_le_bytes() {
-            h ^= u64::from(b);
-            h = h.wrapping_mul(0x0100_0000_01b3);
+    let mut h = Fnv::new();
+    h.add(samples);
+    h.0
+}
+
+/// [`hash_i16`] over a render in pieces (the player's bench hashes block
+/// by block).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fnv(pub u64);
+
+impl Fnv {
+    /// The empty hash.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+
+    /// Add `samples` (their little-endian bytes).
+    pub fn add(&mut self, samples: &[i16]) {
+        for s in samples {
+            for b in s.to_le_bytes() {
+                self.0 ^= u64::from(b);
+                self.0 = self.0.wrapping_mul(0x0100_0000_01b3);
+            }
         }
     }
-    h
+}
+
+impl Default for Fnv {
+    fn default() -> Self {
+        Self::new()
+    }
 }

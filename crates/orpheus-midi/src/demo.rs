@@ -17,6 +17,14 @@ use crate::gm;
 use crate::smf::Division;
 use crate::write::{TrackBuf, Writer};
 
+/// A demo song writer.
+pub type Song = fn(&mut [u8]) -> Option<usize>;
+
+/// The songs as files (the simulator's MIDI folder; the player's suite
+/// fixtures under `/.orpheus/test/suite/midi/`, SYN-3).
+pub const SONGS: [(&str, Song); 3] =
+    [("Etude.mid", etude), ("Hill Song.kar", karaoke), ("Sound tour.mid", tour)];
+
 /// Ticks per quarter note of the demo songs.
 pub const TPQ: u64 = 480;
 const E: u64 = TPQ / 2;

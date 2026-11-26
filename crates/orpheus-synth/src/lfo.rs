@@ -8,7 +8,8 @@
 use crate::math::{Rng, clampf, sin_turns};
 
 /// LFO waveform.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u8)]
 pub enum LfoWave {
     /// Sine.
     #[default]
@@ -24,7 +25,8 @@ pub enum LfoWave {
 }
 
 /// LFO rate.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]
+#[repr(u8)]
 pub enum LfoRate {
     /// Cycles per second (0–50).
     Hz(f32),
@@ -51,7 +53,7 @@ impl LfoRate {
 }
 
 /// LFO settings and depths of its destinations.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, Default, PartialEq)]
 pub struct LfoParams {
     /// Waveform.
     pub wave: LfoWave,
@@ -96,7 +98,7 @@ impl LfoParams {
 }
 
 /// LFO state (12 bytes).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, Default, PartialEq)]
 pub struct Lfo {
     phase: f32,
     held: f32,

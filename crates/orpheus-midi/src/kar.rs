@@ -21,7 +21,8 @@
 use crate::smf::TextKind;
 
 /// Where the lyrics of a file are.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u8)]
 pub enum LyricMode {
     /// No lyrics.
     #[default]
@@ -33,7 +34,8 @@ pub enum LyricMode {
 }
 
 /// A line break before or after a piece.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u8)]
 pub enum Break {
     /// None.
     #[default]

@@ -33,6 +33,9 @@ orpheus-sim = { path = "../sim" }
 # VER-13: the settings tree with every feature (the matrix tool).
 orpheus-apps = { path = "../crates/orpheus-apps", features = ["games", "salvo", "bricks", "books", "seq"] }
 orpheus-input = { path = "../crates/orpheus-input" }
+orpheus-midi = { path = "../crates/orpheus-midi" }
+orpheus-synth = { path = "../crates/orpheus-synth" }
+bytemuck = { version = "1.25", default-features = false, features = ["derive", "min_const_generics"] }
 regex = { version = "1", default-features = false, features = ["std", "unicode-perl"] }
 # TTS-1: the speech engine's lexicon tool.
 orpheus-tts = { path = "../crates/orpheus-tts", features = ["build"] }

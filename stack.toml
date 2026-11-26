@@ -165,6 +165,10 @@ callers = [
     # The chore check peeks at the request channel (`try_peek` wakes a
     # waiting sender when the channel is full).
     "firmware::audio::chore_due",
+    # A request served from inside playback (`serve_one`'s `try_receive`
+    # wakes a waiting sender): out of line since the synth's loop calls it
+    # too (SYN-3).
+    "firmware::audio::serve_one::{closure#0}",
     "<yoton_bsp::settings::NorRegion as orpheus_settings::Nor>::program::{closure#0}",
 ]
 targets = ["embassy_executor::raw::waker::*"]
@@ -222,6 +226,13 @@ callers = ["<orpheus_ui::gfx::Gfx>::resolve", "<orpheus_ui::font::GlyphCache>::g
 bound = 0
 why = "no GlyphSource implementation in the firmware"
 absent = ["<* as orpheus_ui::font::GlyphSource>::*"]
+
+# The MIDI sequencer's `emit: &mut dyn FnMut(Action)` (one copy of the
+# channel-message code instead of one per caller, SYN-3): the render's
+# action collector and the seek's no-op.
+[[indirect]]
+callers = ["<orpheus_midi::seq::Sequencer>::*"]
+targets = ["<orpheus_midi::player::MidiPlayer>::*::{closure#*}"]
 
 # embassy-usb: `dyn Handler` (the classes' and the firmware's handlers) and
 # the waker calls inlined into the device's run loop; the HID class calls

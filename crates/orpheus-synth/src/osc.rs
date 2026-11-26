@@ -22,7 +22,8 @@ use crate::math::{Rng, sin_phase};
 use crate::wavetable;
 
 /// Waveform of an oscillator.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum Waveform {
     /// Sine (polynomial, error < 2.5·10⁻⁷).
     Sine,
@@ -97,7 +98,7 @@ pub fn blamp(p: f32, dt: f32, inv: f32) -> f32 {
 /// Pink noise by the Voss–McCartney method: row `k` of [`PINK_ROWS`] takes a
 /// new random value every 2^(k+1) samples (the trailing zeros of a counter
 /// pick the row), and the output is the sum of the rows plus a white sample.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Pink {
     rows: [i16; PINK_ROWS],
     sum: i32,
@@ -126,7 +127,7 @@ impl Pink {
 
 /// One oscillator. Used inside the voices and on its own (the signal
 /// generator, 05 §7.17).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]
 pub struct Osc {
     /// Waveform.
     pub wave: Waveform,

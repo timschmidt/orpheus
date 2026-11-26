@@ -108,6 +108,17 @@ impl<'a> StreamRing<'a> {
         self.next = None;
     }
 
+    /// Lend the ring's memory to a source that plays without a stream
+    /// (the synthesiser, SYN-3): the ring is emptied first — an empty
+    /// current stream at its end, as [`StreamRing::new`] leaves it, and no
+    /// next stream — so whatever the borrower writes is never read as
+    /// stream data. Call [`StreamRing::reset`] before the next stream.
+    pub fn lend(&mut self) -> &mut [u8] {
+        self.reset(Some(0));
+        self.cur.eof = true;
+        &mut *self.buf
+    }
+
     /// The reader has read the current stream to its end.
     #[must_use]
     pub fn eof(&self) -> bool {
@@ -450,6 +461,32 @@ mod tests {
             drain(&mut r, &mut f, step, &mut out);
             assert_eq!(out, b);
         }
+    }
+
+    /// The memory lent to the synthesiser is the whole ring; afterwards
+    /// the ring reads nothing until the next stream, whatever was written
+    /// into it, and a stream read after it is intact.
+    #[test]
+    fn lent_memory_is_never_read_as_stream_data() {
+        let a = data(3000, 5);
+        let mut buf = std::vec![0u8; 1024];
+        let mut r = StreamRing::new(&mut buf);
+        r.reset(Some(a.len() as u64));
+        let mut f = Files { cur: &a, next: None, pos: [0, 0], chunk: 300 };
+        f.fill(&mut r);
+        r.begin_next(Some(10));
+        let lent = r.lend();
+        assert_eq!(lent.len(), 1024);
+        lent.fill(0xEE);
+        assert_eq!(r.available(), 0);
+        assert!(r.at_end() && r.eof());
+        assert_eq!(r.next_buffered(), 0);
+        assert!(!r.hand_over(), "no next stream after a lend");
+        r.reset(Some(a.len() as u64));
+        let mut f = Files { cur: &a, next: None, pos: [0, 0], chunk: 300 };
+        let mut out = Vec::new();
+        drain(&mut r, &mut f, 77, &mut out);
+        assert_eq!(out, a);
     }
 
     #[test]

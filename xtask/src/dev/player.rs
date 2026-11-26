@@ -498,9 +498,13 @@ impl Player for SimPlayer {
                 // The firmware says "playing" while a track is open (also
                 // paused).
                 match self.sim.sys.playing().map(|p| p.source) {
-                    Some(orpheus_ui::event::Source::Playing | orpheus_ui::event::Source::Paused) => {
-                        format!("playing frames=44100 rate=44100 underruns=0 corrupt=0 shuf={shuf} {tail}")
-                    }
+                    // `syn:` as the firmware's while a synth source plays
+                    // (SYN-3; the simulator's stand-in: one voice sounding,
+                    // the limit at its maximum, never overloaded).
+                    Some(orpheus_ui::event::Source::Playing | orpheus_ui::event::Source::Paused) => format!(
+                        "playing frames=44100 rate=44100 underruns=0 corrupt=0 shuf={shuf} {tail} \
+                         syn: v=1 vlim=16 over=0 reads=0"
+                    ),
                     _ => format!("idle frames=0 rate=0 underruns=0 corrupt=0 {tail}"),
                 }
             }
@@ -533,6 +537,9 @@ impl Player for SimPlayer {
                 format!("fm status: phase={:?} khz={} rssi={}", i.phase, i.khz, i.rssi)
             }
             t if t.starts_with("ls ") => "Music/\n.orpheus/\n(2 entries)".into(),
+            // SYN-3: the bench's load on the host (the same samples as the
+            // player's: its hash is the reference).
+            t if t.starts_with("synth bench ") => sim_bench(t),
             t if t.starts_with("playdir ") => "playdir ok".into(),
             // The simulator's defaults are the test look already; as on the
             // player the look holds the screen timers (unless a session
@@ -584,6 +591,25 @@ impl Player for SimPlayer {
             self.sim = AppSim::new();
             self.hold = Default::default();
         }
+    }
+}
+
+/// `synth bench I [N] [BLOCKS]` on the host: the reply's words the
+/// simulator can know (no cycles), with the render's hash.
+fn sim_bench(t: &str) -> String {
+    use orpheus_synth::bench;
+    let mut w = t.split_whitespace().skip(2).map(str::parse::<u32>);
+    let i = w.next().and_then(Result::ok).unwrap_or(u32::MAX) as usize;
+    let n = w.next().and_then(Result::ok).map_or(bench::VOICES, |n| n.min(255) as u8);
+    let blocks = w.next().and_then(Result::ok).unwrap_or(bench::BLOCKS).clamp(1, 100_000);
+    let mut e = Box::new(<orpheus_synth::Engine as bytemuck::Zeroable>::zeroed());
+    let mut buf = vec![0i16; 2 * bench::BLOCK];
+    match bench::run(i, n, bench::WARM, blocks, &mut e, &mut buf, |_| {}) {
+        Some((h, _)) => {
+            let n = bench::voices(bench::LOADS[i], n);
+            format!("bench {i} n={n} frames={} hash={h:016x}", u64::from(blocks) * bench::BLOCK as u64)
+        }
+        None => format!("synth bench: no load {i}"),
     }
 }
 

@@ -637,6 +637,7 @@ name = "firmware"
 version = "0.1.0"
 dependencies = [
  "atj2157-hal",
+ "bytemuck",
  "critical-section",
  "embassy-executor",
  "embassy-futures",
@@ -657,6 +658,7 @@ dependencies = [
  "orpheus-input",
  "orpheus-library",
  "orpheus-meta",
+ "orpheus-midi",
  "orpheus-otp",
  "orpheus-pager",
  "orpheus-player",
@@ -665,6 +667,7 @@ dependencies = [
  "orpheus-rec",
  "orpheus-settings",
  "orpheus-steps",
+ "orpheus-synth",
  "orpheus-ui",
  "orpheus-update",
  "orpheus-usb",
@@ -991,6 +994,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "orpheus-midi"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "orpheus-synth",
+]
+
+[[package]]
 name = "orpheus-ogg"
 version = "0.1.0"
 dependencies = [
@@ -1047,6 +1058,14 @@ name = "orpheus-steps"
 version = "0.1.0"
 dependencies = [
  "orpheus-proto",
+]
+
+[[package]]
+name = "orpheus-synth"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "orpheus-dsp",
 ]
 
 [[package]]

@@ -547,7 +547,8 @@ impl<'m> SampleCache<'m> {
 }
 
 /// Loop mode of a sample patch.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum SampleLoop {
     /// Play once to the end.
     Off,
@@ -574,7 +575,7 @@ impl SampleLoop {
 
 /// The source of a sample patch (`Kind::Sample`): played through the
 /// patch's filter, envelopes and LFO like the oscillators.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]
 pub struct SampleParams {
     /// Sample slot in the cache.
     pub slot: u8,
@@ -614,7 +615,7 @@ impl SampleParams {
 }
 
 /// A sample hit of a kit (see [`crate::kit`]).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]
 pub struct HitParams {
     /// Sample slot.
     pub slot: u8,
@@ -655,7 +656,7 @@ fn hermite(y0: f32, y1: f32, y2: f32, y3: f32, t: f32) -> f32 {
 }
 
 /// A sample play head (see the module docs).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]
 pub struct SamplePlayer {
     slot: u8,
     mode: SampleLoop,
@@ -873,7 +874,7 @@ impl SamplePlayer {
 const END: f32 = 1.0e-4;
 
 /// A kit's sample hit: a one-shot player with a fade and a low pass.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]
 pub struct SampleHit {
     player: SamplePlayer,
     tune: f32,

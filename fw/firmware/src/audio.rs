@@ -60,6 +60,7 @@ use embassy_time::Timer;
 use orpheus_audio::chore::{self, Ask, Costs, DecPeak, Piece, Spent, Verdict};
 use orpheus_audio::pcm::{self, Book, Fed, Feeder, Look, Reading, Sink};
 use orpheus_audio::ring::{Space, Target as Part};
+use orpheus_audio::synth::{SourceKind, Start as PlanStart, plan_start, source_of};
 use orpheus_audio::{
     ByteSource, ContainerInfo, OpenError, PcmBlock, Probe, SeekSource, SeekStep, SourceError, Step,
     StreamRing, probe,
@@ -87,6 +88,9 @@ macro_rules! t {
         s
     }};
 }
+
+/// Synth sources: the engine in the pool, MIDI files, the bench (SYN-3).
+mod synth;
 
 pub const CMD_LEN: usize = 120;
 
@@ -625,9 +629,6 @@ static STOP: AtomicBool = AtomicBool::new(false);
 /// refill unit next to the resident audio path. Ogg pages up to ~15.5 KiB
 /// play; a stream that needs more ends with an error (open, STATUS).
 const RING: usize = 16 * 1024;
-#[repr(C, align(4))]
-struct RingBuf([u8; RING]);
-static RING_BUF: ConstStaticCell<RingBuf> = ConstStaticCell::new(RingBuf([0; RING]));
 
 /// The stream ring over the current file, and the next file read ahead
 /// after it (gapless); also the picture decoders' source while no track is
@@ -1087,9 +1088,18 @@ const SPARE: usize = 2048;
 /// The largest decoder, the spare bytes and the music library's build
 /// state (the arena's last bytes, `crate::library::STATE`) fit.
 const _: () = assert!(60_008 + SPARE + crate::library::STATE <= ARENA);
+
+/// The pool (02 §1.3): the stream ring, then the decoder arena, one
+/// contiguous region (`repr(C)`: the ring's last byte is followed by the
+/// arena's first). A codec uses the two apart; a synth source
+/// (`synth`, SYN-3) borrows both together, less the library state at the
+/// arena's end, while the ring is idle (`StreamRing::lend`).
 #[repr(C, align(8))]
-struct ArenaBuf([u8; ARENA]);
-static mut ARENA_BUF: ArenaBuf = ArenaBuf([0; ARENA]);
+struct Pool {
+    ring: [u8; RING],
+    arena: [u8; ARENA],
+}
+static mut POOL: Pool = Pool { ring: [0; RING], arena: [0; ARENA] };
 
 /// The card reader's transfer buffer: the first 16 KiB of the decoder
 /// arena. Only while the card is with the USB task, when this task is
@@ -1099,8 +1109,8 @@ static mut ARENA_BUF: ArenaBuf = ArenaBuf([0; ARENA]);
 /// Call only between receiving the card from `CARD_OUT` and sending it
 /// back on `CARD_BACK`, and drop the borrow before sending it back.
 pub unsafe fn usb_buffer() -> &'static mut [u8; 16384] {
-    // SAFETY: see above; the arena is 72 KiB, 8-byte aligned.
-    unsafe { &mut *((&raw mut ARENA_BUF.0).cast::<[u8; 16384]>()) }
+    // SAFETY: see above; the arena is 64 KiB, 8-byte aligned.
+    unsafe { &mut *((&raw mut POOL.arena).cast::<[u8; 16384]>()) }
 }
 /// USB Drive's extent table (USB-6): the 8 KiB after the transfer buffer.
 const EXTENTS_AT: usize = 16384;
@@ -1122,7 +1132,7 @@ pub unsafe fn usb_extents() -> &'static mut [u8] {
     // SAFETY: see above; the bytes lie after `usb_buffer`'s 16 KiB and
     // before the library state, inside the 8-byte aligned arena.
     unsafe {
-        core::slice::from_raw_parts_mut((&raw mut ARENA_BUF.0).cast::<u8>().add(EXTENTS_AT), EXTENTS_LEN)
+        core::slice::from_raw_parts_mut((&raw mut POOL.arena).cast::<u8>().add(EXTENTS_AT), EXTENTS_LEN)
     }
 }
 static mut CACHE: [CacheSlot; 8] = [CacheSlot::EMPTY; 8];
@@ -1239,6 +1249,9 @@ async fn play_path(
     ring.file = Some(vol.open(path, OpenMode::Read).await.map_err(|_| &b"open failed"[..])?);
     let mut out = PcmOut::new();
     let st = Start { frame: 0, paused: false, track: None, gapless: false, early: None };
+    if let SourceKind::Midi { kar } = source_of(ext_of(path)) {
+        return Apart(synth::play_midi(vol, ring, arena, srv, &mut out, st, kar)).await;
+    }
     play_file(vol, ring, arena, ext_of(path), srv, &mut out, st).await
 }
 
@@ -1258,6 +1271,7 @@ fn codec_name(ext: Option<&[u8]>) -> &'static str {
         b"opus" => "Opus",
         b"spx\0" => "Speex",
         b"aif\0" | b"aiff" => "AIFF",
+        b"mid\0" | b"midi" | b"kar\0" | b"rmi\0" => "MIDI",
         _ => "?",
     }
 }
@@ -2734,6 +2748,26 @@ async fn play_item(
             }
         };
         let ext = ext.get(..usize::from(n)).filter(|e| !e.is_empty());
+        let start = plan_start(gapless, source_of(ext));
+        if gapless && start != PlanStart::Gapless {
+            // A synth file read ahead: never gapless. The player hears of
+            // the end first if it has not (it opens this item), then the
+            // file opens fresh after the previous track has played out.
+            if o.early {
+                o.early = false;
+                srv.feed(Event::DecoderEnded);
+            }
+            o.gapless = false;
+            continue;
+        }
+        if let PlanStart::Synth { kar } = start {
+            let st =
+                Start { frame: o.frame, paused: o.paused, track: Some(track), gapless: false, early: None };
+            return match Apart(synth::play_midi(vol, ring, arena, srv, out, st, kar)).await {
+                Ok(end) => end,
+                Err(_) => after(srv.feed(Event::OpenFailed)),
+            };
+        }
         let st = if gapless {
             let early = if let (true, Target::Item(i)) = (o.early, o.target) { Some(i) } else { None };
             Start { frame: 0, paused: false, track: Some(track), gapless, early }
@@ -3272,7 +3306,7 @@ pub fn put_chunk(data: &[u8]) -> bool {
     // SAFETY: while UPLOADING is set the card task does not touch the arena
     // except to copy a chunk out after PUT_LEN says one is there; PUT_LEN 0
     // means it is done with the previous one.
-    unsafe { (&mut (*(&raw mut ARENA_BUF)).0)[..data.len()].copy_from_slice(data) };
+    unsafe { (&mut (*(&raw mut POOL)).arena)[..data.len()].copy_from_slice(data) };
     PUT_LEN.store(data.len() as u32, Ordering::Release);
     PUT_SIGNAL.signal(());
     true
@@ -3439,6 +3473,7 @@ pub fn status_reply() {
             .u(u64::from(ub[UB_ART]))
             .s(t!(b" dec="))
             .u(u64::from(ub[UB_DECODER]));
+        synth::status(w);
     });
 }
 
@@ -3478,8 +3513,11 @@ pub async fn audio() {
     let Some((arena, srv)) = Apart(start(&mut vol)).await else { return };
     // Built here, not in `start`: held across its awaits it would take room
     // in that future as well as in this one.
+    // SAFETY: the ring's half of the pool is taken once, here; only this
+    // task uses it (through `ring`; a synth source borrows it from `ring`).
+    let ring_mem: &'static mut [u8] = unsafe { &mut (*(&raw mut POOL)).ring };
     let mut ring = Ring {
-        s: StreamRing::new(&mut RING_BUF.take().0),
+        s: StreamRing::new(ring_mem),
         file: None,
         next: None,
         next_file: None,
@@ -3551,7 +3589,7 @@ async fn start(slot: &mut Option<Volume<'static, Card>>) -> Option<(&'static mut
     });
     // SAFETY: this task is the arena's owner; the USB task borrows it only
     // while this task waits for the card (`usb_buffer`).
-    let full: &'static mut [u8] = unsafe { &mut (*(&raw mut ARENA_BUF)).0 };
+    let full: &'static mut [u8] = unsafe { &mut (*(&raw mut POOL)).arena };
     // Its last bytes hold the music library's build state (never lent out).
     let (arena, lib_state) = full.split_at_mut(ARENA - crate::library::STATE);
     crate::library::init(lib_state);
@@ -3717,6 +3755,8 @@ async fn idle(vol: &mut Volume<'static, Card>, ring: &mut Ring, arena: &mut [u8]
             }
         } else if let Some(p) = text.strip_prefix("ls ") {
             Apart(ls(vol, p.trim())).await;
+        } else if let Some(a) = text.strip_prefix("synth") {
+            Apart(synth::command(a.trim(), ring, arena)).await;
         } else if let Some(p) = text.strip_prefix("play ") {
             for s in
                 [&FRAMES, &UNDERRUNS, &SLOW_UNDERRUNS, &CORRUPT, &DEC_N, &DEC_US, &DEC_MAX_US, &DEC_LOADS]

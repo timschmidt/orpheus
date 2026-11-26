@@ -139,6 +139,48 @@ frame_mean_ms = 4
 frame_worst_ms = 16
 audio_underruns = 0
 
+[synth]
+# The synthesiser on the player (04 §9, SYN-3, 2026-11-26).
+#
+# RAM: no static RAM of its own (one 4-byte statistics word; the ring and
+# the arena became one 80 KiB `POOL` static: .bss unchanged at 125,448 B).
+# A synth source takes the pool (stream ring + decoder arena less the
+# library's 1,104 B build state). Measured on thumbv7em (`size_of`, a
+# const assertion in `audio::synth` checks they fit): MIDI state 71,640 B
+# (`MidiPlayer` 70,264 = engine 62,360 + parser 6,224 + …; block cache
+# tags, governor, one 256-frame block), then 13 card blocks (6,656 B),
+# 2,520 B spare for card work while it plays.
+pool_bytes = 80816
+midi_state_bytes = 71640
+engine_bytes = 62360
+# Rendering: 44.1 kHz, 256-frame blocks, clock floor High (144 MHz) while
+# a synth source plays. The load governor lowers the voice limit while a
+# block's render takes more than 60 % of its real time (below 35 % for
+# 180 blocks: one voice back), never below 4.
+voices_max = 16
+governor_high_pct = 60
+# Cycles per voice-sample and per sample (effects, the empty engine).
+# ESTIMATES (SYN-1/2 disassembly, ±30 %) until `synth bench I` runs on the
+# player: cost per voice = (cyc_per_frame of the load − that of load 0
+# `empty`) / its voices_x100 × 100; per effect: the load − load 1 `sine`
+# at N = 1. Replace each with the measured value and the date.
+est_cycles_empty_frame = 135
+est_cycles_sine = 75
+est_cycles_saw_lead = 140
+est_cycles_pwm_pad = 190
+est_cycles_fm_2op = 120
+est_cycles_fm_4op = 260
+est_cycles_kick = 145
+est_cycles_snare = 230
+est_cycles_hats = 295
+est_cycles_cymbal = 315
+est_cycles_reverb_frame = 290
+est_cycles_chorus_frame = 120
+# The delay is compiled out of the firmware (feature `delay` off: no MIDI
+# controller feeds it; its code would not fit the code window). Host
+# estimate 90 (k = 1) / 230 (k > 1).
+est_cycles_delay_frame = 90
+
 [tts]
 # Speech engine (04 §8, TTS-2, 2026-11-25). RAM: `Synth` (unit queue,
 # synthesiser, resampler) measured 1,936 B on the host, `Speaker`

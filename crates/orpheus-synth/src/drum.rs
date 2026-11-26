@@ -30,7 +30,8 @@ use crate::math::{Rng, clampf, decay_coef, exp2, sin_phase, sin_turns, soft_clip
 use crate::osc::{blep, inc_for};
 
 /// Drum voice type.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum DrumKind {
     /// Bass drum.
     Kick,
@@ -86,7 +87,7 @@ impl DrumKind {
 }
 
 /// Drum voice settings.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]
 pub struct DrumParams {
     /// Voice type.
     pub kind: DrumKind,
@@ -126,7 +127,7 @@ impl DrumParams {
 const HAT: [f32; 6] = [205.3, 304.4, 369.6, 522.7, 540.0, 800.0];
 
 /// A drum voice's running state (about 150 bytes).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]
 pub struct DrumVoice {
     kind: DrumKind,
     t: u32,

@@ -402,6 +402,22 @@ symbols = [
     "orpheus_fs::unicode::*",
 ]
 
+# A synth source's block loop (SYN-3, `audio::synth::play_midi`): every
+# render block resumes it (requests, the render call, the governor, the
+# DSP and PCM ring, the chores' checks). Placed in the code window's hole
+# before `flac-frame` (which starts over `mp3-frame`'s physical lines):
+# 7 lines that cost no page. While a synth source plays no codec does, so
+# sharing physical lines with `mp3-frame`'s neighbours costs nothing; it
+# shares 6 with `play-fill` (the MIDI file is read a block every few
+# seconds while it plays: no conflict worth a page).
+[[cluster]]
+name = "synth-block"
+bins = ["firmware"]
+fits_with = ["synth-render"]
+symbols = [
+    "firmware::audio::Apart<firmware::audio::synth::play_midi::*>::poll",
+]
+
 # The FLAC decoder per frame (see above: on `mp3-frame`'s physical lines;
 # after `games-io` and `dir-walk`, the code window is left empty up to
 # there, `starts_over`).
@@ -414,6 +430,38 @@ symbols = [
     "<orpheus_codec_flac::FlacDecoder as orpheus_audio::decoder::Decoder>::decode",
     "orpheus_codec_flac::FlacDecoder>::sync",
     "orpheus_codec_flac::frame::*",
+]
+
+# The synthesiser's per-sample code (SYN-3): the render with the voices,
+# oscillators, FM, filter, mix, reverb, chorus and limiter inlined
+# (`Engine::render_i16`, 12 KB), the filter and envelope steps, and the
+# drum kinds a General MIDI kit sounds most (kick, snare, hats, clap).
+# After `flac-frame` it sits on physical lines 17–31 and 0, clear of
+# `synth-block` (1–7); 16 lines, so the two and the PCM path fit the
+# cache together. Outside (per control period or rarer, a line each when
+# they run): the other drum kinds, the filter design, `exp2`, pan gains.
+# Hand-ordered from `cargo xtask hot --name synth-render` (the generated
+# order put rarely used drums first). `budget_lines`: the cluster's 16
+# lines + the 10 reachable functions outside it (`xtask stack --check`).
+[[cluster]]
+name = "synth-render"
+bins = ["firmware"]
+fits_with = ["synth-block"]
+from = [
+    "*orpheus_synth::engine::Engine>::render_i16",
+]
+stop = [
+    "*orpheus_synth::engine::Engine>::apply",
+]
+budget_lines = 26
+symbols = [
+    "<orpheus_synth::engine::Engine>::render_i16",
+    "<orpheus_synth::filter::Svf>::process",
+    "<orpheus_synth::env::Env>::advance",
+    "<orpheus_synth::drum::DrumVoice>::kick",
+    "<orpheus_synth::drum::DrumVoice>::snare",
+    "<orpheus_synth::drum::DrumVoice>::hat",
+    "<orpheus_synth::drum::DrumVoice>::clap",
 ]
 
 # The paged toy: three functions spread over the generated code, packed

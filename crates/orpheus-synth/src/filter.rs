@@ -17,7 +17,8 @@ use core::f32::consts::PI;
 use crate::math::{clampf, flush, tan_lo};
 
 /// Filter response.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u8)]
 pub enum FilterMode {
     /// No filter (bypassed, no cost).
     #[default]
@@ -36,7 +37,7 @@ pub const MIN_CUTOFF: f32 = 16.0;
 pub const MAX_CUTOFF_RATIO: f32 = 0.49;
 
 /// State-variable filter state and coefficients.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, Default, PartialEq)]
 pub struct Svf {
     ic1: f32,
     ic2: f32,

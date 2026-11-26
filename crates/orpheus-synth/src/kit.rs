@@ -33,7 +33,7 @@ pub const SAMPLE: u8 = 0x80;
 /// One note of a kit. Units: `tune` in quarter semitones, `decay` in 1/50
 /// (50 = 1.0, the model's own time; 5–200), `tone`, `snap`, `level` in
 /// percent, `pan` in percent left (−) or right (+).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KitEntry {
     /// MIDI note.
     pub note: u8,
@@ -140,7 +140,7 @@ impl KitEntry {
 }
 
 /// A kit: up to [`KIT_ENTRIES`] entries; the first entry for a note wins.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Kit {
     entries: [KitEntry; KIT_ENTRIES],
     len: u8,
@@ -166,7 +166,7 @@ impl Kit {
     /// The entries.
     #[must_use]
     pub fn entries(&self) -> &[KitEntry] {
-        &self.entries[..usize::from(self.len)]
+        self.entries.get(..usize::from(self.len)).unwrap_or_default()
     }
 
     /// The entry for `note`.
