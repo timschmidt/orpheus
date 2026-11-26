@@ -72,12 +72,139 @@ of every session. Newest entries first in §3.
 | GAME-6 Bricks (M14) | **built (host + simulator + firmware), not yet run on the player** | Brick breaker of our own: integer physics with one-pixel sub-steps (no tunnelling at any speed, no floating point), paddle angles, 1–3-hit and unbreakable bricks, 8 hand-made + generated levels, five power-ups, lives, scores, saves; 7 settings packed into 1 word; 47 goldens; fuzz `bricks_keys`. In the firmware (`orpheus-apps/bricks`): stack margin 4,116 B unchanged. Lead: session entry 2026-11-25 "GAME-6" |
 | BOOK-2 | **done (host + simulator)**; not in the firmware (as BOOK-1; the scratch is the decoder arena, see session entry) | EPUB 2/3 in `orpheus-books`: zip (end record, streamed central directory, CRC, zip64/encrypted/method refusals), `no_std` inflate (48 B state; 32 KiB window + 2,304 B tables lent: 35,072 B), container/OPF/nav/NCX, XHTML reduction over the XML tokenizer split out of FB2, contents positions from anchors, all in bounded steps into BOOK-1's stream; library titles from the package; 12 new goldens; fuzz targets `books_zip`, `books_epub` (session entry 2026-11-25 "BOOK-2") |
 | MIDI-1 | **done (host + simulator)**; on the player since SYN-3; **user check: listen to the three MIDI renders** | `orpheus-midi`: Standard MIDI File parser (formats 0/1/2, running status, meta and SysEx, SMPTE, RMID) streamed through 64 track cursors of 64-byte windows that ask for bytes (`Need`/`supply`), nothing trusted; exact tick→frame clock through tempo changes; sequencer (CC 1/6/7/10/11/38/64/91/93/96–101/120–127, RPN bend range, pressure, programs, kits on channel 10, mute/solo); own GM set of 32 sounds for the 128 programs (`data/gm-sounds.osb`); `MidiPlayer`: open/scan, render, bounded-step seek (bit-exact where nothing sounds across the target), duration/position, `.kar`/lyric events; Files plays `.mid`/`.kar` in the simulator with Now Playing lyrics; player 70,224 B; estimate ≈ 117 MHz at 48 kHz for a 10–11-voice song: High clock (session entry 2026-11-25 "MIDI-1") |
-| SYN-3 | **done (firmware build)**; bench run on the player 2026-11-26 (costs measured); **load governor built, not yet run on the player: lead's checks in the session entry 2026-11-26 "SYN-3: load governor"**; owner decision: half rate for heavy MIDI files (04 §9) | The synthesiser on the player: a synth source beside the codecs (`orpheus_audio::synth`), the engine and the MIDI player built in place in the pool (stream ring + decoder arena, 80,816 B; MIDI state 71,640 B), the MIDI file through a 13-block card cache (`orpheus_midi::cache`), 44.1 kHz into the DAC ring through the DSP chain, clock floor High, budget-aware load governor (`orpheus_synth::load`: 55 % of real time; chorus, delay, reverb, then voices shed) with 4 ms pieces and pace-rule rests (thread mode always runs); `.mid`/`.kar` play from Files and Music with seek and pause; `synth bench` (36 loads, cycles, host hashes); 125/128 code pages, stack margin 5,772 B (session entries 2026-11-26 "SYN-3" and "SYN-3: load governor") |
+| SYN-3 | **done (firmware build)**; bench run on the player 2026-11-26 (costs measured); load governor run on the player (`78b316b5`: no reset, but every song stopped at `ratio=400`); **measurement fix and clock-up (D-4) built, not yet run on the player: lead's checks in the session entry 2026-11-26 "SYN-3: governor ratio measured right"**; owner decision: half rate for heavy MIDI files (04 §9) | The synthesiser on the player: a synth source beside the codecs (`orpheus_audio::synth`), the engine and the MIDI player built in place in the pool (stream ring + decoder arena, 80,816 B; MIDI state ≈ 71,960 B), the MIDI file through a 13-block card cache (`orpheus_midi::cache`), 44.1 kHz into the DAC ring through the DSP chain, clock floor High raised to Turbo/Max by the load governor before anything is shed (`orpheus_synth::load`: 55 % of real time; then chorus, delay, reverb, voices shed at Max; compute measured apart from paging, warm-up 250 ms, rise ≤ 3 % a block), 4 ms pieces and pace-rule rests (thread mode always runs); underruns never end a song (only "nothing can play"); `.mid`/`.kar` play from Files and Music with seek and pause; `synth bench` (36 loads, cycles, host hashes); 125/128 code pages, stack margin 5,476 B (session entries 2026-11-26 "SYN-3", "SYN-3: load governor" and "SYN-3: governor ratio measured right") |
 | A11Y-2 | **built (host + simulator + firmware), not yet run on the player**; journey `settings_accessibility` and user check 31 | Settings › Accessibility (Text size Normal/Large/Extra large, Hold delay 0.5–2 s, Key repeat Normal/Slow/Slower; packed in `0x0D60`), Themes White on black / Black on white (≥ 7:1), reduced motion = Animations off (spinner still, blinks lit), Key click Presses and holds (hold confirmation); 63 `a11y_*` goldens (session entry 2026-11-26 "A11Y-2") |
 | VER-13 Brightness (U-PWM-3) | **built (host + simulator + firmware), not yet run on the player**; journey `settings_brightness` and user check 32 | Settings › Display › Brightness = the stock levels 1–11 (default 6) on the stock PWM4 duties, live; key `0x030D` (old `0x0301` retired); alert flash 15 / 3 (never 16); `ui top` `bl=` |
 | VER-4 (settings store keys) | **done (host + firmware built), not yet run on the player** | Store index 128 → 192 keys at 4 B a slot (was 8), same NOR format both ways (fixture from the old code, byte-equal images); cache write marks unlimited; 131 keys in use with every app (61 free), firmware 129; sector ceiling ≈ 209 settings keys (256 cannot fit one sector); .bss −1,248 B, stack margin 5,664 B; compaction no longer re-blesses a rotted value (session entry 2026-11-26 "VER-4: settings store index") |
 
 ## 3. Session log
+
+### 2026-11-26 — SYN-3: governor ratio measured right; the clock goes up before anything is shed; underruns no longer end a song (worker, no hardware)
+
+The lead's run of build `78b316b5`: no reset over 3 minutes, UI alive,
+underruns labelled `synth:render:8ms` (7, 17), `synth bench` 32 / 29 =
+1,408 / 750 (the table agrees) — but every song stopped at once:
+`Etude.mid` idle within 3 s with `syn: v=9 vlim=2 over=57 lvl=3/3 fx=1
+load=98 ratio=400 rests=56 shed=7`, the playdir within 20 s at
+`underruns=16`. Firmware build and host tests; **nothing run on the
+player** (no `xtask dev`: the brief). Owner direction D-4 (2026-11-26,
+via the lead): clock up to 288 MHz when needed, shed only at Max, back
+down when the music allows; Power modes (Battery saver: the lowest clock
+the peripherals work at, degrade but play; Auto: everything at the least
+battery; High performance: Max). Full "as built" in 04 §9 ("As built
+(SYN-3 governor measurement and clock …)"); in short:
+
+* **Cause** (code and a host model): (1) the ratio's **first measurement
+  was taken as it was**, and the first piece of a song is estimated with
+  the **empty engine** (245 cycles a frame) while its first notes start
+  inside it (plus cold code and patches): ≥ 10 ×, clamped to 4.0 at once;
+  the model reproduces it for all three songs (ratio 400 after piece 1,
+  voice limit 2 at piece 2) even without a cold factor. (2) The render's
+  time included the **pager's line loads**, a cost per piece, not per
+  frame: as the ratio rose the pieces shortened and paging per frame grew
+  — likely why the player stayed at 4.0 for seconds with two voices
+  (renders of 7–17 ms); not proven without hardware, the new `pg=` shows
+  it. (3) The codecs' **too-slow stop** (8 lost PCM halves over the whole
+  file, no time window) ended the songs. Units (µs × MHz) were right.
+* **Measurement** (`orpheus_synth::load::Governor::measured`): compute
+  only (the pager's `LOAD_US` during the render is subtracted and kept as
+  a smoothed paging figure the decisions count as fixed); the estimate is
+  the mean of the engine's before and after the piece; nothing measured
+  for 250 ms after an open or seek (`restart`), nor pieces < 32 frames or
+  with an estimate < 2 × the empty engine's; falls by ¼ of the difference
+  a piece, **rises ≤ 3 % per 256-frame block**. Piece length (only)
+  follows the last piece's raw ratio from the first piece on.
+* **Clock (D-4)**: over budget → the lowest of High/Turbo/Max (144 / 192
+  / 288 MHz) that fits, at once from the RT task (clock floor 2/3/4,
+  `audio::synth::synth_floor`, re-applied every piece); shedding only at
+  Max; restore voices (as many as fit 50 % at once), effects, then the
+  clock one step down after 2 s at full quality under 50 % of the lower
+  clock. **`orpheus_power::governor` (minimal edit)**: floors 3 and 4 are
+  honoured (down-step never below them; Max → Turbo for a Turbo floor;
+  the Normal-performance "Max → High" rule skips a Max floor and goes to
+  Turbo for a Turbo floor). The synth relies on: the clock governor never
+  stepping below `CLOCK_FLOOR`, stepping down to it when idle, and the
+  power-mode pinning the other worker builds; it reads the mode from
+  `ui::POWER_MODE` only to ask no more than High in Battery saver.
+* **Power modes**: when the CPU runs slower than the step asked for, the
+  governor marks the clock **pinned** for the file and sheds at the clock
+  it has (`syn: pin=1`); High performance gets Max's budget at once.
+* **Giving up**: underruns no longer end a MIDI file. Only when everything
+  is shed at the top (or pinned) clock and the measured render stays
+  above 200 % of real time for 5 s of its own time (net): logged `synth:
+  gave up, nothing can play at N load=… ratio=… pg=… lvl= vlim=`.
+* **Logs / `status`**: `synth: clock N load=L% ratio=R pg=P% lvl= vlim=`
+  at each clock change; `syn:` adds `clk=now/max` (MHz asked; set at a
+  change, so 144/144 until the first), `pin=`, `pg=` (paging % of real
+  time).
+* **Model results** (`orpheus-midi` `tests/governor.rs`, true cost = the
+  engine's state through each piece, measured as the player does), clock
+  free: Etude at Max all the way, reverb off, mean voice limit 8.0 (=
+  fixed 288 MHz); Hill Song 16 voices, reverb 17 %, Max 91 % / Turbo 7 % /
+  High 2 %; Sound tour full quality 91 %, High 9 % / Turbo 58 % / Max 33 %;
+  ratio 99–103 %, < 1 % of frames over budget past 2 s, no PCM half at
+  risk, none given up. With the cold start and 350 µs paging a piece: the
+  same frames, ratio ≤ 104 % past the first second. Pinned at 144 MHz
+  (e.g. Battery saver at High): as before (Etude 2.4 voices, Hill Song
+  4.2, Sound tour 6.1). A light song stays at High, bit for bit.
+* **Numbers** (thumbv7em): resident **81,639 B** (`xtask size`; build
+  line 81,644; was 81,623), .bss **124,240 B** (+8: the fourth `syn:`
+  word), governor 40 → 60 B (MIDI state ≈ 71,960 B, computed),
+  **125/128 code pages**, `synth-midi` 9 lines (9,058 B),
+  `play_midi`'s poll 7,134 B in its 7-line hole (the give-up moved into
+  `after_piece`), `synth-render` 25 of 26 lines, **stack margin 5,476 B**
+  (unchanged).
+* **Tests**: `regress_synth_ratio_pinned_by_cold_start` (two: the loop
+  model in `orpheus_synth::load` — first piece estimated empty, 50 ms at
+  10 ×, a 2 s burst at 3 ×: not stopped, ratio back to 95–105 %, the
+  clock up for the burst and back to High, ratio ≤ 110 % without the
+  burst; fails with the old measurement — and the three demo songs in
+  `orpheus-midi`); `regress_synth_render_starved_thread_mode` kept (clock
+  pinned and free; "sustainable after" bound 12 → 80 pieces, ≈ 0.25 s:
+  the rise cap makes a real 1.3 × misestimate show more slowly; thread
+  mode ≥ 30 % of every 100 ms, ≥ 40 % overall, no underrun);
+  `raises_the_clock_before_shedding`, `restores_then_lowers_the_clock`,
+  `battery_saver_degrades_and_never_stops` (24, 48, 96 MHz),
+  `gives_up_only_when_nothing_can_play`, the unfixable overload plays on;
+  `demo_songs_raise_the_clock_before_shedding`,
+  `a_light_song_stays_at_high`; `orpheus-power` `floor_holds` (floors 3
+  and 4).
+* **Gate**: fmt (host, fw); clippy `-D warnings` (host workspace all
+  targets, fw workspace); `cargo test --workspace` 2,048 passed, 0 failed, 13 ignored;
+  `settings-matrix --check` (174 settings, 0 errors); fw `xtask build` (ok, 125 code +
+  26 rodata pages), `check-resident` (ok, none paged), `size --check`
+  (within budgets), `stack --check` (margin 5,476 B). Not run: any `xtask
+  dev` step (the brief), `brand`/`site --check`, fuzzing beyond the
+  corpus replay.
+* **For the lead on the player** (Power mode Automatic; Performance
+  Normal, or whatever the clock worker's build leaves):
+  1. `play /.orpheus/test/suite/midi/Etude.mid`, `status` every ~10 s:
+     plays to its end (`frames=` 1131268 at the end, or within a few
+     hundred while playing out); `syn: clk=288/288 pin=0`, `ratio=` 90–
+     115 after the first second (≫ 100 now means real compute the table
+     misses, not paging), `lvl=3/3` with `vlim=` mostly 6–10 and `fx=1`
+     (reverb off), `pg=` the paging share (expect a few %; ≥ 20 means
+     paging is the problem: report it), `underruns` 0 or a burst at the
+     start; log `synth: clock 288 …` once near the start; no reset, UI
+     alive (`stats` `clock level Max 288` while it plays).
+  2. `Hill Song.kar`: to its end (1146600 frames), `clk=` 288 most of the
+     time with drops to 192/144 in quiet stretches (log lines `synth:
+     clock …` a few seconds apart at most), `vlim=16`, `lvl=` max 2
+     (reverb off at times), underruns 0.
+  3. `Sound tour.mid`: to its end (2469600), `lvl=0` most of the time,
+     `clk=` moving between 144, 192 and 288 (`clk=…/288`), underruns 0.
+  4. `playdir /.orpheus/test/suite/midi`: all three in turn, no stop, no
+     reset; after it `stats` back at High or lower (the clock governor
+     steps down within ≈ 3 s of the end).
+  5. Battery saver (Settings › Power › Power mode): the same Etude plays
+     to its end, shed to the floor (`pin=1`, `vlim=2`, `clk=` the asked
+     step, `stats` the saver clock), underruns allowed, no stop unless a
+     `synth: gave up` line says why; UI alive.
+  6. If a song still stops: the `synth: gave up …` line (or its absence:
+     then something else ended it) and `status` at that moment.
+* Open: whether paging is the player's 4 ×: `pg=` answers it; if it is
+  large, the per-piece paging (lines `play-block` and the chores evict)
+  is the next work, not the governor.
 
 ### 2026-11-26 — NOR read race fixed; 20 boots clean (lead)
 

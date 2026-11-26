@@ -183,9 +183,10 @@ async fn watchdog() {
 }
 
 /// Lowest clock level the governor may choose (0 = Base, 1 = Mid, 2 =
-/// High). The audio task sets it from the codec and the DSP chain: at Base,
-/// Vorbis/Opus, or MP3 + DSP, plus the UI overload the CPU (paging
-/// included) and starve thread mode.
+/// High, 3 = Turbo, 4 = Max). The audio task sets it from the codec and the
+/// DSP chain: at Base, Vorbis/Opus, or MP3 + DSP, plus the UI overload the
+/// CPU (paging included) and starve thread mode; 3 and 4 only the synth's
+/// load governor while a MIDI file needs them (D-4, 2026-11-26).
 pub static CLOCK_FLOOR: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
 /// Governor on/off (test command `gov on|off`).

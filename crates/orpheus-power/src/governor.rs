@@ -114,7 +114,8 @@ pub struct Input {
     /// Idle share of the main executor since the last step (percent).
     pub idle_pct: u32,
     pub current: Level,
-    /// Lowest level the audio task allows: 0 Base, 1 Mid, 2 High.
+    /// Lowest level the audio task allows: 0 Base, 1 Mid, 2 High, 3 Turbo,
+    /// 4 Max (3 and 4: the synth's load governor, D-4).
     pub floor: u8,
     pub perf: Performance,
 }
@@ -140,9 +141,9 @@ impl Governor {
 
     /// The level to switch to, if any.
     pub fn step(&mut self, i: Input) -> Option<Level> {
-        if i.perf == Performance::Normal && i.current == Level::Max {
+        if i.perf == Performance::Normal && i.current == Level::Max && i.floor < 4 {
             self.calm = 0;
-            return Some(Level::High);
+            return Some(if i.floor == 3 { Level::Turbo } else { Level::High });
         }
         if i.idle_pct < UP_BELOW {
             self.calm = 0;
@@ -159,7 +160,8 @@ impl Governor {
             }
             self.calm = 0;
             match i.current {
-                Level::Turbo | Level::Max => Some(Level::High),
+                Level::Max if i.floor == 3 => Some(Level::Turbo),
+                Level::Turbo | Level::Max if i.floor < 3 => Some(Level::High),
                 Level::High if i.floor < 2 => Some(Level::Mid),
                 Level::Mid if i.floor < 1 => Some(Level::Base),
                 _ => None,
@@ -376,6 +378,12 @@ mod tests {
             [Max, Max, High, High, High, High, High, High, High]
         );
         assert_eq!(run(High, Performance::Normal, 1, &[90; 9])[8], Mid);
+        // The synth's floors (D-4, 2026-11-26): Turbo and Max hold, under
+        // Normal too; Max comes down to a Turbo floor, not past it.
+        assert_eq!(run(Max, Performance::Normal, 4, &[90; 9]), [Max; 9]);
+        assert_eq!(run(Turbo, Performance::Normal, 3, &[90; 9]), [Turbo; 9]);
+        assert_eq!(run(Max, Performance::Normal, 3, &[90; 9])[8], Turbo);
+        assert_eq!(run(Max, Performance::Maximum, 3, &[90; 9])[8], Turbo);
     }
 
     #[test]

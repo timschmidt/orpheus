@@ -1447,6 +1447,84 @@ cost.
   .bss 124,208 B (+8), MIDI state 71,936 B (+296: the effects' fade
   buffers, the governor), stack margin 5,772 B.
 
+**As built (SYN-3 governor measurement and clock, 2026-11-26): the ratio
+measures the render, the clock goes up before anything is shed, and
+underruns no longer end a song.** The lead's run of build `78b316b5`:
+no reset and the UI alive, but every demo song stopped within 3–20 s
+(`status` `idle … lvl=3/3 vlim=2 load=98 ratio=400`) while `synth bench`
+agreed with the cost table.
+
+* **Cause** (code and the host model, no hardware): (1) the ratio's first
+  measurement was taken as it was, and the first piece of a song is
+  estimated with the empty engine (245 cycles a frame) while its first
+  notes start inside it (and its code and patches page in cold): ≥ 10 ×,
+  clamped to 4.0 at once. The model reproduces it for all three songs —
+  ratio 400 after the first piece, the voice limit 2 at the second — even
+  without a cold factor. (2) The measurement counted the pager's line
+  loads (≈ 175 µs each) as render: a cost per piece, not per frame, so
+  as the ratio rose the pieces got shorter and the paging per frame
+  larger, which kept it high (on the player it stayed at 4.0 for seconds
+  with two voices, renders of 7–17 ms; not proven without hardware:
+  `status` `syn: pg=` now shows the share). (3) The codecs' too-slow stop
+  (8 lost PCM halves over the file, no time window) ended the songs.
+* **The measurement** (`orpheus_synth::load::Governor::measured`): the
+  render's **compute** only — the pager's line-load time during the piece
+  (`atj2157_hal::pager::LOAD_US`) is taken out and kept as its own
+  smoothed figure (cycles a frame, a fixed cost in the decisions that no
+  voice count changes, and in the piece's predicted time for the pace
+  rule); the estimate is the **mean of the engine's before and after the
+  piece** (the larger of the two made the ratio a little optimistic and a
+  dense song a few % over its budget more often); nothing is measured for
+  **250 ms after an open or a seek** (`Governor::restart`), nor a piece
+  under 32 frames or with an estimate under twice the empty engine's; the
+  ratio falls by a quarter of the difference a piece and **rises by at
+  most 3 % a 256-frame block** (1 → 4 takes ≥ 0.6 s). The piece's length
+  (only) follows the last piece's raw real/estimated ratio from the first
+  piece on, so a cold or misjudged piece still cannot hold the CPU long.
+* **The clock first** (owner, D-4, 2026-11-26): over the budget, the
+  governor raises the clock to the lowest of **High 144, Turbo 192, Max
+  288 MHz** whose budget (55 %: 1,795 / 2,394 / 3,591 cycles a frame)
+  fits the prediction, and sheds (chorus, delay, reverb, voices) **only
+  at Max**. Coming back: voices (now as many at once as fit 50 %, then one
+  a calm second), the effects, then **the clock a step down after 2 s at
+  full quality under 50 % of the lower clock** (5 % hysteresis against
+  the raise). The firmware turns the step into the audio task's clock
+  floor (2/3/4; `audio::synth::synth_floor`), raised at once from the RT
+  task and re-applied every piece; a lower floor lets the clock governor
+  (`orpheus_power::governor`) bring it down when idle — it now honours
+  floors 3 (Turbo) and 4 (Max): never below them, Max comes down to a
+  Turbo floor, and a Max floor survives the Normal-performance rule.
+* **Power modes**: Battery saver asks for no more than High; when the CPU
+  runs slower than the step asked for (a mode pins it) the governor marks
+  the clock **pinned** for the file and sheds at the clock it has
+  (`syn: pin=1`); at 24–96 MHz the model sheds to its floor and plays,
+  underrunning below 96 MHz, without starving thread mode. High
+  performance (the clock at Max) gets Max's budget at once.
+* **Giving up**: underruns no longer end a MIDI file. The governor gives
+  up (`Governor::give_up`, logged `synth: gave up, nothing can play at N
+  load=… ratio=… pg=…`) only when everything is shed at the top (or
+  pinned) clock and the measured render is still above **200 % of real
+  time** (at most half the music could be heard) for **5 s of its own
+  time**, net.
+* **The demo songs, clock free** (`orpheus-midi` `tests/governor.rs`, the
+  true cost now the engine's state through each piece, measured as the
+  player does): "Etude" at Max throughout, reverb off, mean voice limit
+  8.0 (the fixed-288 MHz run's); "Hill Song" all 16 voices, the reverb on
+  17 %, Max 91 % of its length (High/Turbo 9 %); "Sound tour" at full
+  quality 91 %, High 9 %, Turbo 58 %, Max 33 %. Under 1 % of the frames
+  past the first 2 s over the budget, no PCM half at risk, the ratio
+  99–103 %. With the cold start (first 50 ms × 10) and 350 µs of paging
+  a piece: ratio ≤ 104 % past the first second, every song to its end
+  (`regress_synth_ratio_pinned_by_cold_start`). A light song (one voice
+  and the reverb, 37 % of High) stays at High, bit for bit.
+* **Logs and `status`**: `synth: clock N load=L% ratio=R pg=P% lvl= vlim=`
+  at each clock change; `syn:` adds `clk=now/max` (MHz asked, set at a
+  change), `pin=` and `pg=` (paging, % of real time).
+* **Numbers**: governor 40 → 60 B (MIDI state ≈ 71,960 B), one more
+  `syn:` word (.bss 124,240 B), resident 81,639 B, 125/128 code pages,
+  `synth-midi` 9 lines (9,058 B; `play_midi`'s poll 7,134 B in its 7-line
+  hole), stack margin 5,476 B.
+
 ## 10. Work packages
 
 * **WP-AU-1 Pipeline core**: rings, pool leases, `ByteSource`, `Decoder`
