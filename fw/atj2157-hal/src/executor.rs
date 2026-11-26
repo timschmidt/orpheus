@@ -1,7 +1,8 @@
 //! The two executors (docs/plan/02-architecture.md §4).
 //!
 //! * **Main** (thread mode): UI and services. Sleeps with WFE between polls
-//!   and accounts the time spent asleep (power statistics).
+//!   and accounts the time spent asleep (power statistics); its sleep
+//!   during a synth rest ends the rest early (`wake`).
 //! * **RT** (interrupt mode): audio and data pumps, on a software-pended NVIC
 //!   line with no hardware source, at level 2 so deadline interrupts
 //!   (level 1) still preempt it and it preempts the main executor.
@@ -69,8 +70,15 @@ impl MainExecutor {
             unsafe { self.inner.poll() };
             POLLS.fetch_add(1, Ordering::Relaxed);
             crate::wdt::feed_if_allowed();
+            // During a synth rest, thread mode's sleep ends it early
+            // (`wake`: the resting task looks again shortly).
+            crate::wake::thread_sleeps();
             let t0 = crate::time::now_us();
-            cortex_m::asm::wfe();
+            // Not `cortex_m::asm::wfe` (`nomem`): the asleep mark's stores
+            // before and after must stay on their side of the sleep.
+            // SAFETY: WFE only waits for an event; no memory or stack effect.
+            unsafe { core::arch::asm!("wfe", options(nostack, preserves_flags)) };
+            crate::wake::thread_woke();
             let dt = crate::time::now_us().wrapping_sub(t0);
             IDLE_US.fetch_add(dt as u32, Ordering::Relaxed);
         }

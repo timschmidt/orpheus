@@ -1720,6 +1720,76 @@ the three demo songs): every song to its end, no "gave up", no reset,
   `restores_in_reverse_order` now expects the voices back (4 voices with
   one more fit the budget).
 
+**As built (SYN-3: a rest ends when thread mode sleeps, 2026-11-26).** The
+lead's run of build `7f26ae50` (Automatic, the cable in, `playdir` of the
+three demo songs): 20 underruns in ≈ 107 s, all in "Etude" and "Hill
+Song", at a governor `load=` of 25–40 % with the clock at Max; labels
+`ub=synth:render:5–10ms` and one `ub=synth:rest:5ms`; `pg=` 5–16 %. A PC
+profile of 20 s of those songs: 59 % in handlers, 40 % in thread mode of
+which 20 % is the main executor asleep (`MainExecutor::run`'s WFE).
+
+* **Not the soft I2C.** The step counter's sampler (`i2c_soft`,
+  `yoton_bsp::accel`, `firmware::sensor::sample`) takes no critical
+  section: its bit delays are `delay::wait_us` on T0 with interrupts open,
+  a sample is ≈ 1 ms of bus (`steps status` `bus_us_avg`) at 25 Hz in
+  thread mode, which the real-time executor preempts at any point. The
+  only masked part is the batch push (`sensor::with`, a few µs) and once a
+  second the detector over 25 samples (µs; its first touch may fault a
+  line or two under the mask, ≈ 0.2–0.4 ms once a second). The profile's
+  ≈ 8 % for the sampler is mostly aliasing: one sample every 64 ms
+  against the sampler's 40 ms ticker sees only five phases of it.
+* **The rests idled the CPU.** The pace rule rests 4 ms before a piece
+  that would end 8 ms after the last rest (`pace::rest_first`): the
+  real-time executor gets at most two thirds of real time whatever thread
+  mode does with the rest. The render (`load=` 25–40 %) is not all it
+  does: its paging (`pg=`), the wake-up path's line loads after every
+  thread-mode slot (the profile's 6.7 % in `play_midi`'s poll, 4.1 % in
+  `run_player`'s, 1.9 % `player_request`'s, 1.3 % the task's — most
+  likely line loads: the profiler's T2 is at the pager's level, so a
+  sample due during a load is taken after it, on the faulting
+  instruction), the PCM writer and the looks
+  took it to ≈ 60 %, at the cap. Thread mode needed ≈ 20 % (the other
+  20 % of its share it slept), so every heavy stretch drew the ring down
+  to the rest threshold (rest + piece + 2 ms ≈ 10 ms of audio) and a
+  piece of 5–10 ms (paging) or a late rest emptied it: the labels.
+* **Now** (`atj2157_hal::wake`, `orpheus_power::pace::rest_over`): the
+  rest's poll (`rest_until`, in `synth-inner` where `wake_at` was) leaves
+  its waker; the main executor, about to sleep during a rest, marks
+  itself asleep and has the resting task woken 50 µs later
+  (`IDLE_PROBE_US`, `thread_sleeps`, inlined into its loop); still asleep
+  then, thread mode has run everything it had and the rest ends. Any
+  wake-up of thread mode clears the mark first, and the rest clears it as
+  it begins (never ends on its first look), so a rest never ends while
+  thread mode has work: thread mode keeps up to 4 ms per rest as before
+  (the overload and watchdog cases unchanged), and the real-time executor
+  gets the rest. The WFE is the HAL's own (`asm!("wfe")` without `nomem`)
+  so the mark's stores stay on their side of it.
+* **Room for it**: `syn_set` (the `syn:` fields) was a compare-and-swap
+  loop inlined eight times a piece (≈ 52 B each); one writer (the audio
+  task), so a plain read-modify-write, out of line in `synth-inner`.
+  `synth-inner` 8,166 → 8,102 B (8 lines); `rest_until` 340 B,
+  `pace_rest`'s poll 382 → 310 B, `after_piece` 1,276 → 988 B.
+* **Instrumentation** (`status` `syn:`): `rests=` (this file's rests,
+  counted by `atj2157_hal::wake` now), `cut=` (of them ended early by
+  thread mode's sleep) and `late=` (the most µs a rest's task resumed
+  after its time since the last `status`: the real-time executor's
+  wake-up latency — masked stretches in thread mode, higher levels and
+  the line loads of the wake-up path; it bounds how long anything held
+  the render off).
+* **Model** (`orpheus_synth::load::sim`, `Setup::thread_pct`,
+  `rest_ends_idle`): "Etude"'s shape (Max, 9 voices) with 15 % of real
+  time of other real-time work and 10 % paging, thread mode needing
+  20 %: 4 ms rests underrun (≈ 370 frames in 30 s), rests that end when
+  thread mode sleeps (mean ≈ 0.3 ms) do not, with 20 % other work too;
+  thread mode's work waits at most ≈ 2 ms (3.4 ms before) and keeps its
+  20 % in every 100 ms.
+* **Open** (not changed here): the main executor's loop sits on
+  physical lines 9–10 (`render_i16`'s last line and `synth-inner`'s
+  first, `pieces`' poll and `plan_piece`), so every thread-mode slot
+  costs the render about two line loads (≈ 0.35 ms; ≈ 80–100 slots a
+  second while a heavy song plays): a loop of its own clustered onto line
+  18 with the key tick would save ≈ 3 % of real time.
+
 ## 10. Work packages
 
 * **WP-AU-1 Pipeline core**: rings, pool leases, `ByteSource`, `Decoder`

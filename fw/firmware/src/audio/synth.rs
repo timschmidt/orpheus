@@ -94,11 +94,12 @@ const MIN_BLOCKS: usize = 4;
 /// [`F_LVL_MAX`]: 0 full, 1 chorus off, 2 reverb off, 3 voices limited),
 /// the effects enabled ([`F_FX`]), `synth gov off` ([`F_GOV_OFF`], kept),
 /// the predicted render load in % of real time ([`F_LOAD`]) and the
-/// measured/estimated ratio in % ÷ 2 ([`F_RATIO`]); word 2 the rests for
-/// thread mode ([`F_RESTS`]) and the voices the governor faded out
-/// ([`F_SHED`]); in word 1 also the clock step asked for now and the
-/// highest this file ([`F_CLK`], [`F_CLK_MAX`]: 0 High, 1 Turbo, 2 Max;
-/// set when it changes, [`gov_log`]); word 3 the paging during the render
+/// measured/estimated ratio in % ÷ 2 ([`F_RATIO`]); word 2 the voices
+/// the governor faded out ([`F_SHED`]; the rests for thread mode are
+/// counted by `atj2157_hal::wake`, [`REST0`]); in word 1 also the clock
+/// step asked for now and the highest this file ([`F_CLK`],
+/// [`F_CLK_MAX`]: 0 High, 1 Turbo, 2 Max; set when it changes,
+/// [`gov_log`]); word 3 the paging during the render
 /// in % of real time ([`F_PG`]) and whether the clock did not follow a
 /// raise ([`F_PIN`]: a power mode pins it), one store a piece.
 static SYN: [AtomicU32; 4] = [AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)];
@@ -119,20 +120,28 @@ const F_CLK: Field = (1, 24, 2);
 const F_CLK_MAX: Field = (1, 26, 2);
 const F_PG: Field = (3, 0, 8);
 const F_PIN: Field = (3, 8, 1);
-const F_RESTS: Field = (2, 0, 16);
 const F_SHED: Field = (2, 16, 16);
+
+/// The rests for thread mode and those thread mode's sleep ended early
+/// (`atj2157_hal::wake::rests`) when the file opened: `status` shows this
+/// file's (`rests=`, `cut=`).
+static REST0: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
 
 fn syn_get(f: Field) -> u32 {
     let w = SYN.get(f.0).map_or(0, |w| w.load(Ordering::Relaxed));
     (w >> f.1) & ((1 << f.2) - 1)
 }
 
+/// Set field `f` to `v` (saturating). One writer, the audio task (the
+/// pieces, the outer loop, its idle loop's `synth` commands); `status`
+/// only reads: a plain read-modify-write, not a compare-and-swap loop
+/// (SYN-3, 2026-11-26: inlined eight times a piece, the loops were 290 B
+/// of the per-piece code's lines that the rest's early end needed).
 fn syn_set(f: Field, v: u32) {
     let max = (1 << f.2) - 1;
     if let Some(w) = SYN.get(f.0) {
-        let _ = w.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |s| {
-            Some((s & !(max << f.1)) | (v.min(max) << f.1))
-        });
+        let s = w.load(Ordering::Relaxed);
+        w.store((s & !(max << f.1)) | (v.min(max) << f.1), Ordering::Relaxed);
     }
 }
 
@@ -161,6 +170,8 @@ const SIZES: [usize; 4] =
 
 /// The `status` words of the synth source.
 pub(super) fn status(w: &mut super::Writer<'_>) {
+    let (rests, cut) = atj2157_hal::wake::rests();
+    let [r0, c0] = REST0.each_ref().map(|a| a.load(Ordering::Relaxed));
     w.s(t!(b" syn: v="))
         .u(u64::from(syn_get(F_PEAK)))
         .s(t!(b" vlim="))
@@ -180,7 +191,11 @@ pub(super) fn status(w: &mut super::Writer<'_>) {
         .s(t!(b" ratio="))
         .u(u64::from(syn_get(F_RATIO) * 2))
         .s(t!(b" rests="))
-        .u(u64::from(syn_get(F_RESTS)))
+        .u(u64::from(rests.wrapping_sub(r0)))
+        .s(t!(b" cut="))
+        .u(u64::from(cut.wrapping_sub(c0)))
+        .s(t!(b" late="))
+        .u(u64::from(atj2157_hal::wake::take_late_max()))
         .s(t!(b" shed="))
         .u(u64::from(syn_get(F_SHED)))
         .s(t!(b" gov="))
@@ -391,7 +406,11 @@ fn plan_piece(st: &mut MidiState, gov_on: bool, max: u8) -> (Plan, Estimate) {
 /// The render runs on the real-time executor: without the rests a song
 /// the CPU cannot keep up with starved thread mode and the watchdog reset
 /// the player (2026-11-26; modelled in `orpheus_synth::load` tests); a
-/// rest on a short ring underran (`ub=synth:rest:4ms`, the same day).
+/// rest on a short ring underran (`ub=synth:rest:4ms`, the same day). A
+/// rest ends early once thread mode sleeps (`atj2157_hal::wake`,
+/// `orpheus_power::pace::rest_over`): a rest that idled the CPU left the
+/// render a third of real time less than it could have, and the ring ran
+/// dry at a load of 25–40 % (20 underruns in 107 s, the same day).
 async fn pace_rest(rested: &mut u64, deferred: &mut u32, us: u32, frames: u32, out: &mut PcmOut) {
     let busy = (time::now_us() - *rested).min(u64::from(u32::MAX)) as u32;
     if busy.saturating_add(us) < pace::RUN_US {
@@ -408,7 +427,6 @@ async fn pace_rest(rested: &mut u64, deferred: &mut u32, us: u32, frames: u32, o
         RestUntil(time::now_us() + u64::from(pace::REST_US)).await;
         note_as(UB_DECODER, D_SYN + SynthOp::Rest as u8, t0);
         *rested = time::now_us();
-        syn_set(F_RESTS, syn_get(F_RESTS) + 1);
     }
 }
 
@@ -417,17 +435,17 @@ async fn pace_rest(rested: &mut u64, deferred: &mut u32, us: u32, frames: u32, o
 /// `_embassy_time_now` share physical code-cache lines with the synth's
 /// per-piece code and the render's, two line loads or more a rest; this
 /// poll is inlined into `pace_rest`'s (`synth-inner`) and the wake goes to
-/// the HAL's time driver directly (`atj2157_hal::wake::wake_at`).
+/// the HAL's time driver directly (`atj2157_hal::wake::rest_until`, which
+/// also ends the rest when thread mode has gone to sleep).
 struct RestUntil(u64);
 
 impl core::future::Future for RestUntil {
     type Output = ();
 
     fn poll(self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<()> {
-        if time::now_us() >= self.0 {
+        if atj2157_hal::wake::rest_until(self.0, cx.waker()) {
             core::task::Poll::Ready(())
         } else {
-            atj2157_hal::wake::wake_at(self.0, cx.waker());
             core::task::Poll::Pending
         }
     }
@@ -738,6 +756,11 @@ pub(super) async fn play_midi(
     for (w, keep) in SYN.iter().zip([syn_get(F_VMAX) << F_VMAX.1, syn_get(F_GOV_OFF) << F_GOV_OFF.1, 0, 0]) {
         w.store(keep, Ordering::Relaxed);
     }
+    let (rests, cut) = atj2157_hal::wake::rests();
+    for (a, v) in REST0.iter().zip([rests, cut]) {
+        a.store(v, Ordering::Relaxed);
+    }
+    let _ = atj2157_hal::wake::take_late_max();
     syn_set(F_LIMIT, u32::from(state.gov.limit()));
     // The High clock for the open's scan and the render (04 §9: MIDI
     // needs it).

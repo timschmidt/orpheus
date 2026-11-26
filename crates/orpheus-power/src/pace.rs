@@ -62,6 +62,45 @@ pub fn rest_first(busy_us: u32, piece_us: u32, len_us: u32, head_us: u32, deferr
     true
 }
 
+/// How long after thread mode went to sleep during a playback rest the
+/// resting task looks again (µs): still asleep then, thread mode has run
+/// everything it had, and the rest ends ([`rest_over`]). Long enough for a
+/// wake-up that was already pending (a task woken in the main executor's
+/// last poll) to have cleared the mark.
+pub const IDLE_PROBE_US: u32 = 50;
+
+/// Whether a playback rest until `until_us` is over at `now_us`: its time
+/// is up, or — after its first look (`resting`) — thread mode is asleep
+/// (`thread_asleep`: it went to sleep after the rest began and nothing woke
+/// it since). A rest is for thread mode; once thread mode sleeps, the rest
+/// of it idled the CPU while the PCM ring ran short (2026-11-26, the
+/// player: 20 underruns in 107 s at a render load of 25–40 %; a third of
+/// the time in rests, the PC profile 20 % asleep in thread mode).
+#[must_use]
+#[inline(always)]
+pub fn rest_over(now_us: u64, until_us: u64, resting: bool, thread_asleep: bool) -> bool {
+    now_us >= until_us || (resting && thread_asleep)
+}
+
+/// Whether thread mode, going to sleep at `now_us` (low 32 bits) during a
+/// rest that ends at `end_us` (low 32 bits), has the resting task look
+/// again [`IDLE_PROBE_US`] later: only if the rest lasts longer than that
+/// (else it ends by itself; a stale entry is never probed).
+#[must_use]
+#[inline(always)]
+pub fn probe_due(now_us: u32, end_us: u32) -> bool {
+    (end_us.wrapping_sub(now_us) as i32) > IDLE_PROBE_US as i32
+}
+
+/// How long a playback rest lasts when thread mode has `backlog_us` of
+/// work waiting as it starts and its sleep ends the rest ([`rest_over`]):
+/// the work and the probe, at most [`REST_US`] (the host model's view;
+/// work that arrives during the rest is the caller's).
+#[must_use]
+pub fn rest_len(backlog_us: u32) -> u32 {
+    backlog_us.saturating_add(IDLE_PROBE_US).min(REST_US)
+}
+
 /// Whether the card task should rest before a transfer: only on the
 /// real-time executor (`handler`), never inside a synchronous poller
 /// (`sync`: a timer would not fire there) or during work with a deadline
@@ -106,6 +145,24 @@ mod tests {
         assert_eq!(d, 0, "a rest clears it");
         assert!(!rest_first(60_000, 2_000, len, 0, &mut d), "after a long stall too");
         assert!(rest_first(u32::MAX, u32::MAX, len, 0, &mut d));
+    }
+
+    /// A rest ends at its time, or once thread mode sleeps — never on its
+    /// first look; thread mode probes only a rest that lasts longer than
+    /// the probe (also across the counter's wrap).
+    #[test]
+    fn a_rest_ends_when_thread_mode_sleeps() {
+        assert!(rest_over(4_000, 4_000, false, false), "time up");
+        assert!(!rest_over(1_000, 4_000, false, true), "first look: thread mode has not run yet");
+        assert!(!rest_over(1_000, 4_000, true, false), "thread mode busy");
+        assert!(rest_over(1_000, 4_000, true, true), "thread mode asleep");
+        assert!(probe_due(0, IDLE_PROBE_US + 1));
+        assert!(!probe_due(0, IDLE_PROBE_US));
+        assert!(!probe_due(5_000, 4_000), "stale");
+        assert!(probe_due(u32::MAX - 10, 1_000), "across the wrap");
+        assert_eq!(rest_len(0), IDLE_PROBE_US);
+        assert_eq!(rest_len(1_000), 1_000 + IDLE_PROBE_US);
+        assert_eq!(rest_len(10_000), REST_US);
     }
 
     /// Regression (2026-11-25): rests inside the playback refill made a

@@ -560,9 +560,12 @@ symbols = [
 # the check whether the outer loop is due, the engine's estimate. Right
 # after `synth-render` (physical lines 10–17), with the governor's steps
 # when over budget or shed (`over_budget`, `restore`, `lower`: every
-# piece of a heavy stretch) and the rest's wake (`atj2157_hal::wake::wake_at`, not
-# `embassy_time::Timer`, whose code in `games-io` and
-# `_embassy_time_now` shared lines 12–13 and 3 with these). The outer loop
+# piece of a heavy stretch), the `syn:` field writer (`syn_set`, out of
+# line since its compare-and-swap loops went, 2026-11-26) and the rest's
+# poll (`atj2157_hal::wake::rest_until`: the wake-up at its time, the
+# early end when thread mode sleeps; not `embassy_time::Timer`, whose
+# code in `games-io` and `_embassy_time_now` shared lines 12–13 and 3
+# with these). The outer loop
 # (`synth-block`: requests, the position, chores; every 4,096 frames or
 # when something waits) and the note path (`synth-note`) are outside.
 [[cluster]]
@@ -577,8 +580,9 @@ symbols = [
     "<orpheus_synth::load::Governor>::lower",
     "firmware::audio::synth::render_piece",
     "firmware::audio::synth::after_piece",
+    "firmware::audio::synth::syn_set",
     "firmware::audio::Apart<firmware::audio::synth::pace_rest::*>::poll",
-    "atj2157_hal::wake::wake_at",
+    "atj2157_hal::wake::rest_until",
     "<orpheus_synth::load::Governor>::affordable",
     "<orpheus_midi::player::MidiPlayer>::timed",
     "<orpheus_midi::player::MidiPlayer>::flush::<i16>",

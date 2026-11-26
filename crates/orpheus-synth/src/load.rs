@@ -812,6 +812,14 @@ pub mod sim {
         /// what was left to the open's High floor during the scan); a
         /// raise in that plan applies at once, as always.
         pub first_hz: Option<u32>,
+        /// Thread mode's work, % of real time (arriving evenly; served in
+        /// the rests and the waits for the ring). 0: thread mode always
+        /// has work (every rest is thread mode's whole).
+        pub thread_pct: u32,
+        /// A rest ends once thread mode has done its work and sleeps
+        /// (`orpheus_power::pace::rest_over`, the firmware since
+        /// 2026-11-26); else it lasts [`REST_US`] whatever thread mode does.
+        pub rest_ends_idle: bool,
     }
 
     impl Setup {
@@ -826,6 +834,8 @@ pub mod sim {
                 pinned_hz: None,
                 left: None,
                 first_hz: None,
+                thread_pct: 0,
+                rest_ends_idle: false,
             }
         }
     }
@@ -883,13 +893,21 @@ pub mod sim {
         pub shed_below_top: u64,
         /// The clock step of the first piece.
         pub first_clock: u8,
+        /// The most thread mode's work waited for, µs (with
+        /// [`Setup::thread_pct`]).
+        pub max_backlog_us: u64,
+        /// Rests, and the µs they lasted.
+        pub rests: u32,
+        pub rest_us: u64,
     }
 
-    /// Thread mode's time.
+    /// Thread mode's time, and its work not done yet (µs × 100).
     struct Clock {
         t: u64,
         win_start: u64,
         win_thread: u64,
+        pct: u64,
+        backlog: u64,
     }
 
     impl Clock {
@@ -898,6 +916,13 @@ pub mod sim {
             if thread {
                 r.thread_us += dt;
                 self.win_thread += dt;
+            }
+            if self.pct > 0 {
+                self.backlog += dt * self.pct;
+                r.max_backlog_us = r.max_backlog_us.max(self.backlog / 100);
+                if thread {
+                    self.backlog = self.backlog.saturating_sub(dt * 100);
+                }
             }
             if self.t - self.win_start >= WINDOW_US {
                 let pct = (self.win_thread * 100 / (self.t - self.win_start)) as u32;
@@ -924,7 +949,8 @@ pub mod sim {
     ) -> Report {
         let rate = u64::from(s.rate.max(1));
         let mut r = Report { min_thread_pct: 100, ..Report::default() };
-        let mut c = Clock { t: 0, win_start: 0, win_thread: 0 };
+        let pct = u64::from(s.thread_pct.min(90));
+        let mut c = Clock { t: 0, win_start: 0, win_thread: 0, pct, backlog: 0 };
         let (mut written, mut busy, mut start, mut deferred) = (0u64, 0u64, None::<u64>, 0u32);
         let played = |t: u64, start: Option<u64>| start.map_or(0, |s| (t - s) * rate / 1_000_000);
         let hz_of = |step: u8| CLOCKS_MHZ[usize::from(step).min(2)] * 1_000_000;
@@ -984,7 +1010,16 @@ pub mod sim {
                         r.short_rests_unforced += 1;
                     }
                 }
-                c.advance(&mut r, u64::from(REST_US), true);
+                // Thread mode's sleep ends the rest: its work (and what
+                // arrives meanwhile) done, and the probe.
+                let len = if s.rest_ends_idle && pct > 0 {
+                    pace::rest_len((c.backlog / (100 - pct)).min(u64::from(u32::MAX)) as u32)
+                } else {
+                    REST_US
+                };
+                c.advance(&mut r, u64::from(len), true);
+                r.rests += 1;
+                r.rest_us += u64::from(len);
                 busy = 0;
             }
             let cycles = u64::from(cost.per_frame) * u64::from(plan.frames) + u64::from(cost.paging);
@@ -1568,6 +1603,76 @@ mod tests {
         assert!(k.get() >= 25, "stalls {}", k.get());
         assert_eq!((r.short_rests, r.underrun_frames, r.stopped), (0, 0, false), "{r:?}");
         assert_eq!(g.level(), Level::Full);
+    }
+
+    /// A heavy song as the player ran it (2026-11-26, "Etude": the clock
+    /// at Max, voices limited to 9) with what the real-time executor does
+    /// beside the render: `stall_pct` % of each piece's audio before it
+    /// (the wake-up path, the PCM writer, the looks, their line loads —
+    /// the PC profile's ≈ 20 %) and `page_pct` % paging in it; thread mode
+    /// needs `thread_pct` % of real time.
+    fn heavy(
+        rest_ends_idle: bool,
+        stall_pct: u32,
+        page_pct: u32,
+        thread_pct: u32,
+    ) -> (sim::Report, Governor) {
+        let (want, per) = (12, 300);
+        let mut g = Governor::new(16, HZ, RATE);
+        let mut s = sim::Setup::new(RATE, 30);
+        s.thread_pct = thread_pct;
+        s.rest_ends_idle = rest_ends_idle;
+        let fed = FX_CHORUS | FX_REVERB;
+        let state = core::cell::Cell::new((FX_ALL, want));
+        let e_of = |(fx, n): (u8, u32)| Estimate { wanted: fed, ..est(&vec![per; n as usize], fed & fx) };
+        let r = sim::run(
+            &mut g,
+            &s,
+            || e_of(state.get()),
+            |p| {
+                let before = state.get();
+                let n = p.keep.map_or(want, u32::from).min(u32::from(p.limit)).min(want);
+                state.set((p.fx, n));
+                let len_us = p.frames * 1_000_000 / RATE;
+                let mhz = CLOCKS_MHZ[usize::from(p.clock).min(2)];
+                sim::Cost {
+                    per_frame: e_of(before).total(),
+                    paging: len_us * page_pct / 100 * mhz,
+                    stall_us: len_us * stall_pct / 100,
+                }
+            },
+        );
+        (r, g)
+    }
+
+    /// Regression (2026-11-26, the player, build `7f26ae50`): 20 underruns
+    /// in ≈ 107 s of `playdir /.orpheus/test/suite/midi`, all in the heavy
+    /// songs, at a governor load of only 25–40 % with the clock at Max,
+    /// labelled `ub=synth:render:5–10ms` (one `synth:rest:5ms`). The pace
+    /// rule's rests left the real-time executor at most two thirds of real
+    /// time (8 ms of work, 4 ms of rest) whatever thread mode did with
+    /// them, while the render's paging and the per-piece work beside the
+    /// render took it near that (PC profile: 59 % in handlers, 20 % asleep
+    /// in thread mode). Model: "Etude"'s shape (clock Max, 9 voices) with
+    /// 15 % of real time of other real-time work, 10 % paging, thread mode
+    /// needing 20 %. With rests of a fixed 4 ms the ring runs dry; with a
+    /// rest that ends once thread mode sleeps
+    /// (`orpheus_power::pace::rest_over`) nothing underruns, thread mode's
+    /// work waits less than before, and it keeps its share in every 100 ms.
+    #[test]
+    fn regress_synth_rests_idled_while_the_ring_ran_dry() {
+        let (old, _) = heavy(false, 15, 10, 20);
+        assert!(old.underrun_frames > 0, "the old rule: {old:?}");
+        let (new, g) = heavy(true, 15, 10, 20);
+        assert_eq!((new.underrun_frames, new.stopped), (0, false), "{new:?}");
+        assert_eq!((g.clock(), g.level(), g.limit()), (TOP, Level::Voices, 9));
+        assert!(new.rest_us / u64::from(new.rests.max(1)) < u64::from(sim::REST_US) / 4, "{new:?}");
+        assert!(new.max_backlog_us <= old.max_backlog_us, "{} > {}", new.max_backlog_us, old.max_backlog_us);
+        assert!(new.max_backlog_us <= u64::from(sim::RUN_US), "thread mode waited {} µs", new.max_backlog_us);
+        assert!(new.min_thread_pct >= 19, "thread mode {} %", new.min_thread_pct);
+        // More real-time work besides the render: still none.
+        let (new, _) = heavy(true, 20, 10, 20);
+        assert_eq!(new.underrun_frames, 0, "{new:?}");
     }
 
     /// A song that fits renders at full quality with no rest and no
