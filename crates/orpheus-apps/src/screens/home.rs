@@ -264,6 +264,14 @@ impl<S: Services + ?Sized> Screen<S> for HomeScreen {
     fn restore(&mut self, _cx: &mut Cx<'_, S>, r: &Resume) {
         self.focus = u8::try_from(r.focus).unwrap_or(0).min(self.n.saturating_sub(1));
     }
+
+    /// The focused app and its place in the grid.
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, _cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        d.title("Home");
+        let name = self.app(self.focus).map_or("", |a| self.lang.get(a.label()));
+        d.focus(orpheus_ui::a11y::Role::Button, name).at(u32::from(self.focus), u32::from(self.n));
+    }
 }
 
 #[cfg(test)]

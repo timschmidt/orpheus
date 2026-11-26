@@ -437,4 +437,32 @@ impl<S: Services + ?Sized> Screen<S> for PictureScreen {
         // `show` reset the rotation chosen before.
         self.turns = (r.data[9] >> 1) & 3;
     }
+
+    /// The picture's name, size and format, or why it does not show.
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        let l = self.lang;
+        d.title(l.get(Str::AppPictures));
+        match self.result {
+            Some(PicState::Busy) => {
+                d.say(l.get(Str::PicBusy));
+                d.say(l.get(Str::PicBusyAction));
+                return;
+            }
+            Some(PicState::Failed(_) | PicState::Nothing) => {
+                d.say(l.get(Str::PicFailed));
+            }
+            _ => {}
+        }
+        let name = cx.svc.entry(self.row).filter(|_| self.file.is_some()).map_or("", |e| e.name);
+        if name.is_empty() {
+            d.say(l.get(Str::PicLoading));
+            return;
+        }
+        let count = cx.svc.listing().count;
+        d.focus(orpheus_ui::a11y::Role::Text, name).value(self.details().as_str()).at(self.row, count);
+        if self.slideshow {
+            d.say(l.get(Str::Slideshow));
+        }
+    }
 }

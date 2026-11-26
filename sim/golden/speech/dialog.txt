@@ -1,0 +1,49 @@
+# A11Y-1 spoken journey `dialog` (sim/tests/screen_reader.rs)
+# set:0x1004=1 wait:2500 prev ok down*11 ok down*4 wait:2500 ok wait:4000 prev wait:1500 back wait:2500
+     33 earcon reader-on
+     33 say Screen reader on
+     33 say Home. Music, button, 1 of 12
+   2500 stop
+   2500 say Settings, button, 12 of 12
+   2600 stop
+   2660 earcon enter
+   2660 say Settings. Sound, submenu, 1 of 13
+   2700 stop
+   2700 say Playback, submenu, 2 of 13
+   2800 stop
+   2800 say Display, submenu, 3 of 13
+   2900 stop
+   2900 say Power, submenu, 4 of 13
+   3000 stop
+   3000 say Date and time, submenu, 5 of 13
+   3100 stop
+   3100 say Bluetooth, submenu, 6 of 13
+   3200 stop
+   3200 say Radio, submenu, 7 of 13
+   3300 stop
+   3300 say Recording, submenu, 8 of 13
+   3400 stop
+   3400 say USB, submenu, 9 of 13
+   3500 stop
+   3500 say Language, submenu, 10 of 13
+   3600 stop
+   3600 say Storage, submenu, 11 of 13
+   3700 stop
+   3700 say System, submenu, 12 of 13
+   3800 stop
+   3860 earcon enter
+   3860 say System. About, submenu, 1 of 6
+   3900 stop
+   3900 say Update firmware, 2 of 6
+   4000 stop
+   4000 say Diagnostics, submenu, 3 of 6
+   4100 stop
+   4100 say Start original firmware, submenu, 4 of 6
+   4200 stop
+   4200 say Factory reset, 5 of 6
+   6860 earcon dialog
+   6860 say Reset all settings?, dialog. Settings return to their defaults. The card is not touched. Cancel, button, 1 of 2
+  10900 stop
+  12560 earcon back
+  12560 say System. Factory reset, 5 of 6
+audio 16000 Hz mono, 247952 samples, fnv64 cbdd63c5ad2b2822

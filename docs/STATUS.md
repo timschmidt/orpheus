@@ -74,10 +74,92 @@ of every session. Newest entries first in §3.
 | MIDI-1 | **done (host + simulator)**; on the player since SYN-3; **user check: listen to the three MIDI renders** | `orpheus-midi`: Standard MIDI File parser (formats 0/1/2, running status, meta and SysEx, SMPTE, RMID) streamed through 64 track cursors of 64-byte windows that ask for bytes (`Need`/`supply`), nothing trusted; exact tick→frame clock through tempo changes; sequencer (CC 1/6/7/10/11/38/64/91/93/96–101/120–127, RPN bend range, pressure, programs, kits on channel 10, mute/solo); own GM set of 32 sounds for the 128 programs (`data/gm-sounds.osb`); `MidiPlayer`: open/scan, render, bounded-step seek (bit-exact where nothing sounds across the target), duration/position, `.kar`/lyric events; Files plays `.mid`/`.kar` in the simulator with Now Playing lyrics; player 70,224 B; estimate ≈ 117 MHz at 48 kHz for a 10–11-voice song: High clock (session entry 2026-11-25 "MIDI-1") |
 | SYN-3 | **done (firmware build)**; bench run on the player 2026-11-26 (costs measured); load governor run on the player (`78b316b5`: no reset, but every song stopped at `ratio=400`); measurement fix and clock-up (D-4) on the player (`8240f128`: ratio right, 288 MHz, but paging 200–250 %); paging fix on the player (`4e1e9a49`: every song to its end, `pg=` 3–15 %); shed-state, rest and key-tick fixes on the player (`7f26ae50`: all to the end, 20 underruns in 107 s at `load=` 25–40 %); rests that end when thread mode sleeps on the player (`b694ac61`: underruns 18/3/9 per song at `load=` 24–46 %); **budget that follows the PCM ring, main loop off the synth's lines, USB supervisor without its 20 ms timer built, not yet run on the player: lead's checks in the session entry 2026-11-26 "SYN-3: thread mode's line loads"**; owner decision: half rate for heavy MIDI files (04 §9) | The synthesiser on the player: a synth source beside the codecs (`orpheus_audio::synth`), the engine and the MIDI player built in place in the pool (stream ring + decoder arena, 80,816 B; MIDI state ≈ 71,960 B), the MIDI file through a 13-block card cache (`orpheus_midi::cache`), 44.1 kHz into the DAC ring through the DSP chain, clock floor High raised to Turbo/Max by the load governor before anything is shed (`orpheus_synth::load`: 55 % of real time, down to 30 % while the PCM ring runs short; then chorus, delay, reverb, voices shed at Max; compute measured apart from paging, warm-up 250 ms, rise ≤ 3 % a block), 4 ms pieces and pace-rule rests (thread mode always runs; a rest ends once thread mode sleeps); underruns never end a song (only "nothing can play"); `.mid`/`.kar` play from Files and Music with seek and pause; `synth bench` (36 loads, cycles, host hashes); 125/128 code pages, stack margin 5,212 B (session entries 2026-11-26 "SYN-3", "SYN-3: load governor" and "SYN-3: governor ratio measured right") |
 | A11Y-2 | **built (host + simulator + firmware), not yet run on the player**; journey `settings_accessibility` and user check 31 | Settings › Accessibility (Text size Normal/Large/Extra large, Hold delay 0.5–2 s, Key repeat Normal/Slow/Slower; packed in `0x0D60`), Themes White on black / Black on white (≥ 7:1), reduced motion = Animations off (spinner still, blinks lit), Key click Presses and holds (hold confirmation); 63 `a11y_*` goldens (session entry 2026-11-26 "A11Y-2") |
+| A11Y-1 | **done (host + simulator)**; not in the firmware (needs its speech output, TTS-3); **user check: listen to the spoken journeys** | Screen reader: `orpheus_ui::a11y` (descriptions, `Reader`, `SpeechService`, `UtteranceQueue`, earcons, chords) behind `screen-reader`; every one of the apps' 72 screens describes itself (lint: 629 foci, every screen reached); Settings › Accessibility: Screen reader, Speech rate 0.25×–10× in 0.25× steps, Voice, Pitch, Verbosity, Sound cues, Where am I, Keys with screen off; toggle = hold Back + Menu 2 s (Vol+ + Vol− share a ladder); 8 spoken-journey goldens with audio hashes; matrix context `speech` (session entry 2026-11-26 "A11Y-1") |
 | VER-13 Brightness (U-PWM-3) | **built (host + simulator + firmware), not yet run on the player**; journey `settings_brightness` and user check 32 | Settings › Display › Brightness = the stock levels 1–11 (default 6) on the stock PWM4 duties, live; key `0x030D` (old `0x0301` retired); alert flash 15 / 3 (never 16); `ui top` `bl=` |
 | VER-4 (settings store keys) | **done (host + firmware built), not yet run on the player** | Store index 128 → 192 keys at 4 B a slot (was 8), same NOR format both ways (fixture from the old code, byte-equal images); cache write marks unlimited; 131 keys in use with every app (61 free), firmware 129; sector ceiling ≈ 209 settings keys (256 cannot fit one sector); .bss −1,248 B, stack margin 5,664 B; compaction no longer re-blesses a rotted value (session entry 2026-11-26 "VER-4: settings store index") |
 
 ## 3. Session log
+
+### 2026-11-26 — A11Y-1: the screen reader on the host and in the simulator (worker, no hardware)
+
+Features `orpheus-ui/screen-reader` and `orpheus-apps/screen-reader` (on in
+the simulator, the browser build and xtask; **off in the firmware**: no
+speech output there yet, TTS-3). Full "as built" in 05 §7.14; in short:
+
+* **Toolkit** (`orpheus_ui::a11y`, `no_std`, no alloc): `Desc` (title,
+  focus with role, label, value, state, unavailable, position "3 of 12",
+  summary, toast, volume), `Screen::describe`, `Shell::describe` (dialogs
+  and menu sheets over the screen), `Desc::list` (any `ListSource` +
+  `ListView`), `Desc::problem` (the lint); `Reader` (new screen/overlay,
+  moved focus, changed value after a key, toasts, volume; a key press
+  stops speech first; verbosity Brief/Normal/Detailed; earcons enter,
+  back, menu, dialog, wrap, end, on, off, toast, reader on/off; where am
+  I, time and battery); `SpeechService` (stop, say, earcon, configure),
+  `UtteranceQueue<N>` (byte ring), `Chords` (on raw edges before the
+  mapper), `KeyMapper::cancel`, `KeyGate::reader_keys` / `forget`,
+  `Config::timeouts`.
+* **Apps**: `describe` on all 39 screen types (72 screens by name); the
+  dispatch adds the strip hint to screens without a focus. Games say
+  their state, not their boards; text and book pages their first 90
+  bytes.
+* **Settings › Accessibility** (after A11Y-2's rows): Screen reader
+  `0x1004`, Speech rate `0x1005` (stored alone: quarters 1–40, "0.25×" to
+  "10.0×", default 1×, the slider), Voice `0x1006`, Pitch `0x1007` (−4 to
+  +4 semitones), Verbosity `0x1008`, Sound cues `0x1009`, Where am I
+  `0x100A` (Off, Back + OK, Prev + Next), Keys with screen off `0x100B`;
+  six packed in the word `0x0D61` (default 2896). `services::
+  reader_config`. **Found**: `STORED` is a hand count — new stored items
+  need it raised (`READER_STORED`), or their sets are dropped silently
+  (caught by the rate test, not by a build error).
+* **Deviation from 05 §7.14**: the toggle "hold Vol+ and Vol− 2 s" cannot
+  be seen by the hardware (both keys on ladder 1, one key per ladder at a
+  time, 05 §1). Built: **hold Back + Menu 2 s** (works from any screen,
+  locked, screen off, reader off; no screen acts on those keys going
+  down); also the Settings row. Where am I: Back + OK held for the hold
+  delay, 2 s: time and battery. Owner decision wanted (user check 34).
+* **Screen-off operation**: with the reader on and Keys with screen off,
+  keys work with the screen dark (no waking press) and the backlight
+  timeout does not lock the keys (default Auto-lock is "At once", which
+  would have locked them); Power still locks: "Keys locked", "Unlocked".
+* **Simulator**: `sim/src/speech.rs` (`SimSpeech`: the queue, `orpheus-tts`
+  `Speaker` at 16 kHz in simulated time, earcons from `orpheus_synth::
+  math::sin_turns`, a log with times, FNV-1a hash, WAV); `Sim::a11y`,
+  `Host::reader_config`/`set_reader`; script `chord:a+b[:ms]`,
+  `expect-said:`. Workspace profile: `orpheus-tts` and `orpheus-synth`
+  at opt-level 3 in dev/test (a 22 s spoken journey: 7.8 s → 0.04 s).
+* **Tests**: 9 `a11y` unit tests; `sim/tests/screen_reader.rs` — the lint
+  (93 journeys, all 72 screens, 629 foci and menu items: title, label,
+  something said at each verbosity; report `target/orpheus/a11y-lint.txt`),
+  8 spoken goldens `sim/golden/speech/*.txt` (texts, earcons, stops with
+  times, audio hash), behaviour tests, one differential test per setting;
+  `settings.rs reader_packed`; matrix rows `s1004–s100b` and a new
+  service context `speech` (Home with the reader on, two moves, where am
+  I) — it showed real effects of Language, Home screen, Rotate and Hold
+  delay there (declared). `settings-matrix --check`: 182 settings, 0
+  errors. Matrix 199 rows pass in 10 s.
+* **WAVs for the owner**: written by `ORPHEUS_SPEECH_WAVS=DIR cargo test
+  -p orpheus-sim --test screen_reader spoken` (16 kHz mono, one per
+  journey).
+* **Firmware**: unchanged (the feature is off there): `cargo xtask build` resident
+  81,876 B, 125 code + 28 rodata pages (as after SYN-3); `size --check`
+  within budgets (resident 81,875 B, bss 124,296 B); `stack --check`
+  margin 5,212 B. Reader RAM for later (host sizes): `Desc` 536 B,
+  `Reader` 296 B, `Chords` 24 B, `UtteranceQueue<1024>` 1,048 B, plus the
+  `Speaker` 3,352 B.
+* **Gate**: `cargo fmt --all --check`; `cargo clippy --workspace
+  --all-targets -D warnings`, and `-p orpheus-ui` / `-p orpheus-apps`
+  each with and without `screen-reader`; `cargo test --workspace` (2,099
+  passed, 0 failed, 13 ignored); `cargo xtask settings-matrix --check`
+  (182 settings, 12,922/12,969 cells, 0 errors); `cargo xtask build`,
+  `size --check`, `stack --check`. Goldens: `app_group12_dark_latin`,
+  `app_group12_light_cjk` changed (the Screen reader row on the first
+  page, a scroll thumb; looked at). **Not run**: `xtask test all` beyond
+  these, `brand`/`site --check`, every `xtask dev` step (no hardware).
+* **Open**: speech volume, ducking/pausing music, key echo, track changes
+  away from Now Playing, reduced motion's long names, games' boards, the
+  Quick panel's adjust hint says Up/Down (it is Prev/Next); firmware
+  wiring (05 §7.14 "For the firmware"); user check 34 (listen; the toggle
+  chord).
 
 ### 2026-11-26 — MIDI nearly clean on the player (lead)
 

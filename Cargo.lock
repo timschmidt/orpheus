@@ -1220,6 +1220,7 @@ dependencies = [
  "orpheus-seq",
  "orpheus-steps",
  "orpheus-synth",
+ "orpheus-tts",
  "orpheus-ui",
  "orpheus-update",
  "orpheus-usb",

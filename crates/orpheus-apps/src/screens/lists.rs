@@ -947,6 +947,19 @@ impl<S: Services + ?Sized> Screen<S> for ListScreen {
         l.set_focus(&self.rows, r.focus, rows_visible(), cx.now);
         self.list = l;
     }
+
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, _cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        d.title(self.title());
+        d.list(&self.rows, &self.list, "empty");
+        // The quick panel's rows change with Prev and Next.
+        if self.kind == ListKind::Quick
+            && let Some(f) = d.focus.as_mut()
+            && !f.value.is_empty()
+        {
+            f.role = orpheus_ui::a11y::Role::Slider;
+        }
+    }
 }
 
 impl ListScreen {

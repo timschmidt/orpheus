@@ -18,6 +18,12 @@ menu-key = []
 # the firmware until Books is in it. The 16 px face is always built: it is
 # the Large UI text of A11Y-2 (14,468 B, paged).
 book-fonts = []
+# The screen reader (A11Y-1, 05 §7.14): `a11y` (descriptions, the reader,
+# the speech-service trait, chords), `Screen::describe`, `Shell::describe`,
+# the screen-off keys of the key gate. On in the simulator and the browser
+# build; off in the firmware until its speech output exists (no code or
+# RAM there without it).
+screen-reader = []
 
 [dependencies]
 embedded-graphics-core = "0.4"

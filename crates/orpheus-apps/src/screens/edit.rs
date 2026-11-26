@@ -84,6 +84,17 @@ fn big_parts(v: i16, unit: Unit, lang: Lang) -> (StrBuf<12>, &'static str) {
             b.push_i32(i32::from(v));
             "m/s"
         }
+        #[cfg(feature = "screen-reader")]
+        Unit::Quarters => {
+            let mut t = StrBuf::<12>::new();
+            crate::settings::format_choice(
+                crate::settings::Choice::Speed(v.unsigned_abs() * 25),
+                lang,
+                &mut t,
+            );
+            b.push_str(t.as_str().trim_end_matches('×'));
+            "×"
+        }
     };
     (b, u)
 }
@@ -140,6 +151,16 @@ impl<S: Services + ?Sized> Screen<S> for SliderScreen {
 
     fn wants(&self) -> Wants {
         Wants { strip: StripUse::Hint(self.lang.get(Str::HintChange)), ..Wants::default() }
+    }
+
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, _cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        let Some(def) = settings::def(SettingId(self.sid)) else { return };
+        let label = self.lang.get(def.label);
+        d.title(label);
+        let mut v = StrBuf::<24>::new();
+        settings::format_value(def, self.value, self.lang, &mut v);
+        d.focus(orpheus_ui::a11y::Role::Slider, label).value(v.as_str());
     }
 }
 
@@ -393,6 +414,20 @@ impl<S: Services + ?Sized> Screen<S> for PickerScreen {
 
     fn wants(&self) -> Wants {
         Wants { strip: StripUse::Hint(self.lang.get(Str::HintChange)), ..Wants::default() }
+    }
+
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, _cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        d.title(self.lang.get(self.title()));
+        let fields = self.fields();
+        let i = usize::from(self.field).min(fields.len().saturating_sub(1));
+        let f = fields.get(i).copied().unwrap_or(0);
+        let mut v = StrBuf::<8>::new();
+        v.push_u32(self.value(f));
+        let n = u32::try_from(fields.len()).unwrap_or(1);
+        d.focus(orpheus_ui::a11y::Role::Slider, self.lang.get(Self::field_name(f)))
+            .value(v.as_str())
+            .at(u32::try_from(i).unwrap_or(0), n);
     }
 }
 

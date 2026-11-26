@@ -47,6 +47,10 @@ pub enum Unit {
     Kg,
     /// Metres per second (wind).
     MetresPerSecond,
+    /// Quarters shown as a speed ("1.25×"): the screen reader's speech
+    /// rate (A11Y-1).
+    #[cfg(feature = "screen-reader")]
+    Quarters,
 }
 
 /// Things a row does instead of holding a value.
@@ -339,7 +343,40 @@ pub mod id {
     /// The word the accessibility settings are packed into (one cache
     /// slot: the cache holds at most 128).
     pub const A11Y_WORD: SettingId = SettingId(0x0D60);
+    /// The screen reader (A11Y-1, 05 §7.14; feature `screen-reader`): on,
+    /// speech rate (quarters 1–40, stored on its own), voice, pitch,
+    /// verbosity, earcons, the where-am-I keys and keys with the screen
+    /// off, the others packed into [`READER_WORD`].
+    #[cfg(feature = "screen-reader")]
+    pub const READER: SettingId = SettingId(0x1004);
+    #[cfg(feature = "screen-reader")]
+    pub const SPEECH_RATE: SettingId = SettingId(0x1005);
+    #[cfg(feature = "screen-reader")]
+    pub const READER_VOICE: SettingId = SettingId(0x1006);
+    #[cfg(feature = "screen-reader")]
+    pub const READER_PITCH: SettingId = SettingId(0x1007);
+    #[cfg(feature = "screen-reader")]
+    pub const VERBOSITY: SettingId = SettingId(0x1008);
+    #[cfg(feature = "screen-reader")]
+    pub const EARCONS: SettingId = SettingId(0x1009);
+    #[cfg(feature = "screen-reader")]
+    pub const WHERE_KEYS: SettingId = SettingId(0x100A);
+    #[cfg(feature = "screen-reader")]
+    pub const DARK_KEYS: SettingId = SettingId(0x100B);
+    #[cfg(feature = "screen-reader")]
+    pub const READER_WORD: SettingId = SettingId(0x0D61);
 }
+
+/// The screen reader's pitch choices in semitones (A11Y-1): Lower, Low,
+/// Normal, High, Higher.
+#[cfg(feature = "screen-reader")]
+pub const READER_PITCH_SEMITONES: [i8; 5] = [-4, -2, 0, 2, 4];
+
+/// The default of the screen reader's word 0x0D61: every field's default
+/// (off, Neutral, pitch Normal, verbosity Normal, earcons on, Back + OK,
+/// keys with the screen off on).
+#[cfg(feature = "screen-reader")]
+const READER_WORD_DEFAULT: i16 = (2 << 3) | (1 << 6) | (1 << 8) | (1 << 9) | (1 << 11);
 
 /// Settings › Accessibility › Hold delay choices, ms (A11Y-2).
 pub const HOLD_DELAY_MS: [u32; 5] = [500, 750, 1000, 1500, 2000];
@@ -526,6 +563,33 @@ const ACCESSIBILITY: &[Setting] = &[
         .packed(0x0D60, 2, 3),
     c(0x1003, Str::RepeatSpeed, ch![S(Str::RepeatNormal), S(Str::RepeatSlow), S(Str::RepeatSlower)], 0)
         .packed(0x0D60, 5, 2),
+    // A11Y-1: the screen reader (feature `screen-reader`).
+    #[cfg(feature = "screen-reader")]
+    t(0x1004, Str::ScreenReader, 0).packed(0x0D61, 0, 1),
+    // 0.25×–10× in 0.25× steps (owner 2026-11-25; 04 §8): 40 values.
+    #[cfg(feature = "screen-reader")]
+    r(0x1005, Str::SpeechRate, 1, 40, 1, Unit::Quarters, 4),
+    #[cfg(feature = "screen-reader")]
+    c(0x1006, Str::Voice, ch![S(Str::VoiceNeutral), S(Str::Low), S(Str::VoiceBright)], 0)
+        .packed(0x0D61, 1, 2),
+    #[cfg(feature = "screen-reader")]
+    c(
+        0x1007,
+        Str::Pitch,
+        ch![S(Str::PitchLower), S(Str::Low), S(Str::TextNormal), S(Str::High), S(Str::PitchHigher)],
+        2,
+    )
+    .packed(0x0D61, 3, 3),
+    #[cfg(feature = "screen-reader")]
+    c(0x1008, Str::Verbosity, ch![S(Str::VerbBrief), S(Str::TextNormal), S(Str::VerbDetailed)], 1)
+        .packed(0x0D61, 6, 2),
+    #[cfg(feature = "screen-reader")]
+    t(0x1009, Str::Earcons, 1).packed(0x0D61, 8, 1),
+    #[cfg(feature = "screen-reader")]
+    c(0x100A, Str::WhereAmIKeys, ch![S(Str::Off), Lit("Back + OK"), Lit("Prev + Next")], 1)
+        .packed(0x0D61, 9, 2),
+    #[cfg(feature = "screen-reader")]
+    t(0x100B, Str::DarkKeys, 1).packed(0x0D61, 11, 1),
 ];
 
 const SYSTEM: &[Setting] = &[
@@ -617,6 +681,9 @@ pub const APP_ITEMS: &[Setting] = &[
     r(0x0D44, Str::TabTimer, 0, 32400, 1, Unit::None, 1500),
     // The accessibility settings' word (A11Y-2): every field's default is 0.
     r(0x0D60, Str::GAccessibility, i16::MIN, i16::MAX, 1, Unit::None, 0),
+    // The screen reader's word (A11Y-1).
+    #[cfg(feature = "screen-reader")]
+    r(0x0D61, Str::ScreenReader, i16::MIN, i16::MAX, 1, Unit::None, READER_WORD_DEFAULT),
 ];
 
 /// The five band gains (dB) of equaliser preset `preset` (an
@@ -770,8 +837,12 @@ pub fn def(id: SettingId) -> Option<&'static Setting> {
 
 /// Number of stored items (the games' settings with the `games` feature,
 /// the reading settings' word with `books`, the Sequencer's word with
-/// `seq`).
-pub const STORED: usize = 98 + GAMES_STORED + BOOKS_STORED + SEQ_STORED;
+/// `seq`, the screen reader's speech rate and word with `screen-reader`).
+pub const STORED: usize = 98 + GAMES_STORED + BOOKS_STORED + SEQ_STORED + READER_STORED;
+#[cfg(feature = "screen-reader")]
+const READER_STORED: usize = 2;
+#[cfg(not(feature = "screen-reader"))]
+const READER_STORED: usize = 0;
 #[cfg(feature = "seq")]
 const SEQ_STORED: usize = crate::seq::STORED_SETTINGS;
 #[cfg(not(feature = "seq"))]
@@ -887,6 +958,8 @@ pub fn format_value<const N: usize>(s: &Setting, v: i16, lang: Lang, out: &mut S
                 out.push_i32(i32::from(v));
                 out.push_str(" m/s");
             }
+            #[cfg(feature = "screen-reader")]
+            Unit::Quarters => format_choice(Choice::Speed(v.unsigned_abs() * 25), lang, out),
         },
         _ => {}
     }
@@ -1084,6 +1157,55 @@ mod tests {
     use std::collections::BTreeSet;
     use std::vec::Vec;
 
+    /// A11Y-1: the screen reader's settings follow A11Y-2's in the group;
+    /// the rate is stored on its own, the others are bits of the word
+    /// 0x0D61 (its default every field's default), set and read without
+    /// touching each other.
+    #[test]
+    #[cfg(feature = "screen-reader")]
+    fn reader_packed() {
+        // A11Y-1: the screen reader's rows after A11Y-2's, the rate stored
+        // on its own, the rest in the word 0x0D61 whose default is every
+        // field's default; each field set alone keeps the others.
+        let grp = GROUPS.iter().find(|g| g.label == Str::GAccessibility).unwrap();
+        let ids: Vec<u16> = grp.items.iter().map(|s| s.id.0).collect();
+        assert_eq!(
+            ids,
+            [0x1001, 0x1002, 0x1003, 0x1004, 0x1005, 0x1006, 0x1007, 0x1008, 0x1009, 0x100A, 0x100B]
+        );
+        let mut c = SettingsCache::new();
+        let packed: Vec<&Setting> =
+            grp.items.iter().filter(|s| s.pack.is_some_and(|p| p.0 == id::READER_WORD)).collect();
+        assert_eq!(packed.len(), 7);
+        for s in &packed {
+            assert_eq!(c.get(s.id), s.default, "{:#06x}", s.id.0);
+        }
+        assert_eq!(c.get(id::SPEECH_RATE), 4, "1×");
+        assert!(def(id::SPEECH_RATE).is_some_and(Setting::stored));
+        let before: Vec<i16> = packed.iter().map(|s| c.get(s.id)).collect();
+        for (k, s) in packed.iter().enumerate() {
+            let v = s.step(c.get(s.id), 1);
+            assert!(c.set(s.id, v));
+            for (j, t) in packed.iter().enumerate() {
+                let want = if j == k { v } else { before[j] };
+                assert_eq!(c.get(t.id), want, "{:#06x} after {:#06x}", t.id.0, s.id.0);
+            }
+            c.set(s.id, before[k]);
+        }
+        assert_eq!(c.get(id::READER_WORD), READER_WORD_DEFAULT);
+        // The rate: 0.25× to 10× in 0.25× steps, out of range the default.
+        assert!(c.set(id::SPEECH_RATE, 40));
+        assert_eq!(c.get(id::SPEECH_RATE), 40);
+        c.set(id::SPEECH_RATE, 41);
+        assert_eq!(c.get(id::SPEECH_RATE), 4);
+        let d = def(id::SPEECH_RATE).unwrap();
+        let mut b = StrBuf::<12>::new();
+        format_value(d, 1, Lang::ENGLISH, &mut b);
+        assert_eq!(b.as_str(), "0.25×");
+        format_value(d, 40, Lang::ENGLISH, &mut b);
+        assert_eq!(b.as_str(), "10.0×");
+    }
+
     /// A11Y-2: Text size, Hold delay and Key repeat live in bits 0–1, 2–4
     /// and 5–6 of the word 0x0D60 (default 0: every field's default), are
     /// set and read through it without touching each other, and the group
@@ -1091,9 +1213,12 @@ mod tests {
     #[test]
     fn accessibility_packed() {
         let grp = GROUPS.iter().find(|g| g.label == Str::GAccessibility).unwrap();
-        let ids: Vec<u16> = grp.items.iter().map(|s| s.id.0).collect();
+        // The screen reader's rows (A11Y-1, feature `screen-reader`) follow.
+        let items: Vec<&Setting> = grp.items.iter().filter(|s| s.id.0 <= 0x1003).collect();
+        let ids: Vec<u16> = items.iter().map(|s| s.id.0).collect();
         assert_eq!(ids, [0x1001, 0x1002, 0x1003]);
-        for s in grp.items {
+        assert_eq!(grp.items.len(), if cfg!(feature = "screen-reader") { 11 } else { 3 });
+        for s in items {
             assert_eq!(s.pack.map(|p| p.0), Some(id::A11Y_WORD), "{:#06x}", s.id.0);
             assert_eq!(s.default, 0);
         }

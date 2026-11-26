@@ -563,4 +563,33 @@ impl<S: Services + ?Sized> Screen<S> for RecorderScreen {
             Self::arm(cx);
         }
     }
+
+    /// The state and the time; the source, format and time left.
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        let l = self.lang;
+        let info = cx.svc.recorder();
+        d.title(l.get(Str::AppRecorder));
+        let label = match info.phase {
+            RecPhase::Recording => Str::RecRecording,
+            RecPhase::Paused => Str::RecPaused,
+            RecPhase::Waiting => Str::RecWaiting,
+            RecPhase::Saving => Str::RecSaving,
+            RecPhase::Off | RecPhase::Armed => Str::RecReady,
+        };
+        let mut t = StrBuf::<12>::new();
+        push_hms(&mut t, info.elapsed_ms / 1000);
+        d.focus(orpheus_ui::a11y::Role::Text, l.get(label)).value(t.as_str());
+        let mut b = StrBuf::<16>::new();
+        source_label(&info, &mut b);
+        d.say(b.as_str());
+        let mut f = StrBuf::<32>::new();
+        f.push_str(format_name(info.format));
+        f.push(' ');
+        push_rate(info.rate, &mut f);
+        d.say(f.as_str());
+        if let Some(s) = info.left_s {
+            d.say_u32("minutes left", s / 60);
+        }
+    }
 }

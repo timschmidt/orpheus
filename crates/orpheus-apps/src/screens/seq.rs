@@ -257,6 +257,12 @@ impl<S: Services + ?Sized> Screen<S> for SeqListScreen {
         self.list.focus = r.focus;
         self.list.top = r.top;
     }
+
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        d.title(self.lang.get(Str::AppSequencer));
+        d.list(&src(cx.svc.seq(), self.lang), &self.list, "empty");
+    }
 }
 
 // ------------------------------------------------------------ the grid
@@ -600,6 +606,44 @@ impl<S: Services + ?Sized> Screen<S> for GridScreen {
         self.track = (r.focus as usize).min(ALL_TRACKS - 1) as u8;
         self.step = (r.top as usize).min(MAX_STEPS - 1) as u8;
         self.clamp(&cx.svc.seq().project);
+    }
+
+    /// The pattern, tempo and transport; the focused step of its track (on
+    /// or off, note and velocity) and its place in the pattern.
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        use orpheus_ui::a11y::{Role, State};
+        let st = cx.svc.seq();
+        let p = &st.project;
+        let pat = p.pattern(p.current());
+        let mut t = StrBuf::<32>::new();
+        t.push_str(self.lang.get(Str::SeqPattern));
+        t.push(' ');
+        t.push_u32(p.current() as u32 + 1);
+        d.title(t.as_str());
+        d.say_u32(self.lang.get(Str::SeqTempo), u32::from(p.tempo()));
+        if st.seq.playing() {
+            d.say(self.lang.get(Str::SeqPlaying));
+        }
+        let tr = usize::from(self.track);
+        let s = usize::from(self.step);
+        let step = pat.any_step(tr, s);
+        let mut label = StrBuf::<32>::new();
+        label.push_str(orpheus_seq::model::track_label(p, tr).1);
+        label.push_str(", step ");
+        label.push_u32(s as u32 + 1);
+        let mut v = StrBuf::<24>::new();
+        if step.on() {
+            if tr >= TRACKS {
+                push_note(&mut v, pat.synth_step(tr - TRACKS, s).pitch());
+                v.push_str(" · ");
+            }
+            v.push_u32(u32::from(step.velocity()));
+        }
+        d.focus(Role::Cell, label.as_str())
+            .value(v.as_str())
+            .state(if step.on() { State::On } else { State::Off })
+            .at(self.step.into(), pat.len() as u32);
     }
 }
 
@@ -1523,6 +1567,18 @@ impl<S: Services + ?Sized> Screen<S> for SeqEditScreen {
         l.set_focus(&self.rows, r.focus, VISIBLE, cx.now);
         self.list = l;
     }
+
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, _cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        d.title(Screen::<S>::wants(self).title.unwrap_or(""));
+        d.list(&self.rows, &self.list, "empty");
+        if let Some(f) = d.focus.as_mut()
+            && !f.value.is_empty()
+            && f.role == orpheus_ui::a11y::Role::Item
+        {
+            f.role = orpheus_ui::a11y::Role::Slider;
+        }
+    }
 }
 
 // ------------------------------------------------------------ the song
@@ -1725,6 +1781,12 @@ impl<S: Services + ?Sized> Screen<S> for SongScreen {
         self.lang = cx.svc.lang();
         self.list.focus = r.focus;
         self.list.top = r.top;
+    }
+
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        d.title(self.lang.get(Str::SeqSong));
+        self.with_rows(cx.svc.seq(), |rows| d.list(rows, &self.list, "empty"));
     }
 }
 
@@ -1955,6 +2017,31 @@ impl<S: Services + ?Sized> Screen<S> for KeysScreen {
         self.record = r.handle & 1 != 0;
         self.drawn = None;
     }
+
+    /// The synth track, its sound and scale; the note under the cursor.
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        let st = cx.svc.seq();
+        let p = &st.project;
+        d.title(self.lang.get(Str::SeqKeys));
+        d.say(orpheus_seq::model::SYNTH_LABELS[self.st()].1);
+        d.say(p.synth(self.st()).name.as_str());
+        let (scale, root) = p.scale();
+        let mut b = StrBuf::<24>::new();
+        b.push_str(NOTE_NAMES[usize::from(root % 12)]);
+        b.push(' ');
+        b.push_str(scale.label());
+        d.say(b.as_str());
+        if self.record {
+            d.say(self.lang.get(Str::SeqRecording));
+        }
+        let mut n = StrBuf::<8>::new();
+        push_note(&mut n, self.note);
+        let mut v = StrBuf::<16>::new();
+        v.push_str("step ");
+        v.push_u32(u32::from(self.step) + 1);
+        d.focus(orpheus_ui::a11y::Role::Key, n.as_str()).value(v.as_str());
+    }
 }
 
 // ------------------------------------------------------------ live
@@ -2119,5 +2206,24 @@ impl<S: Services + ?Sized> Screen<S> for LiveScreen {
     fn restore(&mut self, cx: &mut Cx<'_, S>, _r: &Resume) {
         self.lang = cx.svc.lang();
         self.drawn = None;
+    }
+
+    /// The pattern playing and the one that comes next, the tempo.
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        let st = cx.svc.seq();
+        let p = &st.project;
+        let l = self.lang;
+        d.title(l.get(Str::SeqLive));
+        let playing = st.seq.position().map_or(p.current() as u8, |x| x.pattern);
+        d.say_u32(l.get(Str::SeqPattern), u32::from(playing) + 1);
+        if p.mode() == PlayMode::Song {
+            d.say(l.get(Str::SeqSong));
+        } else {
+            d.say_u32(l.get(Str::SeqNextPattern), p.current() as u32 + 1);
+        }
+        let mut v = StrBuf::<8>::new();
+        v.push_u32(u32::from(p.tempo()));
+        d.focus(orpheus_ui::a11y::Role::Slider, l.get(Str::SeqTempo)).value(v.as_str());
     }
 }

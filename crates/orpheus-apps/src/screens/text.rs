@@ -258,6 +258,33 @@ impl<S: Services + ?Sized> Screen<S> for TextScreen {
         self.top = r.top.min(self.size);
         cx.svc.want_text(self.top);
     }
+
+    /// The page's text (its first 96 bytes: continuous reading is the
+    /// Books reader's read-aloud) and how far into the file it is.
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        d.title(self.lang.get(Str::KindText));
+        let (ws, win) = cx.svc.text_window();
+        let start = usize::try_from(self.top.saturating_sub(ws)).unwrap_or(0);
+        if self.top < ws || start > win.len() || (win.is_empty() && self.size > 0) {
+            d.say("loading");
+            return;
+        }
+        let mut s = StrBuf::<96>::new();
+        let mut j = start;
+        while j < win.len() && s.len() < 90 {
+            let Some((c, n)) = decode(win, j) else { break };
+            s.push(if c.is_control() { ' ' } else { c });
+            j += n;
+        }
+        if s.as_str().trim().is_empty() {
+            s.push_str("blank");
+        }
+        let mut pct = StrBuf::<12>::new();
+        pct.push_u32(u32::try_from(u64::from(self.top) * 100 / u64::from(self.size.max(1))).unwrap_or(0));
+        pct.push_str(" %");
+        d.focus(orpheus_ui::a11y::Role::Text, s.as_str()).value(pct.as_str());
+    }
 }
 
 #[cfg(test)]

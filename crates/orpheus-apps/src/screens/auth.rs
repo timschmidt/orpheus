@@ -961,6 +961,86 @@ impl<S: Services + ?Sized> Screen<S> for AuthScreen {
         }
         self.reload(cx.svc);
     }
+
+    /// The vault's state: a message, the PIN pad (the prompt, the digits
+    /// entered, the focused key), the accounts with their codes, a code.
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        use orpheus_ui::a11y::Role;
+        let svc = &*cx.svc;
+        let l = self.lang;
+        d.title(l.get(Str::AppAuthenticator));
+        match self.view(svc) {
+            View::Message(a, b) => {
+                d.say(l.get(a));
+                d.say(l.get(b));
+            }
+            View::Working(work, percent) => {
+                d.say(l.get(match work {
+                    VaultWork::Unlock => Str::AuthUnlocking,
+                    VaultWork::Create => Str::AuthSettingUp,
+                    VaultWork::ChangePin => Str::AuthChangingPin,
+                }));
+                d.say_u32("percent", u32::from(percent));
+            }
+            View::Pad(pad) => {
+                let wait = Self::wait_s(svc);
+                if wait > 0 {
+                    d.say(l.get(Str::AuthWrongPin));
+                    d.say_u32(l.get(Str::AuthWait), wait);
+                } else if let Some(e) = self.error {
+                    d.say(l.get(e));
+                } else {
+                    d.say(l.get(match pad {
+                        Mode::NewPin => Str::AuthNewPin,
+                        Mode::ConfirmPin | Mode::ChangeConfirm => Str::AuthConfirmPin,
+                        Mode::ChangePin => Str::AuthNewPinChange,
+                        _ => Str::AuthEnterPin,
+                    }));
+                }
+                d.say_u32("digits", u32::try_from(self.pin.len()).unwrap_or(0));
+                let mut k = StrBuf::<8>::new();
+                match self.cursor {
+                    PAD_DEL => {
+                        k.push_str("Delete");
+                    }
+                    PAD_DONE => {
+                        k.push_str("Done");
+                    }
+                    PAD_ZERO => {
+                        k.push('0');
+                    }
+                    c => {
+                        k.push_u32(u32::from(c) + 1);
+                    }
+                }
+                d.focus(Role::Key, k.as_str()).at(u32::from(self.cursor), 12);
+            }
+            View::List if self.count == 0 => {
+                d.say(l.get(Str::AuthNoAccounts));
+                d.say(l.get(Str::AuthNoAccountsAction));
+            }
+            View::List | View::Code => {
+                let Some(r) = self.focused() else { return };
+                let mut code = StrBuf::<16>::new();
+                let live = Self::code_text(svc, r, &mut code);
+                if svc.unix_time().is_none() && !r.is_hotp() {
+                    d.say(l.get(Str::AuthClockNotSet));
+                }
+                let f = d.focus(Role::Item, r.name.as_str());
+                if live {
+                    f.value(code.as_str());
+                }
+                f.at(u32::from(self.focus), u32::from(self.count));
+                if r.has_issuer {
+                    d.say(self.acct.as_str());
+                }
+                if let (Some(t), false, true) = (svc.unix_time(), r.is_hotp(), live) {
+                    d.say_u32("seconds left", seconds_left(t, r.period));
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

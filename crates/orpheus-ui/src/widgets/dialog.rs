@@ -126,6 +126,19 @@ impl Dialog {
         self.focus
     }
 
+    /// What the screen reader says of the dialog (A11Y-1): its title, its
+    /// text and the focused button with its position.
+    #[cfg(feature = "screen-reader")]
+    pub fn describe(&self, d: &mut crate::a11y::Desc) {
+        d.layer = crate::a11y::Layer::Dialog;
+        d.title(if self.spec.title.is_empty() { "Message" } else { self.spec.title });
+        d.say(self.spec.text.as_str());
+        let n = self.spec.n_buttons.max(1);
+        let i = self.focus.min(n - 1);
+        let label = self.spec.buttons.get(usize::from(i)).copied().unwrap_or("OK");
+        d.focus(crate::a11y::Role::Button, label).at(u32::from(i), u32::from(n));
+    }
+
     pub fn handle(&mut self, ev: &Event) -> DialogResult {
         let Event::Key(k, p) = *ev else { return DialogResult::None };
         let n = self.spec.n_buttons.max(1);

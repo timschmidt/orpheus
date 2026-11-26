@@ -1,0 +1,12 @@
+# A11Y-1 spoken journey `screen_off` (sim/tests/screen_reader.rs)
+# set:0x1004=1 set:timers=run set:0x0302=0 wait:2500 wait:4000 next wait:2500 ok wait:2500 back wait:2000
+     33 earcon reader-on
+     33 say Screen reader on
+     33 say Home. Music, button, 1 of 12
+   6500 say Files, button, 2 of 12
+   9160 earcon enter
+   9160 say Files. Books, submenu, 1 of 8
+  11700 stop
+  11760 earcon back
+  11760 say Home. Files, button, 2 of 12
+audio 16000 Hz mono, 234352 samples, fnv64 c06d33e9e6c2f977

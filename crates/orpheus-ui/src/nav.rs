@@ -175,6 +175,12 @@ pub trait Screen<S: ?Sized> {
     }
     /// Called after `enter` when the screen is rebuilt by a pop.
     fn restore(&mut self, _cx: &mut Cx<'_, S>, _r: &Resume) {}
+    /// What the screen reader says of this screen (A11Y-1, feature
+    /// `screen-reader`): its title, the focused element (role, label,
+    /// value, state, position) and a "where am I" summary. The default
+    /// says nothing, which the simulator's lint refuses.
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, _cx: &Cx<'_, S>, _d: &mut crate::a11y::Desc) {}
 }
 
 /// The app's set of screens: one enum, one variant per screen.

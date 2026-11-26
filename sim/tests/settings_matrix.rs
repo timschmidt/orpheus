@@ -181,6 +181,14 @@ fn service_scripts() -> Vec<(&'static str, &'static str, Probe)> {
         ("volume", "set:volume=29 vol+ vol+", |s| format!("{}", s.sys.volume)),
         // Keys on Home and in a list: the clicks the sound output got.
         ("key-click", "next prev ok wait:100 down up back wait:100", |s| format!("{}", s.sys.clicks)),
+        // A11Y-1: the screen reader on Home (the journey turns it on): two
+        // moves and where am I; what it said and the audio's hash.
+        ("speech", SPEECH, |s| {
+            let a = s.a11y.as_mut().expect("the apps have a reader");
+            a.speech.drain(20_000);
+            let log: Vec<String> = a.speech.log.iter().map(orpheus_sim::speech::Said::line).collect();
+            format!("{log:?} {:016x}", a.speech.audio_hash())
+        }),
         // SEQ-2: the Sequencer — a new project (its kit, length, swing),
         // then the demo beat played 2.5 s from the grid (the notes only:
         // `seqdry`) and two keys pressed while it plays (with Key click
@@ -204,6 +212,9 @@ fn service_scripts() -> Vec<(&'static str, &'static str, Probe)> {
         }),
     ]
 }
+
+/// The `speech` journey (see `service_scripts`).
+const SPEECH: &str = "set:0x1004=1 wait:1500 next wait:1500 down wait:1500 chord:back+ok:700 wait:3000";
 
 /// The `seq-play` journey (see `service_scripts`).
 const SEQ_PLAY: &str = "set:0x0108=1 set:seq=on set:seqdry=on set:seqdemo=1 goto:Sequencer wait:50 ok wait:50 \
@@ -1668,6 +1679,38 @@ mod matrix {
     #[test]
     fn s1003() {
         row(0x1003);
+    }
+    #[test]
+    fn s1004() {
+        row(0x1004);
+    }
+    #[test]
+    fn s1005() {
+        row(0x1005);
+    }
+    #[test]
+    fn s1006() {
+        row(0x1006);
+    }
+    #[test]
+    fn s1007() {
+        row(0x1007);
+    }
+    #[test]
+    fn s1008() {
+        row(0x1008);
+    }
+    #[test]
+    fn s1009() {
+        row(0x1009);
+    }
+    #[test]
+    fn s100a() {
+        row(0x100A);
+    }
+    #[test]
+    fn s100b() {
+        row(0x100B);
     }
     #[test]
     fn s1101() {

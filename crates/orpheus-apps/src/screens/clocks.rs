@@ -622,6 +622,43 @@ impl<S: Services + ?Sized> Screen<S> for ToolsScreen {
         l.set_focus(&self.rows, r.focus, ALARM_ROWS, cx.now);
         self.list = l;
     }
+
+    /// The tab, its time (stopwatch, running timer), the chosen preset or
+    /// the focused alarm.
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        use orpheus_ui::a11y::Role;
+        let l = self.lang;
+        let s = self.shown(cx);
+        let tab = [Str::AppStopwatch, Str::TabTimer, Str::TabAlarm][usize::from(self.tab % 3)];
+        d.title(l.get(tab));
+        match self.tab {
+            TAB_SW => {
+                d.say(s.time.as_str());
+                d.say(if s.running {
+                    "running"
+                } else if s.started {
+                    "stopped"
+                } else {
+                    "ready"
+                });
+                if s.laps > 0 {
+                    d.say_u32(l.get(Str::Lap), u32::from(s.laps));
+                }
+            }
+            TAB_TIMER if s.timer_started => {
+                d.say(s.time.as_str());
+                d.say(if s.timer_running { "running" } else { "paused" });
+            }
+            TAB_TIMER => {
+                let n = (0..PRESETS).take_while(|&i| tools::preset(cx.svc, i) > 0).count();
+                let mut t = StrBuf::<12>::new();
+                push_hms(&mut t, self.preset(cx.svc, self.sel));
+                d.focus(Role::Item, t.as_str()).at(u32::from(self.sel), u32::try_from(n).unwrap_or(0));
+            }
+            _ => d.list(&self.rows, &self.list, "empty"),
+        }
+    }
 }
 
 /// Repeat days of an alarm: seven check rows.
@@ -715,6 +752,12 @@ impl<S: Services + ?Sized> Screen<S> for AlarmDaysScreen {
         l.set_focus(&self.rows, r.focus, 5, cx.now);
         self.list = l;
     }
+
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, _cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        d.title(self.lang.get(Str::Repeat));
+        d.list(&self.rows, &self.list, "empty");
+    }
 }
 
 /// The alert over any screen: the timer reached zero, or an alarm rings.
@@ -799,6 +842,16 @@ impl<S: Services + ?Sized> Screen<S> for AlertScreen {
             strip: StripUse::Hint(self.lang.get(hint)),
             ..Wants::default()
         }
+    }
+
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, _cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        let l = self.lang;
+        d.title(match self.alert {
+            Some(Alert::Timer) => l.get(Str::TimesUp),
+            _ => l.get(Str::TabAlarm),
+        });
+        d.say(self.value.as_str());
     }
 }
 

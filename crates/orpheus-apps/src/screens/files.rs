@@ -509,6 +509,26 @@ impl<S: Services + ?Sized> Screen<S> for FilesScreen {
         self.focus_on(cx.svc, row, cx.now);
         self.want(cx.svc);
     }
+
+    /// The folder's name (the app's at the root), the focused entry.
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        let app = Screen::<S>::wants(self).title.unwrap_or("");
+        let name = cx.svc.dir_name(self.dir);
+        d.title(if name.is_empty() || name == "/" { app } else { name });
+        if self.count == 0 {
+            let empty = match self.mode {
+                BrowseMode::Recordings => Str::NoRecordings,
+                BrowseMode::DiskImages => Str::DriveNoImages,
+                _ => Str::EmptyFolder,
+            };
+            d.say(if self.complete { self.lang.get(empty) } else { "loading" });
+            return;
+        }
+        let src =
+            DirSource::new(&*cx.svc, self.count, self.list.focus).images(self.mode == BrowseMode::DiskImages);
+        d.list(&src, &self.list, "empty");
+    }
 }
 
 #[cfg(test)]

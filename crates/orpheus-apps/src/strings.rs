@@ -1143,6 +1143,37 @@ strings! {
     SeqNoFill = "None",
     #[cfg(feature = "seq")]
     SeqMore = "More",
+    // A11Y-1: the screen reader's settings, behind `screen-reader` (not in
+    // the firmware: no speech output there yet), after the Sequencer's
+    // block for the same reason as it.
+    #[cfg(feature = "screen-reader")]
+    ScreenReader = "Screen reader",
+    #[cfg(feature = "screen-reader")]
+    SpeechRate = "Speech rate",
+    #[cfg(feature = "screen-reader")]
+    Voice = "Voice",
+    #[cfg(feature = "screen-reader")]
+    VoiceNeutral = "Neutral",
+    #[cfg(feature = "screen-reader")]
+    VoiceBright = "Bright",
+    #[cfg(feature = "screen-reader")]
+    Pitch = "Pitch",
+    #[cfg(feature = "screen-reader")]
+    PitchLower = "Lower",
+    #[cfg(feature = "screen-reader")]
+    PitchHigher = "Higher",
+    #[cfg(feature = "screen-reader")]
+    Verbosity = "Verbosity",
+    #[cfg(feature = "screen-reader")]
+    VerbBrief = "Brief",
+    #[cfg(feature = "screen-reader")]
+    VerbDetailed = "Detailed",
+    #[cfg(feature = "screen-reader")]
+    Earcons = "Sound cues",
+    #[cfg(feature = "screen-reader")]
+    WhereAmIKeys = "Where am I",
+    #[cfg(feature = "screen-reader")]
+    DarkKeys = "Keys with screen off",
 }
 
 /// Number of strings.

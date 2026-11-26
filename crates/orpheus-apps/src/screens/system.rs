@@ -71,6 +71,12 @@ impl<S: Services + ?Sized> Screen<S> for BootScreen {
     fn wants(&self) -> Wants {
         Wants { ticks: true, full_screen: true, ..Wants::default() }
     }
+
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, _cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        d.title("Orpheus");
+        d.say("starting");
+    }
 }
 
 /// A big battery outline with `pct` fill (charging screen, lock screen).
@@ -148,6 +154,24 @@ impl<S: Services + ?Sized> Screen<S> for ChargingScreen {
 
     fn wants(&self) -> Wants {
         Wants { full_screen: true, ..Wants::default() }
+    }
+
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        let l = self.lang;
+        let b = cx.svc.battery();
+        d.title(l.get(match b.charge {
+            ChargeState::Charging | ChargeState::Trickle | ChargeState::Detecting => Str::Charging,
+            ChargeState::Full => Str::Charged,
+            ChargeState::NoBattery => Str::NoBattery,
+            ChargeState::Fault => Str::ChargerFault,
+            ChargeState::NotPresent => Str::NotCharging,
+        }));
+        let mut pct = StrBuf::<8>::new();
+        pct.push_u32(u32::from(b.percent));
+        pct.push_str(" %");
+        d.say(pct.as_str());
+        d.say(l.get(Str::UsbConnected));
     }
 }
 
@@ -239,6 +263,24 @@ impl<S: Services + ?Sized> Screen<S> for LockScreen {
 
     fn wants(&self) -> Wants {
         Wants { ticks: true, full_screen: true, ..Wants::default() }
+    }
+
+    /// Locked: the time, the date, what plays, how to unlock.
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        let t = cx.svc.now();
+        d.title("Keys locked");
+        let mut clock = StrBuf::<8>::new();
+        let h24 = cx.svc.setting(id::CLOCK_24H) != 0;
+        let hour = if h24 { t.hour } else { (t.hour + 11) % 12 + 1 };
+        clock.push_u32(u32::from(hour));
+        clock.push(':');
+        clock.push_u32_padded(u32::from(t.minute), 2);
+        d.say(clock.as_str());
+        if let Some(p) = cx.svc.playing() {
+            d.say(p.title);
+        }
+        d.say(self.lang.get(Str::PressPowerToUnlock));
     }
 }
 
@@ -354,6 +396,25 @@ impl<S: Services + ?Sized> Screen<S> for NoticeScreen {
         // The strip's 18 px are needed for three wrapped CJK lines.
         Wants { strip: StripUse::Content, ..Wants::default() }
     }
+
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, _cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        let l = self.lang;
+        let n = Notice::from_arg(self.arg);
+        let (cause, action) = match n {
+            Notice::NoCard => (Str::NoCard, Str::NoCardAction),
+            Notice::CardUnreadable => (Str::CardUnreadable, Str::CardUnreadableAction),
+            Notice::NotYet(app) => (app.label(), Str::NotYetAction),
+            Notice::NotYetSettings => (Str::NotYet, Str::NotYetAction),
+            Notice::BatteryLow => (Str::BatteryLow, Str::BatteryLowAction),
+            Notice::Unsupported => (Str::CannotOpen, Str::CannotOpenAction),
+        };
+        d.title(l.get(cause));
+        if let Notice::NotYet(_) = n {
+            d.say(l.get(Str::NotYet));
+        }
+        d.say(l.get(action));
+    }
 }
 
 /// "Goodbye" for [`GOODBYE_MS`], then power off (05 §6.1).
@@ -396,5 +457,11 @@ impl<S: Services + ?Sized> Screen<S> for GoodbyeScreen {
 
     fn wants(&self) -> Wants {
         Wants { ticks: !self.sent, full_screen: true, ..Wants::default() }
+    }
+
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, _cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        d.title(self.lang.get(Str::Goodbye));
+        d.say("powering off");
     }
 }

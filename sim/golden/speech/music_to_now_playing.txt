@@ -1,0 +1,25 @@
+# A11Y-1 spoken journey `music_to_now_playing` (sim/tests/screen_reader.rs)
+# set:library=ready set:0x1004=1 wait:2500 ok wait:2500 down wait:2000 ok wait:2500 down wait:1500 ok wait:2000 ok wait:2500 ok wait:3000 expect-screen:NowPlaying
+     33 earcon reader-on
+     33 say Screen reader on
+     33 say Home. Music, button, 1 of 12
+   2500 stop
+   2560 earcon enter
+   2560 say Music. Shuffle all, 1 of 9
+   5100 stop
+   5100 say Artists, submenu, 2 of 9
+   7200 stop
+   7260 earcon enter
+   7260 say Artists. Radio Talk, submenu, 1 of 5
+   9800 stop
+   9800 say Sigur Rós, submenu, 2 of 5
+  11400 stop
+  11460 earcon enter
+  11460 say Albums. Takk, submenu
+  13500 stop
+  13560 earcon enter
+  13560 say Songs. Glósóli, 0:01, 1 of 3
+  16100 stop
+  16160 earcon enter
+  16160 say Now Playing. Glósóli, Sigur Rós, playing, 1 of 3
+audio 16000 Hz mono, 327792 samples, fnv64 c290e1e237ffa53c

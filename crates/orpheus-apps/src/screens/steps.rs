@@ -333,6 +333,40 @@ impl<S: Services + ?Sized> Screen<S> for StepsScreen {
         self.tab = u8::from(r.focus == 1);
         self.sel = u8::try_from(r.top).unwrap_or(0).min(DAYS - 1);
     }
+
+    /// Today: the count, the goal, distance and energy. Week: the day
+    /// chosen and its count.
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        let l = self.lang;
+        let s = self.shown(cx.svc);
+        let mut t = StrBuf::<48>::new();
+        t.push_str(l.get(Str::AppSteps));
+        t.push_str(", ");
+        t.push_str(l.get(if self.tab == 0 { Str::TabToday } else { Str::TabWeek }));
+        d.title(t.as_str());
+        let mut line = StrBuf::<48>::new();
+        if self.tab == 0 {
+            let today = s.days[0];
+            d.say_u32("", today);
+            d.say_u32("goal", u32::try_from(s.goal).unwrap_or(0));
+            push_distance(&mut line, cx.svc, today, l);
+            d.say(line.as_str());
+            line.clear();
+            push_energy(&mut line, cx.svc, today, l);
+            d.say(line.as_str());
+        } else {
+            let v = s.days.get(usize::from(s.sel)).copied().unwrap_or(0);
+            let wd = (usize::from(s.weekday) + 7 - usize::from(self.sel)) % 7;
+            let name = l.get(DAY_SHORT.get(wd).copied().unwrap_or(Str::DayMo));
+            line.push_u32(v);
+            line.push_str(" · ");
+            push_distance(&mut line, cx.svc, v, l);
+            d.focus(orpheus_ui::a11y::Role::Cell, name)
+                .value(line.as_str())
+                .at(u32::from(self.sel), u32::from(DAYS));
+        }
+    }
 }
 
 /// The strip hint for the Steps app, if one applies: counting is off in

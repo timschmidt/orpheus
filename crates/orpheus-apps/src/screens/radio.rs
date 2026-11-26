@@ -405,6 +405,27 @@ impl<S: Services + ?Sized> Screen<S> for RadioScreen {
             ..Wants::default()
         }
     }
+
+    /// The frequency (Up/Down tune), the state or station, stereo, the
+    /// radio text.
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        let svc = &*cx.svc;
+        let info = svc.radio();
+        d.title(self.lang.get(Str::AppRadio));
+        let mut mhz = StrBuf::<16>::new();
+        push_mhz(info.khz, &mut mhz);
+        mhz.push_str(" MHz");
+        let mut cap = StrBuf::<48>::new();
+        self.caption(svc, &info, &mut cap);
+        d.focus(orpheus_ui::a11y::Role::Slider, mhz.as_str()).value(cap.as_str());
+        if info.phase.is_on() && info.stereo {
+            d.say("stereo");
+        }
+        if !matches!(info.phase, RadioPhase::Starting | RadioPhase::Seeking | RadioPhase::Scanning) {
+            d.say(self.text(svc, &info));
+        }
+    }
 }
 
 // ---------------------------------------------------------------- presets
@@ -588,5 +609,11 @@ impl<S: Services + ?Sized> Screen<S> for PresetsScreen {
         l.set_focus(self, r.focus, VISIBLE, cx.now);
         self.list = l;
         self.fill(&*cx.svc);
+    }
+
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, _cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        d.title(self.lang.get(Str::Presets));
+        d.list(self, &self.list, "empty");
     }
 }

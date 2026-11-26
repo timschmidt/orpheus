@@ -12,8 +12,10 @@ publish = false
 window = ["dep:minifb"]
 
 [dependencies]
-orpheus-ui = { path = "../crates/orpheus-ui" }
-orpheus-apps = { path = "../crates/orpheus-apps", features = ["games", "salvo", "bricks", "books", "midi", "seq"] }
+orpheus-ui = { path = "../crates/orpheus-ui", features = ["screen-reader"] }
+orpheus-apps = { path = "../crates/orpheus-apps", features = ["games", "salvo", "bricks", "books", "midi", "seq", "screen-reader"] }
+# The screen reader's speech (A11Y-1): text to 16 kHz audio.
+orpheus-tts = { path = "../crates/orpheus-tts" }
 orpheus-books = { path = "../crates/orpheus-books" }
 orpheus-games = { path = "../crates/orpheus-games", features = ["salvo", "bricks"] }
 orpheus-power = { path = "../crates/orpheus-power" }

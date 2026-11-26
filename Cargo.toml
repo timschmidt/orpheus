@@ -49,3 +49,19 @@ opt-level = 1
 
 [profile.test]
 opt-level = 1
+
+# The speech engine at full optimisation in host builds (A11Y-1): the
+# simulator renders the screen reader's speech in every journey with the
+# reader on (the settings matrix runs hundreds): a 22 s journey took 7.8 s at
+# opt-level 1, 0.04 s at 3.
+[profile.dev.package.orpheus-tts]
+opt-level = 3
+
+[profile.test.package.orpheus-tts]
+opt-level = 3
+
+[profile.dev.package.orpheus-synth]
+opt-level = 3
+
+[profile.test.package.orpheus-synth]
+opt-level = 3
