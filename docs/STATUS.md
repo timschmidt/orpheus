@@ -79,6 +79,34 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-26 — PWR-5 and the synth governor merged; on the player: USB needs ≥ 48 MHz, MIDI is paging-bound (lead)
+
+* Merged the synth measurement fix (`d9800bb8`) and PWR-5 (`ad7d5f85`:
+  Performance removed, Power mode per the owner, the governor reaches
+  288 MHz by itself, VDD clamped at `0x18`). Conflicts in `governor.rs`,
+  `audio.rs`, `main.rs` and the MIDI governor test resolved hunk by hunk
+  with PWR-5's side (its floor-as-level design covers the synth's floors
+  3/4); a first attempt that took whole files was undone before it was
+  pushed. Gate: 2,049 host tests, matrix 0 errors, fw build/size/resident,
+  stack margin 5,476 B. Installed `8240f128`; store unchanged.
+* **U-PWR-5 answered on the player: USB does not work at 24 MHz.**
+  `clock 24` with the governor off: the controller looped in
+  `usb: recovery (recover-setup)` (12 resets), then `usb: wedged … watchdog
+  not fed` and the watchdog restarted the player (~30 s). PWR-5's
+  `PERIPHERAL_MIN[usb] = Base` (48 MHz) is right; keep it.
+* Idle with the cable and no track: Base 48 MHz (as designed). With a
+  track loaded but **paused** (resume at start-up): Mid 96 — a paused track
+  keeps its clock floor. Open: drop the floor while paused.
+* **MIDI on the player** (`playdir /.orpheus/test/suite/midi`): the
+  measurement is right now (`ratio=` 100–108, the clock rises to
+  `clk=288/288`), but **paging is 200–250 % of real time** (`pg=248`): the
+  synth's working set (`synth-render` 25 lines + `synth-midi` 9 lines) is
+  larger than the 32-line code cache, so every piece reloads code. All
+  three songs ended with `synth: gave up, nothing can play at 288
+  load=261% ratio=108 pg=248% lvl=3 vlim=2`; no reset, UI alive. The
+  `play PATH` command named in the SYN-3 checks does not exist in this
+  build (use `playdir`).
+
 ### 2026-11-26 — PWR-5: Performance removed; the governor reaches 288 MHz by itself; Power mode as the owner defined it (worker, no hardware)
 
 D-4 as revised by the owner ("Dynamically clock up to 288mhz if required.
