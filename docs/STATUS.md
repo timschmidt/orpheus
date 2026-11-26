@@ -69,6 +69,27 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-26 — games-io and BOOK-1 merged; games during music clean (lead)
+
+* Merged the `games-io` cluster (`606bb84a`: `cargo xtask hot`, a
+  call-graph cluster of 14 lines with a `budget_lines` check in `stack
+  --check`, `starts_over`, `CardRun::rare_step` out of line). On the
+  player (`922ce7ac`): four game opens and quits with an MP3 playing,
+  **0 underruns**, and no `serve:` line at all (every games piece under
+  30 ms; before: 156–223 line loads and 30–53 ms per piece).
+* Suite on `922ce7ac`: `games` failed on the player's saved games
+  ("Continue" shortens "Solitaire" beside it); the values mask now starts
+  at x = 42. Then 16/16.
+* Merged BOOK-1 (`50eb115c`, Books in the simulator only): conflicts with
+  GAME-6 resolved — Books screens renumbered 56–61 (Bricks keeps 55), the
+  reading settings are list `0x0F` of the per-list lookup (`LISTS` has 15
+  lists), strings of both kept. 1,506 host tests; fw gate: resident
+  81,075 B (+32 B of strings crossed a 256 B stack step: usable 19,456 B),
+  stack margin 4,240 B. Suite 16/16 on `9a3bce6a` (idle Home 822 line
+  loads/s, stack free 6,800 B).
+* Build warning (existing): a 17.8 KB anonymous rodata section is larger
+  than a rodata group and stays resident-mapped; open: find its owner.
+
 ### 2026-11-25 — GAME-6 merged; Bricks on the player (lead)
 
 * Merged GAME-6 (`ebbf8ce3`) with Salvo: firmware features `games`,
