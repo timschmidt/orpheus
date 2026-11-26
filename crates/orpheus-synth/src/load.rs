@@ -37,6 +37,17 @@
 //!    dying away) oldest first, then the oldest held ones; never below
 //!    [`MIN_VOICES`].
 //!
+//! The budget follows the PCM ring ([`Governor::set_head`], before every
+//! plan): the whole [`BUDGET_PCT`] with [`HEAD_FULL_US`] or more of audio
+//! queued, down to [`LOW_PCT`] at [`HEAD_LOW_US`] ([`budget_pct`]). A
+//! ring that runs short says the real-time executor is behind whatever
+//! the render's own measure says — thread mode's code-cache line loads
+//! and the reloads after them, which the governor sees only in part —
+//! and the governor then raises the clock or sheds until it recovers;
+//! nothing comes back, and the clock does not come down, while it is
+//! short (2026-11-26, the player: "Etude" 18 underruns at a load of
+//! 24–46 %; the owner's Auto rule: dropouts are worse than shedding).
+//!
 //! The order keeps the notes as long as anything else can go: an effect
 //! colours the music, a dropped voice changes it. An effect fades out over
 //! 256 samples and is then cleared. The decisions leave out the voices
@@ -244,6 +255,16 @@ impl Estimate {
 /// PCM ring, chores and thread mode share the rest; the pace rule's rests
 /// alone take a third of a busy stretch).
 pub const BUDGET_PCT: u32 = 55;
+/// The budget while the PCM ring runs short ([`budget_pct`]): at or below
+/// [`HEAD_LOW_US`] of audio queued the render may take this share.
+pub const LOW_PCT: u32 = 30;
+/// At or above this much audio queued ahead of the DAC (µs) the budget is
+/// the whole [`BUDGET_PCT`]: a render that keeps up never has less than
+/// one PCM half (34.8 ms) queued as a piece starts.
+pub const HEAD_FULL_US: u32 = 30_000;
+/// At or below this much the budget is [`LOW_PCT`]: two render pieces, a
+/// rest and the line loads after it (2026-11-26, the player).
+pub const HEAD_LOW_US: u32 = 12_000;
 /// A piece predicted above this share sheds at once, whatever the smoothed
 /// cost says.
 pub const HARD_PCT: u32 = 80;
@@ -338,6 +359,9 @@ pub struct Governor {
     pub shed: u32,
     /// Pieces measured.
     measures: u32,
+    /// The budget's share of real time for the next plan, %
+    /// ([`budget_pct`] of the headroom [`Governor::set_head`] was told).
+    bpct: u32,
 }
 
 /// What the next piece does ([`Governor::plan`]).
@@ -373,6 +397,27 @@ pub enum Level {
     Voices = 3,
 }
 
+/// The render's budget, % of real time, with `head_us` of audio queued
+/// ahead of the DAC (`u32::MAX`: the DAC is not running): [`BUDGET_PCT`]
+/// from [`HEAD_FULL_US`] up, [`LOW_PCT`] at [`HEAD_LOW_US`] and below,
+/// linear between. A ring that runs short means the real-time executor
+/// is behind whatever the render's own measure says — thread mode's line
+/// loads and the reloads after them, note bursts, the outer part — so
+/// the governor sheds (at the top clock; raises the clock first below
+/// it) until the ring recovers (2026-11-26, the player: "Etude" 18
+/// underruns at a render load of 24–46 %, the owner's Auto rule:
+/// dropouts are worse than shedding).
+#[must_use]
+pub fn budget_pct(head_us: u32) -> u32 {
+    if head_us >= HEAD_FULL_US {
+        BUDGET_PCT
+    } else if head_us <= HEAD_LOW_US {
+        LOW_PCT
+    } else {
+        LOW_PCT + (BUDGET_PCT - LOW_PCT) * (head_us - HEAD_LOW_US) / (HEAD_FULL_US - HEAD_LOW_US)
+    }
+}
+
 /// The clock step of `mhz` (the highest at or below it; High below High).
 #[must_use]
 pub fn step_of(mhz: u32) -> u8 {
@@ -405,6 +450,7 @@ impl Governor {
             over: 0,
             shed: 0,
             measures: 0,
+            bpct: BUDGET_PCT,
         };
         // Every file starts at full quality at High (the floor the
         // firmware sets for the open), whatever clock the last file left:
@@ -442,6 +488,17 @@ impl Governor {
         let asked = CLOCKS_MHZ.get(usize::from(self.clk)).copied().unwrap_or(CLOCKS_MHZ[0]);
         self.pinned = self.mhz < asked;
         self.rt = (self.mhz.min(asked) * 1_000_000 / self.rate).max(1);
+    }
+
+    /// The audio queued ahead of the DAC, µs (`u32::MAX`: the DAC is not
+    /// running), before every plan: the budget follows it ([`budget_pct`]).
+    pub fn set_head(&mut self, head_us: u32) {
+        self.bpct = budget_pct(head_us);
+    }
+
+    /// The render's budget now, cycles per frame ([`budget_pct`]).
+    fn budget(&self) -> u32 {
+        self.pct(self.bpct)
     }
 
     /// The clock did not follow the governor (see [`Governor::set_clock`]).
@@ -576,7 +633,7 @@ impl Governor {
         let p = self.predict(e.lasting()).saturating_add(self.page);
         self.load = if self.load == 0 { p } else { self.load - self.load / 4 + p / 4 };
         let mut keep = None;
-        if self.load > self.pct(BUDGET_PCT) || p > self.pct(HARD_PCT) {
+        if self.load > self.budget() || p > self.pct(HARD_PCT) {
             keep = self.over_budget(e, p);
         } else if self.level() != Level::Full {
             self.restore(e, frames);
@@ -601,14 +658,14 @@ impl Governor {
         // `set_clock` says what the CPU really runs at.
         if !self.at_top() {
             let mut s = self.clk + 1;
-            while s < self.top && p > pct_of(self.rt_at(s), BUDGET_PCT) {
+            while s < self.top && p > pct_of(self.rt_at(s), self.bpct) {
                 s += 1;
             }
             self.clk = s;
             self.rt = self.rt.max(self.rt_at(s));
             self.mhz = self.mhz.max(CLOCKS_MHZ.get(usize::from(s)).copied().unwrap_or(1));
         }
-        let budget = self.pct(BUDGET_PCT);
+        let budget = self.budget();
         // Shed (only at the top clock) in order until it fits.
         if self.at_top() && p > budget {
             for bit in [FX_CHORUS, FX_DELAY, FX_REVERB] {
@@ -656,7 +713,7 @@ impl Governor {
                 [FX_REVERB, FX_DELAY, FX_CHORUS].into_iter().find(|b| self.fx_off & b != 0).unwrap_or(0);
             (bit, self.predict(e.fx_of(bit & e.wanted)), CALM_FX_MS)
         };
-        let fits = self.load <= target && self.load + extra <= self.pct(BUDGET_PCT);
+        let fits = self.load <= target && self.load + extra <= self.budget();
         if !self.calm_for(fits, frames, ms) {
             return;
         }
@@ -676,7 +733,8 @@ impl Governor {
     #[inline(never)]
     fn lower(&mut self, frames: u32) {
         let s = self.clk - 1;
-        if self.calm_for(self.load <= pct_of(self.rt_at(s), RESTORE_PCT), frames, CALM_CLOCK_MS) {
+        let calm = self.load <= pct_of(self.rt_at(s), RESTORE_PCT) && self.bpct == BUDGET_PCT;
+        if self.calm_for(calm, frames, CALM_CLOCK_MS) {
             self.clk = s;
         }
     }
@@ -776,7 +834,12 @@ fn pct_of(rt: u32, p: u32) -> u32 {
 
 /// A model of the firmware's render loop for host tests: the governor, the
 /// clock it asks for, the pieces, the pace rule's rests, the PCM ring and
-/// thread mode, in simulated microseconds.
+/// thread mode, in simulated microseconds. Thread mode is a share of real
+/// time ([`sim::Setup::thread_pct`]) or, since 2026-11-26, jobs with the
+/// code-cache lines they share with the synth ([`sim::Job`]): each line a
+/// job loads in a slot of thread mode costs [`sim::LINE_US`] there and
+/// again in the render after it (`orpheus-midi/tests/governor.rs` runs
+/// the demo songs through it with the player's figures).
 pub mod sim {
     use super::{CLOCKS_MHZ, Estimate, Governor, Level, Plan, TOP};
     use orpheus_power::pace::{self, MARGIN_US};
@@ -789,6 +852,32 @@ pub mod sim {
     pub const REST_US: u32 = pace::REST_US;
     /// The window thread mode's share is measured over, µs.
     pub const WINDOW_US: u64 = 100_000;
+    /// One code-cache line load, µs (1 KiB from the NOR, docs/plan
+    /// 01-hardware §9; at priority 0: everything waits for it).
+    pub const LINE_US: u32 = 175;
+    /// The synth's per-piece working set, lines (`hot.toml` `synth-render`
+    /// with its `fits_with`, 31 of the 32): thread mode's code evicts one of
+    /// them with every line it loads.
+    pub const WORKING_LINES: u32 = 31;
+    /// Of them the render's own (`synth-render`): loaded again inside the
+    /// next piece, where the governor measures them as paging; the others
+    /// (the wake-up's polls, the per-piece code) before it, not measured.
+    pub const RENDER_LINES: u32 = 18;
+    /// Thread-mode jobs a [`Setup`] holds.
+    pub const JOBS: usize = 8;
+
+    /// Work thread mode does over and over while the synth plays (a task
+    /// woken by its timer): every `period_us` (0: none) it takes
+    /// `work_us`, and the first time it runs in a slot of thread mode
+    /// (after the render ran) it loads `lines` code-cache lines that the
+    /// synth's working set uses ([`LINE_US`] each, thread mode's time),
+    /// which the render then loads again (the real-time executor's).
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct Job {
+        pub period_us: u32,
+        pub work_us: u32,
+        pub lines: u32,
+    }
 
     /// The loop's setting.
     #[derive(Clone, Copy, Debug)]
@@ -814,17 +903,34 @@ pub mod sim {
         pub first_hz: Option<u32>,
         /// Thread mode's work, % of real time (arriving evenly; served in
         /// the rests and the waits for the ring). 0: thread mode always
-        /// has work (every rest is thread mode's whole).
+        /// has work (every rest is thread mode's whole). Not with
+        /// [`Setup::jobs`].
         pub thread_pct: u32,
         /// A rest ends once thread mode has done its work and sleeps
         /// (`orpheus_power::pace::rest_over`, the firmware since
         /// 2026-11-26); else it lasts [`REST_US`] whatever thread mode does.
         pub rest_ends_idle: bool,
+        /// Thread mode as jobs and the code-cache lines they share with
+        /// the synth (2026-11-26): used when any has a period, in place of
+        /// [`Setup::thread_pct`].
+        pub jobs: [Job; JOBS],
+        /// The lines every slot of thread mode loads whatever it runs (the
+        /// main executor's loop), of the synth's working set.
+        pub slot_lines: u32,
+        /// Of the lines a slot of thread mode evicts, the share (%) that
+        /// are the render's own ([`RENDER_LINES`] of [`WORKING_LINES`] if
+        /// thread mode's code fell anywhere): loaded inside the next piece,
+        /// measured as its paging; the rest before it, not measured.
+        pub render_share_pct: u32,
+        /// The governor is told the PCM ring's headroom before each plan
+        /// ([`Governor::set_head`], the firmware since 2026-11-26); else it
+        /// budgets as if the ring were always full.
+        pub ring_budget: bool,
     }
 
     impl Setup {
         /// `seconds` at `rate` into the firmware's ring (3,072 frames), the
-        /// clock following the governor.
+        /// clock following the governor, the ring's headroom told.
         #[must_use]
         pub fn new(rate: u32, seconds: u64) -> Self {
             Self {
@@ -836,6 +942,10 @@ pub mod sim {
                 first_hz: None,
                 thread_pct: 0,
                 rest_ends_idle: false,
+                jobs: [Job::default(); JOBS],
+                slot_lines: 0,
+                render_share_pct: RENDER_LINES * 100 / WORKING_LINES,
+                ring_budget: true,
             }
         }
     }
@@ -868,6 +978,9 @@ pub mod sim {
         pub max_busy_us: u32,
         /// Frames the DAC played that the writer had not written.
         pub underrun_frames: u64,
+        /// Times the DAC passed the writer (the player's `underruns`
+        /// counts the PCM halves it fetched stale: about one each).
+        pub underruns: u32,
         /// The last piece whose true cost was over the budget (0: none).
         pub last_over: u32,
         /// Pieces rendered.
@@ -894,11 +1007,22 @@ pub mod sim {
         /// The clock step of the first piece.
         pub first_clock: u8,
         /// The most thread mode's work waited for, µs (with
-        /// [`Setup::thread_pct`]).
+        /// [`Setup::thread_pct`] or [`Setup::jobs`]).
         pub max_backlog_us: u64,
         /// Rests, and the µs they lasted.
         pub rests: u32,
         pub rest_us: u64,
+        /// Rests that thread mode's sleep ended early (`status` `cut=`).
+        pub cut: u32,
+        /// Line loads of thread mode's ([`Setup::jobs`]) and of the
+        /// render's after a slot of thread mode, µs.
+        pub thread_line_us: u64,
+        pub reload_us: u64,
+        /// The least audio queued ahead of the DAC as a piece was planned
+        /// while it ran, µs.
+        pub min_head_us: u32,
+        /// Frames rendered with something shed.
+        pub shed_frames: u64,
     }
 
     /// Thread mode's time, and its work not done yet (µs × 100).
@@ -933,6 +1057,89 @@ pub mod sim {
         }
     }
 
+    /// Thread mode's jobs ([`Setup::jobs`]): when each comes due next, its
+    /// work not done (µs) and since when it waits, whether it ran in this
+    /// slot, and the synth's lines this slot loaded.
+    #[derive(Default)]
+    struct Jobs {
+        next: [u64; JOBS],
+        work: [u64; JOBS],
+        due: [u64; JOBS],
+        ran: [bool; JOBS],
+        slot: bool,
+        lines: u32,
+    }
+
+    impl Jobs {
+        /// The work that came due by `t`: one run of a job at a time (a
+        /// task waits for its next timer after it ran; a run it missed
+        /// while the render held the CPU is not made up twice).
+        fn arrive(&mut self, s: &Setup, t: u64) {
+            for (j, job) in s.jobs.iter().enumerate() {
+                if job.period_us == 0 {
+                    continue;
+                }
+                while self.next[j] <= t {
+                    if self.work[j] == 0 {
+                        self.due[j] = self.next[j];
+                        self.work[j] = u64::from(job.work_us.max(1));
+                    }
+                    self.next[j] += u64::from(job.period_us);
+                }
+            }
+        }
+
+        /// Thread mode runs from `t` for at most `max` µs (`idle_ends`: it
+        /// stops once nothing is pending). The µs it ran, and whether it
+        /// left nothing pending.
+        fn run(&mut self, s: &Setup, r: &mut Report, t: u64, max: u64, idle_ends: bool) -> (u64, bool) {
+            let mut used = 0u64;
+            if !self.slot {
+                self.slot = true;
+                self.lines += s.slot_lines;
+                used += u64::from(s.slot_lines * LINE_US);
+                r.thread_line_us += u64::from(s.slot_lines * LINE_US);
+            }
+            while used < max {
+                self.arrive(s, t + used);
+                // The executor runs the tasks in the order they were woken.
+                let Some(j) = (0..JOBS).filter(|&j| self.work[j] > 0).min_by_key(|&j| self.due[j]) else {
+                    if idle_ends {
+                        break;
+                    }
+                    // Asleep until the next job comes due (or the end).
+                    let next = (0..JOBS).filter(|&j| s.jobs[j].period_us > 0).map(|j| self.next[j]).min();
+                    used = next.map_or(max, |n| n.saturating_sub(t).max(used + 1));
+                    continue;
+                };
+                if !self.ran[j] {
+                    self.ran[j] = true;
+                    self.lines += s.jobs[j].lines;
+                    used += u64::from(s.jobs[j].lines * LINE_US);
+                    r.thread_line_us += u64::from(s.jobs[j].lines * LINE_US);
+                }
+                r.max_backlog_us = r.max_backlog_us.max((t + used).saturating_sub(self.due[j]));
+                let w = self.work[j].min(max.saturating_sub(used));
+                self.work[j] -= w;
+                used += w;
+                if self.work[j] > 0 {
+                    break;
+                }
+            }
+            (used.min(max), self.work.iter().all(|&w| w == 0))
+        }
+
+        /// The render runs again: the lines thread mode loaded since it
+        /// last ran, of the synth's working set.
+        fn reload(&mut self) -> u32 {
+            let n = self.lines.min(WORKING_LINES);
+            self.lines = 0;
+            self.slot = false;
+            self.ran = [false; JOBS];
+            n
+        }
+    }
+
     /// The firmware's render loop as `s` sets it: `estimate()` is the
     /// engine's estimate now, `render(plan)` renders the piece the plan
     /// asks for and returns its true cost. Before a piece that would end
@@ -940,7 +1147,10 @@ pub mod sim {
     /// long as one), the loop rests [`REST_US`] if the ring covers it
     /// (`orpheus_power::pace::rest_first`, as the firmware); a full ring
     /// waits. The governor's clock applies before the piece (unless
-    /// pinned; [`Setup::left`] for a clock the last file left).
+    /// pinned; [`Setup::left`] for a clock the last file left). With
+    /// [`Setup::jobs`], thread mode runs its jobs in the rests and the
+    /// waits, and the render loads the lines they evicted after each.
+    #[allow(clippy::too_many_lines)]
     pub fn run(
         gov: &mut Governor,
         s: &Setup,
@@ -948,10 +1158,15 @@ pub mod sim {
         mut render: impl FnMut(&Plan) -> Cost,
     ) -> Report {
         let rate = u64::from(s.rate.max(1));
-        let mut r = Report { min_thread_pct: 100, ..Report::default() };
-        let pct = u64::from(s.thread_pct.min(90));
+        let mut r = Report { min_thread_pct: 100, min_head_us: u32::MAX, ..Report::default() };
+        let jobs_on = s.jobs.iter().any(|j| j.period_us > 0);
+        let pct = if jobs_on { 0 } else { u64::from(s.thread_pct.min(90)) };
         let mut c = Clock { t: 0, win_start: 0, win_thread: 0, pct, backlog: 0 };
+        let mut jobs = Jobs::default();
         let (mut written, mut busy, mut start, mut deferred) = (0u64, 0u64, None::<u64>, 0u32);
+        // Line loads of the render's own lines after a slot, µs: in the
+        // next piece.
+        let mut inside = 0u64;
         let played = |t: u64, start: Option<u64>| start.map_or(0, |s| (t - s) * rate / 1_000_000);
         let hz_of = |step: u8| CLOCKS_MHZ[usize::from(step).min(2)] * 1_000_000;
         // The clock the CPU runs at for the step asked: at once (the
@@ -967,14 +1182,41 @@ pub mod sim {
                 _ => asked,
             }
         };
+        // After a slot of thread mode: the lines it evicted, loaded again
+        // (the render's inside the next piece, measured; the others now).
+        let reload = |jobs: &mut Jobs, c: &mut Clock, r: &mut Report, busy: &mut u64, inside: &mut u64| {
+            let us = u64::from(jobs.reload() * LINE_US);
+            let own = us * u64::from(s.render_share_pct.min(100)) / 100;
+            r.reload_us += us;
+            *inside += own;
+            c.advance(r, us - own, false);
+            *busy += us - own;
+        };
         while written < s.frames {
             let room = played(c.t, start) + u64::from(s.ring);
             if written >= room {
                 let dt = (written - room + 1) * 1_000_000 / rate + 1;
+                if jobs_on {
+                    jobs.run(s, &mut r, c.t, dt, false);
+                }
                 c.advance(&mut r, dt, true);
                 if dt >= u64::from(REST_US) {
                     (busy, deferred) = (0, 0);
                 }
+                if jobs_on {
+                    reload(&mut jobs, &mut c, &mut r, &mut busy, &mut inside);
+                }
+            }
+            let head = |t: u64| match start {
+                None => u32::MAX,
+                Some(_) => (written.saturating_sub(played(t, start)) * 1_000_000 / rate) as u32,
+            };
+            let h0 = head(c.t);
+            if start.is_some() {
+                r.min_head_us = r.min_head_us.min(h0);
+            }
+            if s.ring_budget {
+                gov.set_head(h0);
             }
             gov.set_clock(cpu(gov.clock(), c.t, r.pieces == 0), s.rate);
             let e = estimate();
@@ -989,6 +1231,9 @@ pub mod sim {
             {
                 r.shed_below_top += u64::from(plan.frames);
             }
+            if gov.level() != Level::Full {
+                r.shed_frames += u64::from(plan.frames);
+            }
             let cost = render(&plan);
             if cost.stall_us > 0 {
                 c.advance(&mut r, u64::from(cost.stall_us), false);
@@ -996,10 +1241,6 @@ pub mod sim {
             }
             // The pace rule, before a piece that would end past the run,
             // if the ring covers the rest (`pace::rest_first`).
-            let head = |t: u64| match start {
-                None => u32::MAX,
-                Some(_) => (written.saturating_sub(played(t, start)) * 1_000_000 / rate) as u32,
-            };
             let h = head(c.t);
             let len = (u64::from(plan.frames) * 1_000_000 / rate) as u32;
             let d0 = deferred;
@@ -1012,20 +1253,35 @@ pub mod sim {
                 }
                 // Thread mode's sleep ends the rest: its work (and what
                 // arrives meanwhile) done, and the probe.
-                let len = if s.rest_ends_idle && pct > 0 {
+                let len = if jobs_on {
+                    let (used, idle) = jobs.run(s, &mut r, c.t, u64::from(REST_US), s.rest_ends_idle);
+                    if s.rest_ends_idle && idle {
+                        (used as u32 + pace::IDLE_PROBE_US).min(REST_US)
+                    } else {
+                        REST_US
+                    }
+                } else if s.rest_ends_idle && pct > 0 {
                     pace::rest_len((c.backlog / (100 - pct)).min(u64::from(u32::MAX)) as u32)
                 } else {
                     REST_US
                 };
+                if len < REST_US {
+                    r.cut += 1;
+                }
                 c.advance(&mut r, u64::from(len), true);
                 r.rests += 1;
                 r.rest_us += u64::from(len);
                 busy = 0;
+                if jobs_on {
+                    reload(&mut jobs, &mut c, &mut r, &mut busy, &mut inside);
+                }
             }
-            let cycles = u64::from(cost.per_frame) * u64::from(plan.frames) + u64::from(cost.paging);
+            let paging = u64::from(cost.paging) + core::mem::take(&mut inside) * u64::from(gov.mhz());
+            let cycles = u64::from(cost.per_frame) * u64::from(plan.frames) + paging;
             let dt = cycles.div_ceil(u64::from(gov.mhz()));
             let after = estimate().total();
-            gov.measured(&e, after, plan.frames, cycles.min(u64::from(u32::MAX)) as u32, cost.paging);
+            let paging = paging.min(u64::from(u32::MAX)) as u32;
+            gov.measured(&e, after, plan.frames, cycles.min(u64::from(u32::MAX)) as u32, paging);
             r.pieces += 1;
             r.max_piece_us = r.max_piece_us.max(dt as u32);
             r.max_ratio_pct = r.max_ratio_pct.max(gov.ratio_pct());
@@ -1041,6 +1297,7 @@ pub mod sim {
             let now = played(c.t, start);
             if start.is_some() && now > written {
                 r.underrun_frames += now - written;
+                r.underruns += 1;
                 written = now;
             }
             written += u64::from(plan.frames);
@@ -1622,6 +1879,9 @@ mod tests {
         let mut s = sim::Setup::new(RATE, 30);
         s.thread_pct = thread_pct;
         s.rest_ends_idle = rest_ends_idle;
+        // The rest rule alone: the budget as before the ring's headroom
+        // counted (which on its own sheds this model clean, 2026-11-26).
+        s.ring_budget = false;
         let fed = FX_CHORUS | FX_REVERB;
         let state = core::cell::Cell::new((FX_ALL, want));
         let e_of = |(fx, n): (u8, u32)| Estimate { wanted: fed, ..est(&vec![per; n as usize], fed & fx) };
@@ -1673,6 +1933,56 @@ mod tests {
         // More real-time work besides the render: still none.
         let (new, _) = heavy(true, 20, 10, 20);
         assert_eq!(new.underrun_frames, 0, "{new:?}");
+    }
+
+    /// The budget follows the PCM ring: whole from `HEAD_FULL_US` up (and
+    /// with the DAC stopped), `LOW_PCT` at `HEAD_LOW_US` and below, linear
+    /// between. A cost that fits the whole budget is left alone with a full
+    /// ring; with the ring short the governor raises the clock first (D-4),
+    /// at the top sheds, and brings nothing back nor the clock down until
+    /// the ring has recovered.
+    #[test]
+    fn the_budget_follows_the_ring() {
+        assert_eq!(budget_pct(u32::MAX), BUDGET_PCT);
+        assert_eq!(budget_pct(HEAD_FULL_US), BUDGET_PCT);
+        assert_eq!(budget_pct(HEAD_LOW_US), LOW_PCT);
+        assert_eq!(budget_pct(0), LOW_PCT);
+        let mid = budget_pct(u32::midpoint(HEAD_FULL_US, HEAD_LOW_US));
+        assert_eq!(mid, u32::midpoint(BUDGET_PCT, LOW_PCT));
+        assert!((HEAD_LOW_US..HEAD_FULL_US).all(|h| budget_pct(h) <= budget_pct(h + 1)));
+        // 6 voices with the reverb: 245 + 1,680 + 671 = 2,596, 60 % of
+        // Turbo, 40 % of Max; 29 % of Max without the reverb.
+        let e = est(&[280; 6], FX_REVERB);
+        let max = CLOCKS_MHZ[usize::from(TOP)] * 1_000_000;
+        let mut g = Governor::new(16, HZ, RATE);
+        g.plan(&e);
+        g.set_clock(max, RATE);
+        assert_eq!((g.clock(), g.level()), (TOP, Level::Full), "raised, nothing shed");
+        for _ in 0..100 {
+            g.plan(&e);
+        }
+        assert_eq!(g.level(), Level::Full, "40 % fits 55 %");
+        g.set_head(HEAD_LOW_US);
+        g.plan(&e);
+        assert_eq!(g.level(), Level::Reverb, "40 % over 30 %: shed at Max");
+        for _ in 0..20 * RATE / BLOCK {
+            g.plan(&e);
+        }
+        // (The fixed estimate still says the reverb runs: the voices are
+        // limited too.)
+        assert!(g.level() >= Level::Reverb, "nothing back while the ring is short");
+        g.set_head(u32::MAX);
+        for _ in 0..20 * RATE / BLOCK {
+            g.plan(&e);
+        }
+        assert_eq!((g.level(), g.clock()), (Level::Full, TOP), "back once it recovered");
+        // Below the top a short ring raises the clock, sheds nothing: 2
+        // voices and the reverb (1,476) fit 55 % of High, not 30 % of it
+        // nor of Turbo.
+        let mut g = Governor::new(16, HZ, RATE);
+        g.set_head(HEAD_LOW_US);
+        let p = g.plan(&est(&[280; 2], FX_REVERB));
+        assert_eq!((p.clock, g.level()), (TOP, Level::Full));
     }
 
     /// A song that fits renders at full quality with no rest and no

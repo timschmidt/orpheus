@@ -26,8 +26,10 @@
 //! [`plan_piece`]) to Turbo or Max when a song needs it (D-4; not in
 //! Battery saver) before anything is shed, and let down again when the
 //! music allows. The governor predicts each piece from the measured costs
-//! and keeps the render under 55 % of real time (then chorus, delay,
-//! reverb, voices shed at Max), and bounds the piece to 4 ms; it measures
+//! and keeps the render under 55 % of real time — less while the PCM ring
+//! runs short, down to 30 % with 12 ms queued (`load::budget_pct`) — (then
+//! chorus, delay, reverb, voices shed at Max), and bounds the piece to
+//! 4 ms; it measures
 //! the render's compute apart from the pager's line loads, not in the
 //! first 250 ms after an open or a seek, and ends a song only when nothing
 //! can play (2026-11-26: the first piece pinned its ratio and every song
@@ -367,13 +369,16 @@ async fn run_steps(
 
 /// Before a piece: the load governor's plan (with `synth gov off`: every
 /// effect and voice, the piece still bounded in time) applied to the
-/// player, and the estimate it came from (`orpheus_synth::load`).
+/// player, and the estimate it came from (`orpheus_synth::load`). `head`:
+/// the audio queued ahead of the DAC, µs ([`head_us`]): the budget comes
+/// down while the ring runs short (`orpheus_synth::load::budget_pct`).
 #[inline(never)]
-fn plan_piece(st: &mut MidiState, gov_on: bool, max: u8) -> (Plan, Estimate) {
+fn plan_piece(st: &mut MidiState, gov_on: bool, max: u8, head: u32) -> (Plan, Estimate) {
     // (The floor is re-applied by the outer loop, not here: its code is
     // not the per-piece code's, `hot.toml` `synth-inner`.)
     let step = st.gov.clock();
     st.gov.set_clock(atj2157_hal::clock::current().hz(), RATE_HZ);
+    st.gov.set_head(head);
     let e = st.player.engine().estimate(&load::PLAYER);
     let plan = if gov_on {
         let p = st.gov.plan(&e);
@@ -398,10 +403,11 @@ fn plan_piece(st: &mut MidiState, gov_on: bool, max: u8) -> (Plan, Estimate) {
 }
 
 /// The pace rule (`orpheus_power::pace::rest_first`) before a piece of
-/// `frames` predicted to take `us`: one that would end more than `RUN_US`
-/// after the last rest (or a wait for the PCM ring as long, `rested`)
-/// rests `REST_US` first — if the ring holds the rest, the piece and a
-/// margin; else the piece renders first (`deferred`: render put off so
+/// `frames` predicted to take `us`, with `head` µs of audio queued
+/// ([`head_us`]): one that would end more than `RUN_US` after the last rest
+/// (or a wait for the PCM ring as long, `rested`) rests `REST_US` first —
+/// if the ring holds the rest, the piece and a margin; else the piece
+/// renders first (`deferred`: render put off so
 /// far, at most one piece's worth, and only while the render keeps up).
 /// The render runs on the real-time executor: without the rests a song
 /// the CPU cannot keep up with starved thread mode and the watchdog reset
@@ -411,22 +417,26 @@ fn plan_piece(st: &mut MidiState, gov_on: bool, max: u8) -> (Plan, Estimate) {
 /// `orpheus_power::pace::rest_over`): a rest that idled the CPU left the
 /// render a third of real time less than it could have, and the ring ran
 /// dry at a load of 25–40 % (20 underruns in 107 s, the same day).
-async fn pace_rest(rested: &mut u64, deferred: &mut u32, us: u32, frames: u32, out: &mut PcmOut) {
+async fn pace_rest(rested: &mut u64, deferred: &mut u32, us: u32, frames: u32, head: u32) {
     let busy = (time::now_us() - *rested).min(u64::from(u32::MAX)) as u32;
     if busy.saturating_add(us) < pace::RUN_US {
         return;
     }
-    // Frames → µs in 32 bits (the ring holds 3,072 frames; `i32::MAX`:
-    // the DAC is not running).
-    let head = match out.headroom() {
-        i32::MAX => u32::MAX,
-        h => h.clamp(0, 4096) as u32 * 1_000_000 / RATE_HZ,
-    };
     if pace::rest_first(busy, us, frames * 1_000_000 / RATE_HZ, head, deferred) {
         let t0 = super::now32();
         RestUntil(time::now_us() + u64::from(pace::REST_US)).await;
         note_as(UB_DECODER, D_SYN + SynthOp::Rest as u8, t0);
         *rested = time::now_us();
+    }
+}
+
+/// The audio queued ahead of the DAC, µs, as a piece is planned (frames →
+/// µs in 32 bits: the ring holds 3,072 frames; `u32::MAX`: the DAC is not
+/// running).
+fn head_us(out: &mut PcmOut) -> u32 {
+    match out.headroom() {
+        i32::MAX => u32::MAX,
+        h => h.clamp(0, 4096) as u32 * 1_000_000 / RATE_HZ,
     }
 }
 
@@ -562,8 +572,9 @@ async fn pieces(
     let (mut done, mut deferred) = (0u32, 0u32);
     loop {
         mark(31);
-        let (plan, e) = plan_piece(st, gov_on, max);
-        super::Apart(pace_rest(rested, &mut deferred, plan.us, plan.frames.min(BLOCK as u32), out)).await;
+        let head = head_us(out);
+        let (plan, e) = plan_piece(st, gov_on, max, head);
+        super::Apart(pace_rest(rested, &mut deferred, plan.us, plan.frames.min(BLOCK as u32), head)).await;
         let want = (plan.frames as usize).clamp(1, BLOCK);
         // Fewer frames when the parser needs file bytes first.
         let (n, dt, pg) = match render_piece(st, b, want) {

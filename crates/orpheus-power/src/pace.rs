@@ -25,8 +25,10 @@ pub fn due(now_us: u32, last_us: u32) -> bool {
 
 /// What the PCM ring must hold, beyond the rest and the piece after it,
 /// for a playback rest to start (µs): the outer loop's part or a card read
-/// that may come first.
-pub const MARGIN_US: u32 = 2_000;
+/// that may come first, the rest's late end and the code-cache lines the
+/// render loads again after it (2026-11-26, the player: `late=` up to
+/// 1.8 ms, ≈ 2 ms of reloads; was 2 ms, `ub=synth:rest:5ms`).
+pub const MARGIN_US: u32 = 4_000;
 /// How much render a playback rest may be put off for while the ring is
 /// short (µs): one render piece (`orpheus_synth::load::PIECE_US`).
 pub const DEFER_US: u32 = 4_000;

@@ -137,16 +137,9 @@ impl Driver for TimeDriver {
         critical_section::with(|cs| self.now_cs(cs))
     }
 
-    // Inlined into its callers (`embassy_time::Timer`'s poll,
-    // `wake::wake_at`): out of line it would be resident by its name.
     #[inline(always)]
     fn schedule_wake(&self, at: u64, waker: &Waker) {
-        critical_section::with(|cs| {
-            let changed = self.queue.borrow(cs).borrow_mut().schedule_wake(at, waker);
-            if changed {
-                self.rearm(cs);
-            }
-        });
+        schedule_wake(at, waker);
     }
 }
 
@@ -156,11 +149,24 @@ pub fn now_us() -> u64 {
     DRIVER.now()
 }
 
-/// [`Driver::schedule_wake`] for [`crate::wake::wake_at`] (inlined there:
-/// an out-of-line copy here would be resident, `atj2157_hal::time::*`).
-#[inline(always)]
+/// Wake `waker` at `at_us` ([`Driver::schedule_wake`], `embassy_time`'s
+/// timers, [`crate::wake`]). Out of line, so resident by its name
+/// (`atj2157_hal::time::*`, ≈ 60 B): inlined, its critical section, the
+/// queue's borrow and the rearm were ≈ 70 B at every caller — the
+/// `Ticker`'s and `Timer`'s polls, the synth's rest, the main loop's probe
+/// — on code-cache lines the synth's per-piece code and the key tick
+/// share (SYN-3, 2026-11-26). `try_borrow_mut`: inside the critical
+/// section nothing else holds the queue; no panic path in the resident
+/// image.
+#[inline(never)]
 pub(crate) fn schedule_wake(at_us: u64, waker: &Waker) {
-    DRIVER.schedule_wake(at_us, waker);
+    critical_section::with(|cs| {
+        let changed =
+            DRIVER.queue.borrow(cs).try_borrow_mut().is_ok_and(|mut q| q.schedule_wake(at_us, waker));
+        if changed {
+            DRIVER.rearm(cs);
+        }
+    });
 }
 
 /// Alarm interrupts taken so far.

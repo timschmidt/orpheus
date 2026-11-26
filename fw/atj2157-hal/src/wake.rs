@@ -30,10 +30,12 @@ use core::task::{RawWakerVTable, Waker};
 use orpheus_power::pace;
 
 /// The resting task's waker (data, vtable; null: no rest) and the rest's
-/// end (low 32 bits of µs: a stale entry stops being probed then).
+/// end (low 32 bits of µs: a stale entry stops being probed then; and the
+/// high 32 bits, for the probe's time without a 64-bit clock read).
 static REST_TASK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static REST_VT: AtomicPtr<RawWakerVTable> = AtomicPtr::new(core::ptr::null_mut());
 static REST_END: AtomicU32 = AtomicU32::new(0);
+static REST_END_HI: AtomicU32 = AtomicU32::new(0);
 /// Thread mode is asleep (set right before its WFE, cleared after).
 static ASLEEP: AtomicBool = AtomicBool::new(false);
 /// Rests ended, of them ended early (thread mode asleep), and the latest a
@@ -69,6 +71,7 @@ pub fn rest_until(at_us: u64, waker: &Waker) -> bool {
         // before it can end early.
         ASLEEP.store(false, Relaxed);
         REST_END.store(at_us as u32, Relaxed);
+        REST_END_HI.store((at_us >> 32) as u32, Relaxed);
         REST_VT.store(core::ptr::from_ref(waker.vtable()).cast_mut(), Relaxed);
         REST_TASK.store(me, Relaxed);
     }
@@ -78,26 +81,32 @@ pub fn rest_until(at_us: u64, waker: &Waker) -> bool {
 
 /// The main executor is about to sleep: mark it asleep and, during a rest,
 /// have the resting task look again [`pace::IDLE_PROBE_US`] from now.
-/// Inlined into the main executor's loop: on the code-cache lines every
-/// thread-mode slot runs anyway, not on a line of its own that the synth's
-/// per-piece code would load again after each rest.
+/// Inlined into the main executor's loop: on the code-cache line every
+/// thread-mode slot runs anyway (`hot.toml` `synth-block`), not on a line of
+/// its own that the synth's per-piece code would load again after each
+/// rest. Small for that line: the probe's time is the rest's end less what
+/// is left of it, from the low 32 bits of the clock (no critical section).
 #[inline(always)]
 pub fn thread_sleeps() {
     ASLEEP.store(true, Relaxed);
     let task = REST_TASK.load(Relaxed);
-    let vt = REST_VT.load(Relaxed);
-    if task.is_null() || vt.is_null() {
+    if task.is_null() {
         return;
     }
-    let now = crate::time::now_us();
-    if !pace::probe_due(now as u32, REST_END.load(Relaxed)) {
+    let end = REST_END.load(Relaxed);
+    let now = crate::time::now_us_raw();
+    if !pace::probe_due(now, end) {
         return;
     }
-    // SAFETY: `task` and `vt` are the data and vtable of a waker that
-    // `rest_until` was given: an executor task's (static, never freed),
-    // whose clone and drop do nothing. The copy is never dropped.
-    let w = core::mem::ManuallyDrop::new(unsafe { Waker::new(task, &*vt) });
-    crate::time::schedule_wake(now + u64::from(pace::IDLE_PROBE_US), &w);
+    // (`probe_due`: under 2^31 µs left.)
+    let end64 = u64::from(REST_END_HI.load(Relaxed)) << 32 | u64::from(end);
+    let at = end64 - u64::from(end.wrapping_sub(now)) + u64::from(pace::IDLE_PROBE_US);
+    // SAFETY: `task` and the vtable are the data and vtable of a waker
+    // that `rest_until` was given (the vtable stored before the task, and
+    // never cleared): an executor task's (static, never freed), whose
+    // clone and drop do nothing. The copy is never dropped.
+    let w = core::mem::ManuallyDrop::new(unsafe { Waker::new(task, &*REST_VT.load(Relaxed)) });
+    crate::time::schedule_wake(at, &w);
 }
 
 /// The main executor woke up.

@@ -1788,7 +1788,102 @@ which 20 % is the main executor asleep (`MainExecutor::run`'s WFE).
   first, `pieces`' poll and `plan_piece`), so every thread-mode slot
   costs the render about two line loads (≈ 0.35 ms; ≈ 80–100 slots a
   second while a heavy song plays): a loop of its own clustered onto line
-  18 with the key tick would save ≈ 3 % of real time.
+  18 with the key tick would save ≈ 3 % of real time (done: below).
+
+**As built (SYN-3: thread mode's line loads, a budget that follows the
+ring, 2026-11-26).** The lead's run of build `b694ac61` (Automatic, the
+cable in, the test look on, `playdir` of the three demo songs): underruns
+"Etude" 18, "Hill Song" 3, "Sound tour" 9, labelled
+`ub=synth:render:8–11ms` and `ub=synth:rest:5ms`; `cut=` ≈ 50 % of
+`rests=`, `late=` 1.1–1.8 ms, `pg=` 4–11 %, `load=` 24–46 % at 288 MHz,
+"Etude" and "Hill Song" shed at Max (`lvl=3/3`, `vlim` 6–10). Host model
+and firmware build; nothing run on the player.
+
+* **Cause.** The synth's per-piece working set (`synth-render`,
+  `synth-inner`, `play-pcm`: 31 lines) and the wake-up entry (line 18)
+  take the whole 32-line code cache. Every line thread mode loads in a
+  rest evicts one of them, and the render loads it again after the rest:
+  2 × 175 µs per line, the second half on the real-time executor. The
+  governor sees only the reloads inside the render (`pg=`): the UI's and
+  the USB task's polls are on lines 10–0 (`layout.json`), the per-piece
+  and wake-up code, so most reloads happen before the render and count
+  nowhere. With thread mode busy through half the rests (`cut=`), the
+  real-time executor's two thirds of real time less those reloads fell
+  under the render plus its per-piece work at a `load=` the budget
+  allowed. The `late=` of 1.1–1.8 ms is the same thing at a rest's end:
+  the wake-up path's lines, evicted, loaded on the way back.
+* **Model** (`orpheus_synth::load::sim`: `Job`, `Setup::{jobs,
+  slot_lines, render_share_pct, ring_budget}`, `Report::{underruns, cut,
+  reload_us, thread_line_us, min_head_us, shed_frames}`;
+  `orpheus-midi/tests/governor.rs` `play`: the demo songs themselves, a
+  piece's true cost the engine through it × 0.78, 2 lines a piece, 8 more
+  when notes start, 6 % per piece and 1.5 ms per outer part of other
+  real-time work). Thread mode as jobs with the lines of the synth's set
+  they load: key tick 10 ms (0 lines: line 18), USB supervisor 20 ms
+  (5 lines), UI tick 33 ms (2.2 ms, 9 lines: what makes `cut=` ≈ 50 %),
+  step sampler 40 ms (0.95 ms, 4 lines), the 1 s tasks (10 lines), the
+  main loop 2 lines a slot. Today's code: "Etude" 41, "Hill Song" 0,
+  "Sound tour" 41 underruns, `cut=` 53–55 %, load 25–39 %, `pg=` 14–15 %
+  (the player's order; a UI tick of 2.1 ms gives 12/0/30). Each change
+  alone and together:
+
+  | | Etude | Hill Song | Sound tour | ring min | reloads |
+  |---|---|---|---|---|---|
+  | today | 41 | 0 | 41 | 4.4 ms | 240 ms/s |
+  | budget follows the ring | 0 | 0 | 0 | 17.7 ms | 240 ms/s |
+  | + main loop, USB timer | 0 | 0 | 0 | 52 ms | 140 ms/s |
+
+  With more thread mode than the player showed (a UI tick of 3–4 ms over
+  12–14 lines, 10 % other real-time work, a 3 ms outer part, or the USB
+  task as the heavy job), today's code underruns 53–804 times a song and
+  the three changes still none; the main loop and the USB timer alone
+  are not enough there, the ring's budget alone is (one underrun in the
+  heaviest case) but sheds "Sound tour" for 65–83 % of its frames, all
+  three 9–37 %. Candidate 4 (a larger rest margin) changes little on
+  its own: the short rests were forced by a ring already short.
+* **The budget follows the ring** (`load::budget_pct`,
+  `Governor::set_head`, firmware `head_us` before `plan_piece`): the
+  whole 55 % with ≥ 30 ms of audio queued (a render that keeps up never
+  has less than one PCM half, 34.8 ms), down to 30 % at ≤ 12 ms, linear
+  between. Below Max it raises the clock (D-4), at Max it sheds; nothing
+  comes back and the clock does not come down while the ring is short.
+  The share is computed once a plan (`Governor::bpct`): 24 B more in
+  `synth-inner` than a constant.
+* **The main executor's loop** (`atj2157_hal::executor::main_loop`, out
+  of `MainExecutor::run`, `hot.toml` `synth-block` after the key tick):
+  on line 18 with the key tick and `play_midi`'s entry and jump table
+  (ends at +998 of 1,024), no longer on lines 9–10. To fit: the sleep
+  timed on the counter's low word (`now_us_raw`, no critical section),
+  its counters written only there (no compare-and-swap loop), the
+  probe's time from the rest's end less what is left of it
+  (`REST_END_HI`, no 64-bit clock read), the key edges sent out of line
+  (`send_keys`), and the time driver's `schedule_wake` out of line
+  (resident by `atj2157_hal::time::*`, `try_borrow_mut`: no panic site),
+  which also shrank the `Ticker`'s poll on line 18 (200 → 134 B) and
+  `rest_until` (340 → 274 B). `main_loop` 206 B.
+* **The USB supervisor** (`usbdev::supervisor`) no longer wakes the USB
+  task every 20 ms: a reboot or an update's read-back is set by the
+  developer channel inside `UsbDevice::run`'s poll in the same task, and
+  the `select` polls the supervisor right after it (`asked()`, no
+  waker); every 20 ms only while an update reads back
+  (`update::usb_busy`), else once a second as a backstop.
+* **Rest margin** (`pace::MARGIN_US`) 2 → 4 ms: the measured `late=`
+  (1.8 ms) and the reloads after a rest (≈ 2 ms).
+* **Numbers** (thumbv7em): resident 81,812 → 81,876 B (`size` 81,875;
+  the out-of-line `schedule_wake`), .bss 124,288 → 124,296 B, code pages
+  125/128, `synth-inner` 8,102 → 8,150 B (8 lines), `synth-block` 5,782 →
+  5,926 B (6 lines), stack margin 5,212 B; `stack --check`
+  `synth-render` 18 of 18, with its `fits_with` 32 of 32 (was 31).
+* **Open.** The wake-up path still crosses per-piece lines: `play_midi`'s
+  poll resumes `pieces` from a block on line 22 (`Feeder::run`'s line in
+  `play-pcm`), and `player_request`'s poll (in no synth cluster) is on
+  line 24, `render_i16`'s first: about four line loads a wake-up, ≈ 7 %
+  of real time at 100 wake-ups a second, not in the model's figures
+  above. No room on line 18 for either; a layout that frees a line (the
+  synth's working set is 32 of 32) is the next lever. The UI's tick on
+  Now Playing (33 ms) is the model's largest thread-mode job; a slower
+  tick while a synth source plays was not done (it changes the screen's
+  behaviour; the model does not need it).
 
 ## 10. Work packages
 

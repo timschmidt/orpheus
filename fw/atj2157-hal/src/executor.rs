@@ -65,22 +65,38 @@ impl MainExecutor {
 
     pub fn run(&'static mut self, init: impl FnOnce(Spawner)) -> ! {
         init(self.inner.spawner());
-        loop {
-            // SAFETY: polled only from this thread-mode loop.
-            unsafe { self.inner.poll() };
-            POLLS.fetch_add(1, Ordering::Relaxed);
-            crate::wdt::feed_if_allowed();
-            // During a synth rest, thread mode's sleep ends it early
-            // (`wake`: the resting task looks again shortly).
-            crate::wake::thread_sleeps();
-            let t0 = crate::time::now_us();
-            // Not `cortex_m::asm::wfe` (`nomem`): the asleep mark's stores
-            // before and after must stay on their side of the sleep.
-            // SAFETY: WFE only waits for an event; no memory or stack effect.
-            unsafe { core::arch::asm!("wfe", options(nostack, preserves_flags)) };
-            crate::wake::thread_woke();
-            let dt = crate::time::now_us().wrapping_sub(t0);
-            IDLE_US.fetch_add(dt as u32, Ordering::Relaxed);
-        }
+        main_loop(&self.inner)
+    }
+}
+
+/// The main executor's loop: poll, feed the watchdog, sleep. A function of
+/// its own, not generic and not inlined into [`MainExecutor::run`], so that
+/// `hot.toml` can place it (`synth-block`: on the code-cache line of the
+/// key scan's tick and the synth's wake-up entry). Inside `run` it sat on
+/// physical lines 9–10, the render's last and the per-piece code's first:
+/// every slot of thread mode while a MIDI file played loaded two lines and
+/// the render loaded them again (SYN-3, 2026-11-26). Small to share that
+/// line (1 KiB) with the tick and the wake-up's entry: the sleep timed on
+/// the low 32 bits of the µs counter (no critical section; a sleep is far
+/// shorter than its 71-minute wrap), the counters written only here (a
+/// plain read-modify-write, not a compare-and-swap loop).
+#[inline(never)]
+fn main_loop(inner: &'static raw::Executor) -> ! {
+    loop {
+        // SAFETY: polled only from this thread-mode loop.
+        unsafe { inner.poll() };
+        POLLS.store(POLLS.load(Ordering::Relaxed).wrapping_add(1), Ordering::Relaxed);
+        crate::wdt::feed_if_allowed();
+        // During a synth rest, thread mode's sleep ends it early
+        // (`wake`: the resting task looks again shortly).
+        crate::wake::thread_sleeps();
+        let t0 = crate::time::now_us_raw();
+        // Not `cortex_m::asm::wfe` (`nomem`): the asleep mark's stores
+        // before and after must stay on their side of the sleep.
+        // SAFETY: WFE only waits for an event; no memory or stack effect.
+        unsafe { core::arch::asm!("wfe", options(nostack, preserves_flags)) };
+        crate::wake::thread_woke();
+        let dt = crate::time::now_us_raw().wrapping_sub(t0);
+        IDLE_US.store(IDLE_US.load(Ordering::Relaxed).wrapping_add(dt), Ordering::Relaxed);
     }
 }

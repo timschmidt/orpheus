@@ -350,3 +350,228 @@ fn regress_synth_ratio_pinned_by_cold_start() {
         assert!(r.limit_x10 * 100 >= exact.limit_x10 * 90, "{name}: {} vs {}", r.limit_x10, exact.limit_x10);
     }
 }
+
+// ---------------------------------------------------------------- the loop
+
+use orpheus_synth::load::sim::{self, Job, LINE_US};
+
+/// The real-time executor's work beside the render while a MIDI file
+/// plays (2026-11-26, the player) and how a piece pays for its notes.
+#[derive(Clone, Copy, Debug)]
+struct Rt {
+    /// The render's true compute, % of the table (the player's `ratio=`).
+    true_pct: u32,
+    /// Lines a steady piece loads (the render's own paging).
+    piece_lines: u32,
+    /// Lines a piece in which notes start loads (the note path,
+    /// `synth-note`, and the render lines it evicts).
+    note_lines: u32,
+    /// The rest of the real-time executor's work per piece (the PCM
+    /// writer, the plan and the measurement), % of the piece's audio.
+    stall_pct: u32,
+    /// The outer part every 4,096 frames, µs.
+    outer_us: u32,
+}
+
+/// A demo song through the firmware's loop (`orpheus_synth::load::sim`)
+/// with thread mode as `s` sets it.
+fn play(data: &[u8], kar: bool, s: &sim::Setup, rt: Rt) -> (sim::Report, Governor) {
+    let mut p = Box::new(MidiPlayer::new(Options::new(s.rate)));
+    p.open_from(&mut SliceSource::new(data), kar).unwrap();
+    let mut setup = *s;
+    setup.frames = p.duration();
+    let src = core::cell::RefCell::new(SliceSource::new(data));
+    let p = core::cell::RefCell::new(p);
+    let mut g = Governor::new(16, 144_000_000, s.rate);
+    let frames = core::cell::Cell::new(0u64);
+    let stamp = core::cell::Cell::new(0u64);
+    let r = sim::run(
+        &mut g,
+        &setup,
+        || p.borrow().engine().estimate(&PLAYER),
+        |plan| {
+            let mut p = p.borrow_mut();
+            p.set_fx_enabled(plan.fx);
+            p.set_voice_limit(usize::from(plan.limit));
+            if let Some(k) = plan.keep {
+                p.shed(usize::from(k));
+            }
+            let mut out = [0i16; 64];
+            let (mut n, mut cyc, mut notes) = (0u64, 0u64, false);
+            while n < u64::from(plan.frames) {
+                let want = (u64::from(plan.frames) - n).min(32) as usize;
+                let got = p.render_from(&mut *src.borrow_mut(), &mut out[..2 * want]).unwrap_or(0);
+                if got == 0 {
+                    break;
+                }
+                cyc += u64::from(p.engine().estimate(&PLAYER).total()) * got as u64;
+                let top = p.engine().voices().map(|v| v.stamp).max().unwrap_or(0);
+                if top > stamp.get() {
+                    stamp.set(top);
+                    notes = true;
+                }
+                n += got as u64;
+            }
+            let per_frame = (cyc * u64::from(rt.true_pct) / 100 / n.max(1)) as u32;
+            let mhz = CLOCKS_MHZ[usize::from(plan.clock).min(2)];
+            let lines = rt.piece_lines + if notes { rt.note_lines } else { 0 };
+            let len_us = u32::try_from(n * 1_000_000 / u64::from(s.rate)).unwrap_or(0);
+            let f0 = frames.get();
+            frames.set(f0 + n);
+            let outer = if (f0 + n) / 4096 != f0 / 4096 { rt.outer_us } else { 0 };
+            sim::Cost {
+                per_frame: if n == 0 { 0 } else { per_frame },
+                paging: lines * LINE_US * mhz,
+                stall_us: len_us * rt.stall_pct / 100 + outer,
+            }
+        },
+    );
+    (r, g)
+}
+
+/// The real-time side as the player measured it (2026-11-26, build
+/// `b694ac61`): the render's compute 78 % of the table (`ratio=` 76–82),
+/// 2 line loads a steady piece (the emulated working set, 2.3), 8 more
+/// in a piece in which notes start (the note path, `synth-note`, and the
+/// render lines it evicts: pieces of 8–11 ms, `ub=synth:render:8–11ms`),
+/// 6 % of each piece's audio for the PCM writer, the plan and the
+/// measurement, 1.5 ms for the outer part every 4,096 frames.
+const PLAYER_RT: Rt = Rt { true_pct: 78, piece_lines: 2, note_lines: 8, stall_pct: 6, outer_us: 1_500 };
+
+/// What the firmware does about thread mode's line loads.
+#[derive(Clone, Copy)]
+struct Fixes {
+    /// The main executor's loop off the synth's lines (`hot.toml`
+    /// `synth-block`; before: lines 9–10, two a slot).
+    main_loop: bool,
+    /// The USB supervisor without its 20 ms timer.
+    usb: bool,
+    /// The budget follows the PCM ring (`Governor::set_head`).
+    ring: bool,
+}
+
+const TODAY: Fixes = Fixes { main_loop: false, usb: false, ring: false };
+const ALL: Fixes = Fixes { main_loop: true, usb: true, ring: true };
+
+/// Thread mode while the demo songs play on the player (Automatic, the
+/// cable in, the test look on, Now Playing), as jobs with the code-cache
+/// lines of the synth's working set they load (`layout.json`, build
+/// `b694ac61`): the key tick (10 ms, on the wake-up entry's line since
+/// `82b61a1e`: none), the USB supervisor (20 ms: the device, the bus, the
+/// timer's and its own polls, 5 lines), the UI's tick (`ui_us`, `ui_lines`
+/// every 33 ms), the step sampler (40 ms, 0.95 ms of I2C, `steps-sample`
+/// on 4 render lines), the once-a-second tasks (10 lines). The UI's and
+/// the USB task's polls are on lines 10–0, the per-piece and wake-up code:
+/// 30 % of the lines thread mode evicts are the render's own (measured in
+/// the next piece, `pg=`). The UI's share is what the player's `cut=`
+/// (≈ 50 % of `rests=`) leaves: ≈ 2.2 ms and 9 lines a tick.
+fn thread(f: Fixes, ui_us: u32, ui_lines: u32) -> sim::Setup {
+    let mut s = sim::Setup::new(44_100, 0);
+    s.rest_ends_idle = true;
+    s.ring_budget = f.ring;
+    s.slot_lines = if f.main_loop { 0 } else { 2 };
+    s.render_share_pct = 30;
+    s.jobs[0] = Job { period_us: 10_000, work_us: 40, lines: 0 };
+    let usb_period = if f.usb { 1_000_000 } else { 20_000 };
+    s.jobs[1] = Job { period_us: usb_period, work_us: 80, lines: 5 };
+    s.jobs[2] = Job { period_us: 33_000, work_us: ui_us, lines: ui_lines };
+    s.jobs[3] = Job { period_us: 40_000, work_us: 950, lines: 4 };
+    s.jobs[4] = Job { period_us: 1_000_000, work_us: 800, lines: 10 };
+    s
+}
+
+/// Each demo song through the loop: (name, report, the governor after).
+fn songs(s: &sim::Setup, rt: Rt) -> Vec<(&'static str, sim::Report, Governor)> {
+    orpheus_midi::demo::SONGS
+        .into_iter()
+        .map(|(name, song)| {
+            let (r, g) = play(&demo(song), name.ends_with(".kar"), s, rt);
+            println!(
+                "{name}: underruns {} rests {} cut {} % min head {} µs reload {} ms shed {} % lim {} pg {} % load {} %",
+                r.underruns,
+                r.rests,
+                r.cut * 100 / r.rests.max(1),
+                r.min_head_us,
+                r.reload_us / 1000,
+                r.shed_frames * 100 / r.written.max(1),
+                g.limit(),
+                g.paging() * 100 / g.rt().max(1),
+                g.load() * 100 / g.rt().max(1),
+            );
+            (name, r, g)
+        })
+        .collect()
+}
+
+/// Regression (2026-11-26, the player, build `b694ac61`, Automatic, the
+/// cable in, the test look on, `playdir /.orpheus/test/suite/midi`):
+/// underruns in every demo song — "Etude" 18, "Hill Song" 3, "Sound
+/// tour" 9 — labelled `ub=synth:render:8–11ms` and `ub=synth:rest:5ms`,
+/// at a governor load of only 24–46 % at 288 MHz, with `cut=` ≈ 50 % of
+/// `rests=`. Thread mode's code shares the code cache with the synth's
+/// whole working set: every line it loads in a rest the render loads
+/// again after it, the governor sees only the share inside the render
+/// (`pg=` 4–11 %), and with thread mode busy through half the rests the
+/// real-time executor fell behind at a render load the budget allowed.
+/// Model (thread mode as the player's `cut=` shows it, its jobs and lines
+/// from `layout.json`): the code of that day underruns in "Etude"; with
+/// the same overheads a budget that follows the PCM ring
+/// (`orpheus_synth::load::budget_pct`) plays all three songs without
+/// one; with the main loop off the synth's lines and the USB supervisor's
+/// 20 ms timer gone as well, without one and with no more shed than the
+/// budget alone sheds, the ring never under 20 ms.
+#[test]
+fn regress_synth_underruns_at_low_load() {
+    let today = songs(&thread(TODAY, 2_200, 9), PLAYER_RT);
+    let (_, etude, _) = &today[0];
+    assert!(etude.underruns >= 10, "the code of 2026-11-26: {etude:?}");
+    assert!((40..=70).contains(&(etude.cut * 100 / etude.rests)), "cut= as on the player: {etude:?}");
+    let ring_only = Fixes { main_loop: false, usb: false, ring: true };
+    let ring = songs(&thread(ring_only, 2_200, 9), PLAYER_RT);
+    let all = songs(&thread(ALL, 2_200, 9), PLAYER_RT);
+    for ((name, r, _), (_, a, _)) in ring.iter().zip(&all) {
+        assert_eq!((r.underruns, r.stopped), (0, false), "{name}, the ring's budget: {r:?}");
+        assert_eq!((a.underruns, a.stopped), (0, false), "{name}, everything: {a:?}");
+        assert!(a.min_head_us >= 20_000, "{name}: {a:?}");
+        assert!(
+            a.shed_frames <= r.shed_frames + r.written / 50,
+            "{name}: {} > {}",
+            a.shed_frames,
+            r.shed_frames
+        );
+        assert!(a.reload_us < r.reload_us, "{name}");
+    }
+}
+
+/// The fixes hold with more of thread mode than the player showed: a UI
+/// tick of 3–4 ms over 12–14 lines, more real-time work per piece and in
+/// the outer part, or the USB task as the heavy job (2 ms, 10 lines every
+/// 20 ms, the UI light). The code of 2026-11-26 underruns in every case;
+/// with the fixes nothing does, and "Sound tour" keeps most of its
+/// frames unshed.
+#[test]
+fn demo_songs_play_through_more_thread_mode() {
+    let heavy_rt = Rt { stall_pct: 10, outer_us: 3_000, ..PLAYER_RT };
+    let usb_heavy = |f: Fixes| {
+        let mut s = thread(f, 800, 6);
+        if !f.usb {
+            s.jobs[1] = Job { period_us: 20_000, work_us: 2_000, lines: 10 };
+        }
+        s
+    };
+    for (label, old, new, rt) in [
+        ("UI 4 ms", thread(TODAY, 4_000, 12), thread(ALL, 4_000, 12), PLAYER_RT),
+        ("UI 3 ms, RT 10 %", thread(TODAY, 3_000, 14), thread(ALL, 3_000, 14), heavy_rt),
+        ("USB", usb_heavy(TODAY), usb_heavy(ALL), Rt { stall_pct: 8, ..PLAYER_RT }),
+    ] {
+        println!("{label}");
+        let before = songs(&old, rt);
+        assert!(before.iter().any(|(_, r, _)| r.underruns > 10), "{label}: the code of 2026-11-26");
+        for (name, r, _) in songs(&new, rt) {
+            assert_eq!((r.underruns, r.stopped), (0, false), "{label}, {name}: {r:?}");
+            if name.starts_with("Sound") {
+                assert!(r.shed_frames * 100 / r.written < 50, "{label}, {name}: {r:?}");
+            }
+        }
+    }
+}

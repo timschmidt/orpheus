@@ -80,9 +80,21 @@ async fn input() {
             }
         }
         let (ev, n) = deb.feed(keys::decode(s));
-        for e in &ev[..n] {
-            let _ = KEYS.try_send((e.key, e.down));
+        if n > 0 {
+            send_keys(&ev[..n]);
         }
+    }
+}
+
+/// Key edges to the UI. Out of the key tick's poll: the tick runs 100
+/// times a second and shares its code-cache line with the main executor's
+/// loop and the synth's wake-up entry (`hot.toml` `synth-block`); an edge
+/// is rare.
+#[cold]
+#[inline(never)]
+fn send_keys(ev: &[orpheus_input::Edge]) {
+    for e in ev {
+        let _ = KEYS.try_send((e.key, e.down));
     }
 }
 

@@ -611,6 +611,13 @@ symbols = [
 # of real time of the render's paging (`pg=`) that the cache model
 # missed. On line 18 they share a code line with the wake-up's entry; an
 # MP3 stream pays one line (`mp3-frame`'s 18) where it paid four.
+#
+# After the tick, on the same line, the main executor's loop
+# (`atj2157_hal::executor::main_loop`): every slot of thread mode runs it
+# (a rest, a wait for the ring), and inside `MainExecutor::run` it was on
+# lines 9–10 (`render_i16`'s last, `synth-inner`'s first): two line loads
+# a slot in thread mode and two in the render after it (SYN-3,
+# 2026-11-26).
 [[cluster]]
 name = "synth-block"
 bins = ["firmware"]
@@ -618,6 +625,7 @@ symbols = [
     "embassy_executor::raw::TaskStorage<firmware::__input_task::*>::poll",
     "<core::future::poll_fn::PollFn<<embassy_time::timer::Ticker>::next::*>::poll",
     "_embassy_time_now",
+    "atj2157_hal::executor::main_loop",
     "firmware::audio::Apart<firmware::audio::synth::play_midi::*>::poll",
 ]
 

@@ -800,6 +800,24 @@ mod tests {
         }
     }
 
+    /// Regression (2026-11-26, the player, build `b694ac61`: "Etude" 18
+    /// underruns at a render load of 24–46 %): the main executor's loop
+    /// was inlined into `MainExecutor::run`, on physical lines 9–10 (the
+    /// render's last and the per-piece code's first), so every slot of
+    /// thread mode while a MIDI file played loaded two lines and the
+    /// render loaded them again. Now its own function, packed after the
+    /// key tick at the head of `synth-block` (the line the synth's wake-up
+    /// entry is on), before `play_midi`'s poll.
+    #[test]
+    fn regress_main_loop_on_the_render_lines() {
+        let hot = rules::load_hot(&root().join("hot.toml"), "firmware").unwrap();
+        let b = hot.iter().find(|c| c.name == "synth-block").unwrap();
+        let at = |p: &str| b.symbols.iter().position(|s| s.contains(p));
+        let (tick, main, midi) = (at("__input_task"), at("executor::main_loop"), at("synth::play_midi"));
+        assert!(tick.is_some() && main.is_some() && midi.is_some(), "{:?}", b.symbols);
+        assert!(tick < main && main < midi, "{:?}", b.symbols);
+    }
+
     /// AU-PERF games pieces (2026-11-25): a games card step while an MP3
     /// played (`serve: games 53 ms while playing pl=223 r=3 w=0`, 40 ms
     /// pl=170, 37 ms pl=156) loaded 156–223 code lines for 1–3 card

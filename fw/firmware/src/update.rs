@@ -643,8 +643,19 @@ fn with_usb(f: impl FnOnce(&mut Installer) -> Result<(), Error>) -> bool {
 /// Bytes read back per [`poll`] (in 256-byte pieces).
 const POLL_BYTES: usize = 16 * 1024;
 
+/// A USB update is committed and its read-back or switch not done: [`poll`]
+/// has work (the USB supervisor then runs it every 20 ms). In the USB task.
+pub fn usb_busy() -> bool {
+    if OWNER.load(Ordering::Acquire) != USB || !USB_COMMIT.load(Ordering::Acquire) {
+        return false;
+    }
+    // SAFETY: the USB task owns the installer; this runs in it.
+    unsafe { (*(&raw const INST)).as_ref() }
+        .is_some_and(|i| matches!(i.phase(), Phase::Verifying | Phase::Commit))
+}
+
 /// Drive a USB update's read-back and switch (the USB supervisor, every
-/// 20 ms).
+/// 20 ms while [`usb_busy`]).
 pub fn poll() {
     if OWNER.load(Ordering::Acquire) != USB {
         return;

@@ -51,10 +51,11 @@ entry = "*MainExecutor>::run*"
 # `main` never returns from `run`: its frame stays below.
 under = ["main"]
 indirect = [
-    # `MainExecutor::run`: the raw executor's poll (inlined) calls each
-    # task's poll through its header. The main executor's tasks
+    # The main executor's loop (`atj2157_hal::executor::main_loop`, out of
+    # `MainExecutor::run` since SYN-3): the raw executor's poll (inlined)
+    # calls each task's poll through its header. The main executor's tasks
     # (firmware/src/main.rs).
-    { callers = ["*MainExecutor>::run*"], targets = [
+    { callers = ["atj2157_hal::executor::main_loop"], targets = [
         "*TaskStorage<firmware::__input_task::*>::poll",
         "*TaskStorage<firmware::__power_task::*>::poll",
         "*TaskStorage<firmware::ui::*>::poll",
@@ -148,9 +149,11 @@ callers = [
     # The synth's rests wake through the driver's queue directly (SYN-3).
     "atj2157_hal::wake::rest_until",
     # Thread mode's sleep during a rest has the resting task woken early
-    # (`wake::thread_sleeps`, inlined into the main executor's loop).
-    "*MainExecutor>::run*",
-    "<embassy_time_queue_utils::Queue>::schedule_wake",
+    # (`wake::thread_sleeps`, inlined into the main executor's loop, which
+    # calls the time driver's `schedule_wake`: out of line since SYN-3,
+    # with the queue's own `schedule_wake` inlined into it).
+    "atj2157_hal::executor::main_loop",
+    "atj2157_hal::time::schedule_wake",
     "<embassy_sync::*",
     "<core::future::poll_fn::PollFn<<embassy_sync::*",
     "<core::future::poll_fn::PollFn<<embassy_time::*",

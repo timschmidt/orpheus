@@ -486,9 +486,32 @@ fn boot_status_reply() {
     });
 }
 
+/// A reboot or a USB update's read-back and switch, asked for by the
+/// developer channel: the requests that set them run in this task, inside
+/// `UsbDevice::run`'s poll, and the `select` it shares with [`supervisor`]
+/// polls the supervisor right after it, so the supervisor sees them in the
+/// same poll without a waker of its own.
+fn asked() -> bool {
+    REBOOT.load(Ordering::Acquire) != 0xFFFF || crate::update::usb_busy()
+}
+
 pub async fn supervisor() {
     loop {
-        Timer::after_millis(20).await;
+        // Every 20 ms only while a USB update reads back (16 KiB a time);
+        // otherwise at a request (`asked`, seen in the poll that took it)
+        // or once a second. The 20 ms timer woke the USB task 50 times a
+        // second whatever happened: each wake polled the device, the bus,
+        // the timers and this, five or six code-cache lines the synth's
+        // per-piece code needs, ≈ 10 % of real time in line loads while a
+        // MIDI file played (SYN-3, 2026-11-26).
+        if crate::update::usb_busy() {
+            Timer::after_millis(20).await;
+        } else {
+            let req = core::future::poll_fn(|_| {
+                if asked() { core::task::Poll::Ready(()) } else { core::task::Poll::Pending }
+            });
+            embassy_futures::select::select(req, Timer::after_millis(1000)).await;
+        }
         // A firmware update over the channel: read-back and slot switch.
         crate::update::poll();
         let r = REBOOT.swap(0xFFFF, Ordering::AcqRel);
