@@ -346,6 +346,42 @@ fn marks_pause_limit_and_card_full() {
     assert_eq!(stopped, Some(StopReason::CardFull));
 }
 
+/// VER-13: Recording › Auto-split (0x0807; `split_ms` from its minutes):
+/// with a split time the session asks to end the file there (the app
+/// starts the next one); without, the same recording runs on.
+#[test]
+fn split_ends_the_file_at_the_split_time() {
+    let run = |split_ms: Option<u64>| {
+        let cfg = Config {
+            params: params(8_000, 1, Format::Wav, 0),
+            chain: ChainConfig::default(),
+            limit_ms: None,
+            split_ms,
+            ring_bytes: 16 * 1024,
+            chunk: 4096,
+            max_wait_ms: 500,
+        };
+        let mut s = Session::new(cfg, 1 << 30, 0, vec![0i16; BUF_SAMPLES], vec![0u8; MAX_BLOCK_BYTES]);
+        let mut ring = vec![0u8; 16 * 1024];
+        let mut sink = |at: usize, b: &[u8]| ring[at..at + b.len()].copy_from_slice(b);
+        s.begin(0, &mut sink);
+        let mut adc = FakeAdc::new(8_000, 1, Signal::Noise(1000), 1);
+        let mut b = [0i16; 160];
+        let mut t = 0;
+        while s.due_stop().is_none() && t < 5_000 {
+            adc.fill(&mut b);
+            s.feed(&mut b, t, &mut sink);
+            while s.next_write(t).is_some() {
+                s.written(true, t);
+            }
+            t += 20;
+        }
+        (s.due_stop(), s.elapsed_ms())
+    };
+    assert_eq!(run(Some(2_000)), (Some(StopReason::Split), 2_000));
+    assert_eq!(run(None), (None, 5_000));
+}
+
 #[test]
 fn write_errors_stop_the_recording() {
     let mut rig = Rig::new(params(16_000, 1, Format::Wav, 0), ChainConfig::default(), 32 * 1024);

@@ -1198,6 +1198,7 @@ dependencies = [
  "orpheus-ui",
  "orpheus-update",
  "orpheus-usb",
+ "toml",
 ]
 
 [[package]]

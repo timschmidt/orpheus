@@ -1115,3 +1115,273 @@ mod tests {
         assert_eq!(lang_code("ru"), i16::from_be_bytes(*b"ru"));
     }
 }
+
+/// VER-13 (07 §5.12): persistence, defaults, out-of-range values and
+/// stores from an older firmware, for every setting of each kind (toggle,
+/// choice, range, language, Home-screen mask, packed fields and words).
+/// "Reboot" is the firmware's path: the cache's dirty records (what it
+/// writes to the `orpheus-settings` store, whose own tests cover the NOR
+/// side and power loss) loaded into a fresh cache.
+#[cfg(test)]
+mod persistence {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    /// The settings of a kind (`packed`: the fields kept in a word and the
+    /// words themselves).
+    fn of(kind: &str) -> Vec<&'static Setting> {
+        let words: Vec<SettingId> = all().filter_map(|s| s.pack.map(|p| p.0)).collect();
+        let v: Vec<&'static Setting> = all()
+            .filter(|s| match (kind, s.kind) {
+                ("packed", _) => s.pack.is_some() || words.contains(&s.id),
+                (_, Kind::Action(_) | Kind::Info(_)) => false,
+                _ if words.contains(&s.id) => false,
+                ("toggle", Kind::Toggle) | ("choice", Kind::Choice(_)) | ("range", Kind::Range { .. }) => {
+                    true
+                }
+                ("language", Kind::Language) | ("homeapps", Kind::HomeApps) => true,
+                _ => false,
+            })
+            .collect();
+        assert!(!v.is_empty(), "no {kind} setting");
+        v
+    }
+
+    /// Those with a value other than the default (Wallpaper has one).
+    fn changeable(kind: &str) -> Vec<&'static Setting> {
+        of(kind).into_iter().filter(|s| other(s) != s.default).collect()
+    }
+
+    /// A valid value other than the default.
+    fn other(s: &Setting) -> i16 {
+        match s.kind {
+            Kind::Toggle => 1 - s.default,
+            Kind::Choice(c) => (s.default + 1) % i16::try_from(c.len()).unwrap(),
+            Kind::Range { min, max, step, .. } => {
+                if s.default <= max - step {
+                    s.default + step
+                } else {
+                    min
+                }
+            }
+            Kind::Language => lang_code("ru"),
+            Kind::HomeApps => s.default & !1,
+            Kind::Action(_) | Kind::Info(_) => s.default,
+        }
+    }
+
+    /// Values a store can hold that the setting cannot take.
+    fn invalid(s: &Setting) -> Vec<i16> {
+        match s.kind {
+            Kind::Toggle => std::vec![2, -1, i16::MAX],
+            Kind::Choice(c) => std::vec![i16::try_from(c.len()).unwrap(), -1, i16::MAX],
+            Kind::Range { min, max, step, .. } => {
+                let mut v = std::vec![];
+                if min > i16::MIN {
+                    v.push(min - 1);
+                }
+                if max < i16::MAX {
+                    v.push(max + 1);
+                }
+                if step > 1 {
+                    v.push(min + 1);
+                }
+                v
+            }
+            Kind::HomeApps => std::vec![-1, (1i32 << crate::App::COUNT) as i16],
+            _ => std::vec![],
+        }
+    }
+
+    /// Set to another value, written and read back after a reboot; the
+    /// other settings keep their defaults.
+    fn persist(kind: &str) {
+        for s in changeable(kind) {
+            let mut c = SettingsCache::new();
+            let v = other(s);
+            assert!(c.set(s.id, v), "{:#06x} set", s.id.0);
+            let w: Vec<_> = c.take_dirty().collect();
+            assert_eq!(w.len(), 1, "{:#06x}: one record written", s.id.0);
+            let mut after = SettingsCache::new();
+            for (k, b) in &w {
+                after.load(*k, b);
+            }
+            assert_eq!(after.get(s.id), v, "{:#06x} after a reboot", s.id.0);
+            for t in all().filter(|t| t.stored() && t.id != s.id && Some(t.id) != s.pack.map(|p| p.0)) {
+                assert_eq!(after.get(t.id), t.default, "{:#06x} untouched by {:#06x}", t.id.0, s.id.0);
+            }
+        }
+    }
+
+    /// A fresh store gives the default; a factory reset brings it back
+    /// and writes it.
+    fn default(kind: &str) {
+        for s in of(kind) {
+            let mut c = SettingsCache::new();
+            assert_eq!(c.get(s.id), s.default, "{:#06x}", s.id.0);
+            c.set(s.id, other(s));
+            c.reset();
+            assert_eq!(c.get(s.id), s.default, "{:#06x} after a factory reset", s.id.0);
+            let key = s.pack.map_or(s.id, |p| p.0);
+            assert!(c.take_dirty().any(|(k, _)| k == key.0), "{:#06x}: the reset is written", s.id.0);
+        }
+    }
+
+    /// An out-of-range stored value (or one set) gives the default (the
+    /// cache validates; it does not clamp to the nearest end, so a damaged
+    /// record never yields an extreme).
+    fn clamp(kind: &str) {
+        for s in of(kind) {
+            for bad in invalid(s) {
+                let mut c = SettingsCache::new();
+                if s.pack.is_none() {
+                    c.load(s.id.0, &encode(bad));
+                    assert_eq!(c.get(s.id), s.default, "{:#06x} loaded {bad}", s.id.0);
+                }
+                c.set(s.id, other(s));
+                c.set(s.id, bad);
+                assert_eq!(c.get(s.id), s.default, "{:#06x} set {bad}", s.id.0);
+            }
+        }
+    }
+
+    /// A store written by an older firmware: records this one does not
+    /// know are skipped, a record of another length is the default, and
+    /// a setting the old store lacks is the default; the known records
+    /// still load.
+    fn migrate(kind: &str) {
+        for s in changeable(kind) {
+            let key = s.pack.map_or(s.id, |p| p.0);
+            let mut old = SettingsCache::new();
+            old.set(s.id, other(s));
+            let rec: Vec<_> = old.take_dirty().collect();
+            let mut c = SettingsCache::new();
+            // Keys of no setting (removed items, the old key ranges).
+            for k in [0x0000u16, 0x00FF, 0x0110, 0x0D2F, 0x0EFF, 0x1001, 0xFFFF] {
+                assert!(def(SettingId(k)).is_none());
+                c.load(k, &encode(1));
+            }
+            for (k, b) in &rec {
+                c.load(*k, b);
+            }
+            assert_eq!(c.get(s.id), other(s), "{:#06x} beside unknown keys", s.id.0);
+            for bytes in [&[1u8][..], &[1, 0, 0, 0], &[]] {
+                let mut c = SettingsCache::new();
+                c.load(key.0, bytes);
+                assert_eq!(c.get(s.id), s.default, "{:#06x}: a {}-byte record", s.id.0, bytes.len());
+            }
+            assert_eq!(SettingsCache::new().get(s.id), s.default, "{:#06x} missing from the store", s.id.0);
+        }
+    }
+
+    #[test]
+    fn persist_toggle() {
+        persist("toggle");
+    }
+    #[test]
+    fn persist_choice() {
+        persist("choice");
+    }
+    #[test]
+    fn persist_range() {
+        persist("range");
+    }
+    #[test]
+    fn persist_language() {
+        persist("language");
+    }
+    #[test]
+    fn persist_homeapps() {
+        persist("homeapps");
+    }
+    #[cfg(any(feature = "salvo", feature = "bricks", feature = "books"))]
+    #[test]
+    fn persist_packed() {
+        persist("packed");
+    }
+    #[test]
+    fn default_toggle() {
+        default("toggle");
+    }
+    #[test]
+    fn default_choice() {
+        default("choice");
+    }
+    #[test]
+    fn default_range() {
+        default("range");
+    }
+    #[test]
+    fn default_language() {
+        default("language");
+    }
+    #[test]
+    fn default_homeapps() {
+        default("homeapps");
+    }
+    #[cfg(any(feature = "salvo", feature = "bricks", feature = "books"))]
+    #[test]
+    fn default_packed() {
+        default("packed");
+    }
+    #[test]
+    fn clamp_toggle() {
+        clamp("toggle");
+    }
+    #[test]
+    fn clamp_choice() {
+        clamp("choice");
+    }
+    #[test]
+    fn clamp_range() {
+        clamp("range");
+    }
+    /// Every two-letter code is a valid language value (a code without a
+    /// pack shows English: the `Lang` lookup), so there is nothing to
+    /// clamp; a record of another length still gives the default.
+    #[test]
+    fn clamp_language() {
+        for s in of("language") {
+            let mut c = SettingsCache::new();
+            c.load(s.id.0, &encode(lang_code("xx")));
+            assert_eq!(c.get(s.id), lang_code("xx"));
+            c.load(s.id.0, &[7]);
+            assert_eq!(c.get(s.id), s.default);
+        }
+    }
+    #[test]
+    fn clamp_homeapps() {
+        clamp("homeapps");
+    }
+    #[cfg(any(feature = "salvo", feature = "bricks", feature = "books"))]
+    #[test]
+    fn clamp_packed() {
+        clamp("packed");
+    }
+    #[test]
+    fn migrate_toggle() {
+        migrate("toggle");
+    }
+    #[test]
+    fn migrate_choice() {
+        migrate("choice");
+    }
+    #[test]
+    fn migrate_range() {
+        migrate("range");
+    }
+    #[test]
+    fn migrate_language() {
+        migrate("language");
+    }
+    #[test]
+    fn migrate_homeapps() {
+        migrate("homeapps");
+    }
+    #[cfg(any(feature = "salvo", feature = "bricks", feature = "books"))]
+    #[test]
+    fn migrate_packed() {
+        migrate("packed");
+    }
+}

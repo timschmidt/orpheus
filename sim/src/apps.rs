@@ -1237,6 +1237,19 @@ impl PlayerService for HostServices {
     }
     fn command(&mut self, c: PlayerCmd) {
         let repeat = self.settings.get(id::REPEAT);
+        // As the firmware (`Fw::command`): a queue made from a folder or
+        // a library list is shuffled when Settings › Playback › Shuffle
+        // is on (VER-13 found the simulator ignoring it).
+        let on = self.settings.get(id::SHUFFLE) != 0;
+        let c = match c {
+            PlayerCmd::PlayDir { dir, start, shuffle } => {
+                PlayerCmd::PlayDir { dir, start, shuffle: shuffle || on }
+            }
+            PlayerCmd::PlayLib { list, start, shuffle } => {
+                PlayerCmd::PlayLib { list, start, shuffle: shuffle || on }
+            }
+            c => c,
+        };
         self.media.command(c, repeat);
     }
 }

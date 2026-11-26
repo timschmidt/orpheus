@@ -1336,12 +1336,63 @@ matrix, measured like code coverage.
   verification report. A new setting lands with its manifest entry and
   tests in the same commit (CLAUDE.md).
 
+**As built (VER-13, 2026-11-25).**
+
+* `cargo xtask settings-matrix [--check] [--strict] [--manifest PATH]`
+  (alias `cargo xtask settings coverage`; `xtask/src/settings_matrix.rs`)
+  takes the settings from the code (`orpheus_apps::settings::all()` with
+  `games`, `salvo`, `bricks` and `books` on: every item with a value,
+  packed fields and their storage words; actions and information rows
+  have none), parses the manifest as TOML (unknown fields refused) and
+  checks: one entry per setting and none for a setting the tree lacks;
+  scope, values (all choices, both ends of a range), the code's default,
+  contexts, oracle and tests; every context declared in `[contexts]` (or
+  an `@group` of `[groups]`); a global setting accounts for every context
+  (affected, `unaffected`, or `na` with a reason); every context, affected
+  or unaffected, covered by a named test or device check (`cover`) or
+  listed in `uncovered` with the reason; at least one covered unaffected
+  context; every test resolves to a `#[test]` fn of that module path in
+  that file that is not `#[ignore]`d; every `suite:<journey>` exists; and
+  `[kinds]` names persistence, default, out-of-range and old-store tests
+  for each kind the tree has. It prints the table and the counts by scope
+  (global, local, storage; device). `--check` fails on any error (part of
+  `xtask test all`, so of the gate); `--strict` also fails on a reviewed
+  exclusion (`gap`: a setting with no effect to show; `uncovered`: a
+  declared context without a test) and is a step of `xtask gate --m11`.
+* **The simulator matrix** (`sim/tests/settings_matrix.rs`, one test per
+  setting, 7 s for all) reads the manifest: every non-default value against
+  the default (`set:KEY=…` before the journey) in each of 59 screen
+  contexts (`@screens`: the frame) and 10 service contexts (`@services`:
+  the queue and its end, the tuner's register writes, the recorded file,
+  the keyboard reports, the USB personality requested, the Bluetooth
+  module, steps counted, an alarm ringing, the sleep timer, the volume
+  reached). The observation must differ exactly where `contexts` says and
+  nowhere else; a journey that ends elsewhere (another app on Home,
+  another file in a sorted folder) is an effect too. Effects that need a
+  second setting, time or a file have dedicated tests named in `cover`
+  (custom EQ bands with their preset, input gain with manual gain, the
+  four alarms' time/days/on, the games' score-table variants after a
+  finished game, list roll-around).
+* **Host contexts**: the sound (`sim/web` `Sound::from_settings` over the
+  real `orpheus-dsp` chain: each Sound setting changes the rendered
+  output, no other setting reaches the chain), the governor
+  (`orpheus-power`), the step detector (`orpheus-steps`), the recorder's
+  split (`orpheus-rec`).
+* **Player**: `device = true` entries; `checks` name suite journeys that
+  change a setting only through the RAM-only test session (the journey
+  stops unless `settings test-session` answers "on", and sets the value
+  back): `settings_shuffle` (status `shuf=` follows 0x0201). Effects the
+  player alone shows and no read-only command reports yet (the applied
+  Sound, the clock level, the ADC gain, auto-off, the step task, the
+  library's code page) are `uncovered` with that reason.
+
 ## 6. Milestone gate (run before declaring any work package done)
 
 ```
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
-xtask test all                 # host unit, golden, codecs, fuzz-smoke
+xtask test all                 # host unit, golden, codecs, fuzz-smoke,
+                               # settings-matrix --check (VER-13, §5.12)
 xtask brand --check            # palette contrast, generated brand assets current
 xtask site --check             # site builds; internal links, screenshots, page limits
 xtask build --release          # both layouts once the full layout exists

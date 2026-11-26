@@ -65,9 +65,104 @@ of every session. Newest entries first in §3.
 | SYN-1 | **done (host)**; not in the firmware (SYN-3) | `orpheus-synth`: band-limited oscillators (polyBLEP/BLAMP, sine, wavetables, white/pink noise), 2–4 operator FM (8 algorithms, feedback), ADSR (linear/exponential), pitch envelope, SVF LP/BP/HP, LFOs (Hz or tempo sync), 16 voices + 4 fade-out tails with stealing, mono legato glide, sample-accurate events, 6 drum voices, delay/chorus/reverb sends, soft limiter; 69,040 B engine; golden hashes equal at opt-level 1 and release; player estimate: 16 saw-lead voices ≈ 79 % of 144 MHz (session entry 2026-11-25 "SYN-1") |
 | TTS-1 | **done (host)**; not in the firmware, simulator or apps (TTS-2, A11Y-1, BOOK-3) | `orpheus-tts`: incremental converter (1,408 B, any feed sizes), English normaliser, NRL letter-to-sound rules + stress heuristic + stems, CMUdict exception lexicon (4,487 entries in 32,766 B; `cargo xtask tts-lexicon`), duration model for 0.25×–10×; rules alone 79.8 % of tokens, with the lexicon 98.1 % (session entry 2026-11-25 "TTS-1") |
 | TTS-2 | **done (host)**; not in the firmware, simulator or apps (A11Y-1, BOOK-3, firmware integration) | `orpheus-tts`: cascade/parallel formant synthesiser after Klatt 1980 (KLGLOTT88-like source with polyBLEP, F1–F6 cascade, nasal pole/zero, parallel frication/bursts), phoneme targets and loci from the phonetics literature, intonation (declination, accents, 5 contours, asides), voices Neutral/Low/Bright, exact TTS-1 durations at 0.25×–10×, resampler to 8–48 kHz, `Synth` (1,936 B) and `Speaker` (3,352 B with the converter), events and stop; WER (whisper base.en) 13.9 / 30.5 / 93 % at 1/2/4× (espeak-ng 5.9 / 63 / 89 %); player estimate ≈ 22 % of Base at 48 kHz (over the 20 % budget), code ≈ 70 KB without the lexicon (over 64 KiB) (session entry 2026-11-25 "TTS-2") |
+| VER-13 | **tool and matrix done (host + simulator); one device journey (not yet run on the player)** | `cargo xtask settings-matrix [--check] [--strict]` (alias `settings coverage`; in `test all`, `--strict` in `gate --m11`); manifest for all 162 settings of the tree; simulator matrix over 59 screen + 10 service contexts (`sim/tests/settings_matrix.rs`), host tests for sound, governor, steps, recorder split, persistence/defaults/clamping/migration per kind; journey `settings_shuffle` (RAM-only session). 9,365 / 9,412 matrix cells covered; 22 settings have no effect to show (not wired) and 47 contexts are reviewed exclusions (session entry 2026-11-26 "VER-13") |
 | GAME-6 Bricks (M14) | **built (host + simulator + firmware), not yet run on the player** | Brick breaker of our own: integer physics with one-pixel sub-steps (no tunnelling at any speed, no floating point), paddle angles, 1–3-hit and unbreakable bricks, 8 hand-made + generated levels, five power-ups, lives, scores, saves; 7 settings packed into 1 word; 47 goldens; fuzz `bricks_keys`. In the firmware (`orpheus-apps/bricks`): stack margin 4,116 B unchanged. Lead: session entry 2026-11-25 "GAME-6" |
 
 ## 3. Session log
+
+### 2026-11-26 — VER-13: setting → effect coverage, tool and gaps (worker, no hardware)
+
+* **Tool**: `cargo xtask settings-matrix [--check] [--strict] [--manifest
+  PATH]` (07 §5.12 "As built"; alias `settings coverage`). Settings from
+  `orpheus_apps::settings::all()` with every feature (162 with a value:
+  98 of the groups and apps, 58 games' fields and words, 8 reading
+  settings and word); the manifest parsed as TOML with unknown fields
+  refused; entries, values against the kind, the code's default,
+  contexts (declared, `@groups`), global accounting (`na`), `cover` per
+  context, `uncovered`/`gap` as reviewed exclusions, tests resolved to a
+  non-ignored `#[test]` by file and module path, `suite:` journeys,
+  `[kinds]` persistence tests. `--check` in `xtask test all`;
+  `--strict` (no exclusion) in `xtask gate --m11`. Unit tests (source
+  parser, complete manifest, uncovered/absence, global accounting,
+  values/defaults/kinds/checks, gaps) and
+  `regress_settings_matrix_missing_entry_and_dangling_test`.
+* **Before**: 64 of 162 settings had an entry (the games' and Books', all
+  local), none with contexts the tool could check (0 cells; 358 errors:
+  "Games", "GamePause" … undeclared, no `unaffected`, no cover); 98
+  settings (all of Sound, Playback, Display, Power, Date & time,
+  Bluetooth, Radio, Recording, USB, Language, System and the apps' own)
+  had none. **After**: 162 entries, 0 errors; global 31 settings (10 full,
+  8 partial, 13 gap; cells 1,261 / 1,269), local 125 (89 full, 27
+  partial, 9 gap; cells 8,096 / 8,135), storage 6 (full); matrix 9,365 /
+  9,412 cells covered (99.5 %); 69 reviewed exclusions (22 settings
+  without an effect, 47 contexts without a test). 23 settings carry
+  `device = true` (1 fully covered on the player: Shuffle).
+* **Simulator matrix** (`sim/tests/settings_matrix.rs`, reads the
+  manifest; 163 tests, 7 s): each non-default value against the default
+  in 59 screen contexts (frame) and 10 service contexts (`playback` queue
+  and its end, `radio-tuner` register writes, `recording` file,
+  `usb-keyboard` reports, `usb-host` personality, `bt-module`,
+  `steps-counter`, `alarms`, `sleep`, `volume`): different exactly where
+  declared, equal elsewhere. Mutation check: moving Date format's `Lock`
+  context to `Home` fails with "declared context `Home` shows no effect"
+  and "leaks into `Lock`". Dedicated tests: custom EQ bands with their
+  preset, input gain with manual gain, auto-split minutes, the four
+  alarms' time/days/on, the games' score-table variants after a finished
+  Blocks, Solitaire and Salvo game (with a control: ghost, previews,
+  timer leave the list alone).
+* **Host**: `sim/web` sound (each Sound setting and custom band changes
+  the rendered output through `Sound::from_settings` and the real chain;
+  no other setting reaches the chain); `orpheus-power`
+  `performance_setting_values`; `orpheus-steps` `sensitivity_setting_values`;
+  `orpheus-rec` `split_ends_the_file_at_the_split_time`; `orpheus-apps`
+  `persistence::{persist,default,clamp,migrate}_{toggle,choice,range,
+  language,homeapps,packed}` (every setting of each kind: written and read
+  back after a reboot with the others untouched, defaults and factory
+  reset, out-of-range → the default, unknown keys / other record lengths
+  / missing keys of an older store). `orpheus-hid` `FakeHost` keeps a
+  digest of the reports (layout and keypad digits show).
+* **Fixed (simulator)**: a queue made from a folder or the library
+  ignored Settings › Playback › Shuffle (the firmware ORs it in):
+  `regress_sim_queue_follows_the_shuffle_setting`.
+* **Device**: journey `settings_shuffle` (`tests/suite/journeys.toml`,
+  expected frame made through the test): stops unless `settings
+  test-session` answers "on", then 0 → 1 → 0 through `settings test-set
+  0x0201` with `status ~ shuf=N` after each, ends Off (RAM only; the
+  suite's closing reboot restores the stored value). `SimPlayer` answers
+  `settings test-session`, `settings test-set`, `status … shuf=`.
+* **Findings (settings with no effect: `gap`)**: Key click 0x0108, Fade on
+  pause 0x0109, Gapless 0x0203, Resume at start 0x0204, Seek step 0x0205,
+  Speed 0x0206 (shown in Now Playing's menu only), Auto bookmark 0x0207,
+  Brightness 0x0301 (backlight fixed at 12), Backlight timeout 0x0302,
+  Lock delay 0x0303, Wallpaper 0x0306 (one value), Screen saver 0x0307,
+  Animations 0x0308, Rotate 0x0309, Power mode 0x0401, Keys when locked
+  0x0404 (KeyGate fixed to volume keys), UTC offset 0x0505, Correction
+  0x0506, Set from RDS 0x0507, Monitor 0x0808 (not built), Read-only card
+  0x0902, Developer channel 0x0903: the matrix shows each changes only its
+  Settings row. Also: ReplayGain Auto = Album (mapping `2 | 3`); Tag code
+  page has an effect only for Cyrillic (fw library.rs); Output 0x0604 is
+  not read by the firmware; Language leaves the Games list, Books, the
+  reader menu, Solitaire, 4096 and Salvo unchanged (their strings are
+  English in every pack); Files › Sort is not applied to queues made from
+  a folder in the simulator (07 §5.12 asks for it: open question).
+* **Reviewed exclusions (47 contexts)**: the player's own sound path for
+  the 16 Sound settings and bands (no read-only report of the applied
+  Sound or an output CRC yet), the clock level (Performance), the ADC gain
+  (Input gain), auto-off (rule 4; not in a host crate), background step
+  counting, the library's code page, Output; the Games list and pause
+  menu for 4096's and Bricks' variant settings (no scripted finished game)
+  and Salvo's players 3–4 (pairwise with Players).
+* **Gate**: host `cargo fmt --all --check`, `cargo clippy --workspace
+  --all-targets -D warnings`, `cargo clippy -p orpheus-apps --all-targets
+  -D warnings` (no features), `cargo test --workspace` (1,712 passed, 0
+  failed, 11 ignored), `cargo xtask settings-matrix --check`: pass. Firmware: not changed (no
+  fw build steps needed). **Not run**: `xtask test all` beyond these
+  (fuzz smoke, codecs), `brand`/`site --check`, every `xtask dev` step.
+* **Open / lead**: run the suite on the player for `settings_shuffle`
+  (the `shuf=` after a test-set may need the 1 s wait); to close the
+  device exclusions: a read-only `status` field with the published Sound
+  and the clock level, `session_settable` extended to Radio (0x0701–3,
+  config only), auto-off's rule into `orpheus-power`.
 
 ### 2026-11-26 — games-io and BOOK-1 merged; games during music clean (lead)
 

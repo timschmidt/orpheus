@@ -62,7 +62,8 @@ pub fn cmd(args: &mut Args) -> Result<String> {
             crate::selftest::run()?;
             let c = codecs(gen_corpus, None, false)?;
             let f = fuzz_smoke(secs)?;
-            Ok(format!("host, golden and pagelink tests passed; {c}; {f}"))
+            let m = crate::settings_matrix::cmd(&mut Args::from_vec(vec!["--check".into()]))?;
+            Ok(format!("host, golden and pagelink tests passed; {c}; {f}; settings matrix: {m}"))
         }
         other => bail!(
             "unknown test suite `{other}` (host, golden, pagelink, codecs, fuzz-smoke, fuzz-seeds, codec-size, asan, miri, all)"

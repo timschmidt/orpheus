@@ -1,26 +1,1448 @@
-# Setting → effect manifest (07 §5.12, VER-13; CLAUDE.md "every setting has an
-# entry"). One `[[setting]]` per stored setting of the settings tree in
-# `crates/orpheus-apps` (the tree is the source of truth):
+# Setting → effect manifest (07 §5.12, VER-13; CLAUDE.md "every setting has
+# an entry"). Checked by `cargo xtask settings-matrix --check` (part of
+# `xtask test all` and the gate), which derives the settings from the tree
+# in `crates/orpheus-apps` (the source of truth, every feature on) and
+# fails on a setting without an entry, a missing field, a context without
+# a test, a test that does not exist or is ignored, or a device check that
+# names no journey.
 #
-#   id        store key, "0x" and four upper-case hex digits
-#   name      where it is in the UI
-#   scope     "global" (every context) or "local" (its app and every other
-#             context that uses it)
-#   values    the choices, or for a range its boundary and representative
-#             values
-#   default   the default value (index for choices)
-#   contexts  the screens (simulator screen names) and other contexts where
-#             the setting shows an effect
-#   oracle    what shows the effect in each context
-#   tests     the differential tests (file::test[::case]): the same journey
-#             with the value under test and with the reference value; the
-#             oracle must differ as declared, every other one stay equal
+# One `[[setting]]` per setting with a value (actions and information rows
+# have none), packed fields and their storage words included:
+#
+#   id         store key, "0x" and four upper-case hex digits
+#   name       where it is in the UI
+#   scope      "global" (every context: each context of [contexts] must be
+#              in `contexts`, `unaffected` or `na`) or "local" (its app and
+#              every other context that uses it)
+#   values     the choices (all of them), or for a range its two ends and
+#              representative values
+#   default    the default (index for choices and toggles, value for ranges)
+#   contexts   where the setting shows an effect ([contexts] names or
+#              @groups)
+#   unaffected where it must not (groups minus `contexts`); at least one
+#              must be covered: the effect shown absent
+#   na         (global) contexts it cannot show in, with the reason
+#   oracle     what shows the effect in each context
+#   tests      the differential tests (path/file.rs::module::name): the
+#              same journey with the value under test and with the
+#              reference value; the oracle must differ as declared and
+#              every other one stay equal
+#   cover      context or @group → the tests or checks that show it there
+#   device     true: an effect only the player shows; `checks` names the
+#              on-device checks (suite:<journey> of tests/suite/journeys.toml)
+#   uncovered  context → why it has no test yet (a reviewed exclusion)
+#   gap        the setting has no effect to show yet, and why (a reviewed
+#              exclusion; `--strict`, the M11 gate, refuses any)
+#
+# The simulator matrix (`sim/tests/settings_matrix.rs`) runs every setting
+# at every value against every screen context of @screens and every
+# service context of @services and fails unless the frames and service
+# states differ exactly where `contexts` says; it reads this file.
 #
 # Created by the M14 package (GAME-0/1/3, 2026-11-25) with the games'
-# settings only. VER-13 adds every other setting of the tree and the
-# `cargo xtask settings-matrix --check` gate that reads this file; until
-# then `orpheus-apps`' `games::tests::settings_table` checks that each game
-# setting has an entry here.
+# settings; completed by VER-13 (2026-11-25).
+
+# ---------------------------------------------------------------- contexts
+#
+# Screen contexts are journeys of the simulator (`context_scripts` in
+# sim/tests/settings_matrix.rs, which must name exactly the @screens
+# group). Service contexts are states of the simulated services after a
+# fixed journey (`service_scripts` there, @services). The rest are shown
+# by host tests of their crate or only on the player.
+
+[contexts]
+"Home" = "Home: the app grid and the strip"
+"Home.Menu" = "Home's menu sheet"
+"Home.Playing" = "Home with music playing (the mini player in the strip)"
+"QuickPanel" = "the quick panel (long Menu)"
+"Volume" = "the volume overlay (Vol+ at the top)"
+"PowerMenu" = "the power menu (long Power)"
+"Lock" = "the lock notice"
+"Charging" = "the charging screen"
+"UsbConnect" = "a computer connected: the USB question or the chosen personality"
+"Music" = "Music's root list"
+"Folders" = "Music › Folders"
+"MusicLibrary" = "Music › Artists (the library)"
+"NowPlaying" = "Now Playing (default view)"
+"NowPlaying.Menu" = "Now Playing's menu"
+"Equaliser" = "the equaliser screen"
+"Files" = "Files at the card root"
+"Files.Big" = "Files in a folder of 5,000 files (sort order)"
+"Files.Menu" = "Files' menu"
+"TextViewer" = "the text viewer (Files) on a book"
+"Pictures" = "Pictures in a folder"
+"PictureViewer" = "a picture shown"
+"Radio" = "the radio playing"
+"RadioPresets" = "the radio's presets"
+"Bluetooth" = "the Bluetooth app"
+"Recorder" = "the recorder ready"
+"Recorder.Recording" = "the recorder recording a tone"
+"Steps" = "Steps: today"
+"Steps.Week" = "Steps: the week"
+"Stopwatch" = "the stopwatch tab"
+"Timer" = "the timer tab (presets)"
+"Alarms" = "the alarm tab"
+"Alert" = "an alarm ringing"
+"Authenticator" = "the authenticator (vault unlocked)"
+"UsbDrive" = "the USB Drive app"
+"Settings" = "Settings' root"
+"Settings.Sound" = "Settings › Sound (first page)"
+"Settings.Playback" = "Settings › Playback (first page)"
+"Settings.Display" = "Settings › Display (first page)"
+"Settings.Power" = "Settings › Power"
+"Settings.DateTime" = "Settings › Date & time"
+"Settings.Bluetooth" = "Settings › Bluetooth"
+"Settings.Radio" = "Settings › Radio"
+"Settings.Recording" = "Settings › Recording (first page)"
+"Settings.Usb" = "Settings › USB (first page)"
+"Settings.Language" = "Settings › Language"
+"Settings.Storage" = "Settings › Storage"
+"Settings.System" = "Settings › System (first page)"
+"About" = "Settings › System › About"
+"HomeApps" = "Settings › Display › Home screen"
+"Games" = "the Games list"
+"Blocks" = "Blocks playing"
+"Game4096" = "4096 after two slides"
+"Solitaire" = "Solitaire after a few moves"
+"Salvo" = "Salvo after a shot"
+"Bricks" = "Bricks after a serve"
+"GamePause" = "a game's pause menu"
+"Books" = "the Books library"
+"Reader" = "the book reader"
+"BookMenu" = "the reader's menu"
+# Service contexts (the simulator's services after a fixed journey).
+"playback" = "the player: queue order, track, position, state after a journey through an album"
+"radio-tuner" = "the FM tuner: band, frequency, stereo, seek after tuning and a seek"
+"recording" = "the recorder's file: name, format, length and content of a short recording"
+"usb-keyboard" = "what the computer receives on the USB keyboard (a typed code)"
+"usb-host" = "what the player offers a computer (the USB personality requested)"
+"bt-module" = "the Bluetooth module's state (power, reconnect)"
+"steps-counter" = "steps counted while walking"
+"alarms" = "an alarm ringing at its time"
+"sleep" = "the sleep timer (minutes left, the stop)"
+"volume" = "the volume the keys reach"
+# Host-crate contexts (a host test of the crate that does it).
+"audio" = "the rendered sound of music (EQ, bass, balance, crossfeed, channels, ReplayGain): the settings → chain mapping of the browser build (sim/web Sound::from_settings) over the real orpheus-dsp chain"
+"governor" = "the CPU clock level the governor picks (orpheus-power governor)"
+# Player-only contexts (the firmware's own code or the hardware).
+"audio-player" = "the player's rendered sound (fw ui.rs publishes media::Sound, the audio task applies it)"
+"governor-player" = "the player's clock level"
+"library" = "the player's library builder's tag decoding (fw library.rs)"
+"recording-player" = "the player's recording (fw rec.rs over the ADC)"
+"steps-player" = "the player's step counting (fw sensor task)"
+"backlight" = "the backlight level and when it goes off"
+"power" = "the player switching itself off"
+"clock" = "the real-time clock's time keeping"
+"keys" = "which keys work while the keys are locked"
+
+[groups]
+screens = [
+    "Home", "Home.Menu", "Home.Playing", "QuickPanel", "Volume", "PowerMenu", "Lock", "Charging",
+    "UsbConnect", "Music", "Folders", "MusicLibrary", "NowPlaying", "NowPlaying.Menu", "Equaliser",
+    "Files", "Files.Big", "Files.Menu", "TextViewer", "Pictures", "PictureViewer", "Radio",
+    "RadioPresets", "Bluetooth", "Recorder", "Recorder.Recording", "Steps", "Steps.Week", "Stopwatch",
+    "Timer", "Alarms", "Alert", "Authenticator", "UsbDrive", "Settings", "Settings.Sound",
+    "Settings.Playback", "Settings.Display", "Settings.Power", "Settings.DateTime",
+    "Settings.Bluetooth", "Settings.Radio", "Settings.Recording", "Settings.Usb", "Settings.Language",
+    "Settings.Storage", "Settings.System", "About", "HomeApps", "Games", "Blocks", "Game4096",
+    "Solitaire", "Salvo", "Bricks", "GamePause", "Books", "Reader", "BookMenu",
+]
+services = [
+    "playback", "radio-tuner", "recording", "usb-keyboard", "usb-host", "bt-module", "steps-counter",
+    "alarms", "sleep", "volume",
+]
+host = ["audio", "governor"]
+device = [
+    "audio-player", "governor-player", "library", "recording-player", "steps-player", "backlight", "power",
+    "clock", "keys",
+]
+
+# ---------------------------------------------------------------- kinds
+#
+# Persistence (written, read back after a reboot, the others untouched),
+# defaults (fresh store, factory reset), out-of-range values (stored or
+# set: the default, not the nearest end) and stores of an older firmware
+# (unknown keys skipped, a record of another length, a key missing), for
+# every setting of each kind (crates/orpheus-apps/src/settings.rs).
+
+[kinds.toggle]
+persist = ["crates/orpheus-apps/src/settings.rs::persistence::persist_toggle"]
+default = ["crates/orpheus-apps/src/settings.rs::persistence::default_toggle"]
+clamp = ["crates/orpheus-apps/src/settings.rs::persistence::clamp_toggle"]
+migrate = ["crates/orpheus-apps/src/settings.rs::persistence::migrate_toggle"]
+
+[kinds.choice]
+persist = ["crates/orpheus-apps/src/settings.rs::persistence::persist_choice"]
+default = ["crates/orpheus-apps/src/settings.rs::persistence::default_choice"]
+clamp = ["crates/orpheus-apps/src/settings.rs::persistence::clamp_choice"]
+migrate = ["crates/orpheus-apps/src/settings.rs::persistence::migrate_choice"]
+
+[kinds.range]
+persist = ["crates/orpheus-apps/src/settings.rs::persistence::persist_range"]
+default = ["crates/orpheus-apps/src/settings.rs::persistence::default_range"]
+clamp = ["crates/orpheus-apps/src/settings.rs::persistence::clamp_range"]
+migrate = ["crates/orpheus-apps/src/settings.rs::persistence::migrate_range"]
+
+[kinds.language]
+persist = ["crates/orpheus-apps/src/settings.rs::persistence::persist_language"]
+default = ["crates/orpheus-apps/src/settings.rs::persistence::default_language"]
+clamp = ["crates/orpheus-apps/src/settings.rs::persistence::clamp_language"]
+migrate = ["crates/orpheus-apps/src/settings.rs::persistence::migrate_language"]
+
+[kinds.homeapps]
+persist = ["crates/orpheus-apps/src/settings.rs::persistence::persist_homeapps"]
+default = ["crates/orpheus-apps/src/settings.rs::persistence::default_homeapps"]
+clamp = ["crates/orpheus-apps/src/settings.rs::persistence::clamp_homeapps"]
+migrate = ["crates/orpheus-apps/src/settings.rs::persistence::migrate_homeapps"]
+
+[kinds.packed]
+persist = ["crates/orpheus-apps/src/settings.rs::persistence::persist_packed"]
+default = ["crates/orpheus-apps/src/settings.rs::persistence::default_packed"]
+clamp = ["crates/orpheus-apps/src/settings.rs::persistence::clamp_packed"]
+migrate = ["crates/orpheus-apps/src/settings.rs::persistence::migrate_packed"]
+
+# ---------------------------------------------------------------- Sound
+
+[[setting]]
+id = "0x0101"
+name = "Settings › Sound › Equaliser"
+scope = "global"
+values = ["Flat", "Rock", "Pop", "Jazz", "Classical", "Electronic", "Hip-hop", "Bass boost", "Vocal", "Custom 1", "Custom 2"]
+default = 0
+contexts = ["Equaliser", "Settings.Sound", "audio", "audio-player"]
+unaffected = ["@screens", "@services"]
+na = { "governor" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max → Governor::step)", "governor-player" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight level follows the screen state only (fw ui.rs: 12 on, 0 off); no setting reads into it", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date; no setting reads into the time keeping", "keys" = "review: the locked-keys rule is fixed (orpheus-ui KeyGate::new: volume keys); no setting reads into it" }
+oracle = "Audio: the five peaking bands of the preset (Custom 1/2: their bands 0x0D10–0x0D19) in the rendered sound (host: Sound::from_settings + the orpheus-dsp chain). Equaliser: the curve and the preset's name; Settings › Sound: the value."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0101", "sim/web/src/audio.rs::tests::settings_effects::equaliser"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0101"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0101"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::equaliser"] }
+device = true
+uncovered = { "audio-player" = "on the player the firmware's own copy of the mapping (fw ui.rs → media::publish_sound) feeds the audio task; no read-only command reports the applied Sound or a rendered-block CRC to compare in a journey yet (needs `status` to print it, or a short fixture and CRC comparison in the suite: a firmware change)" }
+
+[[setting]]
+id = "0x0102"
+name = "Settings › Sound › Balance"
+scope = "global"
+values = [-10, -5, 0, 5, 10]
+default = 0
+contexts = ["Settings.Sound", "audio", "audio-player"]
+unaffected = ["@screens", "@services"]
+na = { "governor" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max → Governor::step)", "governor-player" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight level follows the screen state only (fw ui.rs: 12 on, 0 off); no setting reads into it", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date; no setting reads into the time keeping", "keys" = "review: the locked-keys rule is fixed (orpheus-ui KeyGate::new: volume keys); no setting reads into it" }
+oracle = "Audio: one channel attenuated (left values quieten the right). Settings › Sound: the value (L n / R n)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0102", "sim/web/src/audio.rs::tests::settings_effects::balance"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0102"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0102"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::balance"] }
+device = true
+uncovered = { "audio-player" = "on the player the firmware's own copy of the mapping (fw ui.rs → media::publish_sound) feeds the audio task; no read-only command reports the applied Sound or a rendered-block CRC to compare in a journey yet (needs `status` to print it, or a short fixture and CRC comparison in the suite: a firmware change)" }
+
+[[setting]]
+id = "0x0103"
+name = "Settings › Sound › Bass"
+scope = "global"
+values = [-6, -3, 0, 3, 6]
+default = 0
+contexts = ["Settings.Sound", "audio", "audio-player"]
+unaffected = ["@screens", "@services"]
+na = { "governor" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max → Governor::step)", "governor-player" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight level follows the screen state only (fw ui.rs: 12 on, 0 off); no setting reads into it", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date; no setting reads into the time keeping", "keys" = "review: the locked-keys rule is fixed (orpheus-ui KeyGate::new: volume keys); no setting reads into it" }
+oracle = "Audio: the low shelf (dB) in the rendered sound. Settings › Sound: the value."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0103", "sim/web/src/audio.rs::tests::settings_effects::bass"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0103"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0103"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::bass"] }
+device = true
+uncovered = { "audio-player" = "on the player the firmware's own copy of the mapping (fw ui.rs → media::publish_sound) feeds the audio task; no read-only command reports the applied Sound or a rendered-block CRC to compare in a journey yet (needs `status` to print it, or a short fixture and CRC comparison in the suite: a firmware change)" }
+
+[[setting]]
+id = "0x0104"
+name = "Settings › Sound › Crossfeed"
+scope = "global"
+values = ["Off", "Low", "Medium", "High"]
+default = 0
+contexts = ["Settings.Sound", "audio", "audio-player"]
+unaffected = ["@screens", "@services"]
+na = { "governor" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max → Governor::step)", "governor-player" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight level follows the screen state only (fw ui.rs: 12 on, 0 off); no setting reads into it", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date; no setting reads into the time keeping", "keys" = "review: the locked-keys rule is fixed (orpheus-ui KeyGate::new: volume keys); no setting reads into it" }
+oracle = "Audio: each channel mixed into the other through the crossfeed filter (three strengths). Settings › Sound: the value."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0104", "sim/web/src/audio.rs::tests::settings_effects::crossfeed"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0104"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0104"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::crossfeed"] }
+device = true
+uncovered = { "audio-player" = "on the player the firmware's own copy of the mapping (fw ui.rs → media::publish_sound) feeds the audio task; no read-only command reports the applied Sound or a rendered-block CRC to compare in a journey yet (needs `status` to print it, or a short fixture and CRC comparison in the suite: a firmware change)" }
+
+[[setting]]
+id = "0x0105"
+name = "Settings › Sound › Channel mode"
+scope = "global"
+values = ["Stereo", "Mono", "Swap L/R"]
+default = 0
+contexts = ["audio", "audio-player"]
+unaffected = ["@screens", "@services"]
+na = { "governor" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max → Governor::step)", "governor-player" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight level follows the screen state only (fw ui.rs: 12 on, 0 off); no setting reads into it", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date; no setting reads into the time keeping", "keys" = "review: the locked-keys rule is fixed (orpheus-ui KeyGate::new: volume keys); no setting reads into it" }
+oracle = "Audio: both channels equal (Mono) or exchanged (Swap) after the matrix's ramp."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0105", "sim/web/src/audio.rs::tests::settings_effects::channel_mode"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0105"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0105"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::channel_mode"] }
+device = true
+uncovered = { "audio-player" = "on the player the firmware's own copy of the mapping (fw ui.rs → media::publish_sound) feeds the audio task; no read-only command reports the applied Sound or a rendered-block CRC to compare in a journey yet (needs `status` to print it, or a short fixture and CRC comparison in the suite: a firmware change)" }
+
+[[setting]]
+id = "0x0106"
+name = "Settings › Sound › ReplayGain"
+scope = "global"
+values = ["Off", "Track", "Album", "Auto"]
+default = 0
+contexts = ["audio", "audio-player"]
+unaffected = ["@screens", "@services"]
+na = { "governor" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max → Governor::step)", "governor-player" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight level follows the screen state only (fw ui.rs: 12 on, 0 off); no setting reads into it", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date; no setting reads into the time keeping", "keys" = "review: the locked-keys rule is fixed (orpheus-ui KeyGate::new: volume keys); no setting reads into it" }
+oracle = "Audio: the track's or the album's ReplayGain applied (host test with track −6 dB, album +3 dB tags). Auto is mapped to Album (no shuffle input: `2 | 3 => Album`), so Auto and Album sound the same."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0106", "sim/web/src/audio.rs::tests::settings_effects::replaygain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0106"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0106"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::replaygain"] }
+device = true
+uncovered = { "audio-player" = "on the player the firmware's own copy of the mapping (fw ui.rs → media::publish_sound) feeds the audio task; no read-only command reports the applied Sound or a rendered-block CRC to compare in a journey yet (needs `status` to print it, or a short fixture and CRC comparison in the suite: a firmware change)" }
+
+[[setting]]
+id = "0x0107"
+name = "Settings › Sound › Volume limit"
+scope = "global"
+values = [10, 20, 30]
+default = 30
+contexts = ["Volume", "volume"]
+unaffected = ["@screens", "@services", "audio"]
+na = { "governor" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max → Governor::step)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight level follows the screen state only (fw ui.rs: 12 on, 0 off); no setting reads into it", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date; no setting reads into the time keeping", "keys" = "review: the locked-keys rule is fixed (orpheus-ui KeyGate::new: volume keys); no setting reads into it" }
+oracle = "Volume (service): Vol+ stops at the limit; the volume overlay's scale ends there. The firmware's volume_step clamps the same way (fw services)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0107", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0107"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0107"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0108"
+name = "Settings › Sound › Key click"
+scope = "global"
+values = ["off", "on"]
+default = 0
+contexts = []
+oracle = "None yet."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0108", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+gap = "not wired: no code reads 0x0108 (there is no click sound); only its Settings row shows the value"
+
+[[setting]]
+id = "0x0109"
+name = "Settings › Sound › Fade on pause"
+scope = "global"
+values = ["off", "on"]
+default = 1
+contexts = []
+oracle = "None yet."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0109", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+gap = "not wired: no code reads 0x0109 (pause does not consult it); only its Settings row shows the value"
+
+# ---------------------------------------------------------------- Playback
+
+[[setting]]
+id = "0x0201"
+name = "Settings › Playback › Shuffle"
+scope = "local"
+values = ["off", "on"]
+default = 0
+contexts = ["Home.Playing", "NowPlaying", "NowPlaying.Menu", "Settings.Playback", "playback"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Playback: a queue made from a folder or the library is shuffled (the same tracks in another order); Now Playing and the mini player show the shuffled queue's track; Now Playing's menu the switch. On the player: `status` shuf= follows the setting (suite journey settings_shuffle, RAM-only test session)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0201", "sim/tests/settings_matrix.rs::effects::regress_sim_queue_follows_the_shuffle_setting", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0201"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0201"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "playback" = ["sim/tests/settings_matrix.rs::matrix::s0201", "suite:settings_shuffle"] }
+device = true
+checks = ["suite:settings_shuffle"]
+
+[[setting]]
+id = "0x0202"
+name = "Settings › Playback › Repeat"
+scope = "local"
+values = ["Off", "One", "All"]
+default = 0
+contexts = ["Settings.Playback", "playback"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Playback: at the end of the last track the queue stops (Off), plays the track again (One) or the first track (All)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0202", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0202"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0202"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0203"
+name = "Settings › Playback › Gapless"
+scope = "local"
+values = ["off", "on"]
+default = 1
+contexts = ["Settings.Playback"]
+oracle = "None yet."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0203", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+gap = "not wired: no code reads 0x0203 (the player always joins tracks gaplessly); only its Settings row shows the value"
+
+[[setting]]
+id = "0x0204"
+name = "Settings › Playback › Resume at start"
+scope = "local"
+values = ["off", "on"]
+default = 1
+contexts = ["Settings.Playback"]
+oracle = "None yet."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0204", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+gap = "not wired: no code reads 0x0204; only its Settings row shows the value"
+
+[[setting]]
+id = "0x0205"
+name = "Settings › Playback › Seek step"
+scope = "local"
+values = ["2 s", "5 s", "10 s", "30 s"]
+default = 1
+contexts = []
+oracle = "None yet."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0205", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+gap = "not wired: no code reads 0x0205 (seeking uses fixed steps)"
+
+[[setting]]
+id = "0x0206"
+name = "Now Playing › menu › Speed"
+scope = "local"
+values = ["0.5×", "0.75×", "0.9×", "1.0×", "1.1×", "1.25×", "1.5×", "2.0×"]
+default = 3
+contexts = []
+oracle = "None yet."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0206", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+gap = "not wired: Now Playing's menu shows the value, but neither the player nor the firmware reads 0x0206 (no time-stretch in the chain)"
+
+[[setting]]
+id = "0x0207"
+name = "Settings › Playback › Auto bookmark"
+scope = "local"
+values = ["off", "on"]
+default = 1
+contexts = []
+oracle = "None yet."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0207", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+gap = "not wired: no code reads 0x0207"
+
+[[setting]]
+id = "0x0208"
+name = "Settings › Playback › Tag code page"
+scope = "local"
+values = ["Western", "Central European", "Cyrillic", "Japanese", "Chinese (simplified)", "Chinese (traditional)", "Korean"]
+default = 0
+contexts = ["library"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Library (player): tags without an encoding are read as Windows-1251 (Cyrillic) or Windows-1252 (every other value: fw library.rs maps only Cyrillic), at the next library build."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0208", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0208"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0208"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+device = true
+uncovered = { "library" = "firmware only (fw library.rs config(): 2 → Windows-1251, else 1252) and seen only after a library rebuild, which writes the card; no journey; Central European, Japanese, Chinese and Korean have no effect (all 1252)" }
+
+# ---------------------------------------------------------------- Display
+
+[[setting]]
+id = "0x0301"
+name = "Settings › Display › Brightness"
+scope = "global"
+values = [1, 8, 16]
+default = 10
+contexts = ["Settings.Display"]
+oracle = "None yet."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0301", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+gap = "not wired: the slider stores it, but the backlight is driven at a fixed level (fw ui.rs: 12 on, 0 off)"
+
+[[setting]]
+id = "0x0302"
+name = "Settings › Display › Backlight timeout"
+scope = "global"
+values = ["5 s", "10 s", "15 s", "30 s", "60 s", "120 s", "Always"]
+default = 2
+contexts = ["Settings.Display"]
+oracle = "None yet."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0302", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+gap = "not wired: no code reads 0x0302 (the screen goes off only with Power or the lock)"
+
+[[setting]]
+id = "0x0303"
+name = "Settings › Display › Lock delay"
+scope = "global"
+values = ["Immediately", "5 s", "30 s", "60 s", "Never"]
+default = 0
+contexts = ["Settings.Display"]
+oracle = "None yet."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0303", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+gap = "not wired: no code reads 0x0303"
+
+[[setting]]
+id = "0x0304"
+name = "Settings › Display › Theme"
+scope = "global"
+values = ["Dark", "Light", "Amber"]
+default = 0
+contexts = ["Home", "Home.Menu", "Home.Playing", "QuickPanel", "Volume", "PowerMenu", "Lock", "Charging", "UsbConnect", "Music", "Folders", "MusicLibrary", "NowPlaying", "NowPlaying.Menu", "Equaliser", "Files", "Files.Big", "Files.Menu", "TextViewer", "Pictures", "Radio", "RadioPresets", "Bluetooth", "Recorder", "Recorder.Recording", "Steps", "Steps.Week", "Stopwatch", "Timer", "Alarms", "Alert", "Authenticator", "UsbDrive", "Settings", "Settings.Sound", "Settings.Playback", "Settings.Display", "Settings.Power", "Settings.DateTime", "Settings.Bluetooth", "Settings.Radio", "Settings.Recording", "Settings.Usb", "Settings.Language", "Settings.Storage", "Settings.System", "About", "HomeApps", "Games", "Blocks", "Game4096", "Solitaire", "Salvo", "Bricks", "GamePause", "Books", "Reader", "BookMenu"]
+unaffected = ["@screens", "@services", "audio"]
+na = { "governor" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max → Governor::step)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight level follows the screen state only (fw ui.rs: 12 on, 0 off); no setting reads into it", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date; no setting reads into the time keeping", "keys" = "review: the locked-keys rule is fixed (orpheus-ui KeyGate::new: volume keys); no setting reads into it" }
+oracle = "Every screen's palette (background, text, accents); not a picture shown full screen."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0304", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0304"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0304"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0305"
+name = "Settings › Display › Accent"
+scope = "global"
+values = ["Blue", "Green", "Pink", "Red", "Grey"]
+default = 0
+contexts = ["Home", "Home.Menu", "Home.Playing", "QuickPanel", "Volume", "PowerMenu", "UsbConnect", "Music", "Folders", "MusicLibrary", "NowPlaying", "NowPlaying.Menu", "Equaliser", "Files", "Files.Big", "Files.Menu", "Pictures", "Radio", "RadioPresets", "Bluetooth", "Recorder", "Recorder.Recording", "Steps", "Steps.Week", "Stopwatch", "Timer", "Alarms", "Alert", "Authenticator", "UsbDrive", "Settings", "Settings.Sound", "Settings.Playback", "Settings.Display", "Settings.Power", "Settings.DateTime", "Settings.Bluetooth", "Settings.Radio", "Settings.Recording", "Settings.Usb", "Settings.Language", "Settings.Storage", "Settings.System", "About", "HomeApps", "Games", "Blocks", "Solitaire", "Salvo", "Bricks", "GamePause", "Books", "BookMenu"]
+unaffected = ["@screens", "@services", "audio"]
+na = { "governor" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max → Governor::step)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight level follows the screen state only (fw ui.rs: 12 on, 0 off); no setting reads into it", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date; no setting reads into the time keeping", "keys" = "review: the locked-keys rule is fixed (orpheus-ui KeyGate::new: volume keys); no setting reads into it" }
+oracle = "The accent colour (focus bar, switches, progress) on every screen that has one."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0305", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0305"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0305"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0306"
+name = "Settings › Display › Wallpaper"
+scope = "global"
+values = ["None"]
+default = 0
+contexts = []
+oracle = "None yet."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0306", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+gap = "one value only (None): nothing to change"
+
+[[setting]]
+id = "0x0307"
+name = "Settings › Display › Screen saver"
+scope = "global"
+values = ["Off", "Clock"]
+default = 0
+contexts = []
+oracle = "None yet."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0307", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+gap = "not wired: no code reads 0x0307"
+
+[[setting]]
+id = "0x0308"
+name = "Settings › Display › Animations"
+scope = "global"
+values = ["off", "on"]
+default = 1
+contexts = []
+oracle = "None yet."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0308", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+gap = "not wired: no code reads 0x0308 (4096 has its own Animations setting, 0x0E25)"
+
+[[setting]]
+id = "0x0309"
+name = "Settings › Display › Rotate"
+scope = "global"
+values = ["off", "on"]
+default = 0
+contexts = []
+oracle = "None yet."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0309", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+gap = "not wired: no code reads 0x0309"
+
+[[setting]]
+id = "0x030A"
+name = "Settings › Display › Clock in status bar"
+scope = "global"
+values = ["off", "on"]
+default = 1
+contexts = ["Home", "Home.Menu", "Home.Playing", "QuickPanel", "Volume", "PowerMenu", "UsbConnect", "Music", "Folders", "MusicLibrary", "NowPlaying", "NowPlaying.Menu", "Equaliser", "Files", "Files.Big", "Files.Menu", "TextViewer", "Pictures", "Radio", "RadioPresets", "Bluetooth", "Recorder", "Recorder.Recording", "Steps", "Steps.Week", "Stopwatch", "Timer", "Alarms", "Alert", "Authenticator", "UsbDrive", "Settings", "Settings.Sound", "Settings.Playback", "Settings.Display", "Settings.Power", "Settings.DateTime", "Settings.Bluetooth", "Settings.Radio", "Settings.Recording", "Settings.Usb", "Settings.Language", "Settings.Storage", "Settings.System", "About", "HomeApps", "Games", "Game4096", "GamePause", "Books", "Reader", "BookMenu"]
+unaffected = ["@screens", "@services", "audio"]
+na = { "governor" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max → Governor::step)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight level follows the screen state only (fw ui.rs: 12 on, 0 off); no setting reads into it", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date; no setting reads into the time keeping", "keys" = "review: the locked-keys rule is fixed (orpheus-ui KeyGate::new: volume keys); no setting reads into it" }
+oracle = "The status bar's clock on every screen with a status bar."
+tests = ["sim/tests/settings_matrix.rs::matrix::s030a", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s030a"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s030a"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x030B"
+name = "Settings › Display › Home screen"
+scope = "local"
+values = ["every app (8191)", "Games off (6143)"]
+default = 8191
+contexts = ["Home", "Home.Menu", "Home.Playing", "Volume", "Games"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Home: the apps shown (a hidden app's cell is gone; reaching Games from Home lands elsewhere); the Home screen settings list."
+tests = ["sim/tests/settings_matrix.rs::matrix::s030b", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s030b"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s030b"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x030C"
+name = "Settings › Display › List roll-around"
+scope = "global"
+values = ["off", "on"]
+default = 1
+contexts = ["QuickPanel", "PowerMenu", "Music", "MusicLibrary", "Files", "Files.Big", "Files.Menu", "RadioPresets", "Bluetooth", "Stopwatch", "Alarms", "Authenticator", "Settings", "Settings.Sound", "Settings.Playback", "Settings.Display", "Settings.Power", "Settings.DateTime", "Settings.Bluetooth", "Settings.Radio", "Settings.Recording", "Settings.Usb", "Settings.Storage", "Settings.System", "About", "HomeApps"]
+unaffected = ["@screens", "@services", "audio"]
+na = { "governor" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max → Governor::step)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight level follows the screen state only (fw ui.rs: 12 on, 0 off); no setting reads into it", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date; no setting reads into the time keeping", "keys" = "review: the locked-keys rule is fixed (orpheus-ui KeyGate::new: volume keys); no setting reads into it" }
+oracle = "Every list: Up on the first row goes to the last (Prev/Next page round) with it on, stays with it off (a held Down stops at the end either way)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s030c", "sim/tests/roll.rs::every_list_rolls_round_with_the_setting_on_and_clamps_off", "sim/tests/roll.rs::display_row_switches_it", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s030c"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s030c"], "Settings" = ["sim/tests/settings_matrix.rs::matrix::s030c", "sim/tests/roll.rs::every_list_rolls_round_with_the_setting_on_and_clamps_off"], "HomeApps" = ["sim/tests/settings_matrix.rs::matrix::s030c", "sim/tests/roll.rs::every_list_rolls_round_with_the_setting_on_and_clamps_off"], "About" = ["sim/tests/settings_matrix.rs::matrix::s030c", "sim/tests/roll.rs::every_list_rolls_round_with_the_setting_on_and_clamps_off"], "PowerMenu" = ["sim/tests/settings_matrix.rs::matrix::s030c", "sim/tests/roll.rs::every_list_rolls_round_with_the_setting_on_and_clamps_off"], "QuickPanel" = ["sim/tests/settings_matrix.rs::matrix::s030c", "sim/tests/roll.rs::every_list_rolls_round_with_the_setting_on_and_clamps_off"], "Files" = ["sim/tests/settings_matrix.rs::matrix::s030c", "sim/tests/roll.rs::every_list_rolls_round_with_the_setting_on_and_clamps_off"], "Files.Big" = ["sim/tests/settings_matrix.rs::matrix::s030c", "sim/tests/roll.rs::every_list_rolls_round_with_the_setting_on_and_clamps_off"], "Music" = ["sim/tests/settings_matrix.rs::matrix::s030c", "sim/tests/roll.rs::every_list_rolls_round_with_the_setting_on_and_clamps_off"], "MusicLibrary" = ["sim/tests/settings_matrix.rs::matrix::s030c", "sim/tests/roll.rs::every_list_rolls_round_with_the_setting_on_and_clamps_off"], "Bluetooth" = ["sim/tests/settings_matrix.rs::matrix::s030c", "sim/tests/roll.rs::every_list_rolls_round_with_the_setting_on_and_clamps_off"], "RadioPresets" = ["sim/tests/settings_matrix.rs::matrix::s030c", "sim/tests/roll.rs::every_list_rolls_round_with_the_setting_on_and_clamps_off"], "Authenticator" = ["sim/tests/settings_matrix.rs::matrix::s030c", "sim/tests/roll.rs::every_list_rolls_round_with_the_setting_on_and_clamps_off"], "Alarms" = ["sim/tests/settings_matrix.rs::matrix::s030c", "sim/tests/roll.rs::every_list_rolls_round_with_the_setting_on_and_clamps_off"], "Stopwatch" = ["sim/tests/settings_matrix.rs::matrix::s030c", "sim/tests/roll.rs::every_list_rolls_round_with_the_setting_on_and_clamps_off"], "Files.Menu" = ["sim/tests/settings_matrix.rs::matrix::s030c", "sim/tests/roll.rs::every_list_rolls_round_with_the_setting_on_and_clamps_off"], "Settings.Sound" = ["sim/tests/settings_matrix.rs::matrix::s030c", "sim/tests/roll.rs::every_list_rolls_round_with_the_setting_on_and_clamps_off"], "Settings.Playback" = ["sim/tests/settings_matrix.rs::matrix::s030c", "sim/tests/roll.rs::every_list_rolls_round_with_the_setting_on_and_clamps_off"], "Settings.Display" = ["sim/tests/settings_matrix.rs::matrix::s030c", "sim/tests/roll.rs::every_list_rolls_round_with_the_setting_on_and_clamps_off"], "Settings.Power" = ["sim/tests/settings_matrix.rs::matrix::s030c", "sim/tests/roll.rs::every_list_rolls_round_with_the_setting_on_and_clamps_off"], "Settings.DateTime" = ["sim/tests/settings_matrix.rs::matrix::s030c", "sim/tests/roll.rs::every_list_rolls_round_with_the_setting_on_and_clamps_off"], "Settings.Bluetooth" = ["sim/tests/settings_matrix.rs::matrix::s030c", "sim/tests/roll.rs::every_list_rolls_round_with_the_setting_on_and_clamps_off"], "Settings.Radio" = ["sim/tests/settings_matrix.rs::matrix::s030c", "sim/tests/roll.rs::every_list_rolls_round_with_the_setting_on_and_clamps_off"], "Settings.Recording" = ["sim/tests/settings_matrix.rs::matrix::s030c", "sim/tests/roll.rs::every_list_rolls_round_with_the_setting_on_and_clamps_off"], "Settings.Usb" = ["sim/tests/settings_matrix.rs::matrix::s030c", "sim/tests/roll.rs::every_list_rolls_round_with_the_setting_on_and_clamps_off"], "Settings.Storage" = ["sim/tests/settings_matrix.rs::matrix::s030c", "sim/tests/roll.rs::every_list_rolls_round_with_the_setting_on_and_clamps_off"], "Settings.System" = ["sim/tests/settings_matrix.rs::matrix::s030c", "sim/tests/roll.rs::every_list_rolls_round_with_the_setting_on_and_clamps_off"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+# ---------------------------------------------------------------- Power
+
+[[setting]]
+id = "0x0401"
+name = "Settings › Power › Power mode"
+scope = "global"
+values = ["Auto", "Battery saver", "High performance"]
+default = 0
+contexts = ["Settings.Power"]
+oracle = "None yet."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0401", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+gap = "not wired: no code reads 0x0401 (the clock governor follows Settings › System › Performance, 0x0C07)"
+
+[[setting]]
+id = "0x0402"
+name = "Settings › Power › Sleep timer"
+scope = "global"
+values = ["Off", "15 min", "30 min", "45 min", "60 min", "90 min", "End of track"]
+default = 0
+contexts = ["Home", "Home.Menu", "Home.Playing", "QuickPanel", "Volume", "PowerMenu", "UsbConnect", "Music", "Folders", "MusicLibrary", "NowPlaying", "NowPlaying.Menu", "Equaliser", "Files", "Files.Big", "Files.Menu", "TextViewer", "Pictures", "Radio", "RadioPresets", "Bluetooth", "Recorder", "Recorder.Recording", "Steps", "Steps.Week", "Stopwatch", "Timer", "Alarms", "Alert", "Authenticator", "UsbDrive", "Settings", "Settings.Sound", "Settings.Playback", "Settings.Display", "Settings.Power", "Settings.DateTime", "Settings.Bluetooth", "Settings.Radio", "Settings.Recording", "Settings.Usb", "Settings.Language", "Settings.Storage", "Settings.System", "About", "HomeApps", "Games", "Game4096", "GamePause", "Books", "Reader", "BookMenu", "sleep"]
+unaffected = ["@screens", "@services", "audio"]
+na = { "governor" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max → Governor::step)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight level follows the screen state only (fw ui.rs: 12 on, 0 off); no setting reads into it", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date; no setting reads into the time keeping", "keys" = "review: the locked-keys rule is fixed (orpheus-ui KeyGate::new: volume keys); no setting reads into it" }
+oracle = "Sleep (service): minutes left; the status bar's moon on every screen with a status bar (not with End of track: the power menu and quick panel say it); the player stops at the time (firmware: Command::SleepAfterMs / SleepAfterTrack)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0402", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0402"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0402"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0403"
+name = "Settings › Power › Auto-off"
+scope = "global"
+values = ["Off", "5 min", "10 min", "15 min", "30 min", "60 min"]
+default = 3
+contexts = ["Settings.Power", "power"]
+unaffected = ["@screens", "@services", "audio"]
+na = { "governor" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max → Governor::step)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight level follows the screen state only (fw ui.rs: 12 on, 0 off); no setting reads into it", "clock" = "review: the RTC is set only by Set time / Set date; no setting reads into the time keeping", "keys" = "review: the locked-keys rule is fixed (orpheus-ui KeyGate::new: volume keys); no setting reads into it" }
+oracle = "Power (player): switches off after that many idle minutes (nothing playing, no cable, no key)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0403", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0403"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0403"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+device = true
+uncovered = { "power" = "firmware only (fw ui.rs idle loop) and an automated test may never power the player off (CLAUDE.md rule 4); the rule is not in a host crate yet (factoring it into orpheus-power would make it host-testable)" }
+
+[[setting]]
+id = "0x0404"
+name = "Settings › Power › Keys when locked"
+scope = "global"
+values = ["None", "Volume", "Volume and transport"]
+default = 1
+contexts = ["Settings.Power"]
+oracle = "None yet."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0404", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+gap = "not wired: the key gate's rule is fixed (orpheus-ui KeyGate::new: volume keys work while locked); no code reads 0x0404"
+
+# ---------------------------------------------------------------- Date & time
+
+[[setting]]
+id = "0x0503"
+name = "Settings › Date & time › 24-hour clock"
+scope = "global"
+values = ["off", "on"]
+default = 1
+contexts = ["Home", "Home.Menu", "Home.Playing", "QuickPanel", "Volume", "PowerMenu", "Lock", "UsbConnect", "Music", "Folders", "MusicLibrary", "NowPlaying", "NowPlaying.Menu", "Equaliser", "Files", "Files.Big", "Files.Menu", "TextViewer", "Pictures", "Radio", "RadioPresets", "Bluetooth", "Recorder", "Recorder.Recording", "Steps", "Steps.Week", "Stopwatch", "Timer", "Alarms", "Authenticator", "UsbDrive", "Settings", "Settings.Sound", "Settings.Playback", "Settings.Display", "Settings.Power", "Settings.DateTime", "Settings.Bluetooth", "Settings.Radio", "Settings.Recording", "Settings.Usb", "Settings.Language", "Settings.Storage", "Settings.System", "About", "HomeApps", "Games", "Game4096", "GamePause", "Books", "Reader", "BookMenu"]
+unaffected = ["@screens", "@services", "audio"]
+na = { "governor" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max → Governor::step)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight level follows the screen state only (fw ui.rs: 12 on, 0 off); no setting reads into it", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date; no setting reads into the time keeping", "keys" = "review: the locked-keys rule is fixed (orpheus-ui KeyGate::new: volume keys); no setting reads into it" }
+oracle = "Every clock shown (status bar, lock notice, the time picker) in 24 or 12 hours (seen at 21:05)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0503", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0503"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0503"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0504"
+name = "Settings › Date & time › Date format"
+scope = "global"
+values = ["DD.MM.YYYY", "MM/DD/YYYY", "YYYY-MM-DD"]
+default = 0
+contexts = ["Lock", "Settings.DateTime"]
+unaffected = ["@screens", "@services", "audio"]
+na = { "governor" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max → Governor::step)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight level follows the screen state only (fw ui.rs: 12 on, 0 off); no setting reads into it", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date; no setting reads into the time keeping", "keys" = "review: the locked-keys rule is fixed (orpheus-ui KeyGate::new: volume keys); no setting reads into it" }
+oracle = "Dates shown: the lock notice's date, Settings › Date & time's value."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0504", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0504"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0504"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0505"
+name = "Settings › Date & time › Time zone (UTC offset)"
+scope = "global"
+values = [-720, 0, 60, 840]
+default = 0
+contexts = []
+oracle = "None yet."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0505", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+gap = "not wired: no code outside the settings table reads 0x0505 (the RTC keeps local time)"
+
+[[setting]]
+id = "0x0506"
+name = "Settings › Date & time › Correction"
+scope = "global"
+values = [-60, 0, 60]
+default = 0
+contexts = []
+oracle = "None yet."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0506", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+gap = "not wired: no code reads 0x0506 (no drift correction)"
+
+[[setting]]
+id = "0x0507"
+name = "Settings › Date & time › Set from RDS"
+scope = "local"
+values = ["off", "on"]
+default = 0
+contexts = []
+oracle = "None yet."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0507", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+gap = "not wired: no code reads 0x0507"
+
+# ---------------------------------------------------------------- Bluetooth
+
+[[setting]]
+id = "0x0601"
+name = "Settings › Bluetooth › Bluetooth"
+scope = "global"
+values = ["off", "on"]
+default = 0
+contexts = ["Home", "Home.Menu", "Home.Playing", "QuickPanel", "Volume", "PowerMenu", "UsbConnect", "Music", "Folders", "MusicLibrary", "NowPlaying", "NowPlaying.Menu", "Equaliser", "Files", "Files.Big", "Files.Menu", "TextViewer", "Pictures", "Radio", "RadioPresets", "Bluetooth", "Recorder", "Recorder.Recording", "Steps", "Steps.Week", "Stopwatch", "Timer", "Alarms", "Alert", "Authenticator", "UsbDrive", "Settings", "Settings.Sound", "Settings.Playback", "Settings.Display", "Settings.Power", "Settings.DateTime", "Settings.Bluetooth", "Settings.Radio", "Settings.Recording", "Settings.Usb", "Settings.Language", "Settings.Storage", "Settings.System", "About", "HomeApps", "Games", "Game4096", "GamePause", "Books", "Reader", "BookMenu", "bt-module"]
+unaffected = ["@screens", "@services", "audio"]
+na = { "governor" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max → Governor::step)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight level follows the screen state only (fw ui.rs: 12 on, 0 off); no setting reads into it", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date; no setting reads into the time keeping", "keys" = "review: the locked-keys rule is fixed (orpheus-ui KeyGate::new: volume keys); no setting reads into it" }
+oracle = "Bluetooth module (service): powered and ready; the status bar's Bluetooth sign on every screen with a status bar; the Bluetooth app's state. On the player the firmware sends the module power request (never switched by a test: CLAUDE.md rule 6)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0601", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0601"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0601"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0603"
+name = "Settings › Bluetooth › Reconnect"
+scope = "local"
+values = ["off", "on"]
+default = 1
+contexts = ["Settings.Bluetooth", "bt-module"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Bluetooth module (service): reconnect to the last device when switched on."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0603", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0603"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0603"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0604"
+name = "Settings › Bluetooth › Output"
+scope = "local"
+values = ["Headphones", "Bluetooth"]
+default = 0
+contexts = ["QuickPanel", "Settings.Bluetooth", "audio-player"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Quick panel and Settings show the output chosen. The firmware does not read 0x0604 (no reader in fw/firmware): the audio route follows the Bluetooth connection."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0604", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0604"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0604"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+device = true
+uncovered = { "audio-player" = "not wired in the firmware: no reader of 0x0604 in fw/firmware (the route follows the Bluetooth connection)" }
+
+# ---------------------------------------------------------------- Radio
+
+[[setting]]
+id = "0x0701"
+name = "Settings › Radio › Region"
+scope = "local"
+values = ["Europe", "United States", "World", "Japan", "Wide"]
+default = 0
+contexts = ["Radio", "Settings.Radio", "radio-tuner"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Radio tuner (service): the band and channel step written to the tuner (register writes) and where tuning wraps; Radio: the frequency scale."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0701", "sim/tests/radio.rs::prev_next_step_and_wrap_per_region", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0701"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0701"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0702"
+name = "Settings › Radio › Force mono"
+scope = "local"
+values = ["off", "on"]
+default = 0
+contexts = ["Settings.Radio", "radio-tuner"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Radio tuner (service): the mono bit written to the tuner."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0702", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0702"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0702"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0703"
+name = "Settings › Radio › Seek sensitivity"
+scope = "local"
+values = ["Low", "Medium", "High"]
+default = 1
+contexts = ["Settings.Radio", "radio-tuner"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Radio tuner (service): the seek threshold written to the tuner (where a seek stops)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0703", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0703"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0703"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+# ---------------------------------------------------------------- Recording
+
+[[setting]]
+id = "0x0801"
+name = "Settings › Recording › Source"
+scope = "local"
+values = ["Microphone", "FM radio", "Line in"]
+default = 0
+contexts = ["Recorder", "Recorder.Recording", "Settings.Recording", "recording"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Recording (service): the input recorded (microphone, the radio, line in: the file's content and name); Recorder: the source shown, the radio started for FM."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0801", "sim/tests/recorder.rs::fm_source_starts_the_radio_and_names_the_station", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0801"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0801"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0802"
+name = "Settings › Recording › Format"
+scope = "local"
+values = ["WAV", "WAV ADPCM", "FLAC"]
+default = 0
+contexts = ["Recorder", "Recorder.Recording", "Settings.Recording", "recording"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Recording (service): the file's format and extension; Recorder: the format and time left shown."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0802", "sim/tests/recorder.rs::formats_quality_and_flac", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0802"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0802"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0803"
+name = "Settings › Recording › Quality"
+scope = "local"
+values = ["Voice", "Standard", "High"]
+default = 1
+contexts = ["Recorder", "Recorder.Recording", "Settings.Recording", "recording"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Recording (service): the sample rate (16, 44.1 or 48 kHz); Recorder: the rate and time left shown."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0803", "sim/tests/recorder.rs::formats_quality_and_flac", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0803"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0803"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0804"
+name = "Settings › Recording › Gain mode"
+scope = "local"
+values = ["Manual", "Automatic"]
+default = 1
+contexts = ["Recorder", "Recorder.Recording", "Settings.Recording", "recording"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Recording (service): automatic gain brings a quiet input up (the file's level); Recorder: the gain shown."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0804", "sim/tests/recorder.rs::automatic_gain_brings_quiet_input_up", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0804"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0804"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0806"
+name = "Settings › Recording › Voice activation"
+scope = "local"
+values = ["Off", "−50 dB", "−40 dB", "−30 dB"]
+default = 0
+contexts = ["recording"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Recording (service): with a threshold the recording waits (paused) until the input is louder."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0806", "sim/tests/recorder.rs::voice_activation_waits_for_sound", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0806"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0806"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "recording" = ["sim/tests/settings_matrix.rs::matrix::s0806", "sim/tests/recorder.rs::voice_activation_waits_for_sound"] }
+
+[[setting]]
+id = "0x0807"
+name = "Settings › Recording › Auto-split"
+scope = "local"
+values = ["Off", "15 min", "30 min", "60 min"]
+default = 0
+contexts = ["recording"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Recording (service): the session ends the file at the split time and the next one starts."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0807", "sim/tests/settings_matrix.rs::effects::auto_split_minutes", "crates/orpheus-rec/tests/roundtrip.rs::split_ends_the_file_at_the_split_time", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0807"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0807"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "recording" = ["sim/tests/settings_matrix.rs::matrix::s0807", "sim/tests/settings_matrix.rs::effects::auto_split_minutes", "crates/orpheus-rec/tests/roundtrip.rs::split_ends_the_file_at_the_split_time"] }
+
+[[setting]]
+id = "0x0808"
+name = "Settings › Recording › Monitor"
+scope = "local"
+values = ["off", "on"]
+default = 0
+contexts = []
+oracle = "None yet."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0808", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+gap = "not built: fw rec.rs does not monitor the input in the headphones (`monitor: false`); the simulator neither"
+
+[[setting]]
+id = "0x0809"
+name = "Settings › Recording › Low cut"
+scope = "local"
+values = ["off", "on"]
+default = 0
+contexts = ["Recorder", "recording"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Recording (service): the high-pass filter in the recorded sound; Recorder: the low-cut sign."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0809", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0809"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0809"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x080A"
+name = "Recorder › Input gain (Up/Down)"
+scope = "local"
+values = [-12, 0, 12]
+default = 0
+contexts = ["Recorder", "recording-player"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "With Gain mode Manual: Up/Down on the recorder step from it (the toast's value) and the firmware sets the ADC's digital gain (fw rec.rs adc::digital_for); with Automatic it is not used."
+tests = ["sim/tests/settings_matrix.rs::matrix::s080a", "sim/tests/settings_matrix.rs::effects::input_gain_in_manual_mode", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s080a"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s080a"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Recorder" = ["sim/tests/settings_matrix.rs::matrix::s080a", "sim/tests/settings_matrix.rs::effects::input_gain_in_manual_mode"] }
+device = true
+uncovered = { "recording-player" = "the level of the recorded sound: the firmware's ADC digital gain; the simulator's fake ADC has none; no journey records" }
+
+# ---------------------------------------------------------------- USB
+
+[[setting]]
+id = "0x0901"
+name = "Settings › USB › When connected"
+scope = "local"
+values = ["Ask", "Charge only", "File transfer", "Keyboard", "Last image"]
+default = 0
+contexts = ["UsbConnect", "Settings.Usb", "usb-host"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "USB host (service): the personality requested when a computer is connected (or the question asked); the USB screen shown."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0901", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0901"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0901"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0902"
+name = "Settings › USB › Read-only card"
+scope = "local"
+values = ["off", "on"]
+default = 0
+contexts = ["Settings.Usb"]
+oracle = "None yet."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0902", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+gap = "not wired: no code reads 0x0902 (the USB drive is always writable)"
+
+[[setting]]
+id = "0x0903"
+name = "Settings › USB › Developer channel"
+scope = "local"
+values = ["off", "on"]
+default = 1
+contexts = ["Settings.Usb"]
+oracle = "None yet."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0903", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+gap = "not wired: no code reads 0x0903 (the developer interface is always offered)"
+
+[[setting]]
+id = "0x0904"
+name = "Settings › USB › Keyboard layout"
+scope = "local"
+values = ["US", "UK", "German", "French"]
+default = 0
+contexts = ["Settings.Usb", "usb-keyboard"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "USB keyboard (service): the key reports sent for a typed code (the computer's layout)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0904", "sim/tests/auth.rs::ok_types_the_code_and_enter", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0904"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0904"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0905"
+name = "Settings › USB › Digits from the keypad"
+scope = "local"
+values = ["off", "on"]
+default = 0
+contexts = ["usb-keyboard"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "USB keyboard (service): digits sent as keypad keys instead of the top row."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0905", "sim/tests/auth.rs::ok_types_the_code_and_enter", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0905"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0905"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0906"
+name = "Settings › USB › Enter after a code"
+scope = "local"
+values = ["off", "on"]
+default = 1
+contexts = ["usb-keyboard"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "USB keyboard (service): Enter sent after the code."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0906", "sim/tests/auth.rs::ok_types_the_code_and_enter", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0906"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0906"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+# ---------------------------------------------------------------- Language
+
+[[setting]]
+id = "0x0A01"
+name = "Settings › Language"
+scope = "global"
+values = ["English (0)", "Русский (\"ru\")", "日本語 (\"ja\")"]
+default = 0
+contexts = ["Home", "Home.Menu", "QuickPanel", "Volume", "PowerMenu", "Lock", "Charging", "UsbConnect", "Music", "MusicLibrary", "NowPlaying.Menu", "Equaliser", "Files.Menu", "Radio", "Bluetooth", "Recorder", "Recorder.Recording", "Steps", "Steps.Week", "Stopwatch", "Timer", "Alarms", "Alert", "UsbDrive", "Settings", "Settings.Sound", "Settings.Playback", "Settings.Display", "Settings.Power", "Settings.DateTime", "Settings.Bluetooth", "Settings.Radio", "Settings.Recording", "Settings.Usb", "Settings.Language", "Settings.Storage", "Settings.System", "About", "HomeApps", "Blocks", "Bricks", "GamePause", "BookMenu"]
+unaffected = ["@screens", "@services", "audio"]
+na = { "governor" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max → Governor::step)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's only setting input is Performance 0x0C07 (fw ui.rs perf_max)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight level follows the screen state only (fw ui.rs: 12 on, 0 off); no setting reads into it", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date; no setting reads into the time keeping", "keys" = "review: the locked-keys rule is fixed (orpheus-ui KeyGate::new: volume keys); no setting reads into it" }
+oracle = "Every translated text on every screen (not file names, tags, book text or the screens without words)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0a01", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0a01"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0a01"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+# ---------------------------------------------------------------- System
+
+[[setting]]
+id = "0x0C07"
+name = "Settings › System › Performance"
+scope = "global"
+values = ["Normal", "Maximum"]
+default = 0
+contexts = ["governor", "governor-player"]
+unaffected = ["@screens", "@services", "audio"]
+na = { "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight level follows the screen state only (fw ui.rs: 12 on, 0 off); no setting reads into it", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date; no setting reads into the time keeping", "keys" = "review: the locked-keys rule is fixed (orpheus-ui KeyGate::new: volume keys); no setting reads into it" }
+oracle = "Governor: under load Maximum steps from 192 to 288 MHz, Normal stays at 192 MHz (host: orpheus-power governor with Performance::from_setting); on the player the clock level."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0c07", "crates/orpheus-power/src/governor.rs::tests::performance_setting_values", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0c07"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0c07"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "governor" = ["crates/orpheus-power/src/governor.rs::tests::performance_setting_values"] }
+device = true
+uncovered = { "governor-player" = "the clock level on the player under load (governor statistics); no journey reads it yet" }
+
+# ---------------------------------------------------------------- Apps (Files, Now Playing, Equaliser, Radio, Steps, Alarms, Timer)
+
+[[setting]]
+id = "0x0D01"
+name = "Files › menu › Sort by"
+scope = "local"
+values = ["Name", "Date", "Size"]
+default = 0
+contexts = ["Files.Big", "TextViewer", "Pictures", "PictureViewer", "playback"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Files, Pictures: the rows' order (a long folder; the row a journey opens is another file). Plan 07 §5.12 says also in playback queues made from a folder: not so in the simulator (see uncovered)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d01", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d01"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d01"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+uncovered = { "playback" = "07 §5.12 asks for the sort order in queues made from a folder; the simulator queues in name order (media.rs audio_in) and the firmware is not checked: open question, the matrix shows no effect" }
+
+[[setting]]
+id = "0x0D02"
+name = "Files › menu › Show hidden files"
+scope = "local"
+values = ["off", "on"]
+default = 0
+contexts = ["Folders", "Files", "Files.Big", "Files.Menu", "TextViewer", "Pictures", "PictureViewer"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Files, Folders, Pictures: hidden entries (dot names) listed or not, so the rows below them move; Files' menu shows the switch."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d02", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d02"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d02"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0D03"
+name = "Now Playing › menu › View"
+scope = "local"
+values = ["Standard", "Big art", "Lyrics", "Up next", "Details", "Levels"]
+default = 0
+contexts = ["NowPlaying", "NowPlaying.Menu"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Now Playing: the view drawn; its menu shows it."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d03", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d03"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d03"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0D10"
+name = "Equaliser › Custom 1 › band 1 (60 Hz)"
+scope = "local"
+values = [-12, 0, 12]
+default = 0
+contexts = ["Equaliser", "audio", "audio-player"]
+unaffected = ["@screens", "@services"]
+oracle = "With Equaliser = Custom 1 (pairwise with 0x0101): the band's gain in the equaliser screen's curve and in the rendered sound; with another preset nothing."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d10", "sim/tests/settings_matrix.rs::effects::custom_bands_show_with_their_preset", "sim/web/src/audio.rs::tests::settings_effects::custom_bands"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d10"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d10"], "Equaliser" = ["sim/tests/settings_matrix.rs::matrix::s0d10", "sim/tests/settings_matrix.rs::effects::custom_bands_show_with_their_preset"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::custom_bands"] }
+device = true
+uncovered = { "audio-player" = "on the player the firmware's own copy of the mapping (fw ui.rs → media::publish_sound) feeds the audio task; no read-only command reports the applied Sound or a rendered-block CRC to compare in a journey yet (needs `status` to print it, or a short fixture and CRC comparison in the suite: a firmware change)" }
+
+[[setting]]
+id = "0x0D11"
+name = "Equaliser › Custom 1 › band 2 (230 Hz)"
+scope = "local"
+values = [-12, 0, 12]
+default = 0
+contexts = ["Equaliser", "audio", "audio-player"]
+unaffected = ["@screens", "@services"]
+oracle = "With Equaliser = Custom 1 (pairwise with 0x0101): the band's gain in the equaliser screen's curve and in the rendered sound; with another preset nothing."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d11", "sim/tests/settings_matrix.rs::effects::custom_bands_show_with_their_preset", "sim/web/src/audio.rs::tests::settings_effects::custom_bands"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d11"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d11"], "Equaliser" = ["sim/tests/settings_matrix.rs::matrix::s0d11", "sim/tests/settings_matrix.rs::effects::custom_bands_show_with_their_preset"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::custom_bands"] }
+device = true
+uncovered = { "audio-player" = "on the player the firmware's own copy of the mapping (fw ui.rs → media::publish_sound) feeds the audio task; no read-only command reports the applied Sound or a rendered-block CRC to compare in a journey yet (needs `status` to print it, or a short fixture and CRC comparison in the suite: a firmware change)" }
+
+[[setting]]
+id = "0x0D12"
+name = "Equaliser › Custom 1 › band 3 (910 Hz)"
+scope = "local"
+values = [-12, 0, 12]
+default = 0
+contexts = ["Equaliser", "audio", "audio-player"]
+unaffected = ["@screens", "@services"]
+oracle = "With Equaliser = Custom 1 (pairwise with 0x0101): the band's gain in the equaliser screen's curve and in the rendered sound; with another preset nothing."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d12", "sim/tests/settings_matrix.rs::effects::custom_bands_show_with_their_preset", "sim/web/src/audio.rs::tests::settings_effects::custom_bands"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d12"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d12"], "Equaliser" = ["sim/tests/settings_matrix.rs::matrix::s0d12", "sim/tests/settings_matrix.rs::effects::custom_bands_show_with_their_preset"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::custom_bands"] }
+device = true
+uncovered = { "audio-player" = "on the player the firmware's own copy of the mapping (fw ui.rs → media::publish_sound) feeds the audio task; no read-only command reports the applied Sound or a rendered-block CRC to compare in a journey yet (needs `status` to print it, or a short fixture and CRC comparison in the suite: a firmware change)" }
+
+[[setting]]
+id = "0x0D13"
+name = "Equaliser › Custom 1 › band 4 (3600 Hz)"
+scope = "local"
+values = [-12, 0, 12]
+default = 0
+contexts = ["Equaliser", "audio", "audio-player"]
+unaffected = ["@screens", "@services"]
+oracle = "With Equaliser = Custom 1 (pairwise with 0x0101): the band's gain in the equaliser screen's curve and in the rendered sound; with another preset nothing."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d13", "sim/tests/settings_matrix.rs::effects::custom_bands_show_with_their_preset", "sim/web/src/audio.rs::tests::settings_effects::custom_bands"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d13"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d13"], "Equaliser" = ["sim/tests/settings_matrix.rs::matrix::s0d13", "sim/tests/settings_matrix.rs::effects::custom_bands_show_with_their_preset"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::custom_bands"] }
+device = true
+uncovered = { "audio-player" = "on the player the firmware's own copy of the mapping (fw ui.rs → media::publish_sound) feeds the audio task; no read-only command reports the applied Sound or a rendered-block CRC to compare in a journey yet (needs `status` to print it, or a short fixture and CRC comparison in the suite: a firmware change)" }
+
+[[setting]]
+id = "0x0D14"
+name = "Equaliser › Custom 1 › band 5 (14000 Hz)"
+scope = "local"
+values = [-12, 0, 12]
+default = 0
+contexts = ["Equaliser", "audio", "audio-player"]
+unaffected = ["@screens", "@services"]
+oracle = "With Equaliser = Custom 1 (pairwise with 0x0101): the band's gain in the equaliser screen's curve and in the rendered sound; with another preset nothing."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d14", "sim/tests/settings_matrix.rs::effects::custom_bands_show_with_their_preset", "sim/web/src/audio.rs::tests::settings_effects::custom_bands"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d14"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d14"], "Equaliser" = ["sim/tests/settings_matrix.rs::matrix::s0d14", "sim/tests/settings_matrix.rs::effects::custom_bands_show_with_their_preset"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::custom_bands"] }
+device = true
+uncovered = { "audio-player" = "on the player the firmware's own copy of the mapping (fw ui.rs → media::publish_sound) feeds the audio task; no read-only command reports the applied Sound or a rendered-block CRC to compare in a journey yet (needs `status` to print it, or a short fixture and CRC comparison in the suite: a firmware change)" }
+
+[[setting]]
+id = "0x0D15"
+name = "Equaliser › Custom 2 › band 1 (60 Hz)"
+scope = "local"
+values = [-12, 0, 12]
+default = 0
+contexts = ["Equaliser", "audio", "audio-player"]
+unaffected = ["@screens", "@services"]
+oracle = "With Equaliser = Custom 2 (pairwise with 0x0101): the band's gain in the equaliser screen's curve and in the rendered sound; with another preset nothing."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d15", "sim/tests/settings_matrix.rs::effects::custom_bands_show_with_their_preset", "sim/web/src/audio.rs::tests::settings_effects::custom_bands"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d15"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d15"], "Equaliser" = ["sim/tests/settings_matrix.rs::matrix::s0d15", "sim/tests/settings_matrix.rs::effects::custom_bands_show_with_their_preset"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::custom_bands"] }
+device = true
+uncovered = { "audio-player" = "on the player the firmware's own copy of the mapping (fw ui.rs → media::publish_sound) feeds the audio task; no read-only command reports the applied Sound or a rendered-block CRC to compare in a journey yet (needs `status` to print it, or a short fixture and CRC comparison in the suite: a firmware change)" }
+
+[[setting]]
+id = "0x0D16"
+name = "Equaliser › Custom 2 › band 2 (230 Hz)"
+scope = "local"
+values = [-12, 0, 12]
+default = 0
+contexts = ["Equaliser", "audio", "audio-player"]
+unaffected = ["@screens", "@services"]
+oracle = "With Equaliser = Custom 2 (pairwise with 0x0101): the band's gain in the equaliser screen's curve and in the rendered sound; with another preset nothing."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d16", "sim/tests/settings_matrix.rs::effects::custom_bands_show_with_their_preset", "sim/web/src/audio.rs::tests::settings_effects::custom_bands"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d16"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d16"], "Equaliser" = ["sim/tests/settings_matrix.rs::matrix::s0d16", "sim/tests/settings_matrix.rs::effects::custom_bands_show_with_their_preset"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::custom_bands"] }
+device = true
+uncovered = { "audio-player" = "on the player the firmware's own copy of the mapping (fw ui.rs → media::publish_sound) feeds the audio task; no read-only command reports the applied Sound or a rendered-block CRC to compare in a journey yet (needs `status` to print it, or a short fixture and CRC comparison in the suite: a firmware change)" }
+
+[[setting]]
+id = "0x0D17"
+name = "Equaliser › Custom 2 › band 3 (910 Hz)"
+scope = "local"
+values = [-12, 0, 12]
+default = 0
+contexts = ["Equaliser", "audio", "audio-player"]
+unaffected = ["@screens", "@services"]
+oracle = "With Equaliser = Custom 2 (pairwise with 0x0101): the band's gain in the equaliser screen's curve and in the rendered sound; with another preset nothing."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d17", "sim/tests/settings_matrix.rs::effects::custom_bands_show_with_their_preset", "sim/web/src/audio.rs::tests::settings_effects::custom_bands"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d17"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d17"], "Equaliser" = ["sim/tests/settings_matrix.rs::matrix::s0d17", "sim/tests/settings_matrix.rs::effects::custom_bands_show_with_their_preset"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::custom_bands"] }
+device = true
+uncovered = { "audio-player" = "on the player the firmware's own copy of the mapping (fw ui.rs → media::publish_sound) feeds the audio task; no read-only command reports the applied Sound or a rendered-block CRC to compare in a journey yet (needs `status` to print it, or a short fixture and CRC comparison in the suite: a firmware change)" }
+
+[[setting]]
+id = "0x0D18"
+name = "Equaliser › Custom 2 › band 4 (3600 Hz)"
+scope = "local"
+values = [-12, 0, 12]
+default = 0
+contexts = ["Equaliser", "audio", "audio-player"]
+unaffected = ["@screens", "@services"]
+oracle = "With Equaliser = Custom 2 (pairwise with 0x0101): the band's gain in the equaliser screen's curve and in the rendered sound; with another preset nothing."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d18", "sim/tests/settings_matrix.rs::effects::custom_bands_show_with_their_preset", "sim/web/src/audio.rs::tests::settings_effects::custom_bands"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d18"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d18"], "Equaliser" = ["sim/tests/settings_matrix.rs::matrix::s0d18", "sim/tests/settings_matrix.rs::effects::custom_bands_show_with_their_preset"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::custom_bands"] }
+device = true
+uncovered = { "audio-player" = "on the player the firmware's own copy of the mapping (fw ui.rs → media::publish_sound) feeds the audio task; no read-only command reports the applied Sound or a rendered-block CRC to compare in a journey yet (needs `status` to print it, or a short fixture and CRC comparison in the suite: a firmware change)" }
+
+[[setting]]
+id = "0x0D19"
+name = "Equaliser › Custom 2 › band 5 (14000 Hz)"
+scope = "local"
+values = [-12, 0, 12]
+default = 0
+contexts = ["Equaliser", "audio", "audio-player"]
+unaffected = ["@screens", "@services"]
+oracle = "With Equaliser = Custom 2 (pairwise with 0x0101): the band's gain in the equaliser screen's curve and in the rendered sound; with another preset nothing."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d19", "sim/tests/settings_matrix.rs::effects::custom_bands_show_with_their_preset", "sim/web/src/audio.rs::tests::settings_effects::custom_bands"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d19"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d19"], "Equaliser" = ["sim/tests/settings_matrix.rs::matrix::s0d19", "sim/tests/settings_matrix.rs::effects::custom_bands_show_with_their_preset"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::custom_bands"] }
+device = true
+uncovered = { "audio-player" = "on the player the firmware's own copy of the mapping (fw ui.rs → media::publish_sound) feeds the audio task; no read-only command reports the applied Sound or a rendered-block CRC to compare in a journey yet (needs `status` to print it, or a short fixture and CRC comparison in the suite: a firmware change)" }
+
+[[setting]]
+id = "0x0D20"
+name = "Steps › menu › Daily goal"
+scope = "local"
+values = [1000, 15500, 30000]
+default = 10000
+contexts = ["Steps", "Steps.Week"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Steps: the goal ring and the week's goal line."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d20", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d20"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d20"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0D21"
+name = "Steps › menu › Stride length"
+scope = "local"
+values = [30, 90, 150]
+default = 70
+contexts = ["Steps", "Steps.Week"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Steps: the distance walked (today and the week)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d21", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d21"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d21"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0D22"
+name = "Steps › menu › Weight"
+scope = "local"
+values = [30, 115, 200]
+default = 70
+contexts = ["Steps"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Steps: the calories (today)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d22", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d22"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d22"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0D23"
+name = "Steps › menu › Units"
+scope = "local"
+values = ["Kilometres", "Miles"]
+default = 0
+contexts = ["Steps", "Steps.Week"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Steps: distances in km or miles."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d23", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d23"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d23"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0D24"
+name = "Steps › menu › Count in background"
+scope = "local"
+values = ["Off", "While on"]
+default = 1
+contexts = ["Steps", "Steps.Week", "steps-player"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Steps: says whether it counts; the firmware's step task counts while the player is on, or only with Steps open (the simulator counts either way)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d24", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d24"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d24"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+device = true
+uncovered = { "steps-player" = "the firmware's sensor task (fw services → sensor) stops counting off the Steps screen; the simulator's fake sensor always counts; no journey walks the player" }
+
+[[setting]]
+id = "0x0D25"
+name = "Steps › menu › Sensitivity"
+scope = "local"
+values = ["Low", "Medium", "High"]
+default = 1
+contexts = ["steps-player"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Step counter: the detector's threshold (host: orpheus-steps Sensitivity::from_index on a soft walk counts Low < Medium ≤ High)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d25", "crates/orpheus-steps/tests/synthetic.rs::sensitivity_setting_values", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d25"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d25"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "steps-player" = ["crates/orpheus-steps/tests/synthetic.rs::sensitivity_setting_values"] }
+
+[[setting]]
+id = "0x0D30"
+name = "Stopwatch › Alarm › alarm 1 › time"
+scope = "local"
+values = [0, 719, 1439]
+default = 420
+contexts = ["Alarms", "Alert", "alarms"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Alarm tab: the time shown; with alarm 1 on, it rings at that time (pairwise with 0x0D32)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d30", "sim/tests/settings_matrix.rs::effects::alarms_ring_at_their_time_on_their_days", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d30"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d30"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "alarms" = ["sim/tests/settings_matrix.rs::matrix::s0d30", "sim/tests/settings_matrix.rs::effects::alarms_ring_at_their_time_on_their_days"] }
+
+[[setting]]
+id = "0x0D31"
+name = "Stopwatch › Alarm › alarm 1 › days"
+scope = "local"
+values = [0, 31, 127]
+default = 31
+contexts = ["Alarms", "Alert", "alarms"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Alarm tab: the days shown; with alarm 1 on, it rings only on those days (none: once)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d31", "sim/tests/settings_matrix.rs::effects::alarms_ring_at_their_time_on_their_days", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d31"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d31"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "alarms" = ["sim/tests/settings_matrix.rs::matrix::s0d31", "sim/tests/settings_matrix.rs::effects::alarms_ring_at_their_time_on_their_days"] }
+
+[[setting]]
+id = "0x0D32"
+name = "Stopwatch › Alarm › alarm 1 › on"
+scope = "local"
+values = ["off", "on"]
+default = 0
+contexts = ["Home", "Home.Menu", "Home.Playing", "QuickPanel", "Volume", "PowerMenu", "UsbConnect", "Music", "Folders", "MusicLibrary", "NowPlaying", "NowPlaying.Menu", "Equaliser", "Files", "Files.Big", "Files.Menu", "TextViewer", "Pictures", "Radio", "RadioPresets", "Bluetooth", "Recorder", "Recorder.Recording", "Steps", "Steps.Week", "Stopwatch", "Timer", "Alarms", "Authenticator", "UsbDrive", "Settings", "Settings.Sound", "Settings.Playback", "Settings.Display", "Settings.Power", "Settings.DateTime", "Settings.Bluetooth", "Settings.Radio", "Settings.Recording", "Settings.Usb", "Settings.Language", "Settings.Storage", "Settings.System", "About", "HomeApps", "Games", "Game4096", "GamePause", "Books", "Reader", "BookMenu", "alarms"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Alarm 1 rings at its time (the alert); the status bar's alarm sign on every screen with a status bar; the alarm tab's switch."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d32", "sim/tests/settings_matrix.rs::effects::alarms_ring_at_their_time_on_their_days", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d32"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d32"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "alarms" = ["sim/tests/settings_matrix.rs::matrix::s0d32", "sim/tests/settings_matrix.rs::effects::alarms_ring_at_their_time_on_their_days"] }
+
+[[setting]]
+id = "0x0D33"
+name = "Stopwatch › Alarm › alarm 2 › time"
+scope = "local"
+values = [0, 719, 1439]
+default = 450
+contexts = ["Alarms", "alarms"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Alarm tab: the time shown; with alarm 2 on, it rings at that time (pairwise with 0x0D35)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d33", "sim/tests/settings_matrix.rs::effects::alarms_ring_at_their_time_on_their_days", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d33"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d33"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "alarms" = ["sim/tests/settings_matrix.rs::matrix::s0d33", "sim/tests/settings_matrix.rs::effects::alarms_ring_at_their_time_on_their_days"] }
+
+[[setting]]
+id = "0x0D34"
+name = "Stopwatch › Alarm › alarm 2 › days"
+scope = "local"
+values = [0, 31, 127]
+default = 31
+contexts = ["Alarms", "alarms"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Alarm tab: the days shown; with alarm 2 on, it rings only on those days (none: once)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d34", "sim/tests/settings_matrix.rs::effects::alarms_ring_at_their_time_on_their_days", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d34"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d34"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "alarms" = ["sim/tests/settings_matrix.rs::matrix::s0d34", "sim/tests/settings_matrix.rs::effects::alarms_ring_at_their_time_on_their_days"] }
+
+[[setting]]
+id = "0x0D35"
+name = "Stopwatch › Alarm › alarm 2 › on"
+scope = "local"
+values = ["off", "on"]
+default = 0
+contexts = ["Home", "Home.Menu", "Home.Playing", "QuickPanel", "Volume", "PowerMenu", "UsbConnect", "Music", "Folders", "MusicLibrary", "NowPlaying", "NowPlaying.Menu", "Equaliser", "Files", "Files.Big", "Files.Menu", "TextViewer", "Pictures", "Radio", "RadioPresets", "Bluetooth", "Recorder", "Recorder.Recording", "Steps", "Steps.Week", "Stopwatch", "Timer", "Alarms", "Authenticator", "UsbDrive", "Settings", "Settings.Sound", "Settings.Playback", "Settings.Display", "Settings.Power", "Settings.DateTime", "Settings.Bluetooth", "Settings.Radio", "Settings.Recording", "Settings.Usb", "Settings.Language", "Settings.Storage", "Settings.System", "About", "HomeApps", "Games", "Game4096", "GamePause", "Books", "Reader", "BookMenu", "alarms"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Alarm 2 rings at its time (the alert); the status bar's alarm sign on every screen with a status bar; the alarm tab's switch."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d35", "sim/tests/settings_matrix.rs::effects::alarms_ring_at_their_time_on_their_days", "sim/tests/tools.rs::alarm_rings_on_its_days_only", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d35"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d35"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "alarms" = ["sim/tests/settings_matrix.rs::matrix::s0d35", "sim/tests/settings_matrix.rs::effects::alarms_ring_at_their_time_on_their_days"] }
+
+[[setting]]
+id = "0x0D36"
+name = "Stopwatch › Alarm › alarm 3 › time"
+scope = "local"
+values = [0, 719, 1439]
+default = 540
+contexts = ["Alarms", "alarms"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Alarm tab: the time shown; with alarm 3 on, it rings at that time (pairwise with 0x0D38)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d36", "sim/tests/settings_matrix.rs::effects::alarms_ring_at_their_time_on_their_days", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d36"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d36"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "alarms" = ["sim/tests/settings_matrix.rs::matrix::s0d36", "sim/tests/settings_matrix.rs::effects::alarms_ring_at_their_time_on_their_days"] }
+
+[[setting]]
+id = "0x0D37"
+name = "Stopwatch › Alarm › alarm 3 › days"
+scope = "local"
+values = [0, 31, 127]
+default = 96
+contexts = ["Alarms", "alarms"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Alarm tab: the days shown; with alarm 3 on, it rings only on those days (none: once)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d37", "sim/tests/settings_matrix.rs::effects::alarms_ring_at_their_time_on_their_days", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d37"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d37"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "alarms" = ["sim/tests/settings_matrix.rs::matrix::s0d37", "sim/tests/settings_matrix.rs::effects::alarms_ring_at_their_time_on_their_days"] }
+
+[[setting]]
+id = "0x0D38"
+name = "Stopwatch › Alarm › alarm 3 › on"
+scope = "local"
+values = ["off", "on"]
+default = 0
+contexts = ["Home", "Home.Menu", "Home.Playing", "QuickPanel", "Volume", "PowerMenu", "UsbConnect", "Music", "Folders", "MusicLibrary", "NowPlaying", "NowPlaying.Menu", "Equaliser", "Files", "Files.Big", "Files.Menu", "TextViewer", "Pictures", "Radio", "RadioPresets", "Bluetooth", "Recorder", "Recorder.Recording", "Steps", "Steps.Week", "Stopwatch", "Timer", "Alarms", "Authenticator", "UsbDrive", "Settings", "Settings.Sound", "Settings.Playback", "Settings.Display", "Settings.Power", "Settings.DateTime", "Settings.Bluetooth", "Settings.Radio", "Settings.Recording", "Settings.Usb", "Settings.Language", "Settings.Storage", "Settings.System", "About", "HomeApps", "Games", "Game4096", "GamePause", "Books", "Reader", "BookMenu", "alarms"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Alarm 3 rings at its time (the alert); the status bar's alarm sign on every screen with a status bar; the alarm tab's switch."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d38", "sim/tests/settings_matrix.rs::effects::alarms_ring_at_their_time_on_their_days", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d38"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d38"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "alarms" = ["sim/tests/settings_matrix.rs::matrix::s0d38", "sim/tests/settings_matrix.rs::effects::alarms_ring_at_their_time_on_their_days"] }
+
+[[setting]]
+id = "0x0D39"
+name = "Stopwatch › Alarm › alarm 4 › time"
+scope = "local"
+values = [0, 719, 1439]
+default = 720
+contexts = ["Alarms", "alarms"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Alarm tab: the time shown; with alarm 4 on, it rings at that time (pairwise with 0x0D3B)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d39", "sim/tests/settings_matrix.rs::effects::alarms_ring_at_their_time_on_their_days", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d39"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d39"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "alarms" = ["sim/tests/settings_matrix.rs::matrix::s0d39", "sim/tests/settings_matrix.rs::effects::alarms_ring_at_their_time_on_their_days"] }
+
+[[setting]]
+id = "0x0D3A"
+name = "Stopwatch › Alarm › alarm 4 › days"
+scope = "local"
+values = [0, 31, 127]
+default = 0
+contexts = ["Alarms", "alarms"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Alarm tab: the days shown; with alarm 4 on, it rings only on those days (none: once)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d3a", "sim/tests/settings_matrix.rs::effects::alarms_ring_at_their_time_on_their_days", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d3a"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d3a"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "alarms" = ["sim/tests/settings_matrix.rs::matrix::s0d3a", "sim/tests/settings_matrix.rs::effects::alarms_ring_at_their_time_on_their_days"] }
+
+[[setting]]
+id = "0x0D3B"
+name = "Stopwatch › Alarm › alarm 4 › on"
+scope = "local"
+values = ["off", "on"]
+default = 0
+contexts = ["Home", "Home.Menu", "Home.Playing", "QuickPanel", "Volume", "PowerMenu", "UsbConnect", "Music", "Folders", "MusicLibrary", "NowPlaying", "NowPlaying.Menu", "Equaliser", "Files", "Files.Big", "Files.Menu", "TextViewer", "Pictures", "Radio", "RadioPresets", "Bluetooth", "Recorder", "Recorder.Recording", "Steps", "Steps.Week", "Stopwatch", "Timer", "Alarms", "Authenticator", "UsbDrive", "Settings", "Settings.Sound", "Settings.Playback", "Settings.Display", "Settings.Power", "Settings.DateTime", "Settings.Bluetooth", "Settings.Radio", "Settings.Recording", "Settings.Usb", "Settings.Language", "Settings.Storage", "Settings.System", "About", "HomeApps", "Games", "Game4096", "GamePause", "Books", "Reader", "BookMenu", "alarms"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Alarm 4 rings at its time (the alert); the status bar's alarm sign on every screen with a status bar; the alarm tab's switch."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d3b", "sim/tests/settings_matrix.rs::effects::alarms_ring_at_their_time_on_their_days", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d3b"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d3b"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "alarms" = ["sim/tests/settings_matrix.rs::matrix::s0d3b", "sim/tests/settings_matrix.rs::effects::alarms_ring_at_their_time_on_their_days"] }
+
+[[setting]]
+id = "0x0D40"
+name = "Stopwatch › Timer › preset 1"
+scope = "local"
+values = [0, 16200, 32400]
+default = 60
+contexts = ["Timer"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Timer tab: the preset's duration shown and started."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d40", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d40"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d40"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0D41"
+name = "Stopwatch › Timer › preset 2"
+scope = "local"
+values = [0, 16200, 32400]
+default = 180
+contexts = ["Timer"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Timer tab: the preset's duration shown and started."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d41", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d41"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d41"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0D42"
+name = "Stopwatch › Timer › preset 3"
+scope = "local"
+values = [0, 16200, 32400]
+default = 300
+contexts = ["Timer"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Timer tab: the preset's duration shown and started."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d42", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d42"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d42"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0D43"
+name = "Stopwatch › Timer › preset 4"
+scope = "local"
+values = [0, 16200, 32400]
+default = 600
+contexts = ["Timer"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Timer tab: the preset's duration shown and started."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d43", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d43"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d43"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0D44"
+name = "Stopwatch › Timer › preset 5"
+scope = "local"
+values = [0, 16200, 32400]
+default = 1500
+contexts = ["Timer"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Timer tab: the preset's duration shown and started."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d44", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d44"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d44"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0D50"
+name = "Radio › the station tuned"
+scope = "local"
+values = [6500, 8750, 10800]
+default = 8750
+contexts = ["Radio"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Radio: the frequency it starts on (the station shown and tuned)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0d50", "sim/tests/radio.rs::starts_where_it_was_last", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d50"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d50"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
 # ---------------------------------------------------------------- Blocks
 
@@ -30,9 +1452,11 @@ name = "Games › Blocks › Settings › Mode"
 scope = "local"
 values = ["Endless", "40 lines", "2 minutes"]
 default = 0
-contexts = ["Blocks", "Games", "GamePause"]
+contexts = ["Games", "Blocks", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Blocks panel: Lines shows n/40 (40 lines), Time counts up (40 lines) or down from 2:00 (2 minutes), Best (endless); the game ends at 40 lines / 2:00 (engine phase Done). Games and GamePause: the best result shown is the mode's (score or time). Applies from the next game."
-tests = ["sim/tests/games.rs::settings_effects::blocks_mode"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e01", "sim/tests/games.rs::settings_effects::blocks_mode", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain", "sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e01"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e01"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Games" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"], "GamePause" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"] }
 
 [[setting]]
 id = "0x0E02"
@@ -41,8 +1465,10 @@ scope = "local"
 values = [1, 2, 8, 15]
 default = 1
 contexts = ["Blocks"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Blocks panel Level value; gravity (rows fallen after a fixed time). Applies from the next game."
-tests = ["sim/tests/games.rs::settings_effects::blocks_start_level"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e02", "sim/tests/games.rs::settings_effects::blocks_start_level", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e02"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e02"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
 [[setting]]
 id = "0x0E03"
@@ -50,9 +1476,11 @@ name = "Games › Blocks › Settings › Pieces"
 scope = "local"
 values = ["Bag of seven", "Random"]
 default = 0
-contexts = ["Blocks", "Games", "GamePause"]
+contexts = ["Games", "Blocks", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Piece sequence of a fixed seed differs (Next previews); score table variant (best shown in Games/GamePause). Applies from the next game."
-tests = ["sim/tests/games.rs::settings_effects::blocks_pieces"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e03", "sim/tests/games.rs::settings_effects::blocks_pieces", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain", "sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e03"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e03"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Games" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"], "GamePause" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"] }
 
 [[setting]]
 id = "0x0E04"
@@ -61,8 +1489,10 @@ scope = "local"
 values = ["off", "on"]
 default = 1
 contexts = ["Blocks"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Blocks well: the outline where the piece would land is drawn (on) or not (off). At once."
-tests = ["sim/tests/games.rs::settings_effects::blocks_ghost"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e04", "sim/tests/games.rs::settings_effects::blocks_ghost", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e04"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e04"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
 [[setting]]
 id = "0x0E05"
@@ -71,8 +1501,10 @@ scope = "local"
 values = ["0", "1", "2", "3"]
 default = 3
 contexts = ["Blocks"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Blocks panel: Next label and 0–3 small pieces. At once."
-tests = ["sim/tests/games.rs::settings_effects::blocks_previews"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e05", "sim/tests/games.rs::settings_effects::blocks_previews", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e05"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e05"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
 [[setting]]
 id = "0x0E06"
@@ -80,9 +1512,11 @@ name = "Games › Blocks › Settings › Hold piece"
 scope = "local"
 values = ["off", "on"]
 default = 1
-contexts = ["Blocks", "Games", "GamePause"]
+contexts = ["Games", "Blocks", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Blocks panel: Hold label and slot shown (on) or not (off); Menu swaps the piece (on) or does nothing (off); score table variant. Applies from the next game."
-tests = ["sim/tests/games.rs::settings_effects::blocks_hold"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e06", "sim/tests/games.rs::settings_effects::blocks_hold", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain", "sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e06"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e06"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Games" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"], "GamePause" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"] }
 
 [[setting]]
 id = "0x0E07"
@@ -91,8 +1525,10 @@ scope = "local"
 values = ["0.25 s", "0.5 s", "0.75 s", "1 s"]
 default = 1
 contexts = ["Blocks"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Steps from landing to lock (engine: pieces locked after a fixed wait with the piece resting). Applies from the next game."
-tests = ["sim/tests/games.rs::settings_effects::blocks_lock_delay"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e07", "sim/tests/games.rs::settings_effects::blocks_lock_delay", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e07"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e07"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Blocks" = ["sim/tests/settings_matrix.rs::matrix::s0e07", "sim/tests/games.rs::settings_effects::blocks_lock_delay"] }
 
 [[setting]]
 id = "0x0E08"
@@ -101,8 +1537,10 @@ scope = "local"
 values = ["100 ms", "133 ms", "167 ms", "200 ms", "267 ms"]
 default = 2
 contexts = ["Blocks"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Cells moved while Next is held for a fixed time (piece column). At once (on resume)."
-tests = ["sim/tests/games.rs::settings_effects::blocks_auto_shift"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e08", "sim/tests/games.rs::settings_effects::blocks_auto_shift", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e08"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e08"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Blocks" = ["sim/tests/settings_matrix.rs::matrix::s0e08", "sim/tests/games.rs::settings_effects::blocks_auto_shift"] }
 
 [[setting]]
 id = "0x0E09"
@@ -111,8 +1549,10 @@ scope = "local"
 values = ["0 ms", "17 ms", "33 ms", "50 ms", "83 ms"]
 default = 2
 contexts = ["Blocks"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Cells moved while Next is held for a fixed time (piece column; 0 ms goes to the wall). At once (on resume)."
-tests = ["sim/tests/games.rs::settings_effects::blocks_repeat"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e09", "sim/tests/games.rs::settings_effects::blocks_repeat", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e09"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e09"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Blocks" = ["sim/tests/settings_matrix.rs::matrix::s0e09", "sim/tests/games.rs::settings_effects::blocks_repeat"] }
 
 [[setting]]
 id = "0x0E0A"
@@ -120,9 +1560,11 @@ name = "Games › Blocks › Settings › Wall kicks"
 scope = "local"
 values = ["off", "on"]
 default = 1
-contexts = ["Blocks", "Games", "GamePause"]
+contexts = ["Games", "Blocks", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "A turn against the wall happens (on) or not (off): piece cells after Up at the wall; score table variant. Applies from the next game."
-tests = ["sim/tests/games.rs::settings_effects::blocks_kicks"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e0a", "sim/tests/games.rs::settings_effects::blocks_kicks", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain", "sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e0a"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e0a"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Games" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"], "Blocks" = ["sim/tests/settings_matrix.rs::matrix::s0e0a", "sim/tests/games.rs::settings_effects::blocks_kicks"], "GamePause" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"] }
 
 # ---------------------------------------------------------------- 4096
 
@@ -132,9 +1574,12 @@ name = "Games › 4096 › Settings › Board"
 scope = "local"
 values = ["4 × 4", "5 × 5", "6 × 6"]
 default = 0
-contexts = ["Game4096", "Games", "GamePause"]
+contexts = ["Games", "Game4096", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Game4096: board of 4, 5 or 6 cells a side (screenshot); score table variant. Applies from the next game."
-tests = ["sim/tests/games.rs::settings_effects::tiles_board"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e21", "sim/tests/games.rs::settings_effects::tiles_board", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e21"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e21"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+uncovered = { "Games" = "the best shown is this variant's once a game was finished: the simulator has no scripted finished 4096 game yet", "GamePause" = "the best shown is this variant's once a game was finished: the simulator has no scripted finished 4096 game yet" }
 
 [[setting]]
 id = "0x0E22"
@@ -142,9 +1587,12 @@ name = "Games › 4096 › Settings › Goal tile"
 scope = "local"
 values = ["2048", "4096", "8192", "Endless"]
 default = 1
-contexts = ["Game4096", "Games", "GamePause"]
+contexts = ["Games", "Game4096", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Game4096: the Goal reached banner appears when the goal tile is made (never for Endless); score table variant. Applies from the next game."
-tests = ["sim/tests/games.rs::settings_effects::tiles_goal"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e22", "sim/tests/games.rs::settings_effects::tiles_goal", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e22"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e22"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Game4096" = ["sim/tests/settings_matrix.rs::matrix::s0e22", "sim/tests/games.rs::settings_effects::tiles_goal"] }
+uncovered = { "Games" = "the best shown is this variant's once a game was finished: the simulator has no scripted finished 4096 game yet", "GamePause" = "the best shown is this variant's once a game was finished: the simulator has no scripted finished 4096 game yet" }
 
 [[setting]]
 id = "0x0E23"
@@ -152,9 +1600,12 @@ name = "Games › 4096 › Settings › Chance of a 4"
 scope = "local"
 values = ["0 %", "10 %", "25 %", "50 %"]
 default = 1
-contexts = ["Game4096", "Games", "GamePause"]
+contexts = ["Games", "Game4096", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "New tiles of a fixed seed: share of 4s (0 %: none); score table variant. Applies from the next game."
-tests = ["sim/tests/games.rs::settings_effects::tiles_four"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e23", "sim/tests/games.rs::settings_effects::tiles_four", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e23"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e23"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+uncovered = { "Games" = "the best shown is this variant's once a game was finished: the simulator has no scripted finished 4096 game yet", "GamePause" = "the best shown is this variant's once a game was finished: the simulator has no scripted finished 4096 game yet" }
 
 [[setting]]
 id = "0x0E24"
@@ -162,9 +1613,12 @@ name = "Games › 4096 › Settings › Undo steps"
 scope = "local"
 values = ["0", "1", "2", "3"]
 default = 1
-contexts = ["Game4096", "Games", "GamePause"]
+contexts = ["Games", "Game4096", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Slides OK takes back (board after slides and OK presses); score table variant. Applies from the next game."
-tests = ["sim/tests/games.rs::settings_effects::tiles_undo"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e24", "sim/tests/games.rs::settings_effects::tiles_undo", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e24"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e24"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Game4096" = ["sim/tests/settings_matrix.rs::matrix::s0e24", "sim/tests/games.rs::settings_effects::tiles_undo"] }
+uncovered = { "Games" = "the best shown is this variant's once a game was finished: the simulator has no scripted finished 4096 game yet", "GamePause" = "the best shown is this variant's once a game was finished: the simulator has no scripted finished 4096 game yet" }
 
 [[setting]]
 id = "0x0E25"
@@ -173,8 +1627,10 @@ scope = "local"
 values = ["off", "on"]
 default = 1
 contexts = ["Game4096"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Game4096: the frame 33 ms after a slide shows tiles between cells (on) or the final board (off). At once. Independent of Settings › Display › Animations."
-tests = ["sim/tests/games.rs::settings_effects::tiles_animations"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e25", "sim/tests/games.rs::settings_effects::tiles_animations", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e25"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e25"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Game4096" = ["sim/tests/settings_matrix.rs::matrix::s0e25", "sim/tests/games.rs::settings_effects::tiles_animations"] }
 
 # ---------------------------------------------------------------- Solitaire
 
@@ -184,9 +1640,11 @@ name = "Games › Solitaire › Settings › Draw"
 scope = "local"
 values = ["One card", "Three cards"]
 default = 0
-contexts = ["Solitaire", "Games", "GamePause"]
+contexts = ["Games", "Solitaire", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Solitaire: OK on the stock turns one card or three (the waste fans the top three); score table variant (best shown in Games/GamePause). Applies from the next game."
-tests = ["sim/tests/games.rs::settings_effects::solitaire_draw"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e41", "sim/tests/games.rs::settings_effects::solitaire_draw", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain", "sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e41"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e41"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Games" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"], "GamePause" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"] }
 
 [[setting]]
 id = "0x0E42"
@@ -194,9 +1652,11 @@ name = "Games › Solitaire › Settings › Passes"
 scope = "local"
 values = ["Unlimited", "3", "1"]
 default = 0
-contexts = ["Solitaire", "Games", "GamePause"]
+contexts = ["Games", "Solitaire", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Solitaire: OK on the empty stock takes the waste back (unlimited, up to two times with 3) or does nothing (1); the stock's empty mark (ring or cross); score table variant. Applies from the next game."
-tests = ["sim/tests/games.rs::settings_effects::solitaire_passes"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e42", "sim/tests/games.rs::settings_effects::solitaire_passes", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain", "sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e42"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e42"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Games" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"], "GamePause" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"] }
 
 [[setting]]
 id = "0x0E43"
@@ -204,9 +1664,11 @@ name = "Games › Solitaire › Settings › Scoring"
 scope = "local"
 values = ["Standard", "Casino", "None"]
 default = 0
-contexts = ["Solitaire", "Games", "GamePause"]
+contexts = ["Games", "Solitaire", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Solitaire info line: Score (standard points), Bank (casino: −52 per deal, +5 per card up, carried in scores.bin) or Moves (none, best = time of a won game); score table variant. Applies from the next game."
-tests = ["sim/tests/games.rs::settings_effects::solitaire_scoring", "sim/tests/games.rs::casino_bank_carries_over"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e43", "sim/tests/games.rs::settings_effects::solitaire_scoring", "sim/tests/games.rs::casino_bank_carries_over", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain", "sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e43"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e43"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Games" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"], "GamePause" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"] }
 
 [[setting]]
 id = "0x0E44"
@@ -215,8 +1677,10 @@ scope = "local"
 values = ["off", "on"]
 default = 1
 contexts = ["Solitaire"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Solitaire: safe cards (aces, twos, cards whose lower other-colour cards are up) go to the foundations by themselves after each move and at the deal. At once."
-tests = ["sim/tests/games.rs::settings_effects::solitaire_auto_move"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e44", "sim/tests/games.rs::settings_effects::solitaire_auto_move", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e44"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e44"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
 [[setting]]
 id = "0x0E45"
@@ -225,8 +1689,10 @@ scope = "local"
 values = ["off", "on"]
 default = 1
 contexts = ["Solitaire"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Solitaire: with the stock and waste empty and every card face up the game plays itself out (a card every 4 steps) and is won. At once."
-tests = ["sim/tests/games.rs::settings_effects::solitaire_auto_complete"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e45", "sim/tests/games.rs::settings_effects::solitaire_auto_complete", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e45"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e45"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Solitaire" = ["sim/tests/settings_matrix.rs::matrix::s0e45", "sim/tests/games.rs::settings_effects::solitaire_auto_complete"] }
 
 [[setting]]
 id = "0x0E46"
@@ -235,8 +1701,10 @@ scope = "local"
 values = ["off", "on"]
 default = 1
 contexts = ["Solitaire"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Solitaire info line: m:ss at the right (on) or nothing; the game (its time counted either way) is the same. At once."
-tests = ["sim/tests/games.rs::settings_effects::solitaire_timer"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e46", "sim/tests/games.rs::settings_effects::solitaire_timer", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e46"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e46"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
 [[setting]]
 id = "0x0E47"
@@ -244,15 +1712,13 @@ name = "Games › Solitaire › Settings › Winnable only"
 scope = "local"
 values = ["off", "on"]
 default = 1
-contexts = ["Solitaire", "Games", "GamePause"]
+contexts = ["Games", "Solitaire", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Solitaire: the deal of a seed, or (on) the first of up to 24 deals from it that the deal check wins (best effort; the game's `checked` flag); score table variant. Applies from the next game."
-tests = ["sim/tests/games.rs::settings_effects::solitaire_winnable"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e47", "sim/tests/games.rs::settings_effects::solitaire_winnable", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain", "sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e47"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e47"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Games" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"], "GamePause" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"] }
 
 # ---------------------------------------------------------------- Salvo
-#
-# Salvo's settings are packed into the four stored words 0x0E80–0x0E83
-# (`Setting::pack`); each is set and read under its own key like any
-# other.
 
 [[setting]]
 id = "0x0E61"
@@ -260,9 +1726,11 @@ name = "Games › Salvo › Settings › Players › Players"
 scope = "local"
 values = ["2", "3", "4"]
 default = 0
-contexts = ["Salvo", "Games", "GamePause"]
+contexts = ["Games", "Salvo", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Salvo: 2, 3 or 4 tanks in the world (engine `tanks().len()`); score table variant. Applies from the next game."
-tests = ["sim/tests/games.rs::salvo_settings::players_and_who_plays"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e61", "sim/tests/games.rs::salvo_settings::players_and_who_plays", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain", "sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e61"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e61"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Games" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"], "GamePause" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"] }
 
 [[setting]]
 id = "0x0E62"
@@ -270,9 +1738,11 @@ name = "Games › Salvo › Settings › Players › Player 1"
 scope = "local"
 values = ["Human", "Novice", "Easy", "Hard", "Expert"]
 default = 0
-contexts = ["Salvo", "Games", "GamePause"]
+contexts = ["Games", "Salvo", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Salvo: player 1 aims with the keys (Human) or a computer of that difficulty searches and fires (info line \"Player 1 thinking\"); score table variant (hardest computer). Applies from the next game."
-tests = ["sim/tests/games.rs::salvo_settings::players_and_who_plays"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e62", "sim/tests/games.rs::salvo_settings::players_and_who_plays", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain", "sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e62"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e62"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Games" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"], "GamePause" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"] }
 
 [[setting]]
 id = "0x0E63"
@@ -280,9 +1750,11 @@ name = "Games › Salvo › Settings › Players › Player 2"
 scope = "local"
 values = ["Human", "Novice", "Easy", "Hard", "Expert"]
 default = 2
-contexts = ["Salvo", "Games", "GamePause"]
+contexts = ["Games", "Salvo", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Salvo: as Player 1 for tank 2; two humans: \"Pass to Player n\" before each human turn. Applies from the next game."
-tests = ["sim/tests/games.rs::salvo_settings::players_and_who_plays"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e63", "sim/tests/games.rs::salvo_settings::players_and_who_plays", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain", "sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e63"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e63"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Games" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"], "GamePause" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"] }
 
 [[setting]]
 id = "0x0E64"
@@ -290,9 +1762,12 @@ name = "Games › Salvo › Settings › Players › Player 3"
 scope = "local"
 values = ["Human", "Novice", "Easy", "Hard", "Expert"]
 default = 2
-contexts = ["Salvo", "Games", "GamePause"]
+contexts = ["Games", "Salvo", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Salvo with 3 or 4 players: as Player 1 for tank 3. Applies from the next game."
-tests = ["sim/tests/games.rs::salvo_settings::players_and_who_plays"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e64", "sim/tests/games.rs::salvo_settings::players_and_who_plays", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e64"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e64"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Salvo" = ["sim/tests/settings_matrix.rs::matrix::s0e64", "sim/tests/games.rs::salvo_settings::players_and_who_plays"] }
+uncovered = { "Games" = "Salvo's players 3 and 4 play only with 3–4 players (pairwise with Players); not tested", "GamePause" = "Salvo's players 3 and 4 play only with 3–4 players (pairwise with Players); not tested" }
 
 [[setting]]
 id = "0x0E65"
@@ -300,9 +1775,12 @@ name = "Games › Salvo › Settings › Players › Player 4"
 scope = "local"
 values = ["Human", "Novice", "Easy", "Hard", "Expert"]
 default = 2
-contexts = ["Salvo", "Games", "GamePause"]
+contexts = ["Games", "Salvo", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Salvo with 4 players: as Player 1 for tank 4. Applies from the next game."
-tests = ["sim/tests/games.rs::salvo_settings::players_and_who_plays"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e65", "sim/tests/games.rs::salvo_settings::players_and_who_plays", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e65"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e65"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Salvo" = ["sim/tests/settings_matrix.rs::matrix::s0e65", "sim/tests/games.rs::salvo_settings::players_and_who_plays"] }
+uncovered = { "Games" = "Salvo's players 3 and 4 play only with 3–4 players (pairwise with Players); not tested", "GamePause" = "Salvo's players 3 and 4 play only with 3–4 players (pairwise with Players); not tested" }
 
 [[setting]]
 id = "0x0E66"
@@ -311,8 +1789,10 @@ scope = "local"
 values = ["1", "3", "5", "10"]
 default = 1
 contexts = ["Salvo"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Salvo info line R1/n; the game ends after n rounds. Applies from the next game."
-tests = ["sim/tests/games.rs::salvo_settings::rounds_and_timer"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e66", "sim/tests/games.rs::salvo_settings::rounds_and_timer", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e66"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e66"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
 [[setting]]
 id = "0x0E67"
@@ -321,8 +1801,10 @@ scope = "local"
 values = ["Off", "15 s", "30 s", "60 s"]
 default = 0
 contexts = ["Salvo"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Salvo info line: seconds left of a human turn instead of the round; the tank fires as aimed at 0. Applies from the next game."
-tests = ["sim/tests/games.rs::salvo_settings::rounds_and_timer"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e67", "sim/tests/games.rs::salvo_settings::rounds_and_timer", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e67"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e67"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Salvo" = ["sim/tests/settings_matrix.rs::matrix::s0e67", "sim/tests/games.rs::salvo_settings::rounds_and_timer"] }
 
 [[setting]]
 id = "0x0E68"
@@ -331,8 +1813,10 @@ scope = "local"
 values = ["Hills", "Mountains", "Canyon", "Islands", "Plateaus", "Mixed"]
 default = 0
 contexts = ["Salvo"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Salvo: the ground's shape (water over the islands' sea). Applies from the next game."
-tests = ["sim/tests/games.rs::salvo_settings::terrain"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e68", "sim/tests/games.rs::salvo_settings::terrain", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e68"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e68"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
 [[setting]]
 id = "0x0E69"
@@ -341,8 +1825,10 @@ scope = "local"
 values = ["Low", "Medium", "High"]
 default = 1
 contexts = ["Salvo"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Salvo: the ground's small-scale detail (noise octaves). Applies from the next game."
-tests = ["sim/tests/games.rs::salvo_settings::terrain"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e69", "sim/tests/games.rs::salvo_settings::terrain", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e69"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e69"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
 [[setting]]
 id = "0x0E6A"
@@ -351,8 +1837,10 @@ scope = "local"
 values = ["Low", "Medium", "High"]
 default = 1
 contexts = ["Salvo"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Salvo: the ground's lowest and highest points. Applies from the next game."
-tests = ["sim/tests/games.rs::salvo_settings::terrain"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e6a", "sim/tests/games.rs::salvo_settings::terrain", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e6a"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e6a"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
 [[setting]]
 id = "0x0E6B"
@@ -361,8 +1849,10 @@ scope = "local"
 values = [0, 1, 5, 99]
 default = 0
 contexts = ["Salvo"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Salvo: 0 a new ground every game; any other number the same grounds in every game (round by round). Applies from the next game."
-tests = ["sim/tests/games.rs::salvo_settings::terrain"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e6b", "sim/tests/games.rs::salvo_settings::terrain", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e6b"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e6b"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
 [[setting]]
 id = "0x0E6C"
@@ -370,9 +1860,11 @@ name = "Games › Salvo › Settings › World › World width"
 scope = "local"
 values = ["128 px", "192 px", "256 px", "384 px"]
 default = 2
-contexts = ["Salvo", "Games", "GamePause"]
+contexts = ["Games", "Salvo", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Salvo: the world's width (the view follows the action; the overview squeezes it into the screen); score table variant. Applies from the next game."
-tests = ["sim/tests/games.rs::salvo_settings::world_width"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e6c", "sim/tests/games.rs::salvo_settings::world_width", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain", "sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e6c"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e6c"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Games" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"], "GamePause" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"] }
 
 [[setting]]
 id = "0x0E6D"
@@ -380,9 +1872,11 @@ name = "Games › Salvo › Settings › World › Gravity"
 scope = "local"
 values = ["Moon", "Mars", "Earth", "Jupiter"]
 default = 2
-contexts = ["Salvo", "Games", "GamePause"]
+contexts = ["Games", "Salvo", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Salvo: the shell's path (where it is a fixed time after firing); the top speed of a shot; score table variant. Applies from the next game."
-tests = ["sim/tests/games.rs::salvo_settings::gravity_drag_wind_gusts"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e6d", "sim/tests/games.rs::salvo_settings::gravity_drag_wind_gusts", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain", "sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e6d"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e6d"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Games" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"], "GamePause" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"] }
 
 [[setting]]
 id = "0x0E6E"
@@ -390,9 +1884,11 @@ name = "Games › Salvo › Settings › World › Wind"
 scope = "local"
 values = ["None", "Light", "Strong", "Custom"]
 default = 1
-contexts = ["Salvo", "Games", "GamePause"]
+contexts = ["Games", "Salvo", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Salvo info line: the wind (arrow, m/s), drawn each turn up to 0, 4, 12 m/s or Custom wind; the shells' drift through the drag; score table variant. Applies from the next game."
-tests = ["sim/tests/games.rs::salvo_settings::gravity_drag_wind_gusts"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e6e", "sim/tests/games.rs::salvo_settings::gravity_drag_wind_gusts", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain", "sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e6e"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e6e"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Games" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"], "GamePause" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"] }
 
 [[setting]]
 id = "0x0E6F"
@@ -401,8 +1897,10 @@ scope = "local"
 values = [1, 8, 30]
 default = 8
 contexts = ["Salvo"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Salvo with Wind Custom: the largest wind (m/s) a turn draws. Applies from the next game."
-tests = ["sim/tests/games.rs::salvo_settings::gravity_drag_wind_gusts"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e6f", "sim/tests/games.rs::salvo_settings::gravity_drag_wind_gusts", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e6f"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e6f"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Salvo" = ["sim/tests/settings_matrix.rs::matrix::s0e6f", "sim/tests/games.rs::salvo_settings::gravity_drag_wind_gusts"] }
 
 [[setting]]
 id = "0x0E70"
@@ -410,9 +1908,11 @@ name = "Games › Salvo › Settings › World › Gusts"
 scope = "local"
 values = ["off", "on"]
 default = 0
-contexts = ["Salvo", "Games", "GamePause"]
+contexts = ["Games", "Salvo", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Salvo: during a flight the air's speed changes every 0.1 s of game time (info line shows the air as it moves; the shell's path); score table variant. Applies from the next game."
-tests = ["sim/tests/games.rs::salvo_settings::gravity_drag_wind_gusts"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e70", "sim/tests/games.rs::salvo_settings::gravity_drag_wind_gusts", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain", "sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e70"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e70"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Games" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"], "GamePause" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"] }
 
 [[setting]]
 id = "0x0E71"
@@ -420,9 +1920,11 @@ name = "Games › Salvo › Settings › World › Air drag"
 scope = "local"
 values = ["Off", "Realistic", "Heavy"]
 default = 1
-contexts = ["Salvo", "Games", "GamePause"]
+contexts = ["Games", "Salvo", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Salvo: air density 0, 1.225 or 3.675 kg/m³ (the shell's path, the wind's effect, the top speed); score table variant. Applies from the next game."
-tests = ["sim/tests/games.rs::salvo_settings::gravity_drag_wind_gusts"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e71", "sim/tests/games.rs::salvo_settings::gravity_drag_wind_gusts", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain", "sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e71"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e71"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Games" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"], "GamePause" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"] }
 
 [[setting]]
 id = "0x0E72"
@@ -431,8 +1933,10 @@ scope = "local"
 values = ["50", "100", "150", "200"]
 default = 1
 contexts = ["Salvo"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Salvo: every tank's health at a round's start (the health bars' scale). Applies from the next game."
-tests = ["sim/tests/games.rs::salvo_settings::health_fall_weapons_shop_guide"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e72", "sim/tests/games.rs::salvo_settings::health_fall_weapons_shop_guide", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e72"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e72"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Salvo" = ["sim/tests/settings_matrix.rs::matrix::s0e72", "sim/tests/games.rs::salvo_settings::health_fall_weapons_shop_guide"] }
 
 [[setting]]
 id = "0x0E73"
@@ -441,8 +1945,10 @@ scope = "local"
 values = ["off", "on"]
 default = 1
 contexts = ["Salvo"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Salvo: a tank falling more than 4 px loses 2 health per px more (its health bar). Applies from the next game."
-tests = ["sim/tests/games.rs::salvo_settings::health_fall_weapons_shop_guide"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e73", "sim/tests/games.rs::salvo_settings::health_fall_weapons_shop_guide", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e73"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e73"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Salvo" = ["sim/tests/settings_matrix.rs::matrix::s0e73", "sim/tests/games.rs::salvo_settings::health_fall_weapons_shop_guide"] }
 
 [[setting]]
 id = "0x0E74"
@@ -450,9 +1956,11 @@ name = "Games › Salvo › Settings › Rules › Weapons"
 scope = "local"
 values = ["Shells only", "All seven"]
 default = 1
-contexts = ["Salvo", "Games", "GamePause"]
+contexts = ["Games", "Salvo", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Salvo weapon list (Menu): the special weapons' rounds at the start (0 or the set's); score table variant. Applies from the next game."
-tests = ["sim/tests/games.rs::salvo_settings::health_fall_weapons_shop_guide"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e74", "sim/tests/games.rs::salvo_settings::health_fall_weapons_shop_guide", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain", "sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e74"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e74"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Games" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"], "Salvo" = ["sim/tests/settings_matrix.rs::matrix::s0e74", "sim/tests/games.rs::salvo_settings::health_fall_weapons_shop_guide"], "GamePause" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"] }
 
 [[setting]]
 id = "0x0E75"
@@ -460,9 +1968,11 @@ name = "Games › Salvo › Settings › Rules › Shop"
 scope = "local"
 values = ["off", "on"]
 default = 1
-contexts = ["Salvo", "Games", "GamePause"]
+contexts = ["Games", "Salvo", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Salvo: after a round (not the last) the shop for each human, or the next round at once; score table variant. Applies from the next game."
-tests = ["sim/tests/games.rs::salvo_settings::health_fall_weapons_shop_guide"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e75", "sim/tests/games.rs::salvo_settings::health_fall_weapons_shop_guide", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain", "sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e75"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e75"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Games" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"], "Salvo" = ["sim/tests/settings_matrix.rs::matrix::s0e75", "sim/tests/games.rs::salvo_settings::health_fall_weapons_shop_guide"], "GamePause" = ["sim/tests/settings_matrix.rs::effects::score_table_variant_in_games_and_pause"] }
 
 [[setting]]
 id = "0x0E76"
@@ -471,8 +1981,10 @@ scope = "local"
 values = ["None", "Last shot", "Preview"]
 default = 1
 contexts = ["Salvo"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Salvo while aiming: dots along the last shot's path (the wind of then) or the first 2 s of the aimed shot in still air, or nothing; the game is the same. At once."
-tests = ["sim/tests/games.rs::salvo_settings::health_fall_weapons_shop_guide"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0e76", "sim/tests/games.rs::salvo_settings::health_fall_weapons_shop_guide", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0e76"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0e76"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Salvo" = ["sim/tests/settings_matrix.rs::matrix::s0e76", "sim/tests/games.rs::salvo_settings::health_fall_weapons_shop_guide"] }
 
 [[setting]]
 id = "0x0E80"
@@ -483,6 +1995,7 @@ default = 21056
 contexts = ["Salvo"]
 oracle = "Not shown: holds the bits of the Salvo settings packed into it; each of those has its own entry and tests."
 tests = ["crates/orpheus-apps/src/settings.rs::tests::packed_settings"]
+cover = { "Salvo" = ["crates/orpheus-apps/src/settings.rs::tests::packed_settings"] }
 
 [[setting]]
 id = "0x0E81"
@@ -493,6 +2006,7 @@ default = 160
 contexts = ["Salvo"]
 oracle = "Not shown: holds the bits of the Salvo settings packed into it; each of those has its own entry and tests."
 tests = ["crates/orpheus-apps/src/settings.rs::tests::packed_settings"]
+cover = { "Salvo" = ["crates/orpheus-apps/src/settings.rs::tests::packed_settings"] }
 
 [[setting]]
 id = "0x0E82"
@@ -503,6 +2017,7 @@ default = 4634
 contexts = ["Salvo"]
 oracle = "Not shown: holds the bits of the Salvo settings packed into it; each of those has its own entry and tests."
 tests = ["crates/orpheus-apps/src/settings.rs::tests::packed_settings"]
+cover = { "Salvo" = ["crates/orpheus-apps/src/settings.rs::tests::packed_settings"] }
 
 [[setting]]
 id = "0x0E83"
@@ -513,9 +2028,9 @@ default = 61
 contexts = ["Salvo"]
 oracle = "Not shown: holds the bits of the Salvo settings packed into it; each of those has its own entry and tests."
 tests = ["crates/orpheus-apps/src/settings.rs::tests::packed_settings"]
+cover = { "Salvo" = ["crates/orpheus-apps/src/settings.rs::tests::packed_settings"] }
 
 # ---------------------------------------------------------------- Bricks
-# GAME-6 (2026-11-25): seven settings packed into the stored word 0x0EB0.
 
 [[setting]]
 id = "0x0EA1"
@@ -523,9 +2038,12 @@ name = "Games › Bricks › Settings › Start level"
 scope = "local"
 values = [1, 5, 10]
 default = 1
-contexts = ["Bricks", "Games", "GamePause"]
+contexts = ["Games", "Bricks", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Bricks: the first level is this one (status line \"Level n\", its bricks; engine `level()`); score table variant. Applies from the next game."
-tests = ["sim/tests/games.rs::bricks_settings::start_level_and_level_set"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0ea1", "sim/tests/games.rs::bricks_settings::start_level_and_level_set", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0ea1"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0ea1"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+uncovered = { "Games" = "the best shown is this variant's once a game was finished: the simulator has no scripted finished Bricks game yet", "GamePause" = "the best shown is this variant's once a game was finished: the simulator has no scripted finished Bricks game yet" }
 
 [[setting]]
 id = "0x0EA2"
@@ -533,9 +2051,12 @@ name = "Games › Bricks › Settings › Ball"
 scope = "local"
 values = ["Slow", "Normal", "Fast"]
 default = 1
-contexts = ["Bricks", "Games", "GamePause"]
+contexts = ["Games", "Bricks", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Bricks: the ball's speed (75 / 98 / 120 px/s at level 1; engine `speed()`), so where it is after the same time; score table variant. Applies from the next game."
-tests = ["sim/tests/games.rs::bricks_settings::ball_speed_paddle_lives"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0ea2", "sim/tests/games.rs::bricks_settings::ball_speed_paddle_lives", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0ea2"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0ea2"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+uncovered = { "Games" = "the best shown is this variant's once a game was finished: the simulator has no scripted finished Bricks game yet", "GamePause" = "the best shown is this variant's once a game was finished: the simulator has no scripted finished Bricks game yet" }
 
 [[setting]]
 id = "0x0EA3"
@@ -543,9 +2064,12 @@ name = "Games › Bricks › Settings › Paddle"
 scope = "local"
 values = ["Small", "Medium", "Large"]
 default = 1
-contexts = ["Bricks", "Games", "GamePause"]
+contexts = ["Games", "Bricks", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Bricks: the paddle 16, 22 or 28 px wide (engine `paddle().1`); score table variant. Applies from the next game."
-tests = ["sim/tests/games.rs::bricks_settings::ball_speed_paddle_lives"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0ea3", "sim/tests/games.rs::bricks_settings::ball_speed_paddle_lives", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0ea3"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0ea3"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+uncovered = { "Games" = "the best shown is this variant's once a game was finished: the simulator has no scripted finished Bricks game yet", "GamePause" = "the best shown is this variant's once a game was finished: the simulator has no scripted finished Bricks game yet" }
 
 [[setting]]
 id = "0x0EA4"
@@ -553,9 +2077,12 @@ name = "Games › Bricks › Settings › Lives"
 scope = "local"
 values = ["1", "3", "5"]
 default = 1
-contexts = ["Bricks", "Games", "GamePause"]
+contexts = ["Games", "Bricks", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Bricks: lives at the start (the status line's dots; engine `lives()`); score table variant. Applies from the next game."
-tests = ["sim/tests/games.rs::bricks_settings::ball_speed_paddle_lives"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0ea4", "sim/tests/games.rs::bricks_settings::ball_speed_paddle_lives", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0ea4"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0ea4"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+uncovered = { "Games" = "the best shown is this variant's once a game was finished: the simulator has no scripted finished Bricks game yet", "GamePause" = "the best shown is this variant's once a game was finished: the simulator has no scripted finished Bricks game yet" }
 
 [[setting]]
 id = "0x0EA5"
@@ -563,9 +2090,12 @@ name = "Games › Bricks › Settings › Power-ups"
 scope = "local"
 values = [0, 1]
 default = 1
-contexts = ["Bricks", "Games", "GamePause"]
+contexts = ["Games", "Bricks", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Bricks: on, one breakable brick in seven carries a capsule that falls when it breaks (a capsule on screen); off, none does (no `CARRY` bit, no capsule); score table variant. Applies from the next game."
-tests = ["sim/tests/games.rs::bricks_settings::power_ups"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0ea5", "sim/tests/games.rs::bricks_settings::power_ups", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0ea5"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0ea5"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+uncovered = { "Games" = "the best shown is this variant's once a game was finished: the simulator has no scripted finished Bricks game yet", "GamePause" = "the best shown is this variant's once a game was finished: the simulator has no scripted finished Bricks game yet" }
 
 [[setting]]
 id = "0x0EA6"
@@ -573,9 +2103,12 @@ name = "Games › Bricks › Settings › Levels"
 scope = "local"
 values = ["Hand-made", "Generated", "Mixed"]
 default = 2
-contexts = ["Bricks", "Games", "GamePause"]
+contexts = ["Games", "Bricks", "GamePause"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Bricks: the bricks of a level: the hand-made set (round again, harder, after the eighth), generated from the seed (`bricks::layout(Generated, n, seed)`), or hand-made then generated; score table variant. Applies from the next game."
-tests = ["sim/tests/games.rs::bricks_settings::start_level_and_level_set"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0ea6", "sim/tests/games.rs::bricks_settings::start_level_and_level_set", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0ea6"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0ea6"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+uncovered = { "Games" = "the best shown is this variant's once a game was finished: the simulator has no scripted finished Bricks game yet", "GamePause" = "the best shown is this variant's once a game was finished: the simulator has no scripted finished Bricks game yet" }
 
 [[setting]]
 id = "0x0EA7"
@@ -584,8 +2117,10 @@ scope = "local"
 values = ["Slow", "Normal", "Fast"]
 default = 1
 contexts = ["Bricks"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Bricks: how fast the paddle moves while Prev/Next is held (0.75 → 2, 1.1 → 3, 1.5 → 4.5 px a step; engine `paddle().0` after the same hold). Applies at once, also to a game in progress."
-tests = ["sim/tests/games.rs::bricks_settings::steering"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0ea7", "sim/tests/games.rs::bricks_settings::steering", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0ea7"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0ea7"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
 [[setting]]
 id = "0x0EB0"
@@ -596,14 +2131,9 @@ default = 13649
 contexts = ["Bricks"]
 oracle = "Not shown: holds the bits of the Bricks settings packed into it; each of those has its own entry and tests."
 tests = ["crates/orpheus-apps/src/settings.rs::tests::bricks_packed_settings"]
+cover = { "Bricks" = ["crates/orpheus-apps/src/settings.rs::tests::bricks_packed_settings"] }
+
 # ---------------------------------------------------------------- Books
-# M15 Books (BOOK-1, 05 §7.15): the reading settings, packed in one stored
-# word (0x0F80). Feature `books` (simulator, browser build, UI fuzzer; not
-# in the firmware yet). Contexts are simulator screen names: Reader (the
-# page), BookMenu (the reader menu shows the value), Books (the library).
-# "Elsewhere" in every test: Home, Files, the text viewer on the same
-# book, Settings, and the library (reading settings) or the reader (Find
-# books in) stay pixel for pixel the same.
 
 [[setting]]
 id = "0x0F01"
@@ -612,8 +2142,10 @@ scope = "local"
 values = ["Small", "Medium", "Large", "Extra large"]
 default = 0
 contexts = ["Reader", "BookMenu"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Reader: the page in the UI font (Small), the 16 px or 20 px reading face (Medium, Large) or the UI font at twice the size (Extra large); the book is laid out again (another page index), the position kept. BookMenu: the value."
-tests = ["sim/tests/books.rs::settings_effects::font_size", "sim/tests/books.rs::relayout_keeps_the_position"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0f01", "sim/tests/books.rs::settings_effects::font_size", "sim/tests/books.rs::relayout_keeps_the_position", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0f01"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0f01"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
 [[setting]]
 id = "0x0F02"
@@ -622,8 +2154,10 @@ scope = "local"
 values = ["Narrow", "Normal", "Wide"]
 default = 1
 contexts = ["Reader", "BookMenu"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Reader: left and right margins 2, 5 or 9 px (text width and line breaks change; laid out again). BookMenu: the value."
-tests = ["sim/tests/books.rs::settings_effects::margins"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0f02", "sim/tests/books.rs::settings_effects::margins", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0f02"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0f02"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
 [[setting]]
 id = "0x0F03"
@@ -632,8 +2166,10 @@ scope = "local"
 values = ["Tight", "Normal", "Relaxed"]
 default = 1
 contexts = ["Reader", "BookMenu"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Reader: line pitch and paragraph gap (e.g. 14/16/19 px at Small; lines per page change; laid out again). BookMenu: the value."
-tests = ["sim/tests/books.rs::settings_effects::line_spacing"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0f03", "sim/tests/books.rs::settings_effects::line_spacing", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0f03"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0f03"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
 [[setting]]
 id = "0x0F04"
@@ -642,8 +2178,10 @@ scope = "local"
 values = ["off", "on"]
 default = 0
 contexts = ["Reader", "BookMenu"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Reader: lines of body text and quotes that are not a paragraph's last are spread to the full width (the same line breaks and pages: the index is not made again). BookMenu: the toggle."
-tests = ["sim/tests/books.rs::settings_effects::justify"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0f04", "sim/tests/books.rs::settings_effects::justify", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0f04"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0f04"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
 [[setting]]
 id = "0x0F05"
@@ -652,8 +2190,10 @@ scope = "local"
 values = ["Theme", "Light", "Dark", "Sepia"]
 default = 0
 contexts = ["Reader", "BookMenu"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Reader: background and text colours: the UI theme's, white/near-black, black/light grey, or sepia. BookMenu: the value. Nothing else changes colour."
-tests = ["sim/tests/books.rs::settings_effects::palette"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0f05", "sim/tests/books.rs::settings_effects::palette", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0f05"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0f05"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
 [[setting]]
 id = "0x0F06"
@@ -662,8 +2202,10 @@ scope = "local"
 values = ["Off", "10 s", "20 s", "30 s", "60 s"]
 default = 0
 contexts = ["Reader", "BookMenu"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Reader: the page turns by itself after that many seconds without a key (12 s later: the next page with 10 s, the same page otherwise). BookMenu: the value."
-tests = ["sim/tests/books.rs::settings_effects::auto_page_turn", "sim/tests/books.rs::auto_page_turn"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0f06", "sim/tests/books.rs::settings_effects::auto_page_turn", "sim/tests/books.rs::auto_page_turn", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0f06"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0f06"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "Reader" = ["sim/tests/settings_matrix.rs::matrix::s0f06", "sim/tests/books.rs::settings_effects::auto_page_turn", "sim/tests/books.rs::auto_page_turn"], "BookMenu" = ["sim/tests/settings_matrix.rs::matrix::s0f06", "sim/tests/books.rs::settings_effects::auto_page_turn", "sim/tests/books.rs::auto_page_turn"] }
 
 [[setting]]
 id = "0x0F07"
@@ -672,8 +2214,10 @@ scope = "local"
 values = ["Books folder", "Whole card"]
 default = 0
 contexts = ["Books"]
+unaffected = ["@screens", "@services", "audio"]
 oracle = "Books: the library lists /Books and its folders, or every .txt, .md and .fb2 on the card (outside /.orpheus and hidden folders): the simulator's card adds README and otpauth. The library is searched again when it changes."
-tests = ["sim/tests/books.rs::settings_effects::find_books_in", "sim/tests/books.rs::find_books_in_from_the_menu"]
+tests = ["sim/tests/settings_matrix.rs::matrix::s0f07", "sim/tests/books.rs::settings_effects::find_books_in", "sim/tests/books.rs::find_books_in_from_the_menu", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0f07"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0f07"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
 [[setting]]
 id = "0x0F80"
@@ -684,3 +2228,4 @@ default = 20
 contexts = ["Reader", "BookMenu", "Books"]
 oracle = "Not shown: holds the bits of the reading settings packed into it; each of those has its own entry and tests."
 tests = ["crates/orpheus-apps/src/books.rs::tests::settings_table"]
+cover = { "Reader" = ["crates/orpheus-apps/src/books.rs::tests::settings_table"], "BookMenu" = ["crates/orpheus-apps/src/books.rs::tests::settings_table"], "Books" = ["crates/orpheus-apps/src/books.rs::tests::settings_table"] }

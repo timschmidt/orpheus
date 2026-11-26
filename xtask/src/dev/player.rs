@@ -438,11 +438,32 @@ impl Player for SimPlayer {
             "ui top" => sim_top(&self.sim).text(),
             "status" => {
                 use orpheus_apps::services::PlaybackService;
+                // `shuf=`: the queue follows Settings › Playback › Shuffle
+                // (VER-13 journey `settings_shuffle`).
+                let shuf = self.sim.sys.settings.get(orpheus_apps::settings::id::SHUFFLE);
                 match self.sim.sys.playing().map(|p| p.source) {
                     Some(orpheus_ui::event::Source::Playing) => {
-                        "playing frames=44100 rate=44100 underruns=0 corrupt=0".into()
+                        format!("playing frames=44100 rate=44100 underruns=0 corrupt=0 shuf={shuf}")
                     }
                     _ => "idle frames=0 rate=0 underruns=0 corrupt=0".into(),
+                }
+            }
+            // VER-12/13: the RAM-only settings session and its settings.
+            "settings test-session" | "settings test-session on" => {
+                "test-session on held=0 store=ok keys=0 crc=00000000".into()
+            }
+            t if t.starts_with("settings test-set ") => {
+                let w: Vec<&str> = t.split_whitespace().skip(2).collect();
+                let num = |s: &str| match s.strip_prefix("0x") {
+                    Some(h) => i32::from_str_radix(h, 16).ok(),
+                    None => s.parse().ok(),
+                };
+                match (w.first().and_then(|s| num(s)), w.get(1).and_then(|s| num(s))) {
+                    (Some(id), Some(v)) => {
+                        self.sim.run_script(&format!("set:{id:#06x}={v}"))?;
+                        format!("test-set {id}={v} ok")
+                    }
+                    _ => "usage: settings test-set ID VALUE".into(),
                 }
             }
             "fm status" => {

@@ -44,5 +44,7 @@ orpheus-host = { path = "../crates/orpheus-host" }
 workspace = true
 
 [dev-dependencies]
+# VER-13: the settings matrix reads tests/settings/effects.toml.
+toml = "0.8"
 orpheus-codec-flac = { path = "../crates/codecs/flac" }
 orpheus-codec-wav = { path = "../crates/codecs/wav" }

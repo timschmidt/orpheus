@@ -24,8 +24,11 @@
 # match at once is read again for up to 6 s (list marquees, the 1 s loop).
 #
 # Nothing here writes to the card outside /.orpheus/ (rule 5), switches
-# the Bluetooth module (rule 6), records, or changes a setting: journeys
-# open, look and go back. The order below is the run order.
+# the Bluetooth module (rule 6), records, or changes a stored setting:
+# journeys open, look and go back. The VER-13 `settings_*` journeys change
+# a setting only through the RAM-only test session (`settings test-session`
+# must answer "on" first, else they stop) and set it back before they end.
+# The order below is the run order.
 #
 # The player must be in Dark, Blue, English (the simulator's defaults),
 # with all Home apps shown and nothing playing (the suite sends `stop`).
@@ -314,3 +317,32 @@ rects = [
     { x = 42, y = 33, w = 86, h = 77, why = "the games' values (four rows; Salvo in the firmware since STACK 2026-11-25): Continue or the best result, and the end of a label shortened to fit it (\"Solita…\" beside Continue, 2026-11-25)" },
     { x = 122, y = 12, w = 6, h = 104, why = "scrollbar: the simulator and the firmware list five games (Salvo, Bricks); kept masked while the counts may differ" },
 ]
+
+# VER-13 (07 §5.12): Settings › Playback › Shuffle on the player. The
+# setting is changed only through the RAM-only settings test session (the
+# first line stops the journey unless the session is on: the owner's
+# stored settings are never written; the reboot that ends the suite brings
+# them back) and set to Off again before the end. The queue's `shuf=` in
+# `status` follows it (0 → 1 → 0, whatever the owner's value was).
+[[journey]]
+name = "settings_shuffle"
+about = "Shuffle (0x0201) through the RAM-only test session: status shuf= follows it; set back to Off"
+setup = true
+script = """
+cmd: settings test-session ~ ^test-session on
+cmd: playdir /.orpheus/test/suite/music ~ ^playdir ok
+sim: set:queue=takk
+dev: wait:1500
+cmd: settings test-set 0x0201 0 ~ ^test-set 513=0 ok
+dev: wait:1000
+cmd: status ~ ^playing .*shuf=0
+cmd: settings test-set 0x0201 1 ~ ^test-set 513=1 ok
+dev: wait:1000
+cmd: status ~ ^playing .*shuf=1
+cmd: settings test-set 0x0201 0 ~ ^test-set 513=0 ok
+dev: wait:1000
+cmd: status ~ ^playing .*shuf=0
+cmd: stop
+sim: set:playing=0
+prev ok expect-screen:Settings down ok expect-screen:SettingsGroup shot:playback
+"""

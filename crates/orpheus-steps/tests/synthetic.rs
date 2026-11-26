@@ -134,6 +134,23 @@ fn sensitivity_orders_the_counts() {
     assert!(l < t.steps / 4, "low: {l}");
 }
 
+/// VER-13: Steps › Sensitivity (0x0D25) by its stored index (Low 0,
+/// Medium 1 the default, High 2, anything else Medium): on a soft walk
+/// each value counts differently, in order; on a normal walk all count it.
+#[test]
+fn sensitivity_setting_values() {
+    let soft = walk(25, 120.0, Gait { amp: 0.11, ..SLOW }, 9);
+    let n: Vec<u32> =
+        (0..3).map(|i| count(&mut Detector::new(25, Sensitivity::from_index(i)), &soft)).collect();
+    assert!(n[0] < n[1] && n[1] <= n[2], "low {} medium {} high {}", n[0], n[1], n[2]);
+    assert_eq!(Sensitivity::from_index(7), Sensitivity::Medium);
+    let normal = walk(25, 60.0, SLOW, 4);
+    for i in 0..3 {
+        let got = count(&mut Detector::new(25, Sensitivity::from_index(i)), &normal);
+        assert!(within(got, normal.steps, 5), "{i}: {got} of {}", normal.steps);
+    }
+}
+
 #[test]
 fn clipped_sprint_still_counts() {
     // ± 2 g clipping on a hard run.

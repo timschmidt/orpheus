@@ -176,6 +176,31 @@ mod tests {
         assert_eq!(run(Low, Performance::Normal, 0, &[0]), [Mid]);
     }
 
+    /// VER-13: Settings › System › Performance (0x0C07) — the setting's
+    /// values as the governor takes them, and its effect: under load,
+    /// Maximum reaches 288 MHz, Normal stays at High; idle, both settle
+    /// at the same levels (the setting changes nothing else).
+    #[test]
+    fn performance_setting_values() {
+        use Level::*;
+        assert_eq!(Performance::from_setting(0), Performance::Normal);
+        assert_eq!(Performance::from_setting(1), Performance::Maximum);
+        assert_eq!(Performance::from_setting(7), Performance::Normal, "an invalid value is Normal");
+        let busy = [5; 6];
+        let normal = run(Base, Performance::from_setting(0), 0, &busy);
+        let max = run(Base, Performance::from_setting(1), 0, &busy);
+        assert_ne!(normal, max);
+        assert_eq!((normal[5], max[5]), (High, Max));
+        let idle = [95; 12];
+        for start in [Base, Mid, High] {
+            assert_eq!(
+                run(start, Performance::Normal, 0, &idle),
+                run(start, Performance::Maximum, 0, &idle),
+                "idle from {start:?}"
+            );
+        }
+    }
+
     #[test]
     fn maximum_goes_from_high_to_max() {
         use Level::*;

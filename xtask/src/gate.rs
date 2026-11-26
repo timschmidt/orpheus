@@ -55,6 +55,14 @@ pub fn cmd(args: &mut Args) -> Result<String> {
         .map(|()| String::new()),
     );
     step("test all", crate::test::cmd(&mut Args::from_vec(vec!["all".into()])));
+    // VER-13 (07 §5.12): `test all` runs `settings-matrix --check`; the
+    // M11 gate wants no reviewed exclusion left.
+    if m11 {
+        step(
+            "settings-matrix --strict",
+            crate::settings_matrix::cmd(&mut Args::from_vec(vec!["--check".into(), "--strict".into()])),
+        );
+    }
     step("brand --check", crate::brand::cmd(&mut Args::from_vec(vec!["--check".into()])));
     step("site --check", crate::site::cmd(&mut Args::from_vec(vec!["--check".into()])));
     step("build --release", crate::build::cmd_build(&mut Args::from_vec(vec![])));

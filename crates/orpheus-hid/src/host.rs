@@ -16,6 +16,9 @@ pub struct FakeHost {
     text: [u8; TEXT_MAX],
     len: usize,
     reports: u32,
+    /// A digest of every report received (which keys and modifiers were
+    /// sent, not only the text they made: VER-13 compares it).
+    digest: u64,
     /// Keys that went down while another non-modifier key was still held
     /// (a typist must never do that).
     pub overlaps: u32,
@@ -30,6 +33,7 @@ impl FakeHost {
             text: [0; TEXT_MAX],
             len: 0,
             reports: 0,
+            digest: 0,
             overlaps: 0,
         }
     }
@@ -38,6 +42,8 @@ impl FakeHost {
     pub fn feed(&mut self, bytes: &[u8; 8]) {
         let r = KeyboardReport::from_bytes(bytes);
         self.reports += 1;
+        self.digest =
+            (self.digest ^ u64::from_le_bytes(*bytes)).wrapping_mul(0x0100_0000_01b3).rotate_left(7);
         let held = self.down.keys.iter().filter(|&&k| k != 0).count();
         for &k in r.keys.iter().filter(|&&k| k != 0) {
             if self.down.keys.contains(&k) {
@@ -83,6 +89,13 @@ impl FakeHost {
     #[must_use]
     pub fn reports(&self) -> u32 {
         self.reports
+    }
+
+    /// The digest of the reports received since `new` (keys, modifiers
+    /// and their order).
+    #[must_use]
+    pub fn digest(&self) -> u64 {
+        self.digest
     }
 
     #[must_use]

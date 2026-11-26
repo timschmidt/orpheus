@@ -500,6 +500,185 @@ mod tests {
         assert_eq!(e.started, 2);
     }
 
+    /// VER-13 (07 §5.12): the Sound settings' effect on the rendered
+    /// sound, through `Sound::from_settings` (the settings → chain mapping
+    /// the firmware's UI task also makes) and the real `orpheus-dsp` chain,
+    /// one setting changed at a time against the defaults; and no other
+    /// setting of the tree changes what the chain is given.
+    mod settings_effects {
+        use super::super::*;
+        use orpheus_apps::settings::{self, Kind, SettingId, SettingsCache};
+
+        /// Settings with one value changed.
+        fn with(id: u16, v: i16) -> SettingsCache {
+            let mut c = SettingsCache::new();
+            c.set(SettingId(id), v);
+            c
+        }
+
+        /// 4,410 stereo frames through a chain set from `c`: left 100 Hz
+        /// plus 6 kHz, right 1 kHz (different channels so that balance,
+        /// mono, swap and crossfeed show), ReplayGain tags on the track
+        /// (−6 dB track, +3 dB album).
+        fn render(c: &SettingsCache) -> Vec<i16> {
+            let s = Sound::from_settings(|k| c.get(SettingId(k)));
+            let mut chain = Chain::new(OutWidth::Bits16, false);
+            chain
+                .set_format(orpheus_dsp::Format {
+                    rate: 44_100,
+                    channels: 2,
+                    kind: orpheus_audio::SampleKind::I16,
+                    bits: 16,
+                })
+                .unwrap();
+            s.apply(&mut chain);
+            chain.set_track_gains(orpheus_dsp::RgTags {
+                track_gain_mb: Some(-600),
+                track_peak_ppm: None,
+                album_gain_mb: Some(300),
+                album_peak_ppm: None,
+            });
+            let mut pcm: Vec<i16> = (0..4410)
+                .flat_map(|n| {
+                    let t = n as f32 / 44_100.0;
+                    let tau = core::f32::consts::TAU;
+                    let l = 6000.0 * (tau * 100.0 * t).sin() + 3000.0 * (tau * 6000.0 * t).sin();
+                    let r = 8000.0 * (tau * 1000.0 * t).sin();
+                    [l as i16, r as i16]
+                })
+                .collect();
+            let n = chain.process_i16(&mut pcm);
+            pcm.truncate(n);
+            pcm
+        }
+
+        fn default_sound() -> Vec<i16> {
+            render(&SettingsCache::new())
+        }
+
+        /// Every non-default value of `id` changes the sound.
+        fn changes_the_sound(id: u16, values: &[i16]) {
+            let base = default_sound();
+            for &v in values {
+                assert_ne!(render(&with(id, v)), base, "{id:#06x}={v} does not change the sound");
+            }
+        }
+
+        #[test]
+        fn equaliser() {
+            // Every preset but Flat and the two custom curves (flat until
+            // their bands are set) changes the sound; a custom curve with
+            // a band set does.
+            changes_the_sound(0x0101, &[1, 2, 3, 4, 5, 6, 7, 8]);
+            for (preset, band0) in [(9i16, 0x0D10u16), (10, 0x0D15)] {
+                let mut c = with(0x0101, preset);
+                assert_eq!(render(&c), default_sound(), "custom curve {preset} at 0 dB is flat");
+                c.set(SettingId(band0), 6);
+                assert_ne!(render(&c), default_sound(), "custom curve {preset} with a band raised");
+            }
+        }
+
+        /// The custom curves' bands act only through their preset.
+        #[test]
+        fn custom_bands() {
+            for band in 0x0D10..=0x0D19u16 {
+                assert_eq!(render(&with(band, 6)), default_sound(), "{band:#06x} without its preset");
+                let preset = if band < 0x0D15 { 9 } else { 10 };
+                let mut c = with(0x0101, preset);
+                let flat = render(&c);
+                c.set(SettingId(band), 6);
+                assert_ne!(render(&c), flat, "{band:#06x} with its preset");
+                c.set(SettingId(band), -12);
+                assert_ne!(render(&c), flat, "{band:#06x} at -12 dB");
+            }
+        }
+
+        #[test]
+        fn balance() {
+            changes_the_sound(0x0102, &[-10, -3, 5, 10]);
+            // Left: the right channel is quieter, and the other way round.
+            let peak = |p: &[i16], ch: usize| p.iter().skip(ch).step_by(2).map(|x| x.unsigned_abs()).max();
+            let l = render(&with(0x0102, -10));
+            let r = render(&with(0x0102, 10));
+            assert!(peak(&l, 1) < peak(&default_sound(), 1) && peak(&r, 0) < peak(&default_sound(), 0));
+        }
+
+        #[test]
+        fn bass() {
+            changes_the_sound(0x0103, &[-6, -1, 3, 6]);
+        }
+
+        #[test]
+        fn crossfeed() {
+            changes_the_sound(0x0104, &[1, 2, 3]);
+            assert_ne!(render(&with(0x0104, 1)), render(&with(0x0104, 3)), "levels differ");
+        }
+
+        #[test]
+        fn channel_mode() {
+            changes_the_sound(0x0105, &[1, 2]);
+            // After the matrix's ramp from stereo (the second half), within
+            // the dither's step (it runs per channel).
+            let near = |a: i16, b: i16| (i32::from(a) - i32::from(b)).abs() <= 2;
+            let late = |p: Vec<i16>| p[p.len() / 2..].to_vec();
+            let mono = late(render(&with(0x0105, 1)));
+            assert!(mono.chunks(2).all(|p| near(p[0], p[1])), "mono");
+            let base = late(default_sound());
+            let swap = late(render(&with(0x0105, 2)));
+            assert!(
+                swap.chunks(2).zip(base.chunks(2)).all(|(s, b)| near(s[0], b[1]) && near(s[1], b[0])),
+                "swap"
+            );
+        }
+
+        /// Track −6 dB, album +3 dB. "Auto" is the album gain here (the
+        /// mapping has no shuffle input: `2 | 3 => Album`).
+        #[test]
+        fn replaygain() {
+            changes_the_sound(0x0106, &[1, 2, 3]);
+            assert_ne!(render(&with(0x0106, 1)), render(&with(0x0106, 2)), "track and album gains differ");
+            assert_eq!(render(&with(0x0106, 3)), render(&with(0x0106, 2)), "auto = album (no shuffle input)");
+        }
+
+        /// No other setting of the tree reaches the chain: each at a value
+        /// other than its default gives the default sound settings (the
+        /// "absent elsewhere" half for the audio context).
+        #[test]
+        fn nothing_else_reaches_the_chain() {
+            let sound: [u16; 16] = [
+                0x0101, 0x0102, 0x0103, 0x0104, 0x0105, 0x0106, 0x0D10, 0x0D11, 0x0D12, 0x0D13, 0x0D14,
+                0x0D15, 0x0D16, 0x0D17, 0x0D18, 0x0D19,
+            ];
+            let base = Sound::from_settings(|k| SettingsCache::new().get(SettingId(k)));
+            for d in settings::all() {
+                if sound.contains(&d.id.0) || !d.stored() && d.pack.is_none() {
+                    continue;
+                }
+                let v = match d.kind {
+                    Kind::Toggle => 1 - d.default,
+                    Kind::Choice(c) => (d.default + 1) % i16::try_from(c.len()).unwrap(),
+                    Kind::Range { min, max, .. } => {
+                        if d.default == max {
+                            min
+                        } else {
+                            max
+                        }
+                    }
+                    Kind::Language => settings::lang_code("ru"),
+                    Kind::HomeApps => 1,
+                    Kind::Action(_) | Kind::Info(_) => continue,
+                };
+                let c = with(d.id.0, v);
+                assert_eq!(
+                    Sound::from_settings(|k| c.get(SettingId(k))),
+                    base,
+                    "{:#06x} reaches the chain",
+                    d.id.0
+                );
+            }
+        }
+    }
+
     #[test]
     fn eq_changes_the_output() {
         let data = demo::ENCODED[3];

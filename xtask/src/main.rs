@@ -23,6 +23,7 @@ mod rules;
 mod sanitize;
 mod savedlink;
 mod selftest;
+mod settings_matrix;
 mod site;
 mod size;
 mod stack;
@@ -95,6 +96,13 @@ usage: cargo xtask <command> [options]
                                    and wasm-opt), size budget; --demo regenerates
                                    sim/web/demo/ (ffmpeg), --record adds the sizes to
                                    metrics/static.csv, --test runs the page's self-test
+  settings-matrix [--check] [--strict] [--manifest PATH]
+                                   setting -> effect coverage (VER-13, 07 §5.12): every
+                                   setting of the tree against tests/settings/effects.toml
+                                   (entries, contexts, tests that exist and are not
+                                   ignored, device checks); --check fails on an error,
+                                   --strict also on a reviewed exclusion (alias:
+                                   `settings coverage`)
   tts-lexicon [--check] [--budget BYTES]
                                    the speech engine's exception lexicon from CMUdict
                                    and Gutenberg word counts (TTS-1): src/lexicon.bin,
@@ -127,6 +135,11 @@ fn main() -> ExitCode {
         "site" => site::cmd(&mut args),
         "wasm" => wasm::cmd(&mut args),
         "tts-lexicon" => tts::cmd(&mut args),
+        "settings-matrix" => settings_matrix::cmd(&mut args),
+        // `settings coverage` is the same report (VER-13).
+        "settings" if args.next_positional().as_deref() == Some("coverage") => {
+            settings_matrix::cmd(&mut args)
+        }
         "help" | "-h" | "--help" => {
             print!("{USAGE}");
             return ExitCode::SUCCESS;
