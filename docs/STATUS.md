@@ -79,6 +79,33 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-26 — settings store 192 keys and SYN-3 on the player; MIDI trips the watchdog (lead)
+
+* Merged VER-4 store widening (`efad6eff`): index 128 → 192 keys, same
+  NOR format; on the player the store came through the update identical
+  (`store=ok keys=25 crc=acff8170`, `settings changed` unchanged); suite
+  23/23 (stack free ≥ 7,824 B).
+* Merged SYN-3 (`b2629690` → `1fda608d`): MIDI from Files/Music on the
+  player, `synth bench`. Code pages 128/128 (full), stack margin 5,440 B.
+* **`synth bench` on the player** (no DWT: µs × 144 MHz): all 36 loads
+  bit-exact with the host goldens. Cycles per voice-sample: saw-lead 262,
+  fm-epiano 452, strings 263, kick 296, snare 387, hats 695, cymbal 737,
+  clap 158; per sample: delay 402, chorus 519, reverb 1,073; empty engine
+  245 per frame — 1.7–3.7× the SYN-1/2 estimates (table:
+  scratch `synth-bench-1fda608d.txt`). Budget at 44.1 kHz/144 MHz ≈ 3,265
+  cycles per frame.
+* **MIDI playback trips the watchdog**: `suite --setup midi` uploaded the
+  three demo songs; `playdir /.orpheus/test/suite/midi` underran (`ub=-`)
+  and the watchdog reset the player (last sample in
+  `orpheus_synth::fx::Chorus::process`): chorus + reverb alone ≈ 1,600
+  cycles per frame, a 10-voice song ≈ 4,800 — the RT render never yields
+  and thread mode starves; the voice governor cannot shed the effects'
+  fixed cost. The resume point was moved back to an MP3 (resume at
+  start-up would reopen the MIDI file). A worker fixes the pacing and the
+  governor. Do not play MIDI files on the player until then.
+* The boot-time NOR read error recurred: `settings: store mounted after 1
+  read errors` (the retry worked). Cause open.
+
 ### 2026-11-26 — VER-4: settings store index 128 → 192 keys, same NOR format (worker, no hardware)
 
 * **Problem**: with every app's settings the store's index was full
