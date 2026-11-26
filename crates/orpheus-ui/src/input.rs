@@ -299,6 +299,16 @@ impl KeyGate {
         }
     }
 
+    /// A test tool took the player (the developer test look turned on):
+    /// the screen comes on and the keys unlock, as unlocking otherwise
+    /// needs the Power key, which no test may press (CLAUDE.md rule 4).
+    pub fn wake_for_test(&mut self) {
+        self.screen_on = true;
+        self.locked = false;
+        self.saver = false;
+        self.swallowed = 0;
+    }
+
     /// Keys when locked (Settings › Power, 0x0404): 0 None, 1 Volume, 2
     /// Volume and transport (anything else: Volume, the default).
     #[must_use]
@@ -427,6 +437,22 @@ impl ScreenTimer {
 
 #[cfg(test)]
 mod tests {
+    /// 2026-11-26: with Backlight timeout and Lock delay in effect, the
+    /// player locked itself ~20 s after a reboot and the suite stopped at
+    /// once ("the player's keys are locked: unlocking needs the Power
+    /// key"); the test look held the timers but left the lock. Taking the
+    /// player for a test must wake it and free the keys.
+    #[test]
+    fn regress_test_look_wakes_a_locked_player() {
+        let mut g = super::KeyGate::new();
+        g.screen_on = false;
+        g.locked = true;
+        g.saver = true;
+        g.wake_for_test();
+        assert!(g.screen_on && !g.locked && !g.saver);
+        assert!(matches!(g.filter(super::Key::Next, super::KeyPhase::Down), super::Gate::Pass(..)));
+    }
+
     extern crate std;
     use super::*;
     use std::vec::Vec;

@@ -406,6 +406,11 @@ fn apply_settings(ui: &mut Ui) {
         ui.shell.invalidate();
     }
     ui.shell.gate.when_locked = services::locked_keys(&*ui.fw);
+    if TEST_WAKE.swap(false, core::sync::atomic::Ordering::Relaxed) {
+        ui.shell.gate.wake_for_test();
+        ui.timer = ScreenTimer::new(t);
+        ui.shell.invalidate();
+    }
     let tm = if test_look_on() || atj2157_hal::persist::test_request().is_some() {
         services::TimerHold::from_bits(TIMER_HOLD.load(core::sync::atomic::Ordering::Relaxed))
             .timeouts(&*ui.fw)
@@ -490,9 +495,17 @@ pub fn top_reply() {
 /// so screenshots match the simulator; the settings store is not written.
 /// A RAM flag: cleared by `off` and by every reboot (`.bss`).
 static TEST_LOOK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// Set by `ui test-look on`: the screen timers may have locked the keys
+/// before a test tool arrived (2026-11-26).
+static TEST_WAKE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 pub fn set_test_look(on: bool) {
     TEST_LOOK.store(on, core::sync::atomic::Ordering::Relaxed);
+    if on {
+        // The UI task wakes the screen and frees the keys at its next
+        // settings step (`KeyGate::wake_for_test`).
+        TEST_WAKE.store(true, core::sync::atomic::Ordering::Relaxed);
+    }
     crate::audio::reply(|r| {
         r.s(if on { b"test-look on" } else { b"test-look off" });
     });
