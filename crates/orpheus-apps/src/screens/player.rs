@@ -777,11 +777,13 @@ impl<S: Services + ?Sized> Screen<S> for NowPlayingScreen {
                 out.action(M_FAV, l.get(Str::AddFavourites));
                 out.action(M_BOOKMARK, l.get(Str::BookmarkHere));
                 out.sub(M_AB, l.get(Str::AbRepeat));
-                let mut v = StrBuf::<40>::new();
-                if let Some(d) = settings::def(id::SPEED) {
-                    settings::format_value(d, svc.setting(id::SPEED), l, &mut v);
+                if !settings::hidden(id::SPEED) {
+                    let mut v = StrBuf::<40>::new();
+                    if let Some(d) = settings::def(id::SPEED) {
+                        settings::format_value(d, svc.setting(id::SPEED), l, &mut v);
+                    }
+                    out.value(M_SPEED, l.get(Str::Speed), v.as_str());
                 }
-                out.value(M_SPEED, l.get(Str::Speed), v.as_str());
                 out.action(M_EQ, l.get(Str::EqualiserDots));
                 out.action(M_SLEEP, l.get(Str::SleepTimerDots));
                 if self.view != V_UP_NEXT || self.list.focus == 0 {

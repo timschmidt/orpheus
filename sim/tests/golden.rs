@@ -782,14 +782,16 @@ fn library_cases(add: &mut dyn FnMut(String, String)) {
         ("recent", format!("{lib} down*6 ok wait:100")),
         ("menu", format!("{lib} down ok wait:100 menu")),
         ("play", format!("{lib} down ok wait:100 down*2 ok wait:100 ok wait:100 down ok wait:100")),
-        ("np_menu", "set:library=ready set:queue=kino goto:NowPlaying wait:100 menu down*8".into()),
+        // Now Playing's menu without Speed (hidden until the time stretch,
+        // owner 2026-11-26): Go to album is the 8th row down.
+        ("np_menu", "set:library=ready set:queue=kino goto:NowPlaying wait:100 menu down*7".into()),
         (
             "goto_album",
-            "set:library=ready set:queue=kino goto:NowPlaying wait:100 menu down*8 ok wait:100".into(),
+            "set:library=ready set:queue=kino goto:NowPlaying wait:100 menu down*7 ok wait:100".into(),
         ),
         (
             "goto_artist",
-            "set:library=ready set:queue=kino goto:NowPlaying wait:100 menu down*9 ok wait:100".into(),
+            "set:library=ready set:queue=kino goto:NowPlaying wait:100 menu down*8 ok wait:100".into(),
         ),
     ];
     for (t, l) in [("dark", "latin"), ("light", "cjk")] {

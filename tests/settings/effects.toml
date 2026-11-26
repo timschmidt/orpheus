@@ -414,7 +414,7 @@ default = 3
 contexts = []
 oracle = "None yet."
 tests = ["sim/tests/settings_matrix.rs::matrix::s0206", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
-gap = "not built: 04 §5.1 defines Speed as a pitch-kept time stretch (WSOLA, 20 ms windows, 4 KiB of state, < 15 % CPU), the last step of WP-AU-6 (\"then speed control\"); no time stretch exists, the 4 KiB have no home (static RAM is within 104 B of the next stack step, the decoder arena's spare is 2 KiB and Opus leaves < 4 KiB), and 2× doubles the decoder's rate. A resampling speed change would alter the pitch (not the spec). VER-13 (2026-11-26) proposes: hide Speed from Now Playing's menu until the time-stretch package, or state it as such in 05 §7.1. Now Playing's menu shows the value only"
+gap = "not built, and offered in no menu (owner 2026-11-26: \"take speed off the menu for now\"; `settings::hidden`): 04 §5.1 defines Speed as a pitch-kept time stretch (WSOLA, 4 KiB of state, < 15 % CPU), the last step of WP-AU-6; no time stretch exists and its RAM has no home yet. The key and its stored value are kept for when it is built"
 
 [[setting]]
 id = "0x0207"

@@ -632,6 +632,14 @@ fn list_of(id: SettingId) -> Option<usize> {
     (1..=LIST_COUNT).contains(&hi).then(|| hi - 1)
 }
 
+/// Settings kept (stored, with their key and value) but offered in no
+/// menu: Speed (0x0206) until the time stretch it needs exists (04 §5.1;
+/// owner 2026-11-26: "take speed off the menu for now").
+#[must_use]
+pub const fn hidden(id: SettingId) -> bool {
+    id.0 == 0x0206
+}
+
 /// Look an item up by key.
 ///
 /// It searches only the key's own list (by the key's high byte) with a

@@ -321,6 +321,9 @@ impl ListScreen {
             ListKind::Group(g) => {
                 let Some(grp) = GROUPS.get(usize::from(g)) else { return };
                 for s in grp.items {
+                    if settings::hidden(s.id) {
+                        continue;
+                    }
                     if s.kind == Kind::Action(Action::StartOriginal) && !svc.dual_boot() {
                         continue;
                     }
