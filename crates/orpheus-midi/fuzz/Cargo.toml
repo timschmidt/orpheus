@@ -1,0 +1,28 @@
+# cargo-fuzz targets of orpheus-midi (nightly only; 07 §3.4, VER-4):
+#   cd crates/orpheus-midi/fuzz && cargo +nightly fuzz run midi_parse ../../../tests/fuzz-corpus/midi_parse
+# The body lives in `src/lib.rs`; the crate's `tests/fuzz_corpus.rs`
+# replays the committed corpus and regression inputs through it on stable.
+[package]
+name = "orpheus-midi-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+orpheus-midi = { path = ".." }
+
+# Its own workspace: not part of the host workspace (nightly only).
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "midi_parse"
+path = "fuzz_targets/midi_parse.rs"
+test = false
+doc = false
+bench = false

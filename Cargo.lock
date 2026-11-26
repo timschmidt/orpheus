@@ -1106,6 +1106,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "orpheus-midi"
+version = "0.1.0"
+dependencies = [
+ "orpheus-synth",
+]
+
+[[package]]
 name = "orpheus-ogg"
 version = "0.1.0"
 dependencies = [
@@ -1192,6 +1199,7 @@ dependencies = [
  "orpheus-index",
  "orpheus-library",
  "orpheus-meta",
+ "orpheus-midi",
  "orpheus-otp",
  "orpheus-power",
  "orpheus-proto",

@@ -111,6 +111,31 @@ fn playing_a_file_queues_its_folder() {
     assert!(s.sys.lyrics_count() > 5, ".lrc beside the file");
 }
 
+/// MIDI-1: MIDI files are audio in Files; playing one queues its folder
+/// with the songs' real durations and titles (from the scan), and a
+/// karaoke file's lyrics are timed lines.
+#[test]
+fn midi_files_play_from_files() {
+    let mut s = sim("set:queue=midi wait:100 back back");
+    run(&mut s, "next ok down*2 ok wait:100 down ok wait:100");
+    assert_eq!(s.sys.entry(1).map(|e| e.name.to_string()).as_deref(), Some("Hill Song.kar"));
+    run(&mut s, "down ok wait:100 expect-screen:NowPlaying");
+    let p = s.sys.player();
+    assert_eq!((p.queue_pos, p.queue_len), (1, 3));
+    // Ten bars at 100 BPM and the two-second tail.
+    assert_eq!(p.duration_ms, 26_000);
+    let t = s.sys.track().unwrap();
+    assert_eq!((t.title, t.codec), ("Hill Song", "MIDI"));
+    assert_eq!(s.sys.queue_entry(0).unwrap().title, "Etude for Orpheus");
+    assert_eq!(s.sys.lyrics_count(), 4);
+    let l = s.sys.lyric(1).unwrap();
+    assert_eq!((l.time_ms, l.text), (Some(7200), "the river runs, the air is still."));
+    // Seeking past the end goes on to the next song, the 56 s tour.
+    run(&mut s, "hold:next:3000 wait:100");
+    let p = s.sys.player();
+    assert!(p.queue_pos == 2 || p.position_ms <= 26_000, "{p:?}");
+}
+
 #[test]
 fn transport_keys() {
     let mut s = sim("set:queue=takk goto:NowPlaying wait:100");
