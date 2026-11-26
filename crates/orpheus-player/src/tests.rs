@@ -514,3 +514,115 @@ fn position_is_what_handle_does_with_a_position() {
     p.handle(Event::Position { frame: 1000 }, &mut st, &mut out);
     assert!(out.is_empty() && p.current().is_none());
 }
+
+/// Settings › Playback › Gapless off (VER-13): the same tracks play in
+/// full, but nothing is read ahead and every track after the first is a
+/// fresh open (the firmware plays out the PCM ring and restarts the DAC:
+/// a short silence); on again, the hand-overs are gapless.
+#[test]
+fn gapless_off_starts_each_track_fresh() {
+    let lens = [50_000u64, 7_777, 123_456, 1, 30_000];
+    let (mut p, mut st, mut sim) = setup(&lens);
+    assert!(p.gapless());
+    sim.run(&mut p, &mut st, cmd(Command::Gapless(false)));
+    assert!(!p.gapless());
+    sim.run(&mut p, &mut st, cmd(Command::PlayQueue { id: 1, len: 5, start: 0 }));
+    sim.play(&mut p, &mut st, 10_000_000);
+    assert_eq!(p.state(), State::Stopped);
+    let want: Vec<(u32, u64, u64)> = lens.iter().enumerate().map(|(i, &l)| (i as u32, 0, l)).collect();
+    assert_eq!(sim.played, want);
+    assert_eq!(sim.opens, std::vec![(0, false), (1, false), (2, false), (3, false), (4, false)]);
+    assert_eq!(sim.prefetched, None);
+    // Switched off while the next file is read ahead: the read-ahead is
+    // cancelled and the next track opens fresh.
+    let (mut p, mut st, mut sim) = setup(&lens);
+    sim.run(&mut p, &mut st, cmd(Command::PlayQueue { id: 1, len: 5, start: 0 }));
+    sim.play(&mut p, &mut st, 40_000);
+    assert_eq!(sim.prefetched, Some(1));
+    sim.run(&mut p, &mut st, cmd(Command::Gapless(false)));
+    assert_eq!(sim.prefetched, None);
+    sim.play(&mut p, &mut st, 20_000);
+    assert_eq!(sim.opens, std::vec![(0, false), (1, false), (2, false)]);
+    // On again: the next hand-over is gapless.
+    sim.run(&mut p, &mut st, cmd(Command::Gapless(true)));
+    sim.play(&mut p, &mut st, 200_000);
+    assert_eq!(sim.opens[3..], [(3, true), (4, true)]);
+}
+
+/// Settings › Playback › Auto-bookmark long files (VER-13, 05 §7.1): a
+/// file over 20 min left part-way (Next, a jump, pause, a new queue)
+/// continues there when it is opened again from its start; a short file,
+/// a file played to its end, and the setting off start at 0.
+#[test]
+fn auto_bookmark_continues_long_files() {
+    let min = 60 * u64::from(RATE);
+    let lens = [45 * min, 30 * min, 3 * min, 25 * min];
+    let jump_back = |off: bool, leave: &dyn Fn(&mut Sim, &mut Player, &mut Mem)| {
+        let (mut p, mut st, mut sim) = setup(&lens);
+        if off {
+            sim.run(&mut p, &mut st, cmd(Command::AutoBookmark(false)));
+        }
+        sim.run(&mut p, &mut st, cmd(Command::PlayQueue { id: 1, len: 4, start: 0 }));
+        sim.play(&mut p, &mut st, 1000);
+        sim.run(&mut p, &mut st, cmd(Command::SeekMs(10 * 60 * 1000)));
+        sim.play(&mut p, &mut st, 5000);
+        leave(&mut sim, &mut p, &mut st);
+        sim.run(&mut p, &mut st, cmd(Command::JumpTo(0)));
+        if p.state() == State::Paused {
+            sim.run(&mut p, &mut st, cmd(Command::Play));
+        }
+        sim.play(&mut p, &mut st, 1000);
+        (p, sim.played.last().copied())
+    };
+    let at = 10 * min + 5000;
+    // Left by Next, a jump, a pause (then Next while paused), a new queue.
+    let next = |s: &mut Sim, p: &mut Player, m: &mut Mem| s.run(p, m, cmd(Command::Next));
+    let jump = |s: &mut Sim, p: &mut Player, m: &mut Mem| s.run(p, m, cmd(Command::JumpTo(2)));
+    let pause = |s: &mut Sim, p: &mut Player, m: &mut Mem| {
+        s.run(p, m, cmd(Command::Pause));
+        s.run(p, m, cmd(Command::Next));
+    };
+    let queue = |s: &mut Sim, p: &mut Player, m: &mut Mem| {
+        s.run(p, m, cmd(Command::PlayQueue { id: 1, len: 4, start: 3 }));
+        s.play(p, m, 1000);
+    };
+    for (name, leave) in [
+        ("next", &next as &dyn Fn(&mut Sim, &mut Player, &mut Mem)),
+        ("jump", &jump),
+        ("pause", &pause),
+        ("queue", &queue),
+    ] {
+        let (p, last) = jump_back(false, leave);
+        assert_eq!(last.map(|l| (l.0, l.2)), Some((0, at + 1000)), "{name}: continues where it was left");
+        assert_eq!(p.current().map(|c| c.frame), Some(at + 1000), "{name}");
+        let (p, last) = jump_back(true, leave);
+        assert_eq!(last, Some((0, 0, 1000)), "{name}, off: from the start");
+        assert!(p.auto_marks().as_slice().is_empty(), "{name}, off: nothing kept");
+    }
+    // Every 30 s of play the place is noted (here: power lost after 65 s,
+    // the store as it was).
+    let (mut p, mut st, mut sim) = setup(&lens);
+    sim.run(&mut p, &mut st, cmd(Command::PlayQueue { id: 1, len: 4, start: 1 }));
+    sim.play(&mut p, &mut st, 65 * u64::from(RATE));
+    let t1 = track(1);
+    let noted = p.auto_marks().get(t1).unwrap_or(0);
+    assert!((60 * RATE..65 * RATE).contains(&noted), "noted at 60 s of play (ticks): {noted}");
+    let mut st2 = st.clone();
+    let p2 = Player::new(Config::default(), &mut st2);
+    assert_eq!(p2.auto_marks().get(t1), Some(noted), "kept in the store");
+    // A short file keeps nothing; a long one played to its end forgets its
+    // place.
+    let (mut p, mut st, mut sim) = setup(&lens);
+    sim.run(&mut p, &mut st, cmd(Command::PlayQueue { id: 1, len: 4, start: 2 }));
+    sim.play(&mut p, &mut st, 60 * u64::from(RATE));
+    sim.run(&mut p, &mut st, cmd(Command::Next));
+    assert!(p.auto_marks().as_slice().is_empty(), "3 min file");
+    sim.play(&mut p, &mut st, 60 * u64::from(RATE));
+    sim.run(&mut p, &mut st, cmd(Command::Pause));
+    let t3 = track(3);
+    assert_eq!(p.auto_marks().get(t3), Some(60 * RATE));
+    sim.run(&mut p, &mut st, cmd(Command::SeekMs(25 * 60 * 1000 - 2000)));
+    sim.run(&mut p, &mut st, cmd(Command::Play));
+    sim.play(&mut p, &mut st, 3 * u64::from(RATE));
+    assert_eq!(p.auto_marks().get(t3), None, "played to its end");
+}

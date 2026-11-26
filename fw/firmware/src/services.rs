@@ -783,6 +783,13 @@ impl Fw {
             self.settings.set(id::SLEEP_TIMER, 0);
         }
         self.setting_to_player(id::REPEAT);
+        // Gapless and Auto-bookmark long files are on in a new player: only
+        // an "off" needs saying (the request queue holds four).
+        for sid in [id::GAPLESS, id::AUTO_BOOKMARK] {
+            if self.settings.get(sid) == 0 {
+                self.setting_to_player(sid);
+            }
+        }
     }
 
     /// The tag code page goes to the library builder.
@@ -804,6 +811,8 @@ impl Fw {
                 2 => Repeat::All,
                 _ => Repeat::Off,
             }),
+            id::GAPLESS => Command::Gapless(v != 0),
+            id::AUTO_BOOKMARK => Command::AutoBookmark(v != 0),
             id::SLEEP_TIMER => match usize::try_from(v) {
                 Ok(6) => Command::SleepAfterTrack,
                 Ok(i) if i < SLEEP_MIN.len() => Command::SleepAfterMs(SLEEP_MIN[i] * 60_000),
@@ -1862,5 +1871,15 @@ impl System for Fw {
     }
     fn list_roll_around(&self) -> bool {
         services::list_roll_around(self)
+    }
+    /// Settings › Sound › Key click (VER-13): a click into the sound
+    /// output, mixed into the music while it plays, else sounded alone by
+    /// the card task (not over the radio, whose sound bypasses the DAC).
+    fn key_click(&mut self) {
+        if orpheus_apps::services::key_click(self.settings.get(id::KEY_CLICK), &self.recorder())
+            && !self.radio.phase.is_on()
+        {
+            crate::audio::click(self.player.source != orpheus_ui::event::Source::Playing);
+        }
     }
 }

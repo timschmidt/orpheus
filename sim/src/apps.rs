@@ -124,6 +124,9 @@ pub struct HostServices {
     pub books: SimBooks,
     /// Books on Home: off (not on the player yet); `set:books=on`.
     pub books_on_home: bool,
+    /// Key clicks the sound output got (Settings › Sound › Key click, 05
+    /// §3; the firmware mixes each into its output).
+    pub clicks: u32,
 }
 
 impl Default for HostServices {
@@ -180,6 +183,7 @@ impl HostServices {
             games_on_home: true,
             books: SimBooks::default(),
             books_on_home: false,
+            clicks: 0,
         }
     }
 }
@@ -666,6 +670,12 @@ impl System for HostServices {
     fn list_roll_around(&self) -> bool {
         services::list_roll_around(self)
     }
+
+    fn key_click(&mut self) {
+        if services::key_click(self.settings.get(id::KEY_CLICK), &self.recorder()) {
+            self.clicks += 1;
+        }
+    }
 }
 
 /// Sample "now playing" per language.
@@ -923,8 +933,15 @@ impl Host for HostServices {
                 }
             }
             "resume" => {
+                // A resume point as after a power cycle: with Settings ›
+                // Playback › Resume at start-up on (the default) the start-up
+                // loaded it, paused at its place (05 §6.1); off, Music offers
+                // it as "Resume".
                 self.media.learn("/Music/Sigur Rós/Takk…");
-                self.media.set_resume("/Music/Sigur Rós/Takk…/02 Hoppípolla.mp3");
+                self.media.set_resume_at("/Music/Sigur Rós/Takk…/02 Hoppípolla.mp3", 83_000);
+                if self.settings.get(id::RESUME_AT_START) != 0 {
+                    self.media.resume_paused();
+                }
             }
             "bookmark" => {
                 PlayerService::command(self, PlayerCmd::Bookmark);
@@ -1077,6 +1094,7 @@ impl Host for HostServices {
 
     fn advance(&mut self, ms: u64) {
         let repeat = self.settings.get(id::REPEAT);
+        self.media_options();
         self.media.advance(ms, repeat);
         self.bt.advance(ms);
         self.bt_events();
@@ -1237,6 +1255,7 @@ impl PlayerService for HostServices {
     }
     fn command(&mut self, c: PlayerCmd) {
         let repeat = self.settings.get(id::REPEAT);
+        self.media_options();
         // As the firmware (`Fw::command`): a queue made from a folder or
         // a library list is shuffled when Settings › Playback › Shuffle
         // is on (VER-13 found the simulator ignoring it).
@@ -1291,6 +1310,14 @@ impl PictureService for HostServices {
 }
 
 impl HostServices {
+    /// The settings the fake player follows as the firmware does (VER-13):
+    /// Gapless, Auto-bookmark long files, Fade on pause.
+    fn media_options(&mut self) {
+        let on = |id| self.settings.get(id) != 0;
+        let (gapless, auto, fade) = (on(id::GAPLESS), on(id::AUTO_BOOKMARK), on(id::FADE_ON_PAUSE));
+        self.media.set_options(gapless, auto, fade);
+    }
+
     /// The fake module's events as service events (and the status bar's
     /// state when it changed).
     fn bt_events(&mut self) {

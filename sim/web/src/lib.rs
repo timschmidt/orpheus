@@ -243,6 +243,8 @@ impl Web {
         }
         let st = &sim.sys.settings;
         self.engine.set_sound(audio::Sound::from_settings(|k| st.get(SettingId(k))));
+        // Settings › Sound › Fade on pause (VER-13).
+        self.engine.set_fade_on_pause(st.get(SettingId(0x0109)) != 0);
         let now = sim.sys.media.now_audio();
         let media = &mut sim.sys.media;
         self.engine.sync(now, |p| media.read_file(p));

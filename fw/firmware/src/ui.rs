@@ -176,6 +176,8 @@ impl Ui {
             let st = &self.fw.settings;
             let g = |k: u16| st.get(orpheus_apps::settings::SettingId(k));
             let eq = orpheus_apps::settings::eq_gains(g(0x0101), |id| st.get(id));
+            use crate::media::opt;
+            let bit = |k: u16, b: u8| if g(k) != 0 { b } else { 0 };
             let snd = crate::media::Sound {
                 eq,
                 bass: g(0x0103) as i8,
@@ -183,6 +185,8 @@ impl Ui {
                 crossfeed: g(0x0104) as u8,
                 channels: g(0x0105) as u8,
                 replaygain: g(0x0106) as u8,
+                // Fade on pause, Resume at start-up (VER-13).
+                opts: opt::VALID | bit(0x0109, opt::FADE) | bit(0x0204, opt::RESUME),
             };
             if self.sound != Some(snd) {
                 self.sound = Some(snd);

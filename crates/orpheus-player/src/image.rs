@@ -2,7 +2,7 @@
 //! one fixed-size byte image (`/.orpheus/player.bin`) and the play queue file
 //! (`/.orpheus/queue.bin`).
 //!
-//! `player.bin` (588 bytes) is the three [`PlayerStore`] values at fixed
+//! `player.bin` (680 bytes) is the four [`PlayerStore`] values at fixed
 //! offsets, each carrying its own magic, sequence number (resume slots) and
 //! CRC-32:
 //!
@@ -12,11 +12,14 @@
 //! | 64 | 64 | resume slot B |
 //! | 128 | 460 | bookmarks (magic `YBM2`: count, then per bookmark the
 //! track locator, frame and sample rate) |
+//! | 588 | 92 | automatic bookmarks of long files (magic `YAM1`: count,
+//! then per mark the track locator and frame; VER-13) |
 //!
 //! The firmware keeps the resume slots in RAM ([`StoreImage`]; the
 //! bookmarks live in the player) and writes only the changed span back in
 //! place, so a write cut short by a power loss damages at most the slot
-//! being written (the other slot still loads).
+//! being written (the other slot still loads). A 588-byte file of an
+//! older firmware loads with no automatic bookmarks.
 //!
 //! `queue.bin` (little-endian):
 //!
@@ -36,10 +39,14 @@ use core::ops::Range;
 use orpheus_fs::Locator;
 use orpheus_proto::hash::{crc32, crc32_update};
 
-use crate::store::{BOOKMARKS_LEN, Bookmark, Bookmarks, Key, PlayerStore, RECORD_LEN};
+use crate::store::{
+    AUTO_MARKS_LEN, AutoMarks, BOOKMARKS_LEN, Bookmark, Bookmarks, Key, PlayerStore, RECORD_LEN,
+};
 
 /// Size of `player.bin`.
-pub const IMAGE_LEN: usize = 2 * RECORD_LEN + BOOKMARKS_LEN;
+pub const IMAGE_LEN: usize = 2 * RECORD_LEN + BOOKMARKS_LEN + AUTO_MARKS_LEN;
+const BM_AT: usize = 2 * RECORD_LEN;
+const AM_AT: usize = BM_AT + BOOKMARKS_LEN;
 
 /// Where `key` lives in the image.
 #[must_use]
@@ -47,7 +54,8 @@ pub fn key_range(key: Key) -> Range<usize> {
     match key {
         Key::ResumeA => 0..RECORD_LEN,
         Key::ResumeB => RECORD_LEN..2 * RECORD_LEN,
-        Key::Bookmarks => 2 * RECORD_LEN..IMAGE_LEN,
+        Key::Bookmarks => BM_AT..AM_AT,
+        Key::AutoMarks => AM_AT..IMAGE_LEN,
     }
 }
 
@@ -56,6 +64,7 @@ fn bit(key: Key) -> u8 {
         Key::ResumeA => 1,
         Key::ResumeB => 2,
         Key::Bookmarks => 4,
+        Key::AutoMarks => 8,
     }
 }
 
@@ -87,11 +96,15 @@ impl StoreImage {
         Loading { image: self, file }
     }
 
-    /// The whole file: the resume slots and `bookmarks` (the player's).
-    pub fn image(&self, bookmarks: &[Bookmark], out: &mut [u8; IMAGE_LEN]) {
-        if let Some((head, bm)) = out.split_last_chunk_mut::<BOOKMARKS_LEN>() {
-            head.copy_from_slice(&self.resume);
-            Bookmarks::encode_into(bookmarks, bm);
+    /// The whole file: the resume slots, `bookmarks` and the automatic
+    /// bookmarks `marks` (the player's).
+    pub fn image(&self, bookmarks: &[Bookmark], marks: &AutoMarks, out: &mut [u8; IMAGE_LEN]) {
+        if let Some((head, am)) = out.split_last_chunk_mut::<AUTO_MARKS_LEN>() {
+            am.copy_from_slice(&marks.encode());
+            if let Some((head, bm)) = head.split_last_chunk_mut::<BOOKMARKS_LEN>() {
+                head.copy_from_slice(&self.resume);
+                Bookmarks::encode_into(bookmarks, bm);
+            }
         }
     }
 
@@ -104,7 +117,7 @@ impl StoreImage {
     #[must_use]
     pub fn dirty_range(&self) -> Option<Range<usize>> {
         let mut r: Option<Range<usize>> = None;
-        for key in [Key::ResumeA, Key::ResumeB, Key::Bookmarks] {
+        for key in [Key::ResumeA, Key::ResumeB, Key::Bookmarks, Key::AutoMarks] {
             if self.dirty & bit(key) != 0 {
                 let k = key_range(key);
                 r = Some(match r {
@@ -135,7 +148,7 @@ impl Default for StoreImage {
 
 impl PlayerStore for StoreImage {
     fn write(&mut self, key: Key, data: &[u8]) {
-        if key != Key::Bookmarks {
+        if matches!(key, Key::ResumeA | Key::ResumeB) {
             let r = key_range(key);
             let n = data.len().min(r.len());
             self.resume[r.start..r.start + n].copy_from_slice(&data[..n]);
@@ -145,7 +158,7 @@ impl PlayerStore for StoreImage {
 
     fn read(&mut self, key: Key, buf: &mut [u8]) -> usize {
         let r = key_range(key);
-        if key == Key::Bookmarks || buf.len() != r.len() {
+        if !matches!(key, Key::ResumeA | Key::ResumeB) || buf.len() != r.len() {
             return 0;
         }
         buf.copy_from_slice(&self.resume[r]);
@@ -165,7 +178,7 @@ impl PlayerStore for Loading<'_> {
     }
 
     fn read(&mut self, key: Key, buf: &mut [u8]) -> usize {
-        if key != Key::Bookmarks {
+        if matches!(key, Key::ResumeA | Key::ResumeB) {
             return self.image.read(key, buf);
         }
         match self.file.get(key_range(key)) {
@@ -280,10 +293,10 @@ mod tests {
         p.handle(Event::Command(Command::AddBookmark), &mut img, &mut out);
         p.handle(Event::Command(Command::Pause), &mut img, &mut out);
         assert!(img.is_dirty());
-        assert_eq!(img.dirty_range(), Some(0..IMAGE_LEN));
+        assert_eq!(img.dirty_range(), Some(0..key_range(Key::Bookmarks).end));
         // The file as written, read back after a reboot.
         let mut file = [0u8; IMAGE_LEN];
-        img.image(p.bookmarks(), &mut file);
+        img.image(p.bookmarks(), p.auto_marks(), &mut file);
         let mut back = StoreImage::new();
         let p2 = Player::new(Config::default(), &mut back.load(&file));
         assert!(!back.is_dirty());
@@ -295,8 +308,39 @@ mod tests {
         assert_eq!(p2.bookmarks(), &[Bookmark { track: t, frame: 441_000, rate: 44_100 }]);
         // The image again, from the restarted player: the same bytes.
         let mut again = [0u8; IMAGE_LEN];
-        back.image(p2.bookmarks(), &mut again);
+        back.image(p2.bookmarks(), p2.auto_marks(), &mut again);
         assert_eq!(again, file);
+        // A file of the firmware before VER-13 (588 bytes, no automatic
+        // bookmarks): everything else loads.
+        let mut old = StoreImage::new();
+        let p3 = Player::new(Config::default(), &mut old.load(&file[..key_range(Key::Bookmarks).end]));
+        assert_eq!(p3.saved(), p2.saved());
+        assert_eq!(p3.bookmarks(), p2.bookmarks());
+        assert!(p3.auto_marks().as_slice().is_empty());
+    }
+
+    /// Automatic bookmarks (VER-13) are written with the file and come
+    /// back after a reboot.
+    #[test]
+    fn auto_marks_round_trip_through_the_file() {
+        let mut img = StoreImage::new();
+        let mut p = Player::new(Config::default(), &mut img.load(&[]));
+        let mut out = Actions::default();
+        let t = TrackRef { serial: 1, dir: 2, index: 3, name_hash: 4 };
+        let long = 44_100 * 60 * 30;
+        p.handle(Event::Command(Command::PlayQueue { id: 5, len: 3, start: 1 }), &mut img, &mut out);
+        p.handle(Event::Opened { track: t, rate: 44_100, frames: Some(long) }, &mut img, &mut out);
+        img.clear_dirty();
+        p.handle(Event::Position { frame: 441_000 }, &mut img, &mut out);
+        p.handle(Event::Command(Command::Pause), &mut img, &mut out);
+        assert_eq!(p.auto_marks().get(t), Some(441_000));
+        let d = img.dirty_range().unwrap();
+        assert!(d.end == IMAGE_LEN && d.contains(&key_range(Key::AutoMarks).start));
+        let mut file = [0u8; IMAGE_LEN];
+        img.image(p.bookmarks(), p.auto_marks(), &mut file);
+        let mut back = StoreImage::new();
+        let p2 = Player::new(Config::default(), &mut back.load(&file));
+        assert_eq!(p2.auto_marks(), p.auto_marks());
     }
 
     #[test]
@@ -311,7 +355,7 @@ mod tests {
         // Slot A torn mid-write: half a newer record.
         let newer = ResumeRecord { frame: 99, ..r }.encode(3);
         let mut file = [0u8; IMAGE_LEN];
-        img.image(&[], &mut file);
+        img.image(&[], &AutoMarks::default(), &mut file);
         file[..RECORD_LEN / 2].copy_from_slice(&newer[..RECORD_LEN / 2]);
         let mut back = StoreImage::new();
         let _ = back.load(&file);

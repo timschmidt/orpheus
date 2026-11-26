@@ -20,9 +20,10 @@
 
 use orpheus_fs::Locator;
 use orpheus_player::image::{IMAGE_LEN, StoreImage, decode_queue, encode_queue, queue_file_len, queue_id};
-use orpheus_player::store::{BOOKMARKS_LEN, RECORD_LEN};
+use orpheus_player::store::{AUTO_MARKS_LEN, BOOKMARKS_LEN, RECORD_LEN};
 use orpheus_player::{
-    Action, Actions, Bookmarks, Command, Config, Event, Player, Repeat, ResumeRecord, TrackRef, load_resume,
+    Action, Actions, AutoMarks, Bookmarks, Command, Config, Event, Player, Repeat, ResumeRecord, TrackRef,
+    load_resume,
 };
 
 /// The firmware's queue capacity and other sizes the decoder is given.
@@ -101,7 +102,7 @@ fn track(k: u32) -> TrackRef {
 }
 
 fn command(o: &mut Ops<'_>) -> Command {
-    match o.b() % 21 {
+    match o.b() % 23 {
         0 => Command::PlayQueue { id: o.n().max(1), len: o.n(), start: o.n() },
         1 => Command::Play,
         2 => Command::Pause,
@@ -121,6 +122,8 @@ fn command(o: &mut Ops<'_>) -> Command {
         16 => Command::DeleteBookmark(o.b() % 20),
         17 => Command::SleepAfterMs(o.u32() % 100_000),
         18 => Command::SleepAfterTrack,
+        19 => Command::Gapless(o.b() & 1 != 0),
+        20 => Command::AutoBookmark(o.b() & 1 != 0),
         // As the firmware's queue edit sends it: the current track keeps
         // its position, which is inside the new queue (`queue::edit` only
         // removes tracks after it, so the queue is never empty).
@@ -201,11 +204,18 @@ pub fn player_resume(data: &[u8]) {
             }
         }
     }
-    if let Some(b) = file.get(2 * RECORD_LEN..IMAGE_LEN) {
+    if let Some(b) = file.get(2 * RECORD_LEN..2 * RECORD_LEN + BOOKMARKS_LEN) {
         let b: &[u8; BOOKMARKS_LEN] = b.try_into().unwrap();
         if let Some(m) = Bookmarks::decode(b) {
             assert!(m.as_slice().len() <= 16);
             assert_eq!(Bookmarks::decode(&m.encode()), Some(m));
+        }
+    }
+    if let Some(b) = file.get(IMAGE_LEN - AUTO_MARKS_LEN..IMAGE_LEN) {
+        let b: &[u8; AUTO_MARKS_LEN] = b.try_into().unwrap();
+        if let Some(m) = AutoMarks::decode(b) {
+            assert!(m.as_slice().len() <= 3);
+            assert_eq!(AutoMarks::decode(&m.encode()), Some(m));
         }
     }
 
@@ -234,11 +244,12 @@ pub fn player_resume(data: &[u8]) {
     out.clear();
     p.handle(Event::Shutdown, &mut img, &mut out);
     let mut bin = [0u8; IMAGE_LEN];
-    img.image(p.bookmarks(), &mut bin);
+    img.image(p.bookmarks(), p.auto_marks(), &mut bin);
     let before = load_resume(&mut img);
     let mut img2 = StoreImage::new();
     let p2 = Player::new(cfg, &mut img2.load(&bin));
     assert_eq!(p2.bookmarks(), p.bookmarks(), "bookmarks after a restart");
+    assert_eq!(p2.auto_marks(), p.auto_marks(), "automatic bookmarks after a restart");
     assert_eq!(load_resume(&mut img2), before, "resume record after a restart");
     assert_eq!(p2.saved(), before.map(|(r, _)| r));
 }

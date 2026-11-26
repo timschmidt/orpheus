@@ -37,6 +37,27 @@ const OVERLAY_MS: u64 = 3000;
 const LEVELS_MS: u64 = 66;
 const LIST_ROWS: u32 = 6;
 
+/// The seek ladder of Prev/Next held (05 §7.1: "accelerating from 2 s/step
+/// to 30 s/step"), in seconds; Settings › Playback › Seek step is its
+/// first rung.
+const SEEK_LADDER_S: [i32; 4] = [2, 5, 10, 30];
+
+/// One seek step of Prev/Next held: Settings › Playback › Seek step
+/// (0x0205: 2, 5, 10 or 30 s, 5 s by default) for the hold and five repeats,
+/// then one rung up the ladder after 6, 12 and 20 repeats, at most 30 s.
+/// With "2 s" it is the ladder of 05 §7.1 from its start.
+#[must_use]
+pub fn seek_step_ms(setting: i16, repeats: u16) -> i32 {
+    let first = usize::try_from(setting).unwrap_or(0).min(SEEK_LADDER_S.len() - 1);
+    let up = match repeats {
+        0..6 => 0,
+        6..12 => 1,
+        12..20 => 2,
+        _ => 3,
+    };
+    SEEK_LADDER_S[(first + up).min(SEEK_LADDER_S.len() - 1)] * 1000
+}
+
 fn push_time<const N: usize>(b: &mut StrBuf<N>, ms: u32) {
     b.push_duration(ms / 1000);
 }
@@ -222,15 +243,6 @@ impl NowPlayingScreen {
             v.push_str(" %");
         });
         rows
-    }
-
-    fn seek_step(&self) -> i32 {
-        match self.seek_repeats {
-            0..6 => 2000,
-            6..12 => 5000,
-            12..20 => 10_000,
-            _ => 30_000,
-        }
     }
 
     fn list_view(&self) -> bool {
@@ -586,7 +598,7 @@ impl<S: Services + ?Sized> Screen<S> for NowPlayingScreen {
                 } else {
                     self.seek_repeats = self.seek_repeats.saturating_add(1);
                 }
-                let step = self.seek_step();
+                let step = seek_step_ms(cx.svc.setting(id::SEEK_STEP), self.seek_repeats);
                 cx.svc.command(PlayerCmd::SeekBy(if k == Key::Next { step } else { -step }));
                 return Nav::Stay;
             }
@@ -1019,5 +1031,24 @@ impl<S: Services + ?Sized> Screen<S> for EqualiserScreen {
             is_player: true,
             ..Wants::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::seek_step_ms;
+
+    /// Settings › Playback › Seek step (VER-13): the first steps of a held
+    /// Prev/Next are the setting's; the ladder goes up from there to 30 s.
+    #[test]
+    fn seek_steps_start_at_the_setting() {
+        let steps = |setting| [0u16, 5, 6, 11, 12, 19, 20, 99].map(|r| seek_step_ms(setting, r) / 1000);
+        assert_eq!(steps(0), [2, 2, 5, 5, 10, 10, 30, 30], "2 s: the ladder of 05 §7.1");
+        assert_eq!(steps(1), [5, 5, 10, 10, 30, 30, 30, 30], "5 s (default)");
+        assert_eq!(steps(2), [10, 10, 30, 30, 30, 30, 30, 30], "10 s");
+        assert_eq!(steps(3), [30; 8], "30 s");
+        // Out of range (a damaged store): the nearest end.
+        assert_eq!(seek_step_ms(-1, 0), 2000);
+        assert_eq!(seek_step_ms(9, 0), 30_000);
     }
 }

@@ -46,6 +46,15 @@ pub const SORT_IN_RAM: usize = 128;
 /// Simulated latencies.
 const LOAD_MS: u64 = 40;
 const SORT_MS: u64 = 400;
+/// Silence between two tracks with Settings › Playback › Gapless off (the
+/// firmware plays out its PCM ring, stops the DAC and opens the next file
+/// fresh: about this long on the player).
+pub const GAP_MS: u32 = 200;
+/// Automatic bookmarks (05 §7.1): files longer than this keep their place,
+/// noted this often while playing; the last three are kept.
+const LONG_MS: u32 = 20 * 60 * 1000;
+const MARK_EVERY_MS: u64 = 30_000;
+const MARKS: usize = 3;
 
 #[derive(Clone, Debug)]
 pub struct HostEntry {
@@ -183,6 +192,22 @@ pub struct Media {
     pub log: Vec<String>,
     queue_pending: Option<u64>,
     events: Vec<Event>,
+    /// Settings › Playback › Gapless and Auto-bookmark long files
+    /// (`set_options`).
+    gapless: bool,
+    auto_bm: bool,
+    /// Silence left before the next track's time runs (Gapless off).
+    gap_left: u32,
+    /// Settings › Sound › Fade on pause (`set_options`).
+    fade: bool,
+    /// The firmware's `status` (VER-13): the last pause's fade (ms) and
+    /// whether the last track change at a track's end was gapless.
+    pub last_fade: Option<u32>,
+    pub last_change: Option<bool>,
+    /// Automatic bookmarks: (path, ms), the most recently left last.
+    marks: Vec<(String, u32)>,
+    /// Playing time, for the automatic bookmarks' 30 s.
+    played_ms: u64,
 }
 
 impl Drop for Media {
@@ -257,7 +282,70 @@ impl Media {
             log: Vec::new(),
             queue_pending: None,
             events: Vec::new(),
+            gapless: true,
+            auto_bm: true,
+            gap_left: 0,
+            fade: true,
+            last_fade: None,
+            last_change: None,
+            marks: Vec::new(),
+            played_ms: 0,
         })
+    }
+
+    /// Settings › Playback › Gapless and Auto-bookmark long files, as the
+    /// firmware's player follows them, and Settings › Sound › Fade on
+    /// pause (VER-13).
+    pub fn set_options(&mut self, gapless: bool, auto_bookmark: bool, fade: bool) {
+        self.gapless = gapless;
+        self.auto_bm = auto_bookmark;
+        self.fade = fade;
+    }
+
+    /// The automatic bookmarks (path, ms), the most recently left last.
+    #[must_use]
+    pub fn auto_marks(&self) -> &[(String, u32)] {
+        &self.marks
+    }
+
+    /// The current track is left: a long file notes its place (or forgets
+    /// it at its start or end), as `orpheus_player` does.
+    fn leave(&mut self) {
+        let Some(q) = self.current().filter(|q| self.auto_bm && q.duration > LONG_MS) else { return };
+        let path = q.path.clone();
+        let end = q.duration.saturating_sub(10_000);
+        self.marks.retain(|m| m.0 != path);
+        if self.position > 0 && self.position < end {
+            if self.marks.len() == MARKS {
+                self.marks.remove(0);
+            }
+            self.marks.push((path, self.position));
+        }
+    }
+
+    /// A track was reached at its start: a long file continues at its
+    /// automatic bookmark.
+    fn arrive(&mut self) {
+        if self.position != 0 || !self.auto_bm {
+            return;
+        }
+        if let Some(q) = self.current().filter(|q| q.duration > LONG_MS)
+            && let Some(at) = self.marks.iter().find(|m| m.0 == q.path).map(|m| m.1)
+        {
+            self.position = at;
+        }
+    }
+
+    /// Start-up with a resume point and Resume at start-up on (05 §6.1):
+    /// its track loaded, paused at its place.
+    pub fn resume_paused(&mut self) {
+        if let Some(q) = self.resume.take() {
+            self.queue = vec![q];
+            self.pos = 0;
+            self.playing = false;
+            self.position = self.resume_at.take().unwrap_or(0);
+            self.refresh_art();
+        }
     }
 
     /// The mounted volume (the browser build reads its size and free
@@ -525,13 +613,15 @@ impl Media {
         let data = self.read_file(path);
         let stem = path.rsplit('/').next().unwrap_or(path);
         let stem = stem.rsplit_once('.').map_or(stem, |(s, _)| s);
+        // The podcasts are long (automatic bookmarks, over 20 min).
+        let long = if path.contains("/Podcasts/") { 75 * 60_000 } else { 0 };
         let mut item = QItem {
             file,
             path: path.to_string(),
             title: stem.to_string(),
             artist: String::new(),
             album: String::new(),
-            duration: 150_000 + (fnv(path) % 150) * 1000 + fnv(stem) % 1000,
+            duration: long + 150_000 + (fnv(path) % 150) * 1000 + fnv(stem) % 1000,
             size: data.len() as u64 * 9000 + 3_000_000,
             lyrics: Vec::new(),
             art: None,
@@ -600,12 +690,15 @@ impl Media {
     }
 
     fn set_queue(&mut self, files: Vec<(FileRef, String)>, start: usize) {
+        self.leave();
         self.queue = files.iter().map(|(f, p)| self.load_item(*f, p)).collect();
         self.pos = start.min(self.queue.len().saturating_sub(1));
         self.position = 0;
+        self.gap_left = 0;
         self.playing = !self.queue.is_empty();
         self.a = None;
         self.b = None;
+        self.arrive();
         self.refresh_art();
     }
 
@@ -633,18 +726,26 @@ impl Media {
                         self.command(PlayerCmd::Resume, repeat);
                     }
                 } else {
+                    if self.playing {
+                        self.leave();
+                        // The firmware fades out over 60 ms first.
+                        self.last_fade = Some(if self.fade { 60 } else { 0 });
+                    }
                     self.playing = !self.playing;
                 }
             }
             PlayerCmd::Stop => {
+                self.leave();
                 self.playing = false;
                 self.position = 0;
                 self.resume = None;
             }
             PlayerCmd::Next => self.next(repeat, true),
             PlayerCmd::Prev => {
+                self.leave();
                 self.pos = self.pos.saturating_sub(1);
                 self.position = 0;
+                self.arrive();
             }
             PlayerCmd::SeekTo(ms) => self.position = ms.min(self.current().map_or(0, |q| q.duration)),
             PlayerCmd::SeekBy(d) => {
@@ -655,9 +756,11 @@ impl Media {
             }
             PlayerCmd::Jump(n) => {
                 if (n as usize) < self.queue.len() {
+                    self.leave();
                     self.pos = n as usize;
                     self.position = 0;
                     self.playing = true;
+                    self.arrive();
                 }
             }
             PlayerCmd::Remove(n) => {
@@ -775,18 +878,36 @@ impl Media {
     }
 
     fn next(&mut self, repeat: i16, user: bool) {
+        if user {
+            self.leave();
+        } else if let Some(q) = self.current() {
+            // Played to its end: no place to keep.
+            let path = q.path.clone();
+            if self.auto_bm {
+                self.marks.retain(|m| m.0 != path);
+            }
+        }
+        self.gap_left = 0;
         if repeat == 1 && !user {
             self.position = 0;
+            if !self.gapless {
+                self.gap_left = GAP_MS;
+            }
             return;
         }
-        if self.pos + 1 < self.queue.len() {
-            self.pos += 1;
-        } else if repeat == 2 {
-            self.pos = 0;
+        if self.pos + 1 < self.queue.len() || repeat == 2 {
+            self.pos = if self.pos + 1 < self.queue.len() { self.pos + 1 } else { 0 };
+            if !user {
+                self.last_change = Some(self.gapless);
+                if !self.gapless {
+                    self.gap_left = GAP_MS;
+                }
+            }
         } else {
             self.playing = false;
         }
         self.position = 0;
+        self.arrive();
         self.refresh_art();
     }
 
@@ -796,7 +917,16 @@ impl Media {
             && let Some(q) = self.current()
         {
             let dur = q.duration;
+            // Gapless off: the silence between two tracks first.
+            let gap = self.gap_left.min(u32::try_from(ms).unwrap_or(u32::MAX));
+            self.gap_left -= gap;
+            let ms = ms - u64::from(gap);
+            let before = self.played_ms;
+            self.played_ms += ms;
             self.position = self.position.saturating_add(u32::try_from(ms).unwrap_or(0));
+            if before / MARK_EVERY_MS != self.played_ms / MARK_EVERY_MS && self.position < dur {
+                self.leave();
+            }
             if let (Some(a), Some(b)) = (self.a, self.b)
                 && b > a
                 && self.position >= b

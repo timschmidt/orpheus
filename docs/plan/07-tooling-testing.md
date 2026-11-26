@@ -1362,29 +1362,43 @@ matrix, measured like code coverage.
 * **The simulator matrix** (`sim/tests/settings_matrix.rs`, one test per
   setting, 7 s for all) reads the manifest: every non-default value against
   the default (`set:KEY=…` before the journey) in each of 59 screen
-  contexts (`@screens`: the frame) and 10 service contexts (`@services`:
-  the queue and its end, the tuner's register writes, the recorded file,
-  the keyboard reports, the USB personality requested, the Bluetooth
-  module, steps counted, an alarm ringing, the sleep timer, the volume
-  reached). The observation must differ exactly where `contexts` says and
+  contexts (`@screens`: the frame) and 11 service contexts (`@services`:
+  the queue, a track's end in its middle and the queue's end, the tuner's
+  register writes, the recorded file, the keyboard reports, the USB
+  personality requested, the Bluetooth module, steps counted, an alarm
+  ringing, the sleep timer, the volume reached, the key clicks the output
+  got). The observation must differ exactly where `contexts` says and
   nowhere else; a journey that ends elsewhere (another app on Home,
   another file in a sorted folder) is an effect too. Effects that need a
   second setting, time or a file have dedicated tests named in `cover`
   (custom EQ bands with their preset, input gain with manual gain, the
   four alarms' time/days/on, the games' score-table variants after a
-  finished game, list roll-around).
+  finished game, list roll-around; VER-13's second round: Next held with
+  each seek step, a start-up with a resume point, a podcast played again,
+  the silence of Gapless off, clicks with the recorder listening).
 * **Host contexts**: the sound (`sim/web` `Sound::from_settings` over the
   real `orpheus-dsp` chain: each Sound setting changes the rendered
-  output, no other setting reaches the chain), the governor
-  (`orpheus-power`), the step detector (`orpheus-steps`), the recorder's
-  split (`orpheus-rec`).
+  output, no other setting reaches the chain; the pause fade of the chain
+  and the browser build, the key click), the governor (`orpheus-power`),
+  the step detector (`orpheus-steps`), the recorder's split
+  (`orpheus-rec`), the player's gapless and automatic-bookmark rules
+  (`orpheus-player`).
 * **Player**: `device = true` entries; `checks` name suite journeys that
   change a setting only through the RAM-only test session (the journey
   stops unless `settings test-session` answers "on", and sets the value
-  back): `settings_shuffle` (status `shuf=` follows 0x0201). Effects the
+  back): `settings_shuffle` (status `shuf=` follows 0x0201),
+  `settings_sound` (`clicks=` counts the key clicks sounded, `fade=` is
+  the last pause's fade, 0 or 60 ms) and `settings_playback` (Next held
+  with the 30 s step ends the 30 s fixture; `gapless=` says whether the
+  last track change at a track's end was gapless). Effects the
   player alone shows and no read-only command reports yet (the applied
   Sound, the clock level, the ADC gain, auto-off, the step task, the
   library's code page) are `uncovered` with that reason.
+* **Second round (2026-11-26)**: Key click, Fade on pause, Gapless,
+  Resume at start-up, Seek step and Auto-bookmark long files have their
+  effect (04 §2.2, 04 §5.1, 05 §3, §6.1, §7.1 "As built (VER-13)");
+  16 settings remain `gap` (Speed: 04 §5.1's time stretch is not built,
+  see its entry), 63 reviewed exclusions.
 
 ## 6. Milestone gate (run before declaring any work package done)
 

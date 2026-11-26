@@ -347,3 +347,80 @@ cmd: status ~ ^playing .*shuf=0
 cmd: stop
 sim: set:playing=0
 """
+
+# VER-13 (2026-11-26): Settings › Sound › Key click and Fade on pause on
+# the player, through the RAM-only session as above. `status` clicks=
+# counts the clicks the card task sounded (keys on Home with nothing
+# playing); fade= is the last pause's fade-out in ms (0: the DAC stopped
+# at once, 60: faded). Both end at their defaults (click off, fade on).
+[[journey]]
+name = "settings_sound"
+about = "Key click (0x0108) and Fade on pause (0x0109) through the RAM-only test session: status clicks= counts the clicks sounded, fade= is the last pause's fade (0 off, 60 on); both set back to their defaults"
+setup = true
+script = """
+prev ok expect-screen:Settings ok expect-screen:SettingsGroup wait:500 shot:sound back back
+expect-screen:Home
+cmd: settings test-session ~ ^test-session on
+cmd: settings test-set 0x0108 1 ~ ^test-set 264=1 ok
+dev: wait:500
+next prev next
+dev: wait:1000
+cmd: status ~ clicks=[1-9]
+cmd: settings test-set 0x0108 0 ~ ^test-set 264=0 ok
+cmd: settings test-set 0x0109 0 ~ ^test-set 265=0 ok
+cmd: playdir /.orpheus/test/suite/music ~ ^playdir ok
+sim: set:queue=takk
+dev: wait:1500
+ok wait:300 expect-screen:Music ok wait:300 expect-screen:NowPlaying
+ok
+dev: wait:1000
+cmd: status ~ fade=0 gapless
+ok
+dev: wait:1000
+cmd: settings test-set 0x0109 1 ~ ^test-set 265=1 ok
+dev: wait:500
+ok
+dev: wait:1000
+cmd: status ~ fade=60 gapless
+cmd: stop
+sim: set:playing=0
+"""
+
+# VER-13 (2026-11-26): Settings › Playback › Gapless and Seek step on the
+# player (Repeat All for the run, so the second track's end leads back to
+# the first). Next held with the 30 s step takes the 30 s fixture to its
+# end: with Gapless off the next track starts fresh (status gapless=0);
+# with it on and the 10 s step, the track plays out and is handed over
+# gaplessly (gapless=1). All three set back to their defaults.
+[[journey]]
+name = "settings_playback"
+about = "Gapless (0x0203) and Seek step (0x0205) through the RAM-only test session with Repeat All: Next held seeks by the step; a track's end starts the next fresh with Gapless off (status gapless=0), gaplessly with it on (gapless=1); all set back"
+setup = true
+script = """
+prev ok expect-screen:Settings down ok expect-screen:SettingsGroup wait:500 shot:playback back back
+expect-screen:Home
+next
+cmd: settings test-session ~ ^test-session on
+cmd: settings test-set 0x0202 2 ~ ^test-set 514=2 ok
+cmd: settings test-set 0x0203 0 ~ ^test-set 515=0 ok
+cmd: settings test-set 0x0205 3 ~ ^test-set 517=3 ok
+cmd: playdir /.orpheus/test/suite/music ~ ^playdir ok
+sim: set:queue=takk
+dev: wait:1500
+ok wait:300 expect-screen:Music ok wait:300 expect-screen:NowPlaying
+hold:next:550
+sim: set:pos=9999999 wait:300
+dev: wait:3000
+cmd: status ~ ^playing .*gapless=0
+cmd: settings test-set 0x0203 1 ~ ^test-set 515=1 ok
+cmd: settings test-set 0x0205 2 ~ ^test-set 517=2 ok
+dev: wait:500
+hold:next:550
+sim: set:pos=9999999 wait:300
+dev: wait:22000
+cmd: status ~ ^playing .*gapless=1
+cmd: stop
+sim: set:playing=0
+cmd: settings test-set 0x0205 1 ~ ^test-set 517=1 ok
+cmd: settings test-set 0x0202 0 ~ ^test-set 514=0 ok
+"""

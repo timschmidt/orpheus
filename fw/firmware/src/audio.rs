@@ -32,7 +32,15 @@
 //! A track change the user makes (Next, a jump, a new queue) still stops
 //! the output and starts fresh.
 //!
-//! Not yet: the fades of 04 §2.2 around pause and seek, periodic resume
+//! Settings (VER-13): Fade on pause fades the output out over 60 ms before
+//! the DAC stops and in again after (`Chain::begin_pause`/`end_pause`);
+//! Gapless off makes every track change a fresh start (the player reads
+//! nothing ahead); Resume at start-up opens the saved place paused once the
+//! card is mounted; Key click mixes `orpheus_dsp::click` into the music, or
+//! sounds it alone while nothing plays ([`click`]). `status` shows `fade=`,
+//! `gapless=` and `clicks=`.
+//!
+//! Not yet: the fades of 04 §2.2 around seek, periodic resume
 //! saves while playing (a card write between blocks could underrun; the
 //! state is saved at pause, stop, track change, card hand-over and
 //! power-off instead; a gapless track change does not save).
@@ -169,6 +177,67 @@ pub static PLAYING: AtomicBool = AtomicBool::new(false);
 /// The timer or an alarm rings (UI-5d, set by the UI): the card task
 /// sounds the alert while it is set (`alert_tone`).
 pub static ALERT: AtomicBool = AtomicBool::new(false);
+/// Settings › Sound › Key click (VER-13): the frame of the click the next
+/// output frame gets (`orpheus_dsp::click`), `u32::MAX` while none sounds.
+/// The UI sets it to 0 ([`click`]); the playback loop mixes it into the
+/// music, the idle and paused loops sound it alone.
+static CLICK_AT: AtomicU32 = AtomicU32::new(u32::MAX);
+/// `status` (VER-13): the last pause's fade-out in ms (bits 0–11, `0xFFF`:
+/// no pause yet), the last natural track change (bits 12–13: 0 none yet,
+/// 1 gapless, 2 with the DAC stopped), key clicks sounded (bits 16–31).
+static PLAY_STATS: AtomicU32 = AtomicU32::new(0xFFF);
+
+#[inline(never)]
+fn stats_set(mask: u32, v: u32) {
+    let _ = PLAY_STATS.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |s| Some((s & !mask) | (v & mask)));
+}
+
+/// A key click (Settings › Sound › Key click; the UI decides whether it
+/// sounds). `wake`: nothing plays, the card task is woken to sound it.
+pub fn click(wake: bool) {
+    CLICK_AT.store(0, Ordering::Relaxed);
+    if wake {
+        let _ = media::try_request(media::Req::Alert);
+    }
+}
+
+/// Mix the key click into a piece of output (`ch` channels at the DAC's
+/// rate), if one sounds.
+#[inline(never)]
+fn click_mix<T>(s: &mut [T], n: usize, ch: usize, mix: fn(&mut [T], usize, u32, &mut u32)) {
+    let n = n.min(s.len());
+    let s = &mut s[..n];
+    let (mut at, rate) = (CLICK_AT.load(Ordering::Relaxed), RATE.load(Ordering::Relaxed));
+    if at == 0 {
+        PLAY_STATS.fetch_add(1 << 16, Ordering::Relaxed);
+    }
+    mix(s, ch, rate, &mut at);
+    let done = at >= orpheus_dsp::click::frames(rate);
+    CLICK_AT.store(if done { u32::MAX } else { at }, Ordering::Relaxed);
+}
+
+/// The key click alone (nothing plays): the DAC started for it, the rest
+/// of the click, silence to the end of the ring, stopped.
+#[inline(never)]
+async fn click_alone(out: &mut PcmOut) {
+    let rate = match RATE.load(Ordering::Relaxed) {
+        0 => 44_100,
+        r => r,
+    };
+    if !out.running {
+        dac::set_rate(rate);
+    }
+    let at = CLICK_AT.swap(u32::MAX, Ordering::Relaxed);
+    if at == 0 {
+        PLAY_STATS.fetch_add(1 << 16, Ordering::Relaxed);
+    }
+    for i in at..orpheus_dsp::click::frames(rate) {
+        let s = u32::from(orpheus_dsp::click::sample(i, rate) as u16);
+        out.push(s | s << 16).await;
+    }
+    out.finish().await;
+}
+
 /// Where the playback loop is (status diagnostics): 1 card read, 2 media
 /// request, 3 waiting for the DAC, 4 decoding, 5 DSP, 0 elsewhere.
 pub static WHERE: AtomicU32 = AtomicU32::new(0);
@@ -201,7 +270,7 @@ pub(crate) fn boost(on: bool) {
 
 fn sound_active() -> bool {
     DSP_ON.load(Ordering::Relaxed)
-        && critical_section::with(|cs| *media::SOUND.borrow(cs).borrow() != media::Sound::default())
+        && critical_section::with(|cs| !media::SOUND.borrow(cs).borrow().chain_default())
 }
 
 /// Underruns after which a track is abandoned as undecodable in time.
@@ -1477,6 +1546,9 @@ struct Blk {
     paused: bool,
     /// The pause has been carried out (DAC stopped, state saved).
     held: bool,
+    /// Fade on pause: the output fades out before the pause is carried out
+    /// (`pause_fades`).
+    fading: bool,
     reader_end: bool,
     last_tick: u64,
     /// The decoder reached the end of the stream.
@@ -1567,6 +1639,9 @@ impl Sink<i16> for Out<'_> {
         mark(5);
         let n = if self.dsp { self.chain.process(&mut PcmBlock::I16(s)) } else { s.len() };
         mark(0);
+        if CLICK_AT.load(Ordering::Relaxed) != u32::MAX {
+            click_mix(s, n, 1 + usize::from(self.stereo), orpheus_dsp::click::mix_i16);
+        }
         self.out.look();
         n
     }
@@ -1585,6 +1660,9 @@ impl Sink<i32> for Out<'_> {
         mark(5);
         let n = if self.dsp { self.chain.process(&mut PcmBlock::I32(s)) } else { s.len() };
         mark(0);
+        if CLICK_AT.load(Ordering::Relaxed) != u32::MAX {
+            click_mix(s, n, 1 + usize::from(self.stereo), orpheus_dsp::click::mix_i32);
+        }
         self.out.look();
         n
     }
@@ -1596,6 +1674,41 @@ impl Sink<i32> for Out<'_> {
         *self.frames += 1;
         self.out.put(u32::from(l) | u32::from(r) << 16)
     }
+}
+
+/// Settings › Sound › Fade on pause (VER-13): a pause while the DAC plays
+/// fades the output out over the next blocks first (`Chain::begin_pause`;
+/// `play_block` carries the pause out once the fade is done, `pause` lets
+/// the faded end play out). True while it fades: go on decoding.
+#[inline(never)]
+fn pause_fades(b: &mut Blk, out: &PcmOut, chain: &mut orpheus_dsp::Chain) -> bool {
+    if !b.fading && !b.held && b.dsp && out.running && media::opts() & media::opt::FADE != 0 {
+        b.fading = chain.begin_pause(true);
+    }
+    b.fading
+}
+
+/// Playing again after a pause (fading in with Fade on pause), or while
+/// its fade-out ran (back up from where it is). Out of `play_block`: its
+/// lines are the per-block code's (hot.toml `play-block`).
+#[inline(never)]
+fn resumed(b: &mut Blk, chain: &mut orpheus_dsp::Chain) {
+    if b.held {
+        b.held = false;
+        b.last_tick = time::now_us();
+        chain.end_pause(media::opts() & media::opt::FADE != 0);
+        media::player_update(|p| p.source = Source::Playing);
+    } else {
+        b.fading = false;
+        chain.fade_in(orpheus_dsp::PAUSE_FADE_MS);
+    }
+}
+
+/// A track starts fresh: the output at full level (a pause's fade-out may
+/// have left it at silence).
+#[inline(never)]
+fn full_level(chain: &mut orpheus_dsp::Chain) {
+    chain.end_pause(false);
 }
 
 /// A new block: the end of a gapless join's hand-over, a change of the
@@ -1634,8 +1747,10 @@ fn after_block(b: &mut Blk, ring: &mut Ring, srv: &mut Server, samples: usize) -
         // with this item) and that this one opened.
         let mut fl = srv.feed(Event::DecoderEnded);
         if fl.open.is_some_and(|o| o.target.is_item(item)) {
-            srv.feed(Event::Opened { track, rate: b.info.rate, frames: b.info.frames });
+            let opened = srv.feed(Event::Opened { track, rate: b.info.rate, frames: b.info.frames });
             fl.open = None;
+            // A long file's automatic bookmark: a seek.
+            fl.merge(opened);
         }
         b.flow.merge(fl);
     }
@@ -1851,9 +1966,19 @@ async fn pause(
 ) {
     if !b.held {
         b.held = true;
-        out.stop();
+        // Faded out: the faded end plays out first.
+        let faded = core::mem::take(&mut b.fading);
+        if faded {
+            out.finish().await;
+        } else {
+            out.stop();
+        }
+        stats_set(0xFFF, if faded { orpheus_dsp::PAUSE_FADE_MS } else { 0 });
         media::player_update(|p| p.source = Source::Paused);
         save_store(vol, srv, spare).await;
+    }
+    if CLICK_AT.load(Ordering::Relaxed) != u32::MAX {
+        click_alone(out).await;
     }
     if crate::drain::due() {
         drain_flush_rows(vol, spare).await;
@@ -1965,14 +2090,12 @@ async fn play_block(
         {
             return Went::End(e);
         }
-        if b.paused {
+        if b.paused && !pause_fades(b, out, chain) {
             return Went::Pause;
         }
     }
-    if b.held {
-        b.held = false;
-        b.last_tick = time::now_us();
-        media::player_update(|p| p.source = Source::Playing);
+    if b.held || b.fading && !b.paused {
+        resumed(b, chain);
     }
     if SLOW_UNDERRUNS.load(Ordering::Relaxed) >= MAX_UNDERRUNS {
         // The decoder cannot keep up (Opus on paged code): stop the track
@@ -2049,6 +2172,9 @@ async fn play_block(
                 note_as(UB_SERVE, K_SENSOR as u8, t0);
             }
             reader_check(b, ring, srv);
+            if b.fading && b.paused && chain.fade_done() {
+                return Went::Pause;
+            }
             Went::On
         }
         Ok(Step::NeedData(_)) => {
@@ -2210,6 +2336,7 @@ async fn play_file(
     if !st.gapless {
         mark(7);
         media::apply_sound(chain);
+        full_level(chain);
     }
     mark(8);
     let dsp = DSP_ON.load(Ordering::Relaxed);
@@ -2239,8 +2366,11 @@ async fn play_file(
         media::player_update(|p| show.apply(p));
     }
     let driven = st.track.is_some();
+    // The player's answer to `Opened`: a long file's automatic bookmark
+    // (a seek, carried out at the first block).
+    let mut flow = Flow::default();
     if let Some(track) = st.track.filter(|_| st.early.is_none()) {
-        srv.feed(Event::Opened { track, rate: info.rate, frames: info.frames });
+        flow = srv.feed(Event::Opened { track, rate: info.rate, frames: info.frames });
         // A track change: save while the DAC is not running yet (at a
         // gapless one it runs: the next safe moment saves).
         if !out.running {
@@ -2261,11 +2391,12 @@ async fn play_file(
         driven,
         pos,
         frames: 0,
-        flow: Flow::default(),
+        flow,
         sound_gen,
         decode_us: 0,
         paused: st.paused,
         held: false,
+        fading: false,
         reader_end: false,
         last_tick: t0,
         natural: false,
@@ -2281,7 +2412,7 @@ async fn play_file(
     };
     let end = 'play: loop {
         // While paused, wait for a request (one per pass).
-        let polled = if b.paused {
+        let polled = if b.paused && !b.fading {
             let got =
                 match select3(media::PLAY.receive(), media::REQS.receive(), Timer::after_millis(200)).await {
                     Either3::First(r) => Some(Ok(r)),
@@ -2333,6 +2464,7 @@ async fn play_file(
             .is_some_and(|n| srv.player.as_ref().and_then(|p| p.gapless_next()) == Some(n.item));
     let end = if early {
         gapless = true;
+        stats_set(0x3000, 1 << 12);
         handed_over(out);
         let item = ring.next.as_ref().map_or(0, |n| n.item);
         Ok(End::Open(OpenReq {
@@ -2349,10 +2481,13 @@ async fn play_file(
                 if o.gapless && !o.paused && ring.next.as_ref().is_some_and(|n| o.target.is_item(n.item)) =>
             {
                 gapless = true;
+                stats_set(0x3000, 1 << 12);
                 handed_over(out);
                 Ok(End::Open(o))
             }
             Some(mut o) => {
+                // Gapless off (nothing read ahead), a pause, another rate.
+                stats_set(0x3000, 2 << 12);
                 out.finish().await;
                 o.gapless = false;
                 Ok(End::Open(o))
@@ -2694,7 +2829,7 @@ async fn save_store(vol: &mut Volume<'static, Card>, srv: &mut Server, scratch: 
     let Some(range) = srv.store.dirty_range() else { return };
     let Some(img) = scratch.first_chunk_mut::<IMAGE_LEN>() else { return };
     let Some(pl) = srv.player.as_ref() else { return };
-    srv.store.image(pl.bookmarks(), img);
+    srv.store.image(pl.bookmarks(), pl.auto_marks(), img);
     mark(11);
     let Some(mut f) = create(vol, media::PLAYER_FILE, OpenMode::Create).await else { return };
     let range = if f.size() < IMAGE_LEN as u64 { 0..IMAGE_LEN } else { range };
@@ -3240,6 +3375,22 @@ pub fn status_reply() {
             .u(u64::from(shuffled))
             .s(t!(b" title="))
             .s(&t.as_bytes()[..n]);
+        // VER-13: the last pause's fade (ms), the last natural track
+        // change (gapless or with a stop), the key clicks sounded.
+        let ps = PLAY_STATS.load(Ordering::Relaxed);
+        w.s(t!(b" fade="));
+        match ps & 0xFFF {
+            0xFFF => w.s(b"-"),
+            ms => w.u(u64::from(ms)),
+        };
+        w.s(t!(b" gapless="))
+            .s(match (ps >> 12) & 3 {
+                1 => t!(b"1"),
+                2 => t!(b"0"),
+                _ => t!(b"-"),
+            })
+            .s(t!(b" clicks="))
+            .u(u64::from(ps >> 16));
         // The last gapless join (`-`: not measured yet).
         w.s(t!(b" join#")).u(u64::from(jget(J_SEQ))).s(b":");
         for (label, i) in [
@@ -3418,7 +3569,22 @@ async fn start(slot: &mut Option<Volume<'static, Card>>) -> Option<(&'static mut
     Apart(crate::rec::find_dir(vol)).await;
     Apart(crate::drive::find_dirs(vol)).await;
     atj2157_hal::log::line(b"audio: state loaded");
+    Apart(resume_at_start(srv)).await;
     Some((arena, srv))
+}
+
+/// Settings › Playback › Resume at start-up (VER-13, 05 §6.1): once the UI
+/// has published its settings (at most 2 s), the saved place opens paused.
+async fn resume_at_start(srv: &mut Server) {
+    for _ in 0..100 {
+        if media::opts() & media::opt::VALID != 0 {
+            break;
+        }
+        Timer::after_millis(20).await;
+    }
+    if media::opts() & media::opt::RESUME != 0 && srv.resume_at_start() {
+        atj2157_hal::log::line(t!(b"audio: resuming paused"));
+    }
 }
 
 /// The idle loop: requests, developer commands and background work until a
@@ -3453,6 +3619,16 @@ async fn idle(vol: &mut Volume<'static, Card>, ring: &mut Ring, arena: &mut [u8]
             if ALERT.load(Ordering::Relaxed) && !work_waiting() {
                 let mut out = PcmOut::new();
                 Apart(alert_tone(&mut out)).await;
+            }
+            // A key click with nothing playing (never ahead of card work:
+            // dropped then).
+            if CLICK_AT.load(Ordering::Relaxed) != u32::MAX {
+                if work_waiting() {
+                    CLICK_AT.store(u32::MAX, Ordering::Relaxed);
+                } else {
+                    let mut out = PcmOut::new();
+                    Apart(click_alone(&mut out)).await;
+                }
             }
             if srv.wants_build() && !work_waiting() {
                 Apart(build_slot(vol, srv, arena)).await;

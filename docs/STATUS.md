@@ -65,10 +65,104 @@ of every session. Newest entries first in §3.
 | SYN-1 | **done (host)**; not in the firmware (SYN-3) | `orpheus-synth`: band-limited oscillators (polyBLEP/BLAMP, sine, wavetables, white/pink noise), 2–4 operator FM (8 algorithms, feedback), ADSR (linear/exponential), pitch envelope, SVF LP/BP/HP, LFOs (Hz or tempo sync), 16 voices + 4 fade-out tails with stealing, mono legato glide, sample-accurate events, 6 drum voices, delay/chorus/reverb sends, soft limiter; 69,040 B engine; golden hashes equal at opt-level 1 and release; player estimate: 16 saw-lead voices ≈ 79 % of 144 MHz (session entry 2026-11-25 "SYN-1") |
 | TTS-1 | **done (host)**; not in the firmware, simulator or apps (TTS-2, A11Y-1, BOOK-3) | `orpheus-tts`: incremental converter (1,408 B, any feed sizes), English normaliser, NRL letter-to-sound rules + stress heuristic + stems, CMUdict exception lexicon (4,487 entries in 32,766 B; `cargo xtask tts-lexicon`), duration model for 0.25×–10×; rules alone 79.8 % of tokens, with the lexicon 98.1 % (session entry 2026-11-25 "TTS-1") |
 | TTS-2 | **done (host)**; not in the firmware, simulator or apps (A11Y-1, BOOK-3, firmware integration) | `orpheus-tts`: cascade/parallel formant synthesiser after Klatt 1980 (KLGLOTT88-like source with polyBLEP, F1–F6 cascade, nasal pole/zero, parallel frication/bursts), phoneme targets and loci from the phonetics literature, intonation (declination, accents, 5 contours, asides), voices Neutral/Low/Bright, exact TTS-1 durations at 0.25×–10×, resampler to 8–48 kHz, `Synth` (1,936 B) and `Speaker` (3,352 B with the converter), events and stop; WER (whisper base.en) 13.9 / 30.5 / 93 % at 1/2/4× (espeak-ng 5.9 / 63 / 89 %); player estimate ≈ 22 % of Base at 48 kHz (over the 20 % budget), code ≈ 70 KB without the lexicon (over 64 KiB) (session entry 2026-11-25 "TTS-2") |
-| VER-13 | **tool and matrix done (host + simulator); one device journey (not yet run on the player)** | `cargo xtask settings-matrix [--check] [--strict]` (alias `settings coverage`; in `test all`, `--strict` in `gate --m11`); manifest for all 162 settings of the tree; simulator matrix over 59 screen + 10 service contexts (`sim/tests/settings_matrix.rs`), host tests for sound, governor, steps, recorder split, persistence/defaults/clamping/migration per kind; journey `settings_shuffle` (RAM-only session). 9,365 / 9,412 matrix cells covered; 22 settings have no effect to show (not wired) and 47 contexts are reviewed exclusions (session entry 2026-11-26 "VER-13") |
+| VER-13 | **tool and matrix done (host + simulator); second round: six settings wired (host + simulator + firmware built), journeys `settings_sound`/`settings_playback` not yet run on the player** | `cargo xtask settings-matrix [--check] [--strict]` (alias `settings coverage`; in `test all`, `--strict` in `gate --m11`); manifest for all 162 settings of the tree; simulator matrix over 59 screen + 11 service contexts (`sim/tests/settings_matrix.rs`), host tests for sound, governor, steps, recorder split, persistence/defaults/clamping/migration per kind; journeys `settings_shuffle` (passes on the player), `settings_sound`, `settings_playback` (RAM-only session). Key click, Fade on pause, Gapless, Resume at start-up, Seek step, Auto-bookmark have their effect; 9,927 / 9,974 cells; 16 settings without an effect (Speed: time stretch not built, spec change proposed), 63 reviewed exclusions (session entries 2026-11-26 "VER-13") |
 | GAME-6 Bricks (M14) | **built (host + simulator + firmware), not yet run on the player** | Brick breaker of our own: integer physics with one-pixel sub-steps (no tunnelling at any speed, no floating point), paddle angles, 1–3-hit and unbreakable bricks, 8 hand-made + generated levels, five power-ups, lives, scores, saves; 7 settings packed into 1 word; 47 goldens; fuzz `bricks_keys`. In the firmware (`orpheus-apps/bricks`): stack margin 4,116 B unchanged. Lead: session entry 2026-11-25 "GAME-6" |
 
 ## 3. Session log
+
+### 2026-11-26 — VER-13 second round: six settings get their effect (worker, no hardware)
+
+* **Key click** (0x0108): `orpheus_ui::shell::System::key_click` on every
+  key down the gate passes; `orpheus_apps::services::key_click` (setting
+  on, microphone not live); `orpheus_dsp::click` (3 ms 2.5 kHz triangle,
+  linear decay, ≈ −15 dBFS, a function of its frame index: no table, no
+  state but the index). Firmware: `audio::CLICK_AT` (the click's frame);
+  the playback loop mixes it into each piece after the chain while it
+  sounds (`click_mix`, out of line); with nothing playing or paused the
+  card task sounds it alone (`click_alone`, woken by `Req::Alert`; dropped
+  when card work waits; not over the radio). Simulator: `sys.clicks`, new
+  service context `key-click`.
+* **Fade on pause** (0x0109): `Chain::begin_pause`/`end_pause`
+  (`PAUSE_FADE_MS` 60). Firmware: a pause while the DAC runs sets
+  `Blk::fading`, the loop decodes on until the fade is done, `pause` lets
+  the faded end play out (`finish`) and stops the DAC; playing again fades
+  in (`resumed`, out of `play_block`); a fresh track starts at full level.
+  Browser build: the engine fades out over 60 ms on a pause.
+* **Gapless** (0x0203): `orpheus_player::Command::Gapless` — off, no
+  `Prefetch`, every track change at a track's end is `Open { gapless:
+  false }` (firmware: ring played out, DAC stopped, fresh open).
+  Simulator: 200 ms of silence (`media::GAP_MS`); the `playback` service
+  probe now includes a track's end in the middle of the queue.
+* **Resume at start-up** (0x0204): after the state is loaded and the UI has
+  published (≤ 2 s), `Server::resume_at_start` opens the saved place
+  paused. Simulator: `set:resume=1` is a start-up with a resume point (on:
+  loaded paused at 83 s; the `music_resume` golden now sets 0x0204=0).
+* **Seek step** (0x0205): `seek_step_ms` — the setting is the first rung
+  of the 2/5/10/30 s ladder (default 5 s: the first held steps are now 5
+  s, were 2 s).
+* **Auto-bookmark long files** (0x0207): `orpheus_player::AutoMarks` (three
+  places of files over 20 min; noted at pause, leaving, every 30 s of play,
+  shutdown; continued on `Opened` at frame 0 by a `Seek`; forgotten at the
+  end). `player.bin` 588 → 680 B (key `AutoMarks` at 588, magic `YAM1`; a
+  588-byte file loads without them). RAM paid by packing `Bookmark` to 28
+  B (`repr(packed(4))`): `Player` stays 752 B. Firmware: the `Opened`
+  flow (a seek) is carried out now (it was dropped). Simulator: the
+  podcasts are 75 min long.
+* **Speed** (0x0206): not implemented. 04 §5.1 defines it as a pitch-kept
+  WSOLA time stretch (4 KiB of state, < 15 % CPU, the last step of
+  WP-AU-6); a resampling rate change would alter the pitch. The 4 KiB have
+  no home (.bss is 104 B from the next 256 B stack step, the arena's spare
+  is 2 KiB and Opus leaves < 4 KiB), and 2× doubles the decode rate.
+  **Proposal (owner/lead)**: take Speed off Now Playing's menu until the
+  time-stretch package, or label it "not built"; its entry stays `gap`.
+* **Observables** (`status`, read-only): `fade=` (last pause's fade, ms:
+  60, 0, `-` none yet), `gapless=` (last track change at a track's end:
+  1 gapless, 0 fresh start, `-`), `clicks=` (key clicks sounded). `SimPlayer`
+  answers them. Journeys (RAM-only session, set back at the end):
+  `settings_sound` (clicks on Home with Key click on; pause on Now Playing
+  with Fade off → `fade=0`, on → `fade=60`), `settings_playback` (Repeat
+  All, Gapless off, 30 s step: Next held ends the 30 s fixture →
+  `gapless=0`; Gapless on, 10 s step, the track plays out → `gapless=1`;
+  ≈ 35 s).
+* **Matrix**: 22 → 16 settings without an effect, 69 → 63 exclusions,
+  9,927 / 9,974 cells; dedicated tests in `effects` (seek step held,
+  resume at start-up, gapless silence, podcast bookmark, clicks with the
+  recorder, fade reported).
+* **Firmware** (before → after): resident 81,076 → 81,140 B (budget
+  81,920), .bss 125,280 → 125,344 B (budget 126,976; `__stack_bottom`
+  0x132698, 104 B below the next 256 B step), stack nested worst case
+  15,216 → 15,224 B of 19,456 B usable, margin 4,240 → 4,232 B (budget
+  4,096; RT task frame 8,168 → 8,176 B). `play-block` cluster 14,830 →
+  15,258 B, still 15 lines (the resume/fade code out of line to keep it
+  there; 102 B left in its last line).
+* **Gate**: host `cargo fmt --all --check`, `cargo clippy --workspace
+  --all-targets -D warnings`, `cargo clippy -p orpheus-apps --all-targets
+  -D warnings`, `cargo test --workspace` (1,728 passed, 0 failed, 11
+  ignored), `cargo xtask settings-matrix
+  --check`: pass. Firmware `cargo fmt --all --check`, `cargo clippy
+  --workspace -D warnings`, `cargo xtask build`, `check-resident`, `size
+  --check`, `stack --check`: pass. **Not run**: `xtask test all` beyond
+  these (fuzz smoke, codecs), `brand`/`site --check`, every `xtask dev`
+  step. `orpheus-fs` `bigdir` failed once at its first `create_dir` and
+  passed when run again (another worktree's run in the same scratch
+  folder, presumably).
+* **Lead, on the player** (nothing run here): (1) `cargo xtask dev suite
+  settings_sound settings_playback` (and the whole suite: `music`
+  journeys start after a reboot, which now comes up paused on the last
+  track — the suite's `stop` clears it); (2) listen: a pause fades over 60
+  ms, playing again fades in; Key click on (Settings › Sound) clicks on
+  Home and over music, not with the recorder open; Gapless off leaves a
+  short gap between album tracks; (3) restart the player while a track is
+  paused: it comes up paused at that place (Home's strip), OK plays on;
+  with Resume at start-up off it does not; (4) a podcast over 20 min:
+  leave it at 10 min, play something else, play it again → it continues;
+  (5) the soak (`clicks`/fades on the playback loop: underruns stay 0).
+* **Open**: the fade around seek and skip (05 §7.1 "fade on pause/skip")
+  is not built; Resume at start-up always opens paused (the record's
+  "was playing" is ignored: user power-off and battery cut-off are not
+  told apart); while a track is open paused the library build and
+  directory indexes wait (as during any pause) — after a restart that is
+  now the usual state; Speed (above).
 
 ### 2026-11-26 — VER-13 merged; `settings_shuffle` on the player (lead)
 
