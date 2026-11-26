@@ -3,9 +3,18 @@
 
 /// A built-in bitmap font. The data is `'static` rodata (paged on the
 /// device); nothing is copied to RAM.
+///
+/// A `YFN1` file larger than [`PIECE_MAX`] is linked as two statics
+/// (`builtin_font!`): `data`, the header, ranges, glyph records and the
+/// first bitmaps, and `tail`, the bitmaps from the last glyph boundary at
+/// or below [`PIECE_MAX`] on. On the player a rodata section must fit one
+/// 16 KiB group of the rodata window to be paged (02 §3.3); a larger one
+/// was linked resident (2026-11-26: the 17,794 B UI font was 17.8 KB of
+/// the 80 KiB resident image).
 #[derive(Clone, Copy, Debug)]
 pub struct Font {
     data: &'static [u8],
+    tail: &'static [u8],
     bpp: u8,
     /// Cap height: baseline to the top of `H` (or `0` for numeral fonts).
     pub ascent: u8,
@@ -43,12 +52,30 @@ impl Font {
     /// so a malformed file fails the build.
     #[must_use]
     pub const fn parse(data: &'static [u8]) -> Font {
+        Font::parse_split(data, &[])
+    }
+
+    /// Parse a `YFN1` blob linked in two pieces: `data` (at least the
+    /// header, ranges and glyph records) and `tail`, the rest of the file.
+    /// A glyph whose bitmap straddles the two is not found
+    /// ([`split_point`] cuts where none does).
+    #[must_use]
+    pub const fn parse_split(data: &'static [u8], tail: &'static [u8]) -> Font {
         assert!(data.len() >= HEADER);
         assert!(data[0] == b'Y' && data[1] == b'F' && data[2] == b'N' && data[3] == b'1');
         let n_ranges = rd16(data, 8);
         let n_glyphs = rd16(data, 10);
-        assert!(data.len() >= HEADER + n_ranges as usize * RANGE + n_glyphs as usize * GLYPH);
-        Font { data, bpp: data[4], ascent: data[5], descent: data[6], line: data[7], n_ranges, n_glyphs }
+        assert!(data.len() >= index_len(data));
+        Font {
+            data,
+            tail,
+            bpp: data[4],
+            ascent: data[5],
+            descent: data[6],
+            line: data[7],
+            n_ranges,
+            n_glyphs,
+        }
     }
 
     fn range(&self, i: usize) -> (u32, u16, u16) {
@@ -89,36 +116,119 @@ impl Font {
         let top = i8::from_le_bytes([rec[7]]);
         let bits_start = base + usize::from(self.n_glyphs) * GLYPH + off;
         let n = (usize::from(w) * usize::from(h) * usize::from(self.bpp)).div_ceil(8);
-        let bits = d.get(bits_start..bits_start + n)?;
+        let bits = if bits_start + n <= d.len() {
+            d.get(bits_start..bits_start + n)?
+        } else {
+            let o = bits_start.checked_sub(d.len())?;
+            self.tail.get(o..o + n)?
+        };
         Some(Glyph { adv, w, h, x, top, bpp: self.bpp, bits })
     }
 
-    /// Size of the font data in bytes (rodata).
+    /// Size of the font data in bytes (rodata, both pieces).
     #[must_use]
     pub const fn size_bytes(&self) -> usize {
-        self.data.len()
+        self.data.len() + self.tail.len()
+    }
+
+    /// The sizes of the two pieces as linked (`data`, `tail`).
+    #[must_use]
+    pub const fn piece_bytes(&self) -> (usize, usize) {
+        (self.data.len(), self.tail.len())
     }
 }
 
-/// UI font: DejaVu Sans Condensed 12 px, 2 bits per pixel.
-pub static UI: Font = Font::parse(include_bytes!("../fonts/ui12.yfnt"));
+/// The largest piece a built-in font is linked in: one rodata group of the
+/// player's paged rodata window (`orpheus_pager::RO_GROUP_SIZE`, 02 §3.3).
+/// `xtask pagelink` refuses a larger rodata section that no rule places.
+pub const PIECE_MAX: usize = 16 * 1024;
+
+/// Header, ranges and glyph records of a `YFN1` file: what the first piece
+/// must hold.
+#[must_use]
+pub const fn index_len(d: &[u8]) -> usize {
+    HEADER + rd16(d, 8) as usize * RANGE + rd16(d, 10) as usize * GLYPH
+}
+
+/// Where a `YFN1` file is cut into its two pieces: its length when it fits
+/// [`PIECE_MAX`], else the largest offset ≤ [`PIECE_MAX`] that no glyph's
+/// bitmap straddles. Fails the build if that would cut the index.
+#[must_use]
+pub const fn split_point(d: &[u8]) -> usize {
+    if d.len() <= PIECE_MAX {
+        return d.len();
+    }
+    let base = HEADER + rd16(d, 8) as usize * RANGE;
+    let n_glyphs = rd16(d, 10) as usize;
+    let bits = base + n_glyphs * GLYPH;
+    let mut cut = PIECE_MAX;
+    // Lowering the cut to a glyph's start can put it inside another glyph
+    // (shared or overlapping bitmaps): repeat until none straddles it.
+    let mut moved = true;
+    while moved {
+        moved = false;
+        let mut g = 0;
+        while g < n_glyphs {
+            let o = base + g * GLYPH;
+            let off = d[o] as usize | (d[o + 1] as usize) << 8 | (d[o + 2] as usize) << 16;
+            let n = (d[o + 4] as usize * d[o + 5] as usize * d[4] as usize).div_ceil(8);
+            let start = bits + off;
+            if start < cut && start + n > cut {
+                cut = start;
+                moved = true;
+            }
+            g += 1;
+        }
+    }
+    assert!(cut >= bits, "a built-in font's index does not fit one piece");
+    cut
+}
+
+/// Bytes `from..from + N` of `d` as an array (a built-in font's piece).
+#[must_use]
+pub const fn piece<const N: usize>(d: &[u8], from: usize) -> [u8; N] {
+    let mut out = [0u8; N];
+    let mut i = 0;
+    while i < N {
+        out[i] = d[from + i];
+        i += 1;
+    }
+    out
+}
+
+/// A built-in [`Font`] from a `YFN1` file, linked as two statics of at
+/// most [`PIECE_MAX`] bytes each (`HEAD`, `TAIL`; the tail is empty when
+/// the file fits one piece), so that each can be paged on the player.
+macro_rules! builtin_font {
+    ($file:literal) => {{
+        const RAW: &[u8] = include_bytes!($file);
+        const SPLIT: usize = $crate::font::split_point(RAW);
+        static HEAD: [u8; SPLIT] = $crate::font::piece(RAW, 0);
+        static TAIL: [u8; RAW.len() - SPLIT] = $crate::font::piece(RAW, SPLIT);
+        $crate::font::Font::parse_split(&HEAD, &TAIL)
+    }};
+}
+
+/// UI font: DejaVu Sans Condensed 12 px, 2 bits per pixel. 17,794 B, so
+/// two pieces (`builtin_font!`).
+pub static UI: Font = builtin_font!("../fonts/ui12.yfnt");
 /// UI bold: DejaVu Sans Condensed Bold 12 px (titles, clock).
-pub static UI_BOLD: Font = Font::parse(include_bytes!("../fonts/ui12b.yfnt"));
+pub static UI_BOLD: Font = builtin_font!("../fonts/ui12b.yfnt");
 /// Large numerals, 28 px digits (Fira Sans Condensed), 4 bits per pixel.
-pub static NUM28: Font = Font::parse(include_bytes!("../fonts/num28.yfnt"));
+pub static NUM28: Font = builtin_font!("../fonts/num28.yfnt");
 /// Secondary numerals, 16 px digits (Fira Sans Condensed Medium).
-pub static NUM16: Font = Font::parse(include_bytes!("../fonts/num16.yfnt"));
+pub static NUM16: Font = builtin_font!("../fonts/num16.yfnt");
 
 /// Reading fonts (Books, 05 §7.15): DejaVu Sans Condensed 16 px and 20
 /// px, 2 bits per pixel, Latin, Latin-1, Extended-A, Cyrillic and
 /// punctuation (450 glyphs each; anything else comes from the UI font,
 /// then the fallback font). The 16 px face is also the **Large** UI text
 /// (A11Y-2; 14,468 B of rodata, paged on the player: under the 16 KiB
-/// group size); the 20 px face only with feature `book-fonts` (over 16
-/// KiB, it would be resident).
-pub static BOOK16: Font = Font::parse(include_bytes!("../fonts/book16.yfnt"));
+/// group size); the 20 px face only with feature `book-fonts` (20,244 B:
+/// two pieces, paged like the UI font).
+pub static BOOK16: Font = builtin_font!("../fonts/book16.yfnt");
 #[cfg(feature = "book-fonts")]
-pub static BOOK20: Font = Font::parse(include_bytes!("../fonts/book20.yfnt"));
+pub static BOOK20: Font = builtin_font!("../fonts/book20.yfnt");
 
 /// How a character is drawn ([`Gfx::char_styled`](crate::Gfx::char_styled),
 /// and the large UI faces): pixel-scaled (1 or 2), emboldened (drawn
@@ -350,6 +460,80 @@ mod tests {
         assert_eq!(FontId::XLarge.ascent(), 18, "twice the UI font");
         assert_eq!(TextSize::from_setting(2).at_most_large(), TextSize::Large);
         assert!(BOOK16.glyph('Ж').is_some() && BOOK16.size_bytes() < 16 * 1024);
+    }
+
+    extern crate std;
+    use std::{vec, vec::Vec};
+
+    /// Every face as built in, with the whole file it came from.
+    fn builtin() -> Vec<(&'static str, &'static Font, &'static [u8])> {
+        #[allow(unused_mut)]
+        let mut v: Vec<(&'static str, &'static Font, &'static [u8])> = vec![
+            ("ui12", &UI, include_bytes!("../fonts/ui12.yfnt")),
+            ("ui12b", &UI_BOLD, include_bytes!("../fonts/ui12b.yfnt")),
+            ("num28", &NUM28, include_bytes!("../fonts/num28.yfnt")),
+            ("num16", &NUM16, include_bytes!("../fonts/num16.yfnt")),
+            ("book16", &BOOK16, include_bytes!("../fonts/book16.yfnt")),
+        ];
+        #[cfg(feature = "book-fonts")]
+        v.push(("book20", &BOOK20, include_bytes!("../fonts/book20.yfnt")));
+        v
+    }
+
+    /// Bug 2026-11-26 (PG-1, resident image): the 17,794 B UI font was one
+    /// rodata section larger than the player's 16 KiB rodata group, so
+    /// `xtask pagelink` linked it resident ("larger than a rodata group"):
+    /// 17.8 KB of the 80 KiB resident image, 45 B left. Every built-in
+    /// face is now linked in pieces of at most [`PIECE_MAX`] bytes, and
+    /// every glyph of every face is the same as the whole file's.
+    #[test]
+    fn regress_ui_font_resident_as_one_oversized_section() {
+        for (name, f, raw) in builtin() {
+            let (head, tail) = f.piece_bytes();
+            assert!(head <= PIECE_MAX && tail <= PIECE_MAX, "{name}: pieces {head} + {tail} B");
+            assert_eq!(head + tail, raw.len(), "{name}");
+            assert_eq!(f.size_bytes(), raw.len(), "{name}");
+            assert_eq!(tail == 0, raw.len() <= PIECE_MAX, "{name}: split only when needed");
+            let whole = Font::parse(raw);
+            let mut n = 0;
+            for cp in 0..0x1_0000u32 {
+                let Some(c) = char::from_u32(cp) else { continue };
+                let (a, b) = (f.glyph(c), whole.glyph(c));
+                assert_eq!(a.is_some(), b.is_some(), "{name}: U+{cp:04X}");
+                if let (Some(a), Some(b)) = (a, b) {
+                    assert_eq!((a.adv, a.w, a.h, a.x, a.top, a.bpp), (b.adv, b.w, b.h, b.x, b.top, b.bpp));
+                    assert_eq!(a.bits, b.bits, "{name}: U+{cp:04X}");
+                    n += 1;
+                }
+            }
+            assert_eq!(n, usize::from(whole.n_glyphs), "{name}: every glyph found");
+        }
+        let (head, tail) = UI.piece_bytes();
+        assert!(head > index_len(include_bytes!("../fonts/ui12.yfnt")) && tail > 0, "{head} + {tail}");
+    }
+
+    /// The cut never falls inside a glyph's bitmap, also when bitmaps are
+    /// shared or overlap (the cut moves down until none straddles it).
+    #[test]
+    fn split_point_respects_glyphs() {
+        // Header, one range of 3 glyphs (1 bpp, 8 × 8 = 8 B each), records,
+        // bitmaps at file offsets 44 (the first), PIECE_MAX - 10 (inside
+        // the first piece) and PIECE_MAX - 4 (across PIECE_MAX). Cutting
+        // below the third puts the cut inside the second: a second pass.
+        let mut d = vec![0u8; 12 + 8 + 3 * 8];
+        d[..4].copy_from_slice(b"YFN1");
+        d[4] = 1;
+        d[8] = 1; // ranges
+        d[10] = 3; // glyphs
+        d[12..20].copy_from_slice(&[0x41, 0, 0, 0, 3, 0, 0, 0]);
+        let bits = d.len();
+        let at = |o: usize| [(o & 0xFF) as u8, (o >> 8 & 0xFF) as u8, (o >> 16) as u8, 8, 8, 8, 0, 8];
+        d[20..28].copy_from_slice(&at(0));
+        d[28..36].copy_from_slice(&at(PIECE_MAX - bits - 10));
+        d[36..44].copy_from_slice(&at(PIECE_MAX - bits - 4));
+        d.resize(PIECE_MAX + 200, 0);
+        assert_eq!(split_point(&d), PIECE_MAX - 10, "below both glyphs");
+        assert_eq!(split_point(&d[..PIECE_MAX]), PIECE_MAX, "fits: not cut");
     }
 
     #[test]

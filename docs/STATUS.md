@@ -79,6 +79,110 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-26 — PG-1: resident room (the UI font and the merged strings paged; the code window's gaps filled) (worker, no hardware)
+
+Brief: resident 81,875 of 81,920 B (45 B left), code window 125/128
+pages, and `pagelink` warned on every build that `.rodata..Lanon.<hash>.52`
+(17,794 B) "is larger than a rodata group: resident". Nothing run on the
+player (the brief).
+
+* **The 17,794 B section** was the **UI font** (`orpheus_ui::font::UI`,
+  `ui12.yfnt` through `include_bytes!`: its only referrer in the
+  relocation graph), not the MP3 Huffman tables that `budgets.toml`'s
+  2026-11-24 note named. It sat in the resident `.rodata` in SRAM0:
+  17.8 KB of the resident budget. Fix: built-in fonts are linked as two
+  statics of at most 16 KiB (`builtin_font!`: `split_point` cuts at the
+  last glyph boundary at or below 16 KiB; header, ranges and records stay
+  in the first piece), `Font::glyph` reads a bitmap from either. UI font
+  16,381 + 1,413 B (the tail: 110 rare glyphs, U+04C7… and U+2248…U+25C2,
+  arrows and triangles), `BOOK20` (feature `book-fonts`) 16,372 + 3,872 B
+  and now pageable too; the other faces fit one piece (an empty tail).
+  Rendering is unchanged (every glyph of every face compared with the
+  whole file's). `pagelink` now **fails** on rodata larger than a group
+  that no rule places, instead of warning.
+* **The linker's merged strings** (`.rodata.str1.1`, 8,042 B,
+  "linker-generated", resident): panic-location file names (rustc emits
+  them NUL-terminated, so LLVM puts them in the mergeable C-string
+  section) and `core`'s panic message pieces. Only paged sections refer to
+  them (2,160 referrers, no resident one). `pagelink` now pages a merged
+  section when no root reaches it, no rule keeps it and every referrer is
+  paged; the pass-2 script places it whole like any input section. The
+  constant pools (`.rodata.cst4/8/16/32`, 3,836 B) are kept resident by a
+  new `resident.toml` rule: MP3 `decode`, Opus CELT and the MIDI player
+  read them every frame, and `main` reads `cst32` before the pager runs.
+* **Code window**: the line before each cluster's line-aligned start is
+  filled with code from no cluster, largest first (7,458 B; the clusters'
+  addresses and extents are unchanged: every cluster is at the same VA as
+  before, `fits_with` and the line checks see the same layout). 125 → 124
+  pages, 33,114 B free (was 25,674). Measured and not kept: opt-level
+  `"z"` for 14 cold crates (apps, img, otp, usb, embassy-usb, library,
+  meta, bt, rec, hid, update, sha1, sha2, fm) saves only
+  14.6 KB of code (1 page) and adds 5.4 KB of rodata, at a speed cost
+  in the UI that the MIDI path is sensitive to. The large paged
+  diagnostics (developer-channel handlers, `status_reply`s,
+  `test_command`s: 28.4 KB) are what the lead's tools use; not touched.
+* **Audit of what is still resident** (56,036 B: text 28,304, rodata
+  11,325, data 16,404): the MP3 decoder 13.9 KB (rule, per-frame path),
+  compiler builtins 5.0 KB (the whole archive by rule; `u64_div_rem`
+  864 B and the float conversions might be paged after a profile), the
+  DSP process functions 5.9 KB, the cst pools 3.8 KB, `.text.resident.*`
+  3.0 KB (pager fault path, `nor::writable`), `main` 1.2 KB, the roots'
+  closure ≈ 2.5 KB. `.data` is 16.4 KB of statics with non-zero initial
+  values (`audio::SERVER` 4,368, `media::BROWSE`/`services::UI_BROWSE`
+  3,616 each, `media::TEXT`/`services::UI_TEXT` 1,556 each): RAM state;
+  zero-initialised it would move to `.bss` and free no RAM. No `core::fmt`
+  and no panic site in the resident image (`resident_panic_sites` 0).
+* **Numbers** (thumbv7em, `xtask build`/`size`/`stack`): resident 81,876
+  → **56,036 B** (`size` 56,033; rodata 37,167 → 11,325), `.bss` 124,296
+  (unchanged), code pages 125 → **124** (33,114 B free), rodata 28 →
+  30 of 48, slot 1,339,392 → 1,323,008 B, stack usable 45,568 B,
+  margin 5,212 → **31,068 B**; `synth-render` 18 of 18 and **32 of 32**
+  with its `fits_with` (unchanged), `games-io` 14 of 14 (31 of 32).
+  Budgets: `resident_bytes` 80 → 72 KiB, `bss_bytes` 124 → 132 KiB
+  (their sum unchanged: the stack's floor is what it was).
+* **Rodata cache** (16 lines, direct-mapped by offset in a 16 KiB group):
+  the UI font's first piece is alone in group 12; ASCII text touches its
+  lines 0–1 (header, ranges, ASCII records) and 6–7 (ASCII bitmaps).
+  During MIDI the wavetable (`WAVES`, group 11) holds lines 0–13, so Now
+  Playing's once-a-second times (UI font) now evict ≈ 3 wavetable lines a
+  second (≈ 6 line loads/s, ≈ 1 ms/s); `UI` and `UI_BOLD` share line 0
+  (a screen with both faces reloads it once a redraw).
+* **Tests**: `orpheus_ui::font::tests::regress_ui_font_resident_as_one_oversized_section`,
+  `split_point_respects_glyphs`; `xtask` `pagelink::tests::regress_oversized_ui_font_was_resident`
+  (the 17,794 B section stops the link; the 16,381 + 1,413 B pieces are
+  paged), `merged_sections_paged_when_only_paged_code_uses_them`,
+  `code_before_a_cluster_start_fills_the_line`;
+  `starts_over_pads_to_the_named_clusters_line` updated (the padding is
+  not filled). `docs/regressions.md` row.
+* **Gate**: host fmt, clippy `-D warnings` (all targets), `cargo test
+  --workspace` 2,069 passed, 0 failed, 13 ignored (synth goldens
+  unchanged), `settings-matrix --check` (173 settings, 0 errors),
+  `xtask test pagelink` (the paged toy end to end: passed); fw fmt,
+  clippy, `xtask build` (124 code + 30 rodata pages, no warning),
+  `check-resident` (ok, 59 sections from 21 roots, none paged),
+  `size --check` (within budgets), `stack --check` (margin 31,068 B).
+  **Not run**: any `xtask dev` step (the brief), `brand`/`site --check`.
+* **Lead's checks on the player** (`cargo xtask dev backup-verify`, then
+  `cargo xtask dev update` with this build):
+  1. `cargo xtask dev suite`: every journey and shot as before (the text
+     is drawn from the paged font now; the goldens must not change).
+  2. MIDI, as in the last run (Automatic, cable, test look on, Now
+     Playing): `cargo xtask dev cmd 'playdir /.orpheus/test/suite/midi'`,
+     `cargo xtask dev cmd status` every ~9 s. Compare with today's ≈ 1
+     underrun event in the whole run (Etude `ub=synth:rest:5ms` once,
+     Hill Song `underruns=2`, Sound tour 0), `pg=` 0–6 %, pager loads
+     during Etude ≈ 1,570/s. Expected: the same within noise (≈ +6 line
+     loads/s). More than 2 events in a song: their `pcm: head` labels and
+     the `syn:` line.
+  3. MP3 soak (paging changed: the UI font and the panic strings are paged
+     rodata, unclustered code moved into cluster tail lines):
+     `cargo xtask dev soak mixed` (or the lead's usual soak) with Pictures
+     and a large folder browsed: loads/s within `[soak]`
+     (`loads_per_s_mean_max` 4,500; it was 2,670–3,220 during playback),
+     0 underruns outside the windows, `pager_load_errors` 0.
+  4. `cargo xtask dev cmd status` after browsing in the big folder: `pg`
+     loads per second against the soak's figure while idle on a list.
+
 ### 2026-11-26 — MIDI nearly clean on the player (lead)
 
 * Merged `e1a0dc7c` (budget follows the PCM ring; the main loop off the
@@ -8792,6 +8896,7 @@ Finding: 30-minute `mixed` soak, seed 1, 10.4 min, read in `radio-keys 8
 | 2026-11-25 | Index lookup of a listing (`job:index`), owner-like images (exFAT 128 KiB / FAT32 512 B, root 300–1,000 folders, 40–100 files per shard), cold sectors | walk cache as on the player 6–15 sector reads; after an index build, before the fix 102–334 reads / 1,582–5,121 slots (≈ 56–182 ms at 0.5 ms a read), after it 5–14 reads; one stretch of 16 sets ≤ 3 reads (exFAT) / 6 (FAT32); in 20-ms chore pieces (model) longest 14.7 ms, stretch ≤ 3.7 ms | `orpheus-index` `tests/index_piece.rs` `measure_index_piece` |
 | 2026-11-25 | Firmware with `job:index` in stretches, worker worktree build | resident 80,108 B, `__image_end` 0x1138ec, `__bss_end` 0x131b00, `__stack_bottom` 0x131d00 (all unchanged); 108 code pages (was 107), slot 1,118,208 B; nested worst stack 21,812 of 22,016 B (was 21,820) | `xtask build`, `xtask stack --check`, `nm` |
 | 2026-11-26 | Synth code paging, the three demo songs whole (unicorn harness of the per-piece work, mapped onto `layout.json`, 32-line cache model), "Etude" / "Hill Song" / "Sound tour" at 288 MHz | before (build `8240f128` layout): Etude 96 line loads a piece (80 in the render), `pg=` ≈ 240 % render only, 290 % in all; after (SYN-3 paging): 2.3 / 2.3 / 1.8 loads a piece, `pg=` render only 3.2 / 3.3 / 2.4 %, in all 6.9 / 7.0 / 5.3 % | model; on the player: lead's checks in the session entry |
+| 2026-11-26 | Firmware with the UI font in two paged pieces, merged strings paged, cluster-start gaps filled (PG-1, resident room), worker worktree build | resident 81,876 → 56,036 B (`size` 56,033; rodata 37,167 → 11,325; text 28,304 and data 16,404 unchanged), `.bss` 124,296 B, code 125 → 124 pages (33,114 B of the window free; 7,458 B of cold code in cluster-start lines), rodata 28 → 30 of 48 pages, slot 1,339,392 → 1,323,008 B, stack usable 45,568 B, margin 5,212 → 31,068 B; opt-level `"z"` for 14 cold crates (measured, not kept): code −14.6 KB, rodata +5.4 KB | `xtask build`, `size --check`, `stack --check` |
 
 ## 5. Open questions for the user
 

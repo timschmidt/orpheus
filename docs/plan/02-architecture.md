@@ -468,7 +468,11 @@ exactly, with host tests replaying recorded traces, 07 §3.1).
   boundaries **inside a 32 KiB group** but never across groups. Rodata groups
   are 16 KiB (two pages). Anything larger (fonts, big tables) is not linked as
   rodata at all: it is a **resource** read through the NOR driver's API with a
-  small cache (§7).
+  small cache (§7), or linked in pieces of at most 16 KiB (the built-in
+  fonts, §3.4 "As built (PG-1, resident room)"). `pagelink` refuses a larger
+  rodata section that no rule places. Gaps: the line before a cluster's
+  line-aligned start is filled with code from no cluster (largest first;
+  7,458 B of the window in the 2026-11-26 build).
 * `xtask pagelink` (model: `tools/ym03_pagelink.py`):
   1. link once with a linker script that puts everything in a huge fake
      resident region and emit a map; Rust already gives every function and
@@ -506,6 +510,38 @@ feed. Then, **by measurement only**: per-frame inner loops of the codec in
 use cannot all be resident (there are many codecs), so codecs are paged and
 packed (§3.5); the SD block read path and the FAT cluster-chain step used by
 the stream reader are resident candidates if profiles show them thrashing.
+
+**As built (PG-1, resident room, 2026-11-26).** Resident image 81,876 →
+56,036 B (text 28,304, rodata 37,167 → 11,325, data 16,404). Two things
+were resident only because pagelink could not place them:
+
+* **The UI font** (17,794 B, one anonymous rodata section): larger than a
+  16 KiB rodata group. Built-in fonts are now linked as two statics of at
+  most 16 KiB (`orpheus_ui::font`, `builtin_font!`: the header, ranges,
+  glyph records and the first bitmaps up to the last glyph boundary at or
+  below 16 KiB; the remaining bitmaps), both paged. The UI font is
+  16,381 + 1,413 B (the tail holds 110 rare glyphs: Cyrillic supplement,
+  arrows, geometric shapes); `BOOK20` 16,372 + 3,872 B. A rodata section
+  larger than a group that no `resident.toml` rule places now stops
+  `pagelink` instead of a warning.
+* **The linker's merged strings** (`.rodata.str1.1`, 8,042 B:
+  panic-location file names, which rustc emits NUL-terminated, and
+  `core`'s panic message pieces): "linker-generated". A merged section is
+  now paged when no root reaches it and only paged sections refer to it.
+  The constant pools (`.rodata.cst4/8/16/32`, 3,836 B) stay resident by a
+  `resident.toml` rule: the per-frame decoders read them and one merged
+  section cannot be placed per user (paged, it would compete with the
+  Opus tables and the wavetable for the 16-line rodata cache); `main`
+  reads `cst32` before the pager runs.
+
+What is left: the MP3 decoder (13.9 KB, by rule for its per-frame path),
+compiler builtins (5.0 KB, the whole archive by rule), the DSP stages'
+process functions (5.9 KB), the HAL's resident parts and roots (≈ 7 KB),
+and 16.4 KB of `.data` (statics with non-zero initial values, mostly the
+UI's and the media server's windows: `audio::SERVER` 4,368 B,
+`media::BROWSE` and `services::UI_BROWSE` 3,616 B each, `media::TEXT`
+and `services::UI_TEXT` 1,556 B each), which is RAM state, not code:
+made zero-initialised it would move to `.bss` without freeing RAM.
 
 ### 3.5 Profile-guided packing
 

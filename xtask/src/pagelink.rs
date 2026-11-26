@@ -144,6 +144,10 @@ pub struct PagesInfo {
     /// Code window left empty before `starts_over` clusters.
     #[serde(default)]
     pub code_padding: u32,
+    /// Bytes of code in no cluster placed in the line before a cluster's
+    /// start (what used to be alignment gaps).
+    #[serde(default)]
+    pub code_filler: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -263,19 +267,41 @@ fn unmovable(g: &Graph, n: usize, unique: &BTreeMap<&str, usize>) -> Option<&'st
     None
 }
 
+/// A section the linker merged from mergeable input (`SHF_MERGE`: string
+/// literals, `.rodata.str*`; constant pools, `.rodata.cst*`): one
+/// linker-generated section per name, which a pass-2 script rule places
+/// whole like any other input section.
+fn merged(s: &crate::linkmap::InputSection) -> bool {
+    s.file == "<internal>" && (s.name.starts_with(".rodata.str") || s.name.starts_with(".rodata.cst"))
+}
+
+/// The reason of a section left resident because it is larger than a
+/// rodata group (no group can hold it; 02 §3.3).
+pub const OVERSIZED: &str = "fixed:larger than a rodata group";
+
 /// Classify every node of the pass-1 graph. Returns the placements and
 /// warnings.
+///
+/// A merged section ([`merged`]) is paged when only paged sections refer
+/// to it, no rule keeps it resident and no root reaches it (2026-11-26:
+/// the 8,042 B of panic-location file names in `.rodata.str1.1` were
+/// resident as "linker-generated" though only paged code used them).
 pub fn classify(g: &Graph, rules: &Rules, roots: &[(String, Vec<usize>)]) -> (Vec<Place>, Vec<String>) {
     let unique = g.unique_names();
     let root_nodes: Vec<usize> = roots.iter().flat_map(|(_, v)| v.iter().copied()).collect();
     let parent = g.walk(&root_nodes);
     let mut warnings = Vec::new();
-    let places = (0..g.nodes.len())
+    let mut later = Vec::new();
+    let mut places: Vec<Place> = (0..g.nodes.len())
         .map(|n| {
             let s = &g.nodes[n];
             let kind = g.kinds[n];
             if !matches!(kind, Kind::Code | Kind::Rodata) {
                 return Place::Ram;
+            }
+            if merged(s) && unique.contains_key(s.name.as_str()) {
+                later.push(n);
+                return Place::Resident("fixed:merged".into());
             }
             if let Some(why) = unmovable(g, n, &unique) {
                 return Place::Resident(format!("fixed:{why}"));
@@ -284,7 +310,7 @@ pub fn classify(g: &Graph, rules: &Rules, roots: &[(String, Vec<usize>)]) -> (Ve
             if let Some(p) = rules.paged.select(s) {
                 if too_big {
                     warnings.push(format!("{} forced paged but larger than a rodata group", g.label(n)));
-                    return Place::Resident("fixed:larger than a rodata group".into());
+                    return Place::Resident(OVERSIZED.into());
                 }
                 if parent[n].is_some() {
                     warnings.push(format!("{} is reachable from a root but forced paged ({p})", g.label(n)));
@@ -303,12 +329,52 @@ pub fn classify(g: &Graph, rules: &Rules, roots: &[(String, Vec<usize>)]) -> (Ve
                     g.label(n),
                     s.size
                 ));
-                return Place::Resident("fixed:larger than a rodata group".into());
+                return Place::Resident(OVERSIZED.into());
             }
             Place::Paged("default".into())
         })
         .collect();
+    // Merged sections: after everything that refers to them is placed.
+    for n in later {
+        let s = &g.nodes[n];
+        places[n] = if let Some(p) = rules.resident.select(s) {
+            Place::Resident(format!("rule:{p}"))
+        } else if parent[n].is_some() {
+            Place::Resident(format!("closure:{}", g.chain(&parent, n).join(" -> ")))
+        } else if s.size > RO_GROUP_SIZE {
+            Place::Resident(format!("fixed:merged, {OVERSIZED}"))
+        } else if let Some(r) = (0..g.nodes.len()).find(|&m| {
+            m != n && g.edges[m].binary_search(&n).is_ok() && !matches!(places[m], Place::Paged(_))
+        }) {
+            Place::Resident(format!("fixed:merged, used by {} (not paged)", g.label(r)))
+        } else {
+            Place::Paged("merged: only paged sections use it".into())
+        };
+    }
     (places, warnings)
+}
+
+/// Sections left resident only because they are larger than a rodata
+/// group: `pagelink` refuses them (2026-11-26: the UI font, 17,794 B, was
+/// resident behind a warning on every build). Split the data (`orpheus_ui::font`
+/// links a large font in two pieces) or name it in `resident.toml`.
+pub fn oversized(g: &Graph, places: &[Place]) -> Vec<String> {
+    (0..g.nodes.len())
+        .filter(|&n| matches!(&places[n], Place::Resident(r) if r == OVERSIZED))
+        .map(|n| {
+            let referrers: Vec<String> = (0..g.nodes.len())
+                .filter(|&m| g.edges[m].binary_search(&n).is_ok())
+                .take(3)
+                .map(|m| g.label(m))
+                .collect();
+            format!(
+                "{} ({} B, used by {}) is larger than a {RO_GROUP_SIZE} B rodata group",
+                g.label(n),
+                g.nodes[n].size,
+                if referrers.is_empty() { "nothing".to_string() } else { referrers.join(", ") }
+            )
+        })
+        .collect()
 }
 
 /// The crate each node belongs to: from its first symbol, else from the
@@ -354,6 +420,9 @@ pub struct Plan {
     pub clusters: Vec<ClusterInfo>,
     /// Bytes left empty before `starts_over` clusters.
     pub padding: u32,
+    /// Bytes of unclustered code placed in the line before a cluster's
+    /// start.
+    pub filler: u32,
 }
 
 impl Plan {
@@ -460,9 +529,39 @@ pub fn pack(g: &Graph, places: &[Place], hot: &[Cluster], crates: &[String]) -> 
     let mut plan = Plan::default();
     let mut cur = 0u32;
     let mut prev: Option<usize> = None;
-    for (n, cluster) in order(paged(Kind::Code)) {
+    let code_order = order(paged(Kind::Code));
+    // Code in no cluster, largest first: what fills the end of the line
+    // before a cluster's line-aligned start.
+    let mut fillers: Vec<usize> = code_order.iter().filter(|(_, c)| c.is_none()).map(|&(n, _)| n).collect();
+    fillers.sort_by_key(|&n| std::cmp::Reverse(g.nodes[n].size));
+    let mut filled = BTreeSet::new();
+    for (n, cluster) in code_order.iter().copied().filter(|(_, c)| c.is_some()).chain(
+        // Then the rest, in order, less what went into the gaps.
+        code_order.iter().copied().filter(|(_, c)| c.is_none()),
+    ) {
+        if cluster.is_none() && filled.contains(&n) {
+            continue;
+        }
         let start = cluster.is_some() && cluster != prev;
         if start {
+            // The rest of the line before a cluster's first line: cold code
+            // that fits it (2026-11-26: 7,458 B of what 18 clusters left
+            // empty). It shares a line only with the end of the
+            // cluster before, so it evicts nothing that cluster does not.
+            let line_end = align_up(cur, LINE_SIZE);
+            let mut i = 0;
+            while cur < line_end && i < fillers.len() {
+                let f = fillers[i];
+                let s = &g.nodes[f];
+                let at = align_up(cur, s.align);
+                if !filled.contains(&f) && at + s.size <= line_end {
+                    plan.code.push((f, at, false));
+                    plan.filler += s.size;
+                    filled.insert(f);
+                    cur = at + s.size;
+                }
+                i += 1;
+            }
             cur = align_up(cur, LINE_SIZE);
             if let Some(ci) = cluster
                 && let Some(over) = &hot[ci].starts_over
@@ -723,6 +822,13 @@ pub fn run(o: &Options) -> Result<Layout> {
     let hot = rules::load_hot(&root().join("hot.toml"), &o.bin)?;
     let roots = resolve_roots(&g1, &rules);
     let (places, mut warnings) = classify(&g1, &rules, &roots);
+    let big = oversized(&g1, &places);
+    if !big.is_empty() {
+        bail!(
+            "rodata larger than a group would be resident; split it or name it in resident.toml:\n  {}",
+            big.join("\n  ")
+        );
+    }
     for (p, nodes) in &roots {
         if nodes.is_empty() {
             warnings.push(format!("root `{p}` matches nothing"));
@@ -874,6 +980,7 @@ pub fn run(o: &Options) -> Result<Layout> {
             code_bytes,
             rodata_bytes,
             code_padding: plan.padding,
+            code_filler: plan.filler,
         },
         groups,
         clusters: plan.clusters.clone(),
@@ -910,6 +1017,13 @@ pub fn print_summary(l: &Layout) {
     if l.pages.code_padding > 0 {
         log(&format!("  code window left empty before starts_over clusters: {} B", l.pages.code_padding));
     }
+    let window = l.pages.code_max * PAGE_SIZE;
+    let used = l.groups.iter().find(|g| g.kind == "code").map_or(0, |g| g.size);
+    log(&format!(
+        "  code window: {} B free ({} B in the line before cluster starts); a page is {PAGE_SIZE} B",
+        window.saturating_sub(used),
+        l.pages.code_filler
+    ));
     let closure: Vec<&SectionInfo> = l.sections.iter().filter(|s| s.reason.starts_with("closure:")).collect();
     log(&format!("  {} sections resident through the closure of {} roots", closure.len(), l.roots.len()));
     for c in &l.clusters {
@@ -1006,6 +1120,151 @@ symbols = ["*planted"]
             "t",
         )
         .unwrap()
+    }
+
+    fn internal(name: &str, size: u32) -> InputSection {
+        InputSection { file: "<internal>".into(), ..node(".rodata", name, size, 1, None) }
+    }
+
+    /// Bug 2026-11-26 (resident image 81,875 of 81,920 B): the UI font,
+    /// one 17,794 B anonymous rodata section (`orpheus_ui::font::UI`'s
+    /// data), was larger than a 16 KiB rodata group, so pagelink kept it
+    /// resident behind a warning printed on every build, and the budget's
+    /// note blamed the MP3 tables. Now an oversized section stops the
+    /// link, and the font linked in two pieces (16,381 + 1,413 B) is paged
+    /// in two groups.
+    #[test]
+    fn regress_oversized_ui_font_was_resident() {
+        let r = rules();
+        let whole = Graph::from_parts(
+            vec![
+                node(".text", ".text.draw", 400, 2, Some("orpheus_ui::gfx::Gfx::text")),
+                node(".rodata", ".rodata.ui", 16, 4, Some("orpheus_ui::font::UI")),
+                node(".rodata", ".rodata..Lanon.b54b.52", 17_794, 1, None),
+            ],
+            &[(0, 1), (1, 2)],
+        );
+        let (p, w) = classify(&whole, &r, &resolve_roots(&whole, &r));
+        assert_eq!(p[2], Place::Resident(OVERSIZED.into()));
+        assert!(w[0].contains("17794 bytes"), "{w:?}");
+        let big = oversized(&whole, &p);
+        assert_eq!(big.len(), 1, "{big:?}");
+        assert!(big[0].contains("17794 B, used by orpheus_ui::font::UI"), "{big:?}");
+
+        let split = Graph::from_parts(
+            vec![
+                node(".text", ".text.draw", 400, 2, Some("orpheus_ui::gfx::Gfx::text")),
+                node(".rodata", ".rodata.ui", 16, 4, Some("orpheus_ui::font::UI")),
+                node(".rodata", ".rodata.head", 16_381, 1, Some("orpheus_ui::font::UI::HEAD")),
+                node(".rodata", ".rodata.tail", 1_413, 1, Some("orpheus_ui::font::UI::TAIL")),
+            ],
+            &[(0, 1), (1, 2), (1, 3)],
+        );
+        let (p, _) = classify(&split, &r, &resolve_roots(&split, &r));
+        assert!(oversized(&split, &p).is_empty());
+        assert!(p[2..].iter().all(|x| *x == Place::Paged("default".into())), "{p:?}");
+        let plan = pack(&split, &p, &[], &crates(&split)).unwrap();
+        let groups: Vec<Vec<usize>> =
+            plan.groups.iter().map(|(s, _)| s.iter().map(|&(n, _)| n).collect()).collect();
+        // The 16 B table and the tail share the first group, the head
+        // fills the second.
+        assert_eq!(groups, vec![vec![1, 3], vec![2]]);
+        assert_eq!(plan.nro, 4);
+    }
+
+    /// Merged sections: paged when only paged sections use them; resident
+    /// by rule, through a root, or when resident code uses them.
+    #[test]
+    fn merged_sections_paged_when_only_paged_code_uses_them() {
+        let g = Graph::from_parts(
+            vec![
+                node(".text", ".text.root", 100, 4, Some("root_fn")),
+                node(".text", ".text.cold", 300, 2, Some("app::cold")),
+                node(".rodata", ".rodata.loc", 16, 4, None),
+                internal(".rodata.str1.1", 8042),
+                internal(".rodata.str2.2", 64),
+                internal(".rodata.cst8", 1000),
+                internal(".rodata.cst4", 692),
+                node(".text", ".text.ruled", 10, 2, Some("orpheus_pager::x")),
+                internal(".rodata.cst16", 1440),
+                node(".rodata", ".rodata.str1.4", 12, 4, None),
+            ],
+            // cold -> Location -> strings; root -> str2.2; cold -> cst8,
+            // cst4; the resident pager code -> cst16 (no root reaches it).
+            &[(1, 2), (2, 3), (0, 4), (1, 5), (1, 6), (7, 8), (1, 9)],
+        );
+        let r = Rules::parse(
+            r#"
+roots = ["root_fn"]
+[resident]
+symbols = ["orpheus_pager::*"]
+sections = [".rodata.cst4"]
+"#,
+            "t",
+        )
+        .unwrap();
+        let (p, w) = classify(&g, &r, &resolve_roots(&g, &r));
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(p[3], Place::Paged("merged: only paged sections use it".into()));
+        assert_eq!(p[4], Place::Resident("closure:root_fn -> .rodata.str2.2".into()));
+        assert_eq!(p[5], Place::Paged("merged: only paged sections use it".into()));
+        assert_eq!(p[6], Place::Resident("rule:section:.rodata.cst4".into()));
+        assert_eq!(p[8], Place::Resident("fixed:merged, used by orpheus_pager::x (not paged)".into()));
+        // Mergeable input the linker did not merge cannot move.
+        assert_eq!(p[9], Place::Resident("fixed:mergeable".into()));
+        let plan = pack(&g, &p, &[], &crates(&g)).unwrap();
+        let s = script(&g, &plan, Path::new("/l"), "t");
+        assert!(s.contains(".pr_g0 0x00340000 :\n    {\n"), "{s}");
+        assert!(s.contains("*(\".rodata.str1.1\")"), "{s}");
+        assert!(!s.contains("*(\".rodata.cst4\")"), "{s}");
+    }
+
+    /// The line before a cluster's first line is filled with code from no
+    /// cluster (largest first), the clusters stay line-aligned and their
+    /// extents unchanged, and the rest follows in its order.
+    #[test]
+    fn code_before_a_cluster_start_fills_the_line() {
+        let g = Graph::from_parts(
+            vec![
+                node(".text", ".text.a1", 700, 4, Some("app::a1")),
+                node(".text", ".text.b1", 900, 4, Some("app::b1")),
+                node(".text", ".text.c200", 200, 2, Some("app::c200")),
+                node(".text", ".text.c300", 300, 4, Some("app::c300")),
+                node(".text", ".text.c2000", 2000, 2, Some("app::c2000")),
+                node(".text", ".text.c30", 30, 8, Some("app::c30")),
+            ],
+            &[],
+        );
+        let r = Rules::parse("roots = []\n", "t").unwrap();
+        let (p, _) = classify(&g, &r, &[]);
+        let cl = |name: &str, sym: &str| Cluster {
+            name: name.into(),
+            symbols: vec![sym.into()],
+            ..Cluster::default()
+        };
+        let hot = vec![cl("a", "app::a1"), cl("b", "app::b1")];
+        let plan = pack(&g, &p, &hot, &crates(&g)).unwrap();
+        // a: 0..700; 324 B left: c300 (700..1000), then c200 does not fit
+        // (24 B left) nor c30 at 1000 (8-aligned 1000 + 30 > 1024); b at
+        // 1024; the rest after b in its order: c200, c2000, c30.
+        assert_eq!(
+            plan.code,
+            vec![
+                (0, 0, true),
+                (3, 700, false),
+                (1, 1024, true),
+                (2, 1924, false),
+                (4, 2124, false),
+                (5, 4128, false)
+            ]
+        );
+        assert_eq!(plan.filler, 300);
+        assert_eq!(
+            (plan.clusters[0].bytes, plan.clusters[1].va, plan.clusters[1].bytes),
+            (700, CODE_WIN + 1024, 900)
+        );
+        let s = script(&g, &plan, Path::new("/l"), "t");
+        assert!(s.contains("*(\".text.a1\")\n        *(\".text.c300\")\n        . = ALIGN(0x400);\n        *(\".text.b1\")"), "{s}");
     }
 
     #[test]
@@ -1135,8 +1394,9 @@ symbols = ["*planted"]
         };
         let hot = vec![cl("a", "app::hot_a", None), cl("b", "app::hot_b", Some("a"))];
         let plan = pack(&g, &p, &hot, &crates(&g)).unwrap();
-        // a: line 0 (700 B); b would start on line 1: 31 lines of padding.
-        assert_eq!(plan.code, vec![(10, 0, true), (9, 0x8000, true), (7, 0x8000 + 500, false)]);
+        // a: line 0 (700 B, then the cold `planted` in the rest of the
+        // line); b would start on line 1: 31 lines of padding (not filled).
+        assert_eq!(plan.code, vec![(10, 0, true), (7, 700, false), (9, 0x8000, true)]);
         assert_eq!(plan.padding, 31 * LINE_SIZE);
         assert_eq!(phys_lines(&plan.clusters[1]), vec![0]);
         let s = script(&g, &plan, Path::new("/l"), "t");

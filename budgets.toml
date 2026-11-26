@@ -15,7 +15,17 @@
 # is the 2 KiB profiler block in SRAM3 at 0x307000, outside these
 # budgets: the log ring's first placement, never used (the log runs in
 # SRAM0), so no other user loses RAM; SRAM0 gains 8 B of flags.
-resident_bytes = 81920          # 80 KiB
+# 2026-11-26 (PG-1, resident room): 80 -> 72 KiB (02 §1.2's target).
+# Measured 81,875 -> 56,033 B (`xtask size`; text 28,304, rodata 37,167
+# -> 11,325, data 16,404). The "17.8 KB Huffman tables" above were in fact
+# the UI font (17,794 B, one rodata section larger than a 16 KiB rodata
+# group, resident behind a pagelink warning): now two paged pieces; and
+# the linker's merged strings (`.rodata.str1.1`, 8,042 B of panic-location
+# file names) are paged since only paged code uses them. 25,842 B of SRAM0
+# freed; 8 KiB of it moves to `bss_bytes`, the rest stays here as room
+# (17.3 KB) for resident growth (USB audio's handlers, the speech path).
+# The two budgets' sum is unchanged (208,896 B), so the stack's floor is.
+resident_bytes = 73728          # 72 KiB
 # Static RAM in SRAM0 (.bss + .uninit, excluding the stack).
 # 2026-11-24: 20 -> 124 KiB. Measured 123,000 B. Reason: the mode pool is
 # not a separate region yet; the decoder arena (64 KiB) and the stream ring
@@ -23,7 +33,13 @@ resident_bytes = 81920          # 80 KiB
 # statics (UI task 9.4 KiB, browse/text windows ~9 KiB, DSP chain 4 KiB, FS
 # cache 4 KiB, USB 6 KiB, card task 6 KiB, ...). The stack takes the rest of
 # SRAM0 (27 KiB; measured peak ~21.5 KiB).
-bss_bytes = 126976              # 124 KiB
+# 2026-11-26 (PG-1, resident room): 124 -> 132 KiB. Measured 124,296 B
+# (2,680 B left). Reason: the resident image shrank 25,842 B (see
+# `resident_bytes`, which gives 8 KiB of it up), so SRAM0 has the room;
+# the speech engine (8 KiB, [tts]) and the features after it need static
+# RAM. Stack: 45,568 B usable at today's sizes (`stack --check` margin
+# 31,068 B); with both budgets full it is what it was.
+bss_bytes = 135168              # 132 KiB
 caches_bytes = 8192
 mode_pool_bytes = 106496        # 104 KiB
 stack_bytes = 12288             # 12 KiB

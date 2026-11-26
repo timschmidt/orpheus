@@ -9,15 +9,22 @@
 # apart; inlined code belongs to the function it was inlined into.
 #
 # Order of decisions for every code/rodata input section:
-#   1. cannot move (start-up `.init`/`.vectors`, mergeable `.rodata.str*`/
-#      `.rodata.cst*`, linker-generated, section name not unique): resident
+#   1. cannot move (start-up `.init`/`.vectors`, linker-generated other
+#      than merged sections, mergeable input not merged by the linker,
+#      section name not unique): resident
 #   2. [paged] patterns: paged, even if a root reaches it (check-resident
 #      then fails; for tests and for cold paths proven safe to fault)
 #   3. [resident] patterns: resident
 #   4. reachable from a root (relocation graph, through code, rodata and
 #      RAM data): resident
-#   5. rodata larger than a 16 KiB group: resident, with a warning
+#   5. rodata larger than a 16 KiB group: an ERROR (pagelink fails; split
+#      the data or name it in [resident]; 2026-11-26: the UI font, 17.8 KB,
+#      was resident behind a warning)
 #   6. otherwise: paged
+# Merged sections (the linker's `.rodata.str*` string literals and
+# `.rodata.cst*` constant pools, one section each) take steps 3 and 4, then
+# stay resident if any section that is not paged refers to them, else are
+# paged (2026-11-26: `.rodata.str1.1`, 8 KB of panic-location file names).
 # RAM sections (.data/.bss/.uninit) are never paged.
 
 # Hard roots: their whole reference closure is made resident (pagelink) and
@@ -68,7 +75,17 @@ symbols = [
     "__aeabi_*",
     "compiler_builtins::*",
 ]
-sections = [".text.resident.*", ".rodata.resident.*"]
+sections = [
+    ".text.resident.*",
+    ".rodata.resident.*",
+    # The linker's constant pools (16/32-byte vectors, f32/f64 constants:
+    # 3,836 B in 2026-11-26's build): the per-frame decoders (MP3 `decode`,
+    # Opus CELT, the MIDI player) read them, and one merged section cannot
+    # be placed per user. Paged, each would compete for the 16-line rodata
+    # cache with the Opus tables (all 16 lines) and the synth's wavetable
+    # (14). `cst32` is also read by `main` before the pager runs.
+    ".rodata.cst*",
+]
 files = ["*libcompiler_builtins-*"]
 exclude = [
     "embassy_executor::raw::TaskStorage<*>::poll*",
