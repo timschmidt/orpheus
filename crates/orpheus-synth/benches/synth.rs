@@ -82,14 +82,7 @@ fn main() {
         println!("{name:40} {:6.2}", (t - base) / 16.0);
     }
     println!("\ndrum voice (16 sounding, decay ×4)       ns/voice-sample");
-    for kind in [
-        DrumKind::Kick,
-        DrumKind::Snare,
-        DrumKind::ClosedHat,
-        DrumKind::OpenHat,
-        DrumKind::Clap,
-        DrumKind::Tom,
-    ] {
+    for kind in DrumKind::ALL {
         let setup = move || {
             let mut e = Engine::new(RATE, 1);
             for part in 0..16u8 {
@@ -124,9 +117,86 @@ fn main() {
         }
     };
     for (name, p) in
-        [("delay", Param::DelaySend), ("chorus", Param::ChorusSend), ("reverb", Param::ReverbSend)]
+        [("delay", Param::DelaySend), ("chorus", Param::ChorusSend), ("reverb (FDN)", Param::ReverbSend)]
     {
         let t = time(&fx(p));
         println!("{name:40} {:6.2}", t - dry);
     }
+    // The delay at 1 s: the line at a quarter of the rate, filtered.
+    let long = move || {
+        let (mut e, mut ev) = held(sine, 1)();
+        e.set_delay(&DelayParams { beats: 0.0, time: 1.0, feedback: 0.6, ..DelayParams::DEFAULT });
+        ev.push(Event::param(0, 0, Param::DelaySend, 1.0));
+        (e, ev)
+    };
+    println!("{:40} {:6.2}", "delay, 1 s (k = 4)", time(&long) - dry);
+    samples();
+}
+
+/// Sample voices: 16 notes of a looped 16-bit sample (wholly cached),
+/// at the sample's rate and pitched (interpolated), through the patch's
+/// filter; kit sample hits.
+fn samples() {
+    use orpheus_synth::sample::{SampleCache, SliceSource};
+    use orpheus_synth::{Kit, KitEntry, SampleLoop, SampleParams};
+    let n = 48_000usize;
+    let mut file = Vec::new();
+    file.extend_from_slice(b"RIFF");
+    file.extend_from_slice(&(36 + 2 * n as u32).to_le_bytes());
+    file.extend_from_slice(b"WAVEfmt ");
+    for x in [16u32, 0x0001_0001, 48_000, 96_000, 0x0010_0002] {
+        file.extend_from_slice(&x.to_le_bytes());
+    }
+    file.extend_from_slice(b"data");
+    file.extend_from_slice(&(2 * n as u32).to_le_bytes());
+    for i in 0..n {
+        let x = ((i as f32 * 0.0577).sin() * 12_000.0) as i16;
+        file.extend_from_slice(&x.to_le_bytes());
+    }
+    let files = [file.as_slice()];
+    let mut src = SliceSource::new(&files);
+    let mut mem = vec![0i16; 256 * 190];
+    let mut cache = SampleCache::new(&mut mem);
+    cache.load(&mut src, 0, 0, u32::MAX).unwrap();
+    // `notes`: (part, note); the patch is on every part.
+    let run = |p: Patch, notes: &[(u8, u8)], kit: Option<Kit>| {
+        let mut best = f64::MAX;
+        for _ in 0..3 {
+            let mut e = Engine::new(RATE, 1);
+            if let Some(k) = kit {
+                e.set_kit(1, &k);
+            }
+            for part in 0..16 {
+                e.set_patch(part, &p);
+            }
+            let ev: Vec<Event> = notes.iter().map(|&(part, k)| Event::note_on(0, part, k, 100)).collect();
+            let mut buf = vec![0i16; 2 * 1024];
+            e.render_i16_with(&mut buf, &ev, &cache);
+            let t = Instant::now();
+            let blocks = RATE as usize / 4 / 1024;
+            for _ in 0..blocks {
+                e.render_i16_with(black_box(&mut buf), &[], &cache);
+            }
+            best = best.min(t.elapsed().as_nanos() as f64 / (blocks * 1024) as f64);
+        }
+        best
+    };
+    let base = run(Patch::INIT, &[], None);
+    println!("\nsample voice (16 sounding)               ns/voice-sample");
+    let at_root: Vec<(u8, u8)> = (0..16).map(|part| (part, 60)).collect();
+    let pitched: Vec<(u8, u8)> = (0..16).map(|i| (0, 50 + i)).collect();
+    let mut p = Patch::sample(SampleParams { root: 60, looping: SampleLoop::Whole, ..SampleParams::new(0) });
+    println!("{:40} {:6.2}", "sample at its rate, no filter", (run(p, &at_root, None) - base) / 16.0);
+    println!("{:40} {:6.2}", "sample pitched, no filter", (run(p, &pitched, None) - base) / 16.0);
+    p.filter = FilterParams::low_pass(3000.0, 0.2);
+    println!("{:40} {:6.2}", "sample pitched + low pass", (run(p, &pitched, None) - base) / 16.0);
+    let hits: Vec<KitEntry> =
+        (0..16u8).map(|i| KitEntry::sample(40 + i, 0).tune(i as i8 * 2).decay(200).colour(60, 0)).collect();
+    let kit = Kit::new(&hits);
+    let notes: Vec<(u8, u8)> = (40..56).map(|n| (0, n)).collect();
+    println!(
+        "{:40} {:6.2}",
+        "kit sample hit (low pass)",
+        (run(Patch::kit(1), &notes, Some(kit)) - base) / 16.0
+    );
 }

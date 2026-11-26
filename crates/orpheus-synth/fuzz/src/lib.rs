@@ -9,6 +9,9 @@
 //! render blocks of 0–4096 frames in `f32` and `i16`, events at any offset
 //! and in any order. Oracles: no panic; every output sample finite and
 //! within [−1, 1]; at most 16 + 4 voices sound; every voice level finite.
+//!
+//! [`wav_parse`] — WAV files for samples, then the sample player behind
+//! them (SYN-2). [`bank_decode`] — sound banks and patches (SYN-2).
 
 #![forbid(unsafe_code)]
 
@@ -35,11 +38,12 @@ const PARAMS: [Param; 14] = [
     Param::ReverbSend,
 ];
 
-const FX: [FxParam; 11] = [
+const FX: [FxParam; 12] = [
     FxParam::DelayTime,
     FxParam::DelayBeats,
     FxParam::DelayFeedback,
     FxParam::DelayDamp,
+    FxParam::DelayLowCut,
     FxParam::DelayLevel,
     FxParam::ChorusRate,
     FxParam::ChorusDepth,
@@ -49,8 +53,7 @@ const FX: [FxParam; 11] = [
     FxParam::ReverbLevel,
 ];
 
-const DRUMS: [DrumKind; 6] =
-    [DrumKind::Kick, DrumKind::Snare, DrumKind::ClosedHat, DrumKind::OpenHat, DrumKind::Clap, DrumKind::Tom];
+const DRUMS: [DrumKind; 11] = DrumKind::ALL;
 
 /// A preset (melodic, drum or kit) with one field set to `v`.
 fn patch(sel: u8, field: u8, v: f32) -> Patch {
@@ -114,7 +117,7 @@ fn patch(sel: u8, field: u8, v: f32) -> Patch {
                 26 => d.snap = v,
                 _ => d.level = v,
             },
-            Kind::Kit => {}
+            Kind::Kit(_) | Kind::Sample(_) => {}
         },
     }
     p
@@ -197,4 +200,119 @@ pub fn synth_events(data: &[u8]) {
     pending.truncate(64);
     e.render_f32(&mut fbuf[..2 * frames], &pending);
     check(&e, &fbuf[..2 * frames]);
+}
+
+/// Frames rendered per input at most (the sample and bank targets).
+const PLAY_FRAMES: usize = 48_000;
+
+fn bounded(out: &[f32]) {
+    for (i, x) in out.iter().enumerate() {
+        assert!(x.is_finite() && x.abs() <= 1.0, "sample {i} = {x}");
+    }
+}
+
+/// [`wav_parse`] — the WAV parser and the sample player behind it. Input:
+/// a file. Oracles: no panic; a parsed file's frames lie inside it, it has
+/// one or two channels, its loop is inside the frames; loaded into a small
+/// cache (8 pages, a 2-page head) it plays as a looping sample patch, a
+/// one-shot and a kit hit at pitches from the input, streamed with
+/// `service` between blocks, finite and within [−1, 1].
+pub fn wav_parse(data: &[u8]) {
+    use orpheus_synth::sample::{Reader, SampleCache, SliceSource, Want};
+    use orpheus_synth::{Kit, KitEntry, SampleLoop, SampleParams, wav};
+    let files = [data];
+    let mut src = SliceSource::new(&files);
+    let Ok(mut r) = Reader::new(&mut src, 0) else { return };
+    let Ok(info) = wav::parse(&mut r) else { return };
+    assert!(
+        u64::from(info.data_offset) + u64::from(info.frames) * u64::from(info.block_align)
+            <= data.len() as u64,
+        "{info:?}"
+    );
+    assert!(matches!(info.channels, 1 | 2));
+    if let Some((s, e)) = info.loop_points {
+        assert!(s < e && e <= info.frames, "{info:?}");
+    }
+    let mut first = [0i16; 300];
+    let n = wav::read_frames(&mut r, &info, info.frames / 2, &mut first).unwrap_or(0);
+    assert!(n <= first.len());
+    let mut mem = vec![0i16; 256 * 8];
+    let mut cache = SampleCache::new(&mut mem);
+    let mut src = SliceSource::new(&files);
+    if cache.load(&mut src, 0, 0, 2).is_err() {
+        return;
+    }
+    let mut e = Engine::new(48_000, 1);
+    let looping = [SampleLoop::Off, SampleLoop::File, SampleLoop::Whole][data.len() % 3];
+    e.set_patch(0, &Patch::sample(SampleParams { looping, ..SampleParams::new(0) }));
+    e.set_patch(
+        1,
+        &Patch::sample(SampleParams { looping: SampleLoop::Off, one_shot: true, ..SampleParams::new(0) }),
+    );
+    e.set_kit(1, &Kit::new(&[KitEntry::sample(36, 0).tune((data.len() % 96) as i8).decay(30).colour(40, 0)]));
+    e.set_patch(9, &Patch::kit(1));
+    let mut out = vec![0.0f32; 2 * 256];
+    let mut wants = [Want::default(); 20];
+    let pitches = data.get(data.len().saturating_sub(8)..).unwrap_or(&[]);
+    for block in 0..PLAY_FRAMES / 256 {
+        let mut ev = Vec::new();
+        if block % 16 == 0 {
+            let note = pitches.get(block / 16 % pitches.len().max(1)).map_or(60, |b| b % 128);
+            ev.push(Event::note_on(3, 0, note, 100));
+            ev.push(Event::note_on(5, 1, note ^ 7, 90));
+            ev.push(Event::note_on(9, 9, 36, 127));
+        }
+        if block % 16 == 10 {
+            ev.push(Event { offset: 0, kind: EventKind::AllNotesOff { part: 0xFF } });
+        }
+        let k = e.sample_wants(&mut wants);
+        let _ = cache.service(&mut src, &wants[..k], 16);
+        e.render_f32_with(&mut out, &ev, &cache);
+        bounded(&out);
+    }
+}
+
+/// [`bank_decode`] — the sound-bank decoder. Input: a bank (or a bare
+/// patch). Oracles: no panic; a decoded patch re-encodes and decodes to
+/// itself (it is already sanitised); every decoded patch and kit plays
+/// finite and within [−1, 1].
+pub fn bank_decode(data: &[u8]) {
+    use orpheus_synth::bank::{self, Record};
+    let play = |p: &Patch, kit: Option<&orpheus_synth::Kit>| {
+        let mut e = Engine::new(48_000, 1);
+        if let Some(k) = kit {
+            e.set_kit(1, k);
+        }
+        e.set_patch(0, p);
+        let mut out = vec![0.0f32; 2 * 512];
+        let notes =
+            [Event::note_on(0, 0, 36, 127), Event::note_on(7, 0, 60, 90), Event::note_on(9, 0, 42, 64)];
+        e.render_f32(&mut out, &notes);
+        bounded(&out);
+        e.render_f32(&mut out, &[Event::note_off(0, 0, 60)]);
+        bounded(&out);
+    };
+    let round_trip = |p: &Patch| {
+        let mut buf = [0u8; bank::PATCH_MAX];
+        let n = bank::encode_patch(p, &mut buf).expect("PATCH_MAX too small");
+        let (q, used) = bank::decode_patch(&buf[..n]).expect("re-decode");
+        assert_eq!(used, n);
+        assert_eq!(&q, p, "round trip");
+    };
+    if let Ok((p, n)) = bank::decode_patch(data) {
+        assert!(n <= data.len());
+        round_trip(&p);
+        play(&p, None);
+    }
+    let Ok(records) = bank::records(data) else { return };
+    for r in records.take(32) {
+        match r {
+            Ok(Record::Patch(_, p)) => {
+                round_trip(&p);
+                play(&p, None);
+            }
+            Ok(Record::Kit(_, k)) => play(&Patch::kit(1), Some(&k)),
+            Err(_) => break,
+        }
+    }
 }

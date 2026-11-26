@@ -2,11 +2,16 @@
 //!
 //! ```text
 //! cargo run --release -p orpheus-synth --example render -- <dir>    # WAVs + level table
-//! cargo run --release -p orpheus-synth --example render -- --check  # hashes vs tests/goldens.txt
+//! cargo run --release -p orpheus-synth --example render -- --check  # hashes vs tests/goldens*.txt
 //! ```
 //!
 //! `--check` in a release build (opt-level "s", fat LTO) next to the golden
-//! test (opt-level 1) shows that the optimiser does not change a sample.
+//! tests (opt-level 1) shows that the optimiser does not change a sample.
+//! The sample-playback scenarios (`tests/common/samples.rs`, our own test
+//! samples through the cache) are included.
+
+#[path = "../tests/common/samples.rs"]
+mod samples;
 
 use std::io::Write;
 use std::path::Path;
@@ -72,9 +77,35 @@ fn main() -> ExitCode {
             wav(&dir.join(format!("{name}.wav")), sc.rate, &out).unwrap();
         }
     }
+    let sample_goldens = include_str!("../tests/goldens-samples.txt");
+    for sc in &samples::SCENARIOS {
+        let (out, misses) = sc.render(256);
+        let line = format!("{} {:016x} {}", sc.name, hash_i16(&out), sc.frames());
+        println!(
+            "{:24} {:7.2} {:>9} {:>9}  {:016x} ({misses} misses)",
+            sc.name,
+            sc.seconds,
+            "",
+            "",
+            hash_i16(&out)
+        );
+        if check {
+            if !sample_goldens.lines().any(|l| l == line) {
+                println!("  MISMATCH: {line}");
+                bad += 1;
+            }
+        } else {
+            let dir = Path::new(&arg);
+            let name = sc.name.replace(['/', '@'], "_");
+            wav(&dir.join(format!("{name}.wav")), sc.rate(), &out).unwrap();
+        }
+    }
     if check {
         let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
-        println!("{} scenarios, {bad} mismatches ({profile} build)", SCENARIOS.len());
+        println!(
+            "{} scenarios, {bad} mismatches ({profile} build)",
+            SCENARIOS.len() + samples::SCENARIOS.len()
+        );
         if bad > 0 {
             return ExitCode::FAILURE;
         }

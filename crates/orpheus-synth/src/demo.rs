@@ -117,6 +117,8 @@ pub enum Setup {
     Melodic(usize),
     /// [`presets::DRUMS`]`[i]`: two hits.
     Drum(usize),
+    /// [`crate::kit::FACTORY`]`[i]` in kit slot 0 playing two bars.
+    Kit(usize),
     /// Custom.
     Custom(fn(&mut Engine, &mut Score)),
 }
@@ -155,6 +157,18 @@ impl Scenario {
                 e.set_patch(0, &Patch::drum(presets::DRUMS[i].1));
                 s.note(0.0, 0.1, 0, 60, 127);
                 s.note(0.25, 0.1, 0, 60, 80);
+            }
+            Setup::Kit(i) => {
+                let (name, kit) = crate::kit::FACTORY[i];
+                e.set_kit(0, &crate::kit::Kit::new(kit));
+                e.set_patch(9, &Patch::KIT);
+                e.set_reverb(&ReverbParams { decay: 1.1, damp: 0.5, level: 0.5 });
+                s.param(0.0, 9, Param::ReverbSend, 0.12);
+                if name == "percussion" {
+                    percussion_beat(&mut s);
+                } else {
+                    kit_beat(&mut s);
+                }
             }
             Setup::Custom(f) => f(&mut e, &mut s),
         }
@@ -205,6 +219,94 @@ fn kit_groove(e: &mut Engine, s: &mut Score) {
     s.note(1.15, 0.1, 9, 48, 100);
 }
 
+/// Sixteenth steps at 110 BPM.
+const STEP: f32 = 60.0 / 110.0 / 4.0;
+
+/// Two bars for a drum kit: kick, snare and clap, eighth hats with an open
+/// hat cut by the next closed one (choke group), rim, cowbell, clave and
+/// shaker where the kit has them, a tom fill and a crash. Notes a kit does
+/// not have are silent.
+fn kit_beat(s: &mut Score) {
+    let mut hit = |bar: u8, step: u8, note: u8, vel: u8| {
+        s.note((f32::from(bar) * 16.0 + f32::from(step)) * STEP, 0.05, 9, note, vel);
+    };
+    for bar in 0..2u8 {
+        let kicks: &[u8] = if bar == 0 { &[0, 7, 8] } else { &[0, 7, 10] };
+        for &k in kicks {
+            hit(bar, k, 36, 120);
+        }
+        hit(bar, 4, 38, 110);
+        hit(bar, 12, 38, 115);
+        if bar == 1 {
+            hit(bar, 12, 39, 100);
+            hit(bar, 11, 38, 40);
+        }
+        for st in (0..16u8).step_by(2) {
+            if bar == 0 && st == 14 {
+                hit(bar, st, 46, 95);
+            } else if !(bar == 1 && st >= 12) {
+                hit(bar, st, 42, if st % 4 == 0 { 100 } else { 70 });
+            }
+        }
+        hit(bar, 3, 37, 80);
+        hit(bar, 2 + 8 * bar, 56, 70);
+        hit(bar, 6, 75, 75);
+        for st in (1..16u8).step_by(2) {
+            hit(bar, st, 70, 45 + 4 * (st % 4));
+        }
+    }
+    // Fill and crash.
+    for (st, n) in [(12u8, 50u8), (13, 48), (14, 47), (15, 45)] {
+        hit(1, st, n, 105);
+    }
+    hit(2, 0, 36, 120);
+    hit(2, 0, 49, 110);
+    hit(0, 0, 51, 60);
+}
+
+/// Two bars of hand percussion: a 3-2 son clave, conga tumbao (muted and
+/// open in one choke group), bongos, cowbell, shaker sixteenths, kick.
+fn percussion_beat(s: &mut Score) {
+    let mut hit = |bar: u8, step: u8, note: u8, vel: u8| {
+        s.note((f32::from(bar) * 16.0 + f32::from(step)) * STEP, 0.05, 9, note, vel);
+    };
+    for bar in 0..2u8 {
+        let clave: &[u8] = if bar == 0 { &[0, 6, 12] } else { &[4, 8] };
+        for &c in clave {
+            hit(bar, c, 75, 100);
+        }
+        for (st, n, v) in [
+            (0u8, 62u8, 70u8),
+            (2, 62, 60),
+            (4, 62, 80),
+            (6, 63, 100),
+            (7, 63, 90),
+            (8, 62, 70),
+            (10, 62, 60),
+            (12, 62, 80),
+            (14, 64, 100),
+            (15, 64, 95),
+        ] {
+            hit(bar, st, n, v);
+        }
+        for (st, n) in [(1u8, 60u8), (3, 61), (5, 60), (9, 60), (11, 61), (13, 60)] {
+            hit(bar, st, n, 75);
+        }
+        for st in (0..16u8).step_by(4) {
+            hit(bar, st, 56, if st == 0 { 90 } else { 65 });
+        }
+        for st in 0..16u8 {
+            hit(bar, st, 70, if st % 4 == 0 { 80 } else { 50 });
+        }
+        hit(bar, 0, 36, 110);
+        hit(bar, 8, 36, 90);
+        hit(bar, 8, 67, 70);
+        hit(bar, 10, 68, 70);
+    }
+    hit(2, 0, 36, 110);
+    hit(2, 0, 51, 80);
+}
+
 fn glide_mono(e: &mut Engine, s: &mut Score) {
     e.set_patch(0, &presets::SQUARE_BASS);
     s.note(0.0, 0.30, 0, 36, 110);
@@ -232,6 +334,41 @@ fn fx_delay(e: &mut Engine, s: &mut Score) {
     s.push(0.9, EventKind::Fx { param: FxParam::DelayFeedback, value: 0.2 });
 }
 
+/// A tempo-synced dotted eighth at 120 BPM (375 ms: the line at half rate)
+/// with feedback, low cut and damping.
+fn fx_delay_sync(e: &mut Engine, s: &mut Score) {
+    e.set_patch(0, &presets::PLUCK);
+    e.set_delay(&DelayParams {
+        beats: 0.75,
+        feedback: 0.45,
+        damp: 0.35,
+        low_cut: 250.0,
+        ..DelayParams::DEFAULT
+    });
+    s.push(0.0, EventKind::Tempo(120.0));
+    s.param(0.0, 0, Param::DelaySend, 0.7);
+    s.param(0.0, 0, Param::Pan, -0.3);
+    for (i, n) in [64u8, 67, 71, 74].iter().enumerate() {
+        s.note(0.5 * i as f32, 0.1, 0, *n, 100);
+    }
+}
+
+/// A long delay: one beat at 70 BPM (857 ms: the line at quarter rate).
+fn fx_delay_long(e: &mut Engine, s: &mut Score) {
+    e.set_patch(9, &Patch::KIT);
+    e.set_delay(&DelayParams {
+        beats: 1.0,
+        feedback: 0.5,
+        damp: 0.2,
+        low_cut: 150.0,
+        ..DelayParams::DEFAULT
+    });
+    s.push(0.0, EventKind::Tempo(70.0));
+    s.param(0.0, 9, Param::DelaySend, 0.6);
+    s.note(0.0, 0.05, 9, 37, 120);
+    s.note(0.43, 0.05, 9, 56, 100);
+}
+
 fn fx_chorus(e: &mut Engine, s: &mut Score) {
     e.set_patch(0, &presets::PWM_PAD);
     e.set_chorus(&ChorusParams::DEFAULT);
@@ -247,6 +384,20 @@ fn fx_reverb(e: &mut Engine, s: &mut Score) {
     s.param(0.0, 9, Param::ReverbSend, 0.7);
     s.note(0.0, 0.1, 9, 38, 120);
     s.note(0.3, 0.1, 9, 39, 110);
+}
+
+/// A long hall on strings and a clave: the tail's diffusion and decay.
+fn fx_reverb_hall(e: &mut Engine, s: &mut Score) {
+    e.set_patch(0, &presets::STRINGS);
+    e.set_patch(9, &Patch::KIT);
+    e.set_reverb(&ReverbParams { decay: 4.0, damp: 0.3, level: 0.7 });
+    s.param(0.0, 0, Param::ReverbSend, 0.6);
+    s.param(0.0, 9, Param::ReverbSend, 0.8);
+    for n in [55u8, 62, 67, 71] {
+        s.note(0.0, 0.8, 0, n, 85);
+    }
+    s.note(1.2, 0.05, 9, 75, 120);
+    s.note(1.5, 0.05, 9, 38, 110);
 }
 
 fn lfo_sync(e: &mut Engine, s: &mut Score) {
@@ -329,8 +480,12 @@ const fn c(name: &'static str, seconds: f32, f: fn(&mut Engine, &mut Score)) -> 
     Scenario { name, rate: 48_000, seconds, setup: Setup::Custom(f) }
 }
 
+const fn k(name: &'static str, i: usize) -> Scenario {
+    Scenario { name, rate: 48_000, seconds: 33.0 * STEP + 0.6, setup: Setup::Kit(i) }
+}
+
 /// The golden scenarios.
-pub const SCENARIOS: [Scenario; 28] = [
+pub const SCENARIOS: [Scenario; 45] = [
     m("phrase/saw-lead", 0),
     m("phrase/square-bass", 1),
     m("phrase/pwm-pad", 2),
@@ -355,6 +510,23 @@ pub const SCENARIOS: [Scenario; 28] = [
     c("fx-delay", 1.5, fx_delay),
     c("fx-chorus", 1.2, fx_chorus),
     c("fx-reverb", 2.0, fx_reverb),
+    m("phrase/acid-bass", 12),
+    m("phrase/strings", 13),
+    m("phrase/brass", 14),
+    m("phrase/sub-bass", 15),
+    d("drum/rim", 6),
+    d("drum/cowbell", 7),
+    Scenario { name: "drum/cymbal", rate: 48_000, seconds: 2.5, setup: Setup::Drum(8) },
+    d("drum/clave", 9),
+    d("drum/shaker", 10),
+    k("kit/standard", 0),
+    k("kit/analog", 1),
+    k("kit/punch", 2),
+    k("kit/tight", 3),
+    k("kit/percussion", 4),
+    c("fx-delay-sync", 3.5, fx_delay_sync),
+    c("fx-delay-long", 4.0, fx_delay_long),
+    c("fx-reverb-hall", 5.0, fx_reverb_hall),
     c("lfo-sync", 1.0, lfo_sync),
     c("param-sweep", 1.0, param_sweep),
     c("demo-song", 4.0, demo_song),

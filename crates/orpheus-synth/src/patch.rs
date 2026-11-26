@@ -83,8 +83,12 @@ pub enum Kind {
     Fm(FmParams),
     /// One drum voice on every note.
     Drum(DrumParams),
-    /// A drum kit: General MIDI percussion notes ([`DrumParams::from_gm_note`]).
-    Kit,
+    /// The drum kit in the engine's kit slot `n` ([`crate::kit`];
+    /// [`crate::Engine::set_kit`]).
+    Kit(u8),
+    /// A sample from the cache, pitched by the note, through the filter and
+    /// envelopes ([`crate::sample`]).
+    Sample(crate::sample::SampleParams),
 }
 
 /// Filter settings.
@@ -202,8 +206,26 @@ impl Patch {
         Self { kind: Kind::Drum(p), ..Self::INIT }
     }
 
-    /// The General MIDI style kit.
-    pub const KIT: Self = Self { kind: Kind::Kit, ..Self::INIT };
+    /// The kit in slot 0 (by default the General MIDI style
+    /// [`crate::kit::STANDARD`]).
+    pub const KIT: Self = Self { kind: Kind::Kit(0), ..Self::INIT };
+
+    /// The kit in slot `slot`.
+    #[must_use]
+    pub const fn kit(slot: u8) -> Self {
+        Self { kind: Kind::Kit(slot), ..Self::INIT }
+    }
+
+    /// A sample patch: `p` with a gate envelope and a short release.
+    #[must_use]
+    pub const fn sample(p: crate::sample::SampleParams) -> Self {
+        Self {
+            kind: Kind::Sample(p),
+            amp_env: crate::env::Adsr::new(0.0, 0.0, 1.0, 0.15),
+            level: 0.9,
+            ..Self::INIT
+        }
+    }
 
     /// The patch with every value in range.
     #[must_use]
@@ -215,7 +237,8 @@ impl Patch {
             }),
             Kind::Fm(f) => Kind::Fm(f.sanitized()),
             Kind::Drum(d) => Kind::Drum(d.sanitized()),
-            Kind::Kit => Kind::Kit,
+            Kind::Kit(n) => Kind::Kit(n.min(crate::kit::KIT_SLOTS as u8 - 1)),
+            Kind::Sample(s) => Kind::Sample(s.sanitized()),
         };
         Self {
             kind,
@@ -237,7 +260,17 @@ impl Patch {
     /// Whether the patch plays drum voices.
     #[must_use]
     pub fn is_drum(&self) -> bool {
-        matches!(self.kind, Kind::Drum(_) | Kind::Kit)
+        matches!(self.kind, Kind::Drum(_) | Kind::Kit(_))
+    }
+
+    /// Whether note-off is ignored (drums, one-shot samples that do not
+    /// loop).
+    #[must_use]
+    pub fn ignores_note_off(&self) -> bool {
+        match self.kind {
+            Kind::Sample(s) => s.one_shot && s.looping == crate::sample::SampleLoop::Off,
+            _ => self.is_drum(),
+        }
     }
 }
 

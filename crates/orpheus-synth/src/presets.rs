@@ -1,5 +1,7 @@
-//! Factory patches (our own sounds; SYN-2 moves presets and kits to data
-//! files). They are also the material of the golden renders.
+//! Factory patches (our own sounds). They are plain `const` data; the
+//! factory kits are in [`crate::kit::FACTORY`], and both round-trip through
+//! the binary sound-bank format ([`crate::bank`]) for files on the card.
+//! They are also the material of the golden renders.
 
 use crate::drum::{DrumKind, DrumParams};
 use crate::env::Adsr;
@@ -8,6 +10,7 @@ use crate::fm::{FmParams, OpParams};
 use crate::lfo::{LfoParams, LfoRate, LfoWave};
 use crate::osc::Waveform;
 use crate::patch::{FilterParams, Kind, OscParams, Patch, SubParams};
+use crate::sample::SampleParams;
 
 const fn sub(a: OscParams, b: OscParams, noise: f32) -> Kind {
     Kind::Subtractive(SubParams { osc: [a, b], noise })
@@ -205,6 +208,71 @@ pub const NOISE_HIT: Patch = Patch {
     ..Patch::INIT
 };
 
+/// Acid bass: one saw into a very resonant low pass with a deep, fast
+/// envelope; mono with glide on legato notes.
+pub const ACID_BASS: Patch = Patch {
+    kind: sub(osc(Waveform::Saw, 0.0, 0.0, 0.9), OscParams::OFF, 0.0),
+    filter: FilterParams {
+        mode: FilterMode::LowPass,
+        cutoff: 280.0,
+        resonance: 0.8,
+        env_amount: 4.0,
+        key_track: 0.4,
+        velocity: 1.5,
+    },
+    amp_env: Adsr::new(0.001, 0.4, 0.7, 0.05),
+    filter_env: Adsr::new(0.0, 0.18, 0.0, 0.1),
+    glide: 0.07,
+    mono: true,
+    legato: true,
+    ..Patch::INIT
+};
+
+/// String ensemble: two saws detuned ±9 cents, slow attack, soft low pass,
+/// gentle vibrato (wants the chorus).
+pub const STRINGS: Patch = Patch {
+    kind: sub(osc(Waveform::Saw, 0.0, -9.0, 0.55), osc(Waveform::Saw, 0.0, 9.0, 0.55), 0.0),
+    filter: FilterParams {
+        mode: FilterMode::LowPass,
+        cutoff: 3200.0,
+        resonance: 0.1,
+        key_track: 0.3,
+        ..FilterParams::OFF
+    },
+    amp_env: Adsr::new(0.28, 0.4, 0.85, 0.7),
+    lfo: LfoParams { wave: LfoWave::Sine, rate: LfoRate::Hz(5.2), pitch: 0.06, ..LFO_OFF },
+    level: 0.6,
+    ..Patch::INIT
+};
+
+/// Brass: two saws with a filter that opens over 60 ms and settles.
+pub const BRASS: Patch = Patch {
+    kind: sub(osc(Waveform::Saw, 0.0, -5.0, 0.6), osc(Waveform::Saw, 0.0, 5.0, 0.6), 0.0),
+    filter: FilterParams {
+        mode: FilterMode::LowPass,
+        cutoff: 650.0,
+        resonance: 0.15,
+        env_amount: 2.5,
+        key_track: 0.6,
+        velocity: 1.0,
+    },
+    amp_env: Adsr::new(0.03, 0.2, 0.8, 0.18),
+    filter_env: Adsr::new(0.06, 0.3, 0.45, 0.2),
+    ..Patch::INIT
+};
+
+/// Sub bass: a sine with a quiet triangle an octave up, short and round.
+pub const SUB_BASS: Patch = Patch {
+    kind: sub(osc(Waveform::Sine, 0.0, 0.0, 0.9), osc(Waveform::Triangle, 12.0, 0.0, 0.2), 0.0),
+    amp_env: Adsr::new(0.002, 0.5, 0.6, 0.08),
+    mono: true,
+    ..Patch::INIT
+};
+
+/// A sampler: sample slot 0 at its own pitch on its root note, looping its
+/// file loop, through an open low pass (for samples from the card).
+pub const SAMPLER: Patch = Patch::sample(SampleParams::new(0));
+
 /// Pink noise, held (the signal generator's speaker check).
 pub const PINK: Patch = Patch {
     kind: sub(osc(Waveform::Pink, 0.0, 0.0, 1.0), OscParams::OFF, 0.0),
@@ -214,7 +282,7 @@ pub const PINK: Patch = Patch {
 };
 
 /// The melodic presets by name.
-pub const MELODIC: [(&str, Patch); 12] = [
+pub const MELODIC: [(&str, Patch); 16] = [
     ("saw-lead", SAW_LEAD),
     ("square-bass", SQUARE_BASS),
     ("pwm-pad", PWM_PAD),
@@ -227,14 +295,23 @@ pub const MELODIC: [(&str, Patch); 12] = [
     ("fm-bass", FM_BASS),
     ("sweep-fx", SWEEP_FX),
     ("noise-hit", NOISE_HIT),
+    ("acid-bass", ACID_BASS),
+    ("strings", STRINGS),
+    ("brass", BRASS),
+    ("sub-bass", SUB_BASS),
 ];
 
-/// The drum voices by name.
-pub const DRUMS: [(&str, DrumParams); 6] = [
+/// The drum voices by name (each model with its defaults).
+pub const DRUMS: [(&str, DrumParams); 11] = [
     ("kick", DrumParams::new(DrumKind::Kick)),
     ("snare", DrumParams::new(DrumKind::Snare)),
     ("closed-hat", DrumParams::new(DrumKind::ClosedHat)),
     ("open-hat", DrumParams::new(DrumKind::OpenHat)),
     ("clap", DrumParams::new(DrumKind::Clap)),
     ("tom", DrumParams::new(DrumKind::Tom)),
+    ("rim", DrumParams::new(DrumKind::Rim)),
+    ("cowbell", DrumParams::new(DrumKind::Cowbell)),
+    ("cymbal", DrumParams::new(DrumKind::Cymbal)),
+    ("clave", DrumParams::new(DrumKind::Clave)),
+    ("shaker", DrumParams::new(DrumKind::Shaker)),
 ];

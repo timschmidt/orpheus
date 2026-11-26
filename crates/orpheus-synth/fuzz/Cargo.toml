@@ -26,3 +26,17 @@ path = "fuzz_targets/synth_events.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "wav_parse"
+path = "fuzz_targets/wav_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bank_decode"
+path = "fuzz_targets/bank_decode.rs"
+test = false
+doc = false
+bench = false

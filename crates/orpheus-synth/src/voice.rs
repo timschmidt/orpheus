@@ -20,6 +20,7 @@ use crate::lfo::Lfo;
 use crate::math::{Rng, clampf, exp2, note_hz};
 use crate::osc::Osc;
 use crate::patch::{Kind, Patch, PatchCoef};
+use crate::sample::{HitParams, SampleCache, SampleHit, SamplePlayer, Want};
 
 /// Samples over which a stolen or cut voice fades out (5.3 ms at 48 kHz;
 /// with 64 samples, stealing a loud saw left broadband clicks in the
@@ -35,13 +36,17 @@ pub(crate) struct PartView<'a> {
     pub volume: f32,
     /// Constant-power pan gains.
     pub pan: (f32, f32),
+    /// Pan position, −1 to 1.
+    pub pan_pos: f32,
     /// Pitch bend, −1 to 1.
     pub bend: f32,
 }
 
 /// Engine-wide context of a segment.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Ctx {
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Ctx<'a> {
+    /// The sample cache of this render call.
+    pub cache: Option<&'a SampleCache<'a>>,
     pub rate: f32,
     pub tempo: f32,
     /// Samples from the segment start to the next control tick.
@@ -55,6 +60,8 @@ pub(crate) enum Source {
     Sub([Osc; 2]),
     Fm(FmState),
     Drum(DrumVoice),
+    Sample(SamplePlayer),
+    Hit(SampleHit),
 }
 
 /// A voice slot.
@@ -73,6 +80,10 @@ pub(crate) struct Voice {
     pub dirty: bool,
     /// Samples left of a fade-out (0: none).
     pub fade: u16,
+    /// Kit choke group (0: none).
+    pub group: u8,
+    /// Kit entry pan, −1 to 1, added to the part's.
+    pan: f32,
     vel: f32,
     vel_gain: f32,
     pitch: f32,
@@ -113,6 +124,8 @@ impl Voice {
         stamp: 0,
         dirty: false,
         fade: 0,
+        group: 0,
+        pan: 0.0,
         vel: 0.0,
         vel_gain: 0.0,
         pitch: 60.0,
@@ -193,19 +206,27 @@ impl Voice {
                 s.trigger();
                 self.src = Source::Fm(s);
             }
-            Kind::Drum(_) | Kind::Kit => {}
+            Kind::Sample(sp) => {
+                self.src = Source::Sample(SamplePlayer::new(sp.slot, sp.looping, sp.start));
+            }
+            Kind::Drum(_) | Kind::Kit(_) => {}
         }
+        self.group = 0;
+        self.pan = 0.0;
         self.rng = rng;
     }
 
-    /// Start a drum voice in this slot.
+    /// Start a drum voice (`Ok`) or a kit sample hit (`Err`) in this slot,
+    /// in choke group `group` with an extra `pan`.
     #[allow(clippy::too_many_arguments)]
     pub fn start_drum(
         &mut self,
         part: u8,
-        d: &DrumParams,
+        sound: Result<&DrumParams, &HitParams>,
         note: u8,
         vel_gain: f32,
+        group: u8,
+        pan: f32,
         stamp: u64,
         seed: u32,
         rate: f32,
@@ -219,7 +240,12 @@ impl Voice {
         self.dirty = true;
         self.fresh = true;
         self.vel_gain = 1.0;
-        self.src = Source::Drum(DrumVoice::new(d, vel_gain, rate, seed));
+        self.group = group;
+        self.pan = pan;
+        self.src = match sound {
+            Ok(d) => Source::Drum(DrumVoice::new(d, vel_gain, rate, seed)),
+            Err(h) => Source::Hit(SampleHit::new(h, vel_gain, rate)),
+        };
     }
 
     fn set_glide(&mut self, p: &Patch, from: Option<f32>, rate: f32) {
@@ -288,38 +314,59 @@ impl Voice {
         }
     }
 
-    /// Hat choke.
+    /// Choke-group cut: a fast fade (τ 3 ms) for drums and hits, the
+    /// 256-sample fade for anything else.
     pub fn choke(&mut self, rate: f32) {
-        if let Source::Drum(d) = &mut self.src
-            && d.kind() == crate::drum::DrumKind::OpenHat
-        {
-            d.choke(rate);
+        match &mut self.src {
+            Source::Drum(d) => d.choke(rate),
+            Source::Hit(h) => h.choke(rate),
+            _ => self.cut(),
         }
     }
 
-    /// Whether this is a drum voice.
+    /// Whether this is a drum voice or a kit hit (note-off does nothing).
     pub fn is_drum(&self) -> bool {
-        matches!(self.src, Source::Drum(_))
+        matches!(self.src, Source::Drum(_) | Source::Hit(_))
     }
 
     /// Current level (envelope × velocity), for stealing.
     pub fn level(&self) -> f32 {
         match &self.src {
             Source::Drum(d) => d.level(),
+            Source::Hit(h) => h.level(),
             _ => self.amp.level() * self.vel_gain,
         }
     }
 
-    fn control(&mut self, part: &PartView<'_>, ctx: &Ctx) {
+    /// The sample play head, if this voice plays a sample.
+    pub fn want(&self) -> Option<Want> {
+        match &self.src {
+            Source::Sample(p) => p.want(),
+            Source::Hit(h) => h.player().want(),
+            _ => None,
+        }
+    }
+
+    /// Samples played as silence for a missing page since the last call.
+    pub fn take_misses(&mut self) -> u32 {
+        match &mut self.src {
+            Source::Sample(p) => p.take_misses(),
+            Source::Hit(h) => h.player_mut().take_misses(),
+            _ => 0,
+        }
+    }
+
+    fn control(&mut self, part: &PartView<'_>, ctx: &Ctx<'_>) {
         let n = self.since;
         self.since = 0;
         self.svf.flush();
         let p = part.patch;
-        if let Source::Drum(_) = self.src {
+        if let Source::Drum(_) | Source::Hit(_) = self.src {
             let g = part.volume;
+            let pan = if self.pan == 0.0 { part.pan } else { pan_gains(part.pan_pos + self.pan) };
             self.gain = g;
-            self.gl = g * part.pan.0;
-            self.gr = g * part.pan.1;
+            self.gl = g * pan.0;
+            self.gr = g * pan.1;
             return;
         }
         if self.pitch != self.target {
@@ -356,6 +403,12 @@ impl Voice {
                         o.set_dt(hz * r);
                     }
                     o.set_width(q.width + lfo * p.lfo.width);
+                }
+            }
+            (Source::Sample(sp), Kind::Sample(s)) => {
+                if sp.prepare(ctx.cache, ctx.rate) && retune {
+                    let root = if s.root <= 127 { s.root } else { sp.root() };
+                    sp.set_pitch(semis - f32::from(root) + s.tune);
                 }
             }
             (Source::Fm(f), Kind::Fm(fp)) => {
@@ -395,7 +448,7 @@ impl Voice {
 
     /// Render `out.len()` (≤ [`crate::CONTROL_PERIOD`]) samples into `out`;
     /// returns whether the voice is still sounding.
-    pub fn render(&mut self, part: &PartView<'_>, ctx: &Ctx, tick: bool, out: &mut [f32]) -> bool {
+    pub fn render(&mut self, part: &PartView<'_>, ctx: &Ctx<'_>, tick: bool, out: &mut [f32]) -> bool {
         if tick || self.dirty {
             self.control(part, ctx);
             self.dirty = false;
@@ -417,6 +470,22 @@ impl Voice {
         let p = part.patch;
         let mut alive = match (&mut self.src, &p.kind) {
             (Source::Drum(d), _) => d.render(out, tick),
+            (Source::Hit(h), _) => h.render(ctx.cache, ctx.rate, out, tick),
+            (Source::Sample(sp), Kind::Sample(_)) => {
+                // The end of the sample ends the voice on the next control
+                // tick (as drums), so the slot frees at the same sample
+                // whatever the block sizes.
+                if tick && sp.done() {
+                    false
+                } else {
+                    sp.render(ctx.cache, out);
+                    self.svf.process(p.filter.mode, out);
+                    for x in out.iter_mut() {
+                        *x *= self.amp.step(&part.coef.amp);
+                    }
+                    !self.amp.is_idle()
+                }
+            }
             (Source::Sub(osc), Kind::Subtractive(s)) => {
                 for (o, q) in osc.iter_mut().zip(&s.osc) {
                     if q.level > 0.0 {
