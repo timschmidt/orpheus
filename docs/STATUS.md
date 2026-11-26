@@ -452,6 +452,141 @@ Bricks)".
   estimate is ≈ 0.2 ms of drawing a frame plus the flush of ≈ 30 rows) and
   music playing (underruns while switching to and from Bricks, as for the
   other games).
+| BOOK-1 | **done (host + simulator)**; not in the firmware (feature `orpheus-apps/books` off there: stack/RAM, see session entry) | `orpheus-books` (encodings TXT/Markdown/FB2 → normalised stream cached in `/.orpheus/cache/books/`, layout and page index, positions, bookmarks, contents, library search; all card work in bounded steps), Books app (library, reader, reader menu, contents, bookmarks, Go to; 7 reading settings packed in 0x0F80), reading faces 16/20 px (`orpheus-ui/book-fonts`), Home scrolls to a fourth row; 92 goldens; fuzz targets `books_convert`, `books_layout` (session entry 2026-11-25 "BOOK-1") |
+
+## 3. Session log
+
+### 2026-11-25 — BOOK-1: Books app and reader core (worker, no hardware)
+
+Host and simulator; **not in the firmware** (feature `orpheus-apps/books`
+off there, see "Firmware" below). Design and as-built details: 05 §7.15
+"As built (BOOK-1)".
+
+* **Core crate `orpheus-books`** (`no_std`, no alloc, no `core::fmt`,
+  ≈ 7.2 k lines with tests): encoding detection and a streaming decoder
+  (UTF-8 ± BOM, UTF-16 LE/BE with and without BOM, XML declarations,
+  Windows-1251, KOI8-R, Latin-1/1252; malformed input → U+FFFD);
+  TXT (hard-wrapped or line-per-paragraph, chapter headings, scene
+  breaks, Gutenberg title/author), Markdown (reduced set), FB2 (XML
+  tokenizer, sections → H1–H3, titles, epigraphs, verse, notes, emphasis)
+  → one **normalised stream** cached in `/.orpheus/cache/books/<id>.txt`;
+  `layout` (Liner/Pager/Paginator, `Mark` = offset + 1 state byte, the
+  page function the reader draws with); `files` (page index `.idx`,
+  contents `.toc`, position and 12 bookmarks `/.orpheus/books/<id>.pos`,
+  library `/.orpheus/books/library.bin`); `shelf::Shelf` (the app model
+  and all card work as `step()`, one bounded piece per call).
+* **Measured** (FAT32 and exFAT images, `tests/shelf.rs` with a counting
+  block device): ≤ 16 sectors read and ≤ 12 written in any step (12 only
+  when a folder is made and its cluster zeroed); all other writes ≤ 3.
+  Host speeds (debug-opt-1): converting and laying out the sample books
+  is a few hundred steps; nothing measured on the player.
+* **RAM** (host `size_of`, `tests/ram.rs`; all fixed; a ratchet at
+  9,472 B): the whole `Shelf` **9,360 B** — `Book` 3,828 B (text window
+  2,048, contents window 8 × 48, page-index cache 64 × 8, position and 12
+  bookmarks 444, path 258), `Library` 1,158 B (sort order 200, 8 rows),
+  and one card job at a time in a union (the search: its 840-byte
+  `DirEntry`, 8 folder cursors, 200 sort keys, the meta reader 524 B and a
+  384-byte record; or the converter 356 B with 512 B in and 1 KiB out; or
+  the paginator 96 B with 512 B in and 128 held index entries). The
+  reader's draw path adds a `Liner` (64 B) and `Pager` (28 B); the
+  screens' variants are no larger than the existing list screens.
+* **UI** (`orpheus-apps`, feature `books`; `orpheus-ui` feature
+  `book-fonts`): Books on Home (13 apps scroll to a fourth row; off Home
+  unless the system offers it); library (title, progress, searching,
+  empty; menu: Search again, Find books in); reader (pages, lines,
+  chapters, position bar, palettes, auto page turn, quick menu); reader
+  menu; contents; bookmarks; Go to. Reading faces DejaVu Sans Condensed 16
+  and 20 px (14,468 + 20,244 B rodata, `fontgen/regen.sh`), Extra large =
+  UI font ×2, drawn bold/slant/scale in `Gfx::char_styled` (only with
+  `book-fonts`: the firmware's `orpheus-ui` is unchanged). New icon BOOKS
+  (`icongen/icons.py`; the other icons regenerate byte-identical).
+* **Settings** 0x0F01–0x0F07 (Font size, Margins, Spacing, Justify,
+  Palette, Auto page turn, Find books in) packed in one stored word
+  0x0F80 (stored settings +1 with the feature); `tests/settings/effects.toml`
+  entries and differential tests (`sim/tests/books.rs::settings_effects`).
+* **Simulator**: `sim/src/books.rs` (the Shelf over the simulated card,
+  `set:books=on`, `set:booksteps=N`), three public-domain books added to
+  `/Books` (Carroll in Markdown, Melville in UTF-16 with a Gutenberg header,
+  Pushkin in Windows-1251 FB2); the text-viewer goldens' book rows moved
+  (`{book}` 2→4, 3→6: the same screens).
+* **Tests**: 41 unit tests in `orpheus-books` (encodings incl. malformed,
+  parsers, writer, layout: no word lost or duplicated, piece sizes, stable
+  index, re-layout keeps the position, line up, bounded pages; files round
+  trips incl. bookmarks and position, damage), `tests/shelf.rs` (whole
+  pipeline on FAT32 and exFAT, every page through the reader path, jumps,
+  bookmarks and position across a reopen, re-layout, scope, only
+  `/.orpheus` written (write prefix), fsck clean; a changed book
+  reconverted), `tests/ram.rs`; `orpheus-apps` (settings table, faces and
+  params, Home's fourth row); `sim/tests/books.rs` (15: library, every page
+  by Next/Prev, restart, re-layout, layout in steps with the reader
+  answering, books never written, auto turn, Find books in, 7 differential
+  tests); fuzz targets `books_convert` and `books_layout`
+  (`crates/orpheus-books/fuzz`, 18 seeds in `tests/fuzz-corpus/books_*`,
+  replayed by `tests/fuzz_corpus.rs`); **92 goldens** (`books_*`: dark and
+  light, two amber), all looked at.
+* **Bugs found and fixed during the package** (each with a `regress_`
+  test that fails without its fix): the layout job re-read a character
+  cut between pieces (pages after it a few bytes off;
+  `regress_layout_pieces_resume_after_a_cut_character`); after the page
+  view refused a line, the liner still gave it a scene break's line, which
+  the view took as its page end (Next skipped a line; found by the
+  `books_layout` seed `fb2`; `regress_no_line_after_a_refused_one`); an
+  invalid UTF-8 sequence cut between pieces overflowed the piece index
+  (`regress_invalid_sequence_cut_between_pieces`, seed `garbage`).
+* **Firmware: not wired.** Not attempted because it cannot pass
+  `stack --check` today: the UI task's margin is ≈ 4.1 KB against the
+  4,096 B budget and another worker is making room for Salvo; Books adds
+  static RAM (the Shelf, 9,360 B) and the reader's draw path (layout +
+  styled glyphs) to the UI task. What it needs: (1) the Shelf split like
+  `GamesIo`/`CardRun` — the screens' model (text window 2 KiB, rows,
+  contents rows, state ≈ 3.5 KB) on the UI side, the card work (the
+  scan's 840-byte `DirEntry`, the converter, the paginator, the scratch
+  buffers) in the card task — or one static behind a BASEPRI
+  critical-section lock; (2) the step futures' large locals moved into
+  the struct (index chunk 512 B, the layout's last write 1 KiB, the
+  open's state/record/`DirEntry` ≈ 1.7 KB, library header 272 B) so the
+  card task's stack does not grow; (3) `Shelf::step` as a paced chore
+  (`orpheus_audio::chore`: conversion and layout only with headroom, the
+  window read and jumps first; folder creation zeroes a cluster — 256
+  sectors on the owner's 128 KiB-cluster card — so it needs its own chore
+  or no music); (4) rodata ≈ 35 KB of faces plus the code, to be checked
+  against `rodata_pages`; (5) `App::Books.on_player()` true and the
+  suite's Home masks updated.
+* **For BOOK-2 (EPUB)**: a zip/inflate reader (the 32 KiB window in the
+  decoder arena when no track is loaded, 05 §7.15), OPF spine and NCX/nav
+  contents, an XHTML parser into the same `norm::Events` (the FB2 tokenizer
+  can be split out and shared), chapters concatenated in spine order into
+  the one normalised stream (contents from the nav, not the headings),
+  `Format::Epub`, OPF metadata in `MetaReader`; everything after the
+  stream (layout, index, positions, screens) is unchanged.
+* **For BOOK-3 (read aloud)**: positions are stream offsets (`Mark`): feed
+  `orpheus-tts` from the view's first line (strip control bytes,
+  paragraph bytes as sentence ends); the TTS word offsets map back to
+  stream offsets, the reader knows each character's x (`draw_line`) for the
+  sentence highlight; follow pages with `PageInfo::next` when speech passes
+  it; resume with `Req::Seen` of the spoken sentence; the reader menu's
+  Read aloud row is there (greyed). Needs the speed setting (0.25–10×),
+  voice, sleep timer and screen-off reading.
+* Open: on-device run (the firmware integration first); hyphenation (Extra
+  large breaks long words mid-word); Markdown setext headings and tables;
+  translations of the Books strings; an empty-library golden (the
+  simulator's card always has /Books; a host test covers the state).
+* Gate: fmt; clippy `-D warnings` on the workspace and on `orpheus-apps`
+  (none, games, salvo, books, games+books, salvo+books) and `orpheus-ui`
+  (none, book-fonts, menu-key, both); `cargo test --workspace`: all pass
+  (three xtask tests assumed the simulator's Home is the player's: with
+  Books compiled into the workspace's `orpheus-apps` they counted 13 apps;
+  `soak`'s Home positions, the suite's Home frames and the test-look mask
+  now count only `App::on_player()` apps — otherwise `dev soak`/`dev
+  suite` would have navigated the player's Home one cell off; rerun
+  113/113), the simulator's Books, golden and apps tests re-run after the
+  last changes. **Firmware** (Books not wired; it changes only by the 42
+  new English strings, and `settings::all` and Home compile to the old
+  code without `books`): `xtask build --release` ok, `size --check` within
+  budgets (resident 80,811 B, .bss 124,864 B, 113 code + 20 rodata
+  pages), `check-resident` ok, `stack --check` 16,108 B of 20,224 B,
+  margin 4,116 B (budget 4,096 B). Not run: `dev` (no hardware in this
+  package).
 
 ### 2026-11-25 — UI-PERF: idle Home thrashed the code cache; games during music on the player (lead)
 

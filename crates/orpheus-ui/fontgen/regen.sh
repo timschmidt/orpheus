@@ -15,11 +15,18 @@ UI_RANGES="20-7E,A0-17F,192,218-21B,2C6-2C7,2C9,2D8-2DD,370-3FF,400-4FF,2010-202
 # Cyrillic. Anything else falls back to the regular face.
 BOLD_RANGES="20-7E,A0-17F,218-21B,370-3CE,400-45F,490-491,2013-2014,2018-201E,2022,2026,2039-203A,20AC"
 NUM_RANGES="20,25,2B-2E,2F-3A"
+# The Books reader's faces (BOOK-1, feature `book-fonts`): Latin, Latin-1,
+# Extended-A, Romanian, basic Cyrillic, punctuation, euro, numero.
+BOOK_RANGES="20-7E,A0-17F,218-21B,400-45F,490-491,2010-2027,2030,2039-203A,20AC,2116"
 
 python3 "$here/fontgen.py" --font "$dejavu/DejaVuSansCondensed.ttf" --size 12 --bpp 2 \
     --ranges "$UI_RANGES" --out "$out/ui12.yfnt"
 python3 "$here/fontgen.py" --font "$dejavu/DejaVuSansCondensed-Bold.ttf" --size 12 --bpp 2 \
     --ranges "$BOLD_RANGES" --out "$out/ui12b.yfnt"
+python3 "$here/fontgen.py" --font "$dejavu/DejaVuSansCondensed.ttf" --size 16 --bpp 2 \
+    --ranges "$BOOK_RANGES" --out "$out/book16.yfnt"
+python3 "$here/fontgen.py" --font "$dejavu/DejaVuSansCondensed.ttf" --size 20 --bpp 2 \
+    --ranges "$BOOK_RANGES" --out "$out/book20.yfnt"
 python3 "$here/fontgen.py" --font "$fira/FiraSansCondensed-Regular.otf" --digit-height 28 --bpp 4 \
     --tabular --ranges "$NUM_RANGES" --space 9 --out "$out/num28.yfnt"
 python3 "$here/fontgen.py" --font "$fira/FiraSansCondensed-Medium.otf" --digit-height 16 --bpp 4 \

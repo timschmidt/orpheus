@@ -596,3 +596,91 @@ default = 13649
 contexts = ["Bricks"]
 oracle = "Not shown: holds the bits of the Bricks settings packed into it; each of those has its own entry and tests."
 tests = ["crates/orpheus-apps/src/settings.rs::tests::bricks_packed_settings"]
+# ---------------------------------------------------------------- Books
+# M15 Books (BOOK-1, 05 §7.15): the reading settings, packed in one stored
+# word (0x0F80). Feature `books` (simulator, browser build, UI fuzzer; not
+# in the firmware yet). Contexts are simulator screen names: Reader (the
+# page), BookMenu (the reader menu shows the value), Books (the library).
+# "Elsewhere" in every test: Home, Files, the text viewer on the same
+# book, Settings, and the library (reading settings) or the reader (Find
+# books in) stay pixel for pixel the same.
+
+[[setting]]
+id = "0x0F01"
+name = "Books › reader menu › Font size"
+scope = "local"
+values = ["Small", "Medium", "Large", "Extra large"]
+default = 0
+contexts = ["Reader", "BookMenu"]
+oracle = "Reader: the page in the UI font (Small), the 16 px or 20 px reading face (Medium, Large) or the UI font at twice the size (Extra large); the book is laid out again (another page index), the position kept. BookMenu: the value."
+tests = ["sim/tests/books.rs::settings_effects::font_size", "sim/tests/books.rs::relayout_keeps_the_position"]
+
+[[setting]]
+id = "0x0F02"
+name = "Books › reader menu › Margins"
+scope = "local"
+values = ["Narrow", "Normal", "Wide"]
+default = 1
+contexts = ["Reader", "BookMenu"]
+oracle = "Reader: left and right margins 2, 5 or 9 px (text width and line breaks change; laid out again). BookMenu: the value."
+tests = ["sim/tests/books.rs::settings_effects::margins"]
+
+[[setting]]
+id = "0x0F03"
+name = "Books › reader menu › Spacing"
+scope = "local"
+values = ["Tight", "Normal", "Relaxed"]
+default = 1
+contexts = ["Reader", "BookMenu"]
+oracle = "Reader: line pitch and paragraph gap (e.g. 14/16/19 px at Small; lines per page change; laid out again). BookMenu: the value."
+tests = ["sim/tests/books.rs::settings_effects::line_spacing"]
+
+[[setting]]
+id = "0x0F04"
+name = "Books › reader menu › Justify"
+scope = "local"
+values = ["off", "on"]
+default = 0
+contexts = ["Reader", "BookMenu"]
+oracle = "Reader: lines of body text and quotes that are not a paragraph's last are spread to the full width (the same line breaks and pages: the index is not made again). BookMenu: the toggle."
+tests = ["sim/tests/books.rs::settings_effects::justify"]
+
+[[setting]]
+id = "0x0F05"
+name = "Books › reader menu › Palette"
+scope = "local"
+values = ["Theme", "Light", "Dark", "Sepia"]
+default = 0
+contexts = ["Reader", "BookMenu"]
+oracle = "Reader: background and text colours: the UI theme's, white/near-black, black/light grey, or sepia. BookMenu: the value. Nothing else changes colour."
+tests = ["sim/tests/books.rs::settings_effects::palette"]
+
+[[setting]]
+id = "0x0F06"
+name = "Books › reader menu › Auto page turn"
+scope = "local"
+values = ["Off", "10 s", "20 s", "30 s", "60 s"]
+default = 0
+contexts = ["Reader", "BookMenu"]
+oracle = "Reader: the page turns by itself after that many seconds without a key (12 s later: the next page with 10 s, the same page otherwise). BookMenu: the value."
+tests = ["sim/tests/books.rs::settings_effects::auto_page_turn", "sim/tests/books.rs::auto_page_turn"]
+
+[[setting]]
+id = "0x0F07"
+name = "Books › library › Menu › Find books in"
+scope = "local"
+values = ["Books folder", "Whole card"]
+default = 0
+contexts = ["Books"]
+oracle = "Books: the library lists /Books and its folders, or every .txt, .md and .fb2 on the card (outside /.orpheus and hidden folders): the simulator's card adds README and otpauth. The library is searched again when it changes."
+tests = ["sim/tests/books.rs::settings_effects::find_books_in", "sim/tests/books.rs::find_books_in_from_the_menu"]
+
+[[setting]]
+id = "0x0F80"
+name = "(storage) the reading settings, packed"
+scope = "local"
+values = ["bit fields of the reading settings above"]
+default = 20
+contexts = ["Reader", "BookMenu", "Books"]
+oracle = "Not shown: holds the bits of the reading settings packed into it; each of those has its own entry and tests."
+tests = ["crates/orpheus-apps/src/books.rs::tests::settings_table"]

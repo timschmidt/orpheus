@@ -3,6 +3,8 @@
 
 mod auth;
 mod bluetooth;
+#[cfg(feature = "books")]
+mod books;
 #[cfg(feature = "bricks")]
 mod bricks;
 mod clocks;
@@ -32,6 +34,8 @@ mod update;
 
 pub use auth::AuthScreen;
 pub use bluetooth::{BluetoothScreen, BtConnectScreen, BtView, bt_kind_icon, connect_arg, phase_label};
+#[cfg(feature = "books")]
+pub use books::{BookList, BookListScreen, GotoScreen, ReaderScreen};
 pub use clocks::{
     AlarmDaysScreen, AlertScreen, PICK_ALARM, PICK_TIMER, ToolsScreen, push_days, push_hm, push_hms,
     push_lap, push_stopwatch,
@@ -169,6 +173,22 @@ pub const GAME_SALVO: ScreenId = ScreenId(54);
 /// Bricks being played (GAME-6).
 #[cfg(feature = "bricks")]
 pub const GAME_BRICKS: ScreenId = ScreenId(55);
+/// The Books app (05 §7.15, BOOK-1; feature `books`): the library.
+#[cfg(feature = "books")]
+pub const BOOKS: ScreenId = ScreenId(56);
+/// The reader. Arg: the book's library row.
+#[cfg(feature = "books")]
+pub const BOOK_READ: ScreenId = ScreenId(57);
+/// The reader menu (contents, bookmarks, go to, reading settings).
+#[cfg(feature = "books")]
+pub const BOOK_MENU: ScreenId = ScreenId(58);
+#[cfg(feature = "books")]
+pub const BOOK_TOC: ScreenId = ScreenId(59);
+#[cfg(feature = "books")]
+pub const BOOK_MARKS: ScreenId = ScreenId(60);
+/// Go to a per cent of the book.
+#[cfg(feature = "books")]
+pub const BOOK_GOTO: ScreenId = ScreenId(61);
 
 /// One variant per screen. Only the top screen exists, so the enum's size
 /// (its largest variant, the list screen) is the UI's screen RAM.
@@ -207,6 +227,12 @@ pub enum AppScreen {
     Game(GameScreen),
     #[cfg(feature = "games")]
     GameHelp(GameHelpScreen),
+    #[cfg(feature = "books")]
+    BookList(BookListScreen),
+    #[cfg(feature = "books")]
+    Reader(ReaderScreen),
+    #[cfg(feature = "books")]
+    BookGoto(GotoScreen),
 }
 
 macro_rules! each {
@@ -245,6 +271,12 @@ macro_rules! each {
             AppScreen::Game($s) => $e,
             #[cfg(feature = "games")]
             AppScreen::GameHelp($s) => $e,
+            #[cfg(feature = "books")]
+            AppScreen::BookList($s) => $e,
+            #[cfg(feature = "books")]
+            AppScreen::Reader($s) => $e,
+            #[cfg(feature = "books")]
+            AppScreen::BookGoto($s) => $e,
         }
     };
 }
@@ -363,6 +395,18 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             }
             #[cfg(feature = "games")]
             GAME_HELP => AppScreen::GameHelp(GameHelpScreen::default()),
+            #[cfg(feature = "books")]
+            BOOKS => AppScreen::BookList(BookListScreen::new(BookList::Library)),
+            #[cfg(feature = "books")]
+            BOOK_MENU => AppScreen::BookList(BookListScreen::new(BookList::Menu)),
+            #[cfg(feature = "books")]
+            BOOK_TOC => AppScreen::BookList(BookListScreen::new(BookList::Contents)),
+            #[cfg(feature = "books")]
+            BOOK_MARKS => AppScreen::BookList(BookListScreen::new(BookList::Bookmarks)),
+            #[cfg(feature = "books")]
+            BOOK_READ => AppScreen::Reader(ReaderScreen::default()),
+            #[cfg(feature = "books")]
+            BOOK_GOTO => AppScreen::BookGoto(GotoScreen::default()),
             _ => AppScreen::Home(HomeScreen::default()),
         }
     }
@@ -408,6 +452,12 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             AppScreen::Game(g) => g.screen_id(),
             #[cfg(feature = "games")]
             AppScreen::GameHelp(_) => GAME_HELP,
+            #[cfg(feature = "books")]
+            AppScreen::BookList(l) => l.screen_id(),
+            #[cfg(feature = "books")]
+            AppScreen::Reader(_) => BOOK_READ,
+            #[cfg(feature = "books")]
+            AppScreen::BookGoto(_) => BOOK_GOTO,
         }
     }
 
@@ -452,6 +502,12 @@ impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {
             AppScreen::Game(g) => g.name(),
             #[cfg(feature = "games")]
             AppScreen::GameHelp(_) => "GameHelp",
+            #[cfg(feature = "books")]
+            AppScreen::BookList(l) => l.name(),
+            #[cfg(feature = "books")]
+            AppScreen::Reader(_) => "Reader",
+            #[cfg(feature = "books")]
+            AppScreen::BookGoto(_) => "BookGoTo",
         }
     }
 

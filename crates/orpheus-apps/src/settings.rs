@@ -571,27 +571,34 @@ pub fn all() -> impl Iterator<Item = &'static Setting> {
 }
 
 /// The item lists by the high byte of their keys: groups `0x01..=0x0C`
-/// in [`GROUPS`]' order, the apps' items `0x0D`, the games' `0x0E` (a test
-/// holds every key to its list's byte). Plain slices, so a lookup touches
-/// one list and no closure.
-static LISTS: [&[Setting]; 14] = {
+/// in [`GROUPS`]' order, the apps' items `0x0D`, the games' `0x0E`, the
+/// reading settings `0x0F` (Books) (a test holds every key to its list's
+/// byte). Plain slices, so a lookup touches one list and no closure.
+static LISTS: [&[Setting]; LIST_COUNT] = {
     #[cfg(feature = "games")]
     let games: &'static [Setting] = &crate::games::SETTINGS;
     #[cfg(not(feature = "games"))]
     let games: &'static [Setting] = &[];
+    #[cfg(feature = "books")]
+    let books: &'static [Setting] = &crate::books::SETTINGS;
+    #[cfg(not(feature = "books"))]
+    let books: &'static [Setting] = &[];
     [
         SOUND, PLAYBACK, DISPLAY, POWER, DATE_TIME, BLUETOOTH, RADIO, RECORDING, USB, LANGUAGE, STORAGE,
-        SYSTEM, APP_ITEMS, games,
+        SYSTEM, APP_ITEMS, games, books,
     ]
 };
 
+/// Number of lists (high bytes `0x01..=LIST_COUNT`).
+const LIST_COUNT: usize = 15;
+
 /// Stored items before each list (the cache index of its first stored
 /// item), computed at build time.
-const FIRST_STORED: [u16; 14] = {
-    let mut out = [0u16; 14];
+const FIRST_STORED: [u16; LIST_COUNT] = {
+    let mut out = [0u16; LIST_COUNT];
     let mut n = 0u16;
     let mut l = 0;
-    while l < 14 {
+    while l < LIST_COUNT {
         out[l] = n;
         let list = LISTS[l];
         let mut i = 0;
@@ -610,7 +617,7 @@ const FIRST_STORED: [u16; 14] = {
 #[inline(always)]
 fn list_of(id: SettingId) -> Option<usize> {
     let hi = (id.0 >> 8) as usize;
-    (1..=14).contains(&hi).then(|| hi - 1)
+    (1..=LIST_COUNT).contains(&hi).then(|| hi - 1)
 }
 
 /// Look an item up by key.
@@ -636,11 +643,17 @@ pub fn def(id: SettingId) -> Option<&'static Setting> {
     None
 }
 
-/// Number of stored items (the games' settings with the `games` feature).
-#[cfg(not(feature = "games"))]
-pub const STORED: usize = 98;
+/// Number of stored items (the games' settings with the `games` feature,
+/// the reading settings' word with `books`).
+pub const STORED: usize = 98 + GAMES_STORED + BOOKS_STORED;
 #[cfg(feature = "games")]
-pub const STORED: usize = 98 + crate::games::STORED_SETTINGS;
+const GAMES_STORED: usize = crate::games::STORED_SETTINGS;
+#[cfg(not(feature = "games"))]
+const GAMES_STORED: usize = 0;
+#[cfg(feature = "books")]
+const BOOKS_STORED: usize = crate::books::STORED_SETTINGS;
+#[cfg(not(feature = "books"))]
+const BOOKS_STORED: usize = 0;
 
 /// Position among stored items (cache index).
 ///
@@ -950,7 +963,9 @@ mod tests {
     #[test]
     fn packed_settings() {
         let mut c = SettingsCache::new();
-        let packed: Vec<&Setting> = all().filter(|s| s.pack.is_some()).collect();
+        // The games' (the reading settings of Books are packed too: their
+        // own test, `books::tests::settings_table`).
+        let packed: Vec<&Setting> = all().filter(|s| s.pack.is_some() && s.id.0 >> 8 == 0x0E).collect();
         assert_eq!(packed.len(), 22 + if cfg!(feature = "bricks") { 7 } else { 0 });
         let mut used = std::collections::BTreeMap::<u16, u16>::new();
         for s in &packed {

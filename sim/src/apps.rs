@@ -36,6 +36,7 @@ use orpheus_ui::theme::{Accent, Palette, Theme};
 use orpheus_ui::widgets::bars::{MiniPlayer, Status};
 
 use crate::auth::SimAuth;
+use crate::books::SimBooks;
 use crate::bt::FakeBt;
 use crate::drive::SimDrive;
 use crate::games::SimGames;
@@ -119,6 +120,10 @@ pub struct HostServices {
     /// Games on Home (the cell before Settings): on, as on the player
     /// since GAME-2's integration; `set:games=off` takes it off.
     pub games_on_home: bool,
+    /// The Books app (M15, BOOK-1): the model and its card work.
+    pub books: SimBooks,
+    /// Books on Home: off (not on the player yet); `set:books=on`.
+    pub books_on_home: bool,
 }
 
 impl Default for HostServices {
@@ -173,6 +178,8 @@ impl HostServices {
             update: crate::update::SimUpdate::default(),
             games: SimGames::default(),
             games_on_home: true,
+            books: SimBooks::default(),
+            books_on_home: false,
         }
     }
 }
@@ -196,6 +203,16 @@ impl orpheus_apps::games::GamesService for HostServices {
 
     fn display_on(&self) -> bool {
         self.games.display_on
+    }
+}
+
+impl orpheus_apps::books::BooksService for HostServices {
+    fn books(&self) -> &orpheus_books::shelf::Shelf {
+        &self.books.shelf
+    }
+
+    fn books_request(&mut self, r: orpheus_books::shelf::Req) {
+        self.books.shelf.request(r);
     }
 }
 
@@ -597,8 +614,13 @@ impl SystemService for HostServices {
     }
 
     fn app_available(&self, app: App) -> bool {
-        // As the player (M14); `set:games=off` takes it away.
-        app != App::Games || self.games_on_home
+        // As the player (M14); `set:games=off` takes it away. Books is not
+        // on the player yet: `set:books=on` puts it on Home.
+        match app {
+            App::Games => self.games_on_home,
+            App::Books => self.books_on_home,
+            _ => true,
+        }
     }
 
     fn dual_boot(&self) -> bool {
@@ -923,6 +945,15 @@ impl Host for HostServices {
                 let bit = 1 << (App::Games as u8);
                 self.set_setting(id::HOME_APPS, if on { mask | bit } else { mask & !bit });
             }
+            "books" => {
+                self.books_on_home = on;
+                let mask = self.settings.get(id::HOME_APPS);
+                let bit = 1 << (App::Books as u8);
+                self.set_setting(id::HOME_APPS, if on { mask | bit } else { mask & !bit });
+                // Home looks again even when the mask had the bit already.
+                self.events.push(Event::Service(ServiceEvent::SettingChanged(id::HOME_APPS.0)));
+            }
+            "booksteps" => self.books.per_step = v.parse()?,
             _ if {
                 let (t, b, so) = (
                     orpheus_apps::games::tiles_config(self),
@@ -976,6 +1007,12 @@ impl Host for HostServices {
             "Solitaire" => screens::GAME_SOLITAIRE,
             "Salvo" => screens::GAME_SALVO,
             "Bricks" => screens::GAME_BRICKS,
+            "Books" => screens::BOOKS,
+            "Reader" => screens::BOOK_READ,
+            "BookMenu" => screens::BOOK_MENU,
+            "BookContents" => screens::BOOK_TOC,
+            "BookBookmarks" => screens::BOOK_MARKS,
+            "BookGoTo" => screens::BOOK_GOTO,
             _ => return None,
         })
     }
@@ -1010,6 +1047,14 @@ impl Host for HostServices {
         if self.games.pump(&mut self.media) {
             self.events.push(Event::Service(orpheus_ui::event::ServiceEvent::Other {
                 kind: orpheus_apps::services::other::GAMES,
+                value: 0,
+            }));
+        }
+        // Books: card work in steps, as the firmware's card task would.
+        let face = orpheus_apps::books::Face::of(self);
+        if self.books.pump(&mut self.media, &face) {
+            self.events.push(Event::Service(ServiceEvent::Other {
+                kind: orpheus_apps::services::other::BOOKS,
                 value: 0,
             }));
         }

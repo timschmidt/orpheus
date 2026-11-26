@@ -963,7 +963,10 @@ mod tests {
     fn home_focus_is_normalised() {
         let masks = MaskFile::load(&suite_dir().join("masks.toml")).unwrap();
         let homes = home_frames("").unwrap();
-        assert_eq!(homes.len(), orpheus_apps::App::COUNT, "one frame per app (Games since GAME-2)");
+        // One frame per app on Home: the player's (Games since GAME-2; not
+        // Books, which the simulator has but does not show by default).
+        let on_home = orpheus_apps::App::ALL.iter().filter(|a| a.on_player()).count();
+        assert_eq!(homes.len(), on_home, "one frame per app (Games since GAME-2)");
         let mut p = SimPlayer::one_session();
         for _ in 0..7 {
             player::tap(&mut p, Key::Next).unwrap();

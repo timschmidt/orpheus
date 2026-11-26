@@ -9,6 +9,8 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "books")]
+pub mod books;
 pub mod browse;
 #[cfg(feature = "games")]
 pub mod games;
@@ -54,11 +56,14 @@ pub enum App {
     /// Home-screen bits; its bit (11) is on in the default mask.
     #[cfg(feature = "games")]
     Games,
+    /// M15 (05 §7.15, BOOK-1). After Games; not on the player yet.
+    #[cfg(feature = "books")]
+    Books,
 }
 
 impl App {
     /// How many apps there are.
-    pub const COUNT: usize = if cfg!(feature = "games") { 12 } else { 11 };
+    pub const COUNT: usize = 11 + cfg!(feature = "games") as usize + cfg!(feature = "books") as usize;
 
     pub const ALL: [App; App::COUNT] = [
         App::Music,
@@ -74,6 +79,8 @@ impl App {
         App::Settings,
         #[cfg(feature = "games")]
         App::Games,
+        #[cfg(feature = "books")]
+        App::Books,
     ];
 
     /// Home's grid order: [`App::ALL`] with Settings last (Prev on Home's
@@ -91,6 +98,8 @@ impl App {
         App::UsbDrive,
         #[cfg(feature = "games")]
         App::Games,
+        #[cfg(feature = "books")]
+        App::Books,
         App::Settings,
     ];
 
@@ -110,6 +119,8 @@ impl App {
             App::Settings => Str::AppSettings,
             #[cfg(feature = "games")]
             App::Games => Str::AppGames,
+            #[cfg(feature = "books")]
+            App::Books => Str::AppBooks,
         }
     }
 
@@ -129,6 +140,8 @@ impl App {
             App::Settings => &icons::SETTINGS,
             #[cfg(feature = "games")]
             App::Games => &icons::GAMES,
+            #[cfg(feature = "books")]
+            App::Books => &icons::BOOKS,
         }
     }
 
@@ -158,6 +171,9 @@ impl App {
             // On the player with GAME-2's integration (2026-11-25).
             #[cfg(feature = "games")]
             App::Games => true,
+            // Not in the firmware yet (BOOK-1: the feature is off there).
+            #[cfg(feature = "books")]
+            App::Books => false,
         }
     }
 
@@ -180,8 +196,13 @@ mod tests {
     /// when it was last edited. It now asks [`App::on_player`].
     #[test]
     fn regress_every_app_is_on_the_players_home() {
-        // Games too since GAME-2's integration (2026-11-25).
+        // Games too since GAME-2's integration (2026-11-25); Books not
+        // yet (BOOK-1: not in the firmware).
         for a in App::ALL {
+            #[cfg(feature = "books")]
+            if a == App::Books {
+                continue;
+            }
             assert!(a.on_player(), "{a:?} missing from the player's Home");
         }
     }

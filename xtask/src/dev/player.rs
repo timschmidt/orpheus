@@ -583,15 +583,15 @@ mod tests {
             let Some(d) = def(sid) else { continue };
             assert_eq!(sim.sys.settings.get(sid), d.default, "{:#06x}", sid.0);
         }
-        for (sid, v) in [
-            (id::THEME, 0),
-            (id::ACCENT, 0),
-            (id::CLOCK_IN_BAR, 1),
-            (id::LIST_ROLL, 1),
-            (id::HOME_APPS, 0x0FFF),
-        ] {
+        for (sid, v) in [(id::THEME, 0), (id::ACCENT, 0), (id::CLOCK_IN_BAR, 1), (id::LIST_ROLL, 1)] {
             assert_eq!(def(sid).unwrap().default, v, "{:#06x}", sid.0);
         }
+        // Every app on Home; of the player's apps (the workspace's
+        // `orpheus-apps` has Books too, through the simulator: its bit is
+        // also set, and the player has no such app).
+        let player: i16 =
+            orpheus_apps::App::ALL.iter().filter(|a| a.on_player()).fold(0, |m, &a| m | 1 << a as u8);
+        assert_eq!(def(id::HOME_APPS).unwrap().default & player, 0x0FFF);
         let mut p = SimPlayer::default();
         test_look(&mut p, true).unwrap();
         test_look(&mut p, false).unwrap();

@@ -109,6 +109,33 @@ pub static NUM28: Font = Font::parse(include_bytes!("../fonts/num28.yfnt"));
 /// Secondary numerals, 16 px digits (Fira Sans Condensed Medium).
 pub static NUM16: Font = Font::parse(include_bytes!("../fonts/num16.yfnt"));
 
+/// Reading fonts (Books, 05 §7.15; feature `book-fonts`): DejaVu Sans
+/// Condensed 16 px and 20 px, 2 bits per pixel, Latin, Latin-1,
+/// Extended-A, Cyrillic and punctuation (450 glyphs each; anything else
+/// comes from the UI font, then the fallback font).
+#[cfg(feature = "book-fonts")]
+pub static BOOK16: Font = Font::parse(include_bytes!("../fonts/book16.yfnt"));
+#[cfg(feature = "book-fonts")]
+pub static BOOK20: Font = Font::parse(include_bytes!("../fonts/book20.yfnt"));
+
+/// How [`Gfx::char_styled`](crate::Gfx::char_styled) draws a character:
+/// pixel-scaled (1 or 2), emboldened (drawn again a pixel to the right,
+/// one pixel wider) and slanted (italic emphasis without an italic face).
+#[cfg(feature = "book-fonts")]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Style {
+    pub scale: u8,
+    pub bold: bool,
+    pub slant: bool,
+}
+
+#[cfg(feature = "book-fonts")]
+impl Default for Style {
+    fn default() -> Self {
+        Style { scale: 1, bold: false, slant: false }
+    }
+}
+
 /// Which face to draw with.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum FontId {
@@ -222,6 +249,17 @@ pub fn fallback_glyph(rec: &[u8; FALLBACK_RECORD], baseline: u8) -> Option<Glyph
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "book-fonts")]
+    #[test]
+    fn book_fonts_parse() {
+        for (f, asc) in [(&BOOK16, 12), (&BOOK20, 15)] {
+            assert_eq!(f.ascent, asc);
+            assert!(f.glyph('Ж').is_some() && f.glyph('é').is_some() && f.glyph('—').is_some());
+            assert!(f.glyph('Ω').is_none(), "Greek from the UI font");
+            assert!(f.glyph('m').unwrap().adv > UI.glyph('m').unwrap().adv);
+        }
+    }
 
     #[test]
     fn builtin_fonts_parse() {

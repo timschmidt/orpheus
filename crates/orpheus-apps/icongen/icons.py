@@ -196,6 +196,18 @@ def games():
     return im
 
 
+def books():
+    """An open book: two pages from a spine, lines of text on each."""
+    im, d = canvas()
+    line(d, [(12, 6.5), (12, 20)])
+    line(d, [(12, 6.5), (8, 4.6), (2.5, 4.6), (2.5, 18.2), (8, 18.2), (12, 20)])
+    line(d, [(12, 6.5), (16, 4.6), (21.5, 4.6), (21.5, 18.2), (16, 18.2), (12, 20)])
+    for y in (8.6, 11.6, 14.6):
+        line(d, [(5.4, y), (9.2, y)], w=S)
+        line(d, [(14.8, y), (18.6, y)], w=S)
+    return im
+
+
 def warning():
     im, d = canvas()
     d.polygon([p(12, 2), p(22.5, 21), p(1.5, 21)], fill=255)
@@ -257,6 +269,7 @@ ICONS = [
     ("USB", usb_plug),
     ("POWER", power),
     ("LYRE", lyre),
+    ("BOOKS", books),
 ]
 
 

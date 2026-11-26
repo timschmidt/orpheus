@@ -1,0 +1,458 @@
+//! A book file to the normalised stream, in pieces of any size: encoding
+//! detection from the head, the format's parser, the [`Writer`]; and the
+//! library's title and author from a file's head ([`MetaReader`]).
+
+use crate::enc::{Decoder, Encoding, detect};
+use crate::fb2::{Fb2, MetaText};
+use crate::md::Md;
+use crate::norm::{Emit, Events, Kind, Sink, TocEntry, Writer};
+use crate::txt::{self, Txt};
+
+/// The book formats of BOOK-1 (EPUB is BOOK-2).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[repr(u8)]
+pub enum Format {
+    #[default]
+    Txt = 0,
+    Md = 1,
+    Fb2 = 2,
+}
+
+impl Format {
+    /// From a file name's extension.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Format> {
+        let ext = name.rsplit_once('.')?.1;
+        let is = |e: &str| ext.eq_ignore_ascii_case(e);
+        if is("txt") || is("text") {
+            Some(Format::Txt)
+        } else if is("md") || is("markdown") {
+            Some(Format::Md)
+        } else if is("fb2") {
+            Some(Format::Fb2)
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub fn from_u8(v: u8) -> Format {
+        match v {
+            1 => Format::Md,
+            2 => Format::Fb2,
+            _ => Format::Txt,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Parser {
+    Txt(Txt),
+    Md(Md),
+    Fb2(Fb2),
+}
+
+impl Parser {
+    fn char(&mut self, c: char, ev: &mut impl Events) {
+        match self {
+            Parser::Txt(p) => p.char(c, ev),
+            Parser::Md(p) => p.char(c, ev),
+            Parser::Fb2(p) => p.char(c, ev),
+        }
+    }
+
+    fn finish(&mut self, ev: &mut impl Events) {
+        match self {
+            Parser::Txt(p) => p.finish(ev),
+            Parser::Md(p) => p.finish(ev),
+            Parser::Fb2(p) => p.finish(ev),
+        }
+    }
+}
+
+/// Free room the converter wants in its sink before it takes another
+/// input byte: the most one byte can make (a held line of plain text of
+/// 48 characters, a paragraph and a style byte, a list number).
+pub const ROOM: usize = 256;
+
+/// The converter's state (≈ 400 bytes; the FB2 parser is the largest).
+#[derive(Clone, Copy, Debug)]
+pub struct Converter {
+    dec: Decoder,
+    parser: Parser,
+    w: Writer,
+    /// Bytes of a byte-order mark still to skip.
+    skip: u8,
+    pub format: Format,
+}
+
+impl Converter {
+    /// A converter for a file of `format` whose first bytes are `head`
+    /// (the whole file if `complete`). The head is not consumed: feed the
+    /// file from its start.
+    #[must_use]
+    pub fn new(format: Format, head: &[u8], complete: bool) -> Converter {
+        let (enc, bom) = detect(head, complete);
+        let parser = match format {
+            Format::Txt => {
+                let mut d = Decoder::new(enc);
+                let mut mode = txt::Mode::Join;
+                let mut len = 0usize;
+                let mut f = |c: char| {
+                    if c == '\n' || c == '\r' {
+                        len = 0;
+                    } else {
+                        len += 1;
+                        if len > txt::LONG_LINE {
+                            mode = txt::Mode::Lines;
+                        }
+                    }
+                };
+                d.feed(head.get(bom..).unwrap_or(&[]), &mut f);
+                Parser::Txt(Txt::new(mode))
+            }
+            Format::Md => Parser::Md(Md::new()),
+            Format::Fb2 => Parser::Fb2(Fb2::new()),
+        };
+        Converter {
+            dec: Decoder::new(enc),
+            parser,
+            w: Writer::new(),
+            skip: u8::try_from(bom).unwrap_or(0),
+            format,
+        }
+    }
+
+    #[must_use]
+    pub fn encoding(&self) -> Encoding {
+        self.dec.encoding()
+    }
+
+    /// Bytes of normalised text written so far.
+    #[must_use]
+    pub fn offset(&self) -> u32 {
+        self.w.offset
+    }
+
+    /// Feed `input`. Stops early (returning the bytes taken) when `out`
+    /// has less than [`ROOM`] bytes free or a contents entry waits for
+    /// [`Converter::take_toc`].
+    pub fn feed(&mut self, input: &[u8], out: &mut dyn Sink) -> usize {
+        let mut used = 0;
+        for &b in input {
+            if out.room() < ROOM || self.w.done.is_some() {
+                break;
+            }
+            used += 1;
+            if self.skip > 0 {
+                self.skip -= 1;
+                continue;
+            }
+            let (dec, parser, w) = (&mut self.dec, &mut self.parser, &mut self.w);
+            let mut ev = Emit { w, out: &mut *out };
+            dec.feed(&[b], &mut |c| parser.char(c, &mut ev));
+        }
+        used
+    }
+
+    /// A finished contents entry, if one waits.
+    pub fn take_toc(&mut self) -> Option<TocEntry> {
+        self.w.done.take()
+    }
+
+    /// End of the file (the sink needs [`ROOM`] bytes free).
+    pub fn finish(&mut self, out: &mut dyn Sink) {
+        let (dec, parser, w) = (&mut self.dec, &mut self.parser, &mut self.w);
+        {
+            let mut ev = Emit { w, out: &mut *out };
+            dec.finish(&mut |c| parser.char(c, &mut ev));
+            parser.finish(&mut ev);
+        }
+        self.w.finish(out);
+    }
+}
+
+/// Bytes of a file's head [`MetaReader`] looks at, at most.
+pub const META_HEAD: usize = 4096;
+
+/// A book's title and author for the library.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Meta {
+    pub title: MetaText<64>,
+    pub author: MetaText<48>,
+}
+
+/// Events nobody wants (the meta reader runs the FB2 parser for its
+/// description only).
+struct Nothing;
+
+impl Events for Nothing {
+    fn para(&mut self, _: Kind) {}
+    fn end_para(&mut self) {}
+    fn style(&mut self, _: u8) {}
+    fn text(&mut self, _: char) {}
+    fn title(&mut self, _: bool) {}
+}
+
+/// Bytes of a line looked at (a `Title:` line longer is cut).
+const LINE: usize = 160;
+
+/// Title and author from the head of a file, in pieces: FB2's
+/// `<title-info>`; Markdown's front matter (`title:`, `author:`) or first
+/// `#` heading; plain text's `Title:` and `Author:` lines (Project
+/// Gutenberg's header). Empty if the head does not say.
+#[derive(Clone, Copy, Debug)]
+pub struct MetaReader {
+    format: Format,
+    dec: Decoder,
+    skip: u8,
+    fb2: Fb2,
+    /// The current line's first bytes (UTF-8).
+    line: [u8; LINE],
+    line_n: u8,
+    lines: u16,
+    front: u8,
+    /// Bytes fed so far.
+    pub fed: u32,
+    pub meta: Meta,
+}
+
+impl MetaReader {
+    #[must_use]
+    pub fn new(format: Format, head: &[u8], complete: bool) -> MetaReader {
+        let (enc, bom) = detect(head, complete);
+        MetaReader {
+            format,
+            dec: Decoder::new(enc),
+            skip: u8::try_from(bom).unwrap_or(0),
+            fb2: Fb2::new(),
+            line: [0; LINE],
+            line_n: 0,
+            lines: 0,
+            front: 0,
+            fed: 0,
+            meta: Meta::default(),
+        }
+    }
+
+    /// Whether more of the file could still tell more.
+    #[must_use]
+    pub fn wants_more(&self) -> bool {
+        (self.fed as usize) < META_HEAD
+            && (self.front == 1
+                || self.meta.title.is_empty()
+                || (self.format != Format::Md && self.meta.author.is_empty()))
+    }
+
+    pub fn feed(&mut self, input: &[u8]) {
+        for &b in input {
+            self.fed += 1;
+            if self.skip > 0 {
+                self.skip -= 1;
+                continue;
+            }
+            let mut tmp = [' '; 2];
+            let mut n = 0;
+            self.dec.feed(&[b], &mut |c| {
+                if let Some(s) = tmp.get_mut(n) {
+                    *s = c;
+                    n += 1;
+                }
+            });
+            for &c in tmp.iter().take(n) {
+                self.char(c);
+            }
+        }
+    }
+
+    /// End of what was read: the title and author found.
+    #[must_use]
+    pub fn finish(mut self) -> Meta {
+        if self.format != Format::Fb2 && self.line_n > 0 {
+            self.line_done();
+        }
+        if self.format == Format::Fb2 {
+            self.meta.title = self.fb2.title;
+            self.meta.author = self.fb2.author;
+        }
+        self.meta
+    }
+
+    fn char(&mut self, c: char) {
+        if self.format == Format::Fb2 {
+            self.fb2.char(c, &mut Nothing);
+            return;
+        }
+        if c == '\n' || c == '\r' {
+            self.line_done();
+            return;
+        }
+        let mut tmp = [0u8; 4];
+        let b = c.encode_utf8(&mut tmp).as_bytes();
+        let at = usize::from(self.line_n);
+        if let Some(dst) = self.line.get_mut(at..at + b.len()) {
+            dst.copy_from_slice(b);
+            self.line_n += b.len() as u8;
+        }
+    }
+
+    fn line_done(&mut self) {
+        let n = usize::from(self.line_n);
+        self.line_n = 0;
+        let buf = self.line;
+        let line = core::str::from_utf8(&buf[..n]).unwrap_or("").trim();
+        if line.is_empty() {
+            return;
+        }
+        let first = self.lines == 0;
+        self.lines = self.lines.saturating_add(1);
+        let value = |key: &str| -> Option<&str> {
+            let (k, v) = line.split_once(':')?;
+            k.trim().eq_ignore_ascii_case(key).then(|| v.trim().trim_matches(&['"', '\''][..]))
+        };
+        match self.format {
+            Format::Md => {
+                if first && line == "---" {
+                    self.front = 1;
+                    return;
+                }
+                if self.front == 1 {
+                    if line == "---" || line == "..." {
+                        self.front = 2;
+                    } else if let Some(v) = value("title") {
+                        self.meta.title.clear();
+                        self.meta.title.push_str(v);
+                    } else if let Some(v) = value("author") {
+                        self.meta.author.clear();
+                        self.meta.author.push_str(v);
+                    }
+                    return;
+                }
+                if self.meta.title.is_empty()
+                    && let Some(h) = line.strip_prefix("# ")
+                {
+                    self.meta.title.push_str(h.trim());
+                }
+            }
+            _ => {
+                if self.meta.title.is_empty()
+                    && let Some(v) = value("title")
+                {
+                    self.meta.title.push_str(v);
+                } else if self.meta.author.is_empty()
+                    && let Some(v) = value("author")
+                {
+                    self.meta.author.push_str(v);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use super::*;
+    use crate::norm::tests::show;
+    use std::string::String;
+    use std::vec::Vec;
+
+    /// A sink with a fixed room, like the card job's buffer.
+    struct Bounded(Vec<u8>, usize);
+    impl Sink for Bounded {
+        fn put(&mut self, b: &[u8]) {
+            self.0.extend_from_slice(b);
+        }
+        fn room(&self) -> usize {
+            self.1.saturating_sub(self.0.len())
+        }
+    }
+
+    /// Convert in pieces of `piece` bytes through a sink of 1 KiB that is
+    /// emptied whenever the converter stops: the same stream as at once.
+    pub fn convert_pieces(format: Format, file: &[u8], piece: usize) -> (Vec<u8>, Vec<TocEntry>) {
+        let mut c = Converter::new(format, &file[..file.len().min(512)], file.len() <= 512);
+        let mut all = Vec::new();
+        let mut toc = Vec::new();
+        let mut sink = Bounded(Vec::new(), 1024);
+        let mut at = 0;
+        while at < file.len() {
+            let end = (at + piece).min(file.len());
+            let used = c.feed(&file[at..end], &mut sink);
+            at += used;
+            if let Some(e) = c.take_toc() {
+                toc.push(e);
+            }
+            if used == 0 || sink.room() < ROOM {
+                all.append(&mut sink.0);
+            }
+        }
+        c.finish(&mut sink);
+        if let Some(e) = c.take_toc() {
+            toc.push(e);
+        }
+        all.append(&mut sink.0);
+        (all, toc)
+    }
+
+    #[test]
+    fn pieces_do_not_matter() {
+        let text = crate::fb2::tests::SAMPLE.repeat(5);
+        let (whole, toc) = convert_pieces(Format::Fb2, text.as_bytes(), usize::MAX / 2);
+        for piece in [1, 3, 64, 511] {
+            let (p, t) = convert_pieces(Format::Fb2, text.as_bytes(), piece);
+            assert_eq!(show(&p), show(&whole), "piece {piece}");
+            assert_eq!(t, toc);
+        }
+        assert_eq!(toc.len(), 20);
+    }
+
+    #[test]
+    fn utf16_txt_with_bom() {
+        let t = "Chapter 1\r\n\r\nПривет, мир.\r\n";
+        let mut b = std::vec![0xFF, 0xFE];
+        b.extend(t.encode_utf16().flat_map(u16::to_le_bytes));
+        let (out, toc) = convert_pieces(Format::Txt, &b, 5);
+        assert_eq!(show(&out), "¶2Chapter 1¶0Привет, мир.");
+        assert_eq!(toc[0].title(), "Chapter 1");
+    }
+
+    #[test]
+    fn formats_from_names() {
+        assert_eq!(Format::from_name("a.TXT"), Some(Format::Txt));
+        assert_eq!(Format::from_name("b.markdown"), Some(Format::Md));
+        assert_eq!(Format::from_name("War.fb2"), Some(Format::Fb2));
+        assert_eq!(Format::from_name("x.epub"), None);
+        assert_eq!(Format::from_name("noext"), None);
+    }
+
+    fn meta(format: Format, b: &[u8]) -> (String, String) {
+        let mut r = MetaReader::new(format, b, true);
+        for p in b.chunks(7) {
+            if !r.wants_more() {
+                break;
+            }
+            r.feed(p);
+        }
+        let m = r.finish();
+        (m.title.as_str().into(), m.author.as_str().into())
+    }
+
+    #[test]
+    fn metadata() {
+        assert_eq!(
+            meta(Format::Fb2, crate::fb2::tests::SAMPLE.as_bytes()),
+            ("War & Peace".into(), "Lev N. Tolstoy".into())
+        );
+        assert_eq!(
+            meta(Format::Txt, b"The Project Gutenberg eBook\r\n\r\nTitle: A Tale\r\nAuthor: C. Dickens\r\n"),
+            ("A Tale".into(), "C. Dickens".into())
+        );
+        assert_eq!(
+            meta(Format::Md, b"---\ntitle: \"Notes\"\nauthor: Me\n---\n# Other"),
+            ("Notes".into(), "Me".into())
+        );
+        assert_eq!(meta(Format::Md, b"Intro\n\n# The Heading\n"), ("The Heading".into(), String::new()));
+        assert_eq!(meta(Format::Txt, b"just text"), (String::new(), String::new()));
+    }
+}
