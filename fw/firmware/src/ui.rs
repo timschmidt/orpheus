@@ -627,28 +627,9 @@ fn session_reply() {
     });
 }
 
+/// Numbers in test commands, hex in either case (`orpheus_proto::num`).
 fn parse_num(w: &[u8]) -> Option<i32> {
-    let (neg, d) = match w.split_first() {
-        Some((b'-', d)) => (true, d),
-        _ => (false, w),
-    };
-    let (radix, d) = match d.strip_prefix(b"0x") {
-        Some(h) => (16, h),
-        None => (10, d),
-    };
-    if d.is_empty() || d.len() > 6 {
-        return None;
-    }
-    let mut v = 0i32;
-    for &c in d {
-        let x = match c {
-            b'0'..=b'9' => c - b'0',
-            b'a'..=b'f' if radix == 16 => c - b'a' + 10,
-            _ => return None,
-        };
-        v = v * radix + i32::from(x);
-    }
-    Some(if neg { -v } else { v })
+    orpheus_proto::num::parse(w)
 }
 
 /// Developer `settings …` (VER-12): `test-session on`, `test-session`
