@@ -229,6 +229,28 @@ cycles_chorus_frame = 194
 # controller feeds it; its code would not fit the code window). ESTIMATE:
 # SYN-2's 90 × 2.3.
 est_cycles_delay_frame = 210
+# Code paging (2026-11-26; the lead's run of build 8240f128: `pg=`
+# 200–250 % of real time at 288 MHz, every demo song given up). The
+# steady MIDI working set in code-cache lines (`hot.toml`, `cargo xtask
+# build` prints them): the render with everything it calls every segment
+# (`synth-render`, 18,360 B), the per-piece code (`synth-inner`, 7,882 B:
+# the pieces' loop, the governor, the render call with the MIDI event
+# loop, the rest), the PCM path shared with the codecs (`play-pcm`,
+# 5,010 B): 31 of the cache's 32 lines, on distinct physical lines; `xtask
+# stack --check` fails when the render's reachable code outgrows
+# `budget_lines` 18 or the three outgrow 32 (was 25 + 9 = 34). The outer
+# loop (requests, position, chores) runs every `outer_frames` or when
+# something waits. A host model (the render emulated per piece, replayed
+# through the cache; STATUS 2026-11-26) gives line loads 2.3 a piece for
+# "Etude", `pg=` (render only) 3.2 % and 6.9 % with the rest of the loop,
+# against 96 a piece (291 %) on the old layout. Resident +160 B
+# (81,652 → 81,812 B: the rest's wake through the time queue, which is
+# resident by name, instead of `embassy_time::Timer`, and the timer
+# queue's item lookup).
+render_lines = 18
+inner_lines = 8
+pcm_lines = 5
+outer_frames = 4096
 
 [tts]
 # Speech engine (04 §8, TTS-2, 2026-11-25). RAM: `Synth` (unit queue,

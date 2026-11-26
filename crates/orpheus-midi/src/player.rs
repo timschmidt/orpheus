@@ -496,6 +496,15 @@ impl MidiPlayer {
         if let Some(a) = self.ahead.take() {
             return Pull::Ready(a);
         }
+        self.parse_next()
+    }
+
+    /// [`MidiPlayer::timed`] without a pending event: the parser. Out of
+    /// line: most render pieces only look at the pending event (the next
+    /// one lies beyond them), and the code a piece runs on the player must
+    /// fit its code cache with the render's (SYN-3).
+    #[inline(never)]
+    fn parse_next(&mut self) -> Pull<(u64, MidiEvent)> {
         if self.events_done {
             return Pull::End;
         }

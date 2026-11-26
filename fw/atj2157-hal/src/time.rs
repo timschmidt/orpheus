@@ -137,6 +137,9 @@ impl Driver for TimeDriver {
         critical_section::with(|cs| self.now_cs(cs))
     }
 
+    // Inlined into its callers (`embassy_time::Timer`'s poll,
+    // `wake::wake_at`): out of line it would be resident by its name.
+    #[inline(always)]
     fn schedule_wake(&self, at: u64, waker: &Waker) {
         critical_section::with(|cs| {
             let changed = self.queue.borrow(cs).borrow_mut().schedule_wake(at, waker);
@@ -151,6 +154,13 @@ impl Driver for TimeDriver {
 #[must_use]
 pub fn now_us() -> u64 {
     DRIVER.now()
+}
+
+/// [`Driver::schedule_wake`] for [`crate::wake::wake_at`] (inlined there:
+/// an out-of-line copy here would be resident, `atj2157_hal::time::*`).
+#[inline(always)]
+pub(crate) fn schedule_wake(at_us: u64, waker: &Waker) {
+    DRIVER.schedule_wake(at_us, waker);
 }
 
 /// Alarm interrupts taken so far.

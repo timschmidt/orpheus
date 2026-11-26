@@ -741,11 +741,17 @@ driver exists because it is much faster than reboot cycles.
   cluster's lines plus those must stay within `budget_lines`. A new
   function on the path, a cluster pattern that no longer matches or an
   inlining change that moves code out shows up as a build-gate failure
-  instead of as `pl=` on the player.
+  instead of as `pl=` on the player. **Cache fit** (SYN-3, 2026-11-26):
+  those lines plus the `fits_with` clusters' whole lines must also stay
+  within the cache's 32 (`hot::CACHE_LINES`): before, the synth's render
+  passed its 26-line budget at 25 while it ran with a 9-line cluster, 34
+  lines in all, and paged 200–250 % of real time on the player
+  (`regress_synth_working_set_over_the_cache`). The report line gives
+  both (`… with its fits_with N of 32 cache lines`).
 * **`starts_over = "NAME"`** (pagelink): a cluster starts on the physical
   line NAME starts on, the code window before it left empty (reported by
   `cargo xtask build`; 7 KiB for `flac-frame` after `games-io` and
-  `dir-walk`). The three playback clusters take all 32 physical lines,
+  `dir-walk`). The playback clusters take all 32 physical lines,
   so a chore's cluster that runs with `play-fill` goes between
   `play-fill` and `flac-frame`, and `flac-frame` returns to `mp3-frame`'s
   lines this way.

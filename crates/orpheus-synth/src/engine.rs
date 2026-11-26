@@ -603,8 +603,11 @@ impl Engine {
 
     /// What rendering costs now by the table `c` (cycles per frame): the
     /// sounding voices by class, the effects that run (enabled, and fed by
-    /// a sounding voice's part or still ringing).
+    /// a sounding voice's part or still ringing). Out of line: the player
+    /// calls it before and after every piece, and one copy is a line of
+    /// the code cache less than one inlined into each caller (SYN-3).
     #[must_use]
+    #[inline(never)]
     pub fn estimate(&self, c: &Costs) -> Estimate {
         let mut e = Estimate { base: c.empty, fx: c.fx, ..Estimate::default() };
         let mut fed = 0u8;
@@ -637,7 +640,9 @@ impl Engine {
 
     /// Fade out voices until at most `keep` sound (not counting those
     /// fading already): released ones first, oldest first, then the
-    /// oldest held ones. Returns how many it faded (the load governor).
+    /// oldest held ones. Returns how many it faded (the load governor;
+    /// out of line: rare, kept out of the player's per-piece code).
+    #[inline(never)]
     pub fn shed(&mut self, keep: usize) -> usize {
         let mut cut = 0;
         loop {

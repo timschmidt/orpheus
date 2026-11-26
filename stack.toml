@@ -145,6 +145,9 @@ stack_bytes = 512
 [[indirect]]
 callers = [
     "<atj2157_hal::time::TimeDriver>::rearm",
+    # The synth's rests wake through the driver's queue directly (SYN-3).
+    "atj2157_hal::wake::wake_at",
+    "<embassy_time_queue_utils::Queue>::schedule_wake",
     "<embassy_sync::*",
     "<core::future::poll_fn::PollFn<<embassy_sync::*",
     "<core::future::poll_fn::PollFn<<embassy_time::*",

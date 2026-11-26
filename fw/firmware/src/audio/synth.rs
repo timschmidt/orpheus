@@ -355,10 +355,9 @@ async fn run_steps(
 /// player, and the estimate it came from (`orpheus_synth::load`).
 #[inline(never)]
 fn plan_piece(st: &mut MidiState, gov_on: bool, max: u8) -> (Plan, Estimate) {
+    // (The floor is re-applied by the outer loop, not here: its code is
+    // not the per-piece code's, `hot.toml` `synth-inner`.)
     let step = st.gov.clock();
-    if gov_on {
-        synth_floor(step);
-    }
     st.gov.set_clock(atj2157_hal::clock::current().hz(), RATE_HZ);
     let e = st.player.engine().estimate(&load::PLAYER);
     let plan = if gov_on {
@@ -392,10 +391,31 @@ fn plan_piece(st: &mut MidiState, gov_on: bool, max: u8) -> (Plan, Estimate) {
 async fn pace_rest(rested: &mut u64, us: u32) {
     if pace::due((time::now_us() as u32).wrapping_add(us), *rested as u32) {
         let t0 = super::now32();
-        Timer::after_micros(u64::from(pace::REST_US)).await;
+        RestUntil(time::now_us() + u64::from(pace::REST_US)).await;
         note_as(UB_DECODER, D_SYN + SynthOp::Rest as u8, t0);
         *rested = time::now_us();
         syn_set(F_RESTS, syn_get(F_RESTS) + 1);
+    }
+}
+
+/// The pace rule's rest: until the time (µs, `time::now_us`) it holds.
+/// Not `embassy_time::Timer`: its poll (in `games-io`) and
+/// `_embassy_time_now` share physical code-cache lines with the synth's
+/// per-piece code and the render's, two line loads or more a rest; this
+/// poll is inlined into `pace_rest`'s (`synth-inner`) and the wake goes to
+/// the HAL's time driver directly (`atj2157_hal::wake::wake_at`).
+struct RestUntil(u64);
+
+impl core::future::Future for RestUntil {
+    type Output = ();
+
+    fn poll(self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<()> {
+        if time::now_us() >= self.0 {
+            core::task::Poll::Ready(())
+        } else {
+            atj2157_hal::wake::wake_at(self.0, cx.waker());
+            core::task::Poll::Pending
+        }
     }
 }
 
@@ -427,6 +447,129 @@ fn after_piece(st: &mut MidiState, plan: &Plan, e: &Estimate, n: usize, dt: u32,
         gov_log("synth: gave up, nothing can play at ", &st.gov);
     }
     out
+}
+
+/// Frames between two runs of the playback loop's outer part (requests,
+/// the position, chores, logs) when nothing asks for it sooner
+/// ([`attention`]): 93 ms. Per piece only [`pieces`] runs: the outer part's
+/// code then evicts the render's lines once in 16 pieces, not every piece
+/// (2026-11-26: paging was 200–250 % of real time on the player).
+const OUTER_FRAMES: u32 = 4096;
+
+/// What [`pieces`] stopped for.
+enum Run {
+    /// The outer part is due.
+    Frames,
+    /// The parser needs file bytes first.
+    Need(Need),
+    /// The song is over.
+    End,
+    /// The player rendered nothing 64 times in a row.
+    Stuck,
+    /// The load governor gave up: nothing can play.
+    GaveUp,
+}
+
+/// Something waits for the outer part: a stop, a player or card request,
+/// the player's actions, a fade to pause, a log to write.
+#[inline(never)]
+fn attention(b: &Blk) -> bool {
+    STOP.load(Ordering::Relaxed)
+        || b.fading
+        || !b.flow.is_empty()
+        || !media::PLAY.is_empty()
+        || !media::REQS.is_empty()
+        || crate::drain::due()
+        || crate::sensor::card_due()
+}
+
+/// One piece's render of `want` frames, timed (`dec:` in `status`):
+/// `Ready((frames, µs, µs of them in the pager's line loads))`.
+#[inline(never)]
+fn render_piece(st: &mut MidiState, b: &mut Blk, want: usize) -> Pull<(usize, u32, u32)> {
+    let (t0, l0, u0) = (time::now_us(), pager_loads(), super::now32());
+    let p0 = atj2157_hal::pager::LOAD_US.load(Ordering::Relaxed);
+    let n = match st.player.render(st.pcm.get_mut(..2 * want).unwrap_or_default()) {
+        Pull::Ready(n) => n,
+        Pull::Need(need) => return Pull::Need(need),
+        Pull::End => return Pull::End,
+    };
+    let dt = (time::now_us() - t0) as u32;
+    let pg = atj2157_hal::pager::LOAD_US.load(Ordering::Relaxed).wrapping_sub(p0);
+    note_as(UB_DECODER, D_SYN + SynthOp::Render as u8, u0);
+    T_DECODE.fetch_add(dt, Ordering::Relaxed);
+    DEC_N.fetch_add(1, Ordering::Relaxed);
+    DEC_US.fetch_add(dt, Ordering::Relaxed);
+    DEC_MAX_US.fetch_max(dt, Ordering::Relaxed);
+    LAST_DEC_US.store(dt, Ordering::Relaxed);
+    DEC_LOADS.fetch_add(pager_loads().wrapping_sub(l0), Ordering::Relaxed);
+    b.decode_us += u64::from(dt);
+    b.dec = b.dec.after(dt);
+    Pull::Ready((n, dt, pg))
+}
+
+/// The pieces between two runs of the outer part ([`OUTER_FRAMES`], or
+/// sooner when [`attention`] says so): each planned by the load governor
+/// (effects, voice limit, voices to fade out, frames: bounded in time),
+/// after the pace rule's rest, rendered, measured, through the DSP chain,
+/// key clicks and the PCM ring as a decoder's block. Its own poll
+/// (`Apart`): the code that runs per piece is this, what it calls and the
+/// wake-up through the task's polls — `hot.toml` `synth-inner`,
+/// `synth-render`, `play-pcm`, which fit the code cache together.
+#[allow(clippy::too_many_arguments)]
+async fn pieces(
+    st: &mut MidiState,
+    b: &mut Blk,
+    out: &mut PcmOut,
+    chain: &mut orpheus_dsp::Chain,
+    rested: &mut u64,
+    empty: &mut u32,
+    gov_on: bool,
+    max: u8,
+) -> Run {
+    let mut done = 0u32;
+    loop {
+        mark(31);
+        let (plan, e) = plan_piece(st, gov_on, max);
+        super::Apart(pace_rest(rested, plan.us)).await;
+        let want = (plan.frames as usize).clamp(1, BLOCK);
+        // Fewer frames when the parser needs file bytes first.
+        let (n, dt, pg) = match render_piece(st, b, want) {
+            Pull::Ready(r) => r,
+            Pull::Need(need) => return Run::Need(need),
+            Pull::End => return Run::End,
+        };
+        if n == 0 {
+            *empty += 1;
+            if *empty > 64 {
+                return Run::Stuck;
+            }
+            continue;
+        }
+        *empty = 0;
+        if after_piece(st, &plan, &e, n, dt, pg) && gov_on {
+            return Run::GaveUp;
+        }
+        begin_block(b, chain);
+        let (dsp, frames) = (b.dsp, &mut b.frames);
+        let Some(s) = st.pcm.get_mut(..2 * n) else { continue };
+        let sc = scratch16(SCRATCH_FRAMES * 2);
+        let mut feed = Feeder::new();
+        while feed.run(s, sc, 2, &mut Out { out, chain, dsp, stereo: true, frames }) == Fed::Wait {
+            let w0 = time::now_us();
+            out.half().await;
+            // A wait as long as a rest gave thread mode its time.
+            let w1 = time::now_us();
+            if w1 - w0 >= u64::from(pace::REST_US) {
+                *rested = w1;
+            }
+        }
+        FRAMES.store(b.frames, Ordering::Relaxed);
+        done += n as u32;
+        if done >= OUTER_FRAMES || attention(b) {
+            return Run::Frames;
+        }
+    }
 }
 
 /// What a request did to the synth's playback loop.
@@ -656,6 +799,7 @@ pub(super) async fn play_midi(
         }
     }
     PLAYING.store(true, Ordering::Relaxed);
+    super::PAUSED.store(false, Ordering::Relaxed);
     STOP.store(false, Ordering::Relaxed);
     let t_start = time::now_us();
     let mut b = Blk {
@@ -728,68 +872,34 @@ pub(super) async fn play_midi(
         if b.held || b.fading && !b.paused {
             resumed(&mut b, chain);
         }
-        // One piece as the load governor plans it (effects, voice limit,
-        // voices to fade out, frames: bounded in time); fewer frames when
-        // the parser needs file bytes first.
-        mark(31);
-        let (plan, e) = plan_piece(state, gov_on, max);
-        super::Apart(pace_rest(&mut rested, plan.us)).await;
-        let want = (plan.frames as usize).clamp(1, BLOCK);
-        let (t0, l0, u0) = (time::now_us(), pager_loads(), super::now32());
-        let p0 = atj2157_hal::pager::LOAD_US.load(Ordering::Relaxed);
-        let n = match state.player.render(state.pcm.get_mut(..2 * want).unwrap_or_default()) {
-            Pull::Ready(n) => n,
-            Pull::Need(need) => {
+        // Pieces as the load governor plans them, until something waits
+        // for this outer part or `OUTER_FRAMES` are written (`pieces`, a
+        // poll of its own: per piece only it and what it calls run, the
+        // code `hot.toml` packs to fit the cache, `synth-inner`).
+        match super::Apart(pieces(state, &mut b, out, chain, &mut rested, &mut empty, gov_on, max)).await {
+            Run::Frames => {}
+            Run::Need(need) => {
                 syn_set(F_READS, syn_get(F_READS) + 1);
                 supply(vol, file, &mut state.cache, blocks, &mut state.player, need).await;
                 continue;
             }
-            Pull::End => {
+            Run::End => {
                 b.natural = true;
                 break 'play Ok(End::Idle);
             }
-        };
-        let dt = (time::now_us() - t0) as u32;
-        let pg = atj2157_hal::pager::LOAD_US.load(Ordering::Relaxed).wrapping_sub(p0);
-        note_as(UB_DECODER, D_SYN + SynthOp::Render as u8, u0);
-        T_DECODE.fetch_add(dt, Ordering::Relaxed);
-        DEC_N.fetch_add(1, Ordering::Relaxed);
-        DEC_US.fetch_add(dt, Ordering::Relaxed);
-        DEC_MAX_US.fetch_max(dt, Ordering::Relaxed);
-        LAST_DEC_US.store(dt, Ordering::Relaxed);
-        DEC_LOADS.fetch_add(pager_loads().wrapping_sub(l0), Ordering::Relaxed);
-        b.decode_us += u64::from(dt);
-        b.dec = b.dec.after(dt);
-        if n == 0 {
-            empty += 1;
-            if empty > 64 {
-                break 'play failed(srv, b.driven, t!(b"MIDI player stuck"));
-            }
-            continue;
-        }
-        empty = 0;
-        // Underruns do not end a MIDI file (a burst is better than the end
-        // of the song): only the governor's give-up (with it off, `crc on`
-        // checks render slower than real time; the CRC stays).
-        if after_piece(state, &plan, &e, n, dt, pg) && gov_on {
-            break 'play failed(srv, b.driven, t!(b"synth too slow for this player"));
-        }
-        // DSP, key clicks and the PCM ring, as for a decoder's block.
-        begin_block(&mut b, chain);
-        let (dsp, frames) = (b.dsp, &mut b.frames);
-        let Some(s) = state.pcm.get_mut(..2 * n) else { continue };
-        let sc = scratch16(SCRATCH_FRAMES * 2);
-        let mut feed = Feeder::new();
-        while feed.run(s, sc, 2, &mut Out { out, chain, dsp, stereo: true, frames }) == Fed::Wait {
-            let w0 = time::now_us();
-            out.half().await;
-            // A wait as long as a rest gave thread mode its time.
-            let w1 = time::now_us();
-            if w1 - w0 >= u64::from(pace::REST_US) {
-                rested = w1;
-            }
+            Run::Stuck => break 'play failed(srv, b.driven, t!(b"MIDI player stuck")),
+            // Underruns do not end a MIDI file (a burst is better than the
+            // end of the song): only the governor's give-up (with it off,
+            // `crc on` checks render slower than real time; the CRC stays).
+            Run::GaveUp => break 'play failed(srv, b.driven, t!(b"synth too slow for this player")),
         }
 
+        // The governor's clock step as the floor again (raised at once if
+        // something lowered the clock; a change of step is applied in the
+        // piece that makes it, `plan_piece`).
+        if gov_on {
+            synth_floor(state.gov.clock());
+        }
         // The position (UI, player), the player's ticks.
         b.pos = state.player.position();
         FRAMES.store(b.frames, Ordering::Relaxed);
@@ -862,6 +972,7 @@ pub(super) async fn play_midi(
     DECODE_US.store(b.decode_us as u32, Ordering::Relaxed);
     PLAY_US.store((time::now_us() - t_start) as u32, Ordering::Relaxed);
     PLAYING.store(false, Ordering::Relaxed);
+    super::PAUSED.store(false, Ordering::Relaxed);
     CODEC_FLOOR.store(0, Ordering::Relaxed);
     dsp_clock_floor(false);
     mark(0);

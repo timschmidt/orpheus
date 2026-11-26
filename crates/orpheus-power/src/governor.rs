@@ -231,6 +231,34 @@ pub fn raise_for_floor(mode: PowerMode, current: Level, floor: Level) -> Option<
     (mode == PowerMode::Auto && current < floor).then_some(floor)
 }
 
+/// The audio task's clock floor (0 Base, 1 Mid, 2 High, 3 Turbo, 4 Max:
+/// [`Level::from_floor`]): the track's (`track`, the codec's or the
+/// synth's), at least Mid while the DSP chain works — **none while the
+/// track is paused** (2026-11-26: a track resumed paused at start-up held
+/// Mid 96 MHz for nothing); `boost` (a picture decoding, the card task)
+/// asks High whatever the track does.
+#[must_use]
+pub const fn audio_floor(track: u8, dsp_active: bool, paused: bool, boost: bool) -> u8 {
+    let t = if paused {
+        0
+    } else if dsp_active && track == 0 {
+        1
+    } else {
+        track
+    };
+    if boost && t < 2 { 2 } else { t }
+}
+
+/// The floor one step takes (`Input::floor`) from the audio floor `f`
+/// ([`audio_floor`]): none (`Low`) when nothing plays — or the track is
+/// paused, which the governor treats as nothing playing (the audio
+/// peripheral's minimum is `Low`; a key click while paused plays there) —
+/// unless the floor asks for more (a picture's boost).
+#[must_use]
+pub const fn floor_level(f: u8, playing: bool, paused: bool) -> Level {
+    if f == 0 && (!playing || paused) { Level::Low } else { Level::from_floor(f) }
+}
+
 /// What one step looks at.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Input {
@@ -530,6 +558,52 @@ mod tests {
             assert_eq!(PowerMode::for_governor(v, true), PowerMode::Auto);
             assert_eq!(PowerMode::for_governor(v, false), PowerMode::from_setting(v));
         }
+    }
+
+    /// Regression (2026-11-26, the lead on the player, build `8240f128`):
+    /// a track loaded but **paused** (resumed paused at start-up) kept its
+    /// clock floor — Mid 96 MHz (an MP3 with the DSP chain on) — with
+    /// nothing to play. Paused, the floor is released and the governor
+    /// comes down to the peripherals' minimum (Low; Base on the cable);
+    /// on play the floor is back at once (`raise_for_floor`). Fails with
+    /// the old rule (the floor `max(codec, dsp)` whatever the pause, and a
+    /// loaded track never below Base).
+    #[test]
+    fn regress_paused_track_keeps_clock_floor() {
+        let playing = audio_floor(0, true, false, false);
+        assert_eq!(floor_level(playing, true, false), Mid);
+        let paused = audio_floor(0, true, true, false);
+        assert_eq!(paused, 0);
+        let fl = floor_level(paused, true, true);
+        assert_eq!(fl, Low);
+        let on_battery = run_with(PowerMode::Auto, Mid, fl, periph::ALWAYS | periph::DISPLAY, &[1; 6]);
+        assert_eq!(*on_battery.last().unwrap(), Low);
+        let on_cable = run_with(PowerMode::Auto, Mid, fl, periph::ALWAYS | periph::USB, &[1; 6]);
+        assert_eq!(*on_cable.last().unwrap(), Base);
+        // Play again: back to Mid at once, not a governor step later.
+        assert_eq!(raise_for_floor(PowerMode::Auto, Low, floor_level(playing, true, false)), Some(Mid));
+        // Every track floor (Vorbis High, the synth up to Max) likewise.
+        for t in 1..=4 {
+            assert_eq!(audio_floor(t, false, true, false), 0);
+            assert_eq!(audio_floor(t, true, false, false), t);
+            assert_eq!(floor_level(audio_floor(t, false, false, false), true, false), Level::from_floor(t));
+        }
+    }
+
+    /// The floor's parts: the track's, Mid for the DSP chain, the picture
+    /// boost (High, also while a track is paused or none is loaded).
+    #[test]
+    fn audio_floor_parts() {
+        assert_eq!(audio_floor(0, false, false, false), 0);
+        assert_eq!(audio_floor(0, true, false, false), 1);
+        assert_eq!(audio_floor(2, true, false, false), 2);
+        assert_eq!(audio_floor(0, false, false, true), 2);
+        assert_eq!(audio_floor(0, true, true, true), 2);
+        assert_eq!(audio_floor(4, false, false, true), 4);
+        assert_eq!(floor_level(0, false, false), Low);
+        assert_eq!(floor_level(2, false, false), High);
+        assert_eq!(floor_level(0, true, false), Base);
+        assert_eq!(floor_level(2, true, true), High);
     }
 
     #[test]

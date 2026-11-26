@@ -250,7 +250,7 @@ impl Governor {
         let input = governor::Input {
             idle_pct,
             current: clock::current(),
-            floor: if f == 0 && !playing { Level::Low } else { Level::from_floor(f) },
+            floor: governor::floor_level(f, playing, audio::PAUSED.load(Relaxed)),
             active,
         };
         if let Some(l) = self.g.step(input, power_mode()) {

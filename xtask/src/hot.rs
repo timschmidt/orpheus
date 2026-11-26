@@ -180,7 +180,13 @@ pub struct WorkingSet {
     /// The cluster's lines plus one line per started KiB of each function
     /// outside.
     pub lines: u32,
+    /// The lines of the `fits_with` clusters, whole (each is placed as one
+    /// block beside this one: in the cache with it by design).
+    pub with_lines: u32,
 }
+
+/// Physical lines of the code cache (direct-mapped, 32 × 1 KiB, 02 §3.1).
+pub const CACHE_LINES: u32 = 32;
 
 /// The working set of cluster `name` (running with `fits_with`) for the
 /// reachable functions `dist`.
@@ -201,13 +207,35 @@ pub fn working_set(funcs: &[Func], dist: &[Option<u32>], name: &str, fits_with: 
     }
     w.outside.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     w.lines = w.own.div_ceil(LINE_SIZE) + w.outside.iter().map(|o| o.1.div_ceil(LINE_SIZE)).sum::<u32>();
+    w.with_lines = fits_with
+        .iter()
+        .map(|c| {
+            let bytes: u32 = funcs
+                .iter()
+                .filter(|f| f.paged && f.owner.as_deref() == Some(c.as_str()))
+                .map(|f| packed(f.bytes))
+                .sum();
+            bytes.div_ceil(LINE_SIZE)
+        })
+        .sum();
     w
 }
 
-/// The check of one cluster: `Err` when its working set exceeds `budget`.
+/// The check of one cluster: `Err` when its working set exceeds `budget`,
+/// or when it and its `fits_with` clusters together take more lines than
+/// the cache has (SYN-3, 2026-11-26: the synth's render and its per-piece
+/// code were 34 lines, and every piece reloaded code).
 pub fn check(w: &WorkingSet, name: &str, budget: u32) -> Result<(), String> {
-    if w.lines <= budget {
+    if w.lines <= budget && w.lines + w.with_lines <= CACHE_LINES {
         return Ok(());
+    }
+    if w.lines <= budget {
+        return Err(format!(
+            "cluster {name}: its reachable paged code ({} lines) and its fits_with clusters ({} lines) take {} lines, more than the {CACHE_LINES} of the code cache: every pass reloads code; shrink the path or keep code out of it",
+            w.lines,
+            w.with_lines,
+            w.lines + w.with_lines
+        ));
     }
     let first: Vec<String> = w.outside.iter().take(4).map(|o| format!("{} ({} B)", o.0, o.1)).collect();
     Err(format!(
@@ -327,12 +355,13 @@ pub fn check_all(an: &mut Analysis, cfg: &stack::Config) -> Result<(Vec<String>,
         let w = working_set(&fs, &d, &c.name, &c.fits_with);
         let budget = c.budget_lines.unwrap_or(0);
         lines.push(format!(
-            "cluster {}: reachable paged code {} lines of budget {budget} ({} B in it, {} B in its fits_with, {} functions outside)",
+            "cluster {}: reachable paged code {} lines of budget {budget} ({} B in it, {} B in its fits_with, {} functions outside); with its fits_with {} of {CACHE_LINES} cache lines",
             c.name,
             w.lines,
             w.own,
             w.with,
-            w.outside.len()
+            w.outside.len(),
+            w.lines + w.with_lines
         ));
         if let Err(m) = check(&w, &c.name, budget) {
             errors.push(m);
@@ -542,12 +571,14 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     }
     let w = working_set(&after, &d, &name, &fits_with);
     let verdict = format!(
-        "{name}: {} reachable; cluster {} lines; working set {} lines with {} functions outside it and its fits_with ({})",
+        "{name}: {} reachable; cluster {} lines; working set {} lines with {} functions outside it and its fits_with ({}, {} lines: {} of {CACHE_LINES} cache lines)",
         kib(paged_bytes),
         sel.bytes.div_ceil(LINE_SIZE),
         w.lines,
         w.outside.len(),
-        fits_with.join(", ")
+        fits_with.join(", "),
+        w.with_lines,
+        w.lines + w.with_lines
     );
     Ok(verdict)
 }
@@ -649,8 +680,10 @@ mod tests {
         assert_eq!(w.own, 903 + 303);
         assert_eq!(w.with, 2003);
         assert_eq!(w.outside.len(), 2);
-        // 2 lines of the cluster, 2 for `other`, 1 for `loose`.
+        // 2 lines of the cluster, 2 for `other`, 1 for `loose`; `fill`
+        // whole (2 lines) beside them.
         assert_eq!(w.lines, 5);
+        assert_eq!(w.with_lines, 2);
         assert!(check(&w, "io", 5).is_ok());
         let err = check(&w, "io", 4).unwrap_err();
         assert!(err.contains("5 lines, over its budget_lines 4"), "{err}");
@@ -683,6 +716,88 @@ mod tests {
         assert!(at("play-fill") < at("games-io") && at("games-io") < at("dir-walk"));
         assert!(at("dir-walk") < at("flac-frame"));
         assert_eq!(hot[at("flac-frame")].starts_over.as_deref(), Some("mp3-frame"));
+    }
+
+    /// The working set and its `fits_with` clusters must fit the cache,
+    /// whatever `budget_lines` says.
+    #[test]
+    fn working_set_with_its_fits_with_fits_the_cache() {
+        let funcs = vec![f("root", 21_000, true, Some("a")), f("b", 12_000, true, Some("b"))];
+        let e = graph(2, &[(0, 1)]);
+        let d = distances(&e, &[0], &[false; 2]);
+        let w = working_set(&funcs, &d, "a", &["b".to_string()]);
+        assert_eq!((w.lines, w.with_lines), (21, 12));
+        let err = check(&w, "a", 21).unwrap_err();
+        assert!(err.contains("take 33 lines, more than the 32"), "{err}");
+        // 32 fit.
+        let funcs = vec![f("root", 20_000, true, Some("a")), f("b", 12_000, true, Some("b"))];
+        let w = working_set(&funcs, &d, "a", &["b".to_string()]);
+        assert_eq!((w.lines, w.with_lines), (20, 12));
+        assert!(check(&w, "a", 20).is_ok());
+    }
+
+    /// SYN-3 (2026-11-26, the lead on the player, build `8240f128`): MIDI
+    /// playback paged 200–250 % of real time (`status` `syn: pg=248`)
+    /// and every demo song ended `synth: gave up, nothing can play at 288
+    /// … pg=248%`. The render's cluster (`synth-render`, 16 lines) left
+    /// nine functions it calls every 32-sample segment outside it (the
+    /// filter design, `exp2`, pan gains, six drum kinds: 25 lines of
+    /// budget 26, so `stack --check` passed), and it ran with the
+    /// per-piece cluster `synth-midi` (9 lines): 34 lines for a 32-line
+    /// cache, and the outside functions sat on the render's own physical
+    /// lines. The check must fail that working set and pass the one built
+    /// now: the render whole (18 lines), the per-piece code
+    /// (`synth-inner`, 8) and the shared PCM path (`play-pcm`, 5).
+    #[test]
+    fn regress_synth_working_set_over_the_cache() {
+        // Before: the cluster's 16 lines, nine functions outside (a line
+        // each), with synth-midi.
+        let mut funcs = vec![f("render_i16", 16 * 1024 - 3, true, Some("synth-render"))];
+        for i in 0..9 {
+            funcs.push(f(&format!("helper{i}"), 400, true, None));
+        }
+        funcs.push(f("plan_piece", 9 * 1024 - 3, true, Some("synth-midi")));
+        let n = funcs.len();
+        let e = graph(n, &(1..n).map(|i| (0, i)).collect::<Vec<_>>());
+        let d = distances(&e, &[0], &vec![false; n]);
+        let w = working_set(&funcs, &d, "synth-render", &["synth-midi".to_string()]);
+        assert_eq!((w.lines, w.with_lines), (25, 9));
+        let err = check(&w, "synth-render", 26).unwrap_err();
+        assert!(err.contains("take 34 lines, more than the 32"), "{err}");
+        // After: everything the render calls per segment in its cluster,
+        // the per-piece code and the PCM path beside it.
+        let funcs = vec![
+            f("render", 18 * 1024 - 3, true, Some("synth-render")),
+            f("pieces", 8 * 1024 - 3, true, Some("synth-inner")),
+            f("feed", 5 * 1024 - 3, true, Some("play-pcm")),
+        ];
+        let e = graph(3, &[(1, 0), (1, 2)]);
+        let d = distances(&e, &[1], &[false; 3]);
+        let fits = ["synth-inner".to_string(), "play-pcm".to_string()];
+        let w = working_set(&funcs, &d, "synth-render", &fits);
+        assert_eq!((w.lines, w.with_lines), (18, 13));
+        assert!(check(&w, "synth-render", 18).is_ok());
+    }
+
+    /// `hot.toml`: the synth's steady working set is checked and placed —
+    /// `synth-render` has roots (the pieces' loop), runs with the per-piece
+    /// code and the shared PCM path (not with a codec's clusters: a codec
+    /// and the synth never run together), starts on `play-block`'s line
+    /// (after `play-pcm`'s five), and the three fit the cache.
+    #[test]
+    fn hot_toml_synth_is_checked_and_placed() {
+        let hot = rules::load_hot(&root().join("hot.toml"), "firmware").unwrap();
+        let at = |n: &str| hot.iter().position(|c| c.name == n).unwrap();
+        let r = &hot[at("synth-render")];
+        assert!(!r.from.is_empty() && !r.stop.is_empty());
+        assert_eq!(r.fits_with, ["synth-inner", "play-pcm"]);
+        assert!(r.budget_lines.is_some_and(|b| b < CACHE_LINES), "{:?}", r.budget_lines);
+        assert_eq!(r.starts_over.as_deref(), Some("play-block"));
+        assert!(at("mp3-frame") < at("play-pcm") && at("play-pcm") < at("play-block"));
+        assert!(at("flac-frame") < at("synth-render") && at("synth-render") < at("synth-inner"));
+        for c in ["mp3-frame", "flac-frame"] {
+            assert!(hot[at(c)].fits_with.iter().any(|f| f == "play-pcm"), "{c}");
+        }
     }
 
     /// AU-PERF games pieces (2026-11-25): a games card step while an MP3

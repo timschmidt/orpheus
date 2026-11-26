@@ -1525,6 +1525,106 @@ agreed with the cost table.
   `synth-midi` 9 lines (9,058 B; `play_midi`'s poll 7,134 B in its 7-line
   hole), stack margin 5,476 B.
 
+**As built (SYN-3 paging, 2026-11-26): the steady MIDI working set fits
+the code cache.** The lead's run of build `8240f128`: the measurement was
+right (`ratio=` 100–108) and the clock reached 288 MHz, but the pager's
+line loads were **200–250 % of real time** during the render (`pg=248`)
+and every demo song ended `synth: gave up, nothing can play at 288 …`.
+
+* **Cause** (an emulation, below): not the per-piece code alone. The
+  render's cluster held `render_i16` and seven helpers, but nine
+  functions it calls every 32-sample segment were outside it — the filter
+  design (`Svf::set`), `exp2` and `log2`, the pan gains, six drum kinds —
+  and the linker had put them on physical lines **inside** the render's:
+  `exp2` (0x2ada0c) on line 22 with `render_i16`'s +5 KiB, `Svf::set` and
+  the pan gains on 21, cymbal, cowbell, tom on 22–26. Each segment of a
+  filtered voice evicted a render line and loaded it back: 46 loads a
+  piece on line 22 alone. `stack --check` passed (25 of 26 lines), but it
+  ran with `synth-midi` (9 lines): 34 for a 32-line cache. Paging also
+  shortened the pieces (their length follows the measured time), which
+  raised the paging per frame.
+* **How it was measured** (no player): a bare-metal harness of the
+  firmware's per-piece synth work (the plan, the render with the MIDI
+  player's event loop, the measurement; thumbv7em, the firmware's
+  profile: `render_i16` 12,408 B in both) runs the three demo songs whole
+  in an emulator (unicorn, Cortex-M4) and records every executed block
+  per piece; the addresses are mapped by symbol and offset onto the
+  firmware's `layout.json` and replayed through a model of the code cache
+  (32 direct-mapped lines), with the firmware's own per-piece, per-wake
+  (rest, half boundary) and per-outer code counted as whole functions or,
+  for the big polls on a wake, their first line and the line of the call
+  that resumes. Tools in the worker's scratch directory (not committed:
+  Python + unicorn); the method is reproducible from this description. On
+  the old layout "Etude" loaded 96 lines a piece (80 in the render): `pg=`
+  ≈ 240 % render only, 290 % in all — the player's order of magnitude.
+* **The render whole** (`synth-render`, 18 lines, 18,360 B): `render_i16`,
+  the SVF and envelope steps, `Svf::set`, `exp2`, `log2`, the pan gains,
+  kick, snare, hats, clap, cymbal. Physical lines 24–31 and 0–9
+  (`starts_over` `play-block`). The rare drum kinds (tom, rim, cowbell,
+  clave, shaker) and the parser's next event go to `synth-rare` (lines
+  17–23: those of the wake-up and of the PCM path's half-boundary and
+  position code, which run once a piece or less — never the render's,
+  which a segment needs again 32 samples later); a note's start and end,
+  the sequencer and a voice shed to `synth-note`.
+* **The per-piece code** (`synth-inner`, 8 lines, lines 10–17): the
+  playback loop is split. `pieces` (a poll of its own) runs piece after
+  piece — the governor's plan (`Engine::estimate` now out of line: one
+  copy, not one inlined into each of plan and measure; the governor's
+  over-budget, restore and lower-the-clock steps out of line:
+  `plan_piece` 2,856 → 1,300 B), the pace rule's rest, the render
+  (`render_piece`: the MIDI player's event loop, whose parser
+  `MidiPlayer::parse_next` is out of line: most pieces only look at the
+  pending event), the measurement, the DSP chain and the PCM ring — until
+  **4,096 frames** (93 ms) are written or something waits (`attention`: a
+  stop, a player or card request, the player's actions, a fade to pause,
+  a log due). Then the outer part (`play_midi`'s poll, 4,966 B, was 7,146):
+  requests, pause and seek, the floor re-applied (was every piece), the
+  position, the player's tick, chores, logs. A background job (library,
+  art) gets a chore step every 93 ms while a MIDI file plays (was every
+  piece).
+* **The rest** (`pace_rest`) waits on a future of its own
+  (`RestUntil`: the HAL's clock, `atj2157_hal::wake::wake_at` into the
+  time driver's queue) instead of `embassy_time::Timer`, whose poll (in
+  `games-io`, lines 12–13) and `_embassy_time_now` (line 3, the render's)
+  ran on every rest; the time queue's `schedule_wake` (104 B, out of line
+  now, resident by name) and the executor's
+  `__embassy_time_queue_item_from_waker` (60 B, unmangled, so the
+  resident rule for the timer queues had missed it) are resident.
+* **The shared PCM path** (`play-pcm`, 5 lines, lines 19–23): the task's
+  and `run_player`'s polls, the half-boundary code, the per-block writer
+  (`Feeder::run`, `PcmOut::look`, `wrote_half`, `note_as`, before in no
+  cluster and on `mp3-frame`'s lines), the position and the chores'
+  decision. Split off `play-block` (now 10 lines): `mp3-frame` +
+  `play-pcm` + `play-block` + `play-fill` = 11 + 5 + 10 + 6 lines, the
+  codec path as before and without its two per-block conflicts.
+* **The check**: `synth-render` has `from` (the pieces' poll), `stop`
+  (the rare paths above, the open/scan steps, the DSP stages, which the
+  resident `Chain::process` does not run with the default sound) and
+  `budget_lines` 18; `xtask stack --check` now also fails when a
+  cluster's reachable code and its `fits_with` clusters outgrow the 32
+  lines (07 §5.6): 18 + 8 + 5 = 31 of 32
+  (`regress_synth_working_set_over_the_cache`: 25 + 9 = 34 fails).
+* **Model results** (the three demo songs whole, governor on at 288 MHz):
+  line loads a piece 2.3 / 2.3 / 1.8 ("Etude", "Hill Song", "Sound
+  tour"); `pg=` as `status` shows it (the render only) **3.2 / 3.3 /
+  2.4 %**, with the rest of the loop 6.9 / 7.0 / 5.3 %. The rest: the
+  wake-up's lines (play_midi's resume shares line 21 with the half
+  boundary), the outer part every 93 ms, a note's start between segments,
+  the parser. Not modelled: thread mode's own code between pieces (the UI
+  while Now Playing redraws), other RT tasks (the step sampler), the
+  rodata cache.
+* **Bit for bit**: no arithmetic changed (functions out of line, the loop
+  regrouped); the engine, MIDI and governor goldens are unchanged.
+* **Also**: a paused track no longer holds its clock floor
+  (`orpheus_power::governor::{audio_floor, floor_level}`; 02 §5.4): Mid
+  96 MHz on the player with a track resumed paused at start-up; now the
+  floor is released while paused (the governor treats it as nothing
+  playing) and raised again at once on play; a picture's boost is its own
+  flag (before, its end also cleared a playing track's codec floor).
+* **Numbers**: resident 81,652 → 81,812 B (+160, above), .bss 124,240 →
+  124,256 B (the floor's three flags), code pages 125/128, stack margin
+  5,476 B (unchanged).
+
 ## 10. Work packages
 
 * **WP-AU-1 Pipeline core**: rings, pool leases, `ByteSource`, `Decoder`

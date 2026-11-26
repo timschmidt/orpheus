@@ -554,48 +554,11 @@ impl Governor {
         let all = Self::scale(e.total(), self.ratio.max(self.pace));
         let frames = self.frames(all);
         let us = self.piece_us(frames, all.max(self.predict(e.total()).saturating_add(self.page)));
-        let mut p = self.predict(e.lasting()).saturating_add(self.page);
+        let p = self.predict(e.lasting()).saturating_add(self.page);
         self.load = if self.load == 0 { p } else { self.load - self.load / 4 + p / 4 };
         let mut keep = None;
         if self.load > self.pct(BUDGET_PCT) || p > self.pct(HARD_PCT) {
-            self.over = self.over.saturating_add(1);
-            self.calm = 0;
-            // A faster clock first: the lowest step above that fits, else
-            // the top. The firmware switches at once; the next
-            // `set_clock` says what the CPU really runs at.
-            if !self.at_top() {
-                let mut s = self.clk + 1;
-                while s < self.top && p > pct_of(self.rt_at(s), BUDGET_PCT) {
-                    s += 1;
-                }
-                self.clk = s;
-                self.rt = self.rt.max(self.rt_at(s));
-                self.mhz = self.mhz.max(CLOCKS_MHZ.get(usize::from(s)).copied().unwrap_or(1));
-            }
-            let budget = self.pct(BUDGET_PCT);
-            // Shed (only at the top clock) in order until it fits.
-            if self.at_top() && p > budget {
-                for bit in [FX_CHORUS, FX_DELAY, FX_REVERB] {
-                    if p > budget && self.fx_off & bit == 0 && e.running & bit != 0 {
-                        self.fx_off |= bit;
-                        p = p.saturating_sub(self.predict(e.fx_of(bit)));
-                    }
-                }
-                if p > budget {
-                    let lim = self.affordable(e, self.fx(), budget).min(self.limit);
-                    self.limit = lim;
-                    let live = e.n.saturating_sub(e.n_fading);
-                    if live > u32::from(lim) {
-                        keep = Some(lim);
-                        self.shed = self.shed.saturating_add(live - u32::from(lim));
-                        p = self
-                            .predict(e.base + e.fx_of(e.running & self.fx()) + u32::from(lim) * e.per_voice())
-                            .saturating_add(self.page);
-                    }
-                }
-            }
-            // The smoothed cost starts again from what is left.
-            self.load = p;
+            keep = self.over_budget(e, p);
         } else if self.level() != Level::Full {
             self.restore(e, p, frames);
         } else if self.clk > 0 {
@@ -604,7 +567,57 @@ impl Governor {
         Plan { fx: self.fx(), limit: self.limit, keep, frames, us, clock: self.clk }
     }
 
+    /// Over the budget (predicted `p`): a faster clock, else shed; the
+    /// voices to keep, if some must fade out. Out of line, as
+    /// [`Governor::restore`] and [`Governor::lower`]: the steady piece
+    /// runs none of them, and the code a piece runs on the player must fit
+    /// its code cache with the render's (SYN-3, `hot.toml` `synth-inner`).
+    #[inline(never)]
+    fn over_budget(&mut self, e: &Estimate, mut p: u32) -> Option<u8> {
+        let mut keep = None;
+        self.over = self.over.saturating_add(1);
+        self.calm = 0;
+        // A faster clock first: the lowest step above that fits, else
+        // the top. The firmware switches at once; the next
+        // `set_clock` says what the CPU really runs at.
+        if !self.at_top() {
+            let mut s = self.clk + 1;
+            while s < self.top && p > pct_of(self.rt_at(s), BUDGET_PCT) {
+                s += 1;
+            }
+            self.clk = s;
+            self.rt = self.rt.max(self.rt_at(s));
+            self.mhz = self.mhz.max(CLOCKS_MHZ.get(usize::from(s)).copied().unwrap_or(1));
+        }
+        let budget = self.pct(BUDGET_PCT);
+        // Shed (only at the top clock) in order until it fits.
+        if self.at_top() && p > budget {
+            for bit in [FX_CHORUS, FX_DELAY, FX_REVERB] {
+                if p > budget && self.fx_off & bit == 0 && e.running & bit != 0 {
+                    self.fx_off |= bit;
+                    p = p.saturating_sub(self.predict(e.fx_of(bit)));
+                }
+            }
+            if p > budget {
+                let lim = self.affordable(e, self.fx(), budget).min(self.limit);
+                self.limit = lim;
+                let live = e.n.saturating_sub(e.n_fading);
+                if live > u32::from(lim) {
+                    keep = Some(lim);
+                    self.shed = self.shed.saturating_add(live - u32::from(lim));
+                    p = self
+                        .predict(e.base + e.fx_of(e.running & self.fx()) + u32::from(lim) * e.per_voice())
+                        .saturating_add(self.page);
+                }
+            }
+        }
+        // The smoothed cost starts again from what is left.
+        self.load = p;
+        keep
+    }
+
     /// Undo the last step after a calm stretch.
+    #[inline(never)]
     fn restore(&mut self, e: &Estimate, p: u32, frames: u32) {
         let target = self.pct(RESTORE_PCT);
         // The cost with the next step undone, and how long it must fit.
@@ -636,6 +649,7 @@ impl Governor {
 
     /// At full quality: the clock a step down after a calm stretch at
     /// which the cost fits the lower clock with room.
+    #[inline(never)]
     fn lower(&mut self, p: u32, frames: u32) {
         let s = self.clk - 1;
         if p > pct_of(self.rt_at(s), RESTORE_PCT) {

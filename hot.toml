@@ -200,13 +200,15 @@ symbols = [
 #
 # Now the block path is small named functions (fw/firmware/src/audio.rs
 # "the block path") and each codec's `decode` is a function of its own.
-# Three clusters in this order, consecutive (after `steps-sample`):
-# `mp3-frame` + `play-block` + `play-fill` fit the 32 physical lines
-# together (no two of their lines share one: 11 + 15 + 6 as built).
-# `flac-frame` starts on `mp3-frame`'s physical lines (only one decoder
-# runs; `starts_over`, the code window left empty before it), clear of
-# `play-block` and `play-fill` while it is no longer than 32 - (play-block
-# + play-fill) lines. Between them the chores' clusters that run with
+# Four clusters in this order, consecutive (after `steps-sample`):
+# `mp3-frame` + `play-pcm` + `play-block` + `play-fill` fit the 32
+# physical lines together (no two of their lines share one: 11 + 5 + 10 +
+# 6 as built; `play-pcm`, the part a synth source shares, split off
+# `play-block` in SYN-3, 2026-11-26, with the per-block writer and note
+# that were in no cluster). `flac-frame` starts on `mp3-frame`'s
+# physical lines (only one decoder runs; `starts_over`, the code window
+# left empty before it), clear of the other three while it is no longer
+# than 32 - (play-pcm + play-block + play-fill) lines. Between them the chores' clusters that run with
 # `play-fill` while music plays (`games-io`, `dir-walk`; AU-PERF games
 # pieces, 2026-11-25). `fits_with` makes `pagelink` warn when an edit
 # breaks that (`cargo xtask build` prints the warning and each cluster's
@@ -240,7 +242,7 @@ symbols = [
 [[cluster]]
 name = "mp3-frame"
 bins = ["firmware"]
-fits_with = ["play-block", "play-fill"]
+fits_with = ["play-pcm", "play-block", "play-fill"]
 symbols = [
     "<orpheus_codec_mp3::Mp3Decoder as orpheus_audio::decoder::Decoder>::decode",
     "orpheus_codec_mp3::Mp3Decoder>::find",
@@ -250,44 +252,65 @@ symbols = [
     "<firmware::audio::Ring as orpheus_audio::source::ByteSource>::*",
 ]
 
-# Every block and every DAC half: the task's wake-up through the player's
-# futures (each a small poll function of its own, `Apart`), the block
-# (`play_block`: decode, DSP and PCM ring, the looks at the DMA, the
-# position, the refill and chores checks), the wait for room at a half.
-# The dispatcher `AnyDecoder::decode` is inlined into `decode_timed`. The
-# two largest state machines (`run_player`, `play_file`), of which only
-# the resumption runs per wake-up, come last.
+# The playback path a synth source shares with the codecs (SYN-3,
+# 2026-11-26): what every wake-up of the audio task runs (the task's poll,
+# `run_player`'s poll, the waits for room at a half) and every block's PCM
+# path (the writer `Feeder::run` with the frames into the ring, the half's
+# looks, the underrun ledger's note). First of the playback clusters, on
+# physical lines 19–23 after `mp3-frame`: `synth-render` and `synth-inner`
+# (below) take the 27 others, so the synth's whole per-piece code fits the
+# cache. `Feeder::run` and `note_as` were in no cluster (each a line
+# shared with `mp3-frame`'s, two loads every MP3 block).
 [[cluster]]
-name = "play-block"
+name = "play-pcm"
 bins = ["firmware"]
 symbols = [
+    # Every wake-up: the task's poll, `run_player`'s (lines 19–20 run).
     "embassy_executor::raw::TaskStorage<firmware::audio::__audio_task::*>::poll",
-    "firmware::audio::Apart<firmware::audio::player_request::*>::poll",
-    "firmware::audio::Apart<firmware::audio::play_block::*>::poll",
-    "firmware::audio::decode_timed",
-    "orpheus_codecs::AnyDecoder>::decode",
-    "firmware::audio::begin_block",
-    "firmware::audio::after_block",
-    "firmware::audio::chore_due",
-    # Every block while a chore waits for room (`orpheus_audio::chore`).
-    "orpheus_audio::chore::decide",
-    "firmware::audio::need_of",
-    "firmware::audio::reader_check",
+    "firmware::audio::Apart<firmware::audio::run_player::*>::poll",
+    # At a half boundary.
     "firmware::audio::Room as *>::poll",
     "embassy_sync::waitqueue::atomic_waker::AtomicWaker>::register",
-    "firmware::audio::PcmOut>::wrote_half",
     "firmware::audio::PcmOut>::after_half",
-    "firmware::audio::PcmOut>::look",
     "firmware::audio::PcmOut>::headroom",
     "firmware::audio::PcmOut>::reading",
     "firmware::audio::PcmOut>::account",
+    # Every block.
+    "firmware::audio::begin_block",
+    "orpheus_audio::pcm::Feeder>::run::*",
+    "firmware::audio::PcmOut>::look",
+    "firmware::audio::PcmOut>::wrote_half",
     "orpheus_audio::pcm::Book>::*",
+    "firmware::audio::note_as",
     "firmware::audio::note",
+    # The position and the chores' decision: every codec block, every
+    # synth outer loop.
     "firmware::media::Server>::position",
     "orpheus_player::Player>::position",
     "firmware::media::Flow>::merge",
     "firmware::media::player_update::<firmware::audio::*",
-    "firmware::audio::Apart<firmware::audio::run_player::*>::poll",
+    "orpheus_audio::chore::decide",
+]
+
+# Every codec block (the rest of the block path; `play-pcm` above): the
+# task's wake-up through the player's futures (each a small poll function
+# of its own, `Apart`), the block (`play_block`: decode, DSP and PCM ring,
+# the looks at the DMA, the position, the refill and chores checks). The
+# dispatcher `AnyDecoder::decode` is inlined into `decode_timed`. The
+# largest state machine (`play_file`), of which only the resumption runs
+# per wake-up, comes last.
+[[cluster]]
+name = "play-block"
+bins = ["firmware"]
+symbols = [
+    "firmware::audio::Apart<firmware::audio::player_request::*>::poll",
+    "firmware::audio::Apart<firmware::audio::play_block::*>::poll",
+    "firmware::audio::decode_timed",
+    "orpheus_codecs::AnyDecoder>::decode",
+    "firmware::audio::after_block",
+    "firmware::audio::chore_due",
+    "firmware::audio::need_of",
+    "firmware::audio::reader_check",
     "firmware::audio::Apart<firmware::audio::play_file::*>::poll",
     "firmware::audio::play_file::{closure#0}",
 ]
@@ -334,7 +357,7 @@ symbols = [
 # touch; the helpers `open` runs once last, on the lines shared with the
 # audio task's poll (physical line 19).
 [[cluster]]
-# Generated by `cargo xtask hot --name games-io` from the static call graph: 28 patterns, 13626 B (14 lines); 25974 B (26 lines) of paged code are reachable from the roots. Closest to the roots first.
+# Generated by `cargo xtask hot --name games-io` from the static call graph: 27 patterns, 13563 B (14 lines; `__embassy_time_queue_item_from_waker` resident since SYN-3); 25974 B (26 lines) of paged code are reachable from the roots. Closest to the roots first.
 name = "games-io"
 bins = ["firmware"]
 fits_with = ["play-fill", "dir-walk"]
@@ -357,7 +380,6 @@ symbols = [
     "<atj2157_hal::sd::Sd>::wait_ready::{closure#0}", # 387 B, 4 calls from a root
     "<embassy_time::timer::Timer as core::future::future::Future>::poll", # 267 B, 3 calls from a root
     "<embassy_time::timer::Timer>::after", # 107 B, 3 calls from a root
-    "__embassy_time_queue_item_from_waker", # 63 B, 4 calls from a root
     "<orpheus_fs::cache::Cache>::flush_kinds::<yoton_bsp::card::Card>::{closure#0}", # 327 B, 2 calls from a root
     "<orpheus_fs::cache::Cache>::flush_range::<yoton_bsp::card::Card>::{closure#0}", # 277 B, 2 calls from a root
     "<orpheus_fs::volume::Volume<yoton_bsp::card::Card>>::set_dirty_flag::{closure#0}", # 533 B, 1 calls from a root
@@ -402,20 +424,16 @@ symbols = [
     "orpheus_fs::unicode::*",
 ]
 
-# A synth source's block loop (SYN-3, `audio::synth::play_midi`): every
-# render block resumes it (requests, the render call, the governor, the
-# DSP and PCM ring, the chores' checks). Placed in the code window's hole
-# before `flac-frame` (which starts over `mp3-frame`'s physical lines):
-# 7 lines that cost no page. While a synth source plays no codec does, so
-# sharing physical lines with `mp3-frame`'s neighbours costs nothing; it
-# shares 6 with `play-fill` (the MIDI file is read a block every few
-# seconds while it plays: no conflict worth a page).
+# The synth source's cold code (SYN-3): the open, scan and seek steps,
+# the engine's init, a program change's patch install. In the code
+# window's hole before `flac-frame` (physical lines 1–6: no page).
 [[cluster]]
-name = "synth-block"
+name = "synth-cold"
 bins = ["firmware"]
-fits_with = ["synth-render", "synth-midi"]
 symbols = [
-    "firmware::audio::Apart<firmware::audio::synth::play_midi::*>::poll",
+    "<orpheus_midi::player::MidiPlayer>::step",
+    "<orpheus_synth::engine::Engine>::init",
+    "<orpheus_synth::engine::Engine>::set_patch",
 ]
 
 # The FLAC decoder per frame (see above: on `mp3-frame`'s physical lines;
@@ -424,7 +442,7 @@ symbols = [
 [[cluster]]
 name = "flac-frame"
 bins = ["firmware"]
-fits_with = ["play-block", "play-fill"]
+fits_with = ["play-pcm", "play-block", "play-fill"]
 starts_over = "mp3-frame"
 symbols = [
     "<orpheus_codec_flac::FlacDecoder as orpheus_audio::decoder::Decoder>::decode",
@@ -432,78 +450,185 @@ symbols = [
     "orpheus_codec_flac::frame::*",
 ]
 
+# The synth's code that runs only when a song asks for it (SYN-3,
+# 2026-11-26): the drum kinds a General MIDI kit sounds least (each, while
+# it sounds, every 32-sample segment) and the parser's next event (once a
+# piece at most: most pieces only look at the pending event). Right after
+# `flac-frame`, on physical lines 17–23: the parser on the lines of the
+# PCM path's half-boundary and position code (`play-pcm` 21–23, a few
+# times a second), the drums on those of the wake-up (17–20, about once a
+# piece) — never on the render's (24–9), which a segment needs again
+# 32 samples later.
+[[cluster]]
+name = "synth-rare"
+bins = ["firmware"]
+symbols = [
+    "<orpheus_synth::drum::DrumVoice>::tom",
+    "<orpheus_synth::drum::DrumVoice>::rim",
+    "<orpheus_synth::drum::DrumVoice>::cowbell",
+    "<orpheus_synth::drum::DrumVoice>::clave",
+    "<orpheus_synth::drum::DrumVoice>::shaker",
+    "<orpheus_midi::player::MidiPlayer>::parse_next",
+    "<orpheus_midi::smf::Track>::varlen",
+    "<orpheus_midi::smf::Track>::consume",
+    "<orpheus_midi::smf::Track>::need",
+    "<orpheus_midi::timing::Clock>::set_tempo",
+]
+
 # The synthesiser's per-sample code (SYN-3): the render with the voices,
 # oscillators, FM, filter, mix, reverb, chorus and limiter inlined
-# (`Engine::render_i16`, 12 KB), the filter and envelope steps, and the
-# drum kinds a General MIDI kit sounds most (kick, snare, hats, clap).
-# After `flac-frame` it sits on physical lines 17–31 and 0, clear of
-# `synth-block` (1–7); 16 lines, so the two and the PCM path fit the
-# cache together. Outside (per control period or rarer, a line each when
-# they run): the other drum kinds, the filter design, `exp2`, pan gains.
-# Hand-ordered from `cargo xtask hot --name synth-render` (the generated
-# order put rarely used drums first). `budget_lines`: the cluster's 16
-# lines + the 10 reachable functions outside it (`xtask stack --check`).
+# (`Engine::render_i16`, 12 KB), the filter and envelope steps, what a
+# control period calls for every voice (the filter design, `exp2`,
+# `log2`, pan gains) and the drum kinds a General MIDI kit sounds most
+# (kick, snare, hats, clap, cymbals). On the player (2026-11-26, build
+# `8240f128`) paging was 200–250 % of real time: the filter design,
+# `exp2`, pan gains and six drum kinds were outside the cluster, on
+# physical lines inside it, and the two evicted each other every
+# 32-sample segment (an emulation of the demo songs' renders replayed
+# through a model of the cache on that layout: 80 of 96 line loads a
+# piece). Now the render reaches nothing outside this cluster but the
+# rare paths (`stop`: a note's start between segments, the rare drum
+# kinds, the parser, the governor's shedding — each in a cluster of its
+# own, run only when a song asks), and with `synth-inner` and `play-pcm`
+# it takes 31 of the 32 physical lines: lines 24–31 and 0–9,
+# `starts_over` `play-block`, clear of `play-pcm` (19–23) and
+# `synth-inner` (10–17). `budget_lines`: the three together (`xtask stack
+# --check`, which also fails when the cluster and its `fits_with` outgrow
+# the cache's 32 lines; `regress_synth_working_set_over_the_cache`).
 [[cluster]]
 name = "synth-render"
 bins = ["firmware"]
-fits_with = ["synth-block", "synth-midi"]
+fits_with = ["synth-inner", "play-pcm"]
+starts_over = "play-block"
 from = [
-    "*orpheus_synth::engine::Engine>::render_i16",
+    "*firmware::audio::Apart<firmware::audio::synth::pieces::*>::poll",
 ]
 stop = [
     "*orpheus_synth::engine::Engine>::apply",
+    "*orpheus_synth::engine::Engine>::shed",
+    "*orpheus_midi::player::MidiPlayer>::parse_next",
+    "*orpheus_midi::player::MidiPlayer>::install",
+    "*orpheus_synth::drum::DrumVoice>::tom",
+    "*orpheus_synth::drum::DrumVoice>::rim",
+    "*orpheus_synth::drum::DrumVoice>::cowbell",
+    "*orpheus_synth::drum::DrumVoice>::clave",
+    "*orpheus_synth::drum::DrumVoice>::shaker",
+    "*firmware::audio::synth::gov_log",
+    # Not a steady piece's: the open, scan and seek steps (a piece of a
+    # file not yet ready), the sequencer's messages (with events), an
+    # underrun's log line, a key click, a change of the sound settings and
+    # the DSP stages (resident `Chain::process` runs none with the
+    # default sound; with an equaliser on they page as for a codec).
+    "*orpheus_midi::player::MidiPlayer>::step",
+    "*orpheus_midi::seq::Sequencer>::handle",
+    "*orpheus_midi::timing::Clock>::set_tempo",
+    "*firmware::audio::head_log",
+    "*firmware::audio::click_mix::*",
+    "*firmware::media::apply_sound",
+    # A change of the clock step (`synth_floor`'s raise, once in a while).
+    "*firmware::audio::dsp_clock_floor",
+    "*firmware::audio::sound_active",
+    "*orpheus_dsp::chain::*",
+    "*orpheus_dsp::decimate::*",
+    "*orpheus_dsp::dither::*",
+    "*orpheus_dsp::crossfeed::*",
+    "*orpheus_dsp::biquad::*",
+    "*orpheus_dsp::eq::*",
+    "*orpheus_dsp::matrix::*",
+    "*orpheus_dsp::fixed::*",
 ]
-budget_lines = 26
+budget_lines = 18
 symbols = [
     "<orpheus_synth::engine::Engine>::render_i16",
     "<orpheus_synth::filter::Svf>::process",
     "<orpheus_synth::env::Env>::advance",
+    "<orpheus_synth::filter::Svf>::set",
+    "orpheus_dsp::math::exp2",
+    "orpheus_dsp::math::log2",
+    "orpheus_synth::voice::pan_gains",
     "<orpheus_synth::drum::DrumVoice>::kick",
     "<orpheus_synth::drum::DrumVoice>::snare",
     "<orpheus_synth::drum::DrumVoice>::hat",
     "<orpheus_synth::drum::DrumVoice>::clap",
+    "<orpheus_synth::drum::DrumVoice>::cymbal",
 ]
 
-# The synth source's cold code (SYN-3 load governor, 2026-11-26): the
-# open, scan and seek steps, the player's and engine's init, a program
-# change's patch install. Placed after `synth-render` (which ends in
-# physical line 0) to fill lines 1–7 of the window before `synth-midi`,
-# which must start on line 8: what would otherwise be padding.
+# A synth source's per-piece code (SYN-3, 2026-11-26): the pieces' loop
+# (`audio::synth::pieces`, a poll of its own), the governor's plan and
+# measurement, the render call with the MIDI player's event loop
+# (`render_piece`), the pace rule's rest, the look at the pending event,
+# the check whether the outer loop is due, the engine's estimate. Right
+# after `synth-render` (physical lines 10–17), with the governor's steps
+# when over budget or shed (`over_budget`, `restore`, `lower`: every
+# piece of a heavy stretch) and the rest's wake (`atj2157_hal::wake::wake_at`, not
+# `embassy_time::Timer`, whose code in `games-io` and
+# `_embassy_time_now` shared lines 12–13 and 3 with these). The outer loop
+# (`synth-block`: requests, the position, chores; every 4,096 frames or
+# when something waits) and the note path (`synth-note`) are outside.
 [[cluster]]
-name = "synth-cold"
+name = "synth-inner"
 bins = ["firmware"]
+fits_with = ["synth-render", "play-pcm"]
 symbols = [
-    "<orpheus_midi::player::MidiPlayer>::step",
-    "<orpheus_midi::player::MidiPlayer>::init",
-    "<orpheus_synth::engine::Engine>::init",
-    "<orpheus_synth::engine::Engine>::set_patch",
-]
-
-# A synth source's other per-piece code (SYN-3 load governor,
-# 2026-11-26): the governor's plan and measurement with the engine's
-# estimate inlined (`plan_piece`, `after_piece`), the pace rule's rest,
-# the MIDI player's next event (`timed`) and the sequencer's channel
-# messages. On physical lines 8–15, clear of `synth-block` (1–7) and
-# `synth-render` (17–31, 0): before, `timed` sat on line 20 inside the
-# render's lines and `handle` on 23, two line loads (≈ 180 µs each) a
-# piece or more. Not in it: `Engine::apply` (a note's start, 2.8 KB: no
-# room) and the PCM path (`play-block`'s, shared with the codecs).
-[[cluster]]
-name = "synth-midi"
-bins = ["firmware"]
-fits_with = ["synth-block", "synth-render"]
-starts_over = "flac-frame"
-symbols = [
+    "firmware::audio::Apart<firmware::audio::synth::pieces::*>::poll",
     "firmware::audio::synth::plan_piece",
+    "<orpheus_synth::load::Governor>::over_budget",
+    "<orpheus_synth::load::Governor>::restore",
+    "<orpheus_synth::load::Governor>::lower",
+    "firmware::audio::synth::render_piece",
     "firmware::audio::synth::after_piece",
     "firmware::audio::Apart<firmware::audio::synth::pace_rest::*>::poll",
+    "atj2157_hal::wake::wake_at",
+    "<orpheus_synth::load::Governor>::affordable",
     "<orpheus_midi::player::MidiPlayer>::timed",
-    "<orpheus_midi::seq::Sequencer>::handle",
+    "<orpheus_midi::player::MidiPlayer>::flush::<i16>",
     "<orpheus_midi::player::MidiPlayer>::render_any::<i16>::{closure#0}",
-    "<orpheus_midi::player::MidiPlayer>::set_fx_enabled",
+    "<orpheus_synth::engine::Engine>::estimate",
+    "firmware::audio::synth::attention",
+    "embassy_sync::channel::Channel<*, firmware::media::PlayReq, 4>>::is_empty",
+    "embassy_sync::channel::Channel<*, firmware::media::Req, 4>>::is_empty",
     "<orpheus_synth::fx::Reverb>::is_idle",
     "<orpheus_synth::engine::Engine>::active_voices",
     "*orpheus_synth::load::Estimate>::fx_of*",
+]
+
+# A synth source's outer loop (SYN-3, `audio::synth::play_midi`): the
+# open, requests, pause and seek, the position, chores and logs, once
+# every 4,096 frames (93 ms) or when something waits for it. On physical
+# lines 18–22: a wake-up runs its first line (18, no other per-piece
+# code's) and the one that resumes `pieces` (21, the half boundary's).
+[[cluster]]
+name = "synth-block"
+bins = ["firmware"]
+symbols = [
+    "firmware::audio::Apart<firmware::audio::synth::play_midi::*>::poll",
+]
+
+# A note's start or end, a controller (SYN-3): `Engine::apply` with what
+# it calls, the sequencer's channel messages, a voice shed. Between the
+# render's segments when a song's events fall inside a piece; packed so
+# that an event loads a few lines, not one per function.
+[[cluster]]
+name = "synth-note"
+bins = ["firmware"]
+symbols = [
+    "<orpheus_synth::engine::Engine>::apply",
+    "<orpheus_synth::engine::Engine>::note_off",
+    "<orpheus_synth::engine::Engine>::alloc",
+    "<orpheus_synth::voice::Voice>::start",
+    "<orpheus_synth::engine::Engine>::move_to_tail",
+    "<orpheus_synth::engine::Engine>::drum_on",
+    "<orpheus_synth::kit::KitEntry>::decode",
+    "orpheus_synth::engine::drum_offset",
+    "orpheus_synth::engine::hit_offset",
+    "<orpheus_synth::drum::DrumParams>::sanitized",
+    "<orpheus_synth::voice::Voice>::change_note",
+    "<orpheus_synth::voice::Voice>::release",
+    "<orpheus_synth::engine::Part>::unhold",
+    "<orpheus_midi::seq::Sequencer>::handle",
+    "<orpheus_midi::seq::Sequencer>::unhold",
+    "<orpheus_midi::player::MidiPlayer>::install",
+    "<orpheus_synth::engine::Engine>::shed",
 ]
 
 # The paged toy: three functions spread over the generated code, packed

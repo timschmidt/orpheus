@@ -691,6 +691,12 @@ mode is as planned. Built as `orpheus_power::governor` (03 §2.4).
   whatever the load, screen on or off; planned: largest read-ahead.
 * A host test (test look, test session, test mailbox) runs under Automatic
   whatever the owner chose, so a suite's result does not depend on it.
+* **The audio floor** (`governor::audio_floor`, `floor_level`): the
+  track's (codec or synth), at least Mid while the DSP chain works, High
+  while a picture decodes; **none while the track is paused** — the
+  governor then treats it as nothing playing, and the floor is raised
+  again at once on play (2026-11-26: a track resumed paused at start-up
+  held Mid 96 MHz on the player).
 
 **Why steady loads do not race to sleep.** The governor steps once a
 second, far coarser than an audio block, so racing a steady stream means

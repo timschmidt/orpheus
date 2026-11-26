@@ -55,6 +55,11 @@ symbols = [
     "embassy_executor::raw::*",
     "embassy_time_driver::*",
     "embassy_time_queue_utils::*",
+    # The executor's timer-queue item of a waker (unmangled, so not under
+    # `embassy_executor::raw::*`): every timer's wake-up runs it. Paged, it
+    # straddled two lines of `games-io` that the synth's per-piece code
+    # shares (SYN-3, 2026-11-26; 60 B).
+    "__embassy_time_queue_item_from_waker",
     # Builtins (the library is a separate archive; see `files`).
     "memcpy",
     "memset",

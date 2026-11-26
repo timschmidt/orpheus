@@ -35,6 +35,7 @@ pub mod sd;
 pub mod time;
 pub mod uart;
 pub mod usb;
+pub mod wake;
 pub mod wdt;
 
 pub use atj2157_pac as pac;

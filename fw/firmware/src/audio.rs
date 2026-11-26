@@ -250,23 +250,47 @@ pub static WHERE: AtomicU32 = AtomicU32::new(0);
 /// out by [`dsp_clock_floor`].
 static CODEC_FLOOR: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
+/// The DSP chain works (the last [`dsp_clock_floor`]'s argument).
+static DSP_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// A picture decodes (the card task, [`boost`]).
+static BOOST: AtomicBool = AtomicBool::new(false);
+/// The loaded track is paused (`pause` until `resumed`): its floor is
+/// released and the governor treats it as nothing playing
+/// (`orpheus_power::governor::{audio_floor, floor_level}`; 2026-11-26).
+pub static PAUSED: AtomicBool = AtomicBool::new(false);
+
 /// Apply the clock floor (`CODEC_FLOOR`: 0 Base, 1 Mid, 2 High, 3 Turbo,
 /// 4 Max), the codec's or the synth's, raised to Mid while the DSP chain
-/// works; the level is raised here at once (from the RT task; not in
-/// Battery saver, `crate::raise_to_floor`) and the governor in Automatic
-/// never goes below it.
+/// works, none while the track is paused, High while a picture decodes
+/// (`orpheus_power::governor::audio_floor`); the level is raised here at
+/// once (from the RT task; not in Battery saver, `crate::raise_to_floor`)
+/// and the governor in Automatic never goes below it.
 #[inline(never)]
 fn dsp_clock_floor(dsp_active: bool) {
-    let floor = CODEC_FLOOR.load(Ordering::Relaxed).max(u8::from(dsp_active));
+    DSP_ACTIVE.store(dsp_active, Ordering::Relaxed);
+    let floor = orpheus_power::governor::audio_floor(
+        CODEC_FLOOR.load(Ordering::Relaxed),
+        dsp_active,
+        PAUSED.load(Ordering::Relaxed),
+        BOOST.load(Ordering::Relaxed),
+    );
     crate::CLOCK_FLOOR.store(floor, Ordering::Relaxed);
     crate::raise_to_floor(floor);
 }
 
-/// Clock floor High while the card task decodes a picture (no track is
-/// loaded then; `play_file` sets the codec's floor when a track starts).
+/// The track paused (`true`) or playing again: its floor released, or
+/// back at once.
+fn set_paused(on: bool) {
+    PAUSED.store(on, Ordering::Relaxed);
+    dsp_clock_floor(DSP_ACTIVE.load(Ordering::Relaxed));
+}
+
+/// Clock floor High while the card task decodes a picture, whatever the
+/// track does (before, the end of a picture also cleared a playing
+/// track's codec floor).
 pub(crate) fn boost(on: bool) {
-    CODEC_FLOOR.store(if on { 2 } else { 0 }, Ordering::Relaxed);
-    dsp_clock_floor(false);
+    BOOST.store(on, Ordering::Relaxed);
+    dsp_clock_floor(DSP_ACTIVE.load(Ordering::Relaxed));
 }
 
 fn sound_active() -> bool {
@@ -1714,6 +1738,7 @@ fn pause_fades(b: &mut Blk, out: &PcmOut, chain: &mut orpheus_dsp::Chain) -> boo
 fn resumed(b: &mut Blk, chain: &mut orpheus_dsp::Chain) {
     if b.held {
         b.held = false;
+        set_paused(false);
         b.last_tick = time::now_us();
         chain.end_pause(media::opts() & media::opt::FADE != 0);
         media::player_update(|p| p.source = Source::Playing);
@@ -1985,6 +2010,7 @@ async fn pause(
 ) {
     if !b.held {
         b.held = true;
+        set_paused(true);
         // Faded out: the faded end plays out first.
         let faded = core::mem::take(&mut b.fading);
         if faded {
@@ -2397,6 +2423,7 @@ async fn play_file(
         }
     }
     PLAYING.store(true, Ordering::Relaxed);
+    PAUSED.store(false, Ordering::Relaxed);
     STOP.store(false, Ordering::Relaxed);
     let t0 = time::now_us();
     let mut b = Blk {
@@ -2538,6 +2565,7 @@ async fn play_file(
         dsp_clock_floor(false);
     } else {
         PLAYING.store(false, Ordering::Relaxed);
+        PAUSED.store(false, Ordering::Relaxed);
         CODEC_FLOOR.store(0, Ordering::Relaxed);
         dsp_clock_floor(false);
     }
@@ -2714,6 +2742,7 @@ async fn run_player(
     ring.file = None;
     ring.shown = None;
     PLAYING.store(false, Ordering::Relaxed);
+    PAUSED.store(false, Ordering::Relaxed);
     CODEC_FLOOR.store(0, Ordering::Relaxed);
     dsp_clock_floor(false);
     STOP.store(false, Ordering::Relaxed);
