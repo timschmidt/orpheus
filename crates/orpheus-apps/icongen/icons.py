@@ -208,6 +208,22 @@ def books():
     return im
 
 
+def sequencer():
+    """A step grid: four steps of three tracks, some lit, the playhead
+    over the third."""
+    im, d = canvas()
+    lit = {(0, 0), (2, 0), (1, 1), (3, 1), (0, 2), (2, 2)}
+    for c in range(4):
+        for r in range(3):
+            x0, y0 = 2 + c * 5, 7 + r * 5
+            if (c, r) in lit:
+                d.rectangle([p(x0, y0), p(x0 + 4, y0 + 4)], fill=255)
+            else:
+                d.rectangle([p(x0 + 1, y0 + 1.5), p(x0 + 3, y0 + 2.5)], fill=255)
+    d.polygon([p(12, 1.5), p(18, 1.5), p(15, 4.5)], fill=255)
+    return im
+
+
 def warning():
     im, d = canvas()
     d.polygon([p(12, 2), p(22.5, 21), p(1.5, 21)], fill=255)
@@ -270,6 +286,7 @@ ICONS = [
     ("POWER", power),
     ("LYRE", lyre),
     ("BOOKS", books),
+    ("SEQUENCER", sequencer),
 ]
 
 

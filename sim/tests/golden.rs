@@ -172,6 +172,48 @@ fn media_cases(add: &mut dyn FnMut(String, String)) {
     drive_cases(add);
     games_cases(add);
     books_cases(add);
+    seq_cases(add);
+}
+
+/// M17 Sequencer (SEQ-1): the project list, the grid (empty, the demo
+/// beat, the cursor, a page of a 32-step pattern, playing with the
+/// playhead, its menu), transport, step, track and mixer, over the
+/// simulator's Sequencer back end (`sim/src/seq.rs`; the demo project
+/// "Night Bus" written by `set:seqdemo=1`). Sequencer strings are English
+/// in every language until the packs have them: Dark and Light, two in
+/// Amber.
+fn seq_cases(add: &mut dyn FnMut(String, String)) {
+    let list = "set:seq=on set:seqdemo=1 goto:Sequencer wait:50 expect-screen:Sequencer";
+    let grid = format!("{list} down ok wait:50 expect-screen:SeqGrid");
+    let journeys: &[(&str, String)] = &[
+        ("home", "set:seq=on prev*2".into()),
+        ("list", list.into()),
+        ("list_menu", format!("{list} down menu")),
+        ("new", format!("{list} ok wait:50 expect-screen:SeqGrid")),
+        ("new_steps", format!("{list} ok wait:50 ok next*4 ok next*4 ok next*4 ok down ok")),
+        ("grid", grid.clone()),
+        ("grid_cursor", format!("{grid} next*5 down*3")),
+        ("grid_toggle", format!("{grid} next*2 ok down ok")),
+        ("grid_page2", format!("{grid} menu down*4 ok menu down*4 ok hold:next:600")),
+        ("grid_playing", format!("{grid} menu ok wait:1230")),
+        ("grid_menu", format!("{grid} menu")),
+        ("transport", format!("{grid} menu down ok wait:50 expect-screen:SeqTransport")),
+        ("transport_more", format!("{grid} menu down ok wait:50 down*7")),
+        ("step", format!("{grid} next*4 down hold:ok wait:50 expect-screen:SeqStep")),
+        ("step_edited", format!("{grid} hold:ok wait:50 down next*3 down next down next*2 down next*6")),
+        ("track", format!("{grid} down*3 menu down*3 ok wait:50 expect-screen:SeqTrack")),
+        ("mixer", format!("{grid} menu down*2 ok wait:50 down ok down hold:ok expect-screen:SeqMixer")),
+        ("muted_grid", format!("{grid} menu down*2 ok wait:50 down ok down hold:ok back wait:50")),
+    ];
+    for t in ["dark", "light"] {
+        for (name, script) in journeys {
+            add(format!("seq_{name}_{t}"), format!("@apps theme:{t} {script}"));
+        }
+    }
+    for name in ["grid", "transport"] {
+        let script = &journeys.iter().find(|(n, _)| *n == name).expect("journey").1;
+        add(format!("seq_{name}_amber"), format!("@apps theme:amber {script}"));
+    }
 }
 
 /// M15 Books (BOOK-1, BOOK-2): the library, the reader in each format and

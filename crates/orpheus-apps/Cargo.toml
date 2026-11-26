@@ -20,6 +20,7 @@ orpheus-update = { path = "../orpheus-update" }
 orpheus-games = { path = "../orpheus-games", optional = true }
 orpheus-fs = { path = "../orpheus-fs", optional = true }
 orpheus-books = { path = "../orpheus-books", optional = true }
+orpheus-seq = { path = "../orpheus-seq", optional = true }
 
 [dev-dependencies]
 orpheus-fs = { path = "../orpheus-fs", features = ["std"] }
@@ -49,6 +50,11 @@ books = ["dep:orpheus-books", "orpheus-ui/book-fonts"]
 # Files and the library. On in the simulator (which plays them through
 # `orpheus-midi`); off in the firmware until SYN-3 plays them there.
 midi = []
+# M17 Sequencer (SEQ-1, 05 §7.16): the Sequencer app (project list, grid,
+# transport, step, track and mixer screens) and `SeqService` over the
+# `orpheus-seq` model. On in the simulator and the browser build; off in
+# the firmware until SYN-3 puts the synth on the player.
+seq = ["dep:orpheus-seq"]
 
 [lints]
 workspace = true

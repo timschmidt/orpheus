@@ -1,7 +1,8 @@
 //! Home (05 §6.2): a 4 × 3 grid of 32 × 32 cells with 24 × 24 icons; the
 //! focused cell is an accent rounded square. The strip names the focused
 //! app, or shows the mini-player (the name then appears as a 1 s toast).
-//! More than twelve apps (Books, M15, with Games) make a fourth row: the
+//! More than twelve apps (Books, M15, and the Sequencer, M17, with Games)
+//! make a fourth row: the
 //! grid scrolls by rows to keep the focused cell in view.
 
 use orpheus_ui::event::{Event, Key, KeyPhase, UiEvent};
@@ -56,14 +57,14 @@ impl HomeScreen {
     }
 
     /// Cells of the whole grid: twelve, or whole rows for more apps (only
-    /// Books makes more than twelve: without it, the constant, so the
-    /// firmware's Home code is what it was).
+    /// Books or the Sequencer make more than twelve: without them, the
+    /// constant, so the firmware's Home code is what it was).
     fn cells(&self) -> usize {
-        #[cfg(feature = "books")]
+        #[cfg(any(feature = "books", feature = "seq"))]
         {
             usize::from(self.n).div_ceil(COLS).max(3) * COLS
         }
-        #[cfg(not(feature = "books"))]
+        #[cfg(not(any(feature = "books", feature = "seq")))]
         {
             CELLS
         }
@@ -71,11 +72,11 @@ impl HomeScreen {
 
     /// The first row shown: the focused cell in view.
     fn top_row(&self) -> u8 {
-        #[cfg(feature = "books")]
+        #[cfg(any(feature = "books", feature = "seq"))]
         {
             (self.focus / COLS as u8).saturating_sub(2)
         }
-        #[cfg(not(feature = "books"))]
+        #[cfg(not(any(feature = "books", feature = "seq")))]
         {
             0
         }
@@ -177,6 +178,14 @@ impl<S: Services + ?Sized> Screen<S> for HomeScreen {
                 if app == App::Books {
                     return match cx.svc.card() {
                         CardState::Ready => Nav::Push(super::BOOKS, Arg(0)),
+                        CardState::Unreadable => Nav::Push(NOTICE, Arg(Notice::CardUnreadable.arg())),
+                        _ => Nav::Push(NOTICE, Arg(Notice::NoCard.arg())),
+                    };
+                }
+                #[cfg(feature = "seq")]
+                if app == App::Sequencer {
+                    return match cx.svc.card() {
+                        CardState::Ready => Nav::Push(super::SEQ, Arg(0)),
                         CardState::Unreadable => Nav::Push(NOTICE, Arg(Notice::CardUnreadable.arg())),
                         _ => Nav::Push(NOTICE, Arg(Notice::NoCard.arg())),
                     };

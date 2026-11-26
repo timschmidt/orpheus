@@ -1231,6 +1231,15 @@ pub trait BooksPart {}
 #[cfg(not(feature = "books"))]
 impl<T: ?Sized> BooksPart for T {}
 
+/// The Sequencer's service (M17) with the `seq` feature; without it, a
+/// part every type has.
+#[cfg(feature = "seq")]
+pub use crate::seq::SeqService as SeqPart;
+#[cfg(not(feature = "seq"))]
+pub trait SeqPart {}
+#[cfg(not(feature = "seq"))]
+impl<T: ?Sized> SeqPart for T {}
+
 /// Everything the apps need. Implemented automatically for any type with
 /// all the parts; the toolkit's `System` (status bar, volume, mini-player)
 /// can be implemented with [`status`], [`mini_player`] and
@@ -1259,6 +1268,7 @@ pub trait Services:
     + UpdateService
     + GamesPart
     + BooksPart
+    + SeqPart
 {
 }
 
@@ -1286,6 +1296,7 @@ impl<T> Services for T where
         + UpdateService
         + GamesPart
         + BooksPart
+        + SeqPart
 {
 }
 
@@ -1623,6 +1634,8 @@ pub mod other {
     pub const GAMES: u16 = 9;
     /// Books: card work changed the library or the open book.
     pub const BOOKS: u16 = 10;
+    /// Sequencer: a card request was answered (the list, the open project).
+    pub const SEQ: u16 = 11;
 }
 
 /// Browser order (Files menu › Sort).

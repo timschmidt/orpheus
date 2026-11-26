@@ -24,6 +24,7 @@
 //! | `goto:Library` | push a screen directly |
 //! | `set:drivehost=1`, `set:drivewrite=8` | a computer uses the USB Drive (reads it all; writes 8 blocks) |
 //! | `expect-typed:287082↵` | fail unless the fake computer on the USB keyboard received this (`↵` = Enter) |
+//! | `set:seq=on`, `set:seqdemo=1`, `set:seqcapture=on` | the Sequencer on Home, the demo project on the card, keep its audio (`seq.rs`) |
 //! | `set:games=off` | the Games app off Home (M14; on by default, as on the player) |
 //! | `set:gameseed=7`, `set:tiles=1.2.3…`, `set:blocksrows=12`, `set:solnear=4`, `set:gamesio=on` | Games: next seed, a 4096 board, a Blocks stack, an almost won Solitaire game, the firmware's deferred card queue (`games.rs`) |
 
@@ -42,6 +43,7 @@ pub mod packs;
 pub mod pictures;
 pub mod radio;
 pub mod recorder;
+pub mod seq;
 pub mod steps;
 pub mod system;
 pub mod update;

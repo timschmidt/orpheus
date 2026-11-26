@@ -18,6 +18,8 @@ pub mod icons;
 #[cfg(test)]
 mod id_tests;
 pub mod screens;
+#[cfg(feature = "seq")]
+pub mod seq;
 pub mod services;
 pub mod settings;
 pub mod strings;
@@ -59,11 +61,18 @@ pub enum App {
     /// M15 (05 §7.15, BOOK-1). After Games; not on the player yet.
     #[cfg(feature = "books")]
     Books,
+    /// M17 (05 §7.16, SEQ-1). After Books; not on the player yet (the
+    /// synth is not, SYN-3).
+    #[cfg(feature = "seq")]
+    Sequencer,
 }
 
 impl App {
     /// How many apps there are.
-    pub const COUNT: usize = 11 + cfg!(feature = "games") as usize + cfg!(feature = "books") as usize;
+    pub const COUNT: usize = 11
+        + cfg!(feature = "games") as usize
+        + cfg!(feature = "books") as usize
+        + cfg!(feature = "seq") as usize;
 
     pub const ALL: [App; App::COUNT] = [
         App::Music,
@@ -81,6 +90,8 @@ impl App {
         App::Games,
         #[cfg(feature = "books")]
         App::Books,
+        #[cfg(feature = "seq")]
+        App::Sequencer,
     ];
 
     /// Home's grid order: [`App::ALL`] with Settings last (Prev on Home's
@@ -100,6 +111,8 @@ impl App {
         App::Games,
         #[cfg(feature = "books")]
         App::Books,
+        #[cfg(feature = "seq")]
+        App::Sequencer,
         App::Settings,
     ];
 
@@ -121,6 +134,8 @@ impl App {
             App::Games => Str::AppGames,
             #[cfg(feature = "books")]
             App::Books => Str::AppBooks,
+            #[cfg(feature = "seq")]
+            App::Sequencer => Str::AppSequencer,
         }
     }
 
@@ -142,6 +157,8 @@ impl App {
             App::Games => &icons::GAMES,
             #[cfg(feature = "books")]
             App::Books => &icons::BOOKS,
+            #[cfg(feature = "seq")]
+            App::Sequencer => &icons::SEQUENCER,
         }
     }
 
@@ -174,6 +191,9 @@ impl App {
             // Not in the firmware yet (BOOK-1: the feature is off there).
             #[cfg(feature = "books")]
             App::Books => false,
+            // Not in the firmware yet (SEQ-1: no synth on the player).
+            #[cfg(feature = "seq")]
+            App::Sequencer => false,
         }
     }
 
@@ -201,6 +221,10 @@ mod tests {
         for a in App::ALL {
             #[cfg(feature = "books")]
             if a == App::Books {
+                continue;
+            }
+            #[cfg(feature = "seq")]
+            if a == App::Sequencer {
                 continue;
             }
             assert!(a.on_player(), "{a:?} missing from the player's Home");
