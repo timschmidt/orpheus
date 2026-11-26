@@ -166,6 +166,21 @@ fn session_reply_ok(r: &str) -> bool {
     r.starts_with("test-session on")
 }
 
+/// Whether a `settings test-session` reply says the settings store is not
+/// mounted (`store=none`): the player then runs on defaults, and tests
+/// would pass against the wrong settings (2026-11-26).
+pub fn store_unmounted(r: &str) -> bool {
+    r.contains(" store=none")
+}
+
+/// Ask the player whether its settings store is mounted (`None`: no
+/// answer or no such report in this firmware).
+pub fn store_mounted(p: &mut dyn Player) -> Option<bool> {
+    let re = regex::Regex::new("^test-session").ok()?;
+    let r = player::command(p, "settings test-session", Some(&re), 3000).ok()?;
+    r.contains(" store=").then(|| !store_unmounted(&r))
+}
+
 /// What an oracle found.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -731,6 +746,14 @@ pub fn cmd(args: &mut Args) -> Result<String> {
 mod tests {
     /// Regression (2026-11-25): `fuzz-ui --settings` changed the owner's
     /// stored settings through the menus; it now refuses to run unless the
+    /// 2026-11-26: a boot that did not mount the settings store ran the
+    /// whole suite on defaults and passed; the reply now fails it.
+    #[test]
+    fn regress_suite_sees_an_unmounted_settings_store() {
+        assert!(store_unmounted("test-session off held=0 store=none keys=0 crc=00"));
+        assert!(!store_unmounted("test-session on held=0 store=ok keys=25 crc=acff8170"));
+    }
+
     /// firmware confirms its RAM-only settings session.
     #[test]
     fn regress_settings_fuzzing_requires_the_ram_only_session() {

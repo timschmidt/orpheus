@@ -157,6 +157,26 @@ impl<F: Nor, const N: usize> Store<F, N> {
         Ok(st)
     }
 
+    /// [`mount`](Self::mount), tried up to `tries` times with a fresh
+    /// driver from `make`: a NOR read error at boot left the player on
+    /// default settings until the next restart (2026-11-26: `store=none`
+    /// once, the owner's settings intact in NOR and mounted on the next
+    /// boot). A read error never formats or writes anything. Returns the
+    /// store and the number of failed tries before it.
+    pub async fn mount_retrying(
+        mut make: impl FnMut() -> F,
+        tries: u8,
+    ) -> Result<(Self, u8), Error<F::Error>> {
+        let mut failed = 0u8;
+        loop {
+            match Self::mount(make()).await {
+                Ok(s) => return Ok((s, failed)),
+                Err(e) if failed.saturating_add(1) >= tries.max(1) => return Err(e),
+                Err(_) => failed += 1,
+            }
+        }
+    }
+
     async fn format_sector(&mut self, s: usize, seq: u32) -> Result<(), Error<F::Error>> {
         let base = s as u32 * SECTOR;
         self.nor.erase(base).await?;
@@ -395,6 +415,8 @@ mod tests {
         mem: Vec<u8>,
         budget: Option<u32>,
         ops: u32,
+        /// Reads that fail before reads work (shared across clones).
+        fail_reads: std::rc::Rc<core::cell::Cell<u32>>,
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -402,7 +424,12 @@ mod tests {
 
     impl SimNor {
         fn new(sectors: usize) -> Self {
-            Self { mem: vec![0xFF; sectors * SECTOR as usize], budget: None, ops: 0 }
+            Self {
+                mem: vec![0xFF; sectors * SECTOR as usize],
+                budget: None,
+                ops: 0,
+                fail_reads: std::rc::Rc::new(core::cell::Cell::new(0)),
+            }
         }
         fn tick(&mut self) -> Result<bool, Cut> {
             self.ops += 1;
@@ -417,6 +444,10 @@ mod tests {
     impl Nor for SimNor {
         type Error = Cut;
         async fn read(&mut self, off: u32, buf: &mut [u8]) -> Result<(), Cut> {
+            if self.fail_reads.get() > 0 {
+                self.fail_reads.set(self.fail_reads.get() - 1);
+                return Err(Cut);
+            }
             let o = off as usize;
             buf.copy_from_slice(&self.mem[o..o + buf.len()]);
             Ok(())
@@ -444,6 +475,27 @@ mod tests {
     fn get(s: &mut S, k: u16) -> Option<Vec<u8>> {
         let mut b = [0u8; MAX_VALUE];
         block_on(s.get(k, &mut b)).unwrap().map(|n| b[..n].to_vec())
+    }
+
+    /// 2026-11-26: one NOR read error at boot left the player on default
+    /// settings (`store=none`); the mount is retried with a fresh driver
+    /// and the stored values come back, and nothing is erased.
+    #[test]
+    fn regress_mount_survives_a_read_error() {
+        let mut nor = SimNor::new(4);
+        {
+            let mut s = block_on(S::mount(nor.clone())).unwrap();
+            block_on(s.set(0x0701, &[1, 0])).unwrap();
+            nor = s.nor.clone();
+        }
+        let erases_before = nor.ops;
+        nor.fail_reads.set(1);
+        let (mut s, failed) = block_on(S::mount_retrying(|| nor.clone(), 3)).unwrap();
+        assert_eq!(failed, 1);
+        assert_eq!(get(&mut s, 0x0701), Some(vec![1, 0]));
+        assert_eq!(s.nor.ops, erases_before, "a retried mount wrote to NOR");
+        nor.fail_reads.set(5);
+        assert!(block_on(S::mount_retrying(|| nor.clone(), 3)).is_err());
     }
 
     #[test]

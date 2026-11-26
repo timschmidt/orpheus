@@ -77,6 +77,29 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-26 — Brightness merged; hex keys; settings store mount retried (lead)
+
+* Merged Brightness (`777579cf`: stock levels 1–11, default 6 = duty 8,
+  new key 0x030D, 0x0301 retired; alert flash capped at 15; stop/start
+  duty writes VERBATIM). Suite on it: the new `settings_brightness`
+  journey failed — the firmware's test-command parser took only lower-case
+  hex and refused `settings test-set 0x030D` (`e815359e`:
+  `orpheus_proto::num::parse`, `regress_upper_case_hex_keys_parse`). On
+  the player: `bl=8 → 3 → 15 → 8`, passes.
+* **Settings store not mounted once**: the full suite on `e815359e` passed
+  23/23 but `settings changed` came back empty — the boot after the
+  brightness run reported `store=none keys=0`: `Store::mount` fails only
+  on a NOR read error; nothing was written (with no store the firmware
+  writes no settings). After a plain reboot: `store=ok keys=25` and the
+  owner's settings back (`701=1 d50=10470`). Fix: `Store::mount_retrying`
+  (3 tries, fresh driver; never writes on a read error;
+  `regress_mount_survives_a_read_error`), a log line when it needed
+  retries or failed, and the suite fails on `store=none`
+  (`regress_suite_sees_an_unmounted_settings_store`). Open: the read
+  error's cause (once in many boots).
+* Settings coverage: 3 settings without an effect (Speed hidden, Wallpaper,
+  Monitor).
+
 ### 2026-11-26 — VER-13 follow-up: Brightness on the stock levels, alert flash capped at 15 (worker, no hardware)
 
 * **Brightness works** (U-PWM-3): `orpheus_power::backlight` holds the

@@ -804,6 +804,12 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     if !super::fuzz::session_on(p)? {
         log("   note: this firmware has no settings test session; journeys must not change settings");
     }
+    if super::fuzz::store_mounted(p) == Some(false) {
+        notes.push(
+            "FAIL: the player's settings store is not mounted (store=none): it runs on defaults; restart it and run again"
+                .into(),
+        );
+    }
     let mut results = Vec::new();
     for j in &js {
         log(&format!("== suite/{}", j.name));

@@ -794,7 +794,22 @@ fn new_fw() -> &'static mut Fw {
 fn mount_store() -> &'static mut Option<Store<NorRegion, 4>> {
     // SAFETY: called once; the UI task is the only user.
     let slot = unsafe { &mut *(&raw mut STORE_CELL) };
-    *slot = embassy_futures::block_on(Store::<NorRegion, 4>::mount(NorRegion::settings())).ok();
+    // A NOR read error at boot must not leave the player on defaults
+    // (2026-11-26: `store=none` once): retried, and logged.
+    let r = embassy_futures::block_on(Store::<NorRegion, 4>::mount_retrying(NorRegion::settings, 3));
+    let mut l = atj2157_hal::log::LineBuf::new();
+    match &r {
+        Ok((_, 0)) => {}
+        Ok((_, n)) => {
+            l.push_str("settings: store mounted after ").push_u32(u32::from(*n)).push_str(" read errors");
+            l.emit();
+        }
+        Err(_) => {
+            l.push_str("settings: store not mounted (read errors): defaults this start");
+            l.emit();
+        }
+    }
+    *slot = r.ok().map(|(s, _)| s);
     slot
 }
 
