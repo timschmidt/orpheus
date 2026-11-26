@@ -79,6 +79,27 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-26 — MIDI nearly clean on the player (lead)
+
+* Merged `e1a0dc7c` (budget follows the PCM ring; the main loop off the
+  synth's cache lines; the USB supervisor without its 20 ms timer; rest
+  margin 4 ms). `dev backup-verify` ok. On the player (`e1a0dc7c`):
+  * Update path after the USB-supervisor change: two `dev update`s (B → A
+    and A → B with the same build), each ≈ 40 s, `update: usb installed`,
+    store intact; `dev reboot` back in ≈ 3 s.
+  * `playdir /.orpheus/test/suite/midi` (Automatic, cable, test look):
+    **one underrun event in the whole run** (`ub=synth:rest:5ms` near
+    Etude's end; Hill Song `underruns=2`, Sound tour 0) — was 18/3/9
+    before this change and 28/15/14 two rounds ago. `cut=` ≈ 80 % of
+    `rests=` (was 50 %); `late=` 1.0–2.6 ms; `pg=` 0–6 %; pager loads
+    during Etude 1,570/s (was 2,641/s); UI ≈ 5 loops/s, busy ≈ 6 %.
+    Hill Song sheds at 288 (`lvl=3/3`, `vlim` 4–8); Sound tour mostly at
+    full quality with the clock 192 ↔ 288; all three to the end; Base
+    after.
+* Open (worker's report): the wake-up path still shares two lines with
+  per-piece code (≈ 4 line loads per wake-up); Now Playing's 33 ms tick is
+  the largest thread-mode job.
+
 ### 2026-11-26 — SYN-3: thread mode's line loads; a budget that follows the PCM ring; the main loop off the synth's lines; no 20 ms USB timer (worker, no hardware)
 
 The lead's run of `b694ac61` (Automatic, cable, test look on, `playdir
