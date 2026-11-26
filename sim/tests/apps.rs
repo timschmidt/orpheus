@@ -34,6 +34,11 @@ fn walk_every_settings_group() {
                     if s.shell.dialog_open() {
                         run(&mut s, "back");
                     }
+                    // Rotate turned on swaps the keys the walk relies on:
+                    // OK (not swapped) on the same row turns it off again.
+                    if s.sys.settings.get(orpheus_apps::settings::id::ROTATE) != 0 {
+                        run(&mut s, "ok");
+                    }
                 }
                 "Choice" | "Slider" | "Picker" | "Info" | "HomeApps" | "Notice" | "UpdateFirmware" => {
                     run(&mut s, "back");

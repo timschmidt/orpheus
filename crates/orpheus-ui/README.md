@@ -211,6 +211,12 @@ it in place at random offsets (U-NOR-3) needs the player and is not checked.
 * Key lock (UI-2): with the keys locked, any non-allowed key gives
   `Gate::LockNotice` (screen on or off); `Gate::Wake` is only for a screen
   that went dark without locking.
+* Added in VER-13: `Gate::Transport` (OK/Next/Prev while locked with
+  Keys when locked = Volume and transport: `System::transport`, never the
+  screen), `ScreenTimer` + `Timeouts` (backlight timeout, lock delay,
+  screen saver; `KeyGate::saver`, the shell draws `System::saver_clock`),
+  `System::animations` (`Gfx::motion`: marquees at rest when false),
+  `gfx::turn_band` / `rotated_band` (the 180° panel).
 * Added in UI-2: `Icon2` + `Gfx::icon2` (2-bit icons), `widgets::misc::
   draw_slider`, `Item::wide_value` (information rows), `UiRequests::toast_for`
   and `invalidate_all`, `StrBuf::push_str_or_ellipsis`, and line-start rules

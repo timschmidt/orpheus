@@ -1385,6 +1385,22 @@ matrix, measured like code coverage.
   player alone shows and no read-only command reports yet (the applied
   Sound, the clock level, the ADC gain, auto-off, the step task, the
   library's code page) are `uncovered` with that reason.
+* **Display, Power, Date & time, USB (VER-13 follow-up, 2026-11-26).**
+  Backlight timeout, Lock delay, Screen saver, Animations, Rotate, Power
+  mode, Keys when locked, Time zone, Correction, Set from RDS, Read-only
+  card and Developer channel have their effects (05 §6.3, 06 §2.5, §5.3).
+  The simulator holds the screen timers by default, as the firmware does
+  under the test look (`set:timers=run` runs them); the matrix compares
+  what the panel shows (`Sim::panel`, turned when rotated) and, for
+  `usb-host`, also `HostServices::usb_offer` (developer interface,
+  write-protected card). Device journeys `settings_screen_timers` and
+  `settings_screen_saver` read `ui top` (`screen=`, `locked=`, new
+  `saver=`) through the RAM-only session; a session's `test-set` of 0x0302,
+  0x0303 or 0x0307 off its default arms the timers under the look, setting
+  it back holds them again with the screen on and the keys free. The
+  session refuses the Developer channel (host test). Brightness (no stock
+  duty values, U-PWM-3) and Wallpaper (Pictures › Set as wallpaper not
+  built) stay `gap`.
 
 ## 6. Milestone gate (run before declaring any work package done)
 

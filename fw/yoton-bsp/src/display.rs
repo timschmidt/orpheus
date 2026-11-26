@@ -111,6 +111,19 @@ impl Display {
         self.lcm.blit(start, (y1 - y0) * WIDTH * 2, WIDTH, y1 - y0).await;
     }
 
+    /// Send rows `y0..y1` of the frame buffer to panel rows `py0..` (the
+    /// display turned by 180°: the caller has turned the band,
+    /// `orpheus_ui::gfx::turn_band`).
+    pub async fn flush_band(&mut self, fb: &[u16], y0: u32, y1: u32, py0: u32) {
+        let h = y1.saturating_sub(y0);
+        if !self.on || h == 0 || y1 > HEIGHT || py0 + h > HEIGHT || fb.len() < (WIDTH * HEIGHT) as usize {
+            return;
+        }
+        self.window(0, py0, WIDTH - 1, py0 + h - 1);
+        let start = fb[(y0 * WIDTH) as usize..].as_ptr().cast::<u8>();
+        self.lcm.blit(start, h * WIDTH * 2, WIDTH, h).await;
+    }
+
     /// Blocking full-screen flush (start-up and crash screens).
     pub fn flush_blocking(&mut self, fb: &[u16]) -> bool {
         if fb.len() < (WIDTH * HEIGHT) as usize {

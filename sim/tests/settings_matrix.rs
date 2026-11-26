@@ -158,7 +158,9 @@ fn service_scripts() -> Vec<(&'static str, &'static str, Probe)> {
                 .filter(|l| matches!(l, orpheus_sim::apps::Logged::Usb(_)))
                 .map(|l| format!("{l:?}"))
                 .collect();
-            format!("{usb:?}")
+            // VER-13: and what the computer is offered (the developer
+            // interface, a write-protected card).
+            format!("{usb:?} {:?}", s.sys.usb_offer())
         }),
         ("bt-module", "wait:3000", |s| format!("{:?} {}", s.sys.bt.phase, s.sys.bt.reconnect)),
         ("steps-counter", "set:walk=on wait:20000", |s| format!("{}", s.sys.steps.history.today())),
@@ -285,8 +287,9 @@ fn observe(prefix: &str, c: &Ctx) -> String {
     match c.probe {
         Some(p) => p(&mut s),
         None => {
+            // What the panel shows (turned when the display is rotated).
             s.draw();
-            format!("{:016x}", fnv(s.fb.iter().copied()))
+            format!("{:016x}", fnv(s.panel().into_iter()))
         }
     }
 }
@@ -584,6 +587,172 @@ mod effects {
             let today = sim("wait:1").sys.clock.weekday;
             assert_eq!(ring(600, 0x7F & !(1 << today), 1), None, "alarm {k}, not today");
         }
+    }
+
+    /// The key gate after `script` with the screen timers running as on the
+    /// player (`set:timers=run`): (screen on, keys locked).
+    fn gate(script: &str) -> (bool, bool) {
+        let s = sim(&format!("set:timers=run {script}"));
+        (s.shell.gate.screen_on, s.shell.gate.locked)
+    }
+
+    /// Display › Backlight timeout (0x0302): the screen goes off that long
+    /// after the last key (5 s … 120 s), never with Always; a key restarts
+    /// it. With the timers held (the test look) nothing happens.
+    #[test]
+    fn backlight_timeout_turns_the_screen_off() {
+        // Lock delay Never: only the screen goes off.
+        for (v, s) in [(0i16, 5u64), (1, 10), (2, 15), (3, 30), (4, 60), (5, 120)] {
+            let ms = s * 1000;
+            let set = format!("set:0x0302={v} set:0x0303=4");
+            assert_eq!(gate(&format!("{set} wait:{}", ms - 500)), (true, false), "value {v} before");
+            assert_eq!(gate(&format!("{set} wait:{}", ms + 100)), (false, false), "value {v} after");
+            assert_eq!(
+                gate(&format!("{set} wait:{} down wait:{}", ms - 500, ms - 500)),
+                (true, false),
+                "a key"
+            );
+        }
+        assert_eq!(gate("set:0x0302=6 wait:200000"), (true, false), "Always");
+        let held = sim("set:0x0302=0 set:0x0303=0 wait:20000");
+        assert!(held.shell.gate.screen_on && !held.shell.gate.locked, "held under the test look");
+        // The first key after it only wakes the screen.
+        let mut s = sim("set:timers=run set:0x0302=0 set:0x0303=4 wait:5100");
+        run(&mut s, "down");
+        assert!(s.shell.gate.screen_on);
+        assert_eq!(s.screen(), "Home", "the waking key does nothing else");
+    }
+
+    /// Display › Lock delay (0x0303): after the backlight timeout (5 s
+    /// here) the keys lock at once, or 5, 30, 60 s later; Never: not by the
+    /// timer. A key before then only wakes the screen and keeps them free.
+    #[test]
+    fn lock_delay_locks_after_the_screen_went_off() {
+        for (v, s) in [(0i16, 0u64), (1, 5), (2, 30), (3, 60)] {
+            let at = 5000 + s * 1000;
+            let set = format!("set:0x0302=0 set:0x0303={v}");
+            if s > 0 {
+                assert_eq!(gate(&format!("{set} wait:{}", at - 500)), (false, false), "value {v} before");
+            }
+            assert_eq!(gate(&format!("{set} wait:{}", at + 100)), (false, true), "value {v} after");
+        }
+        assert_eq!(gate("set:0x0302=0 set:0x0303=4 wait:120000"), (false, false), "Never");
+        assert_eq!(
+            gate("set:0x0302=0 set:0x0303=1 wait:6000 down wait:3000"),
+            (true, false),
+            "woken in time"
+        );
+    }
+
+    /// Display › Screen saver (0x0307): Clock shows a dim clock on the
+    /// background when the backlight timeout turns the screen off (the
+    /// panel stays lit), which moves at the next minute; Off leaves the
+    /// panel dark (the frame as it was). A key brings the screen back.
+    #[test]
+    fn screen_saver_shows_a_moving_clock() {
+        let frame_of = |s: &mut AppSim| {
+            s.draw();
+            fnv(s.panel().into_iter())
+        };
+        let mut home = sim("wait:100");
+        let home_frame = frame_of(&mut home);
+        let script = |v: i16| {
+            format!(
+                "set:timers=run set:clock=10:00:30 set:clockrun=1 set:0x0302=0 set:0x0303=4 set:0x0307={v}"
+            )
+        };
+        let mut off = sim(&format!("{} wait:6000", script(0)));
+        assert!(!off.shell.gate.screen_on && !off.shell.gate.saver);
+        let mut on = sim(&format!("{} wait:6000", script(1)));
+        assert!(!on.shell.gate.screen_on && on.shell.gate.saver);
+        let saver = frame_of(&mut on);
+        assert_ne!(saver, frame_of(&mut off), "the saver is drawn");
+        assert_ne!(saver, home_frame);
+        run(&mut on, "wait:30000");
+        assert_ne!(frame_of(&mut on), saver, "the clock moved at 10:01");
+        run(&mut on, "down");
+        run(&mut off, "wait:30000 down");
+        assert!(on.shell.gate.screen_on);
+        assert_eq!(frame_of(&mut on), frame_of(&mut off), "Home is back, as after a dark screen");
+        // Power turns the screen off dark, never into the saver.
+        let s = sim(&format!("{} power", script(1)));
+        assert!(!s.shell.gate.screen_on && !s.shell.gate.saver);
+    }
+
+    /// Power › Keys when locked (0x0404): with music playing and the keys
+    /// locked (Power), Vol+ works with Volume and Volume and transport,
+    /// not with None (the lock notice instead); Next changes the track
+    /// only with Volume and transport. The screen under the lock never
+    /// sees the keys.
+    #[test]
+    fn keys_when_locked_reach_volume_and_transport() {
+        for (v, vol, transport) in [(0i16, false, false), (1, true, false), (2, true, true)] {
+            let s = sim(&format!("set:0x0404={v} set:queue=takk wait:300 power wait:100 vol+ wait:100"));
+            assert!(s.shell.gate.locked);
+            assert_eq!(s.sys.volume != 12, vol, "value {v}: volume");
+            let mut s = sim(&format!("set:0x0404={v} set:queue=takk wait:300 power wait:100"));
+            let (top, pos) = (s.screen(), s.sys.media.state().queue_pos);
+            run(&mut s, "next wait:300");
+            assert_eq!(s.sys.media.state().queue_pos != pos, transport, "value {v}: Next");
+            if transport {
+                assert_eq!(s.screen(), top, "value {v}: the screen under the lock stays");
+            }
+            run(&mut s, "ok wait:300");
+            let playing = s.sys.media.state().source == orpheus_ui::event::Source::Playing;
+            assert_eq!(playing, !transport, "value {v}: OK pauses only with transport");
+        }
+    }
+
+    /// Date & time › Correction (0x0506): +60 s a day puts the running
+    /// clock a second ahead after 24 minutes, -60 a second behind, 0 not.
+    #[test]
+    fn clock_correction_moves_the_clock() {
+        use orpheus_sim::Host;
+        let clock = |v: i16| {
+            let mut s = sim(&format!("set:0x0506={v} set:clock=12:00:00 set:clockrun=1"));
+            for _ in 0..24 {
+                s.sys.advance(60_000);
+            }
+            let c = s.sys.clock;
+            (c.hour, c.minute, c.second)
+        };
+        assert_eq!(clock(0), (12, 24, 0));
+        assert_eq!(clock(60), (12, 24, 1));
+        assert_eq!(clock(-60), (12, 23, 59));
+        assert_eq!(clock(30), (12, 24, 0), "half a second so far");
+    }
+
+    /// Date & time › Set from RDS (0x0507): with the radio on a station
+    /// that sends clock time, the clock is set from it (in the Time zone)
+    /// once two minutes agree; off, it is left alone.
+    #[test]
+    fn set_from_rds_sets_the_clock() {
+        // 2026-11-25 08:30:00 UTC on air; the player's clock at 12:41.
+        let clock = |set: &str| {
+            let s = sim(&format!(
+                "{set} set:rdsclock=1795595400 set:radio=94700 next*2 ok wait:1100 expect-screen:Radio wait:62000"
+            ));
+            let c = s.sys.clock;
+            (c.day, c.hour, c.minute)
+        };
+        assert_eq!(clock("set:0x0507=0").1, 12, "off: the clock keeps its time");
+        assert_eq!(clock("set:0x0507=1"), (25, 8, 31));
+        assert_eq!(clock("set:0x0507=1 set:0x0505=60"), (25, 9, 31));
+    }
+
+    /// USB › Read-only card (0x0902): File transfer gives the computer the
+    /// card write-protected; the USB question says so.
+    #[test]
+    fn read_only_card_for_the_computer() {
+        for v in [0i16, 1] {
+            let s = sim(&format!("set:0x0902={v} set:usb=host wait:200 down ok wait:200"));
+            let o = s.sys.usb_offer();
+            assert_eq!(o.personality, Some(orpheus_apps::services::UsbMode::FileTransfer));
+            assert_eq!(o.card_read_only, v == 1, "value {v}");
+        }
+        // Charge only: no card, nothing write-protected.
+        let s = sim("set:0x0902=1 set:usb=host wait:200 ok wait:200");
+        assert!(!s.sys.usb_offer().card_read_only);
     }
 }
 

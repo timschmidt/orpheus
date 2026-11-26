@@ -20,6 +20,7 @@
 //! | `expect-screen:Name` | fail unless the top screen is `Name` |
 //! | `theme:dark`, `accent:green`, `lang:cyrillic` | appearance and language |
 //! | `set:battery=8`, `set:usb=host` … | simulated system state (per host) |
+//! | `set:timers=run` | the backlight timeout and lock delay run with their settings (held by default, as under the firmware's test look) |
 //! | `goto:Library` | push a screen directly |
 //! | `set:drivehost=1`, `set:drivewrite=8` | a computer uses the USB Drive (reads it all; writes 8 blocks) |
 //! | `expect-typed:287082↵` | fail unless the fake computer on the USB keyboard received this (`↵` = Enter) |
@@ -51,7 +52,7 @@ use anyhow::{Context, Result, bail};
 use orpheus_ui::event::Event;
 use orpheus_ui::font::{GlyphCache, GlyphSource};
 use orpheus_ui::gfx::{DirtySet, FB_PIXELS, Fallback, Gfx};
-use orpheus_ui::input::{KeyGate, KeyMapper};
+use orpheus_ui::input::{KeyGate, KeyMapper, ScreenTimer, Timeouts};
 use orpheus_ui::nav::{Arg, Nav, ScreenId, ScreenSet};
 use orpheus_ui::shell::{Requests, Shell, System};
 use orpheus_ui::theme::{Accent, Palette, Theme};
@@ -112,6 +113,18 @@ pub trait Host: System + Default + Sized {
     fn typed(&self) -> &str {
         ""
     }
+    /// The screen timers' settings (backlight timeout, lock delay, screen
+    /// saver); held (none runs) unless the host has settings for them.
+    fn timeouts(&self) -> Timeouts {
+        Timeouts::HELD
+    }
+    /// The display rotated by 180° (Settings › Display › Rotate): the key
+    /// mapper swaps Up/Down and Prev/Next and [`Sim::panel`] turns the
+    /// picture. `None`: the host has no such setting (the mapper's flag is
+    /// left as a test set it).
+    fn rotated(&self) -> Option<bool> {
+        None
+    }
 }
 
 /// The simulator: frame buffer, input mapper, shell and fake services.
@@ -134,6 +147,9 @@ pub struct Sim<H: Host> {
     pub dirty_pixels: u64,
     /// The screen was off before a lock notice lit it.
     notice_lit: bool,
+    /// Backlight timeout and lock delay (05 §6.3), as the firmware's UI
+    /// task runs them ([`Host::timeouts`]).
+    pub timer: ScreenTimer,
 }
 
 /// The widget demo of UI-1.
@@ -190,9 +206,22 @@ impl<H: Host> Sim<H> {
             frames: 0,
             dirty_pixels: 0,
             notice_lit: false,
+            timer: ScreenTimer::new(0),
         };
         s.draw();
         s
+    }
+
+    /// What the panel shows: the frame buffer, turned by 180° when the
+    /// display is rotated (the firmware sends the rows in reverse,
+    /// `orpheus_ui::gfx::rotated_band`).
+    #[must_use]
+    pub fn panel(&self) -> Vec<u16> {
+        let mut p = self.fb.clone();
+        if self.sys.rotated() == Some(true) {
+            p.reverse();
+        }
+        p
     }
 
     /// Run the shell's draw pass.
@@ -294,6 +323,11 @@ impl<H: Host> Sim<H> {
             let dt = next - self.now.0;
             self.now = Instant(next);
             self.sys.advance(dt);
+            // The screen timers (backlight timeout, lock delay).
+            let t = self.sys.timeouts();
+            if self.timer.step(&mut self.shell.gate, t, self.now.0) && self.shell.gate.locked {
+                self.shell.invalidate();
+            }
             self.settle();
             self.pump();
             if self.shell.wants_ticks(&self.sys) {
@@ -306,15 +340,25 @@ impl<H: Host> Sim<H> {
     }
 
     pub fn press(&mut self, k: Key) {
+        self.key_edge();
         self.mapper.press(k, self.now);
         self.pump();
         self.draw();
     }
 
     pub fn release(&mut self, k: Key) {
+        self.key_edge();
         self.mapper.release(k, self.now);
         self.pump();
         self.draw();
+    }
+
+    /// A key edge: the screen timers restart; the mapper follows Rotate.
+    fn key_edge(&mut self) {
+        self.timer.key(self.now.0);
+        if let Some(r) = self.sys.rotated() {
+            self.mapper.rotated = r;
+        }
     }
 
     /// Tap: press, 60 ms, release, 40 ms.

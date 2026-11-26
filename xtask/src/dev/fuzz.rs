@@ -782,7 +782,16 @@ mod tests {
     }
 
     fn top(name: &str, dialog: bool) -> Top {
-        Top { id: 0, name: name.into(), depth: 2, dialog, overlay: dialog, locked: false, screen_on: true }
+        Top {
+            id: 0,
+            name: name.into(),
+            depth: 2,
+            dialog,
+            overlay: dialog,
+            locked: false,
+            screen_on: true,
+            saver: false,
+        }
     }
 
     #[test]

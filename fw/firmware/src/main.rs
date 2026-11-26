@@ -248,7 +248,9 @@ impl Governor {
             floor: CLOCK_FLOOR.load(Relaxed),
             perf,
         };
-        if let Some(l) = self.g.step(input) {
+        // Settings › Power › Power mode (VER-13), published by the UI.
+        let mode = governor::PowerMode::from_setting(i16::from(crate::ui::POWER_MODE.load(Relaxed)));
+        if let Some(l) = self.g.step_in(input, mode, drain::shared().screen_on.load(Relaxed)) {
             clock::set_level(hal_level(l));
         }
     }

@@ -1,6 +1,7 @@
 //! RDS group decoding (IEC 62106 / EN 50067): the programme service name
-//! (group 0A/0B, 8 characters) and radio text (group 2A: 64 characters,
-//! 2B: 32), from the four blocks the tuner reports (registers 0Ch–0Fh).
+//! (group 0A/0B, 8 characters), radio text (group 2A: 64 characters,
+//! 2B: 32) and clock time (group 4A, UTC to the minute), from the four
+//! blocks the tuner reports (registers 0Ch–0Fh).
 //!
 //! The RDA5807M class reports block errors only for blocks A and B
 //! (register 0Bh `BLERA`/`BLERB`): a group is used when B has at most 1–2
@@ -8,7 +9,10 @@
 //! taken character pair by character pair only after the same pair was
 //! received twice. Radio text is shown as far as it has arrived
 //! contiguously; its A/B flag starting a new text clears it. Consecutive
-//! identical groups count once (the status is read twice per group).
+//! identical groups count once (the status is read twice per group). The
+//! clock time, sent once a minute, is taken only when a second group 4A
+//! agrees with the first (the same minute, or the next one): a corrupted
+//! C or D block cannot set the player's clock.
 //!
 //! Characters are bytes of the RDS character set: 0x20–0x7E are taken as
 //! ASCII; [`to_utf8`] maps the upper half from the basic table of the
@@ -23,7 +27,14 @@ pub const RT_LEN: usize = 64;
 pub mod changed {
     pub const PS: u8 = 1;
     pub const RT: u8 = 2;
+    /// A confirmed clock time ([`Rds::clock`]).
+    pub const CT: u8 = 4;
 }
+
+/// Modified Julian Day of 1970-01-01.
+const MJD_UNIX: u32 = 40_587;
+/// Clock times before 2020-01-01 (MJD 58849) are taken as corrupted.
+const MJD_MIN: u32 = 58_849;
 
 /// Decoder state (about 170 bytes).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -41,9 +52,15 @@ pub struct Rds {
     rt_ab: u8,
     /// Position of the end-of-text mark (`RT_LEN` = none).
     rt_end: u8,
-    /// Groups used, and groups dropped for block-B errors.
-    pub groups: u32,
-    pub bad: u32,
+    /// Groups used, and groups dropped for block-B errors (wrapping:
+    /// 16 bits keep the decoder inside the radio's SRAM3 block).
+    pub groups: u16,
+    pub bad: u16,
+    /// The confirmed clock time (minutes since 1970, UTC; 0 = none).
+    ct: u32,
+    /// The low 16 bits of the last group 4A's minute, not yet confirmed
+    /// (0xFFFF none).
+    ct_cand: u16,
 }
 
 impl Default for Rds {
@@ -67,6 +84,8 @@ impl Rds {
             rt_end: RT_LEN as u8,
             groups: 0,
             bad: 0,
+            ct: 0,
+            ct_cand: 0xFFFF,
         }
     }
 
@@ -136,9 +155,40 @@ impl Rds {
                     ch |= self.rt_chars(seg * 4, &[c0, c1, d0, d1]);
                 }
             }
+            4 if !version_b => ch |= self.clock_group(b, c, d),
             _ => {}
         }
         ch
+    }
+
+    /// Group 4A (IEC 62106 §3.1.5.6): the Modified Julian Day in B bits 1–0
+    /// and C bits 15–1, the UTC hour in C bit 0 and D bits 15–12, the
+    /// minute in D bits 11–6 (the local offset in D bits 5–0 is not used:
+    /// the player has its own time zone setting).
+    fn clock_group(&mut self, b: u16, c: u16, d: u16) -> u8 {
+        let mjd = u32::from(b & 3) << 15 | u32::from(c >> 1);
+        let hour = u32::from(c & 1) << 4 | u32::from(d >> 12);
+        let minute = u32::from((d >> 6) & 0x3F);
+        if mjd < MJD_MIN || hour > 23 || minute > 59 {
+            self.ct_cand = 0xFFFF;
+            return 0;
+        }
+        let t = (mjd - MJD_UNIX) * 1440 + hour * 60 + minute;
+        let low = t as u16;
+        let agrees = self.ct_cand != 0xFFFF && (low == self.ct_cand || low == self.ct_cand.wrapping_add(1));
+        self.ct_cand = low;
+        if agrees && t != self.ct {
+            self.ct = t;
+            return changed::CT;
+        }
+        0
+    }
+
+    /// The last confirmed clock time, seconds since 1970 UTC (to the
+    /// minute: the group is sent at the start of the minute it gives).
+    #[must_use]
+    pub const fn clock(&self) -> Option<u64> {
+        if self.ct == 0 { None } else { Some(self.ct as u64 * 60) }
     }
 
     fn ps_pair(&mut self, seg: usize, pair: [u8; 2]) -> u8 {
@@ -267,6 +317,22 @@ pub fn group_0a(pi: u16, seg: u8, ps: &[u8; PS_LEN]) -> [u16; 4] {
     let i = usize::from(seg & 3) * 2;
     let pair = [ps.get(i).copied().unwrap_or(b' '), ps.get(i + 1).copied().unwrap_or(b' ')];
     [pi, u16::from(seg & 3), 0xE0CD, u16::from_be_bytes(pair)]
+}
+
+/// Encode one group of type 4A (clock time, `unix` seconds UTC, local
+/// offset `half_hours`) — for fakes and tests.
+#[must_use]
+pub fn group_4a(pi: u16, unix: u64, half_hours: i8) -> [u16; 4] {
+    let min = unix / 60;
+    let mjd = (min / 1440) as u32 + MJD_UNIX;
+    let (hour, minute) = (((min % 1440) / 60) as u16, (min % 60) as u16);
+    let off = u16::from(half_hours.unsigned_abs() & 0x1F) | if half_hours < 0 { 0x20 } else { 0 };
+    [
+        pi,
+        0x4000 | ((mjd >> 15) & 3) as u16,
+        ((mjd & 0x7FFF) as u16) << 1 | (hour >> 4),
+        (hour & 15) << 12 | minute << 6 | off,
+    ]
 }
 
 /// Encode one group of type 2A (radio text segment `seg`, flag `ab`) from
@@ -415,5 +481,55 @@ mod tests {
         let n = to_utf8(&[b'a', b'b', b'c', 0x82], &mut small);
         assert_eq!(&small[..n], b"abc");
         assert_eq!(char_of(0xFF), ' ');
+    }
+
+    /// Group 4A (VER-13, Settings › Date & time › Set from RDS): the clock
+    /// time is taken when the next minute's group agrees, at the minute;
+    /// a corrupted or implausible group, or one that disagrees, is not.
+    #[test]
+    fn clock_time_needs_two_agreeing_minutes() {
+        // 2026-11-25 08:30 UTC.
+        let t = 1_795_595_400u64;
+        let g = group_4a(0xD123, t, 2);
+        // MJD 61369 = 2026-11-25; hour 8; minute 30; +1 h.
+        assert_eq!(g[1] & 0xF800, 0x4000);
+        assert_eq!(u32::from(g[1] & 3) << 15 | u32::from(g[2] >> 1), 61_369);
+        assert_eq!((g[3] >> 12, (g[3] >> 6) & 0x3F, g[3] & 0x3F), (8, 30, 2));
+        let mut r = Rds::new();
+        assert_eq!(r.feed(g, 0, 0), 0, "one group is not enough");
+        assert_eq!(r.clock(), None);
+        // Another group in between (as on air), then the next minute.
+        r.feed(group_0a(0xD123, 0, &ps8("ROCK FM")), 0, 0);
+        assert_eq!(r.feed(group_4a(0xD123, t + 60, 2), 0, 0), changed::CT);
+        assert_eq!(r.clock(), Some(t + 60));
+        assert_eq!(r.feed(group_4a(0xD123, t + 120, 2), 0, 0), changed::CT);
+        assert_eq!(r.clock(), Some(t + 120));
+        // A group that jumps (a corrupted C or D block) is not taken, nor
+        // is the one after it unless it follows it.
+        let mut r = Rds::new();
+        r.feed(group_4a(1, t, 0), 0, 0);
+        assert_eq!(r.feed(group_4a(1, t + 3 * 3600, 0), 0, 0), 0);
+        assert_eq!(r.clock(), None);
+        // Implausible: before 2020, hour 24, minute 60.
+        let mut r = Rds::new();
+        let old = group_4a(1, 1_500_000_000, 0);
+        r.feed(old, 0, 0);
+        r.feed(group_0a(1, 0, &ps8("X")), 0, 0);
+        assert_eq!(r.feed(old, 0, 0), 0);
+        let mut bad = g;
+        bad[3] = (bad[3] & 0x0FFF) | 0x8000;
+        bad[2] |= 1;
+        r.feed(bad, 0, 0);
+        bad[3] ^= 0x0040;
+        assert_eq!(r.feed(bad, 0, 0), 0, "hour 24");
+        assert_eq!(r.clock(), None);
+        // The decoder lives in the radio's SRAM3 block (fw fm.rs), whose
+        // window is full: the clock time took no room.
+        assert_eq!(core::mem::size_of::<Rds>(), 112);
+        // Block B in error: the group is not used at all.
+        let mut r = Rds::new();
+        r.feed(group_4a(1, t, 0), 0, 0);
+        assert_eq!(r.feed(group_4a(1, t + 60, 0), 0, 2), 0);
+        assert_eq!(r.clock(), None);
     }
 }

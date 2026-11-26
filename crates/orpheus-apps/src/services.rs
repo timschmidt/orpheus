@@ -1343,6 +1343,210 @@ pub fn list_roll_around<S: SettingsService + ?Sized>(s: &S) -> bool {
     s.setting(id::LIST_ROLL) != 0
 }
 
+// ------------------------------------------------ Display, Power, USB (VER-13)
+
+/// Settings › Display › Backlight timeout (0x0302), Lock delay (0x0303)
+/// and Screen saver (0x0307) as the screen timers take them
+/// (`orpheus_ui::input::ScreenTimer`, 05 §6.3).
+pub fn screen_timeouts<S: SettingsService + ?Sized>(s: &S) -> orpheus_ui::input::Timeouts {
+    const OFF_S: [u32; 6] = [5, 10, 15, 30, 60, 120];
+    const LOCK_S: [u32; 4] = [0, 5, 30, 60];
+    let pick = |v: i16, t: &[u32]| usize::try_from(v).ok().and_then(|i| t.get(i)).map(|s| s * 1000);
+    orpheus_ui::input::Timeouts {
+        screen_off_ms: pick(s.setting(id::BACKLIGHT), &OFF_S),
+        lock_ms: pick(s.setting(id::LOCK_DELAY), &LOCK_S),
+        saver: s.setting(id::SCREEN_SAVER) == 1,
+    }
+}
+
+/// A host test's hold on the screen timers (VER-13). Under the firmware's
+/// test look (`ui test-look on`: the suite, the fuzzers, the soak), and in
+/// the simulator standing in for the player, the backlight timeout and the
+/// lock delay do not run: a test's keys must never be swallowed by a
+/// screen that went off, nor the player left locked (CLAUDE.md rule 4). A
+/// test session that sets one of them, or the screen saver, to another
+/// value than its default (`settings test-set`) runs the timers with the
+/// session's values; setting it back to its default holds them again.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TimerHold {
+    armed: u8,
+}
+
+impl TimerHold {
+    #[must_use]
+    pub const fn from_bits(armed: u8) -> TimerHold {
+        TimerHold { armed }
+    }
+
+    #[must_use]
+    pub const fn bits(self) -> u8 {
+        self.armed
+    }
+
+    /// `settings test-set` of `sid` to `value` (other settings: no change).
+    pub fn test_set(&mut self, sid: SettingId, value: i16) {
+        let bit = match sid {
+            id::BACKLIGHT => 1,
+            id::LOCK_DELAY => 2,
+            id::SCREEN_SAVER => 4,
+            _ => return,
+        };
+        if crate::settings::def(sid).is_some_and(|d| d.default == value) {
+            self.armed &= !bit;
+        } else {
+            self.armed |= bit;
+        }
+    }
+
+    /// The timers under the hold: none unless a session armed them.
+    pub fn timeouts<S: SettingsService + ?Sized>(self, s: &S) -> orpheus_ui::input::Timeouts {
+        if self.armed == 0 { orpheus_ui::input::Timeouts::HELD } else { screen_timeouts(s) }
+    }
+}
+
+/// Settings › Power › Keys when locked (0x0404) for the key gate.
+pub fn locked_keys<S: SettingsService + ?Sized>(s: &S) -> orpheus_ui::input::LockedKeys {
+    orpheus_ui::input::KeyGate::locked_keys(s.setting(id::KEYS_LOCKED))
+}
+
+/// Settings › Display › Rotate (0x0309): the panel turned by 180° (05 §4
+/// "Rotation": the picture and Up/Down, Prev/Next).
+pub fn rotated<S: SettingsService + ?Sized>(s: &S) -> bool {
+    s.setting(id::ROTATE) != 0
+}
+
+/// Settings › Display › Animations (0x0308), off in Battery saver (02
+/// §5.4): what `orpheus_ui::shell::System::animations` answers.
+pub fn animations<S: SettingsService + ?Sized>(s: &S) -> bool {
+    s.setting(id::ANIMATIONS) != 0 && power_mode(s) != orpheus_power::governor::PowerMode::Saver
+}
+
+/// Settings › Power › Power mode (0x0401) for the clock governor.
+pub fn power_mode<S: SettingsService + ?Sized>(s: &S) -> orpheus_power::governor::PowerMode {
+    orpheus_power::governor::PowerMode::from_setting(s.setting(id::POWER_MODE))
+}
+
+/// The screen saver's clock (`orpheus_ui::shell::System::saver_clock`):
+/// hours as the 24-hour setting wants them, minutes; none while the clock
+/// is not set.
+pub fn saver_clock<S: SettingsService + ClockService + ?Sized>(s: &S) -> Option<(u8, u8)> {
+    s.clock_valid().then(|| {
+        let t = s.now();
+        let h = if s.setting(id::CLOCK_24H) != 0 { t.hour } else { (t.hour + 11) % 12 + 1 };
+        (h, t.minute)
+    })
+}
+
+/// A transport key while the keys are locked or the screen is off, with
+/// Keys when locked = Volume and transport (05 §3): a tap of OK plays or
+/// pauses, Next and Prev change the track. Only while something is
+/// queued; holds and repeats do nothing.
+pub fn locked_transport<S: PlayerService + ?Sized>(
+    s: &mut S,
+    k: orpheus_ui::event::Key,
+    p: orpheus_ui::event::KeyPhase,
+) {
+    use orpheus_ui::event::{Key, KeyPhase};
+    if p != (KeyPhase::Up { held: false }) || s.player().source == Source::Idle {
+        return;
+    }
+    match k {
+        Key::Ok => s.command(PlayerCmd::PlayPause),
+        Key::Next => s.command(PlayerCmd::Next),
+        Key::Prev => s.command(PlayerCmd::Prev),
+        _ => {}
+    }
+}
+
+/// Settings › Date & time › Time zone (0x0505), in seconds east of UTC.
+pub fn utc_offset_s<S: SettingsService + ?Sized>(s: &S) -> i32 {
+    i32::from(s.setting(id::UTC_OFFSET)) * 60
+}
+
+/// The player's clock keeps local time (what every screen shows); UTC
+/// (TOTP codes, 06 §5.3) is that less the UTC offset.
+#[must_use]
+pub fn utc_of_local(local_unix: u64, offset_s: i32) -> u64 {
+    local_unix.saturating_add_signed(-i64::from(offset_s))
+}
+
+/// The local date and time of `unix` seconds (the inverse of [`unix_of`];
+/// weekday 0 = Monday).
+#[must_use]
+pub fn date_of(unix: u64) -> DateTime {
+    let days = i64::try_from(unix / 86_400).unwrap_or(0);
+    let secs = unix % 86_400;
+    // Days to the civil date (proleptic Gregorian, eras of 400 years).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    DateTime {
+        year: u16::try_from(year).unwrap_or(0),
+        month: month as u8,
+        day: day as u8,
+        hour: (secs / 3600) as u8,
+        minute: ((secs / 60) % 60) as u8,
+        second: (secs % 60) as u8,
+        weekday: ((days + 3).rem_euclid(7)) as u8,
+    }
+}
+
+/// Settings › Date & time › Set from RDS (0x0507, 06 §5.3): the local time
+/// to set the clock to from a station's clock time (`utc` seconds, RDS
+/// group 4A: `orpheus_fm::rds::Rds::clock`), with the Time zone setting;
+/// `None` while the setting is off.
+pub fn rds_clock<S: SettingsService + ?Sized>(s: &S, utc: u64) -> Option<DateTime> {
+    (s.setting(id::SET_FROM_RDS) != 0).then(|| date_of(utc.saturating_add_signed(i64::from(utc_offset_s(s)))))
+}
+
+/// Settings › USB › Read-only card (0x0902): the card reader presents the
+/// card write-protected (SCSI MODE SENSE WP, writes refused:
+/// `orpheus_usb::msc::scsi::Unit::read_only`).
+pub fn usb_card_read_only<S: SettingsService + ?Sized>(s: &S) -> bool {
+    s.setting(id::READ_ONLY_CARD) != 0
+}
+
+/// Settings › USB › Developer channel (0x0903) as offered on USB: on unless
+/// the setting is off and nothing holds it on (`held`: a host test or a
+/// test session is running, which needs the channel; the RAM-only session
+/// never turns it off).
+pub fn developer_channel<S: SettingsService + ?Sized>(s: &S, held: bool) -> bool {
+    held || s.setting(id::DEV_CHANNEL) != 0
+}
+
+/// Settings › Date & time › Correction (0x0506, seconds per day; 06 §5.3):
+/// the whole seconds to add to the clock as time passes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ClockDrift {
+    /// Milliseconds × seconds per day not yet applied.
+    acc: i64,
+}
+
+impl ClockDrift {
+    const DAY_MS: i64 = 86_400_000;
+
+    #[must_use]
+    pub const fn new() -> ClockDrift {
+        ClockDrift { acc: 0 }
+    }
+
+    /// `elapsed_ms` of running at `per_day` seconds a day: the seconds to
+    /// add to the clock now (negative: hold it back).
+    pub fn step(&mut self, elapsed_ms: u64, per_day: i16) -> i32 {
+        let ms = i64::try_from(elapsed_ms.min(Self::DAY_MS as u64)).unwrap_or(0);
+        self.acc += ms * i64::from(per_day);
+        let whole = self.acc / Self::DAY_MS;
+        self.acc -= whole * Self::DAY_MS;
+        i32::try_from(whole).unwrap_or(0)
+    }
+}
+
 // ---------------------------------------------------------------- Files
 
 pub use crate::browse::{DirId, EntryKind, FileRef};
@@ -2041,5 +2245,165 @@ mod bt_tests {
         assert_eq!(t.as_str(), "AB:34:12:4C:E0:00");
         let bad = BtDevice::new(a, BtKind::Unknown, b"ok\xFFno", false);
         assert_eq!(bad.name(), "ok");
+    }
+}
+
+/// VER-13 (owner's "100 % setting → effect"): the Display, Power, Date &
+/// time and USB settings as the code that applies them takes them.
+#[cfg(test)]
+mod setting_effects {
+    extern crate std;
+    use super::*;
+    use crate::settings::SettingsCache;
+    use orpheus_ui::input::{LockedKeys, Timeouts};
+
+    struct S(SettingsCache);
+    impl SettingsService for S {
+        fn setting(&self, id: SettingId) -> i16 {
+            self.0.get(id)
+        }
+        fn set_setting(&mut self, id: SettingId, v: i16) {
+            self.0.set(id, v);
+        }
+        fn factory_reset(&mut self) {}
+    }
+
+    fn with(sets: &[(SettingId, i16)]) -> S {
+        let mut s = S(SettingsCache::new());
+        for &(k, v) in sets {
+            assert!(s.0.set(k, v) || s.0.get(k) == v, "{k:?}={v}");
+        }
+        s
+    }
+
+    /// Backlight timeout (0x0302), Lock delay (0x0303), Screen saver
+    /// (0x0307): every value; the defaults are 15 s, Immediately, Off.
+    #[test]
+    fn screen_timer_values() {
+        let d = screen_timeouts(&with(&[]));
+        assert_eq!(d, Timeouts { screen_off_ms: Some(15_000), lock_ms: Some(0), saver: false });
+        let off = [Some(5_000), Some(10_000), Some(15_000), Some(30_000), Some(60_000), Some(120_000), None];
+        for (v, want) in off.iter().enumerate() {
+            let t = screen_timeouts(&with(&[(id::BACKLIGHT, v as i16)]));
+            assert_eq!(t.screen_off_ms, *want, "backlight {v}");
+            assert_eq!((t.lock_ms, t.saver), (d.lock_ms, d.saver), "only the backlight timeout changes");
+        }
+        let lock = [Some(0), Some(5_000), Some(30_000), Some(60_000), None];
+        for (v, want) in lock.iter().enumerate() {
+            let t = screen_timeouts(&with(&[(id::LOCK_DELAY, v as i16)]));
+            assert_eq!(t.lock_ms, *want, "lock {v}");
+            assert_eq!((t.screen_off_ms, t.saver), (d.screen_off_ms, d.saver));
+        }
+        assert!(screen_timeouts(&with(&[(id::SCREEN_SAVER, 1)])).saver);
+    }
+
+    /// A host test holds the timers until its session sets one to another
+    /// value than the default; the default holds them again.
+    #[test]
+    fn timer_hold() {
+        let s = with(&[(id::BACKLIGHT, 0), (id::LOCK_DELAY, 1)]);
+        let mut h = TimerHold::default();
+        assert_eq!(h.timeouts(&s), Timeouts::HELD);
+        h.test_set(id::THEME, 1);
+        assert_eq!(h.timeouts(&s), Timeouts::HELD);
+        h.test_set(id::BACKLIGHT, 0);
+        assert_eq!(h.timeouts(&s), screen_timeouts(&s));
+        h.test_set(id::LOCK_DELAY, 1);
+        h.test_set(id::BACKLIGHT, 2);
+        assert_eq!(h.timeouts(&s), screen_timeouts(&s), "Lock delay still armed");
+        h.test_set(id::LOCK_DELAY, 0);
+        assert_eq!(h.timeouts(&s), Timeouts::HELD);
+        assert_eq!(TimerHold::from_bits(h.bits()), h);
+    }
+
+    /// Keys when locked (0x0404), Rotate (0x0309), Animations (0x0308) with
+    /// Power mode (0x0401): Battery saver turns animations off.
+    #[test]
+    fn keys_rotation_animations_power_mode() {
+        use orpheus_power::governor::PowerMode;
+        assert_eq!(locked_keys(&with(&[])), LockedKeys::Volume);
+        assert_eq!(locked_keys(&with(&[(id::KEYS_LOCKED, 0)])), LockedKeys::None);
+        assert_eq!(locked_keys(&with(&[(id::KEYS_LOCKED, 2)])), LockedKeys::VolumeTransport);
+        assert!(!rotated(&with(&[])));
+        assert!(rotated(&with(&[(id::ROTATE, 1)])));
+        assert!(animations(&with(&[])));
+        assert!(!animations(&with(&[(id::ANIMATIONS, 0)])));
+        assert_eq!(power_mode(&with(&[])), PowerMode::Auto);
+        assert_eq!(power_mode(&with(&[(id::POWER_MODE, 1)])), PowerMode::Saver);
+        assert_eq!(power_mode(&with(&[(id::POWER_MODE, 2)])), PowerMode::High);
+        assert!(!animations(&with(&[(id::POWER_MODE, 1)])), "Battery saver: no animations");
+        assert!(animations(&with(&[(id::POWER_MODE, 2)])));
+    }
+
+    /// Time zone (0x0505): the clock keeps local time; UTC is that less the
+    /// offset (Berlin in winter: 13:00 local is 12:00 UTC).
+    #[test]
+    fn utc_offset() {
+        assert_eq!(utc_offset_s(&with(&[])), 0);
+        assert_eq!(utc_offset_s(&with(&[(id::UTC_OFFSET, 60)])), 3600);
+        assert_eq!(utc_offset_s(&with(&[(id::UTC_OFFSET, -720)])), -43_200);
+        assert_eq!(utc_offset_s(&with(&[(id::UTC_OFFSET, 840)])), 50_400);
+        let local = 1_795_524_060; // 2026-11-24 12:41
+        assert_eq!(utc_of_local(local, 0), local);
+        assert_eq!(utc_of_local(local, 3600), local - 3600);
+        assert_eq!(utc_of_local(local, -43_200), local + 43_200);
+        assert_eq!(utc_of_local(10, 3600), 0, "never before 1970");
+    }
+
+    /// Set from RDS (0x0507): off by default (the clock is never set from
+    /// the air); on, a station's clock time in the player's time zone.
+    #[test]
+    fn set_from_rds() {
+        let utc = 1_795_595_400; // 2026-11-25 08:30 UTC, a Wednesday
+        assert_eq!(rds_clock(&with(&[]), utc), None);
+        let t = rds_clock(&with(&[(id::SET_FROM_RDS, 1)]), utc).unwrap();
+        assert_eq!(
+            (t.year, t.month, t.day, t.hour, t.minute, t.second, t.weekday),
+            (2026, 11, 25, 8, 30, 0, 2)
+        );
+        let t = rds_clock(&with(&[(id::SET_FROM_RDS, 1), (id::UTC_OFFSET, 60)]), utc).unwrap();
+        assert_eq!((t.hour, t.minute), (9, 30));
+        let t = rds_clock(&with(&[(id::SET_FROM_RDS, 1), (id::UTC_OFFSET, -720)]), utc).unwrap();
+        assert_eq!((t.day, t.hour), (24, 20));
+        // date_of is unix_of's inverse.
+        for u in [0u64, 946_684_800, 1_709_251_199, 1_795_524_060, 4_102_444_799] {
+            assert_eq!(unix_of(&date_of(u)), u, "{u}");
+        }
+        assert_eq!(date_of(0).weekday, 3, "1970-01-01 was a Thursday");
+    }
+
+    /// Correction (0x0506): +60 s a day adds a second every 24 minutes,
+    /// -60 holds one back, 0 never changes the clock; the remainder carries
+    /// over between steps of any size.
+    #[test]
+    fn clock_drift_correction() {
+        let run = |per_day: i16, step_ms: u64, total_ms: u64| {
+            let mut d = ClockDrift::new();
+            let mut n = 0i32;
+            let mut t = 0;
+            while t < total_ms {
+                n += d.step(step_ms, per_day);
+                t += step_ms;
+            }
+            n
+        };
+        assert_eq!(run(0, 1000, 86_400_000), 0);
+        assert_eq!(run(60, 1000, 86_400_000), 60);
+        assert_eq!(run(-60, 1000, 86_400_000), -60);
+        assert_eq!(run(60, 1000, 1_440_000), 1, "one second after 24 minutes");
+        assert_eq!(run(60, 1000, 1_439_000), 0);
+        assert_eq!(run(1, 7_777, 86_400_000 * 3), 3);
+        assert_eq!(run(-17, 250, 86_400_000), -17);
+    }
+
+    /// Read-only card (0x0902), Developer channel (0x0903): the developer
+    /// channel stays on while a test holds it, whatever the setting.
+    #[test]
+    fn usb_settings() {
+        assert!(!usb_card_read_only(&with(&[])));
+        assert!(usb_card_read_only(&with(&[(id::READ_ONLY_CARD, 1)])));
+        assert!(developer_channel(&with(&[]), false));
+        assert!(!developer_channel(&with(&[(id::DEV_CHANNEL, 0)]), false));
+        assert!(developer_channel(&with(&[(id::DEV_CHANNEL, 0)]), true), "a test holds it on");
     }
 }

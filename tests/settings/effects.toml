@@ -436,7 +436,7 @@ default = 10
 contexts = ["Settings.Display"]
 oracle = "None yet."
 tests = ["sim/tests/settings_matrix.rs::matrix::s0301", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
-gap = "not wired: the slider stores it, but the backlight is driven at a fixed level (fw ui.rs: 12 on, 0 off)"
+gap = "missing hardware fact (VER-13): 01-hardware documents only that the backlight is on PWM4 (§2, pin 22); which PWM4 duty values of the 16-step period the stock firmware's brightness levels use, and whether a DUTY write takes effect while the channel runs (U-PWM-1), are not recorded, so any mapping of 1–16 to the panel would be a guess. The firmware drives fixed levels (fw ui.rs: 12 on, 0 off)"
 
 [[setting]]
 id = "0x0302"
@@ -444,10 +444,14 @@ name = "Settings › Display › Backlight timeout"
 scope = "global"
 values = ["5 s", "10 s", "15 s", "30 s", "60 s", "120 s", "Always"]
 default = 2
-contexts = ["Settings.Display"]
-oracle = "None yet."
-tests = ["sim/tests/settings_matrix.rs::matrix::s0302", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
-gap = "not wired: no code reads 0x0302 (the screen goes off only with Power or the lock)"
+contexts = ["Settings.Display", "backlight"]
+unaffected = ["@screens", "@services", "audio"]
+na = { "governor" = "review: the governor's setting inputs are Performance 0x0C07 and Power mode 0x0401 (orpheus-power Governor::step_in)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's setting inputs are Performance 0x0C07 and Power mode 0x0401 (fw main.rs Governor)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date, Correction 0x0506 and Set from RDS 0x0507", "keys" = "review: the keys lock by Lock delay 0x0303 after this timeout; the first key after it only wakes the screen (backlight context)" }
+oracle = "Backlight: the screen goes off (panel asleep, backlight 0) that long after the last key (5–120 s), never with Always; the next key only wakes it (simulator: the key gate with set:timers=run; player: `ui top` screen=0). Held while a host test's look is on unless its session sets a timer. Settings › Display shows the value."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0302", "sim/tests/settings_matrix.rs::effects::backlight_timeout_turns_the_screen_off", "crates/orpheus-ui/src/input.rs::tests::screen_timer_off_then_lock", "crates/orpheus-ui/src/input.rs::tests::screen_timer_wake_always_and_saver", "crates/orpheus-apps/src/services.rs::setting_effects::screen_timer_values", "crates/orpheus-apps/src/services.rs::setting_effects::timer_hold", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0302"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0302"], "backlight" = ["sim/tests/settings_matrix.rs::effects::backlight_timeout_turns_the_screen_off", "crates/orpheus-ui/src/input.rs::tests::screen_timer_off_then_lock", "crates/orpheus-apps/src/services.rs::setting_effects::screen_timer_values", "suite:settings_screen_timers"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+device = true
+checks = ["suite:settings_screen_timers"]
 
 [[setting]]
 id = "0x0303"
@@ -455,10 +459,14 @@ name = "Settings › Display › Lock delay"
 scope = "global"
 values = ["Immediately", "5 s", "30 s", "60 s", "Never"]
 default = 0
-contexts = ["Settings.Display"]
-oracle = "None yet."
-tests = ["sim/tests/settings_matrix.rs::matrix::s0303", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
-gap = "not wired: no code reads 0x0303"
+contexts = ["Settings.Display", "keys"]
+unaffected = ["@screens", "@services", "audio"]
+na = { "governor" = "review: the governor's setting inputs are Performance 0x0C07 and Power mode 0x0401 (orpheus-power Governor::step_in)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's setting inputs are Performance 0x0C07 and Power mode 0x0401 (fw main.rs Governor)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the screen goes off by Backlight timeout 0x0302; this delay counts from then", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date, Correction 0x0506 and Set from RDS 0x0507" }
+oracle = "Keys: locked that long after the backlight timeout turned the screen off (at once, 5, 30, 60 s), never by the timer with Never; a key before then only wakes the screen and keeps them free (simulator: the key gate; player: `ui top` locked=1). Settings › Display shows the value."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0303", "sim/tests/settings_matrix.rs::effects::lock_delay_locks_after_the_screen_went_off", "crates/orpheus-ui/src/input.rs::tests::screen_timer_lock_delay", "crates/orpheus-apps/src/services.rs::setting_effects::screen_timer_values", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0303"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0303"], "keys" = ["sim/tests/settings_matrix.rs::effects::lock_delay_locks_after_the_screen_went_off", "crates/orpheus-ui/src/input.rs::tests::screen_timer_lock_delay", "suite:settings_screen_timers"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+device = true
+checks = ["suite:settings_screen_timers"]
 
 [[setting]]
 id = "0x0304"
@@ -495,7 +503,7 @@ default = 0
 contexts = []
 oracle = "None yet."
 tests = ["sim/tests/settings_matrix.rs::matrix::s0306", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
-gap = "one value only (None): nothing to change"
+gap = "the spec defines a wallpaper only as a picture chosen with Pictures › Set as wallpaper (05 §7.6: Home and lock screen, a 128 × 128 RGB565 file); that action is not built (AU-14), so the setting has one value (None) and nothing to change; no pattern values are specified"
 
 [[setting]]
 id = "0x0307"
@@ -503,10 +511,14 @@ name = "Settings › Display › Screen saver"
 scope = "global"
 values = ["Off", "Clock"]
 default = 0
-contexts = []
-oracle = "None yet."
-tests = ["sim/tests/settings_matrix.rs::matrix::s0307", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
-gap = "not wired: no code reads 0x0307"
+contexts = ["backlight"]
+unaffected = ["@screens", "@services", "audio"]
+na = { "governor" = "review: the governor's setting inputs are Performance 0x0C07 and Power mode 0x0401 (orpheus-power Governor::step_in)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's setting inputs are Performance 0x0C07 and Power mode 0x0401 (fw main.rs Governor)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date, Correction 0x0506 and Set from RDS 0x0507", "keys" = "review: the saver is the screen off for the keys (the gate's screen_on false); which keys work follows 0x0404" }
+oracle = "Backlight: with Clock, when the backlight timeout turns the screen off the panel stays lit and shows the time in dim large numerals at a place that moves every minute (05 §6.3); Off leaves it dark; Power always turns it dark (simulator: the panel frame; player: `ui top` saver=1)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0307", "sim/tests/settings_matrix.rs::effects::screen_saver_shows_a_moving_clock", "crates/orpheus-ui/src/shell.rs::tests::saver_spot_moves_and_stays_on_the_panel", "crates/orpheus-apps/src/services.rs::setting_effects::screen_timer_values", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0307"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0307"], "backlight" = ["sim/tests/settings_matrix.rs::effects::screen_saver_shows_a_moving_clock", "crates/orpheus-ui/src/shell.rs::tests::saver_spot_moves_and_stays_on_the_panel", "suite:settings_screen_saver"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+device = true
+checks = ["suite:settings_screen_saver"]
 
 [[setting]]
 id = "0x0308"
@@ -514,10 +526,12 @@ name = "Settings › Display › Animations"
 scope = "global"
 values = ["off", "on"]
 default = 1
-contexts = []
-oracle = "None yet."
-tests = ["sim/tests/settings_matrix.rs::matrix::s0308", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
-gap = "not wired: no code reads 0x0308 (4096 has its own Animations setting, 0x0E25)"
+contexts = ["RadioPresets"]
+unaffected = ["@screens", "@services", "audio"]
+na = { "governor" = "review: the governor's setting inputs are Performance 0x0C07 and Power mode 0x0401 (orpheus-power Governor::step_in)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's setting inputs are Performance 0x0C07 and Power mode 0x0401 (fw main.rs Governor)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight follows the screen state (fw ui.rs: 12 on, 0 off), which only Backlight timeout 0x0302 and Screen saver 0x0307 drive", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date, Correction 0x0506 and Set from RDS 0x0507", "keys" = "review: which keys work while locked follows Keys when locked 0x0404 (KeyGate), and Lock delay 0x0303 locks them" }
+oracle = "Marquees (05 §4 \"Motion\"): long focused text in lists and the mini-player's title scroll with it on and stay at rest off (seen in the radio's presets list); also off in Battery saver (0x0401). Nothing else moves differently (4096 has its own Animations, 0x0E25)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0308", "crates/orpheus-apps/src/services.rs::setting_effects::keys_rotation_animations_power_mode", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0308"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0308"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
 [[setting]]
 id = "0x0309"
@@ -525,10 +539,12 @@ name = "Settings › Display › Rotate"
 scope = "global"
 values = ["off", "on"]
 default = 0
-contexts = []
-oracle = "None yet."
-tests = ["sim/tests/settings_matrix.rs::matrix::s0309", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
-gap = "not wired: no code reads 0x0309"
+contexts = ["@screens", "radio-tuner", "recording"]
+unaffected = ["@services", "audio"]
+na = { "governor" = "review: the governor's setting inputs are Performance 0x0C07 and Power mode 0x0401 (orpheus-power Governor::step_in)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's setting inputs are Performance 0x0C07 and Power mode 0x0401 (fw main.rs Governor)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight follows the screen state (fw ui.rs: 12 on, 0 off), which only Backlight timeout 0x0302 and Screen saver 0x0307 drive", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date, Correction 0x0506 and Set from RDS 0x0507", "keys" = "review: which keys work while locked follows Keys when locked 0x0404 (KeyGate), and Lock delay 0x0303 locks them" }
+oracle = "Every screen: the panel shows the frame turned by 180° (simulator: Sim::panel; firmware: each flushed band turned and sent to the mirrored rows, the frame buffer stays upright) and Up/Down, Prev/Next swap (05 §4 \"Rotation\"): journeys by keys land elsewhere (the radio and recorder journeys open other apps). Held off under a host test's look."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0309", "crates/orpheus-ui/src/gfx.rs::tests::rotated_bands_make_the_frame_turned", "sim/tests/shell.rs::rotation_swaps_keys", "crates/orpheus-apps/src/services.rs::setting_effects::keys_rotation_animations_power_mode", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0309"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0309"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
 [[setting]]
 id = "0x030A"
@@ -576,10 +592,14 @@ name = "Settings › Power › Power mode"
 scope = "global"
 values = ["Auto", "Battery saver", "High performance"]
 default = 0
-contexts = ["Settings.Power"]
-oracle = "None yet."
-tests = ["sim/tests/settings_matrix.rs::matrix::s0401", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
-gap = "not wired: no code reads 0x0401 (the clock governor follows Settings › System › Performance, 0x0C07)"
+contexts = ["Settings.Power", "RadioPresets", "governor", "governor-player"]
+unaffected = ["@screens", "@services", "audio"]
+na = { "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: Battery saver's capped backlight (02 §5.4) needs brightness levels the hardware facts do not give (Brightness 0x0301 gap)", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date, Correction 0x0506 and Set from RDS 0x0507", "keys" = "review: which keys work while locked follows Keys when locked 0x0404 (KeyGate), and Lock delay 0x0303 locks them" }
+oracle = "Governor (02 §5.4): Battery saver keeps the clock at Base, or at the audio task's floor, and leaves a higher level at once; High performance holds at least High (144 MHz) while the screen is on; Automatic is the governor itself (host: orpheus-power Governor::step_in). Battery saver also stops the marquees (Animations, seen in the radio's presets list). Settings › Power shows the value."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0401", "crates/orpheus-power/src/governor.rs::tests::power_mode_setting_values", "crates/orpheus-apps/src/services.rs::setting_effects::keys_rotation_animations_power_mode", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0401"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0401"], "governor" = ["crates/orpheus-power/src/governor.rs::tests::power_mode_setting_values"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+device = true
+uncovered = { "governor-player" = "the clock level on the player (governor statistics); Power mode is not in the session's whitelist and no journey reads the level yet" }
 
 [[setting]]
 id = "0x0402"
@@ -615,10 +635,12 @@ name = "Settings › Power › Keys when locked"
 scope = "global"
 values = ["None", "Volume", "Volume and transport"]
 default = 1
-contexts = ["Settings.Power"]
-oracle = "None yet."
-tests = ["sim/tests/settings_matrix.rs::matrix::s0404", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
-gap = "not wired: the key gate's rule is fixed (orpheus-ui KeyGate::new: volume keys work while locked); no code reads 0x0404"
+contexts = ["Settings.Power", "keys"]
+unaffected = ["@screens", "@services", "audio"]
+na = { "governor" = "review: the governor's setting inputs are Performance 0x0C07 and Power mode 0x0401 (orpheus-power Governor::step_in)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's setting inputs are Performance 0x0C07 and Power mode 0x0401 (fw main.rs Governor)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight follows the screen state (fw ui.rs: 12 on, 0 off), which only Backlight timeout 0x0302 and Screen saver 0x0307 drive", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date, Correction 0x0506 and Set from RDS 0x0507" }
+oracle = "Keys while locked or with the screen off: None lets only Power through (Vol± show the lock notice), Volume lets Vol± through, Volume and transport also OK (play/pause), Next and Prev (track) — to playback, never to the screen under the lock (orpheus-ui Gate::Transport). Settings › Power shows the value."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0404", "sim/tests/settings_matrix.rs::effects::keys_when_locked_reach_volume_and_transport", "crates/orpheus-ui/src/input.rs::tests::keys_when_locked_setting", "crates/orpheus-apps/src/services.rs::setting_effects::keys_rotation_animations_power_mode", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0404"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0404"], "keys" = ["sim/tests/settings_matrix.rs::effects::keys_when_locked_reach_volume_and_transport", "crates/orpheus-ui/src/input.rs::tests::keys_when_locked_setting"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
 # ---------------------------------------------------------------- Date & time
 
@@ -654,10 +676,12 @@ name = "Settings › Date & time › Time zone (UTC offset)"
 scope = "global"
 values = [-720, 0, 60, 840]
 default = 0
-contexts = []
-oracle = "None yet."
-tests = ["sim/tests/settings_matrix.rs::matrix::s0505", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
-gap = "not wired: no code outside the settings table reads 0x0505 (the RTC keeps local time)"
+contexts = ["Authenticator", "usb-keyboard"]
+unaffected = ["@screens", "@services", "audio"]
+na = { "governor" = "review: the governor's setting inputs are Performance 0x0C07 and Power mode 0x0401 (orpheus-power Governor::step_in)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's setting inputs are Performance 0x0C07 and Power mode 0x0401 (fw main.rs Governor)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight follows the screen state (fw ui.rs: 12 on, 0 off), which only Backlight timeout 0x0302 and Screen saver 0x0307 drive", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC keeps local time; the offset converts it to UTC for the Authenticator's codes (and for Set from RDS 0x0507)", "keys" = "review: which keys work while locked follows Keys when locked 0x0404 (KeyGate), and Lock delay 0x0303 locks them" }
+oracle = "Time codes (06 §5.3): the clock keeps local time and UTC is that less the offset, so the Authenticator's TOTP codes and the code typed over the USB keyboard follow it (firmware: vault::unix_now)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0505", "crates/orpheus-apps/src/services.rs::setting_effects::utc_offset", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0505"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0505"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
 [[setting]]
 id = "0x0506"
@@ -665,10 +689,12 @@ name = "Settings › Date & time › Correction"
 scope = "global"
 values = [-60, 0, 60]
 default = 0
-contexts = []
-oracle = "None yet."
-tests = ["sim/tests/settings_matrix.rs::matrix::s0506", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
-gap = "not wired: no code reads 0x0506 (no drift correction)"
+contexts = ["clock"]
+unaffected = ["@screens", "@services", "audio"]
+na = { "governor" = "review: the governor's setting inputs are Performance 0x0C07 and Power mode 0x0401 (orpheus-power Governor::step_in)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's setting inputs are Performance 0x0C07 and Power mode 0x0401 (fw main.rs Governor)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight follows the screen state (fw ui.rs: 12 on, 0 off), which only Backlight timeout 0x0302 and Screen saver 0x0307 drive", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "keys" = "review: which keys work while locked follows Keys when locked 0x0404 (KeyGate), and Lock delay 0x0303 locks them" }
+oracle = "Clock: the running clock gains (or loses) that many seconds a day, a whole second at a time (+60: one second every 24 minutes; simulator: set:clockrun; firmware: the RTC stepped by the UI loop, never during a test session)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0506", "sim/tests/settings_matrix.rs::effects::clock_correction_moves_the_clock", "crates/orpheus-apps/src/services.rs::setting_effects::clock_drift_correction", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0506"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0506"], "clock" = ["sim/tests/settings_matrix.rs::effects::clock_correction_moves_the_clock", "crates/orpheus-apps/src/services.rs::setting_effects::clock_drift_correction"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
 [[setting]]
 id = "0x0507"
@@ -676,10 +702,11 @@ name = "Settings › Date & time › Set from RDS"
 scope = "local"
 values = ["off", "on"]
 default = 0
-contexts = []
-oracle = "None yet."
-tests = ["sim/tests/settings_matrix.rs::matrix::s0507", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
-gap = "not wired: no code reads 0x0507"
+contexts = ["clock"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "Clock: on, the radio's RDS clock time (group 4A, taken once two minutes agree) sets the clock in the player's time zone; off, it is never set from the air (firmware: Fw::rds_clock, never during a test session)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0507", "sim/tests/settings_matrix.rs::effects::set_from_rds_sets_the_clock", "crates/orpheus-apps/src/services.rs::setting_effects::set_from_rds", "crates/orpheus-fm/src/rds.rs::tests::clock_time_needs_two_agreeing_minutes", "crates/orpheus-fm/src/radio.rs::tests::rds_clock_time_arrives", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0507"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0507"], "clock" = ["sim/tests/settings_matrix.rs::effects::set_from_rds_sets_the_clock", "crates/orpheus-fm/src/rds.rs::tests::clock_time_needs_two_agreeing_minutes"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
 # ---------------------------------------------------------------- Bluetooth
 
@@ -891,10 +918,11 @@ name = "Settings › USB › Read-only card"
 scope = "local"
 values = ["off", "on"]
 default = 0
-contexts = ["Settings.Usb"]
-oracle = "None yet."
-tests = ["sim/tests/settings_matrix.rs::matrix::s0902", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
-gap = "not wired: no code reads 0x0902 (the USB drive is always writable)"
+contexts = ["UsbConnect", "Settings.Usb", "usb-host"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "USB host: File transfer gives the computer the card write-protected (SCSI MODE SENSE WP, writes refused: orpheus-usb scsi Unit::read_only; firmware MSC_READ_ONLY); the USB question shows a lock on the File transfer row."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0902", "sim/tests/settings_matrix.rs::effects::read_only_card_for_the_computer", "crates/orpheus-apps/src/services.rs::setting_effects::usb_settings", "crates/orpheus-usb/src/msc/scsi.rs::tests::read_write_ranges", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0902"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0902"], "usb-host" = ["sim/tests/settings_matrix.rs::effects::read_only_card_for_the_computer", "crates/orpheus-usb/src/msc/scsi.rs::tests::read_write_ranges"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
 [[setting]]
 id = "0x0903"
@@ -902,10 +930,11 @@ name = "Settings › USB › Developer channel"
 scope = "local"
 values = ["off", "on"]
 default = 1
-contexts = ["Settings.Usb"]
-oracle = "None yet."
-tests = ["sim/tests/settings_matrix.rs::matrix::s0903", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
-gap = "not wired: no code reads 0x0903 (the developer interface is always offered)"
+contexts = ["Settings.Usb", "usb-host"]
+unaffected = ["@screens", "@services", "audio"]
+oracle = "USB host: off, the player offers no developer interface (the device enumerates with none in the idle personality, and without it beside the card reader or keyboard; no developer request is answered). Always on while a host test or a test session runs, and the session can never set it (`settings test-set` refuses it)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0903", "crates/orpheus-apps/src/services.rs::setting_effects::usb_settings", "xtask/src/dev/player.rs::tests::session_refuses_the_developer_channel", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0903"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0903"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
 [[setting]]
 id = "0x0904"

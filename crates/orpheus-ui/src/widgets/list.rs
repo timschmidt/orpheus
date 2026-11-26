@@ -494,7 +494,7 @@ impl ListView {
         let n = src.len();
         let scroll = n > rows;
         let row_w = if scroll { w - 4 } else { w };
-        let marquee = marquee_offset(now.since(self.focus_since), self.overflow);
+        let marquee = if g.motion { marquee_offset(now.since(self.focus_since), self.overflow) } else { 0 };
         let all = dirty == Dirty::All
             || !self.drawn.valid
             || self.drawn.top != self.top

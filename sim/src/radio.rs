@@ -24,6 +24,8 @@ pub struct SimRadio {
     rt: String,
     title: String,
     events: Vec<u32>,
+    /// Milliseconds of the on-air clock (`chip.clock`) not yet a second.
+    clock_ms: u64,
 }
 
 impl Default for SimRadio {
@@ -40,6 +42,7 @@ impl Default for SimRadio {
             rt: String::new(),
             title: String::new(),
             events: Vec::new(),
+            clock_ms: 0,
         }
     }
 }
@@ -134,6 +137,12 @@ impl SimRadio {
 
     /// Let `ms` pass: the radio polls the fake chip at its own deadlines.
     pub fn advance(&mut self, ms: u64) {
+        // The stations' clock time on air (`set:rdsclock=UNIX`).
+        if let Some(c) = self.chip.clock.as_mut() {
+            self.clock_ms += ms;
+            *c += self.clock_ms / 1000;
+            self.clock_ms %= 1000;
+        }
         let end = self.now + ms;
         let mut guard = 0u32;
         while let Some(t) = self.radio.poll(&mut self.chip, self.now) {

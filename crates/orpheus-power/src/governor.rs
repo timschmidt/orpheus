@@ -74,6 +74,33 @@ impl Performance {
     }
 }
 
+/// Settings › Power › Power mode (02 §5.4).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum PowerMode {
+    /// The governor as it is ([`Governor::step`]).
+    #[default]
+    Auto,
+    /// Battery saver: the clock stays at Base, or at the floor the audio
+    /// task asks for when that is higher (playback keeps what it needs; the
+    /// UI never raises the clock).
+    Saver,
+    /// High performance: at least High (144 MHz) while the screen is on.
+    High,
+}
+
+impl PowerMode {
+    /// From the stored setting value (0 Automatic, 1 Battery saver, 2 High
+    /// performance; anything else is Automatic).
+    #[must_use]
+    pub const fn from_setting(v: i16) -> PowerMode {
+        match v {
+            1 => PowerMode::Saver,
+            2 => PowerMode::High,
+            _ => PowerMode::Auto,
+        }
+    }
+}
+
 /// One level up when the idle share is below this (percent).
 pub const UP_BELOW: u32 = 25;
 /// One level down after [`CALM_STEPS`] steps above this (percent).
@@ -142,6 +169,32 @@ impl Governor {
             None
         }
     }
+
+    /// [`Governor::step`] under a power mode (02 §5.4): Automatic is `step`
+    /// itself; Battery saver caps the level at Base or the audio floor,
+    /// whichever is higher (a higher level found goes there at once); High
+    /// performance keeps at least High while the screen is on.
+    pub fn step_in(&mut self, i: Input, mode: PowerMode, screen_on: bool) -> Option<Level> {
+        match mode {
+            PowerMode::Auto => self.step(i),
+            PowerMode::Saver => {
+                let cap = Level::from_index(1 + i.floor.min(2));
+                if i.current > cap {
+                    self.calm = 0;
+                    return Some(cap);
+                }
+                self.step(i).filter(|l| *l <= cap)
+            }
+            PowerMode::High if screen_on => {
+                if i.current < Level::High {
+                    self.calm = 0;
+                    return Some(Level::High);
+                }
+                self.step(i).filter(|l| *l >= Level::High)
+            }
+            PowerMode::High => self.step(i),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -199,6 +252,57 @@ mod tests {
                 "idle from {start:?}"
             );
         }
+    }
+
+    /// Run `loads` under a power mode with the screen on or off.
+    fn run_mode(start: Level, mode: PowerMode, screen: bool, floor: u8, loads: &[u32]) -> Vec<Level> {
+        let mut g = Governor::new();
+        let mut cur = start;
+        loads
+            .iter()
+            .map(|&idle_pct| {
+                let i = Input { idle_pct, current: cur, floor, perf: Performance::Normal };
+                if let Some(l) = g.step_in(i, mode, screen) {
+                    cur = l;
+                }
+                cur
+            })
+            .collect()
+    }
+
+    /// VER-13: Settings › Power › Power mode (0x0401, 02 §5.4) — the
+    /// values as the governor takes them and their effect: Automatic is the
+    /// governor itself; Battery saver stays at Base under load (or at the
+    /// audio floor) and leaves a higher level at once; High performance
+    /// holds High while the screen is on and is Automatic with it off.
+    #[test]
+    fn power_mode_setting_values() {
+        use Level::*;
+        assert_eq!(PowerMode::from_setting(0), PowerMode::Auto);
+        assert_eq!(PowerMode::from_setting(1), PowerMode::Saver);
+        assert_eq!(PowerMode::from_setting(2), PowerMode::High);
+        assert_eq!(PowerMode::from_setting(9), PowerMode::Auto);
+        let busy = [5; 6];
+        let idle = [95; 12];
+        for screen in [false, true] {
+            for (start, loads) in [(Base, &busy[..]), (High, &idle[..]), (Mid, &[50; 4][..])] {
+                assert_eq!(
+                    run_mode(start, PowerMode::Auto, screen, 0, loads),
+                    run(start, Performance::Normal, 0, loads),
+                    "Automatic is the governor"
+                );
+            }
+        }
+        assert_eq!(run_mode(Base, PowerMode::Auto, true, 0, &busy)[5], High);
+        assert_eq!(run_mode(Base, PowerMode::Saver, true, 0, &busy), [Base; 6]);
+        assert_eq!(run_mode(Base, PowerMode::Saver, true, 1, &busy), [Mid; 6], "the audio floor holds");
+        assert_eq!(run_mode(High, PowerMode::Saver, true, 0, &[50]), [Base], "down at once");
+        assert_eq!(run_mode(Base, PowerMode::High, true, 0, &idle), [High; 12]);
+        assert_eq!(
+            run_mode(Base, PowerMode::High, false, 0, &idle),
+            run(Base, Performance::Normal, 0, &idle)
+        );
+        assert_eq!(run_mode(High, PowerMode::High, false, 0, &idle)[11], Base, "screen off: Automatic");
     }
 
     #[test]

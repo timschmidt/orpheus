@@ -66,9 +66,127 @@ of every session. Newest entries first in §3.
 | TTS-1 | **done (host)**; not in the firmware, simulator or apps (TTS-2, A11Y-1, BOOK-3) | `orpheus-tts`: incremental converter (1,408 B, any feed sizes), English normaliser, NRL letter-to-sound rules + stress heuristic + stems, CMUdict exception lexicon (4,487 entries in 32,766 B; `cargo xtask tts-lexicon`), duration model for 0.25×–10×; rules alone 79.8 % of tokens, with the lexicon 98.1 % (session entry 2026-11-25 "TTS-1") |
 | TTS-2 | **done (host)**; not in the firmware, simulator or apps (A11Y-1, BOOK-3, firmware integration) | `orpheus-tts`: cascade/parallel formant synthesiser after Klatt 1980 (KLGLOTT88-like source with polyBLEP, F1–F6 cascade, nasal pole/zero, parallel frication/bursts), phoneme targets and loci from the phonetics literature, intonation (declination, accents, 5 contours, asides), voices Neutral/Low/Bright, exact TTS-1 durations at 0.25×–10×, resampler to 8–48 kHz, `Synth` (1,936 B) and `Speaker` (3,352 B with the converter), events and stop; WER (whisper base.en) 13.9 / 30.5 / 93 % at 1/2/4× (espeak-ng 5.9 / 63 / 89 %); player estimate ≈ 22 % of Base at 48 kHz (over the 20 % budget), code ≈ 70 KB without the lexicon (over 64 KiB) (session entry 2026-11-25 "TTS-2") |
 | VER-13 | **tool and matrix done (host + simulator); one device journey (not yet run on the player)** | `cargo xtask settings-matrix [--check] [--strict]` (alias `settings coverage`; in `test all`, `--strict` in `gate --m11`); manifest for all 162 settings of the tree; simulator matrix over 59 screen + 10 service contexts (`sim/tests/settings_matrix.rs`), host tests for sound, governor, steps, recorder split, persistence/defaults/clamping/migration per kind; journey `settings_shuffle` (RAM-only session). 9,365 / 9,412 matrix cells covered; 22 settings have no effect to show (not wired) and 47 contexts are reviewed exclusions (session entry 2026-11-26 "VER-13") |
+| VER-13 (Display, Power, Date & time, USB) | **built (host + simulator + firmware), not yet run on the player** | Backlight timeout, Lock delay, Screen saver, Animations, Rotate (software 180°), Power mode, Keys when locked (transport to playback), Time zone, Correction, Set from RDS (group 4A), Read-only card, Developer channel (held on under any host test; the session refuses it) have their effects; journeys `settings_screen_timers`, `settings_screen_saver`; Brightness (missing stock duty values, U-PWM-3) and Wallpaper (Set as wallpaper not built) left; stack margin 4,568 B, .bss 125,352 B. User check 30 (session entry 2026-11-26 "VER-13: Display, Power, Date & time and USB") |
 | GAME-6 Bricks (M14) | **built (host + simulator + firmware), not yet run on the player** | Brick breaker of our own: integer physics with one-pixel sub-steps (no tunnelling at any speed, no floating point), paddle angles, 1–3-hit and unbreakable bricks, 8 hand-made + generated levels, five power-ups, lives, scores, saves; 7 settings packed into 1 word; 47 goldens; fuzz `bricks_keys`. In the firmware (`orpheus-apps/bricks`): stack margin 4,116 B unchanged. Lead: session entry 2026-11-25 "GAME-6" |
 
 ## 3. Session log
+
+### 2026-11-26 — VER-13: Display, Power, Date & time and USB settings have their effect (worker, no hardware)
+
+Owner's "100 % setting → effect": the settings VER-13 found changing only
+their own row, except Sound/Playback (another worker). Each with host
+logic and unit tests, simulator support and matrix entries, firmware
+wiring; `effects.toml` entries without `gap` (12 of 14 settings).
+
+* **Backlight timeout 0x0302, Lock delay 0x0303** (05 §6.3):
+  `orpheus_ui::input::ScreenTimer` + `Timeouts` (`services::screen_timeouts`):
+  the screen goes off that long after the last key (the next key only
+  wakes it), the keys lock Lock delay later (Immediately/5/30/60 s/Never);
+  firmware UI loop (`apply_settings`), simulator `Sim::advance`. Tests:
+  `input.rs` `screen_timer_*`, `setting_effects::screen_timer_values`,
+  matrix `effects::backlight_timeout_turns_the_screen_off`,
+  `lock_delay_locks_after_the_screen_went_off`. **Test safety**: under the
+  test look (suite, fuzzers, soak) or a host test the timers are held
+  (`services::TimerHold`); a session's `test-set` of 0x0302/0x0303/0x0307
+  off its default arms them, back at the defaults they are held again and
+  the screen comes on with the keys free (`session_set_hooks`). The
+  simulator holds them by default too (`set:timers=run` runs them), so no
+  existing test or golden changed. Device check: journey
+  `settings_screen_timers` (`ui top` screen=0, then locked=1, then back).
+* **Screen saver 0x0307**: Clock keeps the panel lit at the timeout and
+  the shell draws the time in dim 28 px numerals on a dark background
+  (light themes too), moved every minute (`shell::saver_spot`); Power is
+  always dark; `ui top` gains `saver=`. Goldens `app_screen_saver_*` (6).
+  Journey `settings_screen_saver` (turns the look off for its duration, the
+  look reads 0x0307 as its default).
+* **Animations 0x0308**: `System::animations` → `Gfx::motion`: list and
+  mini-player marquees at rest when off (radio's presets list in the
+  matrix). The 120 ms screen slide of 05 §4 is not built, so marquees are
+  all there is to stop.
+* **Rotate 0x0309**: 180° in software (no controller flag is a hardware
+  fact yet): `gfx::turn_band`/`rotated_band` — each flushed band turned in
+  place, sent to the mirrored panel rows (`Display::flush_band`) and turned
+  back, so the frame buffer stays upright for drawing and screenshots; the
+  key mapper's existing `rotated` swap set from the setting. Simulator
+  `Sim::panel`; the matrix compares the panel (every screen + the radio and
+  recorder journeys, whose keys land elsewhere). `sim/tests/apps.rs`
+  `walk_every_settings_group` turns Rotate back off after toggling it.
+* **Power mode 0x0401**: `governor::PowerMode` + `Governor::step_in`
+  (Battery saver: Base or the audio floor, a higher level left at once;
+  High performance: ≥ High while the screen is on; Automatic = `step`);
+  Battery saver also stops the marquees. Firmware `ui::POWER_MODE` → the
+  watchdog task's governor. Test `power_mode_setting_values`. The backlight
+  cap of 02 §5.4 waits for brightness levels.
+* **Keys when locked 0x0404**: `KeyGate::when_locked` from the setting;
+  new `Gate::Transport`: OK/Next/Prev while locked go to playback
+  (`services::locked_transport`: play/pause, next, previous track), never
+  to the screen under the lock (before, a pass-through would have reached
+  the hidden screen). Tests `keys_when_locked_setting`,
+  `effects::keys_when_locked_reach_volume_and_transport`.
+* **Time zone 0x0505**: the RTC keeps local time; UTC = local − offset
+  (`services::utc_of_local`; firmware `vault::unix_now`, simulator
+  `unix_time`): the Authenticator's codes and the typed code follow it.
+* **Correction 0x0506**: `services::ClockDrift` steps the running clock a
+  whole second at a time (+60 s/day: one second every 24 min); firmware
+  through `set_now`, never during a test session.
+* **Set from RDS 0x0507**: `orpheus_fm::rds` decodes group 4A (MJD,
+  hour, minute) and takes it once the next minute's group agrees (C/D
+  carry no error report); `Rds` stays 112 B (counters to u16) because the
+  SRAM3 shared window is full (`rec::Shared` hit its end with +8 B). The
+  fake tuner sends CT (`chip.clock`, `set:rdsclock=UNIX`). Firmware
+  `Fw::rds_clock` sets the RTC in the time zone, never during a session.
+* **Read-only card 0x0902**: the UI's File transfer sets `MSC_READ_ONLY`
+  from it (SCSI WP and refused writes already in `orpheus-usb`); the USB
+  question shows a lock on the File transfer row (goldens
+  `app_usb_read_only_*`, 6).
+* **Developer channel 0x0903** (06 §2.5 as built): off, the developer
+  personality enumerates with no interface, the others without the vendor
+  interface, and no vendor request is answered (`usbdev::builder`). Held
+  on while the test mailbox, the test look or a settings session is
+  active; `settings test-set` refuses it (host test
+  `session_refuses_the_developer_channel`; the SimPlayer now refuses what
+  the firmware refuses). A change re-enumerates the developer personality.
+  Default on: the build behaves as before (one atomic load per build of
+  the device). Ways back: Settings › USB › Developer channel on (keys),
+  Factory reset; recovery (ADFU) is unchanged (Settings › System ›
+  Recovery mode, power menu, reset + Next) — `docs/user/troubleshooting.md`.
+* **Left (reported)**: **Brightness 0x0301** — missing hardware fact: the
+  stock firmware's brightness duty values for PWM4 (and U-PWM-1); new
+  unknown **U-PWM-3** (01 §9). **Wallpaper 0x0306** — the spec defines it
+  only as a picture from Pictures › Set as wallpaper (not built, AU-14); no
+  other values are specified.
+* **Fixed (tooling)**: a journey's `cmd: ui top ~ …` could never pass
+  (`player::command` primed the reply with `ui top` itself):
+  `regress_ui_top_check_was_primed_with_itself`.
+* **Stack**: the first build had the UI task's poll frame 848 → 1,168 B
+  (margin 3,920 B, below the 4,096 B budget): `Shell::key` inlined into
+  it. `#[inline(never)]` on `Shell::key`: frame 520 B.
+* **Measured** (firmware, `cargo xtask build/size/stack`): resident
+  81,075 → 81,091 B; .bss 125,280 → 125,352 B (+72: the screen timer,
+  drift, statics; the stack start did not move a 256 B step); static stack
+  margin 4,240 → 4,568 B (thread context 5,880 → 5,552 B);
+  `check-resident` ok.
+* **Matrix** (`settings-matrix --check`): 10 settings without an effect
+  (was 22; the rest are Sound/Playback's and Monitor), 0 errors.
+* **Gate**: host `cargo fmt --all --check`, `cargo clippy --workspace
+  --all-targets -D warnings`, `cargo clippy -p orpheus-apps --all-targets
+  -D warnings` (no features), `cargo test --workspace` (1,738 passed, 0
+  failed, 11 ignored; was 1,712), `cargo xtask settings-matrix --check`
+  (162 settings, 10,212 / 10,260 cells, 10 without an effect, 58
+  exclusions, 0 errors); firmware `fmt --check`, `clippy --workspace -D
+  warnings`, `cargo xtask build`, `check-resident`, `size --check`,
+  `stack --check`: pass. **Not run**: `xtask test all` beyond these
+  (fuzz smoke, codecs), `brand`/`site --check`, every `xtask dev` step
+  (no hardware); idle-Home line loads not measured (the UI loop now runs
+  two small functions per pass: `apply_settings`, `publish_settings`).
+* **Open / lead**: run the suite (two new journeys: `settings_screen_timers`
+  ≈ 25 s, `settings_screen_saver`); user check 30 (USER-CHECKS.md); the
+  `na` review texts of the other global settings still say the backlight,
+  keys, clock and governor take no setting — now 0x0302/0x0307, 0x0303/
+  0x0404, 0x0506/0x0507 and 0x0401 do (left untouched to keep this
+  package's manifest edits to its own entries; a one-line sed after the
+  Sound/Playback merge). Power mode on the player (governor statistics)
+  has no journey: not in the session whitelist.
 
 ### 2026-11-26 — VER-13 merged; `settings_shuffle` on the player (lead)
 

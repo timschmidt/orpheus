@@ -12,11 +12,11 @@ or changes, Back goes up a level.
 |---|---|---|
 | **Sound** | Equaliser (Flat, Rock, Pop, Jazz, Classical, Electronic, Hip-hop, Bass boost, Vocal, two custom curves), balance, bass, crossfeed, channel mode (stereo, mono, swapped), volume limit | Works |
 | **Playback** | Shuffle, repeat, gapless, ReplayGain, resume at start, seek step | Works; speed and fades are **in progress** |
-| **Display** | Brightness, backlight time, auto-lock, theme (Dark, Light, Amber), accent colour, clock in the status bar, list roll-around, Home screen apps | Works; rotation, wallpaper and screen saver are **in progress** |
-| **Power** | Sleep timer, auto-off, what the keys do when locked, battery | Auto-off and low-battery switch-off are **being checked** on the player |
-| **Date & time** | Time, date, 24-hour clock, date format | Works; the clock has stopped after some restarts (known issue: set it again) |
+| **Display** | Brightness, backlight time, lock delay, screen saver (a dim clock), animations, rotation by 180°, theme (Dark, Light, Amber), accent colour, clock in the status bar, list roll-around, Home screen apps | Works; brightness and wallpaper are **in progress** |
+| **Power** | Power mode (automatic, battery saver, high performance), sleep timer, auto-off, keys when locked (none, volume, volume and track keys), battery | Auto-off and low-battery switch-off are **being checked** on the player |
+| **Date & time** | Time, date, 24-hour clock, date format, time zone, correction (seconds a day), set from the radio (RDS) | Works; the clock has stopped after some restarts (known issue: set it again) |
 | **Bluetooth** | Device list, reconnect | See [Bluetooth](bluetooth.md) |
-| **USB** | What happens when you plug into a computer: ask, charge only, file transfer (card reader) | Charge only and file transfer work; the other choices are **in progress** |
+| **USB** | What happens when you plug into a computer: ask, charge only, file transfer (card reader); read-only card reader; developer channel (for the tools: [troubleshooting](troubleshooting.md)) | Charge only and file transfer work; the other choices are **in progress** |
 | **Language** | English; Russian and Japanese | English works; the other languages run in the simulator and are **in progress** on the player |
 | **Storage** | Card info, rebuild library, clear caches | Works |
 | **System** | About, Performance, Diagnostics, Factory reset, Recovery mode | Works |
