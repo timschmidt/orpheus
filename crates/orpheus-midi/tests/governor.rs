@@ -179,21 +179,25 @@ fn pct(a: u64, b: u64) -> u64 {
 /// budget (1,795 cycles a frame) at some point — the reverb alone is 671,
 /// a voice 160–740 — so the governor acts on each. Afterwards the render
 /// stays within the budget but for note bursts between two plans and the
-/// fade-out tails of stolen voices (under 3 % of the frames past the
-/// first two seconds), under 1 % of the PCM halves past them cost more
-/// than 62 % of their real time (where the ring could run dry), and the
-/// songs play to their end. None plays bit for bit with the host for
-/// long: `crc on` checks run with `synth gov off`.
+/// fade-out tails of stolen voices, under 1 % of the PCM halves past the
+/// first two seconds cost more than 62 % of their real time (where the
+/// ring could run dry), and the songs play to their end. None plays bit
+/// for bit with the host for long: `crc on` checks run with `synth gov
+/// off`. (Since 2026-11-26 a step comes back when the smoothed cost is
+/// under half of real time and the step fits the budget, through note
+/// bursts: "Hill Song" here keeps a voice more and has single pieces over
+/// the budget in 13 % of its frames, was 2 %, still no PCM half at risk;
+/// "Sound tour" plays 7 % of its frames at full quality, was under 5 %.)
 #[test]
 fn demo_songs_fit_the_budget_at_144_mhz() {
     for (name, song) in orpheus_midi::demo::SONGS {
         let r = run(name, song, AT_144);
         println!("{name} @144: {r:?}");
         assert!(r.frames > 44_100 * 20, "{name} played to its end");
-        assert!(pct(r.over_late, r.frames) < 3, "{name}: {} of {} frames over", r.over_late, r.frames);
+        assert!(pct(r.over_late, r.frames) < 15, "{name}: {} of {} frames over", r.over_late, r.frames);
         assert!(pct(r.halves_late, r.halves) < 1, "{name}: {} halves at risk", r.halves_late);
         assert_eq!(r.max_level, Some(Level::Voices), "{name}");
-        assert!(pct(r.full, r.frames) < 5, "{name}");
+        assert!(pct(r.full, r.frames) < 10, "{name}");
         assert!(!r.gave_up, "{name}");
     }
 }

@@ -42,12 +42,23 @@
 //! 256 samples and is then cleared. The decisions leave out the voices
 //! fading out (stolen into a tail, cut, shed: gone within 256 samples);
 //! the piece's length counts them. After [`CALM_MS`] (a voice) or
-//! [`CALM_FX_MS`] (an effect) of pieces in which the predicted cost *with
-//! the next step undone* stays under [`RESTORE_PCT`], the last step is
-//! undone: voices first, one at a time, then the reverb, the delay, the
-//! chorus; at full quality, after [`CALM_CLOCK_MS`] in which the cost
+//! [`CALM_FX_MS`] (an effect) of pieces in which the smoothed predicted
+//! cost (`status` `load=`) stays under [`RESTORE_PCT`] and the cost with
+//! the next step undone fits [`BUDGET_PCT`], the last step is undone:
+//! voices first, one at a time, then the reverb, the delay, the chorus;
+//! at full quality, after [`CALM_CLOCK_MS`] in which the smoothed cost
 //! stays under [`RESTORE_PCT`] of the next lower clock, the clock comes
-//! down a step. Rendering at half the rate (22.05 kHz, which the
+//! down a step (D-4: quality back before the clock comes down). The calm
+//! is net: a piece over takes back its own frames rather than starting
+//! the stretch again (2026-11-26, the player: one note burst a second kept
+//! "Hill Song" shed for its whole length at `load=30–43%`). Below the top
+//! clock nothing stays shed: a file starts at High at full quality
+//! ([`Governor::new`], whatever clock the last file left), and when the
+//! clock was not at the top while something was shed (a pin that ended)
+//! everything comes back at once. The decisions count the clock asked for
+//! (or the lower one the CPU runs at, [`Governor::set_clock`]), not a
+//! higher one the clock governor may take back. Rendering at half the
+//! rate (22.05 kHz, which the
 //! DAC plays natively) was considered and left out: the engine's state is
 //! rate-dependent throughout (every coefficient, the reverb's line layout)
 //! and a DAC rate change stops the PCM ring (a gap) — see 04 §9.
@@ -82,8 +93,8 @@
 //! An underrun burst is better than ending the song. The governor gives
 //! up ([`Governor::give_up`]) only when nothing can play: everything is
 //! shed at the top clock (or the clock a power mode pins: Battery saver
-//! runs the lowest clock the peripherals work at, and the governor notices
-//! that a raise was not followed, [`Governor::pinned`]) and the measured
+//! runs the lowest clock the peripherals work at, and the governor sees
+//! the CPU below the clock it asked for, [`Governor::pinned`]) and the measured
 //! render (compute and paging) is still above [`HOPELESS_PCT`] of real time
 //! for [`HOPELESS_MS`] of its own time (net: a piece under it takes back what one
 //! over it added). Short of that the song plays, underrunning where it
@@ -236,9 +247,11 @@ pub const BUDGET_PCT: u32 = 55;
 /// A piece predicted above this share sheds at once, whatever the smoothed
 /// cost says.
 pub const HARD_PCT: u32 = 80;
-/// A shed step is undone when the cost with it undone stays under this.
+/// A shed step is undone when the smoothed cost stays under this (and
+/// the cost with it undone fits [`BUDGET_PCT`]); the clock comes down
+/// when the cost is under this share of the lower clock.
 pub const RESTORE_PCT: u32 = 50;
-/// Time under [`RESTORE_PCT`] before a voice comes back, ms.
+/// Calm time (net) under [`RESTORE_PCT`] before a voice comes back, ms.
 pub const CALM_MS: u32 = 1_000;
 /// … before an effect comes back (an effect switching on and off is
 /// heard; a note more is not).
@@ -309,8 +322,9 @@ pub struct Governor {
     clk: u8,
     /// The highest step it may ask for.
     top: u8,
-    /// The clock did not follow a raise (a power mode pins it): no more
-    /// raises for this file; it sheds at the clock it has.
+    /// The CPU runs below the clock asked for (a power mode pins it): no
+    /// raise helps; it sheds at the clock it has. Set by every
+    /// [`Governor::set_clock`] (it was for the rest of the file).
     pinned: bool,
     /// Frames of calm, counted toward [`CALM_MS`] (and the clock's).
     calm: u32,
@@ -392,11 +406,13 @@ impl Governor {
             shed: 0,
             measures: 0,
         };
+        // Every file starts at full quality at High (the floor the
+        // firmware sets for the open), whatever clock the last file left:
+        // the first pieces raise it as far as they need (2026-11-26, the
+        // player: a song opened after "Etude" took Max from the clock it
+        // found, sat shed there and showed `clk=144`). A clock below High
+        // now is not a pin yet: `set_clock` tells before every plan.
         g.set_clock(clock_hz, rate);
-        g.clk = step_of(g.mhz);
-        // (A clock below High at the open is not a pin: the firmware raises
-        // it to High next; the first `set_clock` before a plan tells.)
-        g.pinned = false;
         g.restart();
         g
     }
@@ -413,16 +429,19 @@ impl Governor {
         self.clk = self.clk.min(self.top);
     }
 
-    /// The clock or the rate changed (the clock the CPU runs at now, which
-    /// need not be the one asked for: a power mode may pin it).
+    /// The clock the CPU runs at now (`clock_hz`) and the rate, before
+    /// every plan. It need not be the one asked for: below it, a power
+    /// mode pins the clock ([`Governor::pinned`], until the clock follows
+    /// again); above it, the clock governor raised it for other work and
+    /// may take it back any second, so the decisions count only the clock
+    /// asked for (2026-11-26: a file opened at the 288 MHz the last one
+    /// left was judged against it).
     pub fn set_clock(&mut self, clock_hz: u32, rate: u32) {
-        self.rt = (clock_hz / rate.max(1)).max(1);
         self.rate = rate.max(1);
         self.mhz = (clock_hz / 1_000_000).max(1);
         let asked = CLOCKS_MHZ.get(usize::from(self.clk)).copied().unwrap_or(CLOCKS_MHZ[0]);
-        if self.mhz < asked {
-            self.pinned = true;
-        }
+        self.pinned = self.mhz < asked;
+        self.rt = (self.mhz.min(asked) * 1_000_000 / self.rate).max(1);
     }
 
     /// The clock did not follow the governor (see [`Governor::set_clock`]).
@@ -560,9 +579,9 @@ impl Governor {
         if self.load > self.pct(BUDGET_PCT) || p > self.pct(HARD_PCT) {
             keep = self.over_budget(e, p);
         } else if self.level() != Level::Full {
-            self.restore(e, p, frames);
+            self.restore(e, frames);
         } else if self.clk > 0 {
-            self.lower(p, frames);
+            self.lower(frames);
         }
         Plan { fx: self.fx(), limit: self.limit, keep, frames, us, clock: self.clk }
     }
@@ -616,9 +635,17 @@ impl Governor {
         keep
     }
 
-    /// Undo the last step after a calm stretch.
+    /// Undo the last step after a calm stretch; everything at once below
+    /// the top clock (D-4: shed only at the top; the clock comes down only
+    /// at full quality, so this is a pin that ended or a top raised).
     #[inline(never)]
-    fn restore(&mut self, e: &Estimate, p: u32, frames: u32) {
+    fn restore(&mut self, e: &Estimate, frames: u32) {
+        if !self.at_top() {
+            self.fx_off = 0;
+            self.limit = self.max;
+            self.calm = 0;
+            return;
+        }
         let target = self.pct(RESTORE_PCT);
         // The cost with the next step undone, and how long it must fit.
         let (undo, extra, ms) = if self.limit < self.max {
@@ -629,11 +656,8 @@ impl Governor {
                 [FX_REVERB, FX_DELAY, FX_CHORUS].into_iter().find(|b| self.fx_off & b != 0).unwrap_or(0);
             (bit, self.predict(e.fx_of(bit & e.wanted)), CALM_FX_MS)
         };
-        if p + extra > target {
-            self.calm = 0;
-            return;
-        }
-        if !self.calm_for(frames, ms) {
+        let fits = self.load <= target && self.load + extra <= self.pct(BUDGET_PCT);
+        if !self.calm_for(fits, frames, ms) {
             return;
         }
         if undo == 0 {
@@ -650,19 +674,25 @@ impl Governor {
     /// At full quality: the clock a step down after a calm stretch at
     /// which the cost fits the lower clock with room.
     #[inline(never)]
-    fn lower(&mut self, p: u32, frames: u32) {
+    fn lower(&mut self, frames: u32) {
         let s = self.clk - 1;
-        if p > pct_of(self.rt_at(s), RESTORE_PCT) {
-            self.calm = 0;
-            return;
-        }
-        if self.calm_for(frames, CALM_CLOCK_MS) {
+        if self.calm_for(self.load <= pct_of(self.rt_at(s), RESTORE_PCT), frames, CALM_CLOCK_MS) {
             self.clk = s;
         }
     }
 
-    /// Count `frames` of calm; true (and the count reset) after `ms`.
-    fn calm_for(&mut self, frames: u32, ms: u32) -> bool {
+    /// Count `frames` of calm (`under`: the smoothed cost fits the
+    /// target) toward `ms`; true (and the count reset) when they add up.
+    /// A piece over the target takes its frames back rather than starting
+    /// the stretch again: a note burst in a song whose cost sits under the
+    /// target most of the time no longer keeps every step shed
+    /// (2026-11-26, the player: "Hill Song" at `load=30–43%` with the
+    /// reverb and nine voices shed for its whole length).
+    fn calm_for(&mut self, under: bool, frames: u32, ms: u32) -> bool {
+        if !under {
+            self.calm = self.calm.saturating_sub(frames);
+            return false;
+        }
         self.calm += frames;
         if u64::from(self.calm) * 1000 < u64::from(ms) * u64::from(self.rate) {
             return false;
@@ -748,14 +778,15 @@ fn pct_of(rt: u32, p: u32) -> u32 {
 /// clock it asks for, the pieces, the pace rule's rests, the PCM ring and
 /// thread mode, in simulated microseconds.
 pub mod sim {
-    use super::{CLOCKS_MHZ, Estimate, Governor, Plan};
+    use super::{CLOCKS_MHZ, Estimate, Governor, Level, Plan, TOP};
+    use orpheus_power::pace::{self, MARGIN_US};
 
-    /// The pace rule (`orpheus_power::pace::RUN_US`): a rest after this much
-    /// work without one.
-    pub const RUN_US: u32 = 8_000;
-    /// Its rest (`orpheus_power::pace::REST_US`); a wait for the ring this
-    /// long counts as one.
-    pub const REST_US: u32 = 4_000;
+    /// The pace rule ([`orpheus_power::pace::RUN_US`]): a rest after this
+    /// much work without one.
+    pub const RUN_US: u32 = pace::RUN_US;
+    /// Its rest ([`orpheus_power::pace::REST_US`]); a wait for the ring
+    /// this long counts as one.
+    pub const REST_US: u32 = pace::REST_US;
     /// The window thread mode's share is measured over, µs.
     pub const WINDOW_US: u64 = 100_000;
 
@@ -771,6 +802,16 @@ pub mod sim {
         /// The clock stays here whatever the governor asks (a power mode
         /// pins it), Hz; `None`: the clock follows [`Plan::clock`] at once.
         pub pinned_hz: Option<u32>,
+        /// The clock the CPU runs at when the file opens (the last file
+        /// left it, or the clock governor chose it for other work), Hz,
+        /// and for how long, µs: the clock is at least this until then
+        /// (the clock governor takes it back after its calm steps).
+        /// `None`: the clock asked for from the start.
+        pub left: Option<(u32, u64)>,
+        /// The clock at the first plan, Hz (the clock governor lowered
+        /// what was left to the open's High floor during the scan); a
+        /// raise in that plan applies at once, as always.
+        pub first_hz: Option<u32>,
     }
 
     impl Setup {
@@ -778,7 +819,14 @@ pub mod sim {
         /// clock following the governor.
         #[must_use]
         pub fn new(rate: u32, seconds: u64) -> Self {
-            Self { rate, ring: 3072, frames: u64::from(rate) * seconds, pinned_hz: None }
+            Self {
+                rate,
+                ring: 3072,
+                frames: u64::from(rate) * seconds,
+                pinned_hz: None,
+                left: None,
+                first_hz: None,
+            }
         }
     }
 
@@ -789,6 +837,10 @@ pub mod sim {
         pub per_frame: u32,
         /// Paging during the piece, cycles.
         pub paging: u32,
+        /// Other work on the real-time executor before the piece (the
+        /// outer loop's part, a card read for the parser), µs: no rest,
+        /// not measured.
+        pub stall_us: u32,
     }
 
     /// What the model measured.
@@ -820,6 +872,17 @@ pub mod sim {
         pub stopped: bool,
         /// Frames written.
         pub written: u64,
+        /// Rests that started with less audio in the ring than the rest,
+        /// the piece after it and the margin ([`orpheus_power::pace::rest_first`]),
+        /// and of them those that were not forced by its bound.
+        pub short_rests: u32,
+        pub short_rests_unforced: u32,
+        /// Frames rendered with something shed while the CPU ran below the
+        /// top clock and no power mode pinned it (D-4: shed only at the
+        /// top).
+        pub shed_below_top: u64,
+        /// The clock step of the first piece.
+        pub first_clock: u8,
     }
 
     /// Thread mode's time.
@@ -849,8 +912,10 @@ pub mod sim {
     /// engine's estimate now, `render(plan)` renders the piece the plan
     /// asks for and returns its true cost. Before a piece that would end
     /// more than [`RUN_US`] after the last rest (or a wait for the ring as
-    /// long as one), the loop rests [`REST_US`]; a full ring waits. The
-    /// governor's clock applies before the piece (unless pinned).
+    /// long as one), the loop rests [`REST_US`] if the ring covers it
+    /// (`orpheus_power::pace::rest_first`, as the firmware); a full ring
+    /// waits. The governor's clock applies before the piece (unless
+    /// pinned; [`Setup::left`] for a clock the last file left).
     pub fn run(
         gov: &mut Governor,
         s: &Setup,
@@ -860,30 +925,68 @@ pub mod sim {
         let rate = u64::from(s.rate.max(1));
         let mut r = Report { min_thread_pct: 100, ..Report::default() };
         let mut c = Clock { t: 0, win_start: 0, win_thread: 0 };
-        let (mut written, mut busy, mut start) = (0u64, 0u64, None::<u64>);
+        let (mut written, mut busy, mut start, mut deferred) = (0u64, 0u64, None::<u64>, 0u32);
         let played = |t: u64, start: Option<u64>| start.map_or(0, |s| (t - s) * rate / 1_000_000);
         let hz_of = |step: u8| CLOCKS_MHZ[usize::from(step).min(2)] * 1_000_000;
+        // The clock the CPU runs at for the step asked: at once (the
+        // firmware raises the floor at once), at least what the last file
+        // left until the clock governor takes it back, the first piece's
+        // as given.
+        let cpu = |step: u8, t: u64, first: bool| {
+            let asked = hz_of(step);
+            match (s.pinned_hz, s.left, s.first_hz) {
+                (Some(hz), ..) => hz,
+                (None, _, Some(hz)) if first => hz,
+                (None, Some((hz, until)), _) if t < until => asked.max(hz),
+                _ => asked,
+            }
+        };
         while written < s.frames {
             let room = played(c.t, start) + u64::from(s.ring);
             if written >= room {
                 let dt = (written - room + 1) * 1_000_000 / rate + 1;
                 c.advance(&mut r, dt, true);
                 if dt >= u64::from(REST_US) {
-                    busy = 0;
+                    (busy, deferred) = (0, 0);
                 }
             }
-            gov.set_clock(s.pinned_hz.unwrap_or(hz_of(gov.clock())), s.rate);
+            gov.set_clock(cpu(gov.clock(), c.t, r.pieces == 0), s.rate);
             let e = estimate();
             let plan = gov.plan(&e);
-            // The firmware switches the clock at once.
-            gov.set_clock(s.pinned_hz.unwrap_or(hz_of(plan.clock)), s.rate);
+            // The firmware switches the clock at once (a change of step).
+            if r.pieces == 0 {
+                r.first_clock = plan.clock;
+            }
+            gov.set_clock(cpu(plan.clock, c.t, false), s.rate);
             r.max_clock = r.max_clock.max(plan.clock);
-            // The pace rule, before a piece that would end past the run.
-            if busy + u64::from(plan.us) > u64::from(RUN_US) {
+            if gov.level() != Level::Full && gov.mhz() < CLOCKS_MHZ[usize::from(TOP)] && s.pinned_hz.is_none()
+            {
+                r.shed_below_top += u64::from(plan.frames);
+            }
+            let cost = render(&plan);
+            if cost.stall_us > 0 {
+                c.advance(&mut r, u64::from(cost.stall_us), false);
+                busy += u64::from(cost.stall_us);
+            }
+            // The pace rule, before a piece that would end past the run,
+            // if the ring covers the rest (`pace::rest_first`).
+            let head = |t: u64| match start {
+                None => u32::MAX,
+                Some(_) => (written.saturating_sub(played(t, start)) * 1_000_000 / rate) as u32,
+            };
+            let h = head(c.t);
+            let len = (u64::from(plan.frames) * 1_000_000 / rate) as u32;
+            let d0 = deferred;
+            if pace::rest_first(busy.min(u64::from(u32::MAX)) as u32, plan.us, len, h, &mut deferred) {
+                if h < REST_US + plan.us + MARGIN_US {
+                    r.short_rests += 1;
+                    if plan.us * 3 <= len * 2 && d0 + plan.us <= pace::DEFER_US {
+                        r.short_rests_unforced += 1;
+                    }
+                }
                 c.advance(&mut r, u64::from(REST_US), true);
                 busy = 0;
             }
-            let cost = render(&plan);
             let cycles = u64::from(cost.per_frame) * u64::from(plan.frames) + u64::from(cost.paging);
             let dt = cycles.div_ceil(u64::from(gov.mhz()));
             let after = estimate().total();
@@ -1047,7 +1150,11 @@ mod tests {
                 limits.push(g.limit());
             }
         }
-        assert_eq!(limits, [5], "4 voices + one more = 1,645 > 1,632: no voice back");
+        // (The song sounds 4 voices whatever the limit: 1,365 a frame is
+        // under half of High and one more voice fits the budget, so the
+        // limit comes back one a calm second — before 2026-11-26 the
+        // restore asked for 1,645 under 1,632 and none came back.)
+        assert_eq!(limits, (5..=16).collect::<Vec<u8>>(), "a voice back a calm second");
     }
 
     /// … and with the clock free: voices and effects come back at Max
@@ -1181,7 +1288,7 @@ mod tests {
                 let before = state.get();
                 let n = p.keep.map_or(want, u32::from).min(u32::from(p.limit)).min(want);
                 state.set((p.fx, n));
-                sim::Cost { per_frame: e_of(before).total() * true_x10 / 10, paging: 0 }
+                sim::Cost { per_frame: e_of(before).total() * true_x10 / 10, paging: 0, stall_us: 0 }
             },
         )
     }
@@ -1261,7 +1368,7 @@ mod tests {
                     8_000..10_000 => 30,
                     _ => 10,
                 };
-                sim::Cost { per_frame: song(true).total() * x / 10, paging: 20 * 144 }
+                sim::Cost { per_frame: song(true).total() * x / 10, paging: 20 * 144, stall_us: 0 }
             },
         );
         assert!(!r.stopped);
@@ -1284,7 +1391,7 @@ mod tests {
                 let f = t.get();
                 t.set(f + u64::from(p.frames));
                 let x = if f * 1000 / u64::from(RATE) < 50 { 100 } else { 10 };
-                sim::Cost { per_frame: song(true).total() * x / 10, paging: 20 * 144 }
+                sim::Cost { per_frame: song(true).total() * x / 10, paging: 20 * 144, stall_us: 0 }
             },
         );
         assert!(r.max_ratio_pct <= 110, "ratio {}", r.max_ratio_pct);
@@ -1350,6 +1457,117 @@ mod tests {
             assert!(g.limit() <= 3 && g.fx() & FX_REVERB == 0, "{mhz} MHz");
             assert!(!r.stopped && r.written >= s.frames, "{mhz} MHz played on");
         }
+    }
+
+    /// Regression (2026-11-26, the player, build `4e1e9a49`, `playdir` of
+    /// the demo songs in Automatic): "Hill Song", after "Etude", showed
+    /// `lvl=3/3 vlim=7 clk=144/144` at `load=30–43%` for its whole
+    /// length. A new file's governor took its clock step from the clock
+    /// it found (Max, left by "Etude"), while `status` showed the High it
+    /// resets to and the file never asked for less; and a clock below the
+    /// step at any plan (the clock governor lowering what was left to the
+    /// open's High floor during the scan) pinned it for the whole file —
+    /// no raise again, shedding at whatever clock the CPU ran. Model: a
+    /// heavy file ends at Max, shed; the next starts with the clock it
+    /// left for 2 s, the first plan at High. A light file then starts at
+    /// High at full quality and stays there; a heavy one (after a file
+    /// that left Turbo or Max) raises to Max before shedding, never sheds
+    /// below it, and is not pinned.
+    #[test]
+    fn regress_synth_shed_carried_into_the_next_file() {
+        let mut g = Governor::new(16, HZ, RATE);
+        song(&mut g, &sim::Setup::new(RATE, 10), 16, 400, 10);
+        assert_eq!((g.level(), g.clock()), (Level::Voices, TOP), "the heavy file");
+        let next = |left: u32| sim::Setup {
+            left: Some((left, 2_000_000)),
+            first_hz: Some(HZ),
+            ..sim::Setup::new(RATE, 20)
+        };
+        let max = CLOCKS_MHZ[usize::from(TOP)] * 1_000_000;
+        let mut g = Governor::new(16, max, RATE);
+        assert_eq!((g.clock(), g.level(), g.limit()), (0, Level::Full, 16), "a new file");
+        let r = song(&mut g, &next(max), 2, 280, 10);
+        assert_eq!((r.first_clock, r.max_clock, r.shed_below_top, g.over), (0, 0, 0, 0), "light: {r:?}");
+        assert_eq!(g.level(), Level::Full);
+        for left in [CLOCKS_MHZ[1] * 1_000_000, max] {
+            let mut g = Governor::new(16, left, RATE);
+            let r = song(&mut g, &next(left), 16, 400, 10);
+            assert_eq!(
+                (r.shed_below_top, r.max_clock, g.pinned()),
+                (0, TOP, false),
+                "heavy after {left}: {r:?}"
+            );
+            assert_eq!(g.level(), Level::Voices);
+        }
+    }
+
+    /// Regression (2026-11-26, the player, build `4e1e9a49`): at Max,
+    /// "Hill Song" kept the reverb and voices shed for its whole length
+    /// at `load=30–43%`. A step came back only after a whole calm second
+    /// (three for an effect) in which every piece's own prediction with
+    /// the step undone stayed under half of real time: one note burst
+    /// started the stretch again. Now the smoothed cost counts (`status`
+    /// `load=`): under half of real time, with the step fitting the
+    /// budget, the stretch adds up, and a piece over takes back only its
+    /// own frames. Model at Max: shed by a heavy start, then 8 voices
+    /// (38 % of real time) with a burst of 14 (64 %) every fourth piece:
+    /// full quality again within 12 s, at Max all the while.
+    #[test]
+    fn regress_synth_restore_held_off_by_note_bursts() {
+        let max = CLOCKS_MHZ[usize::from(TOP)] * 1_000_000;
+        let mut g = Governor::new(16, HZ, RATE);
+        let p = g.plan(&est(&[400; 16], FX_REVERB));
+        g.set_clock(max, RATE);
+        assert_eq!((p.clock, g.level()), (TOP, Level::Voices));
+        let (quiet, burst) = (est(&[280; 8], 0), est(&[280; 14], 0));
+        let mut back = None;
+        for i in 0..20 * RATE / BLOCK {
+            g.plan(if i % 4 == 3 { &burst } else { &quiet });
+            g.set_clock(max, RATE);
+            if back.is_none() && g.level() == Level::Full {
+                back = Some(i * BLOCK * 10 / RATE);
+            }
+        }
+        assert!(back.is_some_and(|ds| ds <= 120), "full quality after {back:?} × 0.1 s");
+        assert_eq!((g.level(), g.clock(), g.over), (Level::Full, TOP, 1));
+    }
+
+    /// Regression (2026-11-26, the player, build `4e1e9a49`): underruns
+    /// labelled `ub=synth:rest:4ms` — the pace rule's rest started with
+    /// less audio in the PCM ring than it lasts (after other work on the
+    /// real-time executor had drained it: the outer loop's part, a card
+    /// read). Model: a song at 45 % of High, the ring full, and once a
+    /// second 50–62 ms of other work before a piece (the ring left with
+    /// 8–20 ms). No rest starts with less in the ring than the rest, the
+    /// piece after it and the margin (`orpheus_power::pace::rest_first`:
+    /// the piece renders first), and nothing underruns; with the rule
+    /// `pace::due` alone (a rest whatever the ring holds) rests start
+    /// short.
+    #[test]
+    fn regress_synth_rest_with_a_short_ring() {
+        let mut g = Governor::new(16, HZ, RATE);
+        let e = est(&[280, 280], FX_REVERB);
+        let (t, k) = (core::cell::Cell::new(0u64), core::cell::Cell::new(0u32));
+        let s = sim::Setup::new(RATE, 30);
+        let r = sim::run(
+            &mut g,
+            &s,
+            || e,
+            |p| {
+                let f = t.get();
+                t.set(f + u64::from(p.frames));
+                let stall = if f / u64::from(RATE) != (f + u64::from(p.frames)) / u64::from(RATE) {
+                    k.set(k.get() + 1);
+                    50_000 + (k.get() % 7) * 2_000
+                } else {
+                    0
+                };
+                sim::Cost { per_frame: e.total(), paging: 0, stall_us: stall }
+            },
+        );
+        assert!(k.get() >= 25, "stalls {}", k.get());
+        assert_eq!((r.short_rests, r.underrun_frames, r.stopped), (0, 0, false), "{r:?}");
+        assert_eq!(g.level(), Level::Full);
     }
 
     /// A song that fits renders at full quality with no rest and no

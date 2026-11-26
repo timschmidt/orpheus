@@ -1625,6 +1625,101 @@ and every demo song ended `synth: gave up, nothing can play at 288 …`.
   124,256 B (the floor's three flags), code pages 125/128, stack margin
   5,476 B (unchanged).
 
+**As built (SYN-3 on the player: shed state, rests, paging, 2026-11-26).**
+The lead's run of build `4e1e9a49` (Automatic, the cable in, `playdir` of
+the three demo songs): every song to its end, no "gave up", no reset,
+`pg=` 3–15 % (was ≈ 250). Three findings:
+
+* **Shed while the clock looked low.** "Hill Song" (after "Etude") showed
+  `lvl=3/3 vlim=7 fx=3 clk=144/144` at `load=30–43%` for its whole length.
+  Causes: (1) a new file's governor took its clock step from the clock it
+  found (`step_of(current)`: Max, left by "Etude"), while the `syn:` words
+  are reset to High at the open and are set only when the step changes —
+  so the file ran at Max (the outer part re-applies the step as floor 4)
+  showing 144, and a light file started at Max for nothing ("Sound tour"
+  came down only after its first seconds). (2) A clock below the step at
+  any plan (the clock governor lowering what the last file left to the
+  open's High floor during the scan) set the pin **for the whole file**:
+  no raise again, shedding at whatever clock the CPU ran (from Turbo
+  left over: shed at 192 for the whole song). (3) Restore was too strict:
+  a step came back only after a whole calm second (three for an effect)
+  in which **every piece's own** prediction with the step undone stayed
+  under 50 % — one note burst a second started the stretch again. The
+  governor model of "Hill Song" (`orpheus-midi` `tests/governor.rs`'s
+  loop, clock free, the player's ratio 78 % and paging 12 %) kept the
+  reverb off 84 % of the song.
+* **Now** (`orpheus_synth::load::Governor`): every file starts at High
+  at full quality whatever the last left (`new`), and the first pieces
+  raise it as far as they need; `set_clock` (before every plan) sets the
+  pin anew each time (the CPU below the step asked: Battery saver, `gov
+  off`, a manual `clock`) and the decisions count the lower of the clock
+  asked and the clock the CPU runs (a higher one the clock governor may
+  take back any second is not counted); shedding still only at the top
+  (or pinned), and below the top nothing stays shed — a pin that ended
+  undoes everything at once; a step comes back when the **smoothed** cost
+  (`status` `load=`) is under 50 % and the cost with the step undone fits
+  the 55 % budget, the calm counted **net** (a piece over takes back its
+  own frames); the clock comes down a step after 2 s of net calm under
+  50 % of the lower clock, at full quality only (as before). Model (the
+  three demo songs, clock free, true cost 78 % of the table, 700 µs of
+  paging a piece): "Etude" Max, voice limit 8.9 on average (7.5 with the
+  old rule); "Hill Song" up to Max in its first 4 s, 16 voices, the
+  reverb on 40 % of the song (16 %); "Sound tour" 90 % at full quality,
+  the clock 144–288; no PCM half above 62 % of its real time. At 144 MHz
+  pinned (`demo_songs_fit_the_budget_at_144_mhz`) single pieces over the
+  budget rise for "Hill Song" from 2 % to 13 % of its frames (a voice
+  more on average), still no PCM half at risk; the test's bound is now
+  15 %.
+* **Underruns at rests** (`ub=synth:rest:4ms`): the pace rule's 4 ms rest
+  started whatever the PCM ring held. Now `orpheus_power::pace::
+  rest_first`: a due rest starts only if the ring holds the rest, the
+  piece after it and 2 ms (`MARGIN_US`); otherwise the piece renders
+  first — at most 4 ms of render put off (`DEFER_US`, one piece) and
+  only while the render keeps up with its rests (a piece at most two
+  thirds of its audio's time), else it rests whatever the ring holds, so
+  thread mode keeps its share when the render cannot keep up
+  (`regress_synth_render_starved_thread_mode` and the overload tests
+  unchanged). The firmware reads the ring (`PcmOut::headroom`) only when
+  a rest is due.
+* **Paging 10–15 %** where the model said 2–5 %. What the model left out
+  (from `layout.json`): the key scan's 10 ms tick in thread mode (the
+  input task's poll on lines 31 and 0, the ticker's poll on 20,
+  `_embassy_time_now` on 3: three of `render_i16`'s lines; ≈ 40 thread
+  slots a second between pieces have a tick in them: ≈ 120 render line
+  loads a second, ≈ 2 % of real time); the step sampler's 25 Hz read
+  (`steps-sample`, lines 4–7: the SVF, envelope, filter design and kick to
+  hat lines; ≈ 1.3 % while counting is on; not moved: every line is in use
+  by the synth and the codec paths); the UI's redraws (Now Playing's
+  position, the karaoke lyrics: "Hill Song" had the highest `pg=`) and the
+  watchdog task's second (lines 2–3), unmeasured; the rodata cache. The
+  tick now sits at the front of `synth-block`, on line 18 with the
+  wake-up's entry (808 B), off the render's lines; an MP3 stream pays one
+  line (`mp3-frame`'s 18) where it paid four. `synth-note` moves one line
+  (23–3 → 24–4). Expected `pg=` about 6–9 % (model 2.4–3.3 + steps ≈ 1.3 +
+  UI ≈ 1–3); still ≥ 10 % means the UI or the rodata cache, to be found
+  with the fault profile.
+* **Numbers**: resident 81,812 B (build) / 81,811 B (`size`), unchanged;
+  .bss 124,256 B, unchanged; code pages 125/128; `synth-inner` 7,882 →
+  8,166 B (8 lines: `pace_rest`'s poll reads the ring, `plan_piece` 1,100
+  B, `restore` 434 B, `lower` 136 B); `synth-block` 4,966 → 5,770 B (6
+  lines with the tick); stack margin 5,476 B; `stack --check`
+  `synth-render` 18 of 18, with its `fits_with` 32 of 32 (the check's
+  padded count of `synth-inner` rounds to 9 lines; placed in 8).
+* **Tests**: `regress_synth_shed_carried_into_the_next_file` (two files:
+  a heavy one ends shed at Max; a light one then starts at High at full
+  quality and stays there; a heavy one after a file that left Turbo or
+  Max raises to Max before shedding, never sheds below it, is not
+  pinned — the sim's `Setup::left`/`first_hz` model the clock the last
+  file left and the clock governor's lowering during the scan),
+  `regress_synth_restore_held_off_by_note_bursts` (at Max, 38 % with a
+  64 % burst every fourth piece: full quality within 12 s; never with the
+  old rule), `regress_synth_rest_with_a_short_ring` (50–62 ms of other
+  real-time work once a second: no rest starts below the threshold, no
+  underrun; with `pace::due` alone four rests start short),
+  `orpheus_power::pace::rest_first_waits_for_the_ring_within_a_bound`;
+  `restores_in_reverse_order` now expects the voices back (4 voices with
+  one more fit the budget).
+
 ## 10. Work packages
 
 * **WP-AU-1 Pipeline core**: rings, pool leases, `ByteSource`, `Decoder`

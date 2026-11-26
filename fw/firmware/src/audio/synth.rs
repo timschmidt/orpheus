@@ -382,14 +382,28 @@ fn plan_piece(st: &mut MidiState, gov_on: bool, max: u8) -> (Plan, Estimate) {
     (plan, e)
 }
 
-/// The pace rule (`orpheus_power::pace`) before a piece predicted to take
-/// `us`: one that would end more than `RUN_US` after the last rest (or a
-/// wait for the PCM ring as long, `rested`) rests `REST_US` first. The
-/// render runs on the real-time executor: without the rests a song the CPU
-/// cannot keep up with starved thread mode and the watchdog reset the
-/// player (2026-11-26; modelled in `orpheus_synth::load` tests).
-async fn pace_rest(rested: &mut u64, us: u32) {
-    if pace::due((time::now_us() as u32).wrapping_add(us), *rested as u32) {
+/// The pace rule (`orpheus_power::pace::rest_first`) before a piece of
+/// `frames` predicted to take `us`: one that would end more than `RUN_US`
+/// after the last rest (or a wait for the PCM ring as long, `rested`)
+/// rests `REST_US` first — if the ring holds the rest, the piece and a
+/// margin; else the piece renders first (`deferred`: render put off so
+/// far, at most one piece's worth, and only while the render keeps up).
+/// The render runs on the real-time executor: without the rests a song
+/// the CPU cannot keep up with starved thread mode and the watchdog reset
+/// the player (2026-11-26; modelled in `orpheus_synth::load` tests); a
+/// rest on a short ring underran (`ub=synth:rest:4ms`, the same day).
+async fn pace_rest(rested: &mut u64, deferred: &mut u32, us: u32, frames: u32, out: &mut PcmOut) {
+    let busy = (time::now_us() - *rested).min(u64::from(u32::MAX)) as u32;
+    if busy.saturating_add(us) < pace::RUN_US {
+        return;
+    }
+    // Frames → µs in 32 bits (the ring holds 3,072 frames; `i32::MAX`:
+    // the DAC is not running).
+    let head = match out.headroom() {
+        i32::MAX => u32::MAX,
+        h => h.clamp(0, 4096) as u32 * 1_000_000 / RATE_HZ,
+    };
+    if pace::rest_first(busy, us, frames * 1_000_000 / RATE_HZ, head, deferred) {
         let t0 = super::now32();
         RestUntil(time::now_us() + u64::from(pace::REST_US)).await;
         note_as(UB_DECODER, D_SYN + SynthOp::Rest as u8, t0);
@@ -527,11 +541,11 @@ async fn pieces(
     gov_on: bool,
     max: u8,
 ) -> Run {
-    let mut done = 0u32;
+    let (mut done, mut deferred) = (0u32, 0u32);
     loop {
         mark(31);
         let (plan, e) = plan_piece(st, gov_on, max);
-        super::Apart(pace_rest(rested, plan.us)).await;
+        super::Apart(pace_rest(rested, &mut deferred, plan.us, plan.frames.min(BLOCK as u32), out)).await;
         let want = (plan.frames as usize).clamp(1, BLOCK);
         // Fewer frames when the parser needs file bytes first.
         let (n, dt, pg) = match render_piece(st, b, want) {
@@ -561,7 +575,7 @@ async fn pieces(
             // A wait as long as a rest gave thread mode its time.
             let w1 = time::now_us();
             if w1 - w0 >= u64::from(pace::REST_US) {
-                *rested = w1;
+                (*rested, deferred) = (w1, 0);
             }
         }
         FRAMES.store(b.frames, Ordering::Relaxed);
