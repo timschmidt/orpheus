@@ -107,6 +107,7 @@ cargo xtask dev <subcommand>
   install-full --i-have-a-backup [IMAGE.yfw]
                                 switch to the full layout (D-2): erases the stock firmware
   reset                         reset through ymon (the installed firmware boots)
+  reboot                        normal reboot through the developer channel (no recovery mode)
 ";
 
 /// Upload `data` to `remote` (under `/.orpheus/` only) through the
@@ -204,6 +205,14 @@ fn dispatch(sub: &str, args: &mut Args) -> Result<String> {
             let r = d.control_in(orpheus_proto::devchan::REQ_TEST, 0, 0, 1024)?;
             println!("{}", String::from_utf8_lossy(&r));
             Ok("reply printed".into())
+        }
+        // A normal reboot through the developer channel (the firmware
+        // restarts itself; `reset` goes through the recovery monitor and
+        // can leave the player in recovery mode).
+        "reboot" => {
+            let d = orpheus_host::devchan::DevChannel::open(Duration::from_secs(3))?;
+            d.reboot(orpheus_proto::devchan::REBOOT_NORMAL);
+            Ok("reboot sent".into())
         }
         "stats" => {
             let d = orpheus_host::devchan::DevChannel::open(Duration::from_secs(3))?;

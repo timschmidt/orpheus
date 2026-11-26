@@ -79,6 +79,22 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-26 — NOR read race fixed; 20 boots clean (lead)
+
+* Merged `b7a4cb04` (thread-mode NOR reads masked against the pager,
+  read errors by kind, `nor=C/D/I` in the session reply, the suite fails
+  on any). On the player: **20 normal reboots, 10 of them with an MP3
+  playing (the resume mounts the card at boot): every one `store=ok
+  keys=25 crc=acff8170 nor=0/0/0`, no `settings: store` log line**; the
+  owner's settings unchanged.
+* New `cargo xtask dev reboot` (normal reboot through the developer
+  channel). A loop with `dev reset` (through ymon) left the player in
+  recovery mode on its 3rd boot for 30 min (it came back with `dev
+  reset` from ADFU): use `dev reboot` for reboot loops.
+* Observed: after a normal reboot during playback the player comes back
+  *playing* (`status` playing), although Resume at start-up is described
+  as opening paused (VER-13 round 2). Open: check which is intended.
+
 ### 2026-11-26 — HW: the boot-time settings read error is SPI0 shared with the pager; thread-mode NOR reads masked (worker, no hardware)
 
 * **Cause (from the code, not yet seen on the player)**: `nor::read` (the
