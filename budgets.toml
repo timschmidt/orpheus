@@ -142,8 +142,10 @@ audio_underruns = 0
 [synth]
 # The synthesiser on the player (04 §9, SYN-3, 2026-11-26).
 #
-# RAM: no static RAM of its own but the `syn:` statistics (three 4-byte
-# words since the load governor: .bss 124,208 B). A synth source takes the
+# RAM: no static RAM of its own but the `syn:` statistics (four 4-byte
+# words since the governor's clock and paging fields, 2026-11-26: .bss
+# 124,240 B by `xtask size`, was 124,232 at build 78b316b5; the fourth
+# word holds the paging share and the clock pin). A synth source takes the
 # pool (stream ring + decoder arena less the library's 1,104 B build
 # state). Measured on thumbv7em (`size_of`, a const assertion in
 # `audio::synth` checks they fit): MIDI state 71,936 B (`MidiPlayer`
@@ -153,23 +155,41 @@ audio_underruns = 0
 # 296 B: 256 for the two wet buffers an effect fades out through
 # (`Engine::set_fx_enabled`), 8 for the effect switches, 32 for the
 # governor's state (`orpheus_synth::load::Governor`, was `VoiceGov`).
+# The measurement and clock fix (2026-11-26) grew the governor 40 → 60 B
+# (paging, the piece-length ratio, warm-up, give-up count, clock step,
+# top and pin): MIDI state 71,936 → 71,960 B with the state's 8-byte
+# alignment (computed from the field sizes; `synth bench` with no
+# argument prints the measured `midi_state=`).
 pool_bytes = 80816
-midi_state_bytes = 71936
+midi_state_bytes = 71960
 engine_bytes = 62624
 # Rendering: 44.1 kHz, pieces of 32–256 frames, clock floor High
 # (144 MHz) while a synth source plays. The load governor
 # (`orpheus_synth::load`) predicts each piece from the costs below × the
-# measured ratio and keeps the render under 55 % of real time (1,795 of
-# 3,265 cycles a frame at 144 MHz): chorus off, then delay, reverb, then
+# measured compute ratio, plus the measured paging, and keeps the render
+# under 55 % of real time (1,795 of 3,265 cycles a frame at 144 MHz):
+# first the clock up (D-4: Turbo 192, Max 288 MHz, the lowest that fits;
+# not in Battery saver), then at Max chorus off, delay, reverb, then
 # voices (released first, oldest first; the limit for new notes), never
-# below 2; undone after 1 s (a voice) / 3 s (an effect) under 50 %. A
-# piece is at most 4 ms (its frames from the prediction); the pace rule
-# rests 4 ms before a piece that would end 8 ms after the last rest.
+# below 2; undone after 1 s (voices: as many as fit 50 %) / 3 s (an
+# effect) under 50 %, then the clock a step down after 2 s under 50 % of
+# the lower clock. A piece is at most 4 ms (its frames from the
+# prediction and the last piece's raw ratio); the pace rule rests 4 ms
+# before a piece that would end 8 ms after the last rest. The ratio is
+# not measured for 250 ms after an open or a seek and rises at most 3 %
+# a block. A song is ended only when nothing can play (everything shed
+# at the top clock, 200 % of real time for 5 s of render time).
 voices_max = 16
 voices_min = 2
 budget_pct = 55
 restore_pct = 50
 piece_us_max = 4000
+clocks_mhz = [144, 192, 288]
+calm_clock_ms = 2000
+warm_ms = 250
+ratio_rise_pct_per_block = 3
+give_up_pct = 200
+give_up_ms = 5000
 # Cycles per frame on the player at 144 MHz, MEASURED 2026-11-26 by
 # `synth bench` (build 1fda608d; no DWT on the chip: µs × 144; pager
 # line loads included, as playback sees them): per voice = (load − empty)

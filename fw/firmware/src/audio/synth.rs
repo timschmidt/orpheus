@@ -13,7 +13,7 @@
 //! and then `init` (no value larger than ≈ 1 KiB passes through the
 //! stack). A codec and the synthesiser are never live together: the borrow
 //! of the ring and the arena lasts while the synth plays. No static RAM
-//! but the statistics words below (12 bytes).
+//! but the statistics words below (16 bytes).
 //!
 //! **Playing** ([`play_midi`]): the file opens and is scanned with the DAC
 //! stopped; then pieces of at most [`BLOCK`] frames at [`RATE`] go through
@@ -22,10 +22,16 @@
 //! card sector (with `Urgent`: no card rests). Requests, listings in
 //! pieces, the battery and step logs run as chores by the same rules as
 //! with a codec (`chore::decide`). The clock floor is High while the
-//! synth plays. The load governor (`orpheus_synth::load::Governor`,
-//! [`plan_piece`]) predicts each piece from the measured costs and keeps
-//! the render under 55 % of real time (chorus, delay, reverb, then voices
-//! shed), and bounds the piece to 4 ms; the pace rule ([`pace_rest`])
+//! synth plays, raised by the load governor (`orpheus_synth::load::Governor`,
+//! [`plan_piece`]) to Turbo or Max when a song needs it (D-4; not in
+//! Battery saver) before anything is shed, and let down again when the
+//! music allows. The governor predicts each piece from the measured costs
+//! and keeps the render under 55 % of real time (then chorus, delay,
+//! reverb, voices shed at Max), and bounds the piece to 4 ms; it measures
+//! the render's compute apart from the pager's line loads, not in the
+//! first 250 ms after an open or a seek, and ends a song only when nothing
+//! can play (2026-11-26: the first piece pinned its ratio and every song
+//! was stopped by the underrun count). The pace rule ([`pace_rest`])
 //! rests before a piece that would end 8 ms after the last rest, so thread
 //! mode always runs (2026-11-26: a heavy song starved it into the
 //! watchdog). `synth gov off` (from the next file) renders everything.
@@ -59,11 +65,10 @@ use yoton_bsp::card::Card;
 
 use super::{
     Blk, CHAIN, CODEC_FLOOR, D_SYN, DEC_LOADS, DEC_MAX_US, DEC_N, DEC_US, DECODE_US, DSP_ON, End, FRAMES,
-    K_DRAIN, K_JOB, K_SENSOR, K_SERVE, LAST_DEC_US, LAST_SERVE_MS, MAX_UNDERRUNS, Out, PLAY_US, PLAYING,
-    PcmOut, RATE, ROOMY, Ring, SCRATCH_FRAMES, SLOW_UNDERRUNS, SPARE, STOP, Shown, Start, T_DECODE,
-    UB_DECODER, begin_block, dsp_clock_floor, failed, full_level, log_due, mark, ms_at, need_of, note_as,
-    pager_loads, pause, pause_fades, piece_begin, piece_end, reply, resumed, save_store, scratch16,
-    serve_one, sound_active,
+    K_DRAIN, K_JOB, K_SENSOR, K_SERVE, LAST_DEC_US, LAST_SERVE_MS, Out, PLAY_US, PLAYING, PcmOut, RATE,
+    ROOMY, Ring, SCRATCH_FRAMES, SPARE, STOP, Shown, Start, T_DECODE, UB_DECODER, begin_block,
+    dsp_clock_floor, failed, full_level, log_due, mark, ms_at, need_of, note_as, pager_loads, pause,
+    pause_fades, piece_begin, piece_end, reply, resumed, save_store, scratch16, serve_one, sound_active,
 };
 use super::{drain_flush_rows, sensor_flush_rows};
 use crate::media::{self, PlayReq, Req, Server};
@@ -91,8 +96,12 @@ const MIN_BLOCKS: usize = 4;
 /// the predicted render load in % of real time ([`F_LOAD`]) and the
 /// measured/estimated ratio in % ÷ 2 ([`F_RATIO`]); word 2 the rests for
 /// thread mode ([`F_RESTS`]) and the voices the governor faded out
-/// ([`F_SHED`]).
-static SYN: [AtomicU32; 3] = [AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)];
+/// ([`F_SHED`]); in word 1 also the clock step asked for now and the
+/// highest this file ([`F_CLK`], [`F_CLK_MAX`]: 0 High, 1 Turbo, 2 Max;
+/// set when it changes, [`gov_log`]); word 3 the paging during the render
+/// in % of real time ([`F_PG`]) and whether the clock did not follow a
+/// raise ([`F_PIN`]: a power mode pins it), one store a piece.
+static SYN: [AtomicU32; 4] = [AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)];
 /// `SYN` fields: (word, shift, bits).
 type Field = (usize, u32, u32);
 const F_PEAK: Field = (0, 0, 5);
@@ -106,6 +115,10 @@ const F_FX: Field = (1, 4, 3);
 const F_GOV_OFF: Field = (1, 7, 1);
 const F_LOAD: Field = (1, 8, 8);
 const F_RATIO: Field = (1, 16, 8);
+const F_CLK: Field = (1, 24, 2);
+const F_CLK_MAX: Field = (1, 26, 2);
+const F_PG: Field = (3, 0, 8);
+const F_PIN: Field = (3, 8, 1);
 const F_RESTS: Field = (2, 0, 16);
 const F_SHED: Field = (2, 16, 16);
 
@@ -171,7 +184,57 @@ pub(super) fn status(w: &mut super::Writer<'_>) {
         .s(t!(b" shed="))
         .u(u64::from(syn_get(F_SHED)))
         .s(t!(b" gov="))
-        .u(u64::from(1 - syn_get(F_GOV_OFF)));
+        .u(u64::from(1 - syn_get(F_GOV_OFF)))
+        .s(t!(b" clk="))
+        .u(u64::from(clk_mhz(syn_get(F_CLK))))
+        .s(b"/")
+        .u(u64::from(clk_mhz(syn_get(F_CLK_MAX))))
+        .s(t!(b" pin="))
+        .u(u64::from(syn_get(F_PIN)))
+        .s(t!(b" pg="))
+        .u(u64::from(syn_get(F_PG)));
+}
+
+fn clk_mhz(step: u32) -> u32 {
+    load::CLOCKS_MHZ.get(step as usize).copied().unwrap_or(0)
+}
+
+/// The load governor's clock step as the audio task's clock floor (2 High,
+/// 3 Turbo, 4 Max), raised at once if the CPU runs slower (something
+/// lowered it, or the step went up); a lower step lets the clock governor
+/// bring it down when the system is idle (`orpheus_power::governor`: never
+/// below the floor). Battery saver asks for no more than High (the clock
+/// then does not follow and the governor sheds at the clock it has).
+fn synth_floor(step: u8) {
+    let saver = crate::ui::POWER_MODE.load(Ordering::Relaxed) == 1;
+    let floor = if saver { 2 } else { 2 + step.min(load::TOP) };
+    CODEC_FLOOR.store(floor, Ordering::Relaxed);
+    dsp_clock_floor(false);
+}
+
+/// `synth: clock N load=L% ratio=R pg=P% lvl= vlim=` when the governor
+/// changes the clock (and the `syn:` clock fields), `synth: gave up …`
+/// when nothing can play.
+#[inline(never)]
+fn gov_log(what: &str, g: &Governor) {
+    let step = u32::from(g.clock());
+    syn_set(F_CLK, step);
+    syn_set(F_CLK_MAX, syn_get(F_CLK_MAX).max(step));
+    let rt = g.rt().max(1);
+    let mut s = atj2157_hal::log::LineBuf::new();
+    s.push_str(what)
+        .push_u32(clk_mhz(u32::from(g.clock())))
+        .push_str(" load=")
+        .push_u32(g.load() * 100 / rt)
+        .push_str("% ratio=")
+        .push_u32(g.ratio_pct())
+        .push_str(" pg=")
+        .push_u32(g.paging() * 100 / rt)
+        .push_str("% lvl=")
+        .push_u32(g.level() as u32)
+        .push_str(" vlim=")
+        .push_u32(u32::from(g.limit()));
+    s.emit();
 }
 
 /// The ring's memory and the arena as one region (they are adjacent in
@@ -292,14 +355,24 @@ async fn run_steps(
 /// player, and the estimate it came from (`orpheus_synth::load`).
 #[inline(never)]
 fn plan_piece(st: &mut MidiState, gov_on: bool, max: u8) -> (Plan, Estimate) {
+    let step = st.gov.clock();
+    if gov_on {
+        synth_floor(step);
+    }
     st.gov.set_clock(atj2157_hal::clock::current().hz(), RATE_HZ);
     let e = st.player.engine().estimate(&load::PLAYER);
     let plan = if gov_on {
-        st.gov.plan(&e)
+        let p = st.gov.plan(&e);
+        if p.clock != step {
+            // Up at once (the piece runs at it); down when idle.
+            synth_floor(p.clock);
+            gov_log("synth: clock ", &st.gov);
+        }
+        p
     } else {
         let frames = st.gov.frames(e.total());
         let us = st.gov.piece_us(frames, e.total());
-        Plan { fx: load::FX_ALL, limit: max, keep: None, frames, us }
+        Plan { fx: load::FX_ALL, limit: max, keep: None, frames, us, clock: 0 }
     };
     st.player.set_fx_enabled(plan.fx);
     st.player.set_voice_limit(usize::from(plan.limit));
@@ -326,13 +399,17 @@ async fn pace_rest(rested: &mut u64, us: u32) {
     }
 }
 
-/// After a piece of `n` frames that took `dt` µs: the governor's
-/// measurement (µs × MHz: the chip has no cycle counter) and the `syn:`
-/// words.
+/// After a piece of `n` frames that took `dt` µs, `pg` of them in the
+/// pager's line loads: the governor's measurement (µs × MHz: the chip has
+/// no cycle counter; the engine's estimate now as the piece's end) and
+/// the `syn:` words. True (and logged) when the governor gives up: nothing
+/// can play, everything shed at the top clock and still 2 × real time for
+/// 5 s.
 #[inline(never)]
-fn after_piece(st: &mut MidiState, plan: &Plan, e: &Estimate, n: usize, dt: u32) {
+fn after_piece(st: &mut MidiState, plan: &Plan, e: &Estimate, n: usize, dt: u32, pg: u32) -> bool {
     let mhz = atj2157_hal::clock::current().hz() / 1_000_000;
-    st.gov.measured(e, n as u32, dt.saturating_mul(mhz));
+    let after = st.player.engine().estimate(&load::PLAYER).total();
+    st.gov.measured(e, after, n as u32, dt.saturating_mul(mhz), pg.min(dt).saturating_mul(mhz));
     let v = st.player.engine().active_voices() as u32;
     let lvl = st.gov.level() as u32;
     syn_set(F_PEAK, syn_get(F_PEAK).max(v));
@@ -343,6 +420,13 @@ fn after_piece(st: &mut MidiState, plan: &Plan, e: &Estimate, n: usize, dt: u32)
     syn_set(F_FX, u32::from(plan.fx));
     syn_set(F_LOAD, st.gov.load() * 100 / st.gov.rt().max(1));
     syn_set(F_RATIO, st.gov.ratio_pct() / 2);
+    let pg = (st.gov.paging() * 100 / st.gov.rt().max(1)).min(255);
+    SYN[F_PG.0].store(pg | u32::from(st.gov.pinned()) << F_PIN.1, Ordering::Relaxed);
+    let out = st.gov.give_up();
+    if out {
+        gov_log("synth: gave up, nothing can play at ", &st.gov);
+    }
+    out
 }
 
 /// What a request did to the synth's playback loop.
@@ -494,7 +578,7 @@ pub(super) async fn play_midi(
     state.gov = Governor::new(max, atj2157_hal::clock::current().hz(), RATE_HZ);
     state.player.set_voice_limit(usize::from(state.gov.limit()));
     let gov_on = syn_get(F_GOV_OFF) == 0;
-    for (w, keep) in SYN.iter().zip([syn_get(F_VMAX) << F_VMAX.1, syn_get(F_GOV_OFF) << F_GOV_OFF.1, 0]) {
+    for (w, keep) in SYN.iter().zip([syn_get(F_VMAX) << F_VMAX.1, syn_get(F_GOV_OFF) << F_GOV_OFF.1, 0, 0]) {
         w.store(keep, Ordering::Relaxed);
     }
     syn_set(F_LIMIT, u32::from(state.gov.limit()));
@@ -630,6 +714,8 @@ pub(super) async fn play_midi(
                         break 'play failed(srv, b.driven, t!(b"seek failed"));
                     }
                     b.pos = state.player.position();
+                    // Not measured for a while (cold notes and patches).
+                    state.gov.restart();
                     let p = ms_at(rate, b.pos);
                     media::player_update(|s| s.position_ms = p);
                 }
@@ -642,11 +728,6 @@ pub(super) async fn play_midi(
         if b.held || b.fading && !b.paused {
             resumed(&mut b, chain);
         }
-        // (With the governor off, `crc on` checks may render slower than
-        // real time: the DAC underruns, the CRC of the frames stays.)
-        if gov_on && SLOW_UNDERRUNS.load(Ordering::Relaxed) >= MAX_UNDERRUNS {
-            break 'play failed(srv, b.driven, t!(b"synth too slow for this player"));
-        }
         // One piece as the load governor plans it (effects, voice limit,
         // voices to fade out, frames: bounded in time); fewer frames when
         // the parser needs file bytes first.
@@ -655,6 +736,7 @@ pub(super) async fn play_midi(
         super::Apart(pace_rest(&mut rested, plan.us)).await;
         let want = (plan.frames as usize).clamp(1, BLOCK);
         let (t0, l0, u0) = (time::now_us(), pager_loads(), super::now32());
+        let p0 = atj2157_hal::pager::LOAD_US.load(Ordering::Relaxed);
         let n = match state.player.render(state.pcm.get_mut(..2 * want).unwrap_or_default()) {
             Pull::Ready(n) => n,
             Pull::Need(need) => {
@@ -668,6 +750,7 @@ pub(super) async fn play_midi(
             }
         };
         let dt = (time::now_us() - t0) as u32;
+        let pg = atj2157_hal::pager::LOAD_US.load(Ordering::Relaxed).wrapping_sub(p0);
         note_as(UB_DECODER, D_SYN + SynthOp::Render as u8, u0);
         T_DECODE.fetch_add(dt, Ordering::Relaxed);
         DEC_N.fetch_add(1, Ordering::Relaxed);
@@ -685,7 +768,12 @@ pub(super) async fn play_midi(
             continue;
         }
         empty = 0;
-        after_piece(state, &plan, &e, n, dt);
+        // Underruns do not end a MIDI file (a burst is better than the end
+        // of the song): only the governor's give-up (with it off, `crc on`
+        // checks render slower than real time; the CRC stays).
+        if after_piece(state, &plan, &e, n, dt, pg) && gov_on {
+            break 'play failed(srv, b.driven, t!(b"synth too slow for this player"));
+        }
         // DSP, key clicks and the PCM ring, as for a decoder's block.
         begin_block(&mut b, chain);
         let (dsp, frames) = (b.dsp, &mut b.frames);
