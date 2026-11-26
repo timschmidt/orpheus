@@ -175,7 +175,13 @@ pub enum OtpPhase {
 /// Seconds since 1970 of the RTC (UTC) while it is valid.
 pub fn unix_now() -> Option<u64> {
     let ok = atj2157_hal::rtc_clock::running() && atj2157_hal::rtc_clock::now().year >= 2026;
-    ok.then(|| u64::from(atj2157_hal::rtc_clock::epoch2000(atj2157_hal::rtc_clock::now())) + 946_684_800)
+    // The RTC keeps local time; less the Time zone setting it is UTC
+    // (VER-13, published by the UI).
+    let off = crate::ui::UTC_OFFSET_S.load(core::sync::atomic::Ordering::Relaxed);
+    ok.then(|| {
+        let local = u64::from(atj2157_hal::rtc_clock::epoch2000(atj2157_hal::rtc_clock::now())) + 946_684_800;
+        orpheus_apps::services::utc_of_local(local, off)
+    })
 }
 
 fn bytes(fb: &mut [u16]) -> &mut [u8] {

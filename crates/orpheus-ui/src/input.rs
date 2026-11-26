@@ -267,6 +267,10 @@ pub enum Gate {
     LockNotice,
     /// Swallowed (rest of a waking press, or a locked key's later phases).
     Drop,
+    /// A transport key (Prev, Next, OK) while the keys are locked or the
+    /// screen is off, with Keys when locked = Volume and transport: it
+    /// controls playback, never the screen under the lock.
+    Transport(Key, KeyPhase),
 }
 
 /// Screen-off and key-lock rules (05 §3 "Rules", §6.3).
@@ -275,13 +279,35 @@ pub struct KeyGate {
     pub screen_on: bool,
     pub locked: bool,
     pub when_locked: LockedKeys,
+    /// The screen is off for the keys (`screen_on` false) but the panel
+    /// shows the screen saver (Settings › Display › Screen saver = Clock,
+    /// after the backlight timeout; 05 §6.3). Cleared when the screen goes
+    /// off with Power.
+    pub saver: bool,
     swallowed: u16,
 }
 
 impl KeyGate {
     #[must_use]
     pub const fn new() -> KeyGate {
-        KeyGate { screen_on: true, locked: false, when_locked: LockedKeys::Volume, swallowed: 0 }
+        KeyGate {
+            screen_on: true,
+            locked: false,
+            when_locked: LockedKeys::Volume,
+            saver: false,
+            swallowed: 0,
+        }
+    }
+
+    /// Keys when locked (Settings › Power, 0x0404): 0 None, 1 Volume, 2
+    /// Volume and transport (anything else: Volume, the default).
+    #[must_use]
+    pub const fn locked_keys(v: i16) -> LockedKeys {
+        match v {
+            0 => LockedKeys::None,
+            2 => LockedKeys::VolumeTransport,
+            _ => LockedKeys::Volume,
+        }
     }
 
     fn allowed_locked(&self, k: Key) -> bool {
@@ -302,14 +328,100 @@ impl KeyGate {
             return Gate::Drop;
         }
         let restricted = !self.screen_on || self.locked;
-        if !restricted || self.allowed_locked(k) {
+        if !restricted {
             return Gate::Pass(k, p);
+        }
+        if self.allowed_locked(k) {
+            return if matches!(k, Key::Prev | Key::Next | Key::Ok) {
+                Gate::Transport(k, p)
+            } else {
+                Gate::Pass(k, p)
+            };
         }
         if p != KeyPhase::Down {
             return Gate::Drop;
         }
         self.swallowed |= bit;
         if self.locked { Gate::LockNotice } else { Gate::Wake }
+    }
+}
+
+/// The screen timers' settings (Settings › Display: Backlight timeout,
+/// Lock delay, Screen saver; 05 §6.3).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Timeouts {
+    /// The screen goes off this long after the last key (`None`: always on).
+    pub screen_off_ms: Option<u32>,
+    /// The keys lock this long after the timer turned the screen off
+    /// (`None`: never; the Power key still locks them).
+    pub lock_ms: Option<u32>,
+    /// The panel shows the screen saver instead of going dark.
+    pub saver: bool,
+}
+
+impl Timeouts {
+    /// No timer runs (Always, Never): what a host test holds them at.
+    pub const HELD: Timeouts = Timeouts { screen_off_ms: None, lock_ms: None, saver: false };
+}
+
+/// The backlight timeout and the lock delay (05 §6.3): the screen goes off
+/// [`Timeouts::screen_off_ms`] after the last key (the next key only wakes
+/// it, [`Gate::Wake`]), then the keys lock [`Timeouts::lock_ms`] later
+/// (the next key shows the lock notice). The caller reports keys with
+/// [`ScreenTimer::key`] and calls [`ScreenTimer::step`] at least once a
+/// second; a screen that comes on by any other way (Power, an alert, the
+/// lock notice) counts from then.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ScreenTimer {
+    /// The last key, or when the screen came on (ms).
+    since: u64,
+    /// When this timer turned the screen off (the lock delay runs from it).
+    off_at: Option<u64>,
+    /// The screen was on at the last step.
+    was_on: bool,
+}
+
+impl ScreenTimer {
+    #[must_use]
+    pub const fn new(now: u64) -> ScreenTimer {
+        ScreenTimer { since: now, off_at: None, was_on: true }
+    }
+
+    /// A key edge at `now` (ms).
+    pub fn key(&mut self, now: u64) {
+        self.since = now;
+    }
+
+    /// Apply the timers to `gate` at `now` (ms); true when it changed.
+    pub fn step(&mut self, gate: &mut KeyGate, t: Timeouts, now: u64) -> bool {
+        let mut changed = false;
+        if gate.screen_on {
+            if !self.was_on {
+                self.since = now;
+                self.off_at = None;
+            }
+            self.was_on = true;
+            if let Some(ms) = t.screen_off_ms
+                && now.saturating_sub(self.since) >= u64::from(ms)
+            {
+                gate.screen_on = false;
+                gate.saver = t.saver;
+                self.off_at = Some(now);
+                self.was_on = false;
+                changed = true;
+            }
+        } else {
+            self.was_on = false;
+        }
+        if !gate.screen_on
+            && !gate.locked
+            && let (Some(off), Some(ms)) = (self.off_at, t.lock_ms)
+            && now.saturating_sub(off) >= u64::from(ms)
+        {
+            gate.locked = true;
+            changed = true;
+        }
+        changed
     }
 }
 
@@ -408,5 +520,113 @@ mod tests {
         assert_eq!(g.filter(Key::Power, KeyPhase::Down), Gate::Pass(Key::Power, KeyPhase::Down));
         g.locked = false;
         assert_eq!(g.filter(Key::Down, KeyPhase::Down), Gate::Pass(Key::Down, KeyPhase::Down));
+    }
+
+    /// Keys when locked (0x0404): None, Volume, Volume and transport; the
+    /// transport keys reach playback (`Gate::Transport`), never the screen.
+    #[test]
+    fn keys_when_locked_setting() {
+        assert_eq!(KeyGate::locked_keys(0), LockedKeys::None);
+        assert_eq!(KeyGate::locked_keys(1), LockedKeys::Volume);
+        assert_eq!(KeyGate::locked_keys(2), LockedKeys::VolumeTransport);
+        assert_eq!(KeyGate::locked_keys(9), LockedKeys::Volume);
+        for (v, vol, transport) in [(0, false, false), (1, true, false), (2, true, true)] {
+            for off in [false, true] {
+                let mut g = KeyGate::new();
+                g.when_locked = KeyGate::locked_keys(v);
+                if off {
+                    g.screen_on = false;
+                }
+                g.locked = true;
+                let got = g.filter(Key::VolUp, KeyPhase::Down);
+                assert_eq!(got == Gate::Pass(Key::VolUp, KeyPhase::Down), vol, "{v} {off}: {got:?}");
+                let _ = g.filter(Key::VolUp, KeyPhase::Up { held: false });
+                for k in [Key::Prev, Key::Next, Key::Ok] {
+                    let got = g.filter(k, KeyPhase::Down);
+                    assert_eq!(got == Gate::Transport(k, KeyPhase::Down), transport, "{v} {k:?}: {got:?}");
+                    let _ = g.filter(k, KeyPhase::Up { held: false });
+                }
+                // Up, Down, Back, Menu never pass a lock.
+                for k in [Key::Up, Key::Down, Key::Back, Key::Menu] {
+                    assert_eq!(g.filter(k, KeyPhase::Down), Gate::LockNotice);
+                    let _ = g.filter(k, KeyPhase::Up { held: false });
+                }
+                // Power always does.
+                assert_eq!(g.filter(Key::Power, KeyPhase::Down), Gate::Pass(Key::Power, KeyPhase::Down));
+            }
+        }
+        // Unlocked with the screen on: every key reaches the screen.
+        let mut g = KeyGate::new();
+        g.when_locked = LockedKeys::VolumeTransport;
+        assert_eq!(g.filter(Key::Ok, KeyPhase::Down), Gate::Pass(Key::Ok, KeyPhase::Down));
+    }
+
+    const T15: Timeouts = Timeouts { screen_off_ms: Some(15_000), lock_ms: Some(0), saver: false };
+
+    /// Backlight timeout then lock delay (05 §6.3): off 15 s after the last
+    /// key, locked at once ("Immediately"); a key in between restarts it.
+    #[test]
+    fn screen_timer_off_then_lock() {
+        let mut g = KeyGate::new();
+        let mut t = ScreenTimer::new(0);
+        assert!(!t.step(&mut g, T15, 10_000));
+        t.key(10_000);
+        assert!(!t.step(&mut g, T15, 24_999));
+        assert!(g.screen_on);
+        assert!(t.step(&mut g, T15, 25_000));
+        assert!(!g.screen_on && g.locked && !g.saver);
+        // Locked: nothing more happens.
+        assert!(!t.step(&mut g, T15, 90_000));
+    }
+
+    /// Lock delay 5 s: the screen is off but a key only wakes it during
+    /// those 5 s; then the keys lock. Never: they never lock by the timer.
+    #[test]
+    fn screen_timer_lock_delay() {
+        let five = Timeouts { lock_ms: Some(5_000), ..T15 };
+        let mut g = KeyGate::new();
+        let mut t = ScreenTimer::new(0);
+        assert!(t.step(&mut g, five, 15_000));
+        assert!(!g.screen_on && !g.locked);
+        assert!(!t.step(&mut g, five, 19_999));
+        assert!(t.step(&mut g, five, 20_000));
+        assert!(g.locked);
+        // Woken within the delay: no lock.
+        let mut g = KeyGate::new();
+        let mut t = ScreenTimer::new(0);
+        assert!(t.step(&mut g, five, 15_000));
+        assert_eq!(g.filter(Key::Ok, KeyPhase::Down), Gate::Wake);
+        let _ = g.filter(Key::Ok, KeyPhase::Up { held: false });
+        g.screen_on = true;
+        t.key(16_000);
+        assert!(!t.step(&mut g, five, 20_000));
+        assert!(g.screen_on && !g.locked);
+        let never = Timeouts { lock_ms: None, ..T15 };
+        let mut g = KeyGate::new();
+        let mut t = ScreenTimer::new(0);
+        assert!(t.step(&mut g, never, 15_000));
+        assert!(!t.step(&mut g, never, 3_600_000));
+        assert!(!g.screen_on && !g.locked);
+    }
+
+    /// A screen woken (a key, Power, an alert) counts from then; Always
+    /// keeps it on; the screen saver flag follows the setting.
+    #[test]
+    fn screen_timer_wake_always_and_saver() {
+        let mut g = KeyGate::new();
+        let mut t = ScreenTimer::new(0);
+        let saver = Timeouts { saver: true, lock_ms: None, ..T15 };
+        assert!(t.step(&mut g, saver, 15_000));
+        assert!(!g.screen_on && g.saver);
+        // Woken without a key (an alert) at 40 s.
+        g.screen_on = true;
+        assert!(!t.step(&mut g, saver, 40_000));
+        assert!(!t.step(&mut g, saver, 54_999));
+        assert!(t.step(&mut g, saver, 55_000));
+        assert!(!g.screen_on);
+        let mut g = KeyGate::new();
+        let mut t = ScreenTimer::new(0);
+        assert!(!t.step(&mut g, Timeouts::HELD, 86_400_000));
+        assert!(g.screen_on && !g.locked);
     }
 }

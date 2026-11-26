@@ -43,6 +43,13 @@ menu) does the same without the pinhole.
 The screen switched off and the keys locked (Power, or the backlight and
 lock timers in Settings › Display). Press **Power** to wake it.
 
+## The tools do not find the player
+
+Settings › USB › **Developer channel** off hides the connection the
+install and developer tools use. Switch it on again there (it takes effect
+at once), or use Settings › System › Factory reset. Recovery mode (above)
+works either way.
+
 ## No sound in wired headphones
 
 * Check the volume (Vol+) and Settings › Sound › Volume limit.

@@ -48,6 +48,33 @@ pub trait System {
     /// may click (05 §3: "every press may produce a key click … mixed into
     /// the audio output"; Settings › Sound › Key click).
     fn key_click(&mut self) {}
+    /// **Animations** (Settings › Display, off in Battery saver; 05 §4
+    /// "Motion"): false keeps marquees at rest. Read at each draw.
+    fn animations(&self) -> bool {
+        true
+    }
+    /// A transport key while the keys are locked or the screen is off, with
+    /// Keys when locked = Volume and transport ([`Gate::Transport`]): it
+    /// goes to playback, never to the screen.
+    fn transport(&mut self, _k: Key, _p: KeyPhase) {}
+    /// The time the screen saver shows (hours as the clock setting wants
+    /// them, minutes); `None`: the saver stays dark.
+    fn saver_clock(&self) -> Option<(u8, u8)> {
+        None
+    }
+}
+
+/// Where the screen saver's clock stands in minute `m` of the day (05
+/// §6.3: a dim clock that moves every minute): the left edge and the
+/// baseline of 28 px numerals `w` pixels wide, inside the panel.
+#[must_use]
+pub fn saver_spot(m: u16, w: i16) -> (i16, i16) {
+    let m = i32::from(m);
+    let room_x = (i32::from(SCREEN.w) - i32::from(w)).max(1);
+    let x = (m * 37) % room_x;
+    // Baselines 30 ..= 124: the digits stay on the panel.
+    let y = 30 + (m * 53) % 95;
+    (i16::try_from(x).unwrap_or(0), i16::try_from(y).unwrap_or(30))
 }
 
 /// Things only the caller can do, returned from event handling.
@@ -105,6 +132,8 @@ pub struct Shell<T, S: ?Sized> {
     /// as of that moment (a marquee or clock under the scrim stays still,
     /// so redrawing it there gives the same frame).
     underlay_at: Instant,
+    /// The screen saver's clock as drawn (`None`: not on the panel).
+    saver_drawn: Option<(u8, u8)>,
     _svc: PhantomData<fn(&mut S)>,
 }
 
@@ -151,6 +180,7 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
             now,
             roll: svc.list_roll_around(),
             underlay_at: now,
+            saver_drawn: None,
             _svc: PhantomData,
         };
         s.stack.push(NavEntry { id: root, arg, resume: Default::default() });
@@ -209,6 +239,7 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
         self.strip_drawn = StripKey::None;
         self.toast_drawn = false;
         self.volume_drawn = false;
+        self.saver_drawn = None;
         if self.sheet.is_some() || self.dialog.is_some() {
             self.modal_fresh = true;
         }
@@ -225,6 +256,11 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
     }
 
     /// A key event from the [`KeyMapper`](crate::input::KeyMapper).
+    // Not inlined: inlined into the firmware's UI task loop it made that
+    // task's poll frame 1,168 B, under the deepest path (Settings' events
+    // down to the Authenticator's HMAC); out of line the frame is 520 B
+    // (VER-13, `xtask stack`: margin 3,920 -> 4,568 B).
+    #[inline(never)]
     pub fn key(&mut self, svc: &mut S, k: Key, p: KeyPhase, now: Instant) -> Requests {
         self.now = now;
         self.roll = svc.list_roll_around();
@@ -235,6 +271,7 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
         }
         match gate {
             Gate::Pass(k, p) => self.key_pass(svc, k, p, now, &mut req),
+            Gate::Transport(k, p) => svc.transport(k, p),
             Gate::Wake => req.wake = true,
             Gate::LockNotice => {
                 req.lock_notice = true;
@@ -265,7 +302,11 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
         }
         if k == Key::Power {
             match p {
-                KeyPhase::Up { held: false } => req.screen_off = true,
+                KeyPhase::Up { held: false } => {
+                    // Off with Power is dark, never the screen saver.
+                    self.gate.saver = false;
+                    req.screen_off = true;
+                }
                 KeyPhase::Hold => {
                     req.power_menu = true;
                     if let Some(id) = T::POWER_MENU
@@ -537,6 +578,14 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
     /// Bring the frame buffer up to date. Only changed regions are drawn and
     /// marked dirty in `g`.
     pub fn draw(&mut self, svc: &mut S, g: &mut Gfx<'_>) {
+        if !self.gate.screen_on && self.gate.saver {
+            self.draw_saver(svc, g);
+            return;
+        }
+        if self.saver_drawn.take().is_some() {
+            self.invalidate();
+        }
+        g.motion = svc.animations();
         let now = self.now;
         let wants = self.top.wants();
         let modal = self.sheet.is_some() || self.dialog.is_some();
@@ -631,6 +680,31 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
         }
     }
 
+    /// The screen saver (05 §6.3): the clock in dim large numerals on the
+    /// background, at a place that moves every minute; redrawn only when
+    /// the minute changes.
+    fn draw_saver(&mut self, svc: &S, g: &mut Gfx<'_>) {
+        let clock = svc.saver_clock();
+        let shown = clock.unwrap_or((0xFF, 0xFF));
+        if self.saver_drawn == Some(shown) {
+            return;
+        }
+        // Dark in every theme (a light theme's text colour is its darkest).
+        let bg = if g.pal.is_dark() { Role::Bg } else { Role::Text };
+        g.clear(bg);
+        if let Some((h, m)) = clock {
+            let mut s = crate::text::StrBuf::<8>::new();
+            s.push_u32(u32::from(h));
+            s.push(':');
+            s.push_u32_padded(u32::from(m), 2);
+            let w = g.measure(s.as_str(), crate::font::FontId::Num28);
+            let (x, y) = saver_spot(u16::from(h) * 60 + u16::from(m), w);
+            let dim = g.c(Role::TextDim);
+            g.text(x, y, s.as_str(), crate::font::FontId::Num28, dim);
+        }
+        self.saver_drawn = Some(shown);
+    }
+
     fn draw_strip(&mut self, svc: &S, g: &mut Gfx<'_>, use_: StripUse, is_player: bool, now: Instant) {
         let mini = if is_player { None } else { svc.mini_player() };
         let key = match (&mini, use_) {
@@ -640,7 +714,7 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
                     self.strip_hash = h;
                     self.strip_since = now;
                 }
-                let over = mini_player_overflow(g, m.title);
+                let over = if g.motion { mini_player_overflow(g, m.title) } else { 0 };
                 self.strip_scrolls = over > 0;
                 let scroll = marquee_offset(now.since(self.strip_since), over);
                 StripKey::Mini { hash: h, playing: m.playing, progress: m.progress, scroll }
@@ -673,5 +747,27 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
     #[must_use]
     pub fn top_id(&self) -> ScreenId {
         self.top.id()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use super::saver_spot;
+
+    /// The screen saver's clock moves every minute and its 28 px numerals
+    /// (up to "12:59", 70 px wide) stay on the panel all day.
+    #[test]
+    fn saver_spot_moves_and_stays_on_the_panel() {
+        let mut spots = std::collections::BTreeSet::new();
+        for m in 0..1440u16 {
+            let (x, y) = saver_spot(m, 70);
+            assert!((0..=58).contains(&x) && (30..=124).contains(&y), "{m}: {x},{y}");
+            spots.insert((x, y));
+            if m > 0 {
+                assert_ne!(saver_spot(m - 1, 70), (x, y), "{m}");
+            }
+        }
+        assert!(spots.len() > 500, "{}", spots.len());
     }
 }

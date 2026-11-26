@@ -336,8 +336,11 @@ impl<S: Services + ?Sized> Screen<S> for RadioScreen {
             let (w, _) = g.size();
             self.text_over = (g.measure(text, FontId::Ui) - (w - 8)).max(0);
         }
-        let scroll =
-            if shows_text { marquee_offset(cx.now.since(self.text_since), self.text_over) } else { 0 };
+        let scroll = if shows_text && g.motion {
+            marquee_offset(cx.now.since(self.text_since), self.text_over)
+        } else {
+            0
+        };
         let spinning = matches!(info.phase, RadioPhase::Starting | RadioPhase::Seeking);
         let spin = spinning.then(|| u8::try_from((cx.now.0 / 125) % 8).unwrap_or(0));
         self.scanning = info.phase == RadioPhase::Scanning;

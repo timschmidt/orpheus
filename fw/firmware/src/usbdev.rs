@@ -688,16 +688,31 @@ fn builder(product: &'static str) -> Builder<'static, usb::Driver> {
             &mut *(&raw mut CONTROL_BUF),
         )
     };
-    // SAFETY: as above.
-    b.handler(unsafe { &mut *(&raw mut DEVCHAN) });
+    // Settings › USB › Developer channel (VER-13): off, the device answers
+    // no developer request. On by default, and always while a host test
+    // or a test session runs (`ui::dev_channel_held`).
+    if dev_channel() {
+        // SAFETY: as above.
+        b.handler(unsafe { &mut *(&raw mut DEVCHAN) });
+    }
     b
+}
+
+/// The developer channel is offered (VER-13; `ui::DEV_CHANNEL`, published
+/// by the UI from the setting).
+fn dev_channel() -> bool {
+    crate::ui::DEV_CHANNEL.load(Ordering::Relaxed)
 }
 
 async fn run_dev() -> Personality {
     let mut b = builder("YM03");
     // The developer interface with WebUSB and MS OS 2.0 descriptors (WEB-3):
-    // the browser installer opens it without a driver.
-    orpheus_usb::webusb::dev_interface(&mut b, true);
+    // the browser installer opens it without a driver. With the developer
+    // channel off the device has no interface (charging only; the host
+    // still enumerates it, so the USB liveness check sees it answered).
+    if dev_channel() {
+        orpheus_usb::webusb::dev_interface(&mut b, true);
+    }
     let mut dev = b.build();
     let r = embassy_futures::select::select3(dev.run(), supervisor(), next_mode(Personality::Dev)).await;
     usb::set_attached(false);
@@ -902,7 +917,9 @@ async fn run_image() -> Personality {
 async fn run_kbd() -> Personality {
     use embassy_usb::class::hid::{Config as HidConfig, HidBootProtocol, HidSubclass, HidWriter};
     let mut b = builder("YM03 keyboard");
-    orpheus_usb::webusb::dev_interface(&mut b, false);
+    if dev_channel() {
+        orpheus_usb::webusb::dev_interface(&mut b, false);
+    }
     // SAFETY: as in `builder`: one device at a time; the previous one
     // (and its borrows of these statics) is gone.
     b.handler(unsafe { &mut *(&raw mut KBD_BUS) });

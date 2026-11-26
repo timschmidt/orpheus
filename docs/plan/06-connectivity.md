@@ -142,6 +142,17 @@ SENSE and rejects writes.
 
 ### 2.5 Developer channel (endpoint 0, vendor requests)
 
+*Settings › USB › Developer channel (VER-13).* On by default. Off, the
+developer personality enumerates with no interface, the card reader,
+keyboard and disk-image personalities without the vendor interface, and no
+vendor request is answered (no handler). It stays on whatever the setting
+says while a host test runs (the test mailbox, `ui test-look on`, a settings
+test session), and `settings test-set` refuses it. A change re-enumerates
+the developer personality at once. Ways back: Settings › USB › Developer
+channel on (the keys), Settings › System › Factory reset; recovery (ADFU:
+Settings › System › Recovery mode, the power menu, or reset + Next) works
+either way.
+
 `bmRequestType` vendor | device; `bRequest`:
 
 | Req | Dir | Function |
@@ -653,6 +664,16 @@ correction (seconds per day). The app shows when the clock was last set and
 warns if the RTC reports having stopped (docs/hw/system.md T6 decides how that
 is detected; until then, a "clock set" marker in the settings store compared
 with an implausible date).
+
+*As built (VER-13):* the RTC keeps local time (what every screen shows);
+UTC for the codes is that less Settings › Date & time › Time zone
+(`services::utc_of_local`, firmware `vault::unix_now`). Correction (s/day,
+set by hand; not yet measured between synchronisations) steps the running
+clock a whole second at a time (`services::ClockDrift`). Set from RDS takes
+the clock time of group 4A once the next minute's group agrees with it
+(`orpheus_fm::rds::Rds::clock`; the C and D blocks carry no error report)
+and sets the RTC in the player's time zone. Neither moves the clock during a
+test session.
 
 ### 5.4 Provisioning and output
 

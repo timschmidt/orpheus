@@ -845,6 +845,13 @@ fn app_cases(add: &mut dyn FnMut(String, String)) {
         ("power_menu", "hold:power expect-screen:PowerMenu"),
         ("quick", "set:playing=1 set:bt=connected hold:menu expect-screen:QuickPanel down*3 next"),
         ("lock", "set:playing=1 power down expect-screen:Lock"),
+        // VER-13: the screen saver after the backlight timeout (Clock), and
+        // the USB question with Read-only card on (a lock on File transfer).
+        (
+            "screen_saver",
+            "set:timers=run set:clock=10:00:30 set:0x0302=0 set:0x0303=4 set:0x0307=1 wait:5100",
+        ),
+        ("usb_read_only", "set:0x0902=1 set:usb=host expect-screen:UsbConnect down"),
         ("no_card", "set:card=absent ok expect-screen:Notice"),
         // Every app opens since USB-6 (USB Drive was the last): a
         // playlist (Files › Music › Mix.m3u8) is what is not built yet.

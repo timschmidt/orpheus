@@ -480,6 +480,7 @@ run on the player.
 | U-LCM-3 | Effect of `AHB_CFG_DATA` = 0 on the port's first command write | Send `0x11` in each mode, read display status | LCD-1 |
 | U-PWM-1 | Does a `DUTY` write take effect while the channel runs | Change duty with and without the vendor's stop/start | LCD-1 |
 | U-PWM-2 | Breath and programmable (DMA) PWM modes | Bring-up on PWM4 | later |
+| U-PWM-3 | The stock firmware's brightness levels: which PWM4 duty values (of the 16-step period the port uses) its brightness setting writes, and its default. Needed before Settings › Display › Brightness drives the backlight (VER-13 left it unwired: the firmware uses 12 on, 0 off, 16/3 for the alert flash) | `DRV_LCD.DRV` disassembly around the backlight's `DUTY` writes (the stock dump; never the reference player, rule 9) | LCD-1 follow-up |
 | U-PMU-5 | `ONOFF_CTL` bit 1: live status (DS) or latch (vendor) | Hold the key, read without clearing, release, read again | INPUT-1 |
 | U-AUD-7 | `FIFOCTL.DMAWIDTH` with 16-bit DMA (vendor sets it, the port does not) | Toggle; compare level and channel order | AU-1 |
 | U-AUD-8 | Hardware mixing of DAC FIFO1 (key clicks) | Second DMA stream on FIFO1 during playback | AU-1 |

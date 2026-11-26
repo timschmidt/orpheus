@@ -102,6 +102,9 @@ pub struct Fw {
     radio: RadioInfo,
     /// The radio's change counters last seen (state, RDS, auto-scans).
     radio_seen: (u16, u16, u16),
+    /// The RDS clock time the clock was last set from (minutes since 1970
+    /// UTC; 0 none): Settings › Date & time › Set from RDS (VER-13).
+    rds_set: u32,
     /// RDS name and text as UTF-8, the mini-player's title (SRAM3,
     /// `fm::RadioText`).
     radio_text: &'static mut crate::fm::RadioText,
@@ -287,6 +290,7 @@ impl Fw {
                 found: 0,
             },
             radio_seen: (0, 0, 0),
+            rds_set: 0,
             radio_text,
             radio_freq_since: 0,
             presets,
@@ -682,16 +686,34 @@ impl Fw {
         }
     }
 
+    /// Settings › Date & time › Set from RDS (VER-13): a station's clock
+    /// time sets the RTC (in the Time zone), once per new minute.
+    #[inline(never)]
+    fn rds_clock(&mut self, utc: u64) {
+        let min = (utc / 60) as u32;
+        if min == self.rds_set {
+            return;
+        }
+        // Not in a test session: a test never moves the owner's clock.
+        if let Some(t) = services::rds_clock(&*self, utc).filter(|_| !crate::ui::session_on()) {
+            self.rds_set = min;
+            self.set_now(t);
+            atj2157_hal::log::line(b"clock: set from RDS");
+        }
+    }
+
     pub fn sync_radio(&mut self, now_ms: u64) {
         use orpheus_apps::services::radio_event;
         use orpheus_fm::Phase;
         let (seen_seq, seen_rds, seen_scan) = self.radio_seen;
         let mut ps = [0u8; 8];
         let mut ps_len = 0;
+        let mut ct = None;
         let text = &mut *self.radio_text;
         let i = crate::fm::with(|r| {
             let i = r.info();
             if i.rds_seq != seen_rds {
+                ct = r.rds().clock();
                 let mut b = [0u8; 96];
                 let n = orpheus_fm::rds::to_utf8(r.rds().rt(), &mut b);
                 text.rt = StrBuf::from(core::str::from_utf8(b.get(..n).unwrap_or(&[])).unwrap_or(""));
@@ -737,6 +759,9 @@ impl Fw {
                 self.presets_dirty = true;
             }
             self.pending.push(other(radio_event::RDS));
+        }
+        if let Some(utc) = ct {
+            self.rds_clock(utc);
         }
         if i.scan_seq != seen_scan {
             self.pending.push(other(radio_event::SCANNED));
@@ -1881,5 +1906,16 @@ impl System for Fw {
         {
             crate::audio::click(self.player.source != orpheus_ui::event::Source::Playing);
         }
+    }
+    fn animations(&self) -> bool {
+        services::animations(self)
+    }
+    // Not inlined: a player command's frame in the UI task's poll frame.
+    #[inline(never)]
+    fn transport(&mut self, k: orpheus_ui::event::Key, p: orpheus_ui::event::KeyPhase) {
+        services::locked_transport(self, k, p);
+    }
+    fn saver_clock(&self) -> Option<(u8, u8)> {
+        services::saver_clock(self)
     }
 }

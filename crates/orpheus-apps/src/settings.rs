@@ -217,8 +217,10 @@ pub mod id {
     pub const AUTO_BOOKMARK: SettingId = SettingId(0x0207);
     pub const BRIGHTNESS: SettingId = SettingId(0x0301);
     pub const BACKLIGHT: SettingId = SettingId(0x0302);
+    pub const LOCK_DELAY: SettingId = SettingId(0x0303);
     pub const THEME: SettingId = SettingId(0x0304);
     pub const ACCENT: SettingId = SettingId(0x0305);
+    pub const SCREEN_SAVER: SettingId = SettingId(0x0307);
     pub const ANIMATIONS: SettingId = SettingId(0x0308);
     pub const ROTATE: SettingId = SettingId(0x0309);
     pub const CLOCK_IN_BAR: SettingId = SettingId(0x030A);
@@ -232,10 +234,15 @@ pub mod id {
     pub const CLOCK_24H: SettingId = SettingId(0x0503);
     pub const DATE_FORMAT: SettingId = SettingId(0x0504);
     pub const UTC_OFFSET: SettingId = SettingId(0x0505);
+    /// Clock drift correction, seconds per day (-60 ..= 60).
+    pub const CLOCK_CORRECTION: SettingId = SettingId(0x0506);
+    pub const SET_FROM_RDS: SettingId = SettingId(0x0507);
     pub const BLUETOOTH: SettingId = SettingId(0x0601);
     pub const BT_RECONNECT: SettingId = SettingId(0x0603);
     pub const OUTPUT: SettingId = SettingId(0x0604);
     pub const USB_WHEN_CONNECTED: SettingId = SettingId(0x0901);
+    pub const READ_ONLY_CARD: SettingId = SettingId(0x0902);
+    pub const DEV_CHANNEL: SettingId = SettingId(0x0903);
     /// The computer's keyboard layout (`orpheus_hid::Layout` order).
     pub const KBD_LAYOUT: SettingId = SettingId(0x0904);
     pub const KEYPAD_DIGITS: SettingId = SettingId(0x0905);

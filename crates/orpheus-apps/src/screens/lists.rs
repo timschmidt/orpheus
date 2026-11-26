@@ -466,9 +466,17 @@ impl ListScreen {
                 if !svc.usb_audio_built() {
                     modes[4].1 = u16::MAX;
                 }
+                let ro = crate::services::usb_card_read_only(svc);
                 for (s, tag) in modes {
-                    if tag != u16::MAX {
-                        rows.push(l.get(s), tag);
+                    if tag != u16::MAX
+                        && let Some(r) = rows.push(l.get(s), tag)
+                        && tag == 1
+                        && ro
+                    {
+                        // Settings › USB › Read-only card (VER-13): the
+                        // computer gets the card write-protected (a lock
+                        // before the row).
+                        r.icon = Some(&orpheus_ui::icons::LOCK);
                     }
                 }
                 if let Some(r) = rows.push(l.get(Str::AlwaysDoThis), T_ALWAYS) {

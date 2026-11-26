@@ -143,6 +143,27 @@ enum Resolved {
     Skip,
 }
 
+/// Settings › Display › Rotate (05 §4 "Rotation", 180°): the panel rows
+/// where rows `y0..y1` of the frame go when the display is turned.
+#[must_use]
+pub const fn rotated_band(y0: u32, y1: u32) -> (u32, u32) {
+    let h = SCREEN.h as u32;
+    (h - y1, h - y0)
+}
+
+/// Turn rows `y0..y1` of a 128-pixel-wide frame by 180° in place (the
+/// band's pixels in reverse order): sent to the panel rows of
+/// [`rotated_band`], they show the band turned; turning it again restores
+/// it. The firmware does this around each flush, so the frame buffer the
+/// UI draws into (and screenshots read) stays upright.
+pub fn turn_band(fb: &mut [u16], y0: u32, y1: u32) {
+    let w = SCREEN.w as usize;
+    let (a, b) = ((y0 as usize) * w, (y1 as usize) * w);
+    if a < b && b <= fb.len() {
+        fb[a..b].reverse();
+    }
+}
+
 /// Drawing context. Coordinates are relative to the current area (see
 /// [`Gfx::with_area`]); everything is clipped to the area and the panel.
 pub struct Gfx<'a> {
@@ -151,6 +172,10 @@ pub struct Gfx<'a> {
     fallback: Option<Fallback<'a>>,
     /// Colours for the palette roles.
     pub pal: Palette,
+    /// Animations (Settings › Display, and off in Battery saver; 05 §4
+    /// "Motion"): with false, long focused text and the mini-player's title
+    /// do not scroll (the marquee stays at rest). Set by the shell's draw.
+    pub motion: bool,
     org_x: i16,
     org_y: i16,
     area: Rect,
@@ -166,7 +191,7 @@ impl<'a> Gfx<'a> {
         pal: Palette,
         fallback: Option<Fallback<'a>>,
     ) -> Self {
-        Gfx { px, dirty, fallback, pal, org_x: 0, org_y: 0, area: SCREEN, clip: SCREEN }
+        Gfx { px, dirty, fallback, pal, motion: true, org_x: 0, org_y: 0, area: SCREEN, clip: SCREEN }
     }
 
     /// Whether anything drawn through this `Gfx` so far touched `r`
@@ -822,6 +847,29 @@ mod tests {
     use super::*;
     use crate::theme::{Accent, Theme};
     use std::vec;
+
+    /// Rotate (0x0309): any band turned and sent to its rotated rows gives
+    /// the panel the whole frame turned by 180°, and turning twice restores
+    /// the frame buffer.
+    #[test]
+    fn rotated_bands_make_the_frame_turned() {
+        let frame: std::vec::Vec<u16> = (0..FB_PIXELS as u32).map(|i| (i * 7 + 3) as u16).collect();
+        let mut turned = frame.clone();
+        turned.reverse();
+        for (y0, y1) in [(0, 128), (0, 14), (14, 110), (110, 128), (37, 38)] {
+            let mut fb = frame.clone();
+            turn_band(&mut fb, y0, y1);
+            let (p0, p1) = rotated_band(y0, y1);
+            assert_eq!(p1 - p0, y1 - y0);
+            assert_eq!(
+                &fb[y0 as usize * 128..y1 as usize * 128],
+                &turned[p0 as usize * 128..p1 as usize * 128]
+            );
+            turn_band(&mut fb, y0, y1);
+            assert_eq!(fb, frame);
+        }
+        assert_eq!(rotated_band(0, 14), (114, 128));
+    }
 
     #[test]
     fn dirty_merging() {

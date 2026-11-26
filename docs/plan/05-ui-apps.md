@@ -147,7 +147,12 @@ option).
   progress and the spinner are the only continuous animations.
 * **Rotation**: 0° and 180° (clip worn upside down), set in Display settings;
   implemented with the panel's MADCTL and a swapped key map for Up/Down and
-  Prev/Next.
+  Prev/Next. *As built (VER-13):* in software, without a controller flag
+  (the 180° MADCTL value and its RAM offsets are not hardware facts yet):
+  each flushed band of the frame buffer is turned in place, sent to the
+  mirrored panel rows and turned back (`orpheus_ui::gfx::turn_band`), so the
+  frame buffer stays upright for drawing and screenshots; the key mapper
+  swaps Up/Down and Prev/Next. Held off under a host test's look.
 
 ## 5. Toolkit (crate `orpheus-ui`)
 
@@ -305,6 +310,20 @@ continues at the lowest sufficient clock. While locked, a key press shows the
 lock screen for 2 s: clock in large numerals, date, track title, battery,
 "Press Power to unlock". Optional screen saver instead of off: dim clock that
 moves every minute.
+
+*As built (VER-13):* `orpheus_ui::input::ScreenTimer` turns the screen off
+Backlight time-out after the last key (the next key only wakes it), and locks
+the keys Lock delay after that (Immediately, 5, 30, 60 s, Never; Power still
+locks at once). With Screen saver = Clock the panel stays lit at the
+time-out and the shell draws the time in dim 28 px numerals on a dark
+background, moved every minute (`saver_spot`); Power always turns the panel
+dark. Keys when locked: None, Volume, or Volume and transport (OK
+play/pause, Next/Prev track) — transport keys go to playback
+(`Gate::Transport`), never to the screen under the lock. Animations (and
+Battery saver) keep marquees at rest. Under a host test's look (the suite,
+the fuzzers, the soak) the timers are held unless the test session sets one
+off its default (`services::TimerHold`); setting it back wakes the screen
+and frees the keys.
 
 ### 6.4 Quick panel (hold Menu)
 

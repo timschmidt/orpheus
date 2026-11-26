@@ -29,6 +29,8 @@ pub struct Top {
     pub overlay: bool,
     pub locked: bool,
     pub screen_on: bool,
+    /// The screen saver on the panel (VER-13; firmware `ui top` `saver=`).
+    pub saver: bool,
 }
 
 impl Top {
@@ -40,7 +42,16 @@ impl Top {
         }
         let id = w.next()?.parse().ok()?;
         let name = w.next()?.to_string();
-        let mut t = Top { id, name, depth: 0, dialog: false, overlay: false, locked: false, screen_on: true };
+        let mut t = Top {
+            id,
+            name,
+            depth: 0,
+            dialog: false,
+            overlay: false,
+            locked: false,
+            screen_on: true,
+            saver: false,
+        };
         for kv in w {
             let (k, v) = kv.split_once('=')?;
             let n: u8 = v.parse().ok()?;
@@ -50,6 +61,7 @@ impl Top {
                 "overlay" => t.overlay = n != 0,
                 "locked" => t.locked = n != 0,
                 "screen" => t.screen_on = n != 0,
+                "saver" => t.saver = n != 0,
                 _ => {}
             }
         }
@@ -58,14 +70,15 @@ impl Top {
 
     pub fn text(&self) -> String {
         format!(
-            "top {} {} depth={} dialog={} overlay={} locked={} screen={}",
+            "top {} {} depth={} dialog={} overlay={} locked={} screen={} saver={}",
             self.id,
             self.name,
             self.depth,
             u8::from(self.dialog),
             u8::from(self.overlay),
             u8::from(self.locked),
-            u8::from(self.screen_on)
+            u8::from(self.screen_on),
+            u8::from(self.saver)
         )
     }
 }
@@ -207,7 +220,9 @@ pub fn command(
 ) -> Result<String> {
     let primed = match want {
         Some(_) => {
-            p.send("ui top")?;
+            // `ui top` itself is primed with another reply answered at once
+            // (VER-13 journeys check the screen state with it).
+            p.send(if text == "ui top" { "settings test-session" } else { "ui top" })?;
             Some(p.reply()?)
         }
         None => None,
@@ -388,11 +403,33 @@ pub struct SimPlayer {
     reply: String,
     /// Fresh simulator at every journey (the default), or one session.
     pub fresh: bool,
+    /// The screen timers a session armed (firmware `ui.rs` `TIMER_HOLD`).
+    hold: orpheus_apps::services::TimerHold,
 }
 
 impl Default for SimPlayer {
     fn default() -> Self {
-        Self { sim: AppSim::new(), reply: String::new(), fresh: true }
+        Self { sim: AppSim::new(), reply: String::new(), fresh: true, hold: Default::default() }
+    }
+}
+
+impl SimPlayer {
+    /// A session's `test-set` as the firmware takes it (VER-13,
+    /// `ui.rs` `session_set_hooks`): the screen timers armed while one is
+    /// off its default; when the last goes back, the screen comes on and
+    /// the keys unlock.
+    fn session_set(&mut self, id: i32, v: i32) {
+        let (Ok(id), Ok(v)) = (u16::try_from(id), i16::try_from(v)) else { return };
+        let was = self.hold.bits();
+        self.hold.test_set(orpheus_apps::settings::SettingId(id), v);
+        if self.sim.sys.timer_hold.is_some() {
+            self.sim.sys.timer_hold = Some(self.hold);
+        }
+        if was != 0 && self.hold.bits() == 0 {
+            self.sim.shell.gate.screen_on = true;
+            self.sim.shell.gate.locked = false;
+            self.sim.shell.invalidate();
+        }
     }
 }
 
@@ -415,6 +452,7 @@ pub fn sim_top(sim: &AppSim) -> Top {
         overlay: sim.shell.overlay_shown(),
         locked: sim.shell.gate.locked,
         screen_on: sim.shell.gate.screen_on,
+        saver: sim.shell.gate.saver && !sim.shell.gate.screen_on,
     }
 }
 
@@ -466,8 +504,14 @@ impl Player for SimPlayer {
                     None => s.parse().ok(),
                 };
                 match (w.first().and_then(|s| num(s)), w.get(1).and_then(|s| num(s))) {
+                    // As the firmware: only what a session may set (never
+                    // the developer channel, power, clock, USB …).
+                    (Some(id), Some(_)) if !u16::try_from(id).is_ok_and(super::soak::session_settable) => {
+                        "test-set: not allowed".into()
+                    }
                     (Some(id), Some(v)) => {
                         self.sim.run_script(&format!("set:{id:#06x}={v}"))?;
+                        self.session_set(id, v);
                         format!("test-set {id}={v} ok")
                     }
                     _ => "usage: settings test-set ID VALUE".into(),
@@ -479,9 +523,17 @@ impl Player for SimPlayer {
             }
             t if t.starts_with("ls ") => "Music/\n.orpheus/\n(2 entries)".into(),
             t if t.starts_with("playdir ") => "playdir ok".into(),
-            // The simulator's defaults are the test look already.
-            "ui test-look on" => "test-look on".into(),
-            "ui test-look off" => "test-look off".into(),
+            // The simulator's defaults are the test look already; as on the
+            // player the look holds the screen timers (unless a session
+            // armed them) and off they run (VER-13).
+            "ui test-look on" => {
+                self.sim.sys.timer_hold = Some(self.hold);
+                "test-look on".into()
+            }
+            "ui test-look off" => {
+                self.sim.sys.timer_hold = None;
+                "test-look off".into()
+            }
             // Commands without a reply leave the last one.
             "stop" | "crc on" | "crc off" => return Ok(()),
             _ => "commands: ls PATH, play PATH, playdir PATH [START], vol N".into(),
@@ -507,6 +559,7 @@ impl Player for SimPlayer {
     }
     fn reboot(&mut self) -> Result<()> {
         self.sim = AppSim::new();
+        self.hold = Default::default();
         Ok(())
     }
     fn reconnect(&mut self) -> Result<()> {
@@ -518,6 +571,7 @@ impl Player for SimPlayer {
     fn begin_journey(&mut self) {
         if self.fresh {
             self.sim = AppSim::new();
+            self.hold = Default::default();
         }
     }
 }
@@ -579,12 +633,64 @@ mod tests {
             overlay: true,
             locked: false,
             screen_on: true,
+            saver: false,
         };
         assert_eq!(Top::parse(&t.text()), Some(t));
         // The firmware's reply (fw/firmware/src/ui.rs `top_reply`).
         let f = Top::parse("top 1 Home depth=1 dialog=0 overlay=0 locked=0 screen=1").unwrap();
         assert_eq!((f.id, f.name.as_str(), f.depth, f.screen_on), (1, "Home", 1, true));
+        let f = Top::parse("top 1 Home depth=1 dialog=0 overlay=0 locked=1 screen=0 look=1 saver=1").unwrap();
+        assert!(f.locked && !f.screen_on && f.saver);
         assert_eq!(Top::parse("idle frames=0"), None);
+    }
+
+    /// Regression (VER-13, 2026-11-26): `command` primed the reply with
+    /// `ui top` before every checked command, so a journey's `cmd: ui top ~
+    /// …` check could never pass (its reply equals the primed one: "no
+    /// reply"). `ui top` is now primed with another command.
+    #[test]
+    fn regress_ui_top_check_was_primed_with_itself() {
+        let mut p = SimPlayer::default();
+        let re = regex::Regex::new("screen=1").unwrap();
+        let r = command(&mut p, "ui top", Some(&re), 1000).unwrap();
+        assert!(r.starts_with("top ") && r.contains("screen=1"), "{r}");
+    }
+
+    /// VER-13: the RAM-only session never sets the developer channel (the
+    /// lead's only way to the player), power, clock or USB settings; the
+    /// simulator standing in for the player refuses them as the firmware.
+    #[test]
+    fn session_refuses_the_developer_channel() {
+        for id in [0x0903u16, 0x0902, 0x0901, 0x0403, 0x0402, 0x0505, 0x0506, 0x0507, 0x0601] {
+            assert!(!super::super::soak::session_settable(id), "{id:#06x}");
+        }
+        let mut p = SimPlayer::default();
+        p.send("settings test-set 0x0903 0").unwrap();
+        assert_eq!(p.reply().unwrap(), "test-set: not allowed");
+        assert_eq!(p.sim.sys.settings.get(orpheus_apps::settings::id::DEV_CHANNEL), 1);
+    }
+
+    /// VER-13: the screen timers in a session as on the player: held until
+    /// a test-set arms them; back at their defaults the screen comes on and
+    /// the keys unlock (no journey leaves the player locked).
+    #[test]
+    fn session_screen_timers() {
+        let mut p = SimPlayer::default();
+        let top = |p: &mut SimPlayer| {
+            p.send("ui top").unwrap();
+            Top::parse(&p.reply().unwrap()).unwrap()
+        };
+        p.sleep(30_000);
+        assert!(top(&mut p).screen_on, "held");
+        p.send("settings test-set 0x0302 0").unwrap();
+        p.sleep(5_500);
+        let t = top(&mut p);
+        assert!(!t.screen_on && t.locked, "5 s, then locked at once");
+        p.send("settings test-set 0x0302 2").unwrap();
+        let t = top(&mut p);
+        assert!(t.screen_on && !t.locked, "set back: on and free");
+        p.sleep(30_000);
+        assert!(top(&mut p).screen_on, "held again");
     }
 
     #[test]

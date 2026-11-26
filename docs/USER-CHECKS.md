@@ -77,3 +77,37 @@ the result and date. "Blocking" entries hold up the package named.
 Record a few seconds in the Recorder, open Recorder › Recordings…, delete
 the recording: the list must no longer show it (fixed in firmware; a test
 may not write `/Recordings`).
+
+## 30. Display, Power, Date & time and USB settings (VER-13 follow-up, 2026-11-26)
+
+After the next install, unplugged where it says so. Each setting goes back
+to how you had it afterwards.
+
+* **Backlight timeout / Lock delay** (Settings › Display): set 5 s and 5 s,
+  leave the player alone on Home: the screen goes dark after about 5 s; a
+  key within the next 5 s only lights it again (nothing else happens);
+  wait 10 s: the next key shows the lock notice, Power unlocks. With
+  *Always* the screen stays on.
+* **Screen saver = Clock**: at the timeout a dim clock appears on a dark
+  screen instead of going dark, and moves a little at the next minute;
+  any key brings back the screen; Power makes it dark as before.
+* **Rotate**: on, the picture turns upside down at once (whole screen,
+  clean edges, no stripes while lists scroll or pictures load) and Up/Down,
+  Prev/Next swap. Report any band left upright or flicker.
+* **Keys when locked**: with music playing, lock with Power. *None*: Vol±
+  show the lock notice. *Volume and transport*: OK pauses/plays, Next/Prev
+  change the track, the screen stays dark.
+* **Power mode**: *Battery saver*: long names in lists no longer scroll;
+  playback still smooth. *High performance*: nothing visible (faster).
+* **Time zone**: set your offset; the Authenticator's codes still log you
+  in (the clock shows local time, the codes use UTC).
+* **Set from RDS**: on, play a station that sends the time for two
+  minutes: the clock is set (check against a phone).
+* **Read-only card**: on, connect to a computer, choose File transfer (a
+  lock shows on that row): the computer shows the card read-only; copying
+  a file onto it fails.
+* **Developer channel** (only with the lead present): off, the lead's
+  tools no longer find the player while File transfer still works; on
+  again, they find it at once.
+
+Report anything that does not match.

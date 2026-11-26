@@ -7,7 +7,7 @@
 use std::vec::Vec;
 
 use crate::chip::{Analog, Port, r02, r03, r04};
-use crate::rds::{PS_LEN, RT_LEN, group_0a, group_2a};
+use crate::rds::{PS_LEN, RT_LEN, group_0a, group_2a, group_4a};
 
 /// A station of the fake's world.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -72,6 +72,12 @@ pub struct FakeChip {
     reads: u32,
     routed: bool,
     gain: u8,
+    /// The stations with RDS send clock time (group 4A, once a minute):
+    /// the time on air, seconds since 1970 UTC (`None`: no clock time).
+    /// The simulator moves it with its own time.
+    pub clock: Option<u64>,
+    /// The minute whose group 4A was sent last.
+    ct_min: u64,
 }
 
 impl Default for FakeChip {
@@ -104,6 +110,8 @@ impl FakeChip {
             reads: 0,
             routed: false,
             gain: 7,
+            clock: None,
+            ct_min: u64::MAX,
         }
     }
 
@@ -334,7 +342,13 @@ impl Port for FakeChip {
             if rds_on {
                 r0a |= 1 << 12;
                 if self.reads % 2 == 0 {
-                    blocks = self.group(&s);
+                    blocks = match self.clock {
+                        Some(t) if t / 60 != self.ct_min => {
+                            self.ct_min = t / 60;
+                            group_4a(0xC000 | (s.khz / 100) as u16, t, 2)
+                        }
+                        _ => self.group(&s),
+                    };
                     self.rds_n += 1;
                     r0a |= 1 << 15;
                 }

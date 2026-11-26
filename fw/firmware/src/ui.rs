@@ -4,11 +4,11 @@ use atj2157_hal::dma;
 use embassy_futures::select::{Either4, select4};
 use embassy_time::{Duration, Instant as TInstant, Timer};
 use orpheus_apps::screens::{self, AppScreen};
-use orpheus_apps::services::{self, PowerRequest};
+use orpheus_apps::services::{self, ClockService, PowerRequest};
 use orpheus_input::Key as HwKey;
 use orpheus_ui::event::{Event, Instant, Key, ServiceEvent};
 use orpheus_ui::gfx::{DirtySet, Gfx};
-use orpheus_ui::input::KeyMapper;
+use orpheus_ui::input::{KeyMapper, ScreenTimer};
 use orpheus_ui::nav::Arg;
 use orpheus_ui::shell::{Requests, Shell, TICK_MS};
 use yoton_bsp::display::{self, Backlight, Display};
@@ -46,6 +46,14 @@ struct Ui {
     store: &'static mut Option<Store<NorRegion, 4>>,
     /// Sound settings last published to the audio task.
     sound: Option<crate::media::Sound>,
+    /// Backlight timeout and lock delay (VER-13, 05 §6.3).
+    timer: ScreenTimer,
+    /// Settings › Date & time › Correction: what is not yet a whole
+    /// second, and when it was last stepped (ms).
+    drift: services::ClockDrift,
+    drift_at: u64,
+    /// The panel is turned by 180° (Settings › Display › Rotate).
+    rotated: bool,
 }
 
 impl Ui {
@@ -149,7 +157,9 @@ impl Ui {
                     orpheus_apps::services::UsbMode::DiskImage => crate::usbdev::Personality::Image,
                     _ => crate::usbdev::Personality::Dev,
                 };
-                crate::usbdev::MSC_READ_ONLY.store(false, core::sync::atomic::Ordering::Relaxed);
+                // Settings › USB › Read-only card (VER-13).
+                crate::usbdev::MSC_READ_ONLY
+                    .store(services::usb_card_read_only(&*self.fw), core::sync::atomic::Ordering::Relaxed);
                 crate::usbdev::MODE.signal(p);
             }
             if let Action::Storage(orpheus_apps::services::StorageRequest::RebuildLibrary) = a {
@@ -198,8 +208,10 @@ impl Ui {
             self.fw.settings.get(orpheus_apps::settings::id::PERFORMANCE) == 1,
             core::sync::atomic::Ordering::Relaxed,
         );
-        // Screen on/off follows the gate.
-        let on = self.shell.gate.screen_on;
+        publish_settings(self.fw);
+        // Screen on/off follows the gate; the screen saver keeps the panel
+        // lit (VER-13).
+        let on = self.shell.gate.screen_on || self.shell.gate.saver;
         if on != self.screen_on {
             self.screen_on = on;
             self.disp.sleep(!on);
@@ -298,7 +310,14 @@ impl Ui {
         }
         if y1 > y0 {
             ROWS.fetch_add(y1 - y0, core::sync::atomic::Ordering::Relaxed);
-            self.disp.flush_rows(fb, y0, y1).await;
+            // Settings › Display › Rotate (VER-13): the band turned and sent
+            // to the mirrored rows, then turned back (the frame buffer stays
+            // upright for drawing and screenshots).
+            let p0 = turn_for_panel(fb, y0, y1, self.rotated);
+            self.disp.flush_band(fb, y0, y1, p0).await;
+            if self.rotated {
+                orpheus_ui::gfx::turn_band(fb, y0, y1);
+            }
             T_FLUSH
                 .fetch_add((atj2157_hal::time::now_us() - t1) as u32, core::sync::atomic::Ordering::Relaxed);
         }
@@ -311,6 +330,50 @@ impl Ui {
         }
         self.fw.lend_picture(fb, now().0);
     }
+}
+
+/// The panel row the band `y0..y1` goes to, the band turned first when
+/// the display is rotated.
+#[inline(never)]
+fn turn_for_panel(fb: &mut [u16], y0: u32, y1: u32, rotated: bool) -> u32 {
+    if !rotated {
+        return y0;
+    }
+    orpheus_ui::gfx::turn_band(fb, y0, y1);
+    orpheus_ui::gfx::rotated_band(y0, y1).0
+}
+
+/// Settings other tasks follow (VER-13), published every loop: Power mode
+/// (the governor), Time zone (`vault::unix_now`), Developer channel (the
+/// USB task; a change re-enumerates the developer personality).
+#[inline(never)]
+fn publish_settings(fw: &Fw) {
+    use core::sync::atomic::Ordering::Relaxed;
+    POWER_MODE.store(fw.settings.get(orpheus_apps::settings::id::POWER_MODE).clamp(0, 2) as u8, Relaxed);
+    UTC_OFFSET_S.store(services::utc_offset_s(fw), Relaxed);
+    let dev = services::developer_channel(fw, dev_channel_held());
+    if DEV_CHANNEL.swap(dev, Relaxed) != dev && crate::usbdev::CURRENT.load(Relaxed) == 0 {
+        // The developer personality again, built with or without it.
+        crate::usbdev::MODE.signal(crate::usbdev::Personality::Dev);
+    }
+}
+
+/// Settings › Power › Power mode as the governor takes it (0 Automatic, 1
+/// Battery saver, 2 High performance).
+pub static POWER_MODE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+/// Settings › Date & time › Time zone, seconds east of UTC
+/// (`vault::unix_now` gives UTC).
+pub static UTC_OFFSET_S: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(0);
+/// Settings › USB › Developer channel as offered (`usbdev` builds the
+/// device with or without it); on until the settings are read.
+pub static DEV_CHANNEL: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+
+/// The developer channel stays offered whatever Settings › USB ›
+/// Developer channel says while a host test runs (the test mailbox, the
+/// test look, a settings test session): the tools need it, and a test
+/// can never take it away (VER-13).
+fn dev_channel_held() -> bool {
+    session_on() || test_look_on() || atj2157_hal::persist::test_request().is_some()
 }
 
 /// UI loop counters for STATS: iterations, microseconds of work, rows
@@ -328,9 +391,43 @@ pub static SHOT_HOLD_UNTIL_MS: core::sync::atomic::AtomicU32 = core::sync::atomi
 pub static SET_WRITES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 pub static SET_LAST: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
+/// The Display, Power and Date & time settings the UI loop carries out
+/// (VER-13): Rotate (the key map and the panel), Keys when locked, the
+/// backlight timeout and lock delay (held under a host test unless its
+/// session armed them), Correction (the RTC stepped by whole seconds; not
+/// during a test session).
+#[inline(never)]
+fn apply_settings(ui: &mut Ui) {
+    let t = now().0;
+    let rot = services::rotated(&*ui.fw);
+    ui.mapper.rotated = rot;
+    if rot != ui.rotated {
+        ui.rotated = rot;
+        ui.shell.invalidate();
+    }
+    ui.shell.gate.when_locked = services::locked_keys(&*ui.fw);
+    let tm = if test_look_on() || atj2157_hal::persist::test_request().is_some() {
+        services::TimerHold::from_bits(TIMER_HOLD.load(core::sync::atomic::Ordering::Relaxed))
+            .timeouts(&*ui.fw)
+    } else {
+        services::screen_timeouts(&*ui.fw)
+    };
+    if ui.timer.step(&mut ui.shell.gate, tm, t) {
+        ui.shell.invalidate();
+    }
+    let per_day = ui.fw.settings.get(orpheus_apps::settings::id::CLOCK_CORRECTION);
+    let fix = ui.drift.step(t.saturating_sub(ui.drift_at), per_day);
+    ui.drift_at = t;
+    // Not in a test session: a test never moves the owner's clock.
+    if fix != 0 && !session_on() && ui.fw.clock_valid() {
+        let now = services::unix_of(&ui.fw.now()).saturating_add_signed(i64::from(fix));
+        ui.fw.set_now(services::date_of(now));
+    }
+}
+
 /// The top screen for the developer channel's `ui top` (VER-7, 07 §5.7):
 /// id | depth << 8 | dialog << 12 | overlay << 13 | keys locked << 14 |
-/// screen on << 15 | name length << 16, and the name's bytes (a
+/// screen on << 15 | name length << 16 | screen saver shown << 31, and the name's bytes (a
 /// `&'static str`). Written by the UI task after every loop, read by the USB
 /// task; both run on the main executor, so the pair is never torn.
 static TOP: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
@@ -346,13 +443,14 @@ fn publish_top(ui: &Ui) {
         | u32::from(s.overlay_shown()) << 13
         | u32::from(s.gate.locked) << 14
         | u32::from(s.gate.screen_on) << 15
-        | (name.len().min(0xFFFF) as u32) << 16;
+        | (name.len().min(0x7FFF) as u32) << 16
+        | u32::from(s.gate.saver && !s.gate.screen_on) << 31;
     TOP_NAME.store(name.as_ptr().cast_mut(), core::sync::atomic::Ordering::Relaxed);
     TOP.store(w, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// Developer `ui top` (VER-7): `top ID NAME depth=D dialog=0|1 overlay=0|1
-/// locked=0|1 screen=0|1`, answered at once.
+/// locked=0|1 screen=0|1 look=0|1 saver=0|1`, answered at once.
 pub fn top_reply() {
     let w = TOP.load(core::sync::atomic::Ordering::Relaxed);
     let p = TOP_NAME.load(core::sync::atomic::Ordering::Relaxed);
@@ -361,7 +459,7 @@ pub fn top_reply() {
     } else {
         // SAFETY: `p` and the length in `TOP` were stored together from one
         // `&'static str` by `publish_top` on this executor.
-        unsafe { core::slice::from_raw_parts(p, (w >> 16) as usize) }
+        unsafe { core::slice::from_raw_parts(p, ((w >> 16) & 0x7FFF) as usize) }
     };
     let bit = |n: u32| u64::from((w >> n) & 1);
     crate::audio::reply(|r| {
@@ -380,7 +478,9 @@ pub fn top_reply() {
             .s(b" screen=")
             .u(bit(15))
             .s(b" look=")
-            .u(u64::from(TEST_LOOK.load(core::sync::atomic::Ordering::Relaxed)));
+            .u(u64::from(TEST_LOOK.load(core::sync::atomic::Ordering::Relaxed)))
+            .s(b" saver=")
+            .u(bit(31));
     });
 }
 
@@ -406,6 +506,11 @@ pub fn test_look(sid: orpheus_apps::settings::SettingId) -> Option<i16> {
     (look && TEST_LOOK.load(core::sync::atomic::Ordering::Relaxed))
         .then(|| orpheus_apps::settings::def(sid).map_or(0, |d| d.default))
 }
+
+/// The screen timers armed by a session (`orpheus_apps::services::TimerHold`
+/// bits; RAM, cleared by every reboot): under the test look or a host test
+/// they run only while armed.
+static TIMER_HOLD: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
 fn test_look_on() -> bool {
     TEST_LOOK.load(core::sync::atomic::Ordering::Relaxed)
@@ -437,7 +542,7 @@ static STORE_CRC: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32:
 /// backlight timeout would); the next key wakes it.
 static SCREEN_OFF: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
-fn session_on() -> bool {
+pub(crate) fn session_on() -> bool {
     SESSION.load(core::sync::atomic::Ordering::Relaxed)
 }
 
@@ -585,6 +690,7 @@ fn soak_hooks(ui: &mut Ui) {
     if p != 0 && session_on() {
         let sid = orpheus_apps::settings::SettingId((p >> 16) as u16);
         let want = p as u16 as i16;
+        session_set_hooks(ui, sid, want);
         ui.fw.set_setting(sid, want);
         ui.settle();
         let got = ui.fw.settings.get(sid);
@@ -599,6 +705,26 @@ fn soak_hooks(ui: &mut Ui) {
     }
     if SCREEN_OFF.swap(false, core::sync::atomic::Ordering::Relaxed) && ui.shell.gate.screen_on {
         ui.shell.gate.screen_on = false;
+        ui.shell.gate.saver = false;
+        ui.shell.invalidate();
+    }
+}
+
+/// A session's `test-set` (VER-13): the screen timers run while it set
+/// one to another value than its default, and when the last goes back to
+/// its default the screen comes on and the keys unlock (the journey ends
+/// as it started: CLAUDE.md rule 4; under the test look they are held
+/// again).
+#[inline(never)]
+fn session_set_hooks(ui: &mut Ui, sid: orpheus_apps::settings::SettingId, want: i16) {
+    use core::sync::atomic::Ordering::Relaxed;
+    let mut h = services::TimerHold::from_bits(TIMER_HOLD.load(Relaxed));
+    let was = h.bits();
+    h.test_set(sid, want);
+    TIMER_HOLD.store(h.bits(), Relaxed);
+    if was != 0 && h.bits() == 0 {
+        ui.shell.gate.screen_on = true;
+        ui.shell.gate.locked = false;
         ui.shell.invalidate();
     }
 }
@@ -642,7 +768,20 @@ fn new_ui(
     // the call graph knows) would run below it. `enter_root` does that
     // once the shell is in its static (VER-10).
     let shell = Shell::<AppScreen, Fw>::unentered(fw, screens::HOME, Arg(0), t);
-    let ui = Ui { fw, shell, mapper: KeyMapper::new(), disp, bl, screen_on: true, store, sound: None };
+    let ui = Ui {
+        fw,
+        shell,
+        mapper: KeyMapper::new(),
+        disp,
+        bl,
+        screen_on: true,
+        store,
+        sound: None,
+        timer: ScreenTimer::new(t.0),
+        drift: services::ClockDrift::new(),
+        drift_at: t.0,
+        rotated: false,
+    };
     // SAFETY: called once; the UI task is the only user.
     unsafe { (*(&raw mut UI_CELL)).write(ui) }
 }
@@ -760,6 +899,7 @@ pub async fn ui() {
             Either4::First((k, down)) => {
                 let t = now();
                 last_key_ms = t.0;
+                ui.timer.key(t.0);
                 // Key timing feeds the vault's entropy pool (salts, nonces).
                 ui.fw.auth.mix(&atj2157_hal::time::now_us().to_le_bytes());
                 // A key: a picture still coming is not waited for (the
@@ -798,6 +938,9 @@ pub async fn ui() {
         }
         // VER-12: `settings test-set`, `ui screen-off`.
         soak_hooks(ui);
+        // VER-13: rotation, keys when locked, the screen timers, the clock's
+        // correction.
+        apply_settings(ui);
         let w0 = atj2157_hal::time::now_us();
         LOOPS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         atj2157_hal::wdt::beat(&atj2157_hal::wdt::UI_BEAT);

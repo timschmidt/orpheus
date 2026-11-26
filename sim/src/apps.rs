@@ -103,7 +103,7 @@ pub struct HostServices {
     pub clock_valid: bool,
     /// `set:clockrun=1`: the fake clock follows simulated time (alarms).
     pub clock_run: bool,
-    clock_ms: u64,
+    clock_ms: i64,
     /// Simulated milliseconds (the shell's `Instant`).
     now_ms: u64,
     /// An alert lit the screen.
@@ -127,6 +127,27 @@ pub struct HostServices {
     /// Key clicks the sound output got (Settings › Sound › Key click, 05
     /// §3; the firmware mixes each into its output).
     pub clicks: u32,
+    /// The screen timers held as under the firmware's test look (the
+    /// simulator stands in for the player there: goldens, `xtask dev
+    /// suite`, the fuzzers): `Some` (the default), armed by a session's
+    /// `settings test-set`; `None` (`set:timers=run`): they run with the
+    /// settings, as on the player in use.
+    pub timer_hold: Option<services::TimerHold>,
+    /// Settings › Date & time › Correction applied to the running clock.
+    drift: services::ClockDrift,
+    /// The RDS clock time the clock was last set from (Set from RDS).
+    rds_set: Option<u64>,
+}
+
+/// What the player offers a computer on USB (the `usb-host` context of
+/// the settings matrix): the personality chosen last, whether the
+/// developer interface is there (Settings › USB › Developer channel) and
+/// whether the card reader's card is write-protected (Read-only card).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct UsbOffer {
+    pub personality: Option<UsbMode>,
+    pub developer: bool,
+    pub card_read_only: bool,
 }
 
 impl Default for HostServices {
@@ -184,6 +205,9 @@ impl HostServices {
             books: SimBooks::default(),
             books_on_home: false,
             clicks: 0,
+            timer_hold: Some(services::TimerHold::default()),
+            drift: services::ClockDrift::new(),
+            rds_set: None,
         }
     }
 }
@@ -676,6 +700,18 @@ impl System for HostServices {
             self.clicks += 1;
         }
     }
+
+    fn animations(&self) -> bool {
+        services::animations(self)
+    }
+
+    fn transport(&mut self, k: orpheus_ui::Key, p: orpheus_ui::event::KeyPhase) {
+        services::locked_transport(self, k, p);
+    }
+
+    fn saver_clock(&self) -> Option<(u8, u8)> {
+        services::saver_clock(self)
+    }
 }
 
 /// Sample "now playing" per language.
@@ -886,6 +922,18 @@ impl Host for HostServices {
             "clockvalid" => self.clock_valid = on,
             "clockrun" => self.clock_run = on,
             "alarmwake" => self.alarm_wake = on,
+            // VER-13: `set:timers=run`: the backlight timeout and the lock
+            // delay run with the settings, as on the player; `held` (the
+            // default): as under the firmware's test look.
+            // VER-13: the stations send RDS clock time (UTC seconds), or not.
+            "rdsclock" => self.radio.chip.clock = if v == "off" { None } else { Some(v.parse()?) },
+            "timers" => {
+                self.timer_hold = match v {
+                    "run" => None,
+                    "held" => Some(services::TimerHold::default()),
+                    _ => bail!("timers: run, held"),
+                };
+            }
             "walk" => self.steps.walking = on,
             "sensor" => self.steps.sensor = on,
             "steps" => {
@@ -1040,6 +1088,8 @@ impl Host for HostServices {
     }
 
     fn after_step(&mut self, gate: &mut KeyGate) {
+        // Settings › Power › Keys when locked.
+        gate.when_locked = services::locked_keys(self);
         // What the firmware's power task does with the requests.
         for l in &self.log {
             if let Logged::Power(PowerRequest::LockNoticeDone) = l {
@@ -1093,6 +1143,17 @@ impl Host for HostServices {
         self.auth.typed()
     }
 
+    fn timeouts(&self) -> orpheus_ui::input::Timeouts {
+        match self.timer_hold {
+            Some(h) => h.timeouts(self),
+            None => services::screen_timeouts(self),
+        }
+    }
+
+    fn rotated(&self) -> Option<bool> {
+        Some(services::rotated(self))
+    }
+
     fn advance(&mut self, ms: u64) {
         let repeat = self.settings.get(id::REPEAT);
         self.media_options();
@@ -1143,7 +1204,9 @@ impl AuthService for HostServices {
         self.auth.state()
     }
     fn unix_time(&self) -> Option<u64> {
-        self.clock_valid.then(|| services::unix_of(&self.clock))
+        // The clock keeps local time; TOTP wants UTC (Time zone 0x0505).
+        self.clock_valid
+            .then(|| services::utc_of_local(services::unix_of(&self.clock), services::utc_offset_s(self)))
     }
     fn auth_entry(&mut self, i: usize) -> Option<AuthEntry> {
         self.auth.entry(i)
@@ -1365,6 +1428,17 @@ impl HostServices {
                 let _ = self.settings.take_dirty().count();
             }
         }
+        // Settings › Date & time › Set from RDS: a station's clock time.
+        if let Some(utc) = self.radio.radio.rds().clock()
+            && self.rds_set != Some(utc)
+            && let Some(t) = services::rds_clock(self, utc)
+        {
+            self.rds_set = Some(utc);
+            self.clock = t;
+            self.clock_ms = 0;
+            self.clock_valid = true;
+            self.events.push(Event::Service(ServiceEvent::Minute));
+        }
         let on = info.phase.is_on();
         if on != self.radio_on {
             self.radio_on = on;
@@ -1392,8 +1466,24 @@ impl HostServices {
 
     /// The fake clock follows simulated time (`set:clockrun=1`); days do
     /// not change month (enough for the alarm tests).
+    /// What a connected computer is offered (see [`UsbOffer`]).
+    #[must_use]
+    pub fn usb_offer(&self) -> UsbOffer {
+        let personality = self.log.iter().rev().find_map(|l| match l {
+            Logged::Usb(m) => Some(*m),
+            _ => None,
+        });
+        UsbOffer {
+            personality,
+            developer: self.usb == UsbState::Host && services::developer_channel(self, false),
+            card_read_only: personality == Some(UsbMode::FileTransfer) && services::usb_card_read_only(self),
+        }
+    }
+
     fn tick_clock(&mut self, ms: u64) {
-        self.clock_ms += ms;
+        // Settings › Date & time › Correction: whole seconds as they add up.
+        let fix = self.drift.step(ms, self.settings.get(id::CLOCK_CORRECTION));
+        self.clock_ms += i64::from(fix) * 1000 + i64::try_from(ms).unwrap_or(0);
         while self.clock_ms >= 1000 {
             self.clock_ms -= 1000;
             let c = &mut self.clock;

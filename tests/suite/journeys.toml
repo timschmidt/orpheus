@@ -424,3 +424,46 @@ sim: set:playing=0
 cmd: settings test-set 0x0205 1 ~ ^test-set 517=1 ok
 cmd: settings test-set 0x0202 0 ~ ^test-set 514=0 ok
 """
+
+[[journey]]
+name = "settings_screen_timers"
+about = "Backlight timeout (0x0302) and Lock delay (0x0303) through the RAM-only test session (VER-13): ui top shows the screen off 5 s after the last key, on again at a key (Back, which only wakes it), the keys locked 5 s after the next timeout; both set back to their defaults, which holds the timers again with the screen on and the keys free"
+script = """
+expect-screen:Home
+cmd: settings test-session ~ ^test-session on
+cmd: settings test-set 0x0303 4 ~ ^test-set 771=4 ok
+cmd: settings test-set 0x0302 0 ~ ^test-set 770=0 ok
+wait:6500
+cmd: ui top ~ locked=0 screen=0
+back wait:300
+cmd: ui top ~ locked=0 screen=1
+cmd: settings test-set 0x0303 1 ~ ^test-set 771=1 ok
+wait:11500
+cmd: ui top ~ locked=1 screen=0
+cmd: settings test-set 0x0302 2 ~ ^test-set 770=2 ok
+cmd: settings test-set 0x0303 0 ~ ^test-set 771=0 ok
+cmd: ui top ~ locked=0 screen=1
+expect-screen:Home shot:home_after
+"""
+
+[[journey]]
+name = "settings_screen_saver"
+about = "Screen saver (0x0307) through the RAM-only test session (VER-13): with the test look off for the journey (it reads the look's settings as their defaults), Clock and a 5 s backlight timeout put the saver on the panel (ui top saver=1, screen=0); a key brings Home back; everything set back and the look on again"
+script = """
+expect-screen:Home
+cmd: settings test-session ~ ^test-session on
+cmd: settings test-set 0x0303 4 ~ ^test-set 771=4 ok
+cmd: settings test-set 0x0307 1 ~ ^test-set 775=1 ok
+cmd: ui test-look off ~ ^test-look off
+cmd: settings test-set 0x0302 0 ~ ^test-set 770=0 ok
+wait:6500
+cmd: ui top ~ screen=0 .*saver=1
+back wait:300
+cmd: ui top ~ screen=1
+cmd: settings test-set 0x0302 2 ~ ^test-set 770=2 ok
+cmd: settings test-set 0x0307 0 ~ ^test-set 775=0 ok
+cmd: settings test-set 0x0303 0 ~ ^test-set 771=0 ok
+cmd: ui test-look on ~ ^test-look on
+cmd: ui top ~ locked=0 screen=1
+expect-screen:Home shot:home_after
+"""

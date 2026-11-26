@@ -1271,6 +1271,22 @@ mod tests {
         let _ = t;
     }
 
+    /// VER-13 (Set from RDS): a station's clock time reaches the radio's
+    /// decoder once two minutes' groups agree, and counts as an RDS change.
+    #[test]
+    fn rds_clock_time_arrives() {
+        let (mut r, mut chip, t) = started(Region::Europe, 94_700);
+        let utc = 1_795_595_400u64; // 2026-11-25 08:30:00
+        chip.clock = Some(utc);
+        let t = run(&mut r, &mut chip, t, 2000);
+        assert_eq!(r.rds().clock(), None, "one minute's group only");
+        let seq = r.info().rds_seq;
+        chip.clock = Some(utc + 60);
+        run(&mut r, &mut chip, t, 2000);
+        assert_eq!(r.rds().clock(), Some(utc + 60));
+        assert_ne!(r.info().rds_seq, seq);
+    }
+
     #[test]
     fn rds_name_and_text_arrive() {
         let (mut r, mut chip, t) = started(Region::Europe, 101_900);
