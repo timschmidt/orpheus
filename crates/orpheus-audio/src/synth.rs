@@ -130,120 +130,49 @@ pub fn carve(
     Some(Layout { state: pad..state_end, cache: cache_at..cache_end, spare: cache_end..len, blocks })
 }
 
-/// The voice limit never goes below this.
-pub const GOV_MIN_VOICES: u8 = 4;
-/// Render time above this share of the block's real time: one voice less.
-pub const GOV_HIGH_PCT: u64 = 60;
-/// Below this share for [`GOV_CALM_BLOCKS`] blocks in a row: one voice more.
-pub const GOV_LOW_PCT: u64 = 35;
-/// About a second of 256-frame blocks.
-pub const GOV_CALM_BLOCKS: u16 = 180;
-
-/// The synthesiser's voice limit from its measured render time (SYN-3):
-/// the clock floor is High while it plays, and where a song still needs
-/// more than the CPU has (16 voices of 4-operator FM with every effect),
-/// the limit comes down a voice per overloaded block — new notes then
-/// steal, sounding ones play out — and goes back up after a calm second.
-/// The measured time includes the code paged in for the block, so it is
-/// what the DAC deadline sees. With the limit at its maximum the render is
-/// the host's bit for bit; a lowered limit changes which voices sound.
-#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct VoiceGov {
-    limit: u8,
-    max: u8,
-    calm: u16,
-    /// Blocks over [`GOV_HIGH_PCT`] since the start.
-    pub over: u32,
+/// What a synth source was doing when the DAC ran dry: the `pcm: head`
+/// line names it `ub=synth:<label>:<ms>` (the player, 2026-11-26: synth
+/// underruns logged `ub=-`, the render was never noted). The load governor
+/// itself is `orpheus_synth::load::Governor`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SynthOp {
+    /// A render piece.
+    Render = 0,
+    /// A rest for thread mode (`orpheus_power::pace`).
+    Rest = 1,
+    /// A card block of the MIDI file read while playing.
+    Read = 2,
 }
 
-impl VoiceGov {
-    /// Starting at `max` voices (at least [`GOV_MIN_VOICES`]).
-    #[must_use]
-    pub const fn new(max: u8) -> Self {
-        let max = if max < GOV_MIN_VOICES { GOV_MIN_VOICES } else { max };
-        Self { limit: max, max, calm: 0, over: 0 }
-    }
+/// The labels of [`SynthOp`] in order, NUL-separated (a paged `static`: a
+/// plain literal would be resident on the player).
+pub static SYNTH_LABELS: [u8; 16] = *b"render\0rest\0read";
+/// The prefix of a synth label.
+pub static SYNTH_PREFIX: [u8; 6] = *b"synth:";
 
-    /// The limit now.
-    #[must_use]
-    pub fn limit(&self) -> u8 {
-        self.limit
-    }
-
-    /// A block rendered in `render_us` of its `block_us` of real time;
-    /// returns the limit for the next.
-    pub fn after(&mut self, render_us: u32, block_us: u32) -> u8 {
-        if block_us == 0 {
-            return self.limit;
-        }
-        let pct = u64::from(render_us) * 100 / u64::from(block_us);
-        if pct > GOV_HIGH_PCT {
-            self.over = self.over.saturating_add(1);
-            self.calm = 0;
-            if self.limit > GOV_MIN_VOICES {
-                self.limit -= 1;
-            }
-        } else if pct < GOV_LOW_PCT {
-            self.calm = self.calm.saturating_add(1);
-            if self.calm >= GOV_CALM_BLOCKS && self.limit < self.max {
-                self.limit += 1;
-                self.calm = 0;
-            }
-        } else {
-            self.calm = 0;
-        }
-        self.limit
-    }
+/// The label of synth operation `i` ([`SynthOp`] as `u8`).
+#[must_use]
+pub fn synth_label(i: u8) -> Option<&'static str> {
+    let b = SYNTH_LABELS.split(|&c| c == 0).nth(usize::from(i))?;
+    core::str::from_utf8(b).ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Regression (2026-11-26, the player, build `1fda608d`): underruns
+    /// while a MIDI file played were logged `pcm: head … ub=-` — the synth
+    /// noted nothing in the ledger, so the line could not say what kept
+    /// the writer from the DAC. Every synth operation has a label.
     #[test]
-    fn governor_holds_the_limit_while_the_render_keeps_up() {
-        let mut g = VoiceGov::new(16);
-        for _ in 0..10_000 {
-            assert_eq!(g.after(2000, 5805), 16);
-        }
-        assert_eq!(g.over, 0);
-    }
-
-    /// Overloaded: a voice less per block down to the floor; calm again:
-    /// back up one voice per calm second, never past the maximum.
-    #[test]
-    fn governor_sheds_and_restores_voices() {
-        let mut g = VoiceGov::new(16);
-        assert_eq!(g.after(4000, 5805), 15);
-        for _ in 0..20 {
-            g.after(5000, 5805);
-        }
-        assert_eq!(g.limit(), GOV_MIN_VOICES);
-        // In between the thresholds: no change, and the calm count restarts.
-        for _ in 0..1000 {
-            assert_eq!(g.after(2900, 5805), GOV_MIN_VOICES);
-        }
-        let mut blocks = 0;
-        while g.limit() < 16 {
-            g.after(1000, 5805);
-            blocks += 1;
-            assert!(blocks < 100_000);
-        }
-        assert_eq!(blocks, u32::from(GOV_CALM_BLOCKS) * u32::from(16 - GOV_MIN_VOICES));
-        for _ in 0..1000 {
-            assert_eq!(g.after(10, 5805), 16);
-        }
-        assert_eq!(g.over, 21);
-    }
-
-    #[test]
-    fn governor_edge_cases() {
-        let mut g = VoiceGov::new(2);
-        assert_eq!(g.limit(), GOV_MIN_VOICES);
-        assert_eq!(g.after(u32::MAX, 1), GOV_MIN_VOICES);
-        assert_eq!(g.after(5, 0), GOV_MIN_VOICES);
-        let z = <VoiceGov as bytemuck::Zeroable>::zeroed();
-        assert_eq!(z.limit(), 0);
+    fn regress_synth_underruns_are_labelled() {
+        assert_eq!(synth_label(SynthOp::Render as u8), Some("render"));
+        assert_eq!(synth_label(SynthOp::Rest as u8), Some("rest"));
+        assert_eq!(synth_label(SynthOp::Read as u8), Some("read"));
+        assert_eq!(synth_label(3), None);
+        assert_eq!(&SYNTH_PREFIX, b"synth:");
     }
 
     #[test]

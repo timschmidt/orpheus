@@ -568,6 +568,11 @@ fn note_as(cause: usize, detail: u8, t0: u32) {
 /// ([`REQ_LABELS`]); below it, a chore kind.
 const D_REQ: u8 = 0x40;
 const _: () = assert!(KINDS <= D_REQ as usize);
+/// Details from here on name a synth source's operation
+/// (`orpheus_audio::synth::SynthOp`: `ub=synth:render`, `synth:rest`,
+/// `synth:read`), noted under the decoder's cause.
+const D_SYN: u8 = 0x60;
+const _: () = assert!(D_REQ as usize + 9 <= D_SYN as usize);
 /// The player requests `head` takes while a track plays, as the `pcm:`
 /// line names them (`req:<label>`), NUL-separated in a paged static (plain
 /// literals would land in the resident mergeable-string section and cost
@@ -602,6 +607,9 @@ fn req_detail(r: &PlayReq) -> u8 {
 fn ub_label(cause: usize, detail: u8) -> (&'static str, &'static str) {
     if usize::from(detail) < KINDS {
         return kind_name(usize::from(detail));
+    }
+    if let Some(l) = detail.checked_sub(D_SYN).and_then(orpheus_audio::synth::synth_label) {
+        return (core::str::from_utf8(&orpheus_audio::synth::SYNTH_PREFIX).unwrap_or(""), l);
     }
     if let Some(l) = detail.checked_sub(D_REQ).and_then(|i| req_label(usize::from(i))) {
         return (core::str::from_utf8(&REQ_PREFIX).unwrap_or(""), l);

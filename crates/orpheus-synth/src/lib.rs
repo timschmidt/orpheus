@@ -34,6 +34,8 @@
 //! * [`engine`]: [`PARTS`] parts, [`MAX_VOICES`] voices with stealing, mono
 //!   legato with glide, sample-accurate events, mixing and rendering.
 //! * [`bench`](mod@bench): the fixed loads of the player's `synth bench` (SYN-3).
+//! * [`load`]: the engine's measured cost on the player and the load
+//!   governor (effects, then voices, shed to stay inside a CPU budget).
 //!
 //! # Features
 //!
@@ -81,6 +83,7 @@ pub mod fm;
 pub mod fx;
 pub mod kit;
 pub mod lfo;
+pub mod load;
 pub mod math;
 pub mod osc;
 pub mod patch;

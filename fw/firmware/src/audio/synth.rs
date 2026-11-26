@@ -16,15 +16,20 @@
 //! but the statistics words below (12 bytes).
 //!
 //! **Playing** ([`play_midi`]): the file opens and is scanned with the DAC
-//! stopped; then blocks of at most [`BLOCK`] frames at [`RATE`] go through
+//! stopped; then pieces of at most [`BLOCK`] frames at [`RATE`] go through
 //! the DSP chain and the PCM ring as a decoder's do (`Out`, `Feeder`). The
 //! parser's `Need`s are answered from the block cache; a miss reads one
 //! card sector (with `Urgent`: no card rests). Requests, listings in
 //! pieces, the battery and step logs run as chores by the same rules as
 //! with a codec (`chore::decide`). The clock floor is High while the
-//! synth plays; the load governor (`orpheus_audio::synth::VoiceGov`)
-//! lowers the voice limit while a block's render takes more than 60 % of
-//! its real time. Seek and pause as MIDI-1 built them; never gapless.
+//! synth plays. The load governor (`orpheus_synth::load::Governor`,
+//! [`plan_piece`]) predicts each piece from the measured costs and keeps
+//! the render under 55 % of real time (chorus, delay, reverb, then voices
+//! shed), and bounds the piece to 4 ms; the pace rule ([`pace_rest`])
+//! rests before a piece that would end 8 ms after the last rest, so thread
+//! mode always runs (2026-11-26: a heavy song starved it into the
+//! watchdog). `synth gov off` (from the next file) renders everything.
+//! Seek and pause as MIDI-1 built them; never gapless.
 //!
 //! **Bench** (`synth bench`, read-only: no card access): the fixed loads
 //! of `orpheus_synth::bench`, rendered at the High clock with the cycle
@@ -41,21 +46,24 @@ use embassy_futures::select::{Either3, select3};
 use embassy_time::Timer;
 use orpheus_audio::chore::{self, Ask, DecPeak, Verdict};
 use orpheus_audio::pcm::{Fed, Feeder};
-use orpheus_audio::synth::{VoiceGov, carve};
+use orpheus_audio::synth::{SynthOp, carve};
 use orpheus_fs::{File, Volume};
 use orpheus_midi::cache::{self, BlockCache, Miss};
 use orpheus_midi::{MidiPlayer, Need, Options, Pull};
 use orpheus_player::Event;
+use orpheus_power::pace;
 use orpheus_synth::demo::Fnv;
+use orpheus_synth::load::{self, Estimate, Governor, Plan};
 use orpheus_synth::{Engine, MAX_VOICES, bench};
 use yoton_bsp::card::Card;
 
 use super::{
-    Blk, CHAIN, CODEC_FLOOR, DEC_LOADS, DEC_MAX_US, DEC_N, DEC_US, DECODE_US, DSP_ON, End, FRAMES, K_DRAIN,
-    K_JOB, K_SENSOR, K_SERVE, LAST_DEC_US, LAST_SERVE_MS, MAX_UNDERRUNS, Out, PLAY_US, PLAYING, PcmOut, RATE,
-    ROOMY, Ring, SCRATCH_FRAMES, SLOW_UNDERRUNS, SPARE, STOP, Shown, Start, T_DECODE, begin_block,
-    dsp_clock_floor, failed, full_level, log_due, mark, ms_at, need_of, note_as, pager_loads, pause,
-    pause_fades, piece_begin, piece_end, reply, resumed, save_store, scratch16, serve_one, sound_active,
+    Blk, CHAIN, CODEC_FLOOR, D_SYN, DEC_LOADS, DEC_MAX_US, DEC_N, DEC_US, DECODE_US, DSP_ON, End, FRAMES,
+    K_DRAIN, K_JOB, K_SENSOR, K_SERVE, LAST_DEC_US, LAST_SERVE_MS, MAX_UNDERRUNS, Out, PLAY_US, PLAYING,
+    PcmOut, RATE, ROOMY, Ring, SCRATCH_FRAMES, SLOW_UNDERRUNS, SPARE, STOP, Shown, Start, T_DECODE,
+    UB_DECODER, begin_block, dsp_clock_floor, failed, full_level, log_due, mark, ms_at, need_of, note_as,
+    pager_loads, pause, pause_fades, piece_begin, piece_end, reply, resumed, save_store, scratch16,
+    serve_one, sound_active,
 };
 use super::{drain_flush_rows, sensor_flush_rows};
 use crate::media::{self, PlayReq, Req, Server};
@@ -70,30 +78,49 @@ const STEP_EVENTS: u32 = 256;
 /// Fewest cache blocks worth playing with.
 const MIN_BLOCKS: usize = 4;
 
-/// While a synth source plays (`status` `syn:`), one word (the stack is a
-/// few bytes from its next 256-byte step): the most voices sounding after
-/// a block ([`F_PEAK`]), the governor's limit ([`F_LIMIT`]), its
-/// overloaded blocks ([`F_OVER`], saturating at 255), the card blocks read
-/// for the file while it plays ([`F_READS`], at 511), and the voice
-/// limit's maximum for MIDI playback ([`F_VMAX`]: `synth voices N`; 0:
-/// all [`MAX_VOICES`]; kept across files).
-static SYN: AtomicU32 = AtomicU32::new(0);
-/// `SYN` fields: (shift, bits).
-const F_PEAK: (u32, u32) = (0, 5);
-const F_LIMIT: (u32, u32) = (5, 5);
-const F_OVER: (u32, u32) = (10, 8);
-const F_READS: (u32, u32) = (18, 9);
-const F_VMAX: (u32, u32) = (27, 5);
+/// While a synth source plays (`status` `syn:`), three words (the stack
+/// is a few bytes from its next 256-byte step): word 0 the most voices
+/// sounding after a piece ([`F_PEAK`]), the governor's voice limit
+/// ([`F_LIMIT`]), its pieces over budget ([`F_OVER`], saturating at 255),
+/// the card blocks read for the file while it plays ([`F_READS`], at 511),
+/// and the voice limit's maximum for MIDI playback ([`F_VMAX`]: `synth
+/// voices N`; 0: all [`MAX_VOICES`]; kept across files); word 1 the
+/// governor's level now and the highest this file ([`F_LVL`],
+/// [`F_LVL_MAX`]: 0 full, 1 chorus off, 2 reverb off, 3 voices limited),
+/// the effects enabled ([`F_FX`]), `synth gov off` ([`F_GOV_OFF`], kept),
+/// the predicted render load in % of real time ([`F_LOAD`]) and the
+/// measured/estimated ratio in % ÷ 2 ([`F_RATIO`]); word 2 the rests for
+/// thread mode ([`F_RESTS`]) and the voices the governor faded out
+/// ([`F_SHED`]).
+static SYN: [AtomicU32; 3] = [AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)];
+/// `SYN` fields: (word, shift, bits).
+type Field = (usize, u32, u32);
+const F_PEAK: Field = (0, 0, 5);
+const F_LIMIT: Field = (0, 5, 5);
+const F_OVER: Field = (0, 10, 8);
+const F_READS: Field = (0, 18, 9);
+const F_VMAX: Field = (0, 27, 5);
+const F_LVL: Field = (1, 0, 2);
+const F_LVL_MAX: Field = (1, 2, 2);
+const F_FX: Field = (1, 4, 3);
+const F_GOV_OFF: Field = (1, 7, 1);
+const F_LOAD: Field = (1, 8, 8);
+const F_RATIO: Field = (1, 16, 8);
+const F_RESTS: Field = (2, 0, 16);
+const F_SHED: Field = (2, 16, 16);
 
-fn syn_get(f: (u32, u32)) -> u32 {
-    (SYN.load(Ordering::Relaxed) >> f.0) & ((1 << f.1) - 1)
+fn syn_get(f: Field) -> u32 {
+    let w = SYN.get(f.0).map_or(0, |w| w.load(Ordering::Relaxed));
+    (w >> f.1) & ((1 << f.2) - 1)
 }
 
-fn syn_set(f: (u32, u32), v: u32) {
-    let max = (1 << f.1) - 1;
-    let _ = SYN.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |s| {
-        Some((s & !(max << f.0)) | (v.min(max) << f.0))
-    });
+fn syn_set(f: Field, v: u32) {
+    let max = (1 << f.2) - 1;
+    if let Some(w) = SYN.get(f.0) {
+        let _ = w.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |s| {
+            Some((s & !(max << f.1)) | (v.min(max) << f.1))
+        });
+    }
 }
 
 /// What a MIDI file needs in the pool.
@@ -101,7 +128,7 @@ fn syn_set(f: (u32, u32), v: u32) {
 struct MidiState {
     player: MidiPlayer,
     cache: BlockCache,
-    gov: VoiceGov,
+    gov: Governor,
     pcm: [i16; 2 * BLOCK],
 }
 
@@ -128,7 +155,23 @@ pub(super) fn status(w: &mut super::Writer<'_>) {
         .s(t!(b" over="))
         .u(u64::from(syn_get(F_OVER)))
         .s(t!(b" reads="))
-        .u(u64::from(syn_get(F_READS)));
+        .u(u64::from(syn_get(F_READS)))
+        .s(t!(b" lvl="))
+        .u(u64::from(syn_get(F_LVL)))
+        .s(b"/")
+        .u(u64::from(syn_get(F_LVL_MAX)))
+        .s(t!(b" fx="))
+        .u(u64::from(syn_get(F_FX)))
+        .s(t!(b" load="))
+        .u(u64::from(syn_get(F_LOAD)))
+        .s(t!(b" ratio="))
+        .u(u64::from(syn_get(F_RATIO) * 2))
+        .s(t!(b" rests="))
+        .u(u64::from(syn_get(F_RESTS)))
+        .s(t!(b" shed="))
+        .u(u64::from(syn_get(F_SHED)))
+        .s(t!(b" gov="))
+        .u(u64::from(1 - syn_get(F_GOV_OFF)));
 }
 
 /// The ring's memory and the arena as one region (they are adjacent in
@@ -210,11 +253,13 @@ async fn supply(
             Err(Miss { block }) => {
                 let Some(s) = cache.slot(block, mem) else { break };
                 file.set_position(u64::from(block) * cache::BLOCK as u64);
+                let t0 = super::now32();
                 let n = {
                     // A deadline while playing: no card rests.
                     let _urgent = yoton_bsp::card::Urgent::enter();
                     vol.read(file, s).await.unwrap_or(0)
                 };
+                note_as(UB_DECODER, D_SYN + SynthOp::Read as u8, t0);
                 cache.filled(block, n);
             }
         }
@@ -240,6 +285,64 @@ async fn run_steps(
         }
         breathe(&mut since).await;
     }
+}
+
+/// Before a piece: the load governor's plan (with `synth gov off`: every
+/// effect and voice, the piece still bounded in time) applied to the
+/// player, and the estimate it came from (`orpheus_synth::load`).
+#[inline(never)]
+fn plan_piece(st: &mut MidiState, gov_on: bool, max: u8) -> (Plan, Estimate) {
+    st.gov.set_clock(atj2157_hal::clock::current().hz(), RATE_HZ);
+    let e = st.player.engine().estimate(&load::PLAYER);
+    let plan = if gov_on {
+        st.gov.plan(&e)
+    } else {
+        let frames = st.gov.frames(e.total());
+        let us = st.gov.piece_us(frames, e.total());
+        Plan { fx: load::FX_ALL, limit: max, keep: None, frames, us }
+    };
+    st.player.set_fx_enabled(plan.fx);
+    st.player.set_voice_limit(usize::from(plan.limit));
+    if let Some(k) = plan.keep {
+        let cut = st.player.shed(usize::from(k)) as u32;
+        syn_set(F_SHED, syn_get(F_SHED) + cut);
+    }
+    (plan, e)
+}
+
+/// The pace rule (`orpheus_power::pace`) before a piece predicted to take
+/// `us`: one that would end more than `RUN_US` after the last rest (or a
+/// wait for the PCM ring as long, `rested`) rests `REST_US` first. The
+/// render runs on the real-time executor: without the rests a song the CPU
+/// cannot keep up with starved thread mode and the watchdog reset the
+/// player (2026-11-26; modelled in `orpheus_synth::load` tests).
+async fn pace_rest(rested: &mut u64, us: u32) {
+    if pace::due((time::now_us() as u32).wrapping_add(us), *rested as u32) {
+        let t0 = super::now32();
+        Timer::after_micros(u64::from(pace::REST_US)).await;
+        note_as(UB_DECODER, D_SYN + SynthOp::Rest as u8, t0);
+        *rested = time::now_us();
+        syn_set(F_RESTS, syn_get(F_RESTS) + 1);
+    }
+}
+
+/// After a piece of `n` frames that took `dt` µs: the governor's
+/// measurement (µs × MHz: the chip has no cycle counter) and the `syn:`
+/// words.
+#[inline(never)]
+fn after_piece(st: &mut MidiState, plan: &Plan, e: &Estimate, n: usize, dt: u32) {
+    let mhz = atj2157_hal::clock::current().hz() / 1_000_000;
+    st.gov.measured(e, n as u32, dt.saturating_mul(mhz));
+    let v = st.player.engine().active_voices() as u32;
+    let lvl = st.gov.level() as u32;
+    syn_set(F_PEAK, syn_get(F_PEAK).max(v));
+    syn_set(F_LIMIT, u32::from(plan.limit));
+    syn_set(F_OVER, st.gov.over);
+    syn_set(F_LVL, lvl);
+    syn_set(F_LVL_MAX, syn_get(F_LVL_MAX).max(lvl));
+    syn_set(F_FX, u32::from(plan.fx));
+    syn_set(F_LOAD, st.gov.load() * 100 / st.gov.rt().max(1));
+    syn_set(F_RATIO, st.gov.ratio_pct() / 2);
 }
 
 /// What a request did to the synth's playback loop.
@@ -388,9 +491,12 @@ pub(super) async fn play_midi(
         0 => MAX_VOICES as u8,
         n => n.min(MAX_VOICES as u8),
     };
-    state.gov = VoiceGov::new(max);
+    state.gov = Governor::new(max, atj2157_hal::clock::current().hz(), RATE_HZ);
     state.player.set_voice_limit(usize::from(state.gov.limit()));
-    SYN.store(syn_get(F_VMAX) << F_VMAX.0, Ordering::Relaxed);
+    let gov_on = syn_get(F_GOV_OFF) == 0;
+    for (w, keep) in SYN.iter().zip([syn_get(F_VMAX) << F_VMAX.1, syn_get(F_GOV_OFF) << F_GOV_OFF.1, 0]) {
+        w.store(keep, Ordering::Relaxed);
+    }
     syn_set(F_LIMIT, u32::from(state.gov.limit()));
     // The High clock for the open's scan and the render (04 §9: MIDI
     // needs it).
@@ -499,6 +605,8 @@ pub(super) async fn play_midi(
         early: None,
     };
     let mut empty = 0u32;
+    // The end of the last rest (or wait) for thread mode.
+    let mut rested = t_start;
     let end = 'play: loop {
         // A request: waited for while paused, else one per block.
         let got = if b.paused && !b.fading {
@@ -534,13 +642,20 @@ pub(super) async fn play_midi(
         if b.held || b.fading && !b.paused {
             resumed(&mut b, chain);
         }
-        if SLOW_UNDERRUNS.load(Ordering::Relaxed) >= MAX_UNDERRUNS {
+        // (With the governor off, `crc on` checks may render slower than
+        // real time: the DAC underruns, the CRC of the frames stays.)
+        if gov_on && SLOW_UNDERRUNS.load(Ordering::Relaxed) >= MAX_UNDERRUNS {
             break 'play failed(srv, b.driven, t!(b"synth too slow for this player"));
         }
-        // One block (fewer frames when the parser needs file bytes first).
+        // One piece as the load governor plans it (effects, voice limit,
+        // voices to fade out, frames: bounded in time); fewer frames when
+        // the parser needs file bytes first.
         mark(31);
-        let (t0, l0) = (time::now_us(), pager_loads());
-        let n = match state.player.render(&mut state.pcm) {
+        let (plan, e) = plan_piece(state, gov_on, max);
+        super::Apart(pace_rest(&mut rested, plan.us)).await;
+        let want = (plan.frames as usize).clamp(1, BLOCK);
+        let (t0, l0, u0) = (time::now_us(), pager_loads(), super::now32());
+        let n = match state.player.render(state.pcm.get_mut(..2 * want).unwrap_or_default()) {
             Pull::Ready(n) => n,
             Pull::Need(need) => {
                 syn_set(F_READS, syn_get(F_READS) + 1);
@@ -553,6 +668,7 @@ pub(super) async fn play_midi(
             }
         };
         let dt = (time::now_us() - t0) as u32;
+        note_as(UB_DECODER, D_SYN + SynthOp::Render as u8, u0);
         T_DECODE.fetch_add(dt, Ordering::Relaxed);
         DEC_N.fetch_add(1, Ordering::Relaxed);
         DEC_US.fetch_add(dt, Ordering::Relaxed);
@@ -569,14 +685,7 @@ pub(super) async fn play_midi(
             continue;
         }
         empty = 0;
-        // The load governor and the statistics.
-        let block_us = (n as u64 * 1_000_000 / u64::from(RATE_HZ)) as u32;
-        let lim = state.gov.after(dt, block_us);
-        state.player.set_voice_limit(usize::from(lim));
-        let v = state.player.engine().active_voices() as u32;
-        syn_set(F_PEAK, syn_get(F_PEAK).max(v));
-        syn_set(F_LIMIT, u32::from(lim));
-        syn_set(F_OVER, state.gov.over);
+        after_piece(state, &plan, &e, n, dt);
         // DSP, key clicks and the PCM ring, as for a decoder's block.
         begin_block(&mut b, chain);
         let (dsp, frames) = (b.dsp, &mut b.frames);
@@ -584,8 +693,15 @@ pub(super) async fn play_midi(
         let sc = scratch16(SCRATCH_FRAMES * 2);
         let mut feed = Feeder::new();
         while feed.run(s, sc, 2, &mut Out { out, chain, dsp, stereo: true, frames }) == Fed::Wait {
+            let w0 = time::now_us();
             out.half().await;
+            // A wait as long as a rest gave thread mode its time.
+            let w1 = time::now_us();
+            if w1 - w0 >= u64::from(pace::REST_US) {
+                rested = w1;
+            }
         }
+
         // The position (UI, player), the player's ticks.
         b.pos = state.player.position();
         FRAMES.store(b.frames, Ordering::Relaxed);
@@ -730,7 +846,11 @@ fn put_hash(w: &mut super::Writer<'_>, h: u64) {
 ///
 /// * `synth bench I [N] [BLOCKS]`: load I of `orpheus_synth::bench` with N
 ///   voices (8), BLOCKS measured blocks (64) after 8 warm-up blocks;
-/// * `synth voices N`: MIDI playback's voice limit at most N (0: 16).
+/// * `synth voices N`: MIDI playback's voice limit at most N (0: 16);
+/// * `synth gov on|off`: the load governor from the next file (off: every
+///   effect and voice, the host's render bit for bit, slower than real
+///   time where the song is too heavy — for `crc on` checks; the pace
+///   rule's rests stay).
 ///
 /// A MIDI file's samples are checked through playback itself: with `dsp
 /// off` and `crc on`, `play PATH` replies with the CRC of the synth's
@@ -740,6 +860,14 @@ pub(super) async fn command(arg: &str, ring: &mut Ring, arena: &mut [u8]) {
     let what = it.next().unwrap_or("");
     let mut num = |d: u32| it.next().and_then(|t| t.parse::<u32>().ok()).unwrap_or(d);
     let (a, b, c) = (num(u32::MAX), num(u32::MAX), num(bench::BLOCKS));
+    if what == "gov" {
+        let off = arg.ends_with("off");
+        syn_set(F_GOV_OFF, u32::from(off));
+        reply(|w| {
+            w.s(t!(b"synth gov ")).u(u64::from(!off));
+        });
+        return;
+    }
     if what == "voices" && a != u32::MAX {
         let n = a.min(MAX_VOICES as u32) as u8;
         syn_set(F_VMAX, u32::from(n));
@@ -750,7 +878,8 @@ pub(super) async fn command(arg: &str, ring: &mut Ring, arena: &mut [u8]) {
     }
     if what != "bench" || a == u32::MAX {
         reply(|w| {
-            w.s(t!(b"synth bench I [N] [BLOCKS] | voices N; loads ")).u(bench::LOADS.len() as u64);
+            w.s(t!(b"synth bench I [N] [BLOCKS] | voices N | gov on|off; loads "))
+                .u(bench::LOADS.len() as u64);
             w.s(t!(b" midi_state=")).u(SIZES[0] as u64).s(t!(b" pool=")).u(SIZES[1] as u64);
             w.s(t!(b" engine=")).u(SIZES[2] as u64).s(t!(b" lib_state=")).u(SIZES[3] as u64);
         });

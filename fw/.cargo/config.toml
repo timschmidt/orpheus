@@ -2,7 +2,10 @@
 target = "thumbv7em-none-eabihf"
 
 [target.thumbv7em-none-eabihf]
-rustflags = ["-C", "target-cpu=cortex-m4", "-C", "link-arg=--nmagic"]
+# `sha2_backend_soft="compact"`: SHA-256/512 rounds as a loop, not
+# unrolled (the firmware-update check and OTP hash rarely; the unrolled
+# SHA-512 alone was 30.6 KB of paged code, SYN-3 2026-11-26).
+rustflags = ["-C", "target-cpu=cortex-m4", "-C", "link-arg=--nmagic", "--cfg", 'sha2_backend_soft="compact"']
 # Saves every link for `cargo xtask pagelink` (which links again with the
 # generated paged layout without recompiling), then runs rust-lld unchanged.
 linker = "../tools/orpheus-ld"

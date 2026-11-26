@@ -413,7 +413,7 @@ symbols = [
 [[cluster]]
 name = "synth-block"
 bins = ["firmware"]
-fits_with = ["synth-render"]
+fits_with = ["synth-render", "synth-midi"]
 symbols = [
     "firmware::audio::Apart<firmware::audio::synth::play_midi::*>::poll",
 ]
@@ -446,7 +446,7 @@ symbols = [
 [[cluster]]
 name = "synth-render"
 bins = ["firmware"]
-fits_with = ["synth-block"]
+fits_with = ["synth-block", "synth-midi"]
 from = [
     "*orpheus_synth::engine::Engine>::render_i16",
 ]
@@ -462,6 +462,48 @@ symbols = [
     "<orpheus_synth::drum::DrumVoice>::snare",
     "<orpheus_synth::drum::DrumVoice>::hat",
     "<orpheus_synth::drum::DrumVoice>::clap",
+]
+
+# The synth source's cold code (SYN-3 load governor, 2026-11-26): the
+# open, scan and seek steps, the player's and engine's init, a program
+# change's patch install. Placed after `synth-render` (which ends in
+# physical line 0) to fill lines 1–7 of the window before `synth-midi`,
+# which must start on line 8: what would otherwise be padding.
+[[cluster]]
+name = "synth-cold"
+bins = ["firmware"]
+symbols = [
+    "<orpheus_midi::player::MidiPlayer>::step",
+    "<orpheus_midi::player::MidiPlayer>::init",
+    "<orpheus_synth::engine::Engine>::init",
+    "<orpheus_synth::engine::Engine>::set_patch",
+]
+
+# A synth source's other per-piece code (SYN-3 load governor,
+# 2026-11-26): the governor's plan and measurement with the engine's
+# estimate inlined (`plan_piece`, `after_piece`), the pace rule's rest,
+# the MIDI player's next event (`timed`) and the sequencer's channel
+# messages. On physical lines 8–15, clear of `synth-block` (1–7) and
+# `synth-render` (17–31, 0): before, `timed` sat on line 20 inside the
+# render's lines and `handle` on 23, two line loads (≈ 180 µs each) a
+# piece or more. Not in it: `Engine::apply` (a note's start, 2.8 KB: no
+# room) and the PCM path (`play-block`'s, shared with the codecs).
+[[cluster]]
+name = "synth-midi"
+bins = ["firmware"]
+fits_with = ["synth-block", "synth-render"]
+starts_over = "flac-frame"
+symbols = [
+    "firmware::audio::synth::plan_piece",
+    "firmware::audio::synth::after_piece",
+    "firmware::audio::Apart<firmware::audio::synth::pace_rest::*>::poll",
+    "<orpheus_midi::player::MidiPlayer>::timed",
+    "<orpheus_midi::seq::Sequencer>::handle",
+    "<orpheus_midi::player::MidiPlayer>::render_any::<i16>::{closure#0}",
+    "<orpheus_midi::player::MidiPlayer>::set_fx_enabled",
+    "<orpheus_synth::fx::Reverb>::is_idle",
+    "<orpheus_synth::engine::Engine>::active_voices",
+    "*orpheus_synth::load::Estimate>::fx_of*",
 ]
 
 # The paged toy: three functions spread over the generated code, packed

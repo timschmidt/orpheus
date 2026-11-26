@@ -302,3 +302,128 @@ fn ram_table() {
     // also inside a 64 KiB arena.
     assert!(ram::engine() <= 64 * 1024, "engine {} B exceeds 64 KiB", ram::engine());
 }
+
+// ------------------------------------------------- the load governor's controls
+
+/// A held saw on part 0 sending fully to the chorus and the reverb.
+fn wet_engine() -> Engine {
+    let mut e = Engine::new(48_000, 1);
+    e.set_patch(0, &held_patch());
+    e.apply(EventKind::Param { part: 0, param: Param::ChorusSend, value: 1.0 });
+    e.apply(EventKind::Param { part: 0, param: Param::ReverbSend, value: 1.0 });
+    e.render_f32(&mut [0.0; 2 * 64], &[Event::note_on(0, 0, 60, 100)]);
+    // The reverb's tail built up (its shortest path is ≈ 14 ms).
+    e.render_f32(&mut vec![0.0; 2 * 4096], &[]);
+    e
+}
+
+/// With every effect enabled (the default) `set_fx_enabled` changes
+/// nothing: the render is the same bit for bit.
+#[test]
+fn every_effect_enabled_is_the_plain_render() {
+    let (mut a, mut b) = (wet_engine(), wet_engine());
+    b.set_fx_enabled(orpheus_synth::load::FX_ALL);
+    let (mut x, mut y) = ([0.0f32; 2 * 4096], [0.0f32; 2 * 4096]);
+    a.render_f32(&mut x, &[]);
+    b.render_f32(&mut y, &[]);
+    assert!(x.iter().zip(&y).all(|(p, q)| p.to_bits() == q.to_bits()));
+}
+
+/// An effect switched off fades out over `FX_FADE` samples (no step),
+/// then adds nothing: the output equals an engine whose reverb never
+/// sounded. Switched on again it is fed again (from silence).
+#[test]
+fn an_effect_switched_off_fades_out_then_is_silent() {
+    use orpheus_synth::engine::FX_FADE;
+    use orpheus_synth::load::{FX_ALL, FX_CHORUS, FX_DELAY, FX_REVERB, PLAYER};
+    let fade = usize::from(FX_FADE);
+    let mut on = wet_engine();
+    let mut off = wet_engine();
+    off.set_fx_enabled(FX_DELAY | FX_CHORUS);
+    assert_eq!(off.fx_enabled() & FX_REVERB, 0);
+    let n = 48_000;
+    let (mut a, mut b) = (vec![0.0f32; 2 * n], vec![0.0f32; 2 * n]);
+    on.render_f32(&mut a, &[]);
+    off.render_f32(&mut b, &[]);
+    // The same voice and chorus with the reverb off from the start.
+    let mut dry = Engine::new(48_000, 1);
+    dry.set_patch(0, &held_patch());
+    dry.apply(EventKind::Param { part: 0, param: Param::ChorusSend, value: 1.0 });
+    dry.set_fx_enabled(FX_DELAY | FX_CHORUS);
+    dry.render_f32(&mut [0.0; 2 * 64], &[Event::note_on(0, 0, 60, 100)]);
+    dry.render_f32(&mut vec![0.0; 2 * 4096], &[]);
+    let mut c = vec![0.0f32; 2 * n];
+    dry.render_f32(&mut c, &[]);
+    // The reverb's share: in full where it stays on, fading where it was
+    // switched off (starting at its full level: no step), then nothing.
+    let full = |k: usize| (a[2 * k] - c[2 * k]).abs();
+    let fading = |k: usize| (b[2 * k] - c[2 * k]).abs();
+    assert!(fading(0) > 0.0 && (fading(0) - full(0)).abs() <= full(0) * 0.01, "{} {}", fading(0), full(0));
+    let first: f32 = (0..fade / 4).map(fading).sum();
+    let last: f32 = (3 * fade / 4..fade).map(fading).sum();
+    assert!(last < first * 0.5, "fading: {first} then {last}");
+    for k in fade..n {
+        assert_eq!(b[2 * k].to_bits(), c[2 * k].to_bits(), "frame {k}");
+    }
+    off.set_fx_enabled(FX_ALL);
+    assert_eq!(off.fx_enabled(), FX_ALL);
+    assert_ne!(off.estimate(&PLAYER).running & FX_REVERB, 0, "fed by the part's send again");
+}
+
+/// `shed` fades out released voices first (oldest first), then the
+/// oldest held ones, down to `keep`.
+#[test]
+fn shed_takes_released_voices_first_then_the_oldest() {
+    let mut e = Engine::new(48_000, 1);
+    e.set_patch(0, &held_patch());
+    let mut buf = [0.0f32; 2 * 64];
+    for n in [60, 62, 64, 65, 67] {
+        e.render_f32(&mut buf, &[Event::note_on(0, 0, n, 100)]);
+    }
+    // 64 released (its 0.5 s release keeps it sounding).
+    e.render_f32(&mut buf, &[Event::note_off(0, 0, 64)]);
+    assert_eq!(e.shed(5), 0);
+    assert_eq!(e.shed(3), 2);
+    let mut fading: Vec<u8> = e.voices().filter(|v| v.fading).map(|v| v.note).collect();
+    fading.sort_unstable();
+    assert_eq!(fading, [60, 64]);
+    assert_eq!(notes(&e, true), [62, 65, 67]);
+    e.render_f32(&mut [0.0; 2 * 512], &[]);
+    assert_eq!(notes(&e, false), [62, 65, 67]);
+}
+
+/// The estimate counts each sounding voice by its class, the fading ones
+/// apart, and an effect only while it is fed or rings.
+#[test]
+fn the_estimate_counts_voices_by_class_and_effects_that_run() {
+    use orpheus_synth::load::{FX_CHORUS, FX_REVERB, PLAYER};
+    let mut e = Engine::new(48_000, 1);
+    assert_eq!(e.estimate(&PLAYER).total(), PLAYER.empty);
+    e.set_patch(0, &held_patch());
+    e.set_patch(1, &presets::FM_EPIANO);
+    e.set_patch(2, &Patch::drum(presets::DRUMS[2].1));
+    let mut buf = [0.0f32; 2 * 64];
+    e.render_f32(
+        &mut buf,
+        &[Event::note_on(0, 0, 60, 100), Event::note_on(0, 1, 60, 100), Event::note_on(0, 2, 60, 100)],
+    );
+    let est = e.estimate(&PLAYER);
+    assert_eq!((est.n, est.n_fading), (3, 0));
+    assert_eq!(est.voices, PLAYER.sub + PLAYER.fm2 + 2 * PLAYER.fm_op + PLAYER.drum[2]);
+    assert_eq!(est.running, 0, "no part sends: no effect runs");
+    e.apply(EventKind::Param { part: 1, param: Param::ReverbSend, value: 0.5 });
+    let est = e.estimate(&PLAYER);
+    assert_eq!((est.running, est.wanted), (FX_REVERB, FX_REVERB));
+    assert_eq!(est.total(), PLAYER.empty + est.voices + PLAYER.fx[2]);
+    e.render_f32(&mut buf, &[]);
+    e.set_fx_enabled(FX_CHORUS);
+    let est = e.estimate(&PLAYER);
+    assert_eq!(est.running, FX_REVERB, "fading out still costs");
+    e.render_f32(&mut [0.0; 2 * 512], &[]);
+    let est = e.estimate(&PLAYER);
+    assert_eq!((est.running, est.wanted & FX_REVERB), (0, FX_REVERB));
+    e.shed(1);
+    let est = e.estimate(&PLAYER);
+    assert_eq!(est.n_fading, 2);
+    assert!(est.lasting() < est.total());
+}

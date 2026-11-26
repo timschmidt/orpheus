@@ -1277,7 +1277,8 @@ play from Files and Music.** Firmware module `audio::synth` (a child of
   duration from the scan (Now Playing shows codec `MIDI`, 44.1 kHz). Clock
   floor **High** while it plays (scan included). Lyrics and the
   mute/solo/tempo view are not on the player yet.
-* **Load governor** (`orpheus_audio::synth::VoiceGov`, host-tested): the
+* **Load governor** (first cut, replaced the same day by the
+  budget-aware `orpheus_synth::load::Governor`: below; `VoiceGov`, host-tested): the
   render of each block is timed (paging included); above 60 % of the
   block's real time the voice limit drops one voice (sounding voices play
   out, new notes steal), below 35 % for 180 blocks it comes back, never
@@ -1328,6 +1329,123 @@ play from Files and Music.** Firmware module `audio::synth` (a child of
   limit / floor below High for light songs, lyrics and the mute/solo/tempo
   view in Now Playing, the card `SampleSource` (samples off), the delay
   for the Sequencer (it needs ≈ 2.4 KB of code room), SF2.
+
+**As built (SYN-3 load governor, 2026-11-26): a MIDI file can no longer
+starve thread mode.** The lead's first run on the player (build
+`1fda608d`): `playdir /.orpheus/test/suite/midi` underran (`pcm: head …
+ub=-`) and the watchdog reset the player, its last handler-mode sample in
+`fx::Chorus::process`. The render ran on the real-time executor in
+256-frame blocks and only yielded when the PCM ring was full; a song the
+CPU could not keep up with never filled it, so thread mode (UI, USB, the
+watchdog's feeder) never ran. The old governor lowered the voice limit by
+one per late block, down to 4, which cannot recover the effects' fixed
+cost.
+
+* **Measured costs** (`synth bench`, cycles a frame at 144 MHz, µs × 144:
+  the chip has no DWT counter, 01 §9 U-DWT-1): empty engine 245; a voice
+  155 (sine) to 308 (pwm-pad) subtractive, 288 FM 2-op, 453 FM 4-op; drums
+  159 (clap) to 737 (cymbal), hats 696; reverb 671, chorus 194 (the
+  effect's load less the same sine voice into the dry delay — the first
+  reading, 1,073 and 519, also counted that voice and its line loads).
+  1.7–3.7 × the SYN-1/2 estimates. Real time is 3,265 cycles a frame at
+  44.1 kHz. `orpheus_synth::load::PLAYER` holds the table;
+  `Engine::estimate` sums it for the engine's state (each sounding voice
+  by class — subtractive, FM by operators, drum by kind, sample —, the
+  fading ones apart, each effect while it is enabled and fed by a
+  sounding voice's part or still ringing).
+* **The governor** (`orpheus_synth::load::Governor`, host-tested, 40 B in
+  the MIDI state): before each piece it predicts the render (the estimate
+  × the measured ratio of real to estimated cycles, smoothed over four
+  pieces, 0.5–4) and keeps it under **55 % of real time** (1,795 cycles a
+  frame at 144 MHz; the pace rule's rests alone leave a busy stretch two
+  thirds, the DSP chain, the PCM ring and chores need the rest). Over it
+  (smoothed over ≈ 4 pieces, or one piece over 80 %) it sheds, **in this
+  order**: the **chorus** (it widens a few parts; General MIDI files leave
+  its send at 0 unless they ask), the **delay** (not in the player's
+  build), the **reverb** (the room around every part: the notes stay, the
+  sound gets drier; 671 cycles, the most any one step frees), then
+  **voices**: the limit for new notes comes down to what the budget
+  affords at the mean voice cost, and the voices above it fade out (256
+  samples) — released ones first (they are already dying away), oldest
+  first, then the oldest held ones — never below **2**. An effect switched
+  off fades out over 256 samples and is cleared
+  (`Engine::set_fx_enabled`). The order keeps the notes as long as
+  anything else can go: an effect colours the music, a dropped voice
+  changes it. Voices fading out (stolen into a tail, cut, shed) are left
+  out of the decisions: counting them brought the limit down again and
+  again to the floor. Undone in reverse order: a voice after 1 s, an
+  effect after 3 s, in which the cost with it back stays under 50 % (an
+  effect switching on and off is heard; a note more is not). With nothing
+  shed the render is the host's bit for bit. `synth gov off` (for `crc
+  on` checks) renders everything, slower than real time where the song
+  is heavy (the too-slow stop is off then; the rests stay).
+* **Bounded pieces and the pace rule** (by construction): a piece is as
+  many frames as the prediction fits in **4 ms** (32–256 frames; the
+  engine's output does not depend on the cut), and before a piece that
+  would end more than 8 ms (`orpheus_power::pace::RUN_US`) after the last
+  rest — or a wait for the PCM ring as long — the loop rests 4 ms
+  (`REST_US`): thread mode gets at least a third of any busy stretch,
+  whatever the song, the misestimate or the governor's state. A render
+  that cannot keep up then underruns; it does not hang.
+  `orpheus_synth::load::sim` models the loop (pieces, rests, the ring,
+  thread mode); `regress_synth_render_starved_thread_mode` runs today's
+  load (10 voices + chorus + reverb, 1.3 × dearer than the table):
+  sustainable after 10 pieces (≈ 40 ms, before the DAC starts; the test
+  allows 12), thread mode ≥ 44 % of every 100 ms (59 % overall; the test
+  asks 30 %), the longest piece 5.2 ms, the longest busy stretch 7.1 ms,
+  no underrun; an overload no state fixes (4 × the table at the floor of
+  voices) underruns but still gives thread mode ≥ 30 % of every 100 ms
+  (33 % overall).
+* **The demo songs** (`orpheus-midi` `tests/governor.rs`, the player's
+  costs, the firmware's loop): unshed they cost 4,951 ("Etude", ≈ 12
+  voices with FM piano and hats), 2,714 ("Hill Song") and 1,859 ("Sound
+  tour") cycles a frame on average — at 144 MHz none fits for long. Under
+  the governor every song plays to its end with under 3 % of its frames
+  over the budget past the first two seconds (bursts between two plans)
+  and under 1 % of its PCM halves above 62 % of real time (one in "Hill
+  Song"); the reverb is off for most of each song and the mean voice
+  limit is 2.2 / 4.2 / 6.1. At **288 MHz** (Settings › System ›
+  Performance: Maximum; the governor follows the clock) "Sound tour" plays
+  as the host renders it for 91 % of its length, "Hill Song" keeps all
+  16 voices (reverb on 17 %), "Etude" 7.7.
+* **Half rate** (22.05 kHz; the DAC plays it natively, no resampler is
+  needed) was considered and not built: at 144 MHz it would do what
+  288 MHz does above (same numbers: every cost per second halves), but
+  the engine's state is rate-dependent throughout (every coefficient, the
+  reverb's line layout) and a DAC rate change stops the PCM ring, so it
+  would be chosen when the file opens (a polyphony count in the scan) —
+  a decision for the owner (the top octave above 11 kHz goes).
+* **Paging**: the MIDI player's per-piece code sat inside the render's
+  physical lines (`MidiPlayer::timed` on line 20, `Sequencer::handle` on
+  23 inside `synth-render`'s 17–31): two or more line loads (≈ 180 µs
+  each) a piece. New cluster **`synth-midi`** (9 lines, physical 8–16:
+  the governor's `plan_piece`/`after_piece` with the estimate inlined, the
+  pace rule's rest, `timed`, `handle`, small helpers), after
+  **`synth-cold`** (the open/scan/seek steps, the inits, a patch install:
+  7 lines that fill the window up to line 8 instead of padding). The
+  render's own working set (`synth-render`, 16 lines) is unchanged.
+* **The reverb** is compute, not paging (+0.4 line loads a block over the
+  dry load) and its network already runs at half rate. A step-by-step
+  rewrite (bit-exact; 15 % faster on the host) has more instructions a
+  frame on thumbv7em at opt-level "s" (≈ 313 against ≈ 255: an index and
+  wrap per cell, no unrolling) and was not kept. The measured ratio
+  (≈ 2.5 cycles an instruction) is the platform's: the code page cache's
+  and SRAM's wait states. The governor not running it is the cheap win.
+* **Logs**: a synth source notes its render pieces, rests and card reads
+  in the underrun ledger (under the decoder's cause): `pcm: head …
+  ub=synth:render:9ms` / `synth:rest:4ms` / `synth:read:…`
+  (`orpheus_audio::synth::SynthOp`; `regress_synth_underruns_are_labelled`).
+  `status` ends in `syn: v= vlim= over= reads= lvl=N/M fx= load= ratio=
+  rests= shed= gov=` (level now/highest this file: 0 full, 1 chorus off,
+  2 reverb off, 3 voices limited; effects enabled, 7 all; predicted load
+  in % of real time; measured/estimated in %; rests; voices faded out).
+* **Code room**: SHA-256/512 rounds as a loop on the player
+  (`sha2_backend_soft="compact"`, `fw/.cargo/config.toml`: the unrolled
+  SHA-512 alone was 30.6 KB) — **125/128 code pages** (was 128/128);
+  the block loop's governor work moved out of `play_midi`'s poll (it must
+  stay within its 7 lines before `flac-frame`); resident 81,427 B (+40),
+  .bss 124,208 B (+8), MIDI state 71,936 B (+296: the effects' fade
+  buffers, the governor), stack margin 5,772 B.
 
 ## 10. Work packages
 
