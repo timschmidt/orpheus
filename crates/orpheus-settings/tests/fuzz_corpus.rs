@@ -52,6 +52,9 @@ fn seeds() -> Vec<(String, Vec<u8>)> {
     // Firmware-like keys: settings ids, Bluetooth record, resume data.
     let fw: Vec<(u16, usize)> = vec![(0x0101, 2), (0x0304, 2), (0x0603, 2), (0x0700, 120), (0x0800, 64)];
     let churn: Vec<(u16, usize)> = (0..400).map(|i| ((i % 9) as u16, 1 + (i * 37) % 180)).collect();
+    // More keys than the 128-key index held (VER-4, 2026-11-26), the
+    // fuzzer's keys 0..16 among them.
+    let many: Vec<(u16, usize)> = (0..180u16).map(|k| (k, 2)).collect();
     vec![
         ("erased-ops".into(), with(ops, Vec::new())),
         ("fw".into(), with(&[], image(&fw, &[], None))),
@@ -63,6 +66,7 @@ fn seeds() -> Vec<(String, Vec<u8>)> {
         ),
         ("torn".into(), with(ops, image(&fw, &[], Some(2)))),
         ("torn-compact".into(), with(&[], image(&churn[..60], &[], Some(5)))),
+        ("many-keys".into(), with(ops, image(&many, &[3, 100], None))),
     ]
 }
 

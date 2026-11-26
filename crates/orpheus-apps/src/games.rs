@@ -436,8 +436,8 @@ pub use salvo_defs::{HEALTH_POINTS, ROUND_COUNTS, TIMER_SECS, WIND_MAX};
 use salvo_defs::{SALVO, SETTINGS_SALVO_PLAYERS, SETTINGS_SALVO_RULES, SETTINGS_SALVO_WORLD};
 
 /// Bricks' settings (feature `bricks`, GAME-6): seven small ones packed
-/// into one stored word, `0x0EB0` (`Setting::pack`: the settings cache
-/// stays within its 128 slots with Salvo's too).
+/// into one stored word, `0x0EB0` (`Setting::pack`: one store key and
+/// cache slot for all seven).
 #[cfg(feature = "bricks")]
 mod bricks_defs {
     use super::*;

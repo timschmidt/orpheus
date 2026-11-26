@@ -69,7 +69,7 @@ macro_rules! t {
 
 /// Settings-store key of the last connected device (6 bytes, as the
 /// module sends the address).
-pub const LAST_KEY: u16 = 0x06F0;
+pub const LAST_KEY: u16 = orpheus_apps::settings::BT_LAST_KEY;
 /// Uptime before the Bluetooth setting powers the module at boot.
 pub const BOOT_ON_MS: u64 = 5000;
 

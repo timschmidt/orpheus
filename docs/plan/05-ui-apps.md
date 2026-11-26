@@ -1811,7 +1811,9 @@ host and simulator.** Still off in the firmware (SYN-3). Module docs of
   default pattern length, default swing (of new projects), metronome,
   count-in, step length, key clicks in play (off: "key click off while
   playing"). MIDI clock out over USB is not built (with M16). With games,
-  Books and the Sequencer the settings store is full: 128 of 128 keys.
+  Books and the Sequencer the settings store was full: 128 of 128 keys
+  (VER-4, 2026-11-26: the store's index now holds 192 keys; 131 in use
+  with every app, the Bluetooth address, the presets and the retired key).
 * **RAM** (`size_of` on the host): project 35,808 B (SEQ-1:
   25,092; a pattern 2,147 B: drum steps 1,536, synth steps 512, locks 97),
   player 3,784 B (SEQ-1: 1,880: a 128-hit queue of 24-byte hits, the

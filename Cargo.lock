@@ -903,6 +903,7 @@ dependencies = [
 name = "orpheus-apps"
 version = "0.1.0"
 dependencies = [
+ "embassy-futures",
  "orpheus-books",
  "orpheus-fm",
  "orpheus-fs",
@@ -911,6 +912,7 @@ dependencies = [
  "orpheus-power",
  "orpheus-rec",
  "orpheus-seq",
+ "orpheus-settings",
  "orpheus-steps",
  "orpheus-ui",
  "orpheus-update",

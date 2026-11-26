@@ -24,6 +24,9 @@ orpheus-seq = { path = "../orpheus-seq", optional = true }
 
 [dev-dependencies]
 orpheus-fs = { path = "../orpheus-fs", features = ["std"] }
+# The settings tree against the real store (VER-4 headroom test).
+orpheus-settings = { path = "../orpheus-settings" }
+embassy-futures = "0.1"
 
 [features]
 # M14 Games (GAME-0/1/3, 05 §7.13): the Games app, its screens, settings,

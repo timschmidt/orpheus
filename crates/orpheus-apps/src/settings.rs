@@ -103,8 +103,9 @@ pub struct Setting {
     pub default: i16,
     /// A small setting kept in bits of another stored item (a "word"):
     /// `(word key, first bit, bits)`; `None`: stored on its own. Packing
-    /// keeps the settings cache within its 128 slots and its RAM (the
-    /// artillery game's 21 settings take four words, GAME-4/5).
+    /// saves store keys (each takes an index slot and a 16-byte record,
+    /// [`STORE_KEYS`]) and cache RAM (the artillery game's 21 settings take
+    /// four words, GAME-4/5).
     pub pack: Option<(SettingId, u8, u8)>,
 }
 
@@ -210,6 +211,25 @@ pub const OUTPUT: &[Choice] = ch![S(Str::Headphones), S(Str::AppBluetooth)];
 ///   nothing (the firmware lit the panel at a fixed duty 12). Now
 ///   [`id::BRIGHTNESS`] (`0x030D`), the stock levels.
 pub const RETIRED: &[u16] = &[0x0301];
+
+/// Settings-store key of the last connected Bluetooth device (6 bytes, as
+/// the module sends the address; the firmware's `bt::LAST_KEY`).
+pub const BT_LAST_KEY: u16 = 0x06F0;
+
+/// Store keys the firmware keeps beside the stored settings: the
+/// Bluetooth address, the radio presets ([`orpheus_fm::presets::STORE_KEY`])
+/// and the [`RETIRED`] keys an older firmware may have left.
+pub const OTHER_STORE_KEYS: usize = 2 + RETIRED.len();
+
+/// Store keys in use at most: every stored setting and the others.
+pub const STORE_KEYS: usize = STORED + OTHER_STORE_KEYS;
+
+/// Free store keys required above [`STORE_KEYS`] (the settings store's
+/// index holds 192 since VER-4 2026-11-26; with every app's settings 128
+/// of its 128 were in use). The firmware asserts it at build time and
+/// `regress_full_feature_settings_tree_fits_with_headroom` with every
+/// feature.
+pub const MIN_FREE_STORE_KEYS: usize = 32;
 
 /// Store keys used by code outside the Settings screens.
 pub mod id {
@@ -915,7 +935,15 @@ pub fn format_choice<const N: usize>(ch: Choice, lang: Lang, out: &mut StrBuf<N>
 #[derive(Clone, Debug)]
 pub struct SettingsCache {
     vals: [i16; STORED],
-    dirty: u128,
+    /// One bit per stored item (was a `u128`, full at 128 items, SEQ-2).
+    dirty: [u32; DIRTY_WORDS],
+}
+
+const DIRTY_WORDS: usize = STORED.div_ceil(32);
+
+/// Whether bit `i` of `d` is set.
+fn bit(d: &[u32; DIRTY_WORDS], i: usize) -> bool {
+    d.get(i / 32).is_some_and(|w| w & (1 << (i % 32)) != 0)
 }
 
 impl Default for SettingsCache {
@@ -932,7 +960,7 @@ impl SettingsCache {
         for (slot, s) in vals.iter_mut().zip(all().filter(|s| s.stored())) {
             *slot = s.default;
         }
-        SettingsCache { vals, dirty: 0 }
+        SettingsCache { vals, dirty: [0; DIRTY_WORDS] }
     }
 
     /// Take a record read from the store (unknown keys are ignored).
@@ -974,7 +1002,9 @@ impl SettingsCache {
         match self.vals.get_mut(i) {
             Some(slot) if *slot != v => {
                 *slot = v;
-                self.dirty |= 1u128 << i;
+                if let Some(w) = self.dirty.get_mut(i / 32) {
+                    *w |= 1 << (i % 32);
+                }
                 true
             }
             _ => false,
@@ -984,15 +1014,16 @@ impl SettingsCache {
     /// Back to defaults; every item is marked for writing.
     pub fn reset(&mut self) {
         *self = SettingsCache::new();
-        // Every stored item (all 128 bits when the store is full: games,
-        // Books and the Sequencer together, SEQ-2).
-        self.dirty = if STORED >= 128 { u128::MAX } else { (1u128 << (STORED % 128)) - 1 };
+        // Every stored item, whatever their number.
+        for i in 0..STORED {
+            self.dirty[i / 32] |= 1 << (i % 32);
+        }
     }
 
     /// Pending writes as (store key, bytes); clears the marks.
     pub fn take_dirty(&mut self) -> impl Iterator<Item = (u16, [u8; 2])> + '_ {
         let d = core::mem::take(&mut self.dirty);
-        all().filter(|s| s.stored()).enumerate().filter(move |(i, _)| d & (1u128 << i) != 0).map(|(i, s)| {
+        all().filter(|s| s.stored()).enumerate().filter(move |(i, _)| bit(&d, *i)).map(|(i, s)| {
             let v = self.vals.get(i).copied().unwrap_or(s.default);
             (s.id.0, encode(v))
         })
@@ -1000,7 +1031,7 @@ impl SettingsCache {
 
     #[must_use]
     pub fn is_dirty(&self) -> bool {
-        self.dirty != 0
+        self.dirty.iter().any(|&w| w != 0)
     }
 }
 
@@ -1095,7 +1126,135 @@ mod tests {
             }
         }
         assert_eq!(all().filter(|s| s.stored()).count(), STORED);
-        const { assert!(STORED <= 128) };
+        const { assert!(STORE_KEYS + MIN_FREE_STORE_KEYS <= orpheus_settings::MAX_KEYS) };
+    }
+
+    /// 2026-11-26 (SEQ-2): with every app's settings (games, Salvo,
+    /// Bricks, Books, Sequencer) the settings used 128 of the store's 128
+    /// index keys, and with the Bluetooth address, the radio presets and
+    /// the retired Brightness key 131 keys were needed: after a factory
+    /// reset the store refused the last writes (`TooManyKeys`, ignored by
+    /// the firmware: those values reverted at the next start), and the
+    /// firmware alone needed 129. The index now holds
+    /// [`orpheus_settings::MAX_KEYS`] (192).
+    ///
+    /// The real store, written as the firmware writes it after a factory
+    /// reset on a player that had an older firmware, keeps every value, has
+    /// at least [`MIN_FREE_STORE_KEYS`] keys free, takes that many new
+    /// two-byte settings, and still compacts with the presets rewritten.
+    #[test]
+    fn regress_full_feature_settings_tree_fits_with_headroom() {
+        use embassy_futures::block_on;
+        use orpheus_settings::{MAX_KEYS, MAX_VALUE, Nor, SECTOR, Store};
+
+        struct Ram(Vec<u8>);
+        impl Nor for Ram {
+            type Error = ();
+            async fn read(&mut self, off: u32, buf: &mut [u8]) -> Result<(), ()> {
+                buf.copy_from_slice(&self.0[off as usize..off as usize + buf.len()]);
+                Ok(())
+            }
+            async fn program(&mut self, off: u32, data: &[u8]) -> Result<(), ()> {
+                for (m, d) in self.0[off as usize..].iter_mut().zip(data) {
+                    *m &= *d;
+                }
+                Ok(())
+            }
+            async fn erase(&mut self, off: u32) -> Result<(), ()> {
+                self.0[off as usize..(off + SECTOR) as usize].fill(0xFF);
+                Ok(())
+            }
+        }
+
+        // With every feature (as `cargo test --workspace` builds it: the
+        // simulator turns them all on) this is the full tree.
+        #[cfg(all(
+            feature = "games",
+            feature = "salvo",
+            feature = "bricks",
+            feature = "books",
+            feature = "seq"
+        ))]
+        const {
+            assert!(STORED >= 128);
+        };
+        let free = MAX_KEYS - STORE_KEYS;
+        assert!(free >= MIN_FREE_STORE_KEYS, "{STORE_KEYS} of {MAX_KEYS} store keys: {free} free");
+
+        let presets = [0x5Au8; orpheus_fm::presets::BYTES];
+        let mut s = block_on(Store::<Ram, 4>::mount(Ram(std::vec![0xFF; 4 * SECTOR as usize]))).unwrap();
+        for &k in RETIRED {
+            block_on(s.set(k, &encode(10))).unwrap();
+        }
+        let mut c = SettingsCache::new();
+        c.reset();
+        let written: Vec<(u16, [u8; 2])> = c.take_dirty().collect();
+        assert_eq!(written.len(), STORED);
+        for (k, v) in &written {
+            block_on(s.set(*k, v)).unwrap();
+        }
+        block_on(s.set(BT_LAST_KEY, &[1, 2, 3, 4, 5, 6])).unwrap();
+        block_on(s.set(orpheus_fm::presets::STORE_KEY, &presets)).unwrap();
+        assert_eq!(s.indexed(), STORE_KEYS);
+        assert!(MAX_KEYS - s.indexed() >= MIN_FREE_STORE_KEYS);
+
+        // The free keys are usable: new settings, then every value and the
+        // presets rewritten through several compactions.
+        let new: Vec<u16> = (0..MIN_FREE_STORE_KEYS as u16).map(|i| 0x1F00 + i).collect();
+        for &k in &new {
+            block_on(s.set(k, &encode(k as i16))).unwrap();
+        }
+        let erases = s.erases;
+        for round in 0..6i16 {
+            for (k, _) in &written {
+                block_on(s.set(*k, &encode(round))).unwrap();
+            }
+            block_on(s.set(orpheus_fm::presets::STORE_KEY, &presets[..presets.len() - round as usize]))
+                .unwrap();
+        }
+        assert!(s.erases >= erases + 3, "compacted: {} erases", s.erases - erases);
+
+        let mut s = block_on(Store::<Ram, 4>::mount(s.into_inner())).unwrap();
+        let get = |s: &mut Store<Ram, 4>, k: u16| {
+            let mut b = [0u8; MAX_VALUE];
+            block_on(s.get(k, &mut b)).unwrap().map(|n| b[..n].to_vec())
+        };
+        for (k, _) in &written {
+            assert_eq!(get(&mut s, *k), Some(encode(5).to_vec()), "{k:#06x}");
+        }
+        for &k in &new {
+            assert_eq!(get(&mut s, k), Some(encode(k as i16).to_vec()));
+        }
+        assert_eq!(get(&mut s, BT_LAST_KEY), Some(std::vec![1, 2, 3, 4, 5, 6]));
+        assert_eq!(get(&mut s, orpheus_fm::presets::STORE_KEY).map(|v| v.len()), Some(presets.len() - 5));
+        assert_eq!(s.indexed(), STORE_KEYS + MIN_FREE_STORE_KEYS);
+    }
+
+    /// The cache's write marks cover every stored item, however many
+    /// (2026-11-26: a `u128`, full at 128): a reset marks all, each
+    /// item's own change marks only it.
+    #[test]
+    fn dirty_marks_cover_every_stored_item() {
+        let mut c = SettingsCache::new();
+        assert!(!c.is_dirty());
+        c.reset();
+        let all_keys: Vec<u16> = c.take_dirty().map(|(k, _)| k).collect();
+        assert_eq!(all_keys.len(), STORED);
+        assert!(!c.is_dirty());
+        let stored: Vec<&Setting> = all().filter(|s| s.stored()).collect();
+        for s in [stored[0], stored[31], stored[32], stored[STORED - 1]] {
+            let mut c = SettingsCache::new();
+            let v =
+                (s.default..s.default.saturating_add(400)).find(|&v| v != s.default && s.validate(v) == v);
+            let Some(v) =
+                v.or_else(|| (s.default.saturating_sub(400)..s.default).find(|&v| s.validate(v) == v))
+            else {
+                continue;
+            };
+            assert!(c.set(s.id, v), "{:#06x}", s.id.0);
+            let w: Vec<(u16, [u8; 2])> = c.take_dirty().collect();
+            assert_eq!(w, [(s.id.0, encode(v))]);
+        }
     }
 
     /// Salvo's settings live in bits of four stored words (GAME-4/5): each

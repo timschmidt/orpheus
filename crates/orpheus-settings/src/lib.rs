@@ -19,6 +19,21 @@
 //! last write; a power cut at any step leaves either the old or the new
 //! value of that key and never disturbs others. The newest valid record
 //! for a key (highest sector sequence, then highest offset) wins.
+//!
+//! Only the active sector holds live records, so a store holds at most
+//! what one sector does: 4,080 bytes of records. A two-byte setting is a
+//! 16-byte record, so 255 of them fill a sector with no room to compact.
+//! The RAM index ([`MAX_KEYS`] keys, 4 bytes each) is sized so that it is
+//! full before the sector is: 192 keys of the firmware's mix (two-byte
+//! settings, the 332-byte radio presets, the 6-byte Bluetooth address)
+//! are 3,404 bytes, which leaves 676 bytes to write in before the next
+//! compaction (VER-4, 2026-11-26; the index was 128 keys of 8 bytes).
+//!
+//! The format does not depend on the index size: a store written with a
+//! bigger index mounts with a smaller one as long as it holds no more
+//! keys than that index; beyond it, the smaller index keeps the first keys
+//! in log order and does not see the others (its next compaction drops
+//! them; nothing else is disturbed).
 
 #![warn(missing_docs)]
 #![no_std]
@@ -38,8 +53,12 @@ const STATE_RETIRED: u32 = 0;
 const DELETED: u16 = 0xFFFF;
 /// Largest value.
 pub const MAX_VALUE: usize = 1024;
-/// Keys tracked in the RAM index.
-pub const MAX_KEYS: usize = 128;
+/// Keys tracked in the RAM index (the default of [`Store`]'s `K`): 192
+/// since 2026-11-26 (was 128, full with every app's settings; module
+/// documentation for why not more).
+pub const MAX_KEYS: usize = 192;
+// An index slot keeps a record offset in 15 bits.
+const _: () = assert!(SECTOR <= 0x8000);
 
 /// The NOR region the store lives in. Addresses are offsets from its
 /// start; `erase` takes a sector-aligned offset.
@@ -66,7 +85,7 @@ pub enum Error<E> {
     Full,
     /// The caller's buffer is shorter than the value.
     BufferTooSmall,
-    /// More than [`MAX_KEYS`] distinct keys.
+    /// More distinct keys than the index holds ([`MAX_KEYS`] by default).
     TooManyKeys,
 }
 
@@ -76,37 +95,62 @@ impl<E> From<E> for Error<E> {
     }
 }
 
+/// One key of the index: 4 bytes (was 8 with an absolute offset and the
+/// length; the length is read back from the record header when needed).
 #[derive(Clone, Copy, Debug, Default)]
 struct Slot {
     key: u16,
-    /// Absolute offset of the record header.
-    at: u32,
-    len: u16,
+    /// Offset of the newest record's header inside the active sector, with
+    /// [`Slot::DELETED`] set for a deletion marker.
+    at: u16,
 }
 
-/// A wear-levelled key-value store over `N` NOR sectors.
-pub struct Store<F: Nor, const N: usize> {
+impl Slot {
+    const DELETED: u16 = 0x8000;
+    fn new(key: u16, off: u32, deleted: bool) -> Self {
+        Slot { key, at: off as u16 | if deleted { Self::DELETED } else { 0 } }
+    }
+    fn off(self) -> u32 {
+        u32::from(self.at & !Self::DELETED)
+    }
+    fn deleted(self) -> bool {
+        self.at & Self::DELETED != 0
+    }
+}
+
+/// A wear-levelled key-value store over `N` NOR sectors with an index of
+/// `K` keys (4 bytes of RAM each).
+pub struct Store<F: Nor, const N: usize, const K: usize = MAX_KEYS> {
     nor: F,
     active: usize,
     seq: u32,
     /// Next free offset inside the active sector.
     head: u32,
-    index: [Slot; MAX_KEYS],
+    index: [Slot; K],
     n_keys: usize,
     /// Statistics.
     pub erases: u32,
 }
 
-fn crc32(data: &[u8]) -> u32 {
-    let mut c = 0xFFFF_FFFFu32;
+/// CRC-32 (IEEE) register update: [`crc32`] is `!crc32_update(!0, data)`.
+fn crc32_update(mut c: u32, data: &[u8]) -> u32 {
     for &b in data {
         c ^= u32::from(b);
         for _ in 0..8 {
             c = (c >> 1) ^ (0xEDB8_8320 & (c & 1).wrapping_neg());
         }
     }
-    !c
+    c
 }
+
+fn crc32(data: &[u8]) -> u32 {
+    !crc32_update(0xFFFF_FFFF, data)
+}
+
+/// NOR is read and copied in pieces of this size: no value-sized buffer
+/// in `set`'s future, which the firmware keeps in the UI task's static
+/// (VER-4, 2026-11-26: a 1 KiB copy buffer and a 1 KiB check buffer).
+const PIECE: usize = 64;
 
 fn word(b: &[u8], o: usize) -> u32 {
     u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
@@ -116,7 +160,7 @@ fn pad4(n: u32) -> u32 {
     n.div_ceil(4) * 4
 }
 
-impl<F: Nor, const N: usize> Store<F, N> {
+impl<F: Nor, const N: usize, const K: usize> Store<F, N, K> {
     /// Mount: find the active sector (or format an empty region) and build
     /// the index.
     pub async fn mount(mut nor: F) -> Result<Self, Error<F::Error>> {
@@ -132,15 +176,8 @@ impl<F: Nor, const N: usize> Store<F, N> {
                 }
             }
         }
-        let mut st = Self {
-            nor,
-            active: 0,
-            seq: 0,
-            head: HDR,
-            index: [Slot::default(); MAX_KEYS],
-            n_keys: 0,
-            erases: 0,
-        };
+        let mut st =
+            Self { nor, active: 0, seq: 0, head: HDR, index: [Slot::default(); K], n_keys: 0, erases: 0 };
         match best {
             Some((s, seq)) => {
                 st.active = s;
@@ -218,7 +255,7 @@ impl<F: Nor, const N: usize> Store<F, N> {
                 break;
             }
             if word(&rh, 8) == 0 && self.check(base + off, len, word(&rh, 4)).await? {
-                self.put_index(key, base + off, len);
+                self.put_index(key, off, len == DELETED);
             }
             off += total;
         }
@@ -245,20 +282,44 @@ impl<F: Nor, const N: usize> Store<F, N> {
         if len == DELETED {
             return Ok(crc == 0);
         }
-        let mut buf = [0u8; MAX_VALUE];
-        let b = &mut buf[..usize::from(len)];
-        self.nor.read(at + REC_HDR, b).await?;
-        Ok(crc32(b) == crc)
+        Ok(self.crc_at(at + REC_HDR, len).await? == crc)
     }
 
-    fn put_index(&mut self, key: u16, at: u32, len: u16) {
+    /// CRC-32 of the `len` bytes at absolute `at`, read piece by piece.
+    async fn crc_at(&mut self, at: u32, len: u16) -> Result<u32, Error<F::Error>> {
+        let mut c = 0xFFFF_FFFF;
+        let mut b = [0u8; PIECE];
+        let mut done = 0;
+        while done < u32::from(len) {
+            let n = (u32::from(len) - done).min(PIECE as u32) as usize;
+            self.nor.read(at + done, &mut b[..n]).await?;
+            c = crc32_update(c, &b[..n]);
+            done += n as u32;
+        }
+        Ok(!c)
+    }
+
+    /// Index the record at `off` of the active sector as `key`'s newest.
+    /// A key beyond the index's `K` is not seen (only a store written with
+    /// a bigger index has one: module documentation).
+    fn put_index(&mut self, key: u16, off: u32, deleted: bool) {
+        let slot = Slot::new(key, off, deleted);
         if let Some(s) = self.index[..self.n_keys].iter_mut().find(|s| s.key == key) {
-            s.at = at;
-            s.len = len;
-        } else if self.n_keys < MAX_KEYS {
-            self.index[self.n_keys] = Slot { key, at, len };
+            *s = slot;
+        } else if self.n_keys < K {
+            self.index[self.n_keys] = slot;
             self.n_keys += 1;
         }
+    }
+
+    /// The data length of the record whose header is at absolute `at`
+    /// (read back from NOR: the index keeps no lengths). `None` if the
+    /// header no longer reads as a value the store wrote.
+    async fn len_at(&mut self, at: u32) -> Result<Option<u16>, Error<F::Error>> {
+        let mut b = [0u8; 4];
+        self.nor.read(at, &mut b).await?;
+        let len = u16::from_le_bytes([b[2], b[3]]);
+        Ok((usize::from(len) <= MAX_VALUE).then_some(len))
     }
 
     /// Read a value; returns its length, or `None` if absent.
@@ -266,21 +327,29 @@ impl<F: Nor, const N: usize> Store<F, N> {
         let Some(s) = self.index[..self.n_keys].iter().find(|s| s.key == key).copied() else {
             return Ok(None);
         };
-        if s.len == DELETED {
+        if s.deleted() {
             return Ok(None);
         }
-        let n = usize::from(s.len);
+        let at = self.active as u32 * SECTOR + s.off();
+        let Some(len) = self.len_at(at).await? else { return Ok(None) };
+        let n = usize::from(len);
         if buf.len() < n {
             return Err(Error::BufferTooSmall);
         }
-        self.nor.read(s.at + REC_HDR, &mut buf[..n]).await?;
+        self.nor.read(at + REC_HDR, &mut buf[..n]).await?;
         Ok(Some(n))
     }
 
-    /// Keys currently present.
     /// The keys that hold a value.
     pub fn keys(&self) -> impl Iterator<Item = u16> + '_ {
-        self.index[..self.n_keys].iter().filter(|s| s.len != DELETED).map(|s| s.key)
+        self.index[..self.n_keys].iter().filter(|s| !s.deleted()).map(|s| s.key)
+    }
+
+    /// Keys in the index, deletion markers included (each takes a slot
+    /// until the next compaction).
+    #[must_use]
+    pub fn indexed(&self) -> usize {
+        self.n_keys
     }
 
     /// Store `value` under `key`, replacing any older value.
@@ -288,7 +357,7 @@ impl<F: Nor, const N: usize> Store<F, N> {
         if value.len() > MAX_VALUE || key == 0xFFFF {
             return Err(Error::TooLarge);
         }
-        if self.index[..self.n_keys].iter().all(|s| s.key != key) && self.n_keys >= MAX_KEYS {
+        if self.index[..self.n_keys].iter().all(|s| s.key != key) && self.n_keys >= K {
             return Err(Error::TooManyKeys);
         }
         self.append(key, value.len() as u16, value).await
@@ -296,7 +365,7 @@ impl<F: Nor, const N: usize> Store<F, N> {
 
     /// Delete the value under `key` (nothing happens if there is none).
     pub async fn remove(&mut self, key: u16) -> Result<(), Error<F::Error>> {
-        if self.index[..self.n_keys].iter().any(|s| s.key == key && s.len != DELETED) {
+        if self.index[..self.n_keys].iter().any(|s| s.key == key && !s.deleted()) {
             self.append(key, DELETED, &[]).await?;
         }
         Ok(())
@@ -308,10 +377,10 @@ impl<F: Nor, const N: usize> Store<F, N> {
             self.compact(need).await?;
         }
         let base = self.active as u32 * SECTOR;
-        let at = base + self.head;
-        self.write_record(at, key, len, value).await?;
+        let off = self.head;
+        self.write_record(base + off, key, len, value).await?;
         self.head += need;
-        self.put_index(key, at, len);
+        self.put_index(key, off, len == DELETED);
         Ok(())
     }
 
@@ -323,34 +392,77 @@ impl<F: Nor, const N: usize> Store<F, N> {
         value: &[u8],
     ) -> Result<(), Error<F::Error>> {
         let crc = if len == DELETED { 0 } else { crc32(value) };
-        let mut h = [0u8; 8];
-        h[0..2].copy_from_slice(&key.to_le_bytes());
-        h[2..4].copy_from_slice(&len.to_le_bytes());
-        h[4..8].copy_from_slice(&crc.to_le_bytes());
-        self.nor.program(at, &h).await?;
-        let mut chunk = [0xFFu8; 64];
-        for (i, part) in value.chunks(64).enumerate() {
+        self.write_header(at, key, len, crc).await?;
+        let mut chunk = [0xFFu8; PIECE];
+        for (i, part) in value.chunks(PIECE).enumerate() {
             let n = pad4(part.len() as u32) as usize;
             chunk[..n].fill(0xFF);
             chunk[..part.len()].copy_from_slice(part);
-            self.nor.program(at + REC_HDR + (i * 64) as u32, &chunk[..n]).await?;
+            self.nor.program(at + REC_HDR + (i * PIECE) as u32, &chunk[..n]).await?;
         }
         // Commit last.
         self.nor.program(at + 8, &0u32.to_le_bytes()).await?;
         Ok(())
     }
 
+    /// The record's first 8 bytes: key, length, CRC (not yet committed).
+    async fn write_header(&mut self, at: u32, key: u16, len: u16, crc: u32) -> Result<(), Error<F::Error>> {
+        let mut h = [0u8; 8];
+        h[0..2].copy_from_slice(&key.to_le_bytes());
+        h[2..4].copy_from_slice(&len.to_le_bytes());
+        h[4..8].copy_from_slice(&crc.to_le_bytes());
+        self.nor.program(at, &h).await?;
+        Ok(())
+    }
+
+    /// Copy a value record from absolute `from` to `to` piece by piece:
+    /// the same bytes [`write_record`](Self::write_record) would write
+    /// for its value, committed last.
+    async fn copy_record(
+        &mut self,
+        from: u32,
+        to: u32,
+        key: u16,
+        len: u16,
+        crc: u32,
+    ) -> Result<(), Error<F::Error>> {
+        self.write_header(to, key, len, crc).await?;
+        let mut chunk = [0xFFu8; PIECE];
+        let mut done = 0;
+        while done < u32::from(len) {
+            let n = (u32::from(len) - done).min(PIECE as u32) as usize;
+            let p = pad4(n as u32) as usize;
+            chunk[..p].fill(0xFF);
+            self.nor.read(from + REC_HDR + done, &mut chunk[..n]).await?;
+            self.nor.program(to + REC_HDR + done, &chunk[..p]).await?;
+            done += n as u32;
+        }
+        self.nor.program(to + 8, &0u32.to_le_bytes()).await?;
+        Ok(())
+    }
+
     /// Move live records into the next sector and retire the old one.
+    ///
+    /// The index is not touched until the new sector is active; it is then
+    /// rebuilt by scanning that sector (which drops the deletion markers).
+    /// A NOR error part-way leaves the index on the old sector, which is
+    /// also the active one in NOR.
     async fn compact(&mut self, need: u32) -> Result<(), Error<F::Error>> {
-        let live: u32 = self.index[..self.n_keys]
-            .iter()
-            .filter(|s| s.len != DELETED)
-            .map(|s| REC_HDR + pad4(u32::from(s.len)))
-            .sum();
+        let old = self.active;
+        let obase = old as u32 * SECTOR;
+        let mut live = 0u32;
+        for i in 0..self.n_keys {
+            let s = self.index[i];
+            if s.deleted() {
+                continue;
+            }
+            if let Some(len) = self.len_at(obase + s.off()).await? {
+                live += REC_HDR + pad4(u32::from(len));
+            }
+        }
         if HDR + live + need > SECTOR {
             return Err(Error::Full);
         }
-        let old = self.active;
         let next = (old + 1) % N;
         let seq = self.seq.wrapping_add(1);
         // New sector: erase and write its header but keep it inactive
@@ -363,33 +475,36 @@ impl<F: Nor, const N: usize> Store<F, N> {
         h[4..8].copy_from_slice(&seq.to_le_bytes());
         self.nor.program(nbase, &h).await?;
         let mut off = HDR;
-        let mut buf = [0u8; MAX_VALUE];
         for i in 0..self.n_keys {
             let s = self.index[i];
-            if s.len == DELETED {
+            if s.deleted() {
                 continue;
             }
-            let n = usize::from(s.len);
-            self.nor.read(s.at + REC_HDR, &mut buf[..n]).await?;
-            self.write_record(nbase + off, s.key, s.len, &buf[..n]).await?;
-            self.index[i].at = nbase + off;
-            off += REC_HDR + pad4(u32::from(s.len));
+            let at = obase + s.off();
+            let mut rh = [0u8; REC_HDR as usize];
+            self.nor.read(at, &mut rh).await?;
+            let len = u16::from_le_bytes([rh[2], rh[3]]);
+            let crc = word(&rh, 4);
+            // A value that no longer reads as it did at mount (bit rot) is
+            // not carried over: the next mount would refuse it as well.
+            if usize::from(len) > MAX_VALUE || self.crc_at(at + REC_HDR, len).await? != crc {
+                continue;
+            }
+            let total = REC_HDR + pad4(u32::from(len));
+            if off + total > SECTOR {
+                // The old sector read differently from the first pass:
+                // stay on it.
+                return Err(Error::Full);
+            }
+            self.copy_record(at, nbase + off, s.key, len, crc).await?;
+            off += total;
         }
         // Activate the new sector, then retire the old one.
         self.nor.program(nbase + 8, &STATE_ACTIVE.to_le_bytes()).await?;
-        self.nor.program(old as u32 * SECTOR + 8, &STATE_RETIRED.to_le_bytes()).await?;
-        // Drop deletion markers from the index.
-        let mut w = 0;
-        for r in 0..self.n_keys {
-            if self.index[r].len != DELETED {
-                self.index[w] = self.index[r];
-                w += 1;
-            }
-        }
-        self.n_keys = w;
         self.active = next;
         self.seq = seq;
-        self.head = off;
+        self.scan().await?;
+        self.nor.program(obase + 8, &STATE_RETIRED.to_le_bytes()).await?;
         Ok(())
     }
 
@@ -496,6 +611,31 @@ mod tests {
         assert_eq!(s.nor.ops, erases_before, "a retried mount wrote to NOR");
         nor.fail_reads.set(5);
         assert!(block_on(S::mount_retrying(|| nor.clone(), 3)).is_err());
+    }
+
+    /// 2026-11-26 (VER-4, found while making the index smaller): a value
+    /// whose bytes changed in NOR after the mount (bit rot) was copied by
+    /// the next compaction with a fresh CRC, so the corruption became a
+    /// valid record. Now the copy checks the CRC and leaves it out, as a
+    /// mount would; the other keys are copied.
+    #[test]
+    fn regress_compaction_does_not_bless_a_rotted_value() {
+        let mut s = block_on(S::mount(SimNor::new(4))).unwrap();
+        block_on(s.set(1, &[0x55; 40])).unwrap();
+        block_on(s.set(2, &[7, 7])).unwrap();
+        // Key 1's data starts after the sector and record headers.
+        let at = (s.active as u32 * SECTOR + HDR + REC_HDR) as usize + 5;
+        s.nor.mem[at] &= 0xFE;
+        let erases = s.erases;
+        let mut i = 0u16;
+        while s.erases == erases {
+            block_on(s.set(2, &i.to_le_bytes())).unwrap();
+            i += 1;
+        }
+        assert_eq!(get(&mut s, 1), None, "the rotted value was carried over");
+        let mut s = block_on(S::mount(s.into_inner())).unwrap();
+        assert_eq!(get(&mut s, 1), None);
+        assert_eq!(get(&mut s, 2), Some((i - 1).to_le_bytes().to_vec()));
     }
 
     #[test]

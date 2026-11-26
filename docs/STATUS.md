@@ -74,8 +74,89 @@ of every session. Newest entries first in §3.
 | MIDI-1 | **done (host + simulator)**; not in the firmware (SYN-3); **user check: listen to the three MIDI renders** | `orpheus-midi`: Standard MIDI File parser (formats 0/1/2, running status, meta and SysEx, SMPTE, RMID) streamed through 64 track cursors of 64-byte windows that ask for bytes (`Need`/`supply`), nothing trusted; exact tick→frame clock through tempo changes; sequencer (CC 1/6/7/10/11/38/64/91/93/96–101/120–127, RPN bend range, pressure, programs, kits on channel 10, mute/solo); own GM set of 32 sounds for the 128 programs (`data/gm-sounds.osb`); `MidiPlayer`: open/scan, render, bounded-step seek (bit-exact where nothing sounds across the target), duration/position, `.kar`/lyric events; Files plays `.mid`/`.kar` in the simulator with Now Playing lyrics; player 70,224 B; estimate ≈ 117 MHz at 48 kHz for a 10–11-voice song: High clock (session entry 2026-11-25 "MIDI-1") |
 | A11Y-2 | **built (host + simulator + firmware), not yet run on the player**; journey `settings_accessibility` and user check 31 | Settings › Accessibility (Text size Normal/Large/Extra large, Hold delay 0.5–2 s, Key repeat Normal/Slow/Slower; packed in `0x0D60`), Themes White on black / Black on white (≥ 7:1), reduced motion = Animations off (spinner still, blinks lit), Key click Presses and holds (hold confirmation); 63 `a11y_*` goldens (session entry 2026-11-26 "A11Y-2") |
 | VER-13 Brightness (U-PWM-3) | **built (host + simulator + firmware), not yet run on the player**; journey `settings_brightness` and user check 32 | Settings › Display › Brightness = the stock levels 1–11 (default 6) on the stock PWM4 duties, live; key `0x030D` (old `0x0301` retired); alert flash 15 / 3 (never 16); `ui top` `bl=` |
+| VER-4 (settings store keys) | **done (host + firmware built), not yet run on the player** | Store index 128 → 192 keys at 4 B a slot (was 8), same NOR format both ways (fixture from the old code, byte-equal images); cache write marks unlimited; 131 keys in use with every app (61 free), firmware 129; sector ceiling ≈ 209 settings keys (256 cannot fit one sector); .bss −1,248 B, stack margin 5,664 B; compaction no longer re-blesses a rotted value (session entry 2026-11-26 "VER-4: settings store index") |
 
 ## 3. Session log
+
+### 2026-11-26 — VER-4: settings store index 128 → 192 keys, same NOR format (worker, no hardware)
+
+* **Problem**: with every app's settings the store's index was full
+  (`MAX_KEYS` 128; STORED 128). With the Bluetooth address (`0x06F0`),
+  the radio presets (`0x0710`) and the retired Brightness key (`0x0301`)
+  **131** keys were needed (the firmware alone 129): after a factory reset
+  the last writes were refused (`TooManyKeys`, ignored by the firmware;
+  those values reverted at the next start). The settings cache had its
+  own limit too (a `u128` write mask).
+* **Limits now**: store index **192 keys** (`MAX_KEYS`; `Store`'s new
+  third parameter `K`, default 192); cache write marks a bitset sized from
+  `STORED` (no limit of its own). In use: full tree 131 (61 free),
+  firmware 129 (63 free). `settings::STORE_KEYS` / `MIN_FREE_STORE_KEYS`
+  (32) asserted at build time in the firmware (`ui.rs`) and in the host
+  tests. `bt::LAST_KEY` is now `orpheus_apps::settings::BT_LAST_KEY`.
+* **Sector capacity is the real ceiling** (not changed: 4 sectors at the
+  same place): only the active 4 KiB sector holds live records, 4,080 B of
+  them. A two-byte setting is a 16-byte record, the presets 344 B, the
+  Bluetooth address 20 B. 192 keys of that mix (190 settings + presets +
+  BT) = 3,404 B, leaving 676 B (42 small writes) between compactions; the
+  presets can still be rewritten up to ≈ 209 settings keys; **256 keys
+  cannot fit one sector** (256 × 16 B > 4,080 B) without a format change
+  (live records across sectors) — so 192, where the index is full before
+  the sector.
+* **Format unchanged, both ways**: the index is RAM only. The new code
+  writes byte-for-byte the same NOR image as the old for the same
+  operations (`new_code_writes_the_old_format_byte_for_byte`, against a
+  fixture the old code wrote, `crates/orpheus-settings/tests/data/
+  store-128keys-c3041aeb.bin`); the old image mounts with identical values
+  under a 192- and a 128-key index, and the mount writes nothing. An older
+  firmware reading a store with more than 128 keys sees the first 128 in
+  log order and drops the rest at its first compaction, nothing else
+  disturbed (`smaller_index_reads_a_bigger_store`); today's firmware
+  stores ≤ 129, so at worst one key. The owner's store (25 keys) is read
+  as it is: the boot's `keys=` count and store CRC (`STORE_KEYS`,
+  `STORE_CRC`, index order unchanged) should be identical before and
+  after the update.
+* **RAM**: index slot 8 → 4 B (key + 15-bit offset in the active sector
+  + deletion bit; the length is read back from the record header), so 192
+  keys = 768 B (was 1,024 B for 128): `STORE_CELL` 1,056 → 800 B. The
+  compaction copy and the CRC check stream in 64-B pieces instead of two
+  1 KiB buffers, and the boot load no longer copies the key list (268 B):
+  the UI task's future (`ui::ui::POOL`, .bss) 1,520 → 536 B. **.bss
+  125,448 → 124,200 B (−1,248)**; usable stack 19,200 → 20,480 B; **static
+  stack margin 4,304 → 5,664 B**; resident 81,235 B unchanged.
+* **Compaction** now rebuilds the index by scanning the new sector once it
+  is active (the index is untouched until then: a NOR error part-way
+  leaves RAM on the old sector, still the active one), and copies each
+  record with its own CRC after checking it. **Fixed**: a value that
+  rotted in NOR after the mount was copied with a fresh CRC and became
+  valid (`regress_compaction_does_not_bless_a_rotted_value`, fails on the
+  old code).
+* **Tests**: `orpheus-settings/tests/compat.rs` (fixture mounts, byte
+  equality, smaller index, `full_index_before_full_sector`: 192 keys and
+  2,000 writes incl. 332-B values never `Full`, the 193rd key refused;
+  `power_cut_at_every_step_with_many_keys`: 180 keys + 6 new + removes,
+  a cut at every one of the workload's write steps through compactions,
+  with the fuzz NOR model's no-program-over-programmed-bits check);
+  `orpheus-apps` `regress_full_feature_settings_tree_fits_with_headroom`
+  (the real store after a factory reset on a player with the retired key,
+  BT and full presets: ≥ 32 keys free, 32 new settings stored, six rounds
+  of rewrites through compactions, all values back after a remount),
+  `dirty_marks_cover_every_stored_item`; new fuzz seed
+  `seed-many-keys` (180 keys); the corpus replays.
+* Gate: fmt (host, fw); clippy `-D warnings` (host workspace, fw;
+  `orpheus-apps` with no features, `seq`, `games,salvo,bricks`, `books`);
+  `cargo test --workspace` 1,995 passed, 0 failed, 13 ignored;
+  `settings-matrix --check` (174 settings, 12,224/12,272 cells, 0 errors);
+  fw `xtask build`, `check-resident` (ok, none paged), `size --check`
+  (resident 81,235 B, .bss 124,200 B), `stack --check` (14,816 B of
+  20,480 B, margin 5,664 B). Not run: any `xtask dev` step (the brief
+  forbids them), `brand`/`site --check`, fuzzing beyond the corpus replay.
+* **For the lead on the player**: before the update `settings changed`
+  and the boot line's `store=ok keys=N` / store CRC; update; after it the
+  same `keys=N`, the same CRC and the same `settings changed` (the
+  owner's `701=1 d50=10470` among them).
+* Open: the index still counts deletion markers until the next
+  compaction (only `remove` makes them; the firmware does not call it);
+  F-SET-2 unchanged.
 
 ### 2026-11-26 — Brightness merged; hex keys; settings store mount retried (lead)
 

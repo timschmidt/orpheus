@@ -775,6 +775,13 @@ fn session_set_hooks(ui: &mut Ui, sid: orpheus_apps::settings::SettingId, want: 
 
 static mut FW_CELL: core::mem::MaybeUninit<Fw> = core::mem::MaybeUninit::uninit();
 static mut STORE_CELL: Option<Store<NorRegion, 4>> = None;
+
+// Every key the firmware stores fits the store's index with room for more
+// (VER-4, 2026-11-26: the index was full).
+const _: () = assert!(
+    orpheus_apps::settings::STORE_KEYS + orpheus_apps::settings::MIN_FREE_STORE_KEYS
+        <= orpheus_settings::MAX_KEYS
+);
 static mut UI_CELL: core::mem::MaybeUninit<Ui> = core::mem::MaybeUninit::uninit();
 
 /// Once, from the UI task.
@@ -868,18 +875,17 @@ pub async fn ui() {
     let store = mount_store();
     let mut bt_last = None;
     if let Some(s) = store.as_mut() {
-        // Every stored setting (65 since PWR-5) and the Bluetooth address:
-        // after a factory reset all of them are in the store.
-        let mut keys = [0u16; orpheus_apps::settings::STORED + 8];
+        // Every stored setting and the Bluetooth address: after a factory
+        // reset all of them are in the store. The keys are taken one at a
+        // time by position (`get` borrows the store), not copied into a
+        // list first: no list to size, and 268 B less in this task's
+        // future (VER-4, 2026-11-26).
         let mut n = 0;
-        for k in s.keys() {
-            if n < keys.len() {
-                keys[n] = k;
-                n += 1;
-            }
-        }
         let mut crc = 0xFFFF_FFFF;
-        for &k in &keys[..n] {
+        loop {
+            let next = s.keys().nth(n);
+            let Some(k) = next else { break };
+            n += 1;
             let mut b = [0u8; 8];
             crc = orpheus_proto::hash::crc32_update(crc, &k.to_le_bytes());
             if let Ok(Some(len)) = s.get(k, &mut b).await {
