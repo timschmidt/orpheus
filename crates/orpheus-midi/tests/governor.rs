@@ -129,7 +129,7 @@ fn demo_songs_fit_the_budget_at_144_mhz() {
     }
 }
 
-/// At 288 MHz (Settings › System › Performance: Maximum) the budget
+/// At 288 MHz (the clock governor's top level, PWR-5) the budget
 /// doubles: "Sound tour" plays as the host renders it for most of its
 /// length, the others keep more voices.
 #[test]

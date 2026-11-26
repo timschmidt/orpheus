@@ -15,6 +15,7 @@ prof = []
 [dependencies]
 atj2157-pac = { path = "../../crates/atj2157-pac" }
 orpheus-proto.workspace = true
+orpheus-power = { path = "../../crates/orpheus-power" }
 cortex-m = { version = "0.7", default-features = false, features = ["inline-asm"] }
 critical-section = { version = "1.2", features = ["restore-state-u32"] }
 embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }

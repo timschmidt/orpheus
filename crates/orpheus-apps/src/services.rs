@@ -84,7 +84,7 @@ pub trait PowerService {
     fn developer(&self) -> bool;
     fn show_developer(&mut self);
     fn drain_log(&self) -> DrainLog;
-    /// Start (labelled from the Performance setting) or stop the battery
+    /// Start (labelled with the Power mode) or stop the battery
     /// logger; `stay` suppresses auto-off while it runs.
     fn set_drain_log(&mut self, on: bool, stay: bool);
 }

@@ -49,7 +49,7 @@ planned.
 
 That is a goal and is being measured. Orpheus runs the processor at
 1.0 V instead of the chip's default 1.2 V and slows it down when it has
-nothing to do. [Performance](performance.md) explains the faster mode.
+nothing to do. [Power mode](power.md) explains the choices.
 
 ## Can the player receive Bluetooth audio from my phone?
 

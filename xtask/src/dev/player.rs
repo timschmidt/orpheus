@@ -749,14 +749,14 @@ mod tests {
     }
 
     /// The firmware's test look (`ui test-look on`: the settings
-    /// 0x0304–0x030C, language, Now Playing view and, until a session sets
+    /// 0x0304–0x030C, Power mode, language, Now Playing view and, until a session sets
     /// them, the accessibility settings 0x1001–0x1003 read as their defaults)
     /// is what the simulator starts with, so it needs no counterpart.
     #[test]
     fn simulator_starts_in_the_test_look() {
         use orpheus_apps::settings::{SettingId, def, id};
         let sim = AppSim::new();
-        let ids = (0x0304..=0x030Cu16).chain([0x0A01, 0x0D03, 0x1001, 0x1002, 0x1003]).map(SettingId);
+        let ids = (0x0304..=0x030Cu16).chain([0x0401, 0x0A01, 0x0D03, 0x1001, 0x1002, 0x1003]).map(SettingId);
         for sid in ids {
             let Some(d) = def(sid) else { continue };
             assert_eq!(sim.sys.settings.get(sid), d.default, "{:#06x}", sid.0);

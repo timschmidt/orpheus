@@ -12,6 +12,7 @@ extern crate std;
 
 pub mod backlight;
 pub mod charger;
+pub mod clock;
 pub mod drain;
 pub mod gauge;
 pub mod governor;

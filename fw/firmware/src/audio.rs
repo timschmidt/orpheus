@@ -245,24 +245,21 @@ async fn click_alone(out: &mut PcmOut) {
 /// Where the playback loop is (status diagnostics): 1 card read, 2 media
 /// request, 3 waiting for the DAC, 4 decoding, 5 DSP, 0 elsewhere.
 pub static WHERE: AtomicU32 = AtomicU32::new(0);
-/// Clock floor for the current track (set at its start from the codec).
+/// Clock floor for the current track (set at its start from the codec, by
+/// the synth up to Max): 0 Base, 1 Mid, 2 High, 3 Turbo, 4 Max; carried
+/// out by [`dsp_clock_floor`].
 static CODEC_FLOOR: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
-/// Apply the clock floor: the codec's, raised to Mid while the DSP chain
-/// works; the level is raised here at once (from the RT task) and the
-/// governor never goes below it.
+/// Apply the clock floor (`CODEC_FLOOR`: 0 Base, 1 Mid, 2 High, 3 Turbo,
+/// 4 Max), the codec's or the synth's, raised to Mid while the DSP chain
+/// works; the level is raised here at once (from the RT task; not in
+/// Battery saver, `crate::raise_to_floor`) and the governor in Automatic
+/// never goes below it.
+#[inline(never)]
 fn dsp_clock_floor(dsp_active: bool) {
-    use atj2157_hal::clock::{Level, current, set_level};
     let floor = CODEC_FLOOR.load(Ordering::Relaxed).max(u8::from(dsp_active));
     crate::CLOCK_FLOOR.store(floor, Ordering::Relaxed);
-    let have = match current() {
-        Level::Low | Level::Base => 0,
-        Level::Mid => 1,
-        _ => 2,
-    };
-    if have < floor {
-        set_level(if floor >= 2 { Level::High } else { Level::Mid });
-    }
+    crate::raise_to_floor(floor);
 }
 
 /// Clock floor High while the card task decodes a picture (no track is

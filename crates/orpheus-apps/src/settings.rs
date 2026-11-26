@@ -210,7 +210,11 @@ pub const OUTPUT: &[Choice] = ch![S(Str::Headphones), S(Str::AppBluetooth)];
 /// * `0x0301`: Brightness 1–16 (default 10) until 2026-11-26; it drove
 ///   nothing (the firmware lit the panel at a fixed duty 12). Now
 ///   [`id::BRIGHTNESS`] (`0x030D`), the stock levels.
-pub const RETIRED: &[u16] = &[0x0301];
+/// * `0x0C07`: Settings › System › Performance (Normal / Maximum, D-4)
+///   until 2026-11-26 (PWR-5): the governor now reaches 288 MHz by itself
+///   when the load needs it, and Power mode (`0x0401`) is the only
+///   setting it follows.
+pub const RETIRED: &[u16] = &[0x0301, 0x0C07];
 
 /// Settings-store key of the last connected Bluetooth device (6 bytes, as
 /// the module sends the address; the firmware's `bt::LAST_KEY`).
@@ -290,8 +294,6 @@ pub mod id {
     /// Custom 1 bands 0..5, then Custom 2 bands 0..5.
     pub const EQ_BAND0: SettingId = SettingId(0x0D10);
     pub const SPEED: SettingId = SettingId(0x0206);
-    /// Settings › System › Performance (D-4): 0 Normal, 1 Maximum.
-    pub const PERFORMANCE: SettingId = SettingId(0x0C07);
     /// Settings › Radio (UI-5a): region (`orpheus_fm::Region` order),
     /// forced mono, seek sensitivity (low, medium, high).
     pub const RADIO_REGION: SettingId = SettingId(0x0701);
@@ -533,7 +535,6 @@ const SYSTEM: &[Setting] = &[
     a(0x0C04, Str::StartOriginal, Action::StartOriginal),
     a(0x0C05, Str::FactoryReset, Action::FactoryReset),
     a(0x0C06, Str::RecoveryMode, Action::Recovery),
-    c(0x0C07, Str::Performance, ch![S(Str::PerfNormal), S(Str::PerfMaximum)], 0),
     a(0x0C08, Str::Developer, Action::Developer),
 ];
 
@@ -770,7 +771,7 @@ pub fn def(id: SettingId) -> Option<&'static Setting> {
 /// Number of stored items (the games' settings with the `games` feature,
 /// the reading settings' word with `books`, the Sequencer's word with
 /// `seq`).
-pub const STORED: usize = 99 + GAMES_STORED + BOOKS_STORED + SEQ_STORED;
+pub const STORED: usize = 98 + GAMES_STORED + BOOKS_STORED + SEQ_STORED;
 #[cfg(feature = "seq")]
 const SEQ_STORED: usize = crate::seq::STORED_SETTINGS;
 #[cfg(not(feature = "seq"))]
@@ -1176,7 +1177,9 @@ mod tests {
             feature = "seq"
         ))]
         const {
-            assert!(STORED >= 128);
+            // 128 when the bug was found; Performance (0x0C07) retired since
+            // (PWR-5): the store keys it needed are the same (RETIRED).
+            assert!(STORED >= 127 && STORE_KEYS >= 131);
         };
         let free = MAX_KEYS - STORE_KEYS;
         assert!(free >= MIN_FREE_STORE_KEYS, "{STORE_KEYS} of {MAX_KEYS} store keys: {free} free");

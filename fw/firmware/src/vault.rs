@@ -414,13 +414,11 @@ impl Fw {
     }
 
     /// Run a key derivation to the end (about a second at 48 MHz, a third
-    /// at 144 MHz: the clock is raised for it; the governor lowers it again).
+    /// at 144 MHz: the clock is raised to at least High for it, except in
+    /// Battery saver; the governor lowers it again).
     #[inline(never)]
     fn derive(&mut self, work: VaultWork, pin: &Pin, scratch: &mut [u8], now_ms: u64) {
-        use atj2157_hal::clock::{Level, current, set_level};
-        if matches!(current(), Level::Low | Level::Base | Level::Mid) {
-            set_level(Level::High);
-        }
+        crate::raise_to_floor(2);
         // Started and finished in frames of their own: inlined here, the
         // start's futures and temporaries stayed in this frame (4.2 KB) under
         // the finish's sealing and hashing (VER-10).

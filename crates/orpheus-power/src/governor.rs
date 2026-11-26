@@ -1,90 +1,53 @@
-//! The clock governor's decision (PWR-2 first cut, PWR-5 / D-4): a pure
+//! The clock governor's decision (PWR-2, PWR-5; decision D-4 as revised
+//! 2026-11-26 and the owner's Power mode rules of the same day): a pure
 //! function of the main executor's idle share over the last step, the
-//! current level, the clock floor the audio task asks for, and the
-//! Performance setting. The firmware runs it once a second and carries out
-//! the level it returns.
+//! current level, the clock floor the audio task asks for, the peripherals
+//! in use, and Settings › Power › Power mode. The firmware runs it once a
+//! second and carries out the level it returns.
 //!
-//! * Idle below [`UP_BELOW`] %: one level up (Base → Mid → High). With
-//!   Performance = Maximum, the step above High goes to `Max` (288 MHz);
-//!   with Normal there is nothing above High.
-//! * Idle above [`DOWN_ABOVE`] % for [`CALM_STEPS`] steps in a row: one
-//!   level down (Turbo/Max → High → Mid → Base), never below the floor.
-//! * With Normal the governor never runs at `Max`: a `Max` level found
-//!   there (pinned by a test, or the setting just turned off) goes to High
-//!   at the next step.
+//! * **Battery saver**: "the lowest clocked performance level which is
+//!   functional for required peripherals" — pinned at the highest of the
+//!   minimum levels ([`PERIPHERAL_MIN`]) of the peripherals in use,
+//!   whatever the load; audio floors do not raise it (playback may stutter,
+//!   the synth may shed).
+//! * **High performance**: pinned at `Max` (288 MHz, 1.3 V).
+//! * **Automatic**: "all functionality at minimum battery cost … given the
+//!   performance required to keep up". Never below the peripherals'
+//!   minimum or the audio floor (which goes up to `Max`: nothing sheds in
+//!   Automatic while a higher level would keep up). A saturated level
+//!   (idle below [`UP_BELOW`] %: the work is not keeping up and its
+//!   demand is not known) climbs ([`climb`]): to at least twice its clock
+//!   each step (Low → Base → Mid → Turbo), and to `Max` only from a
+//!   saturated `Turbo` — a sustained demand above what 192 MHz carries;
+//!   otherwise the level is the one the power model ([`COST`], [`steady`])
+//!   says carries the measured demand for the least energy; with nothing
+//!   to do that is the peripherals' minimum. Down only after
+//!   [`CALM_STEPS`] steps in a row asking for less (to the highest level
+//!   asked in that run), so a load near a boundary does not flap.
+//!
+//! Why steady loads do not race to sleep (02 §5.1): the governor steps
+//! once a second, far coarser than the audio blocks, so "racing" a steady
+//! stream means sitting at `Max` with the core mostly in WFI. In the model
+//! a cycle costs ∝ V² (1.0 V up to 144 MHz, 1.3 V at 288 MHz: 1.69× per
+//! cycle) and a level's standing power (leakage, PLL, clock tree) grows
+//! with its voltage and clock, so a demand that a 1.0 V level carries is
+//! cheapest at the lowest such level. Racing would pay only where
+//! finishing sooner lets the player sit in a much cheaper state afterwards
+//! for long enough, which the model's figures do not show. The figures are
+//! estimates: the datasheet gives no current per level (U-PWR-6) and
+//! M13's measured drain replaces them; the decision is this one function.
 
-/// Clock levels the governor knows, in rising order (the HAL's
-/// `clock::Level`).
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub enum Level {
-    Low,
-    Base,
-    Mid,
-    High,
-    Turbo,
-    Max,
-}
+pub use crate::clock::Level;
 
-impl Level {
-    pub const ALL: [Level; 6] = [Level::Low, Level::Base, Level::Mid, Level::High, Level::Turbo, Level::Max];
-
-    /// Core clock in MHz.
-    #[must_use]
-    pub const fn mhz(self) -> u16 {
-        match self {
-            Level::Low => 24,
-            Level::Base => 48,
-            Level::Mid => 96,
-            Level::High => 144,
-            Level::Turbo => 192,
-            Level::Max => 288,
-        }
-    }
-
-    /// From its index in [`Level::ALL`] (anything larger is `Max`).
-    #[must_use]
-    pub const fn from_index(i: u8) -> Level {
-        match i {
-            0 => Level::Low,
-            1 => Level::Base,
-            2 => Level::Mid,
-            3 => Level::High,
-            4 => Level::Turbo,
-            _ => Level::Max,
-        }
-    }
-}
-
-/// Settings › System › Performance (decision D-4).
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum Performance {
-    /// Base … High (48–144 MHz).
-    #[default]
-    Normal,
-    /// The step above High is `Max` (288 MHz, 1.3 V core supply).
-    Maximum,
-}
-
-impl Performance {
-    /// From the stored setting value (0 Normal, 1 Maximum; anything else
-    /// is Normal).
-    #[must_use]
-    pub const fn from_setting(v: i16) -> Performance {
-        if v == 1 { Performance::Maximum } else { Performance::Normal }
-    }
-}
-
-/// Settings › Power › Power mode (02 §5.4).
+/// Settings › Power › Power mode (02 §5.4, owner 2026-11-26).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum PowerMode {
-    /// The governor as it is ([`Governor::step`]).
+    /// The cheapest level that keeps up ([`Governor::step`]).
     #[default]
     Auto,
-    /// Battery saver: the clock stays at Base, or at the floor the audio
-    /// task asks for when that is higher (playback keeps what it needs; the
-    /// UI never raises the clock).
+    /// Battery saver: pinned at the peripherals' minimum.
     Saver,
-    /// High performance: at least High (144 MHz) while the screen is on.
+    /// High performance: pinned at `Max`.
     High,
 }
 
@@ -99,25 +62,111 @@ impl PowerMode {
             _ => PowerMode::Auto,
         }
     }
+
+    /// The mode the governor follows: Automatic (the default) while a host
+    /// test runs (the test look, a test session or the test mailbox), so a
+    /// suite gives the same result on a player the owner left in another
+    /// mode; the stored one otherwise.
+    #[must_use]
+    pub const fn for_governor(stored: i16, under_test: bool) -> PowerMode {
+        if under_test { PowerMode::Auto } else { PowerMode::from_setting(stored) }
+    }
 }
 
-/// One level up when the idle share is below this (percent).
+/// Peripherals with a minimum core clock, as bits of [`Input::active`].
+pub mod periph {
+    /// USB while connected (VBUS present).
+    pub const USB: u8 = 1 << 0;
+    /// The card (SD0).
+    pub const CARD: u8 = 1 << 1;
+    /// The display while it is on.
+    pub const DISPLAY: u8 = 1 << 2;
+    /// The DAC and the audio path while something plays.
+    pub const AUDIO: u8 = 1 << 3;
+    /// The NOR flash pager.
+    pub const PAGER: u8 = 1 << 4;
+    /// The keys.
+    pub const KEYS: u8 = 1 << 5;
+    /// Always in use.
+    pub const ALWAYS: u8 = CARD | PAGER | KEYS;
+}
+
+/// The lowest level at which each peripheral works (bit order of
+/// [`periph`]), with its source:
+///
+/// * **USB `Base`** (48 MHz) — the lowest level Orpheus's USB has run at
+///   [HW] (and the ROM's USB clock); the controller has its own UTMI+ PHY
+///   clock (`0xC0001100`) but the datasheet states no minimum core/AHB
+///   clock for it. **Unknown: 24 MHz is to be tested (U-PWR-5).** Assumed
+///   `Base` meanwhile because a controller that stops answering trips the
+///   USB liveness check, which holds the watchdog: the player would restart
+///   over and over on the cable. `Low` once the player passes it.
+/// * **Card `Low`** — SD0's clock is CK24M or DEVPLL, not the core ([DS]
+///   §4.3 `CMU_SD0CLK`; 01 §7); the card runs at 24 MHz from CK24M [HW].
+///   The core minimum for its DMA itself: assumed, to be tested (U-PWR-5).
+/// * **Display `Low`** — LCD clock CK24M, DMA blit with no HOSC detour
+///   (01 §9 U-LCM-1/2 [HW]); the stock firmware drives the panel with the
+///   core on HOSC, 24 MHz (system.md §1.5) [code].
+/// * **Audio `Low`** — the DAC runs from the audio PLLs ([DS] §4.3; 01 §7),
+///   its DMA moves 176 KB/s. The decoders' own needs are the audio
+///   floor, not this. Assumed, to be tested (U-PWR-5).
+/// * **Pager `Low`** — SPI0 on CK24M at `Low` (24 Mbit/s, half the rate of
+///   the PLL levels: page loads take twice as long); the clock self-test
+///   passed its NOR DMA CRC at 24 MHz (2026-11-24) [HW].
+/// * **Keys `Low`** — LRADC and the key timer run from HOSC (system.md
+///   §1.5); the stock UI scans keys at 24 MHz with the screen off [code].
+pub const PERIPHERAL_MIN: [Level; 6] =
+    [Level::Base, Level::Low, Level::Low, Level::Low, Level::Low, Level::Low];
+
+/// The highest minimum level of the peripherals in `active` ([`periph`]
+/// bits); `Low` when none needs more.
+#[must_use]
+pub const fn peripheral_min(active: u8) -> Level {
+    let mut l = Level::Low;
+    let mut i = 0;
+    while i < PERIPHERAL_MIN.len() {
+        if active & (1 << i) != 0 && PERIPHERAL_MIN[i] as u8 > l as u8 {
+            l = PERIPHERAL_MIN[i];
+        }
+        i += 1;
+    }
+    l
+}
+
+/// Below this idle share (percent) the level is saturated ([`climb`]).
 pub const UP_BELOW: u32 = 25;
-/// One level down after [`CALM_STEPS`] steps above this (percent).
-pub const DOWN_ABOVE: u32 = 70;
-/// Steps in a row above [`DOWN_ABOVE`] before a step down.
-pub const CALM_STEPS: u8 = 3;
+/// A level other than the current one is chosen only if the demand fills
+/// at most this share of it (percent), so after a step down the idle share
+/// is at least 40 %, well above [`UP_BELOW`].
+pub const FIT_PCT: u32 = 60;
+/// The current level carries the demand while it fills at most this share
+/// (percent; above it the level is saturated).
+pub const STAY_PCT: u32 = 100 - UP_BELOW;
+/// Steps in a row asking for a lower level before the step down.
+pub const CALM_STEPS: u8 = 2;
 
-/// What one step looks at.
+/// Modelled power of one level (µW): `on` while the level is selected
+/// (leakage at its voltage, the PLL and clock tree; the core in WFI), and
+/// `per_mhz` for each MHz of busy core on top (dynamic, ∝ V²).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Input {
-    /// Idle share of the main executor since the last step (percent).
-    pub idle_pct: u32,
-    pub current: Level,
-    /// Lowest level the audio task allows: 0 Base, 1 Mid, 2 High.
-    pub floor: u8,
-    pub perf: Performance,
+pub struct Cost {
+    pub on_uw: u32,
+    pub per_mhz_uw: u32,
 }
+
+/// The power model, by level ([`Level::ALL`] order). **Estimates, not
+/// measurements** (U-PWR-6): 100 µW/MHz dynamic at 1.0 V scaled by V²
+/// (1.1 V ×1.21, 1.3 V ×1.69); standing 1,000 µW leakage at 1.0 V scaled
+/// by V², plus 4 µW/MHz for COREPLL and the clock tree (none at `Low`,
+/// PLL off). Only their order matters to the decision; M13 replaces them.
+pub const COST: [Cost; 6] = [
+    Cost { on_uw: 1_000, per_mhz_uw: 100 },
+    Cost { on_uw: 1_000 + 4 * 48, per_mhz_uw: 100 },
+    Cost { on_uw: 1_000 + 4 * 96, per_mhz_uw: 100 },
+    Cost { on_uw: 1_000 + 4 * 144, per_mhz_uw: 100 },
+    Cost { on_uw: 1_210 + 4 * 192, per_mhz_uw: 121 },
+    Cost { on_uw: 1_690 + 4 * 288, per_mhz_uw: 169 },
+];
 
 /// The idle share in percent from the idle time and the wall time of a
 /// step (microseconds); a zero-length step counts as 1 µs.
@@ -126,95 +175,151 @@ pub fn idle_percent(idle_us: u64, dt_us: u64) -> u32 {
     (idle_us.saturating_mul(100) / dt_us.max(1)).min(u64::from(u32::MAX)) as u32
 }
 
-/// The governor's memory between steps: the run of calm steps.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// The demand in MHz of busy core: the busy share of the step at the
+/// current level's clock.
+#[must_use]
+pub const fn demand_mhz(idle_pct: u32, current: Level) -> u32 {
+    let busy = 100 - if idle_pct > 100 { 100 } else { idle_pct };
+    busy * current.mhz() as u32 / 100
+}
+
+/// Modelled power (µW) of carrying `demand` MHz at `l`.
+#[must_use]
+pub const fn power_uw(l: Level, demand: u32) -> u32 {
+    let c = COST[l as usize];
+    c.on_uw + demand * c.per_mhz_uw
+}
+
+/// The level that carries `demand` MHz for the least modelled power, at
+/// or above `floor`: `current` if it fills at most [`STAY_PCT`] of it,
+/// any other level if it fills at most [`FIT_PCT`]; `Max` when none does.
+/// Ties go to the lower level.
+#[must_use]
+pub fn steady(demand: u32, floor: Level, current: Level) -> Level {
+    let (mut best, mut best_uw) = (Level::Max, u32::MAX);
+    for l in Level::ALL {
+        let fill = if l == current { STAY_PCT } else { FIT_PCT };
+        if l >= floor && demand * 100 <= fill * u32::from(l.mhz()) {
+            let p = power_uw(l, demand);
+            if p < best_uw {
+                (best, best_uw) = (l, p);
+            }
+        }
+    }
+    best
+}
+
+/// The level after a saturated step at `l`: the lowest at least twice its
+/// clock (the demand is at least what it carried), but `Max` (1.3 V, the
+/// costliest) only from `Turbo`.
+#[must_use]
+pub const fn climb(l: Level) -> Level {
+    match l {
+        Level::Low => Level::Base,
+        Level::Base => Level::Mid,
+        Level::Mid | Level::High => Level::Turbo,
+        Level::Turbo | Level::Max => Level::Max,
+    }
+}
+
+/// The level the audio task raises the clock to at once for its floor
+/// (`floor`, a level), if any: never down, and never in a pinned mode
+/// (Battery saver stays at the peripherals' minimum whatever the audio
+/// needs; High performance is at `Max` already).
+#[must_use]
+pub fn raise_for_floor(mode: PowerMode, current: Level, floor: Level) -> Option<Level> {
+    (mode == PowerMode::Auto && current < floor).then_some(floor)
+}
+
+/// What one step looks at.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Input {
+    /// Idle share of the main executor since the last step (percent).
+    pub idle_pct: u32,
+    pub current: Level,
+    /// Lowest level the audio task allows (`Low` when nothing plays).
+    pub floor: Level,
+    /// The peripherals in use ([`periph`] bits).
+    pub active: u8,
+}
+
+/// The governor's memory between steps: the run of steps asking for a
+/// lower level, and the highest level asked in it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Governor {
     calm: u8,
+    hold: Level,
+}
+
+impl Default for Governor {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Governor {
     #[must_use]
     pub const fn new() -> Governor {
-        Governor { calm: 0 }
+        Governor { calm: 0, hold: Level::Low }
     }
 
-    /// The level to switch to, if any.
-    pub fn step(&mut self, i: Input) -> Option<Level> {
-        if i.perf == Performance::Normal && i.current == Level::Max {
+    /// The level to switch to under `mode`, if any.
+    pub fn step(&mut self, i: Input, mode: PowerMode) -> Option<Level> {
+        let want = match mode {
+            PowerMode::Saver => peripheral_min(i.active),
+            PowerMode::High => Level::Max,
+            PowerMode::Auto => self.auto(i),
+        };
+        if mode != PowerMode::Auto {
             self.calm = 0;
-            return Some(Level::High);
         }
+        (want != i.current).then_some(want)
+    }
+
+    fn auto(&mut self, i: Input) -> Level {
         if i.idle_pct < UP_BELOW {
             self.calm = 0;
-            match (i.current, i.perf) {
-                (Level::Low | Level::Base, _) => Some(Level::Mid),
-                (Level::Mid, _) => Some(Level::High),
-                (Level::High | Level::Turbo, Performance::Maximum) => Some(Level::Max),
-                _ => None,
-            }
-        } else if i.idle_pct > DOWN_ABOVE {
-            self.calm = self.calm.saturating_add(1);
-            if self.calm < CALM_STEPS {
-                return None;
-            }
-            self.calm = 0;
-            match i.current {
-                Level::Turbo | Level::Max => Some(Level::High),
-                Level::High if i.floor < 2 => Some(Level::Mid),
-                Level::Mid if i.floor < 1 => Some(Level::Base),
-                _ => None,
-            }
-        } else {
-            self.calm = 0;
-            None
+            return climb(i.current).max(i.floor).max(peripheral_min(i.active));
         }
-    }
-
-    /// [`Governor::step`] under a power mode (02 §5.4): Automatic is `step`
-    /// itself; Battery saver caps the level at Base or the audio floor,
-    /// whichever is higher (a higher level found goes there at once); High
-    /// performance keeps at least High while the screen is on.
-    pub fn step_in(&mut self, i: Input, mode: PowerMode, screen_on: bool) -> Option<Level> {
-        match mode {
-            PowerMode::Auto => self.step(i),
-            PowerMode::Saver => {
-                let cap = Level::from_index(1 + i.floor.min(2));
-                if i.current > cap {
-                    self.calm = 0;
-                    return Some(cap);
-                }
-                self.step(i).filter(|l| *l <= cap)
-            }
-            PowerMode::High if screen_on => {
-                if i.current < Level::High {
-                    self.calm = 0;
-                    return Some(Level::High);
-                }
-                self.step(i).filter(|l| *l >= Level::High)
-            }
-            PowerMode::High => self.step(i),
+        let min = i.floor.max(peripheral_min(i.active));
+        let t = steady(demand_mhz(i.idle_pct, i.current), min, i.current);
+        if t >= i.current {
+            self.calm = 0;
+            return t;
         }
+        self.hold = if self.calm == 0 { t } else { self.hold.max(t) };
+        self.calm += 1;
+        if self.calm < CALM_STEPS {
+            return i.current;
+        }
+        self.calm = 0;
+        self.hold
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use Level::*;
     use std::vec::Vec;
 
-    fn input(idle_pct: u32, current: Level, perf: Performance) -> Input {
-        Input { idle_pct, current, floor: 0, perf }
+    /// The idle share a steady `demand` (MHz) leaves at `l`.
+    fn idle_at(demand: u32, l: Level) -> u32 {
+        100 - (demand * 100 / u32::from(l.mhz())).min(100)
     }
 
-    /// Run `loads` (idle percent per step) from `start`; the levels after
-    /// each step.
-    fn run(start: Level, perf: Performance, floor: u8, loads: &[u32]) -> Vec<Level> {
+    fn input(demand: u32, cur: Level, floor: Level, active: u8) -> Input {
+        Input { idle_pct: idle_at(demand, cur), current: cur, floor, active }
+    }
+
+    /// Run a demand per step (MHz) from `start`; the level after each step.
+    fn run_with(mode: PowerMode, start: Level, floor: Level, active: u8, demand: &[u32]) -> Vec<Level> {
         let mut g = Governor::new();
         let mut cur = start;
-        loads
+        demand
             .iter()
-            .map(|&idle_pct| {
-                if let Some(l) = g.step(Input { idle_pct, current: cur, floor, perf }) {
+            .map(|&d| {
+                if let Some(l) = g.step(input(d, cur, floor, active), mode) {
                     cur = l;
                 }
                 cur
@@ -222,173 +327,208 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn normal_steps_up_to_high_and_stops() {
-        use Level::*;
-        assert_eq!(run(Base, Performance::Normal, 0, &[10, 10, 10, 10]), [Mid, High, High, High]);
-        assert_eq!(run(Low, Performance::Normal, 0, &[0]), [Mid]);
+    fn run(mode: PowerMode, start: Level, floor: Level, demand: &[u32]) -> Vec<Level> {
+        run_with(mode, start, floor, periph::ALWAYS, demand)
     }
 
-    /// VER-13: Settings › System › Performance (0x0C07) — the setting's
-    /// values as the governor takes them, and its effect: under load,
-    /// Maximum reaches 288 MHz, Normal stays at High; idle, both settle
-    /// at the same levels (the setting changes nothing else).
+    fn auto(start: Level, demand: &[u32]) -> Vec<Level> {
+        run(PowerMode::Auto, start, Low, demand)
+    }
+
+    /// Where a constant demand settles in Automatic, from `start`.
+    fn settles(start: Level, demand: u32) -> Level {
+        *auto(start, &[demand; 12]).last().unwrap()
+    }
+
+    /// PWR-5: a saturated level climbs (at least doubling its clock, Max
+    /// only from Turbo), and a demand that a lower level carries comes back
+    /// down after CALM_STEPS.
     #[test]
-    fn performance_setting_values() {
-        use Level::*;
-        assert_eq!(Performance::from_setting(0), Performance::Normal);
-        assert_eq!(Performance::from_setting(1), Performance::Maximum);
-        assert_eq!(Performance::from_setting(7), Performance::Normal, "an invalid value is Normal");
-        let busy = [5; 6];
-        let normal = run(Base, Performance::from_setting(0), 0, &busy);
-        let max = run(Base, Performance::from_setting(1), 0, &busy);
-        assert_ne!(normal, max);
-        assert_eq!((normal[5], max[5]), (High, Max));
-        let idle = [95; 12];
-        for start in [Base, Mid, High] {
-            assert_eq!(
-                run(start, Performance::Normal, 0, &idle),
-                run(start, Performance::Maximum, 0, &idle),
-                "idle from {start:?}"
-            );
+    fn saturated_work_climbs_and_comes_back() {
+        // 30 MHz of work at 24 MHz: saturated → Base, which carries it.
+        assert_eq!(auto(Low, &[30; 4]), [Base; 4]);
+        // More than anything below Max carries: Max after four steps.
+        assert_eq!(auto(Low, &[300; 5]), [Base, Mid, Turbo, Max, Max]);
+        assert_eq!(auto(High, &[300; 2]), [Turbo, Max]);
+        // 80 MHz: Mid saturates, Turbo carries it, then High is cheaper.
+        assert_eq!(auto(Mid, &[80; 4]), [Turbo, Turbo, High, High]);
+        for l in Level::ALL {
+            assert!(climb(l) > l || l == Max, "{l:?}");
+            assert!(climb(l) != Max || l >= Turbo, "{l:?}");
         }
+        // The work ends: down to Low (nothing to do) after two steps.
+        assert_eq!(auto(Max, &[0, 0, 0]), [Max, Low, Low]);
+        assert_eq!(auto(Base, &[1, 1, 1]), [Base, Low, Low]);
     }
 
-    /// Run `loads` under a power mode with the screen on or off.
-    fn run_mode(start: Level, mode: PowerMode, screen: bool, floor: u8, loads: &[u32]) -> Vec<Level> {
-        let mut g = Governor::new();
-        let mut cur = start;
-        loads
-            .iter()
-            .map(|&idle_pct| {
-                let i = Input { idle_pct, current: cur, floor, perf: Performance::Normal };
-                if let Some(l) = g.step_in(i, mode, screen) {
-                    cur = l;
-                }
-                cur
-            })
-            .collect()
-    }
-
-    /// VER-13: Settings › Power › Power mode (0x0401, 02 §5.4) — the
-    /// values as the governor takes them and their effect: Automatic is the
-    /// governor itself; Battery saver stays at Base under load (or at the
-    /// audio floor) and leaves a higher level at once; High performance
-    /// holds High while the screen is on and is Automatic with it off.
+    /// PWR-5: Max is kept only for a sustained demand above what Turbo
+    /// carries; below it the level steps down within CALM_STEPS and stays
+    /// (no flapping), and wherever it settles the work keeps up.
     #[test]
-    fn power_mode_setting_values() {
-        use Level::*;
-        assert_eq!(PowerMode::from_setting(0), PowerMode::Auto);
-        assert_eq!(PowerMode::from_setting(1), PowerMode::Saver);
-        assert_eq!(PowerMode::from_setting(2), PowerMode::High);
-        assert_eq!(PowerMode::from_setting(9), PowerMode::Auto);
-        let busy = [5; 6];
-        let idle = [95; 12];
-        for screen in [false, true] {
-            for (start, loads) in [(Base, &busy[..]), (High, &idle[..]), (Mid, &[50; 4][..])] {
-                assert_eq!(
-                    run_mode(start, PowerMode::Auto, screen, 0, loads),
-                    run(start, Performance::Normal, 0, loads),
-                    "Automatic is the governor"
-                );
+    fn max_only_for_sustained_demand_above_turbo() {
+        let turbo_cap = FIT_PCT * 192 / 100;
+        for d in (0..=300).step_by(5) {
+            for start in Level::ALL {
+                let l = auto(start, &[d; 20]);
+                let end = l[19];
+                assert!(l[12..].iter().all(|x| *x == end), "{d} MHz from {start:?}: {l:?}");
+                if d >= 150 {
+                    assert_eq!(end, Max, "{d} MHz");
+                } else if d <= turbo_cap {
+                    assert!(end < Max, "{d} MHz from {start:?} stays at Max: {l:?}");
+                }
+                // From below, Max only through a saturated Turbo.
+                if start < Max && d <= STAY_PCT * 192 / 100 {
+                    assert!(!l.contains(&Max), "{d} MHz from {start:?}: {l:?}");
+                }
+                if d < 288 * STAY_PCT / 100 {
+                    assert!(idle_at(d, end) >= UP_BELOW, "{d} MHz at {end:?} does not keep up");
+                }
             }
         }
-        assert_eq!(run_mode(Base, PowerMode::Auto, true, 0, &busy)[5], High);
-        assert_eq!(run_mode(Base, PowerMode::Saver, true, 0, &busy), [Base; 6]);
-        assert_eq!(run_mode(Base, PowerMode::Saver, true, 1, &busy), [Mid; 6], "the audio floor holds");
-        assert_eq!(run_mode(High, PowerMode::Saver, true, 0, &[50]), [Base], "down at once");
-        assert_eq!(run_mode(Base, PowerMode::High, true, 0, &idle), [High; 12]);
-        assert_eq!(
-            run_mode(Base, PowerMode::High, false, 0, &idle),
-            run(Base, Performance::Normal, 0, &idle)
-        );
-        assert_eq!(run_mode(High, PowerMode::High, false, 0, &idle)[11], Base, "screen off: Automatic");
+        // Down from Max after the demand drops: within CALM_STEPS.
+        let l = auto(Max, &[250, 250, 100, 100, 100, 100]);
+        assert_eq!(&l[..3], [Max, Max, Max]);
+        assert_eq!(l[3], Turbo, "{l:?}");
     }
 
+    /// The steady level is the cheapest one in the model: with the
+    /// estimates, the lowest level carrying the demand at 1.0 V.
     #[test]
-    fn maximum_goes_from_high_to_max() {
-        use Level::*;
-        assert_eq!(run(Base, Performance::Maximum, 0, &[10, 10, 10, 10]), [Mid, High, Max, Max]);
-        let mut g = Governor::new();
-        assert_eq!(g.step(input(0, Turbo, Performance::Maximum)), Some(Max));
+    fn steady_demand_runs_at_the_cheapest_level() {
+        assert_eq!(settles(Max, 1), Low);
+        assert_eq!(settles(Max, 14), Low);
+        assert_eq!(settles(Max, 20), Base);
+        assert_eq!(settles(Max, 50), Mid);
+        assert_eq!(settles(Max, 80), High);
+        assert_eq!(settles(Max, 110), Turbo);
+        assert_eq!(settles(Max, 200), Max);
+        for d in [0, 10, 20] {
+            for w in Level::ALL.windows(2) {
+                assert!(power_uw(w[0], d) < power_uw(w[1], d), "{d} MHz {w:?}");
+            }
+        }
+        assert_eq!(steady(500, Low, Low), Max, "nothing carries it");
+        assert_eq!(steady(0, High, Max), High, "never below the minimum");
     }
 
+    /// The audio floor holds in Automatic, up to Max (nothing sheds while
+    /// a higher level would keep up).
     #[test]
-    fn never_max_when_normal() {
-        // Every load sequence, every start level, every floor: Normal never
-        // returns Max.
+    fn floor_holds_up_to_max() {
+        for floor in Level::ALL {
+            let l = run(PowerMode::Auto, Max, floor, &[0; 6]);
+            assert_eq!(l[5], floor, "floor {floor:?}");
+            let l = run(PowerMode::Auto, Low, floor, &[0; 3]);
+            assert_eq!(l[0], floor, "a floor above the level raises it at once");
+        }
+        assert_eq!(raise_for_floor(PowerMode::Auto, Base, Max), Some(Max));
+        assert_eq!(raise_for_floor(PowerMode::Auto, High, Turbo), Some(Turbo));
+        assert_eq!(raise_for_floor(PowerMode::Auto, Max, High), None, "never down");
+        assert_eq!(raise_for_floor(PowerMode::Saver, Low, Max), None, "Battery saver");
+        assert_eq!(raise_for_floor(PowerMode::High, Max, Max), None);
+    }
+
+    /// PWR-5: with the screen off the UI does not draw; whatever moderate
+    /// background load comes and goes (up to what Turbo carries), the
+    /// governor never chooses Max, and from Max it leaves.
+    #[test]
+    fn no_max_with_the_screen_off_and_nothing_demanding_it() {
         let mut seed = 0x1234_5678u32;
         for start in Level::ALL {
-            for floor in 0..3 {
+            for floor in [Low, Base, Mid, High] {
                 let mut g = Governor::new();
                 let mut cur = start;
-                for _ in 0..2000 {
+                for n in 0..2000 {
                     seed ^= seed << 13;
                     seed ^= seed >> 17;
                     seed ^= seed << 5;
-                    let idle_pct = seed % 101;
-                    let r = g.step(Input { idle_pct, current: cur, floor, perf: Performance::Normal });
-                    assert_ne!(r, Some(Level::Max), "from {start:?}, floor {floor}");
+                    // A demand up to 100 MHz (MP3 + DSP, the card task).
+                    let d = seed % 101;
+                    let r = g.step(input(d, cur, floor, periph::ALWAYS | periph::AUDIO), PowerMode::Auto);
+                    assert_ne!(r, Some(Max), "from {start:?}, floor {floor:?}, step {n}, {d} MHz at {cur:?}");
                     if let Some(l) = r {
                         cur = l;
+                    }
+                    if n >= usize::from(CALM_STEPS) {
+                        assert_ne!(cur, Max, "from {start:?}");
                     }
                 }
             }
         }
-    }
-
-    /// Regression: `clock 288` with the governor on stayed at 288 MHz under
-    /// Normal (PWR-5, 2026-11-24): a Max level found under Normal now goes
-    /// to High at the next step.
-    #[test]
-    fn regress_max_found_under_normal_leaves_at_once() {
-        let mut g = Governor::new();
-        for idle in [0, 50, 100] {
-            assert_eq!(g.step(input(idle, Level::Max, Performance::Normal)), Some(Level::High));
+        for start in Level::ALL {
+            assert_eq!(settles(start, 0), Low, "an idle player from {start:?}");
         }
     }
 
+    /// The peripherals' minimum levels: the highest of those in use, in
+    /// Automatic (the lowest it goes) and Battery saver (where it stays).
     #[test]
-    fn same_hysteresis_down_from_max() {
-        use Level::*;
-        // Three calm steps in a row for each step down; a busy or middling
-        // step restarts the count.
-        assert_eq!(run(Max, Performance::Maximum, 0, &[90, 90, 90]), [Max, Max, High]);
-        assert_eq!(
-            run(Max, Performance::Maximum, 0, &[90, 90, 50, 90, 90, 90]),
-            [Max, Max, Max, Max, Max, High]
-        );
-        assert_eq!(
-            run(Max, Performance::Maximum, 0, &[90; 9]),
-            [Max, Max, High, High, High, Mid, Mid, Mid, Base]
-        );
-        assert_eq!(
-            run(High, Performance::Normal, 0, &[90; 9]),
-            [High, High, Mid, Mid, Mid, Base, Base, Base, Base]
-        );
+    fn peripheral_minimum() {
+        use periph::*;
+        assert_eq!(peripheral_min(0), Low);
+        assert_eq!(peripheral_min(ALWAYS | DISPLAY | AUDIO), Low);
+        assert_eq!(peripheral_min(USB), PERIPHERAL_MIN[0]);
+        assert_eq!(peripheral_min(ALWAYS | USB), PERIPHERAL_MIN[0]);
+        assert_eq!(PERIPHERAL_MIN[0], Base, "U-PWR-5 unanswered: USB assumed to need 48 MHz");
+        for (i, l) in PERIPHERAL_MIN.iter().enumerate() {
+            assert_eq!(peripheral_min(1 << i), *l);
+            assert!(*l < Max);
+        }
+        let usb = ALWAYS | USB;
+        assert_eq!(run_with(PowerMode::Auto, Max, Low, usb, &[0; 4])[3], Base);
+        assert_eq!(run_with(PowerMode::Saver, Max, Low, usb, &[200; 3]), [Base; 3]);
+        assert_eq!(run_with(PowerMode::Saver, Max, Low, ALWAYS, &[200; 3]), [Low; 3]);
+        // The cable comes and goes: Battery saver follows at once.
+        let mut g = Governor::new();
+        assert_eq!(g.step(input(0, Low, Low, usb), PowerMode::Saver), Some(Base));
+        assert_eq!(g.step(input(0, Base, Low, ALWAYS), PowerMode::Saver), Some(Low));
     }
 
+    /// VER-13: Settings › Power › Power mode (0x0401) — the values as the
+    /// governor takes them and their effect on the same load: Battery
+    /// saver pins the peripherals' minimum (24 MHz without USB) whatever the
+    /// load or the audio floor; High performance pins Max (288 MHz) whatever
+    /// happens, idle included; Automatic takes the work to Max while it
+    /// does not keep up and idles at the minimum.
     #[test]
-    fn floor_holds() {
-        use Level::*;
-        assert_eq!(
-            run(Max, Performance::Maximum, 2, &[90; 9]),
-            [Max, Max, High, High, High, High, High, High, High]
-        );
-        assert_eq!(run(High, Performance::Normal, 1, &[90; 9])[8], Mid);
-    }
-
-    #[test]
-    fn middling_load_stays() {
+    fn power_mode_setting_values() {
+        assert_eq!(PowerMode::from_setting(0), PowerMode::Auto);
+        assert_eq!(PowerMode::from_setting(1), PowerMode::Saver);
+        assert_eq!(PowerMode::from_setting(2), PowerMode::High);
+        assert_eq!(PowerMode::from_setting(9), PowerMode::Auto);
+        // Work, then nothing.
+        let load = [300, 300, 300, 300, 300, 0, 0, 0, 0];
+        for start in Level::ALL {
+            for floor in Level::ALL {
+                assert_eq!(run(PowerMode::Saver, start, floor, &load), [Low; 9], "{start:?} {floor:?}");
+                assert_eq!(run(PowerMode::High, start, floor, &load), [Max; 9], "{start:?} {floor:?}");
+            }
+            let a = run(PowerMode::Auto, start, Low, &load);
+            assert_eq!((a[4], a[5], a[8]), (Max, Max, Low), "{start:?}: {a:?}");
+        }
+        let [s, h, a] =
+            [PowerMode::Saver, PowerMode::High, PowerMode::Auto].map(|m| run(m, Base, Low, &load));
+        assert!(s != h && h != a && a != s);
+        // The pinned modes leave a level found elsewhere at once (a test's
+        // `clock` pin, a mode just changed).
         let mut g = Governor::new();
         for l in Level::ALL {
-            for perf in [Performance::Normal, Performance::Maximum] {
-                if l == Level::Max && perf == Performance::Normal {
-                    continue;
-                }
-                assert_eq!(g.step(input(25, l, perf)), None);
-                assert_eq!(g.step(input(70, l, perf)), None);
-            }
+            let i = Input { idle_pct: 50, current: l, floor: Max, active: periph::ALWAYS };
+            assert_eq!(g.step(i, PowerMode::Saver), (l != Low).then_some(Low));
+            assert_eq!(g.step(i, PowerMode::High), (l != Max).then_some(Max));
+        }
+    }
+
+    /// Regression (2026-11-26, owner): a suite run on a player the owner
+    /// left in Battery saver would have run at 24 MHz (or with High
+    /// performance at 288 MHz) and failed its timings; under a host test
+    /// the governor follows Automatic, the default.
+    #[test]
+    fn regress_tests_follow_automatic_whatever_the_owner_chose() {
+        for v in [0, 1, 2, 7] {
+            assert_eq!(PowerMode::for_governor(v, true), PowerMode::Auto);
+            assert_eq!(PowerMode::for_governor(v, false), PowerMode::from_setting(v));
         }
     }
 
@@ -396,12 +536,9 @@ mod tests {
     fn helpers() {
         assert_eq!(idle_percent(500_000, 1_000_000), 50);
         assert_eq!(idle_percent(5, 0), 500);
-        assert_eq!(Performance::from_setting(1), Performance::Maximum);
-        assert_eq!(Performance::from_setting(0), Performance::Normal);
-        assert_eq!(Performance::from_setting(7), Performance::Normal);
-        for (i, l) in Level::ALL.iter().enumerate() {
-            assert_eq!(Level::from_index(i as u8), *l);
-        }
-        assert_eq!(Level::Max.mhz(), 288);
+        assert_eq!(demand_mhz(500, Max), 0);
+        assert_eq!(demand_mhz(0, Max), 288);
+        assert_eq!(demand_mhz(50, High), 72);
+        assert_eq!(Governor::default(), Governor::new());
     }
 }

@@ -797,11 +797,15 @@ Host side in `xtask/src/dev/` (`script.rs`, `player.rs`, `mask.rs`,
   the appearance settings read as their defaults: Display 0x0304–0x030C
   (theme Dark, accent Blue, no wallpaper or screen saver, animations,
   no rotation, clock in the bar, all Home apps, lists roll round), the
-  language (English) and Now Playing's view. The settings store is not
-  written; `off` and every reboot clear it; the UI reloads and redraws
-  within its 1 s loop. These are the simulator's defaults (host test
-  `simulator_starts_in_the_test_look`), so the owner's look (an accent,
-  hidden Home apps) does not change the screenshots.
+  language (English), Now Playing's view and Power mode (Automatic). The
+  settings store is not written; `off` and every reboot clear it; the UI
+  reloads and redraws within its 1 s loop. These are the simulator's
+  defaults (host test `simulator_starts_in_the_test_look`), so the owner's
+  look (an accent, hidden Home apps) does not change the screenshots. The
+  clock governor follows Automatic under the test look, a test session or
+  the test mailbox whatever the owner's Power mode (PWR-5,
+  `PowerMode::for_governor`), so a suite does not run at 24 or 288 MHz
+  because of it.
 
 **`cargo xtask dev suite [NAME…] [--list] [--update-expected] [--setup]
 [--sim] [--no-reboot]`**
@@ -971,7 +975,7 @@ the scenario logic also in the simulator).
     keys, letter jumps, roll-around), pictures opened, Now Playing views,
     menus and dialogs, all while music plays;
   * `settings-churn`: settings changed while playing (theme, accent,
-    language, sound settings, Performance level, roll-around, Bluetooth on/
+    language, sound settings, roll-around, Bluetooth on/
     off), with listening periods in between;
   * `mixed`: all of the above interleaved at random with long listening
     stretches (minutes) and idle periods (screen off, auto-off suppressed),
@@ -1014,7 +1018,7 @@ fuzzer's guard, `ddmin`, root listing and RNG, the player interface of
   answers the same line; `keys`/`crc` describe the store as the last boot
   read it (CRC-32 over keys and values, and the presets).
 * `settings test-set ID VALUE` (decimal or `0x…`), only in a session and
-  only for Sound, Playback, Display (not Home apps), Language, Performance,
+  only for Sound, Playback, Display (not Home apps), Language,
   Files sort/hidden and Now Playing's view (`ui.rs` `session_settable`,
   mirrored and checked by a host test): `test-set: queued`, then the UI
   task applies it as the screens do and answers `test-set ID=V ok|refused`.
@@ -1080,8 +1084,8 @@ Weights (`--list` prints them; `soak.rs` `weights`):
 | `music` | playdir 8, shuffle (set 0x0201) 3, repeat 1, seek fwd 8, seek back 5, seek-start 3, seek to the end (6 s hold) 2, pause 5, skip 5, volume 4, dsp 3, eq 5, np-view 3, listen 60–300 s 20 |
 | `radio` | radio-on 8, radio-seek 8, radio-scan 2, radio-keys 10, radio-off 4, playdir (music while the radio holds) 6, record 3, volume 3, listen 20 |
 | `browse-while-playing` | playdir 4, browse files 20, library 15, pictures 10, nowplaying 6, settings 4, menus 8, seek 3, skip 3, listen 30–120 s 8 |
-| `settings-churn` | look 15, set sound (EQ preset, balance, bass, crossfeed, channels, ReplayGain) 15, set playback (shuffle, repeat, gapless, seek step) 6, set display (brightness, animations, clock in bar) 6, Performance 5, dsp 3, eq 3, browse files 4, playdir 4, listen 60–240 s 25 |
-| `mixed` | playdir 6, shuffle 2, seek 5+3, seek-start 2, seek-end 1, pause 3, skip 3, volume 3, dsp 2, eq 3, np-view 2, listen 10, long listen 300–900 s 6, idle 120–600 s 3, browse files 6, library 5, pictures 4, settings 2, nowplaying 2, menus 3, radio-on 3, radio-seek 2, radio-scan 1, radio-keys 3, radio-off 2, record 1, set sound 3, playback 1, display 1, Performance 1, look 3, handover 1, personality 1 |
+| `settings-churn` | look 15, set sound (EQ preset, balance, bass, crossfeed, channels, ReplayGain) 15, set playback (shuffle, repeat, gapless, seek step) 6, set display (brightness, animations, clock in bar) 6, dsp 3, eq 3, browse files 4, playdir 4, listen 60–240 s 25 |
+| `mixed` | playdir 6, shuffle 2, seek 5+3, seek-start 2, seek-end 1, pause 3, skip 3, volume 3, dsp 2, eq 3, np-view 2, listen 10, long listen 300–900 s 6, idle 120–600 s 3, browse files 6, library 5, pictures 4, settings 2, nowplaying 2, menus 3, radio-on 3, radio-seek 2, radio-scan 1, radio-keys 3, radio-off 2, record 1, set sound 3, playback 1, display 1, look 3, handover 1, personality 1 |
 | `stress` | first `clock 48`; playdir 4, seek 6+4, skip 6 (2–8 taps), pause 2, volume 3, eq 3, dsp 2, np-view 3, browse files 12, library 10, pictures 8, nowplaying 4, settings 3 (2–3× the steps, 20 ms keys), menus 6, radio-keys 2, set sound 3, look 3, listen 5–20 s 4 |
 
 Oracles and limits (`budgets.toml [hil]`, `[soak]`; first values, to be
@@ -1209,7 +1213,7 @@ into recovery mode.
 **Run engine (MEAS-2, firmware).** A plan compiled by `xtask meas` into a
 small binary file under `/.orpheus/meas/` (uploaded with `dev put`) and armed
 over USB: steps such as play file/tone set at volume V, clock level or
-governor, Performance setting, screen on/off and backlight level, Bluetooth
+governor, Power mode, screen on/off and backlight level, Bluetooth
 on/off/streaming, radio, recording, pictures, idle, standby; each for a
 time, a number of loops or until a voltage. The run starts a set delay
 after VBUS goes (time to plug the jack), needs no keys, and stops at its
@@ -1295,7 +1299,7 @@ matrix, measured like code coverage.
   * *global* settings (theme, accent, text size, language, list
     roll-around, clock in the status bar, volume limit, key click,
     transport keys when locked, auto-off, backlight and lock timers,
-    Performance, …) apply to **every context**: every screen and app of the
+    Power mode, …) apply to **every context**: every screen and app of the
     screen registry, with the screen off, locked, during playback, radio,
     recording, the USB personalities and Bluetooth streaming, as far as
     the effect can show there;
@@ -1318,7 +1322,7 @@ matrix, measured like code coverage.
   oracle must differ in the declared way, and every other oracle must stay
   equal (catches settings that leak into contexts they should not touch).
   Interacting settings (volume limit × ReplayGain × EQ × bass × balance;
-  theme × accent × text size; sort × hidden; Performance × governor) are
+  theme × accent × text size; sort × hidden; Power mode × governor) are
   covered pairwise.
 * **Persistence and defaults**: each setting survives a reboot and a
   power-off, a factory reset restores its default, an out-of-range stored

@@ -10,7 +10,7 @@
 //! File format (UTF-8, `\n` line ends):
 //!
 //! ```text
-//! # orpheus drain log v1 label=normal file=3 perf=normal stay=0 row_s=60
+//! # orpheus drain log v1 label=auto file=3 stay=0 row_s=60
 //! uptime_s,mv,mv_raw,percent,charge,cable,clock_mhz,s_low,s_base,s_mid,s_high,s_turbo,s_max,playing_s,backlight,screen,bt,card_io
 //! 60,3912,3906,63,none,0,48,0,52,8,0,0,0,60,0,0,off,41
 //! # lost 2 rows
@@ -216,7 +216,6 @@ pub enum End {
 pub struct Log {
     on: bool,
     stay: bool,
-    perf_max: bool,
     label: [u8; LABEL_MAX],
     label_len: u8,
     /// The file's number (0: not chosen yet).
@@ -249,7 +248,6 @@ impl Log {
         Log {
             on: false,
             stay: false,
-            perf_max: false,
             label: [0; LABEL_MAX],
             label_len: 0,
             file: 0,
@@ -266,7 +264,7 @@ impl Log {
 
     /// Start a new log (a running one is replaced: its unwritten rows go).
     /// `label` is cleaned up with [`clean_label`]; empty means `run`.
-    pub fn start(&mut self, label: &[u8], stay: bool, perf_max: bool) {
+    pub fn start(&mut self, label: &[u8], stay: bool) {
         self.reset();
         let n = clean_label(label, &mut self.label);
         self.label_len = if n == 0 {
@@ -280,14 +278,12 @@ impl Log {
         };
         self.on = true;
         self.stay = stay;
-        self.perf_max = perf_max;
     }
 
     /// Back to [`Log::new`] in place (no 250-byte temporary on the stack).
     fn reset(&mut self) {
         self.on = false;
         self.stay = false;
-        self.perf_max = false;
         self.label = [0; LABEL_MAX];
         self.label_len = 0;
         self.file = 0;
@@ -427,8 +423,6 @@ impl Log {
             .s(self.label())
             .s(bs!(b" file="))
             .u(u32::from(self.file))
-            .s(bs!(b" perf="))
-            .s(if self.perf_max { bs!(b"maximum") } else { bs!(b"normal") })
             .s(bs!(b" stay="))
             .u(u32::from(self.stay))
             .s(bs!(b" row_s="))
@@ -734,7 +728,7 @@ mod tests {
     fn log_header_name_and_rows() {
         let mut l = Log::new();
         assert!(!l.on() && !l.due());
-        l.start(b"  Normal Screen-off!  ", true, false);
+        l.start(b"  Normal Screen-off!  ", true);
         assert_eq!(l.label(), b"normal_screen-of");
         assert!(l.on() && l.stay() && l.due(), "the header is due at once");
         l.file = 3;
@@ -744,9 +738,7 @@ mod tests {
         let h = text(&b[..n]);
         assert_eq!(
             h,
-            std::format!(
-                "# orpheus drain log v1 label=normal_screen-of file=3 perf=normal stay=1 row_s=60\n{COLUMNS}\n"
-            )
+            std::format!("# orpheus drain log v1 label=normal_screen-of file=3 stay=1 row_s=60\n{COLUMNS}\n")
         );
         let n = l.file_name(&mut b);
         assert_eq!(text(&b[..n]), "drain-3-normal_screen-of.csv");
@@ -800,7 +792,7 @@ mod tests {
     #[test]
     fn full_log_drops_the_oldest() {
         let mut l = Log::new();
-        l.start(b"", false, true);
+        l.start(b"", false);
         assert_eq!(l.label(), b"run");
         assert!(!l.stay());
         l.header_done = true;
@@ -817,7 +809,7 @@ mod tests {
         assert_eq!(text(&b[..n]), "# power-off\n");
         // Ending with no partial row still ends.
         let mut m = Log::new();
-        m.start(b"x", false, false);
+        m.start(b"x", false);
         m.end(End::PowerOff);
         assert_eq!(m.ending(), Some(End::PowerOff));
         assert_eq!(m.pop(), None);

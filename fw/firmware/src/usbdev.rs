@@ -262,6 +262,8 @@ impl Target for Fw {
             // Test: pin the clock level (the governor may move it again).
             use atj2157_hal::clock::{Level, set_level};
             set_level(match l {
+                // U-PWR-5: does USB keep working at 24 MHz?
+                b"24" => Level::Low,
                 b"96" => Level::Mid,
                 b"144" => Level::High,
                 b"192" => Level::Turbo,

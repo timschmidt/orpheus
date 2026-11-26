@@ -13,13 +13,13 @@ or changes, Back goes up a level.
 | **Sound** | Equaliser (Flat, Rock, Pop, Jazz, Classical, Electronic, Hip-hop, Bass boost, Vocal, two custom curves), balance, bass, crossfeed, channel mode (stereo, mono, swapped), volume limit | Works |
 | **Playback** | Shuffle, repeat, gapless, ReplayGain, resume at start, seek step | Works; speed and fades are **in progress** |
 | **Display** | Brightness, backlight time, lock delay, screen saver (a dim clock), animations, rotation by 180°, theme (Dark, Light, Amber), accent colour, clock in the status bar, list roll-around, Home screen apps | Works; wallpaper is **in progress** |
-| **Power** | Power mode (automatic, battery saver, high performance), sleep timer, auto-off, keys when locked (none, volume, volume and track keys), battery | Auto-off and low-battery switch-off are **being checked** on the player |
+| **Power** | [Power mode](power.md) (automatic, battery saver, high performance), sleep timer, auto-off, keys when locked (none, volume, volume and track keys), battery | Auto-off and low-battery switch-off are **being checked** on the player |
 | **Date & time** | Time, date, 24-hour clock, date format, time zone, correction (seconds a day), set from the radio (RDS) | Works; the clock has stopped after some restarts (known issue: set it again) |
 | **Bluetooth** | Device list, reconnect | See [Bluetooth](bluetooth.md) |
 | **USB** | What happens when you plug into a computer: ask, charge only, file transfer (card reader); read-only card reader; developer channel (for the tools: [troubleshooting](troubleshooting.md)) | Charge only and file transfer work; the other choices are **in progress** |
 | **Language** | English; Russian and Japanese | English works; the other languages run in the simulator and are **in progress** on the player |
 | **Storage** | Card info, rebuild library, clear caches | Works |
-| **System** | About, Performance, Diagnostics, Factory reset, Recovery mode | Works |
+| **System** | About, Diagnostics, Factory reset, Recovery mode | Works |
 
 Radio and Recording groups belong to apps that are not built yet; their
 settings are stored but do nothing.
@@ -52,7 +52,6 @@ faster during playback; that costs a little battery.
 ## System
 
 * **About**: version, build, serial number, hardware.
-* **[Performance](performance.md)**: Normal or Maximum processor speed.
 * **Factory reset**: every setting back to its default. Music, the library
   and your bookmarks on the card are not touched.
 * **Recovery mode**: restarts into the chip's USB recovery mode, for the

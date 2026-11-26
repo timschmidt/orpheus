@@ -1278,10 +1278,6 @@ mod matrix {
         row(0x0A01);
     }
     #[test]
-    fn s0c07() {
-        row(0x0C07);
-    }
-    #[test]
     fn s0d01() {
         row(0x0D01);
     }

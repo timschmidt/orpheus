@@ -66,8 +66,6 @@ pub struct Shared {
     due: AtomicBool,
     /// Running and not ending: the power task samples.
     active: AtomicBool,
-    /// Settings › System › Performance = Maximum (D-4), from the UI.
-    pub perf_max: AtomicBool,
     /// Backlight PWM4 duty (0 dark, else a stock duty of
     /// `orpheus_power::backlight::LEVEL_DUTY`) and panel on, from the UI.
     pub backlight: AtomicU8,
@@ -91,7 +89,6 @@ pub fn init() {
         log: Mutex::new(RefCell::new(Log::new())),
         due: AtomicBool::new(false),
         active: AtomicBool::new(false),
-        perf_max: AtomicBool::new(false),
         backlight: AtomicU8::new(yoton_bsp::display::Duty::DEFAULT.get()),
         screen_on: AtomicBool::new(true),
         developer: AtomicBool::new(false),
@@ -141,8 +138,7 @@ fn update(f: impl FnOnce(&mut Log)) {
 /// Start a new log (a running one ends without its unwritten rows).
 #[inline(never)]
 pub fn start(label: &[u8], stay: bool) {
-    let perf_max = shared().perf_max.load(Ordering::Relaxed);
-    update(|l| l.start(label, stay, perf_max));
+    update(|l| l.start(label, stay));
 }
 
 /// Stop: the partial row and `# stop` are written, then it is off.
