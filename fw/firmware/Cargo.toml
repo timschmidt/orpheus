@@ -11,7 +11,7 @@ atj2157-hal = { path = "../atj2157-hal", features = ["prof"] }
 yoton-bsp = { path = "../yoton-bsp" }
 orpheus-proto.workspace = true
 orpheus-ui = { path = "../../crates/orpheus-ui" }
-orpheus-apps = { path = "../../crates/orpheus-apps", features = ["games", "salvo", "bricks"] }
+orpheus-apps = { path = "../../crates/orpheus-apps", features = ["games", "salvo", "bricks", "midi"] }
 orpheus-input = { path = "../../crates/orpheus-input" }
 orpheus-power = { path = "../../crates/orpheus-power" }
 orpheus-settings = { path = "../../crates/orpheus-settings" }
@@ -33,6 +33,9 @@ orpheus-hid = { path = "../../crates/orpheus-hid" }
 orpheus-otp = { path = "../../crates/orpheus-otp" }
 orpheus-update = { path = "../../crates/orpheus-update" }
 orpheus-rec = { path = "../../crates/orpheus-rec" }
+orpheus-synth = { path = "../../crates/orpheus-synth", default-features = false }
+orpheus-midi = { path = "../../crates/orpheus-midi", default-features = false }
+bytemuck = { version = "1.25", default-features = false, features = ["derive", "min_const_generics"] }
 embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }
 embassy-time = "0.5"
 embassy-sync = "0.8"

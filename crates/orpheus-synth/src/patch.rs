@@ -27,7 +27,7 @@ use crate::math::clampf;
 use crate::osc::Waveform;
 
 /// One oscillator of a subtractive patch.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]
 pub struct OscParams {
     /// Waveform.
     pub wave: Waveform,
@@ -66,7 +66,7 @@ impl OscParams {
 }
 
 /// Oscillators of a subtractive patch.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]
 pub struct SubParams {
     /// The two oscillators.
     pub osc: [OscParams; 2],
@@ -75,7 +75,8 @@ pub struct SubParams {
 }
 
 /// The voice type of a patch.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]
+#[repr(u8)]
 pub enum Kind {
     /// Two oscillators and noise.
     Subtractive(SubParams),
@@ -92,7 +93,7 @@ pub enum Kind {
 }
 
 /// Filter settings.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]
 pub struct FilterParams {
     /// Response.
     pub mode: FilterMode,
@@ -139,7 +140,7 @@ impl FilterParams {
 }
 
 /// Everything a part plays.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]
 pub struct Patch {
     /// Voice type and its sources.
     pub kind: Kind,
@@ -275,7 +276,7 @@ impl Patch {
 }
 
 /// Envelope coefficients of a patch at one rate (shared by its voices).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, Default, PartialEq)]
 pub struct PatchCoef {
     /// Amplitude envelope.
     pub amp: EnvCoef,

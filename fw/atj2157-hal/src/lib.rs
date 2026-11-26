@@ -12,6 +12,7 @@
 pub mod adc;
 pub mod clock;
 mod cs;
+pub mod cycles;
 pub mod dac;
 pub mod delay;
 pub mod dma;

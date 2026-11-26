@@ -20,6 +20,8 @@
 //!   writer and the DAC's DMA.
 //! * [`chore`]: when the playback loop may do other card work, and for how
 //!   long (the headroom's budget, the chores' measured needs).
+//! * [`synth`]: a synthesiser source beside the codecs: which files it
+//!   plays, how an item starts, where its memory goes in the pool (SYN-3).
 //! * [`ring`]: [`StreamRing`], the stream ring with gapless read-ahead into
 //!   the next file (04 §2.2).
 //! * [`bits`], [`crc`]: bit reader over a ring view, the CRCs the formats use.
@@ -44,6 +46,7 @@ pub mod rate;
 pub mod ring;
 pub mod source;
 pub mod stream;
+pub mod synth;
 
 pub use arena::{Arena, ArenaFull};
 pub use decoder::{Decoder, Plan, SeekStep};

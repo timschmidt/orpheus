@@ -491,6 +491,23 @@ expect-screen:Home shot:home_after
 """
 
 [[journey]]
+name = "midi"
+about = "MIDI on the player (SYN-3): the synth bench's saw-lead load (8 voices) renders the host's samples (its hash is orpheus-synth/tests/goldens-bench.txt line 2); the MIDI fixtures play from their folder through the synthesiser in the pool, without underruns, with voices sounding (status syn:); stopped, Home"
+setup = true
+script = """
+expect-screen:Home shot:home
+cmd: synth bench 2 ~ ^bench 2 n=8 .*hash=9683d06642bbfc31$
+cmd: playdir /.orpheus/test/suite/midi ~ ^playdir ok
+sim: set:queue=midi
+dev: wait:4000
+cmd: status ~ ^playing .*underruns=0\\b.* syn: v=[1-9][0-9]* vlim=16 over=0
+cmd: stop
+sim: set:playing=0
+dev: wait:1000
+hold:back wait:300 expect-screen:Home
+"""
+
+[[journey]]
 name = "settings_accessibility"
 about = "Accessibility (A11Y-2) through the RAM-only test session: with Hold delay 2 s a 0.7 s Menu press is a tap (Home's menu) and only a 2.3 s one opens the quick panel; Text size Large shows Settings in the 16 px face with four rows; Key click Presses and holds clicks twice for each held key (two long Backs on Home: at least three of the four clicks, so the hold clicks sounded; status clicks=); all set back to their defaults (the test look reads them as defaults until a session sets them)"
 script = """

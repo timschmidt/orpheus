@@ -7,8 +7,20 @@ license.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+default = ["samples", "delay"]
+# Sample playback and the delay in the engine (off in the firmware,
+# `orpheus-synth`).
+samples = ["orpheus-synth/samples"]
+delay = ["orpheus-synth/delay"]
+
 [dependencies]
-orpheus-synth = { path = "../orpheus-synth" }
+orpheus-synth = { path = "../orpheus-synth", default-features = false }
+bytemuck = { version = "1.25", default-features = false, features = ["derive", "min_const_generics"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+bytemuck = { version = "1.25", default-features = false, features = ["derive", "min_const_generics"] }
+orpheus-proto = { path = "../orpheus-proto" }

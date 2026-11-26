@@ -33,7 +33,7 @@ pub const MAX_SECONDS: u64 = 24 * 3600;
 pub const TEMPO_MAX: usize = 128;
 
 /// Tick → frame conversion with the current tempo.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Clock {
     rate: u32,
     division: Division,
@@ -69,7 +69,8 @@ impl Clock {
     /// the current tempo; callers go forward).
     #[must_use]
     pub fn frame(&self, tick: u64) -> u64 {
-        u64::try_from(self.acc(tick) / u128::from(self.den)).unwrap_or(u64::MAX)
+        // `den` ≥ 1 by construction (`max(1)`: no division panic path).
+        u64::try_from(self.acc(tick) / u128::from(self.den.max(1))).unwrap_or(u64::MAX)
     }
 
     fn acc(&self, tick: u64) -> u128 {
@@ -118,7 +119,7 @@ impl Clock {
 }
 
 /// One tempo segment.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TempoPoint {
     /// From this tick …
     pub tick: u64,
@@ -129,7 +130,7 @@ pub struct TempoPoint {
 }
 
 /// The tempo changes of a song (the first [`TEMPO_MAX`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TempoMap {
     pts: [TempoPoint; TEMPO_MAX],
     n: u16,

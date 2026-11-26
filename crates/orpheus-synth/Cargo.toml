@@ -7,8 +7,20 @@ license.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+default = ["samples", "delay"]
+# Sample playback (`Kind::Sample`, kit sample hits). Off in the firmware
+# until it has a card sample source (SYN-3: its code would take paged room
+# for voices that cannot sound there): such notes then do not start.
+samples = []
+# The delay effect. Off in the firmware's MIDI build (no MIDI controller
+# sends to it; its code would take paged room): set, it keeps its settings
+# and adds nothing.
+delay = []
+
 [dependencies]
 orpheus-dsp = { path = "../orpheus-dsp" }
+bytemuck = { version = "1.25", default-features = false, features = ["derive", "min_const_generics"] }
 
 [lints]
 workspace = true
@@ -16,3 +28,6 @@ workspace = true
 [[bench]]
 name = "synth"
 harness = false
+
+[dev-dependencies]
+bytemuck = { version = "1.25", default-features = false, features = ["derive", "min_const_generics"] }

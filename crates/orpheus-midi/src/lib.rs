@@ -38,9 +38,11 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod cache;
 pub mod demo;
 pub mod gm;
 pub mod kar;
+mod opt;
 pub mod player;
 pub mod seq;
 pub mod smf;

@@ -550,12 +550,23 @@ pub const FIXTURE_SECS: f32 = 30.0;
 
 /// The `--setup` fixtures: two tones (WAV, 44.1 kHz mono 16 bit, the rate
 /// the player plays most; 2.6 MB each, about 50 s each to upload at the
-/// developer channel's 50 KB/s), the same bytes on every run.
+/// developer channel's 50 KB/s), and the three MIDI demo songs (SYN-3:
+/// `orpheus_midi::demo::SONGS`, 3–6 KB each; `orpheus-midi`'s
+/// `tests/goldens-play.txt` holds the frames and CRC the player's `play`
+/// reports for each with `dsp off` and `crc on`), the same bytes on every
+/// run.
 pub fn fixtures() -> Vec<(String, Vec<u8>)> {
-    vec![
+    let mut v = vec![
         (format!("{FIXTURES}/music/01 Tone 440.wav"), wav_tone(440.0, FIXTURE_SECS)),
         (format!("{FIXTURES}/music/02 Tone 880.wav"), wav_tone(880.0, FIXTURE_SECS)),
-    ]
+    ];
+    for (name, song) in orpheus_midi::demo::SONGS {
+        let mut buf = vec![0u8; 64 * 1024];
+        let n = song(&mut buf).unwrap_or(0);
+        buf.truncate(n);
+        v.push((format!("{FIXTURES}/midi/{name}"), buf));
+    }
+    v
 }
 
 pub fn wav_tone(hz: f32, secs: f32) -> Vec<u8> {
@@ -1020,6 +1031,11 @@ mod tests {
         assert_eq!(w.len(), 44 + 22_050 * 2);
         for (p, data) in fixtures() {
             assert!(p.starts_with("/.orpheus/test/suite/"));
+            if p.contains("/midi/") {
+                // A Standard MIDI File (SYN-3's fixtures).
+                assert_eq!(&data[..4], b"MThd", "{p}");
+                continue;
+            }
             // Long enough to still play at the journey's `status` check.
             assert_eq!(data.len(), 44 + 44_100 * 30 * 2);
         }

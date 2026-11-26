@@ -46,6 +46,7 @@ pub(crate) struct PartView<'a> {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Ctx<'a> {
     /// The sample cache of this render call.
+    #[cfg_attr(not(feature = "samples"), allow(dead_code))]
     pub cache: Option<&'a SampleCache<'a>>,
     pub rate: f32,
     pub tempo: f32,
@@ -55,7 +56,9 @@ pub(crate) struct Ctx<'a> {
     pub tick: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]
+#[repr(u8)]
+#[cfg_attr(not(feature = "samples"), allow(dead_code))]
 pub(crate) enum Source {
     Sub([Osc; 2]),
     Fm(FmState),
@@ -65,7 +68,7 @@ pub(crate) enum Source {
 }
 
 /// A voice slot.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Voice {
     pub active: bool,
     pub part: u8,
@@ -206,9 +209,14 @@ impl Voice {
                 s.trigger();
                 self.src = Source::Fm(s);
             }
+            #[cfg(feature = "samples")]
             Kind::Sample(sp) => {
                 self.src = Source::Sample(SamplePlayer::new(sp.slot, sp.looping, sp.start));
             }
+            // Built without sample playback (the player until it has a
+            // card sample source): the note does not sound.
+            #[cfg(not(feature = "samples"))]
+            Kind::Sample(_) => self.active = false,
             Kind::Drum(_) | Kind::Kit(_) => {}
         }
         self.group = 0;
@@ -244,7 +252,13 @@ impl Voice {
         self.pan = pan;
         self.src = match sound {
             Ok(d) => Source::Drum(DrumVoice::new(d, vel_gain, rate, seed)),
+            #[cfg(feature = "samples")]
             Err(h) => Source::Hit(SampleHit::new(h, vel_gain, rate)),
+            #[cfg(not(feature = "samples"))]
+            Err(_) => {
+                self.active = false;
+                return;
+            }
         };
     }
 
@@ -319,6 +333,7 @@ impl Voice {
     pub fn choke(&mut self, rate: f32) {
         match &mut self.src {
             Source::Drum(d) => d.choke(rate),
+            #[cfg(feature = "samples")]
             Source::Hit(h) => h.choke(rate),
             _ => self.cut(),
         }
@@ -333,6 +348,7 @@ impl Voice {
     pub fn level(&self) -> f32 {
         match &self.src {
             Source::Drum(d) => d.level(),
+            #[cfg(feature = "samples")]
             Source::Hit(h) => h.level(),
             _ => self.amp.level() * self.vel_gain,
         }
@@ -341,7 +357,9 @@ impl Voice {
     /// The sample play head, if this voice plays a sample.
     pub fn want(&self) -> Option<Want> {
         match &self.src {
+            #[cfg(feature = "samples")]
             Source::Sample(p) => p.want(),
+            #[cfg(feature = "samples")]
             Source::Hit(h) => h.player().want(),
             _ => None,
         }
@@ -350,7 +368,9 @@ impl Voice {
     /// Samples played as silence for a missing page since the last call.
     pub fn take_misses(&mut self) -> u32 {
         match &mut self.src {
+            #[cfg(feature = "samples")]
             Source::Sample(p) => p.take_misses(),
+            #[cfg(feature = "samples")]
             Source::Hit(h) => h.player_mut().take_misses(),
             _ => 0,
         }
@@ -405,6 +425,7 @@ impl Voice {
                     o.set_width(q.width + lfo * p.lfo.width);
                 }
             }
+            #[cfg(feature = "samples")]
             (Source::Sample(sp), Kind::Sample(s)) => {
                 if sp.prepare(ctx.cache, ctx.rate) && retune {
                     let root = if s.root <= 127 { s.root } else { sp.root() };
@@ -468,22 +489,23 @@ impl Voice {
         self.since += out.len() as u32;
         out.fill(0.0);
         let p = part.patch;
-        let mut alive = match (&mut self.src, &p.kind) {
-            (Source::Drum(d), _) => d.render(out, tick),
-            (Source::Hit(h), _) => h.render(ctx.cache, ctx.rate, out, tick),
+        // The source, then (`shape`) the filter and the amplitude envelope
+        // in one place for every melodic source (written once: the code
+        // is paged on the player). `src`: the source itself still sounds.
+        let (shape, src) = match (&mut self.src, &p.kind) {
+            (Source::Drum(d), _) => (false, d.render(out, tick)),
+            #[cfg(feature = "samples")]
+            (Source::Hit(h), _) => (false, h.render(ctx.cache, ctx.rate, out, tick)),
+            #[cfg(feature = "samples")]
             (Source::Sample(sp), Kind::Sample(_)) => {
                 // The end of the sample ends the voice on the next control
                 // tick (as drums), so the slot frees at the same sample
                 // whatever the block sizes.
                 if tick && sp.done() {
-                    false
+                    (false, false)
                 } else {
                     sp.render(ctx.cache, out);
-                    self.svf.process(p.filter.mode, out);
-                    for x in out.iter_mut() {
-                        *x *= self.amp.step(&part.coef.amp);
-                    }
-                    !self.amp.is_idle()
+                    (true, true)
                 }
             }
             (Source::Sub(osc), Kind::Subtractive(s)) => {
@@ -497,22 +519,23 @@ impl Voice {
                         *x += self.rng.bipolar() * s.noise;
                     }
                 }
-                self.svf.process(p.filter.mode, out);
-                for x in out.iter_mut() {
-                    *x *= self.amp.step(&part.coef.amp);
-                }
-                !self.amp.is_idle()
+                (true, true)
             }
             (Source::Fm(f), Kind::Fm(_)) => {
                 f.render(&part.coef.fm, out);
-                self.svf.process(p.filter.mode, out);
-                for x in out.iter_mut() {
-                    *x *= self.amp.step(&part.coef.amp);
-                }
-                !self.amp.is_idle() && !f.finished(&part.coef.fm)
+                (true, !f.finished(&part.coef.fm))
             }
             // The part's patch changed kind under a sounding voice.
-            _ => false,
+            _ => (false, false),
+        };
+        let mut alive = if shape {
+            self.svf.process(p.filter.mode, out);
+            for x in out.iter_mut() {
+                *x *= self.amp.step(&part.coef.amp);
+            }
+            !self.amp.is_idle() && src
+        } else {
+            src
         };
         if self.fade > 0 {
             for x in out.iter_mut() {

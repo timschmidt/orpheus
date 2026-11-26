@@ -51,7 +51,7 @@ const READ_BUF: usize = if WINDOW > crate::smf::HEAD_LEN { WINDOW } else { crate
 pub const STEP_BUDGET: u32 = 512;
 
 /// Player settings.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]
 pub struct Options {
     /// Output rate, Hz (the DAC's: 44 100 or 48 000; 8 000–48 000).
     pub rate: u32,
@@ -76,7 +76,7 @@ impl Options {
 }
 
 /// What the scan found.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SongInfo {
     /// Format (0, 1, 2).
     pub format: u16,
@@ -110,7 +110,7 @@ impl SongInfo {
     /// The title (karaoke `@T`, else the first track's name), as stored.
     #[must_use]
     pub fn title(&self) -> &[u8] {
-        &self.title[..usize::from(self.title_len)]
+        self.title.get(..usize::from(self.title_len)).unwrap_or_default()
     }
 
     /// Duration in milliseconds.
@@ -121,7 +121,7 @@ impl SongInfo {
 }
 
 /// The scan's tallies.
-#[derive(Clone, Copy, Debug)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug)]
 struct Scan {
     info: SongInfo,
     lyric_events: u32,
@@ -227,7 +227,7 @@ fn trim(mut t: &[u8]) -> &[u8] {
 }
 
 /// A lyric piece at its frame.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LyricEvent {
     /// Output frame the syllable is sung at.
     pub frame: u64,
@@ -243,15 +243,18 @@ impl LyricEvent {
     /// The syllable.
     #[must_use]
     pub fn text(&self) -> &[u8] {
-        &self.text[..usize::from(self.len)]
+        self.text.get(..usize::from(self.len)).unwrap_or_default()
     }
 
     fn of(frame: u64, ev: &MidiEvent, mode: LyricMode) -> Option<Self> {
         let Msg::Text(kind) = ev.msg else { return None };
         let p = kar::piece(kind, ev.text(), mode)?;
         let mut text = [0; TEXT_MAX];
-        text[..p.text.len()].copy_from_slice(p.text);
-        Some(Self { frame, before: p.before, after: p.after, text, len: p.text.len() as u8 })
+        let n = p.text.len().min(TEXT_MAX);
+        for (d, s) in text.iter_mut().zip(p.text) {
+            *d = *s;
+        }
+        Some(Self { frame, before: p.before, after: p.after, text, len: n as u8 })
     }
 }
 
@@ -273,7 +276,8 @@ impl Sample for f32 {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 enum Phase {
     Idle,
     Open,
@@ -284,7 +288,7 @@ enum Phase {
 }
 
 /// The player (see the module documentation).
-#[derive(Clone, Debug)]
+#[derive(bytemuck::Zeroable, Clone, Debug)]
 pub struct MidiPlayer {
     engine: Engine,
     smf: Smf,
@@ -293,11 +297,11 @@ pub struct MidiPlayer {
     opts: Options,
     phase: Phase,
     scan: Scan,
-    info: Option<SongInfo>,
+    info: crate::opt::Opt<SongInfo>,
     /// Frames rendered (the position).
     pos: u64,
     /// The next event, pulled but not yet played.
-    ahead: Option<(u64, MidiEvent)>,
+    ahead: crate::opt::Opt<(u64, MidiEvent)>,
     /// The file's events are all played.
     events_done: bool,
     evs: [Event; EV_MAX],
@@ -309,32 +313,42 @@ pub struct MidiPlayer {
 
 impl MidiPlayer {
     /// A player with `opts`; no file.
+    ///
+    /// About 70 KB: on the player use [`MidiPlayer::init`] on zeroed
+    /// memory (an all-zero `MidiPlayer` is a valid value:
+    /// `bytemuck::Zeroable`).
     #[must_use]
     pub fn new(opts: Options) -> Self {
-        let mut engine = Engine::new(opts.rate, opts.seed);
-        engine.apply(EventKind::Master(opts.gain));
-        let rate = engine.rate();
+        let mut p = <Self as bytemuck::Zeroable>::zeroed();
+        p.init(opts);
+        p
+    }
+
+    /// Make this player what [`MidiPlayer::new`]`(opts)` returns, in place
+    /// (no temporary larger than an engine part, ≈ 1 KiB): the firmware
+    /// builds it in the decoder arena. `new` is this on a zeroed value.
+    pub fn init(&mut self, opts: Options) {
+        self.engine.init(opts.rate, opts.seed);
+        self.engine.apply(EventKind::Master(opts.gain));
+        let rate = self.engine.rate();
         let opts = Options { rate, ..opts };
+        self.smf.clear();
+        self.clock = Clock::new(rate, Division::Metrical(96));
+        self.seq = Sequencer::new(opts.effects);
+        self.opts = opts;
+        self.phase = Phase::Idle;
+        self.scan = Scan::new(rate, 0, 0, Division::Metrical(96));
+        self.info.set(None);
+        self.pos = 0;
+        self.ahead.set(None);
+        self.events_done = false;
+        self.evs.fill(<Event as bytemuck::Zeroable>::zeroed());
+        self.n_ev = 0;
         let blank =
             LyricEvent { frame: 0, before: Break::None, after: Break::None, text: [0; TEXT_MAX], len: 0 };
-        Self {
-            engine,
-            smf: Smf::new(),
-            clock: Clock::new(rate, Division::Metrical(96)),
-            seq: Sequencer::new(opts.effects),
-            opts,
-            phase: Phase::Idle,
-            scan: Scan::new(rate, 0, 0, Division::Metrical(96)),
-            info: None,
-            pos: 0,
-            ahead: None,
-            events_done: false,
-            evs: [Event { offset: 0, kind: EventKind::AllSoundOff }; EV_MAX],
-            n_ev: 0,
-            lyrics: [blank; LYRIC_QUEUE],
-            ly_head: 0,
-            ly_len: 0,
-        }
+        self.lyrics.fill(blank);
+        self.ly_head = 0;
+        self.ly_len = 0;
     }
 
     /// Start opening a file of `len` bytes (`kar`: a `.kar` file); then
@@ -342,7 +356,7 @@ impl MidiPlayer {
     pub fn open(&mut self, len: u32, kar: bool) {
         self.opts.kar = kar;
         self.smf.begin(len);
-        self.info = None;
+        self.info.set(None);
         self.phase = Phase::Open;
         self.pos = 0;
     }
@@ -368,7 +382,7 @@ impl MidiPlayer {
     /// Frames in all (0 before the scan).
     #[must_use]
     pub fn duration(&self) -> u64 {
-        self.info.map_or(0, |i| i.duration)
+        self.info.get().map_or(0, |i| i.duration)
     }
 
     /// Current tempo, BPM (at the last event played).
@@ -381,6 +395,12 @@ impl MidiPlayer {
     #[must_use]
     pub fn engine(&self) -> &Engine {
         &self.engine
+    }
+
+    /// Use at most `n` voices from the next note on (the player's load
+    /// governor, SYN-3; `Engine::set_voice_limit`).
+    pub fn set_voice_limit(&mut self, n: usize) {
+        self.engine.set_voice_limit(n);
     }
 
     /// The channel state.
@@ -448,11 +468,11 @@ impl MidiPlayer {
     /// Start a seek to `frame` (clamped to the duration); then
     /// [`MidiPlayer::step`] until ready.
     pub fn seek(&mut self, frame: u64) -> Result<(), MidiError> {
-        let Some(info) = self.info else { return Err(MidiError::State) };
+        let Some(info) = self.info.get() else { return Err(MidiError::State) };
         self.smf.rewind();
         self.clock = Clock::new(self.opts.rate, info.division);
         self.seq.reset();
-        self.ahead = None;
+        self.ahead.set(None);
         self.events_done = false;
         self.phase = Phase::Seek(frame.min(info.duration));
         Ok(())
@@ -505,7 +525,7 @@ impl MidiPlayer {
                     let rate = self.opts.rate;
                     self.clock = Clock::new(rate, h.division);
                     self.scan = Scan::new(rate, h.format, self.smf.tracks() as u8, h.division);
-                    self.ahead = None;
+                    self.ahead.set(None);
                     self.events_done = false;
                     self.phase = Phase::Scan;
                     Ok(Pull::Ready(false))
@@ -521,7 +541,7 @@ impl MidiPlayer {
                             self.scan.add(f, &ev);
                         }
                         Pull::End => {
-                            self.info = Some(self.scan.finish(self.opts.kar));
+                            self.info.set(Some(self.scan.finish(self.opts.kar)));
                             self.seek(0)?;
                             return Ok(Pull::Ready(false));
                         }
@@ -534,7 +554,7 @@ impl MidiPlayer {
                     match self.timed() {
                         Pull::Need(n) => return Ok(Pull::Need(n)),
                         Pull::Ready((f, ev)) if f >= target => {
-                            self.ahead = Some((f, ev));
+                            self.ahead.set(Some((f, ev)));
                             self.finish_seek(target);
                             return Ok(Pull::Ready(true));
                         }
@@ -576,7 +596,7 @@ impl MidiPlayer {
         self.n_ev = 0;
         self.ly_head = 0;
         self.ly_len = 0;
-        let end = self.info.map_or(0, |i| i.duration);
+        let end = self.info.get().map_or(0, |i| i.duration);
         self.phase = if target >= end { Phase::Ended } else { Phase::Play };
     }
 
@@ -588,7 +608,11 @@ impl MidiPlayer {
         }
         let a = ((self.pos - start) * 2) as usize;
         let b = ((upto - start) * 2) as usize;
-        T::render(&mut self.engine, &mut out[a..b], &self.evs[..self.n_ev]);
+        // (`get`: no panic path, whose location data would be resident on
+        // the player; the ranges are in bounds by construction.)
+        if let Some(o) = out.get_mut(a..b) {
+            T::render(&mut self.engine, o, self.evs.get(..self.n_ev).unwrap_or_default());
+        }
         self.n_ev = 0;
         self.pos = upto;
     }
@@ -598,14 +622,17 @@ impl MidiPlayer {
             self.flush(out, start, f);
             if self.n_ev == EV_MAX {
                 // Still full (all at the block's first frame): apply them now.
-                for e in &self.evs[..self.n_ev] {
+                for e in self.evs.iter().take(self.n_ev) {
                     self.engine.apply(e.kind);
                 }
                 self.n_ev = 0;
             }
         }
-        self.evs[self.n_ev] = Event { offset: (f - self.pos) as u32, kind };
-        self.n_ev += 1;
+        // (Room: the buffer was flushed above when full.)
+        if let Some(e) = self.evs.get_mut(self.n_ev) {
+            *e = Event { offset: (f - self.pos) as u32, kind };
+            self.n_ev += 1;
+        }
     }
 
     /// Render the next frames into `out` (interleaved stereo; its length
@@ -658,7 +685,7 @@ impl MidiPlayer {
                 Pull::Ready(x) => x,
             };
             if f >= end {
-                self.ahead = Some((f, ev));
+                self.ahead.set(Some((f, ev)));
                 break;
             }
             let f = f.max(self.pos);
@@ -679,21 +706,21 @@ impl MidiPlayer {
                     n = 1;
                 }
                 Msg::Text(_) => {
-                    let mode = self.info.map_or(LyricMode::None, |i| i.lyrics);
+                    let mode = self.info.get().map_or(LyricMode::None, |i| i.lyrics);
                     if let Some(l) = LyricEvent::of(f, &ev, mode) {
                         self.push_lyric(l);
                     }
                 }
                 _ => {}
             }
-            for &a in &acts[..n] {
+            for &a in acts.iter().take(n) {
                 match a {
                     Action::Engine(k) => self.push_event(out, start, f, k),
                     _ => {
                         self.flush(out, start, f);
                         // Events at `f` were applied after the flushed block.
                         let pending = self.n_ev;
-                        for e in &self.evs[..pending] {
+                        for e in self.evs.iter().take(pending) {
                             self.engine.apply(e.kind);
                         }
                         self.n_ev = 0;
@@ -721,7 +748,7 @@ impl MidiPlayer {
     pub fn open_from<S: MidiSource>(&mut self, src: &mut S, kar: bool) -> Result<SongInfo, MidiError> {
         self.open(src.len(), kar);
         self.run(src)?;
-        self.info.ok_or(MidiError::State)
+        self.info.get().ok_or(MidiError::State)
     }
 
     /// Seek to `frame` reading from `src`; returns the position.

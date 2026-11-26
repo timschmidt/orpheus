@@ -1110,6 +1110,8 @@ dependencies = [
 name = "orpheus-midi"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
+ "orpheus-proto",
  "orpheus-synth",
 ]
 
@@ -1233,6 +1235,7 @@ dependencies = [
 name = "orpheus-synth"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "orpheus-dsp",
 ]
 
@@ -1952,15 +1955,18 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytemuck",
  "flate2",
  "object",
  "orpheus-apps",
  "orpheus-host",
  "orpheus-input",
+ "orpheus-midi",
  "orpheus-pager",
  "orpheus-power",
  "orpheus-proto",
  "orpheus-sim",
+ "orpheus-synth",
  "orpheus-tts",
  "orpheus-ui",
  "orpheus-update",

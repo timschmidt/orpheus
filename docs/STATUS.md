@@ -62,8 +62,8 @@ of every session. Newest entries first in §3.
 | UI-8 | **done (host); not yet on the player** | List roll-around in every list (`ListView` + `ListView::step_plain`), Settings › Display › List roll-around (`0x030C`, on by default), held keys stop at the end; Up next/Details keep their view change. User check 26; the on-device journey belongs to VER-7 |
 | USB-W1 (bug) | **fixed and self-recovering (host-tested, built); not yet run on the player** | Root cause: the SETUP read was not cancel-safe (embassy-usb drops it on bus events; the interrupt stayed masked for good) and late stages landed on the next transfer. Drop-safe driver, liveness recovery, watchdog only when recovery cannot help, counters in `STATS` 24–30, soak logs self-recoveries, `xtask dev usb-cancel`. 06 §2.6; user check 28 |
 | VER-10 (static stack) | **tool done (host-tested), gate step; firmware cut from ≥ 30,232 to 22,900 B, then to 16,188 B nested worst case of 22,528 B usable: margin 6,340 B, goal ≥ 4 KiB met (built, not yet run on the player)** | `cargo xtask stack [--check] [--root P]`, `stack.toml`, `budgets.toml stack_static_margin_bytes` = 6,084 B (the measured margin less one 256 B step: a ratchet). Second round: the card task's poll frames (the volume and the decoder no longer move by value; `idle`'s and start-up's children are futures of their own), .bss −512 B. Lead: soak, a Vorbis seek, the Authenticator, card hand-over to USB (session entry 2026-11-25 "VER-10: card task frames") |
-| SYN-1 | **done (host)**; not in the firmware (SYN-3) | `orpheus-synth`: band-limited oscillators (polyBLEP/BLAMP, sine, wavetables, white/pink noise), 2–4 operator FM (8 algorithms, feedback), ADSR (linear/exponential), pitch envelope, SVF LP/BP/HP, LFOs (Hz or tempo sync), 16 voices + 4 fade-out tails with stealing, mono legato glide, sample-accurate events, 6 drum voices, delay/chorus/reverb sends, soft limiter; 69,040 B engine; golden hashes equal at opt-level 1 and release; player estimate: 16 saw-lead voices ≈ 79 % of 144 MHz (session entry 2026-11-25 "SYN-1") |
-| SYN-2 | **done (host)**; not in the firmware (SYN-3); **user check: listen to the kits and effects** | `orpheus-synth`: 11 drum models (new rim, cowbell, cymbal, clave, shaker), kits as data (9-byte entries, choke groups, 5 factory kits incl. a 32-note GM kit), sample playback (block `SampleSource`, bounded page cache with pinned heads and streaming, WAV 8/16/24/32/float, Hermite interpolation, loops), delay to 1.02 s (exact at tempo, low cut), 8-line FDN reverb at half rate in 8 KiB, `OSB1` sound banks; engine 62,320 B (was 69,040); player estimate: drum voices ≈ 75–315 cycles/sample, reverb ≈ 290 (session entry 2026-11-25 "SYN-2") |
+| SYN-1 | **done (host)**; on the player since SYN-3 | `orpheus-synth`: band-limited oscillators (polyBLEP/BLAMP, sine, wavetables, white/pink noise), 2–4 operator FM (8 algorithms, feedback), ADSR (linear/exponential), pitch envelope, SVF LP/BP/HP, LFOs (Hz or tempo sync), 16 voices + 4 fade-out tails with stealing, mono legato glide, sample-accurate events, 6 drum voices, delay/chorus/reverb sends, soft limiter; 69,040 B engine; golden hashes equal at opt-level 1 and release; player estimate: 16 saw-lead voices ≈ 79 % of 144 MHz (session entry 2026-11-25 "SYN-1") |
+| SYN-2 | **done (host)**; on the player since SYN-3 (samples and the delay compiled out there); **user check: listen to the kits and effects** | `orpheus-synth`: 11 drum models (new rim, cowbell, cymbal, clave, shaker), kits as data (9-byte entries, choke groups, 5 factory kits incl. a 32-note GM kit), sample playback (block `SampleSource`, bounded page cache with pinned heads and streaming, WAV 8/16/24/32/float, Hermite interpolation, loops), delay to 1.02 s (exact at tempo, low cut), 8-line FDN reverb at half rate in 8 KiB, `OSB1` sound banks; engine 62,320 B (was 69,040); player estimate: drum voices ≈ 75–315 cycles/sample, reverb ≈ 290 (session entry 2026-11-25 "SYN-2") |
 | TTS-1 | **done (host)**; not in the firmware, simulator or apps (TTS-2, A11Y-1, BOOK-3) | `orpheus-tts`: incremental converter (1,408 B, any feed sizes), English normaliser, NRL letter-to-sound rules + stress heuristic + stems, CMUdict exception lexicon (4,487 entries in 32,766 B; `cargo xtask tts-lexicon`), duration model for 0.25×–10×; rules alone 79.8 % of tokens, with the lexicon 98.1 % (session entry 2026-11-25 "TTS-1") |
 | TTS-2 | **done (host)**; not in the firmware, simulator or apps (A11Y-1, BOOK-3, firmware integration) | `orpheus-tts`: cascade/parallel formant synthesiser after Klatt 1980 (KLGLOTT88-like source with polyBLEP, F1–F6 cascade, nasal pole/zero, parallel frication/bursts), phoneme targets and loci from the phonetics literature, intonation (declination, accents, 5 contours, asides), voices Neutral/Low/Bright, exact TTS-1 durations at 0.25×–10×, resampler to 8–48 kHz, `Synth` (1,936 B) and `Speaker` (3,352 B with the converter), events and stop; WER (whisper base.en) 13.9 / 30.5 / 93 % at 1/2/4× (espeak-ng 5.9 / 63 / 89 %); player estimate ≈ 22 % of Base at 48 kHz (over the 20 % budget), code ≈ 70 KB without the lexicon (over 64 KiB) (session entry 2026-11-25 "TTS-2") |
 | VER-13 | **tool and matrix done (host + simulator); second round: six settings wired (host + simulator + firmware built), journeys `settings_sound`/`settings_playback` not yet run on the player** | `cargo xtask settings-matrix [--check] [--strict]` (alias `settings coverage`; in `test all`, `--strict` in `gate --m11`); manifest for all 162 settings of the tree; simulator matrix over 59 screen + 11 service contexts (`sim/tests/settings_matrix.rs`), host tests for sound, governor, steps, recorder split, persistence/defaults/clamping/migration per kind; journeys `settings_shuffle` (passes on the player), `settings_sound`, `settings_playback` (RAM-only session). Key click, Fade on pause, Gapless, Resume at start-up, Seek step, Auto-bookmark have their effect; 9,927 / 9,974 cells; 16 settings without an effect (Speed: time stretch not built, spec change proposed), 63 reviewed exclusions (session entries 2026-11-26 "VER-13") |
@@ -71,11 +71,153 @@ of every session. Newest entries first in §3.
 | VER-13 (Display, Power, Date & time, USB) | **built (host + simulator + firmware), not yet run on the player** | Backlight timeout, Lock delay, Screen saver, Animations, Rotate (software 180°), Power mode, Keys when locked (transport to playback), Time zone, Correction, Set from RDS (group 4A), Read-only card, Developer channel (held on under any host test; the session refuses it) have their effects; journeys `settings_screen_timers`, `settings_screen_saver`; Brightness (missing stock duty values, U-PWM-3) and Wallpaper (Set as wallpaper not built) left; stack margin 4,568 B, .bss 125,352 B. User check 30 (session entry 2026-11-26 "VER-13: Display, Power, Date & time and USB") |
 | GAME-6 Bricks (M14) | **built (host + simulator + firmware), not yet run on the player** | Brick breaker of our own: integer physics with one-pixel sub-steps (no tunnelling at any speed, no floating point), paddle angles, 1–3-hit and unbreakable bricks, 8 hand-made + generated levels, five power-ups, lives, scores, saves; 7 settings packed into 1 word; 47 goldens; fuzz `bricks_keys`. In the firmware (`orpheus-apps/bricks`): stack margin 4,116 B unchanged. Lead: session entry 2026-11-25 "GAME-6" |
 | BOOK-2 | **done (host + simulator)**; not in the firmware (as BOOK-1; the scratch is the decoder arena, see session entry) | EPUB 2/3 in `orpheus-books`: zip (end record, streamed central directory, CRC, zip64/encrypted/method refusals), `no_std` inflate (48 B state; 32 KiB window + 2,304 B tables lent: 35,072 B), container/OPF/nav/NCX, XHTML reduction over the XML tokenizer split out of FB2, contents positions from anchors, all in bounded steps into BOOK-1's stream; library titles from the package; 12 new goldens; fuzz targets `books_zip`, `books_epub` (session entry 2026-11-25 "BOOK-2") |
-| MIDI-1 | **done (host + simulator)**; not in the firmware (SYN-3); **user check: listen to the three MIDI renders** | `orpheus-midi`: Standard MIDI File parser (formats 0/1/2, running status, meta and SysEx, SMPTE, RMID) streamed through 64 track cursors of 64-byte windows that ask for bytes (`Need`/`supply`), nothing trusted; exact tick→frame clock through tempo changes; sequencer (CC 1/6/7/10/11/38/64/91/93/96–101/120–127, RPN bend range, pressure, programs, kits on channel 10, mute/solo); own GM set of 32 sounds for the 128 programs (`data/gm-sounds.osb`); `MidiPlayer`: open/scan, render, bounded-step seek (bit-exact where nothing sounds across the target), duration/position, `.kar`/lyric events; Files plays `.mid`/`.kar` in the simulator with Now Playing lyrics; player 70,224 B; estimate ≈ 117 MHz at 48 kHz for a 10–11-voice song: High clock (session entry 2026-11-25 "MIDI-1") |
+| MIDI-1 | **done (host + simulator)**; on the player since SYN-3; **user check: listen to the three MIDI renders** | `orpheus-midi`: Standard MIDI File parser (formats 0/1/2, running status, meta and SysEx, SMPTE, RMID) streamed through 64 track cursors of 64-byte windows that ask for bytes (`Need`/`supply`), nothing trusted; exact tick→frame clock through tempo changes; sequencer (CC 1/6/7/10/11/38/64/91/93/96–101/120–127, RPN bend range, pressure, programs, kits on channel 10, mute/solo); own GM set of 32 sounds for the 128 programs (`data/gm-sounds.osb`); `MidiPlayer`: open/scan, render, bounded-step seek (bit-exact where nothing sounds across the target), duration/position, `.kar`/lyric events; Files plays `.mid`/`.kar` in the simulator with Now Playing lyrics; player 70,224 B; estimate ≈ 117 MHz at 48 kHz for a 10–11-voice song: High clock (session entry 2026-11-25 "MIDI-1") |
+| SYN-3 | **done (firmware build; not run on the player)**; **lead: bench, MIDI fixtures, underruns** | The synthesiser on the player: a synth source beside the codecs (`orpheus_audio::synth`), the engine and the MIDI player built in place in the pool (stream ring + decoder arena, 80,816 B; MIDI state 71,640 B), the MIDI file through a 13-block card cache (`orpheus_midi::cache`), 44.1 kHz into the DAC ring through the DSP chain, clock floor High, load governor on the voice limit; `.mid`/`.kar` play from Files and Music with seek and pause; `synth bench` (36 loads, cycles, host hashes); 128/128 code pages, stack margin 4,336 B (session entry 2026-11-26 "SYN-3") |
 | A11Y-2 | **built (host + simulator + firmware), not yet run on the player**; journey `settings_accessibility` and user check 31 | Settings › Accessibility (Text size Normal/Large/Extra large, Hold delay 0.5–2 s, Key repeat Normal/Slow/Slower; packed in `0x0D60`), Themes White on black / Black on white (≥ 7:1), reduced motion = Animations off (spinner still, blinks lit), Key click Presses and holds (hold confirmation); 63 `a11y_*` goldens (session entry 2026-11-26 "A11Y-2") |
 | VER-13 Brightness (U-PWM-3) | **built (host + simulator + firmware), not yet run on the player**; journey `settings_brightness` and user check 32 | Settings › Display › Brightness = the stock levels 1–11 (default 6) on the stock PWM4 duties, live; key `0x030D` (old `0x0301` retired); alert flash 15 / 3 (never 16); `ui top` `bl=` |
 
 ## 3. Session log
+
+### 2026-11-26 — SYN-3: the synthesiser on the player; MIDI files play (worker, no hardware)
+
+Firmware build and host tests; **nothing run on the player** (no `xtask
+dev`: the brief). Full "as built" in 04 §9 ("As built (SYN-3 …)"); in
+short:
+
+* **Source switch** (`orpheus_audio::synth`, host-tested): `.mid`,
+  `.midi`, `.rmi`, `.kar` play through the synthesiser, everything else
+  through a codec; a synth item is never gapless (a MIDI file the gapless
+  reader read ahead is opened fresh after the previous track played out).
+  `play PATH` and the queue dispatch on it; `orpheus-apps`' `midi` feature
+  is on in the firmware (Files and the indexes list MIDI files as audio).
+* **Placement**: the stream ring and the decoder arena are one `repr(C)`
+  static `POOL` (same bytes; .bss **125,448 B, unchanged**). A synth
+  source borrows both as one 80,816-byte region (`StreamRing::lend`; the
+  library state stays) and lays it out with `orpheus_audio::synth::carve`:
+  **MIDI state 71,640 B** on thumbv7em (`MidiPlayer` 70,264 = engine 62,360
+  + parser 6,224 + …; cache tags, governor, a 256-frame block), 13 card
+  blocks, 2,520 B spare; a const assertion keeps it fitting. Built in
+  place: every engine/MIDI type is `bytemuck::Zeroable` (enums `repr(u8)`,
+  `Option` fields → `Opt`/a sentinel), the firmware zeroes and casts (one
+  `unsafe`), `Engine::init`/`MidiPlayer::init` fill it field by field
+  (`new` = zeroed + `init`: one path; tests: `init` on a used engine or
+  player equals `new`).
+* **Card source** (`orpheus_midi::cache::BlockCache`, host-tested): the
+  parser's ≤ 64-byte `Need`s from 512-byte blocks, LRU, one sector read
+  per miss with `Urgent`; the golden songs render bit for bit through 2, 4
+  and 32 blocks, seeks equal the slice source's.
+* **Playing** (`audio::synth::play_midi`): open + scan with the DAC
+  stopped (breaks for thread mode), 256-frame blocks at **44.1 kHz**
+  through the DSP chain into the PCM ring, requests, pause/fade, seek
+  (re-scan, DAC stopped), stop/skip, card requests and listing pieces as
+  chores (`chore::decide`), battery/step logs; Now Playing shows codec
+  MIDI and the scan's duration. **Clock floor High** while it plays.
+  **Load governor** (`VoiceGov`, host-tested): a block's render above 60 %
+  of its real time drops the voice limit by one (≥ 4), calm (< 35 % for
+  180 blocks) brings one back; `synth voices N` caps it. `status` ends in
+  `syn: v= vlim= over= reads=`.
+* **Bench** `synth bench I [N] [BLOCKS]` (read-only, no card access): 36
+  loads (`orpheus_synth::bench`), cycles from the DWT counter (new
+  `atj2157_hal::cycles`; U-DWT-1: unknown whether the chip has it, else
+  µs × MHz, `cyc_ok=`), pager loads, voices, and the render's hash —
+  `crates/orpheus-synth/tests/goldens-bench-player.txt` holds the player's
+  (the delay loads 29, 30, 35 render dry there), `goldens-bench.txt` the
+  host's. Without arguments it prints the sizes.
+* **Whole MIDI songs bit-exact through playback**: `dsp off` + `crc on` +
+  `play PATH` replies `frames=`/`crc=`; `crates/orpheus-midi/tests/
+  goldens-play.txt` predicts them for the suite's three MIDI fixtures
+  (`xtask dev suite --setup` now uploads `orpheus_midi::demo::SONGS` to
+  `/.orpheus/test/suite/midi/`).
+* **Code room** (the code window was 121/128 pages; the synthesiser is
+  ≈ 65 KB): `orpheus-synth` features `samples` and `delay` (default on)
+  are **off in the firmware** (no card sample source yet; no MIDI
+  controller feeds the delay — with it off the delay keeps its settings
+  and adds nothing, MIDI renders are unchanged); the sequencer's channel
+  callback is `&mut dyn FnMut`; one filter/envelope tail in the voice
+  render; GM/kit/bench tables linked without names; `synth midi`/`synth
+  golden` commands dropped for the playback CRC check. **128/128 code
+  pages**, rodata 26/48. Clusters: `synth-block` (the block loop, 7 lines)
+  in the window's hole before `flac-frame` (no page), `synth-render` (16
+  lines: render, SVF and envelope steps, kick, snare, hats, clap; budget
+  26 checked by `stack --check`), on physical lines 1–7 and 17–31 + 0.
+* **Resident/stack**: panic location data is resident, so the new paths
+  in `orpheus-midi`, the engine, the reverb and the kits were made
+  panic-free (`get`, index masks) — resident **81,388 B** (+153 B:
+  constant pools, strings), **stack margin 4,336 B** (was 4,304; usable
+  19,200 B). `stack.toml`: the sequencer's `dyn FnMut` targets,
+  `serve_one`'s waker call.
+* **Measured** (host / build): sizes above; host ns per voice-sample
+  unchanged from SYN-1/2. **Not measured: cycles per voice and effect on
+  the player** — budgets.toml `[synth]` holds SYN-1/2's estimates
+  (saw-lead ≈ 140, FM 4-op ≈ 260, snare ≈ 230, reverb ≈ 290 per sample …)
+  to be replaced by the bench's numbers.
+* **Tests**: `orpheus-audio` (lend, switch rules, carve, governor),
+  `orpheus-midi` `cache` (6) and `tests/card.rs` (goldens through the
+  cache, seek, `init` = `new`, play CRCs), `orpheus-synth` `tests/bench.rs`
+  (36 bench hashes, `init` = `new`, scenarios set up in place, streaming
+  hash), suite journey **`midi`** (bench hash, the fixtures play without
+  underruns with voices sounding; `SimPlayer` runs the host bench); all
+  synth/MIDI goldens unchanged (the refactors are bit-exact). No bug found
+  in the existing code (no `regress_` test).
+* **Gate**: `cargo fmt --all --check` (host, fw); `cargo clippy --workspace
+  --all-targets -D warnings` (host) and `cargo clippy --workspace -D
+  warnings` (fw); `cargo test --workspace` **2,011 passed, 0 failed, 13
+  ignored**; `cargo xtask settings-matrix --check` (174 settings,
+  12,224/12,272 cells, 0 errors); `cargo xtask build` (128/128 code, 26/48
+  rodata pages), `check-resident` (ok, none paged), `size --check`
+  (resident 81,388 B, .bss 125,448 B), `stack --check` (margin **4,336 B**,
+  `synth-render` 25 of 26 lines). **Not run**: `brand`/`site --check`,
+  `xtask test all` beyond these, every `xtask dev` step (the brief: no
+  hardware), `cargo test -p orpheus-synth --no-default-features` beyond
+  `--test bench` (the other goldens include the delay).
+* **For the lead on the player** (after staging this build):
+  1. `cargo xtask dev cmd 'synth bench'` → `… loads 36 midi_state=71640
+     pool=80816 engine=62360 lib_state=1104`.
+  2. Bench, each read-only (≈ 0.1–1 s): `cargo xtask dev cmd 'synth bench
+     I' --wait 10` for I = 0…35; compare `hash=` with
+     `crates/orpheus-synth/tests/goldens-bench-player.txt` line I (bit-exact
+     f32 on the player, FZ = 0); note `cyc_ok` (U-DWT-1),
+     `cyc_per_frame`, `loads`, `voices_x100`. Per voice = (load −
+     load 0) × 100 / `voices_x100`; per effect: `synth bench 29|31|32 1`
+     − `synth bench 1 1`. Also `synth bench 9 16` (16 FM e-piano voices,
+     the worst melodic case). Into budgets.toml `[synth]`.
+  3. Fixtures: `cargo xtask dev suite --setup midi` (uploads the tones and
+     the MIDI songs under `/.orpheus/test/suite/`, runs journey `midi`).
+  4. Bit-exact songs and underruns: `cargo xtask dev cmd 'dsp off'`,
+     `cargo xtask dev cmd 'crc on'`, then `cargo xtask dev cmd 'play
+     /.orpheus/test/suite/midi/Etude.mid' --wait 40` → `played
+     frames=1131268 … underruns=0 … crc=54821393`; `Hill Song.kar`
+     (`frames=1146600 crc=1777526454`), `Sound tour.mid` (`--wait 70`,
+     `frames=2469600 crc=4099842480`); after each `cmd status` (`syn:
+     over=0`: else the governor lowered the limit and the CRC differs).
+     Then `cmd 'dsp on'`, `cmd 'crc off'`.
+  5. With the DSP on and browsing: `cmd 'playdir
+     /.orpheus/test/suite/midi'`, open Files/Music, list a large folder
+     while it plays, 60 s, `cmd status` → `underruns=0`, `ub:` all 0,
+     `syn: vlim=16 over=0`, `dec: max_us=` (the longest render block).
+  6. Paging: `cargo xtask dev prof --faults 30 --during 'cmd play
+     /.orpheus/test/suite/midi/Sound tour.mid'` — the `synth-render`
+     cluster should fault little after warm-up.
+* **User check 33** (docs/USER-CHECKS.md): listen to the three MIDI
+  fixtures on the player (the lead starts them with `playdir`; or the
+  owner's own `.mid` files): as the host WAVs (`cargo run --release -p
+  orpheus-midi --example render -- DIR`), no clicks or dropouts; seek and
+  pause in Now Playing.
+* **Open / next**: the measured cycles; whether a light song may run
+  below High (a floor by voice count once the numbers exist); lyrics and
+  the mute/solo/tempo view in Now Playing; the card `SampleSource`
+  (samples are compiled out); the code window is full — the Sequencer on
+  the player needs room for its own code and the delay (≈ 2.4 KB), e.g. by
+  moving rarely used code out of the window or growing it.
+* **What the Sequencer needs on the player**: the engine is in place in the
+  pool (`Engine::init` on zeroed memory: 62,360 B on thumbv7em) and leaves
+  ≈ 18 KB of the 80,816-byte pool; the project (35.8 KB) does not fit
+  beside it — split it as SEQ-2 noted (synth steps and locks elsewhere) or
+  shrink it; `render_i16` from the playback loop as `play_midi` does
+  (blocks into `Out`/`Feeder`, the governor, chores); the delay feature
+  back on (code room). **Speech**: the TTS synthesiser (`orpheus-tts`,
+  ≈ 3.4 KB) is small enough for the pool or its own static; it can use the
+  same synth-source loop (a `Speaker` rendering blocks) — not started.
 
 ### 2026-11-26 — Brightness merged; hex keys; settings store mount retried (lead)
 

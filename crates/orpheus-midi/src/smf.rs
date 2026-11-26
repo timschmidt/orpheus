@@ -113,7 +113,8 @@ impl MidiError {
 }
 
 /// Time division of the file.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum Division {
     /// Ticks per quarter note (1–32767); tempo events set the quarter.
     Metrical(u16),
@@ -128,7 +129,7 @@ pub enum Division {
 }
 
 /// The file header.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Header {
     /// 0, 1 or 2 (as stored).
     pub format: u16,
@@ -189,7 +190,8 @@ pub fn parse_header(b: &[u8], file_len: u32) -> Result<Header, MidiError> {
 }
 
 /// What kind of text a text meta event carries (its type byte).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum TextKind {
     /// 0x01: any text (karaoke files put their syllables here).
     Text,
@@ -223,7 +225,8 @@ impl TextKind {
 }
 
 /// An event of the file.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum Msg {
     /// A channel message: `status` (0x80–0xEF, channel in the low nibble)
     /// and its data bytes (`d2` is 0 for program change and channel
@@ -269,7 +272,7 @@ pub enum Msg {
 }
 
 /// An event with its absolute tick and track.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MidiEvent {
     /// Ticks from the start of the file (format 2: of the song).
     pub tick: u64,
@@ -285,7 +288,7 @@ impl MidiEvent {
     /// The kept bytes of a text event (empty for other events).
     #[must_use]
     pub fn text(&self) -> &[u8] {
-        &self.text[..usize::from(self.text_len)]
+        self.text.get(..usize::from(self.text_len)).unwrap_or_default()
     }
 
     /// An event without text.
@@ -295,7 +298,8 @@ impl MidiEvent {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 enum St {
     /// The next thing is a delta time.
     Delta,
@@ -315,7 +319,7 @@ enum P<T> {
 }
 
 /// One track's cursor.
-#[derive(Clone, Copy, Debug)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug)]
 struct Track {
     /// File offset of the track's first byte.
     start: u32,
@@ -361,7 +365,7 @@ impl Track {
     }
 
     fn avail(&self) -> &[u8] {
-        &self.win[usize::from(self.lo)..usize::from(self.hi)]
+        self.win.get(usize::from(self.lo)..usize::from(self.hi)).unwrap_or_default()
     }
 
     /// Bytes from the read position to the end of the track.
@@ -397,7 +401,9 @@ impl Track {
     /// Compact the window and say what to read next.
     fn need(&mut self) -> Need {
         let (lo, hi) = (usize::from(self.lo), usize::from(self.hi));
-        self.win.copy_within(lo..hi, 0);
+        if lo <= hi && hi <= WINDOW {
+            self.win.copy_within(lo..hi, 0);
+        }
         self.base += u32::from(self.lo);
         self.hi -= self.lo;
         self.lo = 0;
@@ -410,7 +416,9 @@ impl Track {
     fn supply(&mut self, d: &[u8]) {
         let n = d.len().min(usize::from(self.asked));
         let hi = usize::from(self.hi);
-        self.win[hi..hi + n].copy_from_slice(&d[..n]);
+        if let (Some(w), Some(d)) = (self.win.get_mut(hi..hi + n), d.get(..n)) {
+            w.copy_from_slice(d);
+        }
         self.hi += n as u8;
         if n < usize::from(self.asked) {
             // The source had less than the chunk claimed: the track ends here.
@@ -428,7 +436,8 @@ impl Track {
                 P::Need => return P::Need,
                 P::End => return P::End,
             }
-            let b = self.avail()[at + i];
+            // `check` made the byte available.
+            let Some(&b) = self.avail().get(at + i) else { return P::End };
             v = (v << 7) | u32::from(b & 0x7F);
             if b & 0x80 == 0 {
                 return P::Ok((v, i + 1));
@@ -455,7 +464,7 @@ impl Track {
             P::Need => return P::Need,
             P::End => return P::End,
         }
-        let b0 = self.avail()[0];
+        let Some(&b0) = self.avail().first() else { return P::End };
         match b0 {
             0x00..=0xEF => {
                 let (status, i) = if b0 >= 0x80 {
@@ -472,8 +481,10 @@ impl Track {
                     P::End => return P::End,
                 }
                 let a = self.avail();
-                let d1 = a[i];
-                let d2 = if n == 2 { a[i + 1] } else { 0 };
+                // (`check` made them available; a missing byte reads as an
+                // invalid one and ends the track.)
+                let d1 = a.get(i).copied().unwrap_or(0x80);
+                let d2 = if n == 2 { a.get(i + 1).copied().unwrap_or(0x80) } else { 0 };
                 if d1 & 0x80 != 0 || d2 & 0x80 != 0 {
                     return P::End;
                 }
@@ -500,7 +511,7 @@ impl Track {
                     P::Need => return P::Need,
                     P::End => return P::End,
                 }
-                let ty = self.avail()[1];
+                let Some(&ty) = self.avail().get(1) else { return P::End };
                 let (len, vl) = match self.varlen(2) {
                     P::Ok(x) => x,
                     P::Need => return P::Need,
@@ -521,7 +532,7 @@ impl Track {
                 }
                 // What the track holds of the payload (it may end early).
                 let p = (len as usize).min(cap).min(self.have() - hdr);
-                let d = &self.avail()[hdr..hdr + p];
+                let Some(d) = self.avail().get(hdr..hdr + p) else { return P::End };
                 ev.msg = match ty {
                     0x2F => Msg::EndOfTrack,
                     0x51 if p == 3 => {
@@ -532,7 +543,9 @@ impl Track {
                     0x59 if p == 2 => Msg::KeySig { sharps: d[0] as i8, minor: d[1] != 0 },
                     _ => match kind {
                         Some(k) => {
-                            ev.text[..p].copy_from_slice(d);
+                            if let Some(t) = ev.text.get_mut(..p) {
+                                t.copy_from_slice(d);
+                            }
                             ev.text_len = p as u8;
                             Msg::Text(k)
                         }
@@ -549,7 +562,8 @@ impl Track {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 enum Phase {
     /// Nothing opened.
     Idle,
@@ -561,7 +575,8 @@ enum Phase {
     Open,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 enum Pend {
     None,
     Head(u16),
@@ -569,11 +584,11 @@ enum Pend {
 }
 
 /// The file's structure and its track cursors (≈ 90 bytes per track).
-#[derive(Clone, Debug)]
+#[derive(bytemuck::Zeroable, Clone, Debug)]
 pub struct Smf {
     tracks: [Track; MAX_TRACKS],
     n: u8,
-    header: Option<Header>,
+    header: crate::opt::Opt<Header>,
     file_len: u32,
     phase: Phase,
     pend: Pend,
@@ -593,24 +608,29 @@ impl Default for Smf {
 impl Smf {
     /// No file.
     #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            tracks: [Track::EMPTY; MAX_TRACKS],
-            n: 0,
-            header: None,
-            file_len: 0,
-            phase: Phase::Idle,
-            pend: Pend::None,
-            head: [0; HEAD_LEN],
-            cur: 0,
-            started: true,
-        }
+    pub fn new() -> Self {
+        let mut s = <Self as bytemuck::Zeroable>::zeroed();
+        s.clear();
+        s
+    }
+
+    /// [`Smf::new`] in place (no 6 KB value through the stack).
+    pub fn clear(&mut self) {
+        self.tracks.fill(Track::EMPTY);
+        self.n = 0;
+        self.header.set(None);
+        self.file_len = 0;
+        self.phase = Phase::Idle;
+        self.pend = Pend::None;
+        self.head.fill(0);
+        self.cur = 0;
+        self.started = true;
     }
 
     /// Start opening a file of `file_len` bytes; then call [`Smf::open`]
     /// until it is ready.
     pub fn begin(&mut self, file_len: u32) {
-        *self = Self::new();
+        self.clear();
         self.file_len = file_len;
         self.phase = Phase::Head;
     }
@@ -621,15 +641,18 @@ impl Smf {
             match self.phase {
                 Phase::Idle => return Err(MidiError::State),
                 Phase::Open => {
-                    return self.header.map(Pull::Ready).ok_or(MidiError::State);
+                    return self.header.get().map(Pull::Ready).ok_or(MidiError::State);
                 }
                 Phase::Head => {
                     let len = (HEAD_LEN as u32).min(self.file_len) as u16;
                     match self.pend {
                         Pend::Head(got) => {
                             self.pend = Pend::None;
-                            let h = parse_header(&self.head[..usize::from(got)], self.file_len)?;
-                            self.header = Some(h);
+                            let h = parse_header(
+                                self.head.get(..usize::from(got)).unwrap_or_default(),
+                                self.file_len,
+                            )?;
+                            self.header.set(Some(h));
                             self.phase = Phase::Chunks { at: h.chunks_at, walked: 0 };
                         }
                         _ => {
@@ -653,10 +676,9 @@ impl Smf {
                             let body = at + 8;
                             let end = (u64::from(body) + u64::from(len)).min(u64::from(self.file_len)) as u32;
                             if &h[0..4] == b"MTrk" {
-                                if usize::from(self.n) == MAX_TRACKS {
+                                let Some(t) = self.tracks.get_mut(usize::from(self.n)) else {
                                     return Err(MidiError::TooManyTracks);
-                                }
-                                let t = &mut self.tracks[usize::from(self.n)];
+                                };
                                 t.start = body;
                                 t.end = end;
                                 self.n += 1;
@@ -679,7 +701,7 @@ impl Smf {
         }
         self.phase = Phase::Open;
         self.rewind();
-        self.header.map(Pull::Ready).ok_or(MidiError::State)
+        self.header.get().map(Pull::Ready).ok_or(MidiError::State)
     }
 
     /// Hand over the bytes asked for by the last [`Pull::Need`] (fewer at the
@@ -688,11 +710,15 @@ impl Smf {
         match self.pend {
             Pend::Head(_) => {
                 let n = d.len().min(HEAD_LEN);
-                self.head[..n].copy_from_slice(&d[..n]);
+                for (h, b) in self.head.iter_mut().zip(d) {
+                    *h = *b;
+                }
                 self.pend = Pend::Head(n as u16);
             }
             Pend::Track(i) => {
-                self.tracks[usize::from(i)].supply(d);
+                if let Some(t) = self.tracks.get_mut(usize::from(i)) {
+                    t.supply(d);
+                }
                 self.pend = Pend::None;
             }
             Pend::None => {}
@@ -702,7 +728,7 @@ impl Smf {
     /// The header, once open.
     #[must_use]
     pub fn header(&self) -> Option<Header> {
-        if self.phase == Phase::Open { self.header } else { None }
+        if self.phase == Phase::Open { self.header.get() } else { None }
     }
 
     /// Track chunks found.
@@ -714,23 +740,23 @@ impl Smf {
     /// Byte range of track `i` in the file.
     #[must_use]
     pub fn track_range(&self, i: usize) -> Option<(u32, u32)> {
-        self.tracks[..usize::from(self.n)].get(i).map(|t| (t.start, t.end))
+        self.tracks.iter().take(usize::from(self.n)).nth(i).map(|t| (t.start, t.end))
     }
 
     fn sequential(&self) -> bool {
-        self.header.is_some_and(|h| h.format == 2)
+        self.header.get().is_some_and(|h| h.format == 2)
     }
 
     /// Back to the first event.
     pub fn rewind(&mut self) {
-        for t in &mut self.tracks[..usize::from(self.n)] {
+        for t in self.tracks.iter_mut().take(usize::from(self.n)) {
             t.rewind(0);
         }
         self.pend = Pend::None;
         self.cur = 0;
         self.started = true;
         if self.sequential() {
-            for t in &mut self.tracks[1..usize::from(self.n)] {
+            for t in self.tracks.iter_mut().take(usize::from(self.n)).skip(1) {
                 t.st = St::Done;
             }
         }
@@ -746,17 +772,16 @@ impl Smf {
         } else {
             0..usize::from(self.n)
         };
+        // (Indexing through `get`: no panic path, whose location data
+        // would be resident on the player.)
+        let cur_tick = self.tracks.get(usize::from(self.cur)).map_or(0, |t| t.tick);
         if !self.started {
             self.started = true;
-            return Pull::Ready(MidiEvent::new(
-                self.tracks[usize::from(self.cur)].tick,
-                self.cur,
-                Msg::Pattern(self.cur),
-            ));
+            return Pull::Ready(MidiEvent::new(cur_tick, self.cur, Msg::Pattern(self.cur)));
         }
         // Every live track's next tick.
         for i in range.clone() {
-            let t = &mut self.tracks[i];
+            let Some(t) = self.tracks.get_mut(i) else { break };
             if t.st == St::Delta {
                 match t.delta() {
                     P::Ok(d) => {
@@ -771,25 +796,25 @@ impl Smf {
                 }
             }
         }
-        let mut best: Option<usize> = None;
-        for i in range {
-            let t = &self.tracks[i];
-            if t.st == St::Ready && best.is_none_or(|b| t.tick < self.tracks[b].tick) {
-                best = Some(i);
+        let mut best: Option<(usize, u64)> = None;
+        for (i, t) in self.tracks.iter().enumerate().take(range.end).skip(range.start) {
+            if t.st == St::Ready && best.is_none_or(|(_, b)| t.tick < b) {
+                best = Some((i, t.tick));
             }
         }
-        let Some(i) = best else {
+        let Some((i, _)) = best else {
             // Format 2: the next pattern starts where this one ended.
             if self.sequential() && usize::from(self.cur) + 1 < usize::from(self.n) {
-                let end = self.tracks[usize::from(self.cur)].tick;
                 self.cur += 1;
-                self.tracks[usize::from(self.cur)].rewind(end);
+                if let Some(t) = self.tracks.get_mut(usize::from(self.cur)) {
+                    t.rewind(cur_tick);
+                }
                 self.started = false;
                 return self.next_event();
             }
             return Pull::End;
         };
-        let t = &mut self.tracks[i];
+        let Some(t) = self.tracks.get_mut(i) else { return Pull::End };
         let mut ev = MidiEvent::new(t.tick, i as u8, Msg::Other);
         match t.event(&mut ev) {
             P::Ok(()) => {

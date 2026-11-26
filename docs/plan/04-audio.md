@@ -1221,6 +1221,114 @@ short:
   sample cache and `Kind::Sample` are the way in, but SoundFont parsing
   (RIFF, presets, zones, generators, modulators) is a package of its own.
 
+**As built (SYN-3, 2026-11-26): the synthesiser on the player; MIDI files
+play from Files and Music.** Firmware module `audio::synth` (a child of
+`audio`, sharing the playback loop's pieces); host logic in
+`orpheus_audio::synth`, `orpheus_midi::cache`, `orpheus_synth::bench`.
+
+* **A synth source is another source.** `orpheus_audio::synth::plan_start`
+  (host-tested): `.mid`, `.midi`, `.rmi`, `.kar` (any case) play through
+  the synthesiser, everything else through a codec; a synth item is never
+  gapless (a MIDI file read ahead by the gapless reader is dropped and
+  opened fresh after the previous track has played out; after a MIDI file
+  nothing was read ahead). `play PATH` and the player's queue
+  (`play_item`) both dispatch on it. The `midi` feature of `orpheus-apps`
+  is on in the firmware: Files and the directory indexes list MIDI files
+  as audio.
+* **Memory: the pool.** The stream ring (16 KiB) and the decoder arena
+  (64 KiB) are one `repr(C)` static (`audio::POOL`, same bytes as before:
+  .bss unchanged). A synth source borrows the ring's memory
+  (`StreamRing::lend`: the ring is emptied, nothing is read as stream data)
+  and the arena as one 80,816-byte region (less the library's build state,
+  1,104 B). `orpheus_audio::synth::carve` lays it out: the state, the file
+  block cache, the spare bytes for card work while it plays. **Measured on
+  thumbv7em**: MIDI state 71,640 B (`MidiPlayer` 70,264: engine 62,360,
+  parser 6,224; block-cache tags; governor; one 256-frame block), 13 cache
+  blocks, 2,520 B spare; a const assertion fails the build if it ever does
+  not fit. The codec and the synthesiser are never live together: the
+  region borrows the ring and the arena for as long as the synth plays.
+* **Built in place.** Every type of the engine and the MIDI player is
+  `bytemuck::Zeroable` (enums `#[repr(u8)]` with a valid variant 0;
+  `Option` fields became a zero-valid `Opt`/sentinel), so the firmware
+  zeroes the region and casts (`place`, the one `unsafe`), then
+  `Engine::init`/`MidiPlayer::init` set every field in place with no value
+  larger than a part (≈ 1 KiB) on the stack. `Engine::new` is `zeroed` +
+  `init` (one code path; host tests: `init` on a used engine/player equals
+  `new` field for field, golden scenarios set up in place render their
+  hashes). `Smf::begin` and `Engine::reset` no longer build whole arrays
+  by value.
+* **The card source.** `orpheus_midi::cache::BlockCache` answers the
+  parser's `Need`s (≤ 64 bytes at any offset) from 512-byte card blocks,
+  least recently used out (up to 32 slots; the player gets 13); a miss
+  reads one sector (`Urgent`: no card rests while playing); a short read
+  answers short and ends that track. Host tests: answers equal the file at
+  any offset, a need across two blocks reads both once, interleaved tracks
+  within the slots read each block once, LRU, failed reads leave no stale
+  bytes; the golden songs render bit for bit through 2, 4 and 32 blocks;
+  a seek through it equals the slice source's.
+* **Playing** (`play_midi`): open and scan with the DAC stopped (bounded
+  steps, a 1.5 ms break for thread mode every 4 ms of CPU); blocks of ≤ 256
+  frames at **44.1 kHz** through `Out`/`Feeder` (the DSP chain, key clicks,
+  `crc on`) into the PCM ring, as a decoder's; requests one per block
+  (pause with Fade on pause, resume, stop, skip, queue edits, seek: the DAC
+  stops, the file is re-scanned to the target as MIDI-1 built it), card
+  requests and listing pieces as chores under `chore::decide`, the battery
+  and step logs by `log_due`; the position and ticks to the player;
+  duration from the scan (Now Playing shows codec `MIDI`, 44.1 kHz). Clock
+  floor **High** while it plays (scan included). Lyrics and the
+  mute/solo/tempo view are not on the player yet.
+* **Load governor** (`orpheus_audio::synth::VoiceGov`, host-tested): the
+  render of each block is timed (paging included); above 60 % of the
+  block's real time the voice limit drops one voice (sounding voices play
+  out, new notes steal), below 35 % for 180 blocks it comes back, never
+  below 4 nor above `synth voices N` (default 16). At the maximum the
+  output is the host's bit for bit. `status` ends in `syn: v=` (most voices
+  after a block) `vlim=` `over=` (overloaded blocks) `reads=` (card blocks
+  read while playing).
+* **Code room.** The code window was 121/128 pages; the synthesiser added
+  ~65 KB. To fit: the `samples` and `delay` features of `orpheus-synth`
+  are off in the firmware (no card sample source yet; no MIDI controller
+  feeds the delay: with the feature off it keeps its settings and adds
+  nothing — MIDI renders are unchanged, the bench's delay loads render
+  dry); the sequencer's channel callback is `&mut dyn FnMut` (one copy);
+  the voice render has one filter/envelope tail for all melodic sources;
+  the GM set, kits and bench tables are linked without their names. The
+  block loop (`play_midi`'s poll, 7 lines) is a cluster in the code
+  window's hole before `flac-frame` (no page): **128/128 code pages**.
+* **Resident.** Panic location data is resident: the new code paths in
+  `orpheus-midi`, the engine, the reverb and the kits were made panic-free
+  (`get`, index masks the compiler can see), which also cost nothing at
+  run time. Resident 81,388 B (+153 B: constant pools and the MIDI/synth
+  strings); .bss 125,448 B (unchanged); **stack margin 4,336 B** (was
+  4,304).
+* **Clusters.** `synth-block` (above) on physical lines 1–7;
+  `synth-render` (16 lines: `Engine::render_i16` with voices, oscillators,
+  FM, filter, mix, reverb, chorus and limiter inlined, the SVF and
+  envelope steps, kick, snare, hats, clap) on lines 17–31 and 0; the other
+  drums and control-rate helpers outside (`budget_lines` 26, checked by
+  `xtask stack --check`).
+* **Bench** (`synth bench I [N] [BLOCKS]`, read-only, no card access): load
+  I of `orpheus_synth::bench::BENCHES` (36: empty, sine, the 16 melodic
+  presets held, the 11 drums struck every 43 ms, delay, delay 1 s, chorus,
+  reverb, three voice+effect pairs) with N voices (8) at 48 kHz, 8 warm-up
+  and BLOCKS (64) measured 256-frame blocks at the High clock; replies
+  `cyc_per_frame` (DWT cycle counter, `cyc_ok=1`; else µs × MHz),
+  `loads=` (pager line loads), `voices_x100=`, `peak=` and the FNV-1a
+  `hash=` of the measured blocks, which
+  `orpheus-synth/tests/goldens-bench.txt` holds for N = 8. Without
+  arguments it reports the sizes. **Cycles are not measured yet** (no
+  hardware in this package): budgets.toml `[synth]` holds SYN-1/2's
+  estimates until the lead's run.
+* **Whole songs checked through playback.** With `dsp off` and `crc on`,
+  `play PATH` of a MIDI file replies with the frames rendered and the CRC
+  of every frame written; `orpheus-midi/tests/goldens-play.txt` predicts
+  both for the suite's MIDI fixtures (the three demo songs, uploaded by
+  `xtask dev suite --setup` to `/.orpheus/test/suite/midi/`).
+* **Left**: measured cycles per voice and effect (the bench), a voice
+  limit / floor below High for light songs, lyrics and the mute/solo/tempo
+  view in Now Playing, the card `SampleSource` (samples off), the delay
+  for the Sequencer (it needs ≈ 2.4 KB of code room), SF2.
+
 ## 10. Work packages
 
 * **WP-AU-1 Pipeline core**: rings, pool leases, `ByteSource`, `Decoder`

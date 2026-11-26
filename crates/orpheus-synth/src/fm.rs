@@ -23,7 +23,7 @@ use crate::math::{clampf, sin_phase, turns_to_phase};
 pub const OPS: usize = 4;
 
 /// One operator's settings.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]
 pub struct OpParams {
     /// Frequency ratio to the note (0.0625–32).
     pub ratio: f32,
@@ -59,7 +59,7 @@ impl OpParams {
 }
 
 /// FM settings.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]
 pub struct FmParams {
     /// Index into [`ALGORITHMS`] (wrapped).
     pub algorithm: u8,
@@ -96,7 +96,7 @@ impl FmParams {
 /// An operator graph: bit `j` of `mods[i]` means operator `j` modulates
 /// operator `i` (only `j > i` counts); bit `i` of `carriers` makes operator
 /// `i` an output.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Algorithm {
     /// Modulators of each operator.
     pub mods: [u8; OPS],
@@ -130,7 +130,7 @@ pub const ALGORITHMS: [Algorithm; 8] = [
 const TURN: f32 = 1.0 / core::f32::consts::TAU;
 
 /// One operator's running state (28 bytes).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, Default, PartialEq)]
 pub struct OpState {
     phase: u32,
     inc: u32,
@@ -146,7 +146,7 @@ pub struct OpState {
 
 /// What an FM patch's voices share (in the part's coefficients): the
 /// operator graph as a matrix, the carrier weights, the feedback.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, Default, PartialEq)]
 pub struct FmCoef {
     /// `m[i][j]`: operator `j` modulates operator `i` (0 or 1).
     m: [[f32; OPS]; OPS],
@@ -188,7 +188,7 @@ impl FmCoef {
 /// control update advances them to the next tick and the per-sample level
 /// moves there in a straight line (DX-style envelope stepping; an attack
 /// of 0 becomes a ramp of at most one control period, 0.67 ms).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, Default, PartialEq)]
 pub struct FmState {
     pub(crate) op: [OpState; OPS],
     fb: [f32; 2],

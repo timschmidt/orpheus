@@ -500,7 +500,12 @@ pub fn pack(g: &Graph, places: &[Place], hot: &[Cluster], crates: &[String]) -> 
     plan.code_size = cur;
     plan.ncode = cur.div_ceil(PAGE_SIZE);
     if plan.ncode > MAX_CODE_PAGES {
-        bail!("paged code needs {} pages, the code window holds {MAX_CODE_PAGES}", plan.ncode);
+        bail!(
+            "paged code needs {} pages ({} B), the code window holds {MAX_CODE_PAGES} ({} B)",
+            plan.ncode,
+            cur,
+            MAX_CODE_PAGES * PAGE_SIZE
+        );
     }
     for (n, _) in order(paged(Kind::Rodata)) {
         let s = &g.nodes[n];

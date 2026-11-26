@@ -1,0 +1,3 @@
+Etude.mid frames=1131268 crc=54821393
+Hill Song.kar frames=1146600 crc=1777526454
+Sound tour.mid frames=2469600 crc=4099842480

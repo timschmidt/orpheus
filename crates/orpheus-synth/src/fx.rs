@@ -66,10 +66,13 @@
 use crate::filter::Svf;
 use crate::math::{clampf, decay_coef, exp2, flush, soft_clip};
 
+#[cfg_attr(not(feature = "delay"), allow(dead_code))]
 const Q: f32 = 8192.0;
+#[cfg_attr(not(feature = "delay"), allow(dead_code))]
 const DQ: f32 = 1.0 / Q;
 
 #[inline]
+#[cfg_attr(not(feature = "delay"), allow(dead_code))]
 fn quant(x: f32) -> i16 {
     sat16(x * Q)
 }
@@ -93,7 +96,7 @@ pub const CHORUS_LEN: usize = 1024;
 pub const REVERB_LEN: usize = 4096;
 
 /// Delay settings.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]
 pub struct DelayParams {
     /// Delay time, seconds. Times beyond 4 lines (1.02 s at 48 kHz) are
     /// clamped to it, also when they come from `beats`.
@@ -120,7 +123,7 @@ impl DelayParams {
 }
 
 /// The delay.
-#[derive(Clone, Debug)]
+#[derive(bytemuck::Zeroable, Clone, Debug)]
 pub struct Delay {
     line: [i16; DELAY_LEN],
     pos: usize,
@@ -151,28 +154,33 @@ impl Delay {
     /// A silent delay with the default settings.
     #[must_use]
     pub fn new() -> Self {
-        let mut d = Self {
-            line: [0; DELAY_LEN],
-            pos: 0,
-            time: 1,
-            spread: 0,
-            k: 1,
-            cnt: 0,
-            acc: 0.0,
-            inv_k: 1.0,
-            taps: [[(0, 0.0); DELAY_MAX_K]; 2],
-            fb: 0.0,
-            damp: 0.0,
-            lp: 0.0,
-            hp_c: 1.0,
-            hp: 0.0,
-            level: 0.0,
-            zero_run: DELAY_LEN,
-            aa: [Svf::ZERO; 3],
-            params: DelayParams::DEFAULT,
-        };
-        d.set(&DelayParams::DEFAULT, 48_000.0, 120.0);
+        let mut d = <Self as bytemuck::Zeroable>::zeroed();
+        d.init();
         d
+    }
+
+    /// [`Delay::new`] in place (no copy of the 24 KiB line through the
+    /// stack: the player builds the engine in the decoder arena).
+    pub fn init(&mut self) {
+        self.line.fill(0);
+        self.pos = 0;
+        self.time = 1;
+        self.spread = 0;
+        self.k = 1;
+        self.cnt = 0;
+        self.acc = 0.0;
+        self.inv_k = 1.0;
+        self.taps = [[(0, 0.0); DELAY_MAX_K]; 2];
+        self.fb = 0.0;
+        self.damp = 0.0;
+        self.lp = 0.0;
+        self.hp_c = 1.0;
+        self.hp = 0.0;
+        self.level = 0.0;
+        self.zero_run = DELAY_LEN;
+        self.aa = [Svf::ZERO; 3];
+        self.params = DelayParams::DEFAULT;
+        self.set(&DelayParams::DEFAULT, 48_000.0, 120.0);
     }
 
     /// Current settings.
@@ -189,6 +197,20 @@ impl Delay {
 
     /// Apply settings at `rate` Hz and `bpm`.
     pub fn set(&mut self, p: &DelayParams, rate: f32, bpm: f32) {
+        // Built without the delay (the player's MIDI build, SYN-3: no
+        // MIDI controller feeds it): the settings are kept, nothing sounds.
+        #[cfg(not(feature = "delay"))]
+        {
+            let _ = (rate, bpm);
+            self.params = *p;
+            return;
+        }
+        #[cfg(feature = "delay")]
+        self.set_on(p, rate, bpm);
+    }
+
+    #[cfg(feature = "delay")]
+    fn set_on(&mut self, p: &DelayParams, rate: f32, bpm: f32) {
         let beats = clampf(p.beats, 0.0, 16.0);
         let t = if beats > 0.0 { beats * 60.0 / bpm } else { clampf(p.time, 0.0, 10.0) };
         let max = (DELAY_MAX_K * (DELAY_LEN - 4)) as f32;
@@ -241,7 +263,7 @@ impl Delay {
 
     /// Clear the line.
     pub fn clear(&mut self) {
-        self.line = [0; DELAY_LEN];
+        self.line.fill(0);
         self.lp = 0.0;
         self.hp = 0.0;
         self.acc = 0.0;
@@ -260,6 +282,7 @@ impl Delay {
 
     /// The feedback filter: low pass (damping), then high pass (low cut).
     #[inline]
+    #[cfg_attr(not(feature = "delay"), allow(dead_code))]
     fn filter(&mut self, y: f32) -> f32 {
         self.lp = y + (self.lp - y) * self.damp;
         if self.hp_c >= 1.0 {
@@ -269,8 +292,20 @@ impl Delay {
         self.lp - self.hp
     }
 
-    /// Process the mono send `input`, adding the wet signal to `l` and `r`.
+    /// Process the mono send `input`, adding the wet signal to `l` and `r`
+    /// (nothing without the `delay` feature).
     pub fn process(&mut self, input: &[f32], l: &mut [f32], r: &mut [f32]) {
+        #[cfg(not(feature = "delay"))]
+        {
+            let _ = (input, l, r);
+            return;
+        }
+        #[cfg(feature = "delay")]
+        self.process_on(input, l, r);
+    }
+
+    #[cfg(feature = "delay")]
+    fn process_on(&mut self, input: &[f32], l: &mut [f32], r: &mut [f32]) {
         if self.zero_run >= DELAY_LEN && input.iter().all(|&x| x == 0.0) {
             self.lp = 0.0;
             self.hp = 0.0;
@@ -340,7 +375,7 @@ impl Default for Delay {
 }
 
 /// Chorus settings.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]
 pub struct ChorusParams {
     /// Sweep rate, Hz (0.05–5).
     pub rate: f32,
@@ -356,7 +391,7 @@ impl ChorusParams {
 }
 
 /// The chorus.
-#[derive(Clone, Debug)]
+#[derive(bytemuck::Zeroable, Clone, Debug)]
 pub struct Chorus {
     line: [f32; CHORUS_LEN],
     pos: usize,
@@ -373,19 +408,23 @@ impl Chorus {
     /// A silent chorus with the default settings.
     #[must_use]
     pub fn new() -> Self {
-        let mut c = Self {
-            line: [0.0; CHORUS_LEN],
-            pos: 0,
-            phase: 0,
-            inc: 0,
-            base: 0.0,
-            depth: 0.0,
-            level: 0.0,
-            zero_run: CHORUS_LEN,
-            params: ChorusParams::DEFAULT,
-        };
-        c.set(&ChorusParams::DEFAULT, 48_000.0);
+        let mut c = <Self as bytemuck::Zeroable>::zeroed();
+        c.init();
         c
+    }
+
+    /// [`Chorus::new`] in place.
+    pub fn init(&mut self) {
+        self.line.fill(0.0);
+        self.pos = 0;
+        self.phase = 0;
+        self.inc = 0;
+        self.base = 0.0;
+        self.depth = 0.0;
+        self.level = 0.0;
+        self.zero_run = CHORUS_LEN;
+        self.params = ChorusParams::DEFAULT;
+        self.set(&ChorusParams::DEFAULT, 48_000.0);
     }
 
     /// Current settings.
@@ -407,7 +446,7 @@ impl Chorus {
 
     /// Clear the line.
     pub fn clear(&mut self) {
-        self.line = [0.0; CHORUS_LEN];
+        self.line.fill(0.0);
         self.zero_run = CHORUS_LEN;
     }
 
@@ -428,7 +467,7 @@ impl Chorus {
             return;
         }
         for ((x, l), r) in input.iter().zip(l.iter_mut()).zip(r.iter_mut()) {
-            self.line[self.pos] = *x;
+            self.line[self.pos % CHORUS_LEN] = *x;
             self.zero_run = if *x == 0.0 { self.zero_run + 1 } else { 0 };
             self.phase = self.phase.wrapping_add(self.inc);
             let tri = |ph: u32| {
@@ -449,7 +488,7 @@ impl Default for Chorus {
 }
 
 /// Reverb settings.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]
 pub struct ReverbParams {
     /// Decay time to −60 dB, seconds (0.2–10).
     pub decay: f32,
@@ -483,7 +522,7 @@ const IN_SIGN: [f32; REVERB_LINES] = [1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1
 /// Network steps per block (32 input samples).
 const BLOCK_STEPS: usize = 17;
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, Default)]
 struct Line {
     start: usize,
     len: usize,
@@ -495,22 +534,34 @@ impl Line {
     /// (two copies at most: the run to the end, the run from the start).
     #[inline]
     fn load(&self, mem: &[i16], out: &mut [i16]) {
-        let line = &mem[self.start..self.start + self.len];
-        let n = out.len().min(self.len - self.pos);
-        out[..n].copy_from_slice(&line[self.pos..self.pos + n]);
-        let rest = out.len() - n;
-        out[n..].copy_from_slice(&line[..rest]);
+        // (Through `get`: the ranges are in the line by construction; the
+        // player's image then has no panic path here, SYN-3.)
+        let line = mem.get(self.start..self.start + self.len).unwrap_or_default();
+        let n = out.len().min(self.len.saturating_sub(self.pos));
+        let (a, b) = out.split_at_mut(n);
+        if let Some(src) = line.get(self.pos..self.pos + n) {
+            a.copy_from_slice(src);
+        }
+        if let Some(src) = line.get(..b.len()) {
+            b.copy_from_slice(src);
+        }
     }
 
     /// Write `vals` where [`Line::load`] read and move on past them.
     #[inline]
     fn store(&mut self, mem: &mut [i16], vals: &[i16]) {
-        let line = &mut mem[self.start..self.start + self.len];
-        let n = vals.len().min(self.len - self.pos);
-        line[self.pos..self.pos + n].copy_from_slice(&vals[..n]);
-        let rest = vals.len() - n;
-        line[..rest].copy_from_slice(&vals[n..]);
-        self.pos = if n == self.len - self.pos { rest } else { self.pos + n };
+        let left = self.len.saturating_sub(self.pos);
+        let n = vals.len().min(left);
+        let (a, b) = vals.split_at(n);
+        if let Some(line) = mem.get_mut(self.start..self.start + self.len) {
+            if let Some(dst) = line.get_mut(self.pos..self.pos + n) {
+                dst.copy_from_slice(a);
+            }
+            if let Some(dst) = line.get_mut(..b.len()) {
+                dst.copy_from_slice(b);
+            }
+        }
+        self.pos = if n == left { b.len() } else { self.pos + n };
     }
 }
 
@@ -525,7 +576,7 @@ fn hadamard8(v: &mut [f32; REVERB_LINES]) {
 }
 
 /// The reverb.
-#[derive(Clone, Debug)]
+#[derive(bytemuck::Zeroable, Clone, Debug)]
 pub struct Reverb {
     mem: [i16; REVERB_LEN],
     line: [Line; REVERB_LINES],
@@ -556,27 +607,31 @@ impl Reverb {
     /// A silent reverb with the default settings at 48 kHz.
     #[must_use]
     pub fn new() -> Self {
-        let mut r = Self {
-            mem: [0; REVERB_LEN],
-            line: [Line::default(); REVERB_LINES],
-            diff: [Line::default(); 3],
-            g: [0.0; REVERB_LINES],
-            lp: [0.0; REVERB_LINES],
-            round_above: 1,
-            damp: 0.0,
-            level: 0.0,
-            longest: 1,
-            chunk: 2,
-            zero_run: REVERB_LEN,
-            rate: 24_000.0,
-            odd: false,
-            first: 0.0,
-            prev: [0.0; 2],
-            cur: [0.0; 2],
-            params: ReverbParams::DEFAULT,
-        };
-        r.set_rate(48_000.0);
+        let mut r = <Self as bytemuck::Zeroable>::zeroed();
+        r.init();
         r
+    }
+
+    /// [`Reverb::new`] in place.
+    pub fn init(&mut self) {
+        self.mem.fill(0);
+        self.line = [Line::default(); REVERB_LINES];
+        self.diff = [Line::default(); 3];
+        self.g = [0.0; REVERB_LINES];
+        self.lp = [0.0; REVERB_LINES];
+        self.round_above = 1;
+        self.damp = 0.0;
+        self.level = 0.0;
+        self.longest = 1;
+        self.chunk = 2;
+        self.zero_run = REVERB_LEN;
+        self.rate = 24_000.0;
+        self.odd = false;
+        self.first = 0.0;
+        self.prev = [0.0; 2];
+        self.cur = [0.0; 2];
+        self.params = ReverbParams::DEFAULT;
+        self.set_rate(48_000.0);
     }
 
     /// Lay out the lines for an engine at `rate` Hz (≤ 48 kHz; the network
@@ -631,7 +686,7 @@ impl Reverb {
 
     /// Clear the lines.
     pub fn clear(&mut self) {
-        self.mem = [0; REVERB_LEN];
+        self.mem.fill(0);
         self.lp = [0.0; REVERB_LINES];
         self.zero_run = REVERB_LEN;
         self.first = 0.0;
@@ -652,7 +707,7 @@ impl Reverb {
     /// wrote, and each value is computed exactly as one step at a time would
     /// (the same operations in the same order per value).
     fn steps(&mut self, xs: &[f32], outs: &mut [[f32; 2]]) {
-        let m = xs.len().min(self.chunk / 2 + 1);
+        let m = xs.len().min(self.chunk / 2 + 1).min(BLOCK_STEPS);
         // OR of every value written in the block (zero: the block wrote
         // only zeros).
         let mut any = 0i32;
@@ -721,11 +776,11 @@ impl Reverb {
         // longest line, every line holds zeros, whatever the block sizes.
         self.zero_run = if any != 0 { 0 } else { self.zero_run + m };
         let g = OUT_GAIN * self.level;
-        for j in 0..m {
+        for (j, o) in outs.iter_mut().enumerate().take(m) {
             let s = |k: usize| y[k][j];
             let left = (s(0) - s(1)) + (s(2) - s(3)) + (s(4) - s(5)) + (s(6) - s(7));
             let right = (s(0) + s(1)) - (s(2) + s(3)) + (s(4) + s(5)) - (s(6) + s(7));
-            outs[j] = [left * g, right * g];
+            *o = [left * g, right * g];
         }
     }
 
@@ -739,7 +794,7 @@ impl Reverb {
             self.odd ^= input.len() % 2 == 1;
             return;
         }
-        let chunk = self.chunk;
+        let chunk = self.chunk.max(1);
         for ((input, l), r) in input.chunks(chunk).zip(l.chunks_mut(chunk)).zip(r.chunks_mut(chunk)) {
             // The network inputs this chunk completes.
             let mut xs = [0.0f32; BLOCK_STEPS];
@@ -747,7 +802,9 @@ impl Reverb {
             let (mut odd, mut first) = (self.odd, self.first);
             for x in input {
                 if odd {
-                    xs[m] = (first + *x) * 0.5;
+                    if let Some(s) = xs.get_mut(m) {
+                        *s = (first + *x) * 0.5;
+                    }
                     m += 1;
                 } else {
                     first = *x;
@@ -755,7 +812,7 @@ impl Reverb {
                 odd = !odd;
             }
             let mut outs = [[0.0f32; 2]; BLOCK_STEPS];
-            self.steps(&xs[..m], &mut outs);
+            self.steps(&xs[..m.min(BLOCK_STEPS)], &mut outs);
             let mut j = 0;
             let (mut odd, mut prev, mut cur) = (self.odd, self.prev, self.cur);
             for (l, r) in l.iter_mut().zip(r.iter_mut()) {
@@ -797,7 +854,7 @@ impl Default for Reverb {
 }
 
 /// The master soft limiter.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]
 pub struct Limiter {
     env: f32,
     gain: f32,

@@ -62,7 +62,7 @@ pub enum Action {
 }
 
 /// One channel's controller state.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Channel {
     /// Program, 0–127.
     pub program: u8,
@@ -138,7 +138,7 @@ impl Channel {
 }
 
 /// A note held at the seek target.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(bytemuck::Zeroable, Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Held {
     ch: u8,
     note: u8,
@@ -146,7 +146,7 @@ struct Held {
 }
 
 /// The 16 channels, mute/solo, and the notes held while scanning.
-#[derive(Clone, Debug)]
+#[derive(bytemuck::Zeroable, Clone, Debug)]
 pub struct Sequencer {
     ch: [Channel; 16],
     /// Sound installed per part (as far as the sequencer has asked).
@@ -233,7 +233,7 @@ impl Sequencer {
 
     /// Handle a channel message. With `live` false only the state changes
     /// (and the held notes are tracked for [`Sequencer::restore`]).
-    pub fn handle(&mut self, status: u8, d1: u8, d2: u8, live: bool, emit: &mut impl FnMut(Action)) {
+    pub fn handle(&mut self, status: u8, d1: u8, d2: u8, live: bool, emit: &mut dyn FnMut(Action)) {
         let c = status & 15;
         let part = c;
         let i = usize::from(c);
@@ -288,7 +288,7 @@ impl Sequencer {
         }
     }
 
-    fn control(&mut self, c: u8, cc: u8, v: u8, live: bool, emit: &mut impl FnMut(Action)) {
+    fn control(&mut self, c: u8, cc: u8, v: u8, live: bool, emit: &mut dyn FnMut(Action)) {
         let part = c;
         if matches!(cc, 120 | 123..=127) {
             if live {
@@ -296,9 +296,12 @@ impl Sequencer {
             } else {
                 let n = usize::from(self.n_held);
                 let mut k = 0;
-                for i in 0..n {
-                    if self.held[i].ch != c {
-                        self.held[k] = self.held[i];
+                for i in 0..n.min(HELD_MAX) {
+                    let h = self.held[i];
+                    if h.ch != c {
+                        if let Some(d) = self.held.get_mut(k) {
+                            *d = h;
+                        }
                         k += 1;
                     }
                 }
@@ -389,8 +392,8 @@ impl Sequencer {
         if n == HELD_MAX {
             self.held.copy_within(1.., 0);
             self.held[HELD_MAX - 1] = h;
-        } else {
-            self.held[n] = h;
+        } else if let Some(d) = self.held.get_mut(n) {
+            *d = h;
             self.n_held += 1;
         }
     }
@@ -401,9 +404,15 @@ impl Sequencer {
     }
 
     fn unhold(&mut self, ch: u8, note: u8) {
-        let n = usize::from(self.n_held);
-        if let Some(i) = self.held[..n].iter().position(|h| h.ch == ch && h.note == note) {
-            self.held.copy_within(i + 1..n, i);
+        let n = usize::from(self.n_held).min(HELD_MAX);
+        if let Some(i) = self.held.iter().take(n).position(|h| h.ch == ch && h.note == note) {
+            for k in i + 1..n {
+                if let (Some(&h), Some(d)) = (self.held.get(k), k.checked_sub(1))
+                    && let Some(d) = self.held.get_mut(d)
+                {
+                    *d = h;
+                }
+            }
             self.n_held -= 1;
         }
     }
@@ -438,7 +447,7 @@ impl Sequencer {
             emit(param(c, Param::DelaySend, 0.0));
         }
         if chase {
-            for i in 0..usize::from(self.n_held) {
+            for i in 0..usize::from(self.n_held).min(HELD_MAX) {
                 let h = self.held[i];
                 if h.ch != DRUM_CHANNEL && self.audible(h.ch) {
                     emit(Action::Engine(EventKind::NoteOn { part: h.ch, note: h.note, velocity: h.vel }));
