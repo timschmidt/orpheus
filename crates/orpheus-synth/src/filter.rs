@@ -73,6 +73,14 @@ impl Svf {
         (v2, v1)
     }
 
+    /// One sample of the high-pass output.
+    #[inline]
+    pub fn tick_hp(&mut self, v0: f32) -> f32 {
+        let k = self.k;
+        let (lp, bp) = self.tick(v0);
+        v0 - k * bp - lp
+    }
+
     /// Filter `buf` in place.
     pub fn process(&mut self, mode: FilterMode, buf: &mut [f32]) {
         match mode {

@@ -136,7 +136,8 @@ pub fn soft_clip(x: f32) -> f32 {
 #[must_use]
 pub fn to_i16(x: f32) -> i16 {
     let v = x * 32767.0;
-    (if v >= 0.0 { v + 0.5 } else { v - 0.5 }) as i16
+    // Through i32 (the same values as `as i16`): one vcvt and one ssat on the M4.
+    ((if v >= 0.0 { v + 0.5 } else { v - 0.5 }) as i32).clamp(-32_768, 32_767) as i16
 }
 
 /// Marsaglia's xorshift32: the deterministic noise and random source. One

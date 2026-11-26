@@ -63,11 +63,93 @@ of every session. Newest entries first in §3.
 | USB-W1 (bug) | **fixed and self-recovering (host-tested, built); not yet run on the player** | Root cause: the SETUP read was not cancel-safe (embassy-usb drops it on bus events; the interrupt stayed masked for good) and late stages landed on the next transfer. Drop-safe driver, liveness recovery, watchdog only when recovery cannot help, counters in `STATS` 24–30, soak logs self-recoveries, `xtask dev usb-cancel`. 06 §2.6; user check 28 |
 | VER-10 (static stack) | **tool done (host-tested), gate step; firmware cut from ≥ 30,232 to 22,900 B, then to 16,188 B nested worst case of 22,528 B usable: margin 6,340 B, goal ≥ 4 KiB met (built, not yet run on the player)** | `cargo xtask stack [--check] [--root P]`, `stack.toml`, `budgets.toml stack_static_margin_bytes` = 6,084 B (the measured margin less one 256 B step: a ratchet). Second round: the card task's poll frames (the volume and the decoder no longer move by value; `idle`'s and start-up's children are futures of their own), .bss −512 B. Lead: soak, a Vorbis seek, the Authenticator, card hand-over to USB (session entry 2026-11-25 "VER-10: card task frames") |
 | SYN-1 | **done (host)**; not in the firmware (SYN-3) | `orpheus-synth`: band-limited oscillators (polyBLEP/BLAMP, sine, wavetables, white/pink noise), 2–4 operator FM (8 algorithms, feedback), ADSR (linear/exponential), pitch envelope, SVF LP/BP/HP, LFOs (Hz or tempo sync), 16 voices + 4 fade-out tails with stealing, mono legato glide, sample-accurate events, 6 drum voices, delay/chorus/reverb sends, soft limiter; 69,040 B engine; golden hashes equal at opt-level 1 and release; player estimate: 16 saw-lead voices ≈ 79 % of 144 MHz (session entry 2026-11-25 "SYN-1") |
+| SYN-2 | **done (host)**; not in the firmware (SYN-3); **user check: listen to the kits and effects** | `orpheus-synth`: 11 drum models (new rim, cowbell, cymbal, clave, shaker), kits as data (9-byte entries, choke groups, 5 factory kits incl. a 32-note GM kit), sample playback (block `SampleSource`, bounded page cache with pinned heads and streaming, WAV 8/16/24/32/float, Hermite interpolation, loops), delay to 1.02 s (exact at tempo, low cut), 8-line FDN reverb at half rate in 8 KiB, `OSB1` sound banks; engine 62,320 B (was 69,040); player estimate: drum voices ≈ 75–315 cycles/sample, reverb ≈ 290 (session entry 2026-11-25 "SYN-2") |
 | TTS-1 | **done (host)**; not in the firmware, simulator or apps (TTS-2, A11Y-1, BOOK-3) | `orpheus-tts`: incremental converter (1,408 B, any feed sizes), English normaliser, NRL letter-to-sound rules + stress heuristic + stems, CMUdict exception lexicon (4,487 entries in 32,766 B; `cargo xtask tts-lexicon`), duration model for 0.25×–10×; rules alone 79.8 % of tokens, with the lexicon 98.1 % (session entry 2026-11-25 "TTS-1") |
 | TTS-2 | **done (host)**; not in the firmware, simulator or apps (A11Y-1, BOOK-3, firmware integration) | `orpheus-tts`: cascade/parallel formant synthesiser after Klatt 1980 (KLGLOTT88-like source with polyBLEP, F1–F6 cascade, nasal pole/zero, parallel frication/bursts), phoneme targets and loci from the phonetics literature, intonation (declination, accents, 5 contours, asides), voices Neutral/Low/Bright, exact TTS-1 durations at 0.25×–10×, resampler to 8–48 kHz, `Synth` (1,936 B) and `Speaker` (3,352 B with the converter), events and stop; WER (whisper base.en) 13.9 / 30.5 / 93 % at 1/2/4× (espeak-ng 5.9 / 63 / 89 %); player estimate ≈ 22 % of Base at 48 kHz (over the 20 % budget), code ≈ 70 KB without the lexicon (over 64 KiB) (session entry 2026-11-25 "TTS-2") |
 | GAME-6 Bricks (M14) | **built (host + simulator + firmware), not yet run on the player** | Brick breaker of our own: integer physics with one-pixel sub-steps (no tunnelling at any speed, no floating point), paddle angles, 1–3-hit and unbreakable bricks, 8 hand-made + generated levels, five power-ups, lives, scores, saves; 7 settings packed into 1 word; 47 goldens; fuzz `bricks_keys`. In the firmware (`orpheus-apps/bricks`): stack margin 4,116 B unchanged. Lead: session entry 2026-11-25 "GAME-6" |
 
 ## 3. Session log
+
+### 2026-11-25 — SYN-2: drums, kits, samples, effects, banks (worker, no hardware)
+
+Host only; nothing in the firmware, simulator or apps (SYN-3, MIDI-1,
+SEQ-1). The full "as built" is in 04 §9; in short:
+
+**Drums**: 11 models with tune/decay/tone/snap/level, from published
+descriptions of analogue circuits (frequencies and structure only):
+SYN-1's six unchanged (their golden hashes kept), new rim, cowbell,
+cymbal (two bands, ride → crash), clave/wood block, shaker. **Kits**:
+`Kit` of ≤ 32 nine-byte `KitEntry`s (drum or sample hit, choke group,
+pan, tune, decay, tone, snap, level), 2 kit slots in the engine,
+`Kind::Kit(slot)`; choke groups symmetric within a part; factory kits
+`standard` (GM, 32 notes), `analog`, `punch`, `tight`, `percussion`.
+**Samples**: `SampleSource` (512-byte blocks of numbered files; the card
+in SYN-3), `SampleCache` over borrowed memory (256-frame pages, pinned
+heads, `service` streams what the play heads reach in the next 1024
+frames, misses play silent and are counted), WAV PCM 8/16/24/32/float,
+mono/stereo (to mono), extensible, `smpl` loops; 4-point Hermite, 32.32
+position, bit-exact at unit speed; `Kind::Sample` through filter and
+envelopes; kit sample hits. **Effects**: delay exact to the sample at
+tempo up to 256 ms, to 1.02 s at a reduced line rate (filtered,
+centre within a sample), feedback low cut; reverb now an 8-line FDN
+(Hadamard) at half rate, 8 KiB instead of 16 KiB. **Banks**: `OSB1`
+records of patches (`f32` bit for bit) and kits; 4 new patches
+(acid-bass, strings, brass, sub-bass) and `SAMPLER`.
+
+**Looked at, fixed** (spectrograms of every render; no listening here):
+cowbell harmonics to 20 kHz → a 3.5 kHz low pass after the band pass;
+images of long-delay repeats to 20 kHz → anti-alias/anti-image low
+passes with their delay compensated; the reverb's truncation shortened
+decays (0.8 s → 0.48 s; `regress_reverb_truncation_shortened_the_decay`)
+→ rounding above a limit-cycle-free threshold; the full-rate FDN cost
+≈ 900 M4 cycles/sample → half rate, block-wise lines, saturating casts
+through `i32` (`as i16` costs three compares; `math::to_i16` too, same
+values); sample voices freed their slot mid-segment (block-size
+dependence) → end on ticks; the test pluck's loop clicked (decaying
+tone) → a steady loop region.
+
+**Measured (host, x86-64, opt "s")**, ns per voice-sample: kick 12.2,
+snare 18.0, hats 23.6/24.9, clap 5.6, tom 10.4, rim 10.6, cowbell 9.9,
+cymbal 24.2, clave 7.0, shaker 6.0, sample voice 7.4 (pitched + LP
+10.6), kit sample hit 7.3; per sample: delay 5.1 (1 s: 10.9), chorus 9.9,
+reverb 26.6. **Player estimate** (thumbv7em disassembly, ±30 %), cycles
+per voice-sample: kick ≈ 145, snare ≈ 230, hats ≈ 295, clap ≈ 105, tom
+≈ 155, rim ≈ 120, cowbell ≈ 155, cymbal ≈ 315, clave ≈ 100, shaker ≈ 75,
+sample + LP ≈ 95, kit hit ≈ 90; delay ≈ 90 (long ≈ 230), chorus ≈ 120,
+reverb ≈ 290. A kit groove (6–8 drum voices) ≈ 48–77 MHz + reverb ≈ 14
+MHz at 48 kHz: drum patterns need the High clock.
+
+**RAM** (host sizes): engine **62,320 B** (asserted ≤ 64 KiB; reverb 8,600,
+delay 24,888, chorus 4,144, kits 2 × 289, voice slot 328 unchanged);
+sample cache state 4,904 B + borrowed pages (512 B each). Code 64.3 KB,
+read-only 26.7 KB (thumbv7em, opt "s", no LTO, whole crate).
+
+**Tests**: 61 in the crate (27 unit, `drums_fx` 9, `engine` 10,
+`samples` 7, `fuzz_corpus` 6, `golden` 1 of 45 scenarios, `spectrum` 1):
+sample-accurate hits and sample notes, choke groups, delay timing at
+tempo, reverb decay rate and exact silence, no NaN/subnormal/clipping
+with every drum and effect at extremes, streaming equals pinned,
+block-size independence, WAV formats and malformed files, bank round
+trips; release `render --check` 49 scenarios, 0 mismatches. Fuzz
+targets `wav_parse` and `bank_decode` (8 + 5 seeds in
+`tests/fuzz-corpus/`), 90 s each with `nightly-2026-11-05` under ASan
+(4.8 k and 69.6 k runs; no finding).
+
+Gate: host fmt, clippy `-D warnings` (workspace, all targets), `cargo test
+--workspace` (1,533 passed, 11 ignored): pass; thumbv7em build of the
+crate: 0 fused multiply-add. Not run: `xtask test all` beyond `cargo test
+--workspace`, firmware build, size/resident/stack checks (no firmware
+change), HIL (no hardware).
+
+**User check**: listen to the WAVs the worker wrote (kits, effects,
+drums, samples; list in the hand-over) — the kits' balance and the
+reverb's character are judged by ear only.
+
+**Open / next**: SYN-3 (card `SampleSource`, cache pages in the stream
+ring, `service` between blocks, measured cycles, clock floor for drum
+patterns, hot loops clustered; whether drums should end at −60 dB);
+MIDI-1 (GM programs → presets, channel 10 → `STANDARD`, SF2 through the
+cache); SEQ-1 (patches and kits as bank records; 2 kit slots).
 
 ### 2026-11-26 — games-io and BOOK-1 merged; games during music clean (lead)
 

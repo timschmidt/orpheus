@@ -281,12 +281,15 @@ fn ram_table() {
         ("voice slot", ram::voice()),
         ("  of which a drum voice", ram::drum_voice()),
         ("  of which an oscillator", ram::osc()),
+        ("  of which a sample player", ram::sample_player()),
         ("patch", ram::patch()),
+        ("kit slot (2 in the engine)", ram::kit()),
         ("delay", ram::delay()),
         ("chorus", ram::chorus()),
         ("reverb", ram::reverb()),
-        ("engine core (20 voice slots, 16 parts, buses)", ram::core()),
+        ("engine core (20 voice slots, 16 parts, 2 kits, buses)", ram::core()),
         ("engine total", ram::engine()),
+        ("sample cache state (outside; pages borrowed)", ram::sample_cache()),
     ];
     for (n, b) in rows {
         println!("{n:48} {b:>7} B");
@@ -295,4 +298,7 @@ fn ram_table() {
     // The documented budget (lib docs and 04 §9 "as built").
     assert!(ram::voice() <= 336, "voice slot {} B", ram::voice());
     assert!(ram::engine() <= 72 * 1024, "engine {} B exceeds the 72 KiB decoder arena", ram::engine());
+    // SYN-2: 62,320 B with kits and samples (the reverb at half rate in 8 KiB):
+    // also inside a 64 KiB arena.
+    assert!(ram::engine() <= 64 * 1024, "engine {} B exceeds 64 KiB", ram::engine());
 }

@@ -1,6 +1,6 @@
 //! `orpheus-synth`: the synthesis engine shared by MIDI playback, the
 //! Sequencer, the games' sound effects, the signal generator and the speech
-//! engine's resonators (docs/plan/04-audio.md §9; WP SYN-1).
+//! engine's resonators (docs/plan/04-audio.md §9; WPs SYN-1, SYN-2).
 //!
 //! ```ignore
 //! use orpheus_synth::{Engine, Event, Param, presets};
@@ -24,8 +24,13 @@
 //!   envelope).
 //! * [`filter`]: trapezoidal state-variable filter, low/band/high pass.
 //! * [`lfo`]: sine, triangle, square, saw, sample-and-hold; Hz or tempo sync.
-//! * [`drum`]: kick, snare, closed/open hat, clap, tom.
+//! * [`drum`]: kick, snare, closed/open hat, clap, tom, rim, cowbell,
+//!   cymbal, clave, shaker.
+//! * [`kit`]: drum kits as data (note → drum or sample, choke groups).
+//! * [`sample`], [`wav`]: sample playback from a bounded page cache fed by a
+//!   block source (the card), WAV parsing.
 //! * [`fx`]: delay, chorus, reverb (sends), soft limiter (master).
+//! * [`bank`]: patches and kits in a compact binary format (sound banks).
 //! * [`engine`]: [`PARTS`] parts, [`MAX_VOICES`] voices with stealing, mono
 //!   legato with glide, sample-accurate events, mixing and rendering.
 //!
@@ -42,8 +47,10 @@
 //!
 //! # Memory
 //!
-//! All state lives in [`Engine`]; no allocation, no `unsafe`. [`ram`] gives
-//! the sizes (the `ram_table` test prints them).
+//! All state lives in [`Engine`]; no allocation, no `unsafe`. Sample data
+//! lives in a [`SampleCache`] over memory the caller lends; the engine reads
+//! it only during `render_*_with`. [`ram`] gives the sizes (the `ram_table`
+//! test prints them).
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -51,6 +58,7 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod bank;
 pub mod demo;
 pub mod drum;
 pub mod engine;
@@ -58,12 +66,15 @@ pub mod env;
 pub mod filter;
 pub mod fm;
 pub mod fx;
+pub mod kit;
 pub mod lfo;
 pub mod math;
 pub mod osc;
 pub mod patch;
 pub mod presets;
+pub mod sample;
 mod voice;
+pub mod wav;
 pub mod wavetable;
 
 pub use drum::{DrumKind, DrumParams};
@@ -74,9 +85,11 @@ pub use env::{Adsr, Curve};
 pub use filter::FilterMode;
 pub use fm::{FmParams, OpParams};
 pub use fx::{ChorusParams, DelayParams, ReverbParams};
+pub use kit::{Kit, KitEntry};
 pub use lfo::{LfoParams, LfoRate, LfoWave};
 pub use osc::{Osc, Waveform};
 pub use patch::{FilterParams, Kind, OscParams, Patch, SubParams};
+pub use sample::{SampleCache, SampleLoop, SampleParams, SampleSource, SliceSource};
 
 /// RAM of the engine's parts, in bytes (`size_of`, this build).
 pub mod ram {
@@ -122,6 +135,25 @@ pub mod ram {
     #[must_use]
     pub fn reverb() -> usize {
         size_of::<crate::fx::Reverb>()
+    }
+
+    /// One kit slot.
+    #[must_use]
+    pub fn kit() -> usize {
+        size_of::<crate::kit::Kit>()
+    }
+
+    /// A sample cache's own state (tags and slots; the page memory is
+    /// borrowed: 512 bytes per page).
+    #[must_use]
+    pub fn sample_cache() -> usize {
+        size_of::<crate::sample::SampleCache<'static>>()
+    }
+
+    /// One sample player (inside a voice slot).
+    #[must_use]
+    pub fn sample_player() -> usize {
+        size_of::<crate::sample::SamplePlayer>()
     }
 
     /// The whole engine.

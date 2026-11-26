@@ -922,6 +922,147 @@ rate). Module docs are the reference; in short:
   keep the wavetables and hot loops resident or clustered (they are read
   per sample).
 
+**As built (SYN-2, 2026-11-25): drums, kits, samples, effects, banks;
+host side.** Same crate, same rules (`no_std`, no `alloc`, no `unsafe`,
+IEEE basic `f32` only — the thumbv7em build has 0 `vfma`/`vfms`/`vfnma`/
+`vfnms`; its 349 `vmla`/`vmls` are the M4's chained, separately rounded
+multiply-accumulate). Module docs are the reference; in short:
+
+* **Drum models** (`drum`): 11 kinds, each with `tune`, `decay`, `tone`,
+  `snap`, `level` (per-kind meaning in the module table), written from
+  published descriptions of analogue drum circuits (facts such as the
+  six metal-oscillator frequencies, the rim shot's two resonators at
+  455/1667 Hz, the cowbell's two squares at 540/800 Hz; no code or
+  samples copied): kick, snare, closed/open hat, clap, tom (congas and
+  bongos are tuned toms) from SYN-1 unchanged (their goldens kept), and
+  new **rim** (two sines, click, high pass, drive), **cowbell** (two
+  band-limited squares, band pass then a 3.5 kHz low pass, fast + slow
+  decay), **cymbal** (six squares and noise in two bands: 3.4 kHz band
+  pass τ 0.9 s, 7 kHz high pass τ 0.35 s; `tone` ride → crash), **clave**
+  (2.5 kHz sine, `tone` toward a wood block), **shaker** (high-passed
+  noise with an attack). One `#[inline(never)]` method per kind (own
+  symbol for the estimate and for placing hot code).
+* **Kits as data** (`kit`): a `Kit` is ≤ 32 `KitEntry`s of 9 bytes
+  (note, sound = drum code or sample slot, choke group, pan %, tune in
+  ¼ semitones, decay ×50, tone/snap/level %); the engine holds 2 kit
+  slots (`set_kit`), `Kind::Kit(slot)` plays one (`Patch::KIT` = slot 0,
+  default `STANDARD`). **Choke groups**: a hit in group g ≠ 0 chokes the
+  part's sounding voices of group g (τ 3 ms for drums and sample hits;
+  symmetric: closed, pedal and open hats share group 1). Factory kits:
+  `standard` (General MIDI map, the SYN-1 kit completed: 32 notes incl.
+  cymbals, ride, splash, tambourine, cowbell, bongos, congas, claves,
+  wood block), `analog`, `punch`, `tight`, `percussion`.
+* **Sample playback** (`sample`, `wav`): `SampleSource` reads 512-byte
+  blocks of numbered files (the card in SYN-3; `SliceSource` for tests,
+  the simulator, flash); `SampleCache<'m>` borrows its page memory
+  (`&mut [i16]`, 512 B pages of 256 mono frames, ≤ 256 pages, 32 slots;
+  its own state 4.9 KB on the host) — on the player, memory the synth may
+  use while it plays (the idle 32 KiB stream ring is 64 pages).
+  `load(src, slot, file, head_pages)` parses the WAV and pins the first
+  pages; `service(src, &wants, max_pages)` between render blocks loads
+  what the play heads (`Engine::sample_wants`) reach within 1024 output
+  frames (wrapping at loop ends), evicting least-recently-wanted unpinned
+  pages; a missing page plays as silence and counts
+  (`Engine::sample_misses`) without shifting time. The head must cover a
+  render block at the highest speed (4 pages: 512-frame blocks to an
+  octave up). WAV: PCM 8/16/24/32 and float 32, mono/stereo (stereo is
+  mixed to mono on loading), `WAVE_FORMAT_EXTENSIBLE`, `smpl` loop and
+  unity note; sizes never trusted (chunks bounded by the file, ≤ 64
+  chunks). Player: 32.32 fixed-point position, 4-point Hermite
+  interpolation (Niemitalo 2001), one-shot or forward loop (reading
+  across the seam), increment ≤ 8; at unit speed the output is the stored
+  samples bit for bit (tested). `Kind::Sample(SampleParams)` runs through
+  the patch's filter, envelopes and LFO (root note from the file or the
+  patch, loop off/file/whole, one-shot ignores note-off, start offset);
+  kit sample hits (`KitEntry::sample`) have tune, fade, a one-pole low
+  pass and pan. `render_*_with(&mut out, &events, &cache)`; the plain
+  `render_*` play sample voices silent. Sample voices end on control
+  ticks, as drums do (block-size independence; a first version freed the
+  slot mid-segment and the kit render differed at block size 1).
+* **Effects** (`fx`). *Delay*: 12 288 × `i16`; times to 256 ms at full
+  rate, exact to the sample (beats × 60 / BPM × rate rounded); longer
+  (to 1.02 s at 48 kHz) by storing every k-th sample (k = 2…4, the mean
+  of k) read back by linear interpolation, with two-pole low passes at
+  0.4·rate/k before the line and on the taps (images of the cowbell
+  echoes reached 20 kHz without them) whose delay is subtracted from the
+  read position: the echo's centre of mass within a sample of the time
+  (tested at 60–174 BPM × ¼–1½ beats); feedback path: damping low pass
+  and a new `low_cut` high pass (default 120 Hz; `FxParam::DelayLowCut`).
+  *Chorus*: unchanged. *Reverb*: replaced the Schroeder combs by an
+  **8-line feedback delay network** (Jot & Chaigne 1991): 3 series
+  all-pass diffusers, 8 lines of 11.3–28.9 ms with damping and RT60
+  gains, an 8 × 8 Hadamard mix, two orthogonal output sign patterns,
+  the input on a sign pattern orthogonal to both; **at half the engine
+  rate** (pairs averaged in, linear interpolation out) in 4 096 × `i16`
+  (8 KiB, half SYN-1's 16 KiB) and computed line by line over blocks of
+  ≤ 16 steps (no line is shorter than a block: the same values as step by
+  step; tested at 8–48 kHz). Lines hold ±1.0 at 1/32768 and are written
+  rounded above T = ⌈0.5/(1 − g) + 1⌉ steps and truncated toward zero
+  below, so the decay is at the set rate (measured RT60 0.80/2.46 s for
+  0.8/2.5 s) and the tail still ends in exact zeros; truncation alone
+  measured 0.48 s for 0.8 s (the tail of a single hit lives at tens of
+  steps), error feedback did not fix it (its shaped noise biased the
+  highs). A single hit's tail keeps the rate for 30 dB at ≤ 2.5 s and
+  15 dB at 10 s, then drains.
+* **Banks** (`bank`): `OSB1` files of records (tag, length, 16-byte name,
+  body; unknown tags skipped): patches (every field, `f32` bit for bit:
+  subtractive 165 B, 4-op FM 259 B, drum 138 B) and kits (1 + 9 per
+  entry); decoding checks every code and length and sanitises. Factory
+  patches stay `const` (`presets`: 16 melodic — new `acid-bass`,
+  `strings`, `brass`, `sub-bass` — 11 drums, `SAMPLER`); all round-trip
+  exactly (tested).
+* **RAM** (`ram_table`, host sizes): voice slot 328 B (unchanged: drum
+  voice 156 B, sample player 48 B fit the slot), kit slot 289 B × 2,
+  delay 24,888 B, chorus 4,144 B, reverb 8,600 B, core 24,688 B,
+  **engine 62,320 B** (was 69,040; asserted ≤ 64 KiB), plus the sample
+  cache state 4,904 B and its borrowed pages. Code (thumbv7em, opt "s",
+  no LTO, whole crate incl. demo scenarios): 64.3 KB, read-only data
+  26.7 KB (wavetables 14.3 KB).
+* **Cost.** Host ns per voice-sample (x86-64, `cargo bench`): kick 12.2,
+  snare 18.0, hats 23.6/24.9, clap 5.6, tom 10.4, rim 10.6, cowbell 9.9,
+  cymbal 24.2, clave 7.0, shaker 6.0; sample voice 7.4 (unit or pitched),
+  pitched + low pass 10.6, kit sample hit 7.3; effects per sample: delay
+  5.1 (1 s, k = 4: 10.9), chorus 9.9, reverb 26.6 (full-rate FDN: 42.7).
+  **Player estimate** (thumbv7em disassembly, SYN-1's rule, inner loops
+  less their rarely taken branches, + ≈ 15 for mixing and amortised
+  control; ±30 %), cycles per voice-sample: kick ≈ 145, snare ≈ 230,
+  hats ≈ 295, clap ≈ 105, tom ≈ 155, rim ≈ 120, cowbell ≈ 155, cymbal
+  ≈ 315, clave ≈ 100, shaker ≈ 75, sample voice with low pass ≈ 95, kit
+  sample hit ≈ 90; per sample: delay ≈ 90 (k = 1) / ≈ 230 (k > 1), chorus
+  ≈ 120, **reverb ≈ 290** (step by step at full rate it was ≈ 900; SYN-1's
+  four combs ≈ 190). A kit groove keeps ≈ 6–8 drum voices sounding (a
+  retriggered note replaces itself): ≈ 1,000–1,600 cycles/sample, 48–77
+  MHz at 48 kHz, plus ≈ 14 MHz of reverb: **drum patterns need the High
+  clock (144 MHz)**, not Base. Drums end at −80 dB; a −60 dB end would
+  free voices ~25 % sooner (SYN-3 to judge).
+* **Tests**: unit tests per module (27); `tests/drums_fx.rs` (every
+  drum's hit is identical at any offset and block cutting; choke groups
+  cut members only, both ways, not other groups or parts; every factory
+  kit entry sounds; 16 extreme drums with every effect at maximum: finite,
+  no subnormal, within ±1, limiter engaged, tails end in exact zeros;
+  delay exact at tempo; reverb energy decays window by window at the
+  set RT60 and drains; RAM); `tests/samples.rs` (golden hashes of 4
+  sample scenarios in `tests/goldens-samples.txt`; streaming through 48
+  pages equals the pinned render; block-size independence; sample notes
+  start on their sample; WAV formats and conversion; malformed files;
+  cache limits); `tests/golden.rs` now 45 scenarios (all drums, the 5
+  kits playing two bars, tempo-synced and 1 s delays, a hall); fuzz
+  targets `wav_parse` (parser + cache + playback; 8 seeds) and
+  `bank_decode` (decoder, round trip, playback; 5 seeds) replayed by
+  `tests/fuzz_corpus.rs`; release `render --check`: 49 scenarios, 0
+  mismatches.
+* **Left for SYN-3**: the card `SampleSource` and where the cache pages
+  live (stream ring), `service` in the synth task between blocks, the
+  measured cycles (the estimates above), the clock floor for drum
+  patterns, the reverb and drum loops clustered/resident. **MIDI-1**:
+  map GM programs to `presets` (16 melodic now; a fuller sound set), drum
+  channel 10 → `Kit` slot 0 (`STANDARD` covers 32 GM notes), SF2 samples
+  through the same cache (WAV is the only file format so far). **SEQ-1**:
+  projects store patches and kits as bank records (`bank::Writer`,
+  `records`); kit editing is `KitEntry` fields in UI units already; a
+  drum track is a part with `Kind::Kit(slot)` (2 slots: more kits per
+  project need more slots, 289 B each).
+
 ## 10. Work packages
 
 * **WP-AU-1 Pipeline core**: rings, pool leases, `ByteSource`, `Decoder`

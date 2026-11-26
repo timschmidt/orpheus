@@ -29,10 +29,12 @@
 //! priority); with legato, notes played while another is held glide without
 //! retriggering, and releasing the top note returns to the one below.
 
-use crate::drum::{DrumKind, DrumParams};
+use crate::drum::DrumParams;
 use crate::fx::{Chorus, ChorusParams, Delay, DelayParams, Limiter, Reverb, ReverbParams};
+use crate::kit::{KIT_SLOTS, Kit, KitSound};
 use crate::math::{Rng, clampf, to_i16};
 use crate::patch::{Kind, Patch, PatchCoef};
+use crate::sample::{HitParams, SampleCache, Want};
 use crate::voice::{Ctx, PartView, Voice, pan_gains};
 
 /// Voice slots.
@@ -94,6 +96,8 @@ pub enum FxParam {
     DelayFeedback,
     /// Delay damping, 0–0.95.
     DelayDamp,
+    /// High pass of the delay's repeats, Hz (below 20: off).
+    DelayLowCut,
     /// Delay wet level, 0–1.
     DelayLevel,
     /// Chorus rate, Hz.
@@ -244,6 +248,7 @@ impl Part {
             coef: &self.coef,
             volume: self.volume,
             pan: self.pan_g,
+            pan_pos: self.pan,
             bend: self.bend,
         }
     }
@@ -303,6 +308,8 @@ pub struct Engine {
     chorus: Chorus,
     reverb: Reverb,
     limiter: Limiter,
+    kits: [Kit; KIT_SLOTS],
+    misses: u32,
 }
 
 impl Engine {
@@ -339,6 +346,8 @@ impl Engine {
             chorus: Chorus::new(),
             reverb: Reverb::new(),
             limiter: Limiter::new(rate_f),
+            kits: [Kit::new(crate::kit::STANDARD); KIT_SLOTS],
+            misses: 0,
         };
         e.delay.set(&DelayParams::DEFAULT, rate_f, e.tempo);
         e.chorus.set(&ChorusParams::DEFAULT, rate_f);
@@ -366,6 +375,7 @@ impl Engine {
         self.limiter = Limiter::new(self.rate_f);
         self.master_cur = self.master;
         self.master_ramp = 0;
+        self.misses = 0;
     }
 
     /// Sample rate, Hz.
@@ -398,6 +408,42 @@ impl Engine {
     #[must_use]
     pub fn patch(&self, part: u8) -> Option<&Patch> {
         self.parts.get(usize::from(part)).map(|p| &p.patch)
+    }
+
+    /// Install `kit` in kit slot `slot` (ignored past [`KIT_SLOTS`]); the
+    /// kit patches of that slot play it from their next note (sounding
+    /// hits play out).
+    pub fn set_kit(&mut self, slot: u8, kit: &Kit) {
+        if let Some(k) = self.kits.get_mut(usize::from(slot)) {
+            *k = *kit;
+        }
+    }
+
+    /// The kit in `slot`.
+    #[must_use]
+    pub fn kit(&self, slot: u8) -> Option<&Kit> {
+        self.kits.get(usize::from(slot))
+    }
+
+    /// The play heads of the voices playing samples, for
+    /// [`SampleCache::service`]: fills `out`, returns how many.
+    pub fn sample_wants(&self, out: &mut [Want]) -> usize {
+        let mut n = 0;
+        for w in self.voices.iter().chain(&self.tails).filter(|v| v.active).filter_map(Voice::want) {
+            if n == out.len() {
+                break;
+            }
+            out[n] = w;
+            n += 1;
+        }
+        n
+    }
+
+    /// Samples played as silence because a voice's sample page was not in
+    /// the cache, since creation or [`Engine::reset`].
+    #[must_use]
+    pub fn sample_misses(&self) -> u32 {
+        self.misses
     }
 
     /// Use at most `n` voice slots (1–16). Voices above the limit play out.
@@ -561,6 +607,7 @@ impl Engine {
             FxParam::DelayBeats => d.beats = v,
             FxParam::DelayFeedback => d.feedback = v,
             FxParam::DelayDamp => d.damp = v,
+            FxParam::DelayLowCut => d.low_cut = v,
             FxParam::DelayLevel => d.level = v,
             FxParam::ChorusRate => c.rate = v,
             FxParam::ChorusDepth => c.depth = v,
@@ -601,10 +648,17 @@ impl Engine {
             return;
         }
         match p.patch.kind {
-            Kind::Drum(d) => self.drum_on(part, &d, note, velocity),
-            Kind::Kit => {
-                if let Some(d) = DrumParams::from_gm_note(note) {
-                    self.drum_on(part, &d, note, velocity);
+            Kind::Drum(d) => self.drum_on(part, Ok(&d), note, velocity, 0, 0.0),
+            Kind::Kit(slot) => {
+                let Some(e) = self.kits.get(usize::from(slot)).and_then(|k| k.find(note)).copied() else {
+                    return;
+                };
+                match e.decode() {
+                    Some(KitSound::Drum(d)) => self.drum_on(part, Ok(&d), note, velocity, e.choke, e.pan_f()),
+                    Some(KitSound::Sample(h)) => {
+                        self.drum_on(part, Err(&h), note, velocity, e.choke, e.pan_f());
+                    }
+                    None => {}
                 }
             }
             _ if p.patch.mono => self.mono_on(part, note, velocity),
@@ -617,12 +671,22 @@ impl Engine {
         self.stamp
     }
 
-    fn drum_on(&mut self, part: u8, d: &DrumParams, note: u8, velocity: u8) {
+    /// Start a drum (`Ok`) or a sample hit (`Err`); a choke group ≠ 0
+    /// first chokes the part's sounding voices of that group.
+    fn drum_on(
+        &mut self,
+        part: u8,
+        sound: Result<&DrumParams, &HitParams>,
+        note: u8,
+        velocity: u8,
+        group: u8,
+        pan: f32,
+    ) {
         let p = &self.parts[usize::from(part)];
         let g = Self::vel_gain(&p.patch, velocity);
-        if d.kind == DrumKind::ClosedHat {
+        if group != 0 {
             for v in self.voices.iter_mut().chain(self.tails.iter_mut()) {
-                if v.active && v.part == part {
+                if v.active && v.part == part && v.group == group {
                     v.choke(self.rate_f);
                 }
             }
@@ -630,7 +694,7 @@ impl Engine {
         let i = self.alloc(part, note);
         let stamp = self.next_stamp();
         let seed = self.rng.next_u32();
-        self.voices[i].start_drum(part, d, note, g, stamp, seed, self.rate_f);
+        self.voices[i].start_drum(part, sound, note, g, group, pan, stamp, seed, self.rate_f);
     }
 
     fn poly_on(&mut self, part: u8, note: u8, velocity: u8) {
@@ -677,7 +741,7 @@ impl Engine {
 
     fn note_off(&mut self, part: u8, note: u8) {
         let Some(p) = self.parts.get_mut(usize::from(part)) else { return };
-        if p.patch.is_drum() {
+        if p.patch.ignores_note_off() {
             return;
         }
         let rate = self.rate_f;
@@ -767,11 +831,11 @@ impl Engine {
     }
 
     /// Render one segment of `n` ≤ [`CONTROL_PERIOD`] frames into `self.out`.
-    fn segment(&mut self, n: usize) {
+    fn segment(&mut self, n: usize, cache: Option<&SampleCache<'_>>) {
         let tick = self.clock % CONTROL_PERIOD as u64 == 0;
         let ahead = (CONTROL_PERIOD - (self.clock % CONTROL_PERIOD as u64) as usize) as u32;
-        let ctx = Ctx { rate: self.rate_f, tempo: self.tempo, ahead, tick };
-        let Self { voices, tails, parts, bus, .. } = self;
+        let ctx = Ctx { cache, rate: self.rate_f, tempo: self.tempo, ahead, tick };
+        let Self { voices, tails, parts, bus, misses, .. } = self;
         bus.l[..n].fill(0.0);
         bus.r[..n].fill(0.0);
         for s in &mut bus.send {
@@ -793,6 +857,7 @@ impl Engine {
                     }
                 }
             }
+            *misses = misses.wrapping_add(v.take_misses());
             if !alive {
                 v.active = false;
             }
@@ -821,7 +886,13 @@ impl Engine {
         self.clock += n as u64;
     }
 
-    fn run(&mut self, frames: usize, events: &[Event], mut sink: impl FnMut(usize, [f32; 2])) {
+    fn run(
+        &mut self,
+        frames: usize,
+        events: &[Event],
+        cache: Option<&SampleCache<'_>>,
+        mut sink: impl FnMut(usize, [f32; 2]),
+    ) {
         let mut pos = 0;
         let mut ei = 0;
         loop {
@@ -839,7 +910,7 @@ impl Engine {
             let to_tick = CONTROL_PERIOD - (self.clock % CONTROL_PERIOD as u64) as usize;
             let end = next.min(pos + to_tick);
             let n = end - pos;
-            self.segment(n);
+            self.segment(n, cache);
             for (i, f) in self.out[..n].iter().enumerate() {
                 sink(pos + i, *f);
             }
@@ -849,25 +920,46 @@ impl Engine {
 
     /// Render `out.len() / 2` interleaved stereo frames (an odd last sample
     /// is set to 0), applying `events` at their offsets. Samples are in
-    /// [−1, 1].
+    /// [−1, 1]. Sample voices are silent (no cache: see
+    /// [`Engine::render_f32_with`]).
     pub fn render_f32(&mut self, out: &mut [f32], events: &[Event]) {
+        self.f32_out(out, events, None);
+    }
+
+    /// The same as 16-bit samples (rounded, no dither).
+    pub fn render_i16(&mut self, out: &mut [i16], events: &[Event]) {
+        self.i16_out(out, events, None);
+    }
+
+    /// [`Engine::render_f32`] with sample voices playing from `cache`.
+    /// Call [`SampleCache::service`] with [`Engine::sample_wants`] between
+    /// blocks to stream samples that are not wholly pinned.
+    pub fn render_f32_with(&mut self, out: &mut [f32], events: &[Event], cache: &SampleCache<'_>) {
+        self.f32_out(out, events, Some(cache));
+    }
+
+    /// [`Engine::render_i16`] with sample voices playing from `cache`.
+    pub fn render_i16_with(&mut self, out: &mut [i16], events: &[Event], cache: &SampleCache<'_>) {
+        self.i16_out(out, events, Some(cache));
+    }
+
+    fn f32_out(&mut self, out: &mut [f32], events: &[Event], cache: Option<&SampleCache<'_>>) {
         let frames = out.len() / 2;
         if out.len() % 2 == 1 {
             out[out.len() - 1] = 0.0;
         }
-        self.run(frames, events, |i, [l, r]| {
+        self.run(frames, events, cache, |i, [l, r]| {
             out[2 * i] = l;
             out[2 * i + 1] = r;
         });
     }
 
-    /// The same as 16-bit samples (rounded, no dither).
-    pub fn render_i16(&mut self, out: &mut [i16], events: &[Event]) {
+    fn i16_out(&mut self, out: &mut [i16], events: &[Event], cache: Option<&SampleCache<'_>>) {
         let frames = out.len() / 2;
         if out.len() % 2 == 1 {
             out[out.len() - 1] = 0;
         }
-        self.run(frames, events, |i, [l, r]| {
+        self.run(frames, events, cache, |i, [l, r]| {
             out[2 * i] = to_i16(l);
             out[2 * i + 1] = to_i16(r);
         });

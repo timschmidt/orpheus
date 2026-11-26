@@ -1,6 +1,6 @@
 [package]
 name = "orpheus-synth"
-description = "Synthesis engine: band-limited oscillators, FM, envelopes, state-variable filter, LFOs, voices, drum voices, send effects and a limiter (04-audio §9, WP SYN-1)"
+description = "Synthesis engine: band-limited oscillators, FM, envelopes, state-variable filter, LFOs, voices, drum models and kits, sample playback from a block source through a bounded cache, send effects, a limiter, sound banks (04-audio §9, WPs SYN-1, SYN-2)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
