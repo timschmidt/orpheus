@@ -73,8 +73,9 @@ USB: **Keyboard layout** (the computer's: US, UK, German, French),
 
 ## Menu
 
-Import from card, Move up / down, Delete…, Time check (the clock's date
-and time), Change PIN, Lock, Wipe vault… (deletes every account). If the
+Import from card, Move up / down, Delete…, Time check (the date and time
+in UTC that the codes use: the clock less Settings › Date and time › Time
+zone; compare it with UTC, not your local time), Change PIN, Lock, Wipe vault… (deletes every account). If the
 app says "Vault damaged", wipe it and import again.
 
 ## What has been tested

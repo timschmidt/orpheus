@@ -25,6 +25,7 @@
 mod audio;
 mod books;
 mod bt;
+mod care;
 mod drain;
 mod drive;
 mod fm;

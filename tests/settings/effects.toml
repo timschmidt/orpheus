@@ -769,13 +769,10 @@ name = "Settings › Bluetooth › Output"
 scope = "local"
 values = ["Headphones", "Bluetooth"]
 default = 0
-contexts = ["QuickPanel", "Settings.Bluetooth", "audio-player"]
-unaffected = ["@screens", "@services", "audio"]
-oracle = "Quick panel and Settings show the output chosen. The firmware does not read 0x0604 (no reader in fw/firmware): the audio route follows the Bluetooth connection."
-tests = ["sim/tests/settings_matrix.rs::matrix::s0604", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
-cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0604"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0604"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
-device = true
-uncovered = { "audio-player" = "not wired in the firmware: no reader of 0x0604 in fw/firmware (the route follows the Bluetooth connection)" }
+contexts = []
+oracle = "None: offered in no menu (`settings::hidden`); the quick panel and Settings › Bluetooth leave the row out."
+tests = ["sim/tests/settings_matrix.rs::matrix::s0604", "sim/tests/settings_matrix.rs::effects::regress_output_setting_offered_without_effect", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+gap = "hidden (VER-13, 2026-11-27): the YM03 has no output route to choose. The Bluetooth module takes its analogue audio after the headphone amplifier (U-BT-2, 01 §9), so the jack and a connected sink always carry the same sound and neither can be muted alone; the firmware never read 0x0604. The key and its stored value are kept in case a later board or a module command makes the choice possible"
 
 # ---------------------------------------------------------------- Radio
 
@@ -821,11 +818,11 @@ cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0703"], "@servic
 id = "0x0801"
 name = "Settings › Recording › Source"
 scope = "local"
-values = ["Microphone", "FM radio", "Line in"]
+values = ["Microphone", "FM radio"]
 default = 0
 contexts = ["Recorder", "Recorder.Recording", "Settings.Recording", "recording"]
 unaffected = ["@screens", "@services", "audio"]
-oracle = "Recording (service): the input recorded (microphone, the radio, line in: the file's content and name); Recorder: the source shown, the radio started for FM."
+oracle = "Recording (service): the input recorded (microphone or the radio: the file's content and name); Recorder: the source shown, the radio started for FM. Line in (value 2) retired 2026-11-27: no line input on the YM03; a stored 2 reads as Microphone (regress_rec_source_line_in_retired)."
 tests = ["sim/tests/settings_matrix.rs::matrix::s0801", "sim/tests/recorder.rs::fm_source_starts_the_radio_and_names_the_station", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
 cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0801"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0801"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 

@@ -615,6 +615,11 @@ fn auth_cases(add: &mut dyn FnMut(String, String)) {
             }
         }
     }
+    // Time check at Time zone +01:00: UTC is an hour behind the clock (DOC-2).
+    add(
+        "auth_time_check_tz_dark_latin".into(),
+        format!("@apps theme:dark set:0x0505=60 {open} menu down*3 ok"),
+    );
     add("auth_list_amber".into(), format!("@apps theme:amber {open}"));
     add("auth_code_amber".into(), format!("@apps theme:amber {open} ok wait:50"));
     add("auth_locked_amber".into(), format!("@apps theme:amber {locked}"));
@@ -938,6 +943,11 @@ fn app_cases(add: &mut dyn FnMut(String, String)) {
         ("battery", "prev ok down*3 ok down*4 ok expect-screen:Info"),
         ("reset_dialog", "prev ok down*11 ok down*4 ok"),
         ("format_dialog", "prev ok down*10 ok down*4 ok"),
+        // VER-13 (DOC-2 findings): Storage's card work and Diagnostics.
+        ("check_card", "prev ok down*10 ok down*3 ok wait:50"),
+        ("check_card_problems", "set:cardbad=1 prev ok down*10 ok down*3 ok wait:50"),
+        ("formatted", "prev ok down*10 ok down*4 ok next ok wait:50"),
+        ("diagnostics", "prev ok down*11 ok down*2 ok expect-screen:Info"),
         ("home_apps", "prev ok down*2 ok down*11 ok expect-screen:HomeApps down*2"),
         ("power_menu", "hold:power expect-screen:PowerMenu"),
         ("quick", "set:playing=1 set:bt=connected hold:menu expect-screen:QuickPanel down*3 next"),

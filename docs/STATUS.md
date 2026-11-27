@@ -82,10 +82,152 @@ of every session. Newest entries first in §3.
 | A11Y-2 | **on the player** (suite `settings_accessibility` passes 2026-11-27); journey `settings_accessibility` and user check 31 | Settings › Accessibility (Text size Normal/Large/Extra large, Hold delay 0.5–2 s, Key repeat Normal/Slow/Slower; packed in `0x0D60`), Themes White on black / Black on white (≥ 7:1), reduced motion = Animations off (spinner still, blinks lit), Key click Presses and holds (hold confirmation); 63 `a11y_*` goldens (session entry 2026-11-26 "A11Y-2") |
 | A11Y-1 | **done (host + simulator)**; in the firmware with TTS-3 (feature `speech`, **on by default since PG-2**, suite `screen_reader` passes on the player; chords approved by the owner); **user check: listen to the spoken journeys** | Screen reader: `orpheus_ui::a11y` (descriptions, `Reader`, `SpeechService`, `UtteranceQueue`, earcons, chords) behind `screen-reader`; every one of the apps' 72 screens describes itself (lint: 629 foci, every screen reached); Settings › Accessibility: Screen reader, Speech rate 0.25×–10× in 0.25× steps, Voice, Pitch, Verbosity, Sound cues, Where am I, Keys with screen off, Speech volume and Music while speaking (TTS-3); toggle = hold Back + Menu 2 s (Vol+ + Vol− share a ladder); 8 spoken-journey goldens with audio hashes; matrix contexts `speech`, `speech-music` (session entries 2026-11-26 "A11Y-1", 2026-11-27 "TTS-3") |
 | VER-13 Brightness (U-PWM-3) | **on the player** (suite `settings_brightness` passes 2026-11-27); journey `settings_brightness` and user check 32 | Settings › Display › Brightness = the stock levels 1–11 (default 6) on the stock PWM4 duties, live; key `0x030D` (old `0x0301` retired); alert flash 15 / 3 (never 16); `ui top` `bl=` |
+| VER-13 (DOC-2 findings) | **done (host + simulator + firmware built); on the player: not yet** (2026-11-27) | Time check shows UTC (`regress_auth_time_check_shows_utc`); Recording › Source Line-in retired; Output hidden (no route, U-BT-2); Settings › Storage: Clear caches, Check card (read-only), Format card (owner allowed, 2026-11-27, via the lead) work through `orpheus-fs` (`format`, `Volume::check`, `remove_tree`); System › Diagnostics read-only; journeys `storage`, `storage_clear` (not run); rodata window 64/64; stack margin 4,276 B (session entry 2026-11-27 "VER-13: the DOC-2 findings fixed") |
 | VER-3 | **done (host)** | Adversarial-input suites in 27 crates (`tests/adversarial.rs`, shared helper `tests/adversarial.rs`; 99 tests, 24 `proptest` properties with fixed seeds, failures recorded in `tests/regress/proptest/`); 3 bugs fixed (F-GAME-1, F-SET-3, F-SET-4); inventory and what is not covered: `docs/verification/baseline-2026-11.md` §9 (session entry 2026-11-27 "VER-3") |
 | VER-4 (settings store keys) | **done, on the player** (store mounts on every boot since the 2026-11-26 read-race fix; owner's settings intact) | Store index 128 → 192 keys at 4 B a slot (was 8), same NOR format both ways (fixture from the old code, byte-equal images); cache write marks unlimited; 131 keys in use with every app (61 free), firmware 129; sector ceiling ≈ 209 settings keys (256 cannot fit one sector); .bss −1,248 B, stack margin 5,664 B; compaction no longer re-blesses a rotted value (session entry 2026-11-26 "VER-4: settings store index") |
 
 ## 3. Session log
+
+### 2026-11-27 — VER-13: the DOC-2 findings fixed; Storage and Diagnostics on the player (worker, no hardware)
+
+Host, simulator and firmware build only (no `xtask dev`: another worker
+had the player). The six findings of the DOC-2 entry below, plus the
+lead's update during the session: the owner replaced the player's card
+with one that is safe to format and allowed Format card (2026-11-27,
+relayed by the lead; not heard from the owner by this worker), so it is
+built rather than hidden and there is no §5 question about it.
+
+* **Authenticator › Time check** showed the clock's local time labelled
+  "UTC" (`screens/auth.rs` drew `now()`). It shows the UTC the codes are
+  computed from (`unix_time()`, the clock less Time zone).
+  `regress_auth_time_check_shows_utc` (sim/tests/auth.rs; fails without
+  the fix: 12:41 "UTC" at +01:00); golden `auth_time_check_tz_dark_latin`
+  (status bar 12:41, dialog 11:41:00 UTC).
+* **Recording › Source** offered Line-in; the YM03 has no line input (01
+  §9 row "Audio inputs on the board", inferred). Value 2 retired: two
+  choices, a stored 2 reads as Microphone (`validate`), `rec_source(2)` is
+  Microphone; `RecorderService::rec_has_line_in` and the simulator's
+  `set:recline` removed; `rec start line` (developer) stays.
+  `regress_rec_source_line_in_retired`; effects.toml 0x0801 values
+  Microphone, FM radio.
+* **Output (0x0604)** was never read: there is no route to choose (the
+  module takes its audio after the amplifier, U-BT-2: jack and sink carry
+  the same sound, neither can be muted alone). Hidden (`settings::hidden`,
+  as Speed): not in Settings › Bluetooth nor the quick panel; the dead
+  Now Playing handler removed; key kept. effects.toml: `contexts = []`
+  and a `gap`. `regress_output_setting_offered_without_effect`
+  (sim/tests/settings_matrix.rs: neither list offers it, no frame
+  changes). Quick-panel goldens (6) and `app_group05` re-blessed.
+* **Storage and Diagnostics**, built (05 §7.11 "As built (VER-13 …)"):
+  * `orpheus-fs`: `format` module (FAT32 to 32 GiB, exFAT above and below
+    33 MiB; on the volume's own region: the MBR's first FAT/exFAT
+    partition or the whole superfloppy; the partition table never
+    written; GPT and unknown layouts refused, nothing written; boot
+    sectors zeroed first and written last, so a cut format does not
+    mount and formats again; label ORPHEUS; the exFAT up-case table is
+    mkfs.exfat's byte for byte, from four identity runs and `upcase16`,
+    so a formatted card keeps the fast up-case path); `Volume::check`
+    (reads every folder to a cursor-stack depth, follows every file's
+    chain to its size, writes nothing, stops when asked);
+    `Volume::remove_tree` (inside the write prefix); `region_of` shared
+    by mount and format.
+  * `orpheus-apps`: `StorageOutcome`, `CACHE_DIRS` (`/.orpheus/cache`,
+    `/.orpheus/index`), `CHECK_DEPTH` 8, `other::STORAGE`, `Diagnostics`;
+    Settings › Storage: one card job at a time ("The card is busy"),
+    "Started", then a toast (Done / Card formatted) or a dialog (No
+    problems found · Problems found + "Check the card on a computer." ·
+    Check stopped · The card could not be read · Format failed). Format's
+    confirmation (destructive, Cancel focused): "All music and files on
+    the card are erased." Diagnostics: a read-only page (Uptime,
+    Processor MHz, Code loads, Audio underruns, Free stack).
+  * Firmware: `care.rs`; `media::Req::Care` → the idle loop hands the
+    card over as for USB (`hand_over`: playback stopped, state saved),
+    `audio::release` runs `care::run` (Clear, Check) or `care::format`
+    instead of the USB hand-over, then `card_back`. Format: the volume
+    flushed, the card formatted through it, the old volume dropped
+    without a flush, mounted again. Check stops when any request for the
+    card task arrives. `care:` log line. `Fw::care_poll` raises
+    `other::STORAGE`; Diagnostics from `uptime`, `delay::core_hz`, pager
+    loads, `audio::UNDERRUNS`, `rt::stack_unused`.
+  * Simulator: the same `orpheus-fs` calls on its card (`Media::
+    format_card`, `clear_caches`, `check_card`), `set:cardbad=1` (a file
+    with a broken chain).
+  * Tests: `crates/orpheus-fs/tests/format.rs` (7: FAT32 and exFAT on an
+    MBR partition, `fsck.fat`/`fsck.exfat -n` clean before and after use,
+    the MBR and gap untouched, exFAT by size on a 33 GiB sparse image,
+    label, superfloppy, refusals, a format cut at five points);
+    `tests/care.rs` (4: counts, read-only, depth, stop, a broken chain,
+    remove_tree only the tree and only under the prefix, `fsck` clean);
+    unit `upcase_table_is_the_standard_one`, `layouts`;
+    `sim/tests/storage.rs` (6, with `regress_diagnostics_was_not_available`:
+    it opened "Not available yet"). Goldens `app_check_card`,
+    `app_check_card_problems`, `app_formatted`, `app_diagnostics` (6
+    each), `app_format_dialog` (new text) — looked at. Suite: journeys
+    `storage`, `storage_clear` with expected frames (looked at; counts and
+    values masked); `home/quick` and `settings/bluetooth` re-blessed (no
+    Output row). The simulated player's `ls` (xtask `SimPlayer`) answered
+    a fixed root listing for any path; it reads the simulated card now
+    (`Media::ls`), so `storage_clear`'s `ls` checks run in the dry run.
+* **Stale text**: `orpheus-apps/Cargo.toml` (games, Salvo, Bricks, Books,
+  MIDI, screen reader are in the firmware; the Sequencer is not, and why),
+  `strings.rs`, `orpheus-ui/src/a11y.rs`; 05 §7.13 (games feature),
+  §7.14, §7.15, §7.16 (Sequencer not wired, not "until SYN-3").
+* **Radio spec** (05 §7.3) now says what the code does: Down next preset,
+  Up previous (as every list; the user page already said so), steps and
+  seeks wrap at the region's limits, Wide 65–108 MHz, RDS clock built
+  (Set from RDS). No code change.
+* **Game sound effects**: 05 §7.13 marks them not built.
+* **Docs**: `docs/user/settings.md` (Storage section, Diagnostics, no
+  Output), `authenticator.md` (Time check is UTC), `keys.md` (quick
+  panel); `recorder.md` already said Microphone and FM only.
+* **Firmware numbers** (`xtask build`, speech + Books): resident 60,556 →
+  60,612 B; `.bss` 147,352 → 147,360 B; code 127/128 (8,194 B free,
+  unchanged); **rodata window 61 → 64 of 64** (cold code 21 → 22 pages,
+  164,536 → 176,410 B; the formatter is 5.3 KB, Check and Clear about
+  1.2 KB each): the code window's reserve page (8 KiB) is now the only
+  room left for code; slot 1,605,632 → 1,630,208 B. `stack --check`:
+  13,644 B of 17,920 B, **margin 4,276 B (unchanged)**, the worst chain
+  the Vorbis set-up as before. What it took: each card job polled in its
+  own frame (`Own`/`Apart`), `release` a two-arm dispatcher (`to_usb` the
+  old body), Care folded into `Idle::Release` (an arm of its own grew
+  the task's poll in the `play-pcm` cluster by 196 B and made `play-fill`
+  share lines with `mp3-frame`/`flac-frame`), the formatter's two
+  512-byte locals moved into the caller's buffer, `check`'s stop callback
+  generic (an unresolved indirect call), and Format holding no `Card` in
+  its future (the card task's future was +312 B in `.bss`: over budget
+  and one 256 B stack step lower). `check-resident` ok.
+* **Gate**: `cargo fmt --all --check` (root, `fw/`); `cargo clippy
+  --workspace --all-targets -D warnings`; `fw/` clippy as the gate runs
+  it; `cargo test --workspace --no-fail-fast` 2,284 passed, 0 failed, 14
+  ignored; `settings-matrix --check` 184 settings, 13,171 / 13,217 cells
+  (99.7 %), 4 without an effect, 50 exclusions, 0 errors; goldens (in the
+  workspace tests); `xtask build`, `check-resident`, `size --check`,
+  `stack --check`, `xtask test pagelink` (self-test passed); `brand
+  --check`; `site --check` (134 files; `site shots` rewrote
+  `app_quick_dark_latin`; settings.md cut back under 600 words). **Not
+  run**: every `xtask dev` step (the brief).
+* **On the player, for the lead** (not run here):
+  1. `cargo xtask dev suite storage` (new journey): Check card on the
+     owner's card, the result dialog, Diagnostics. The 60 s wait is a
+     guess: read `care: check ok dirs=… files=… problems=…` in the log for
+     the time it took and the counts; adjust the wait. Then
+     `--update-expected` for its shots after looking.
+  2. `cargo xtask dev suite storage_clear` (new, last in the run order):
+     Clear caches; `ls` shows both folders gone; browse a large folder
+     after (index rebuilt).
+  3. Format card (**lead/owner check, no journey**; user check 38 in
+     USER-CHECKS.md covers 1–3 by hand): on the card the owner
+     said is safe to format only. Settings › Storage › Format card…,
+     Format; "Card formatted"; Card info shows FAT32 (≤ 32 GB) or exFAT;
+     Files empty; the card then reads on a computer (label ORPHEUS,
+     `fsck` clean) and takes files; settings and the vault unchanged.
+  4. Authenticator › Time check with Time zone ≠ 0: the time shown is UTC.
+  5. Settings › Recording › Source: two choices; Settings › Bluetooth and
+     the quick panel: no Output row.
+* **Open**: Check card's duration on a large card and whether to run it
+  while music plays (now it stops playback, as Clear and Format); the
+  spec's full Diagnostics (key, display, audio, sensor tests, card speed,
+  event list) is not built; the rodata window is full.
 
 ### 2026-11-27 — DOC-2 refresh: docs and site brought up to date (worker, no hardware)
 

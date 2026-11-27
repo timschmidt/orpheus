@@ -209,7 +209,7 @@ fn no_recordings_yet_and_no_card() {
 fn the_card_fills_up_and_the_recording_is_saved() {
     // WAV 48 kHz stereo: the simulated card's free space lasts a minute
     // or two.
-    let mut s = sim(&format!("set:0x0801=2 set:recline=1 set:0x0803=2 {APP} ok"));
+    let mut s = sim(&format!("set:0x0801=1 set:0x0803=2 {APP} ok"));
     let mut ended = None;
     for _ in 0..40 {
         run(&mut s, "wait:10000");

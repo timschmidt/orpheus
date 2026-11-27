@@ -27,7 +27,6 @@ pub struct SimRecorder {
     pub signal: Signal,
     /// `set:recstall=MS`: no card writes for that long from now.
     pub stall_until: u64,
-    pub line_in: bool,
     /// `set:rectuner=0`: no tuner (FM recordings end at once).
     pub tuner: bool,
     settings: Option<RecSettings>,
@@ -61,7 +60,6 @@ impl Default for SimRecorder {
             phase: RecPhase::Off,
             signal: Signal::Bursts { hz: 220, amp: 14_000, on_ms: 700, off_ms: 500 },
             stall_until: 0,
-            line_in: false,
             tuner: true,
             settings: None,
             adc: None,

@@ -337,7 +337,7 @@ strings! {
     FactoryResetQ = "Reset all settings?",
     FactoryResetText = "Settings return to their defaults. The card is not touched.",
     FormatQ = "Format the card?",
-    FormatText = "Everything on the card will be erased.",
+    FormatText = "All music and files on the card are erased.",
     RebuildQ = "Rebuild the library?",
     RebuildText = "The card is scanned again in the background.",
     ClearQ = "Clear caches?",
@@ -928,8 +928,9 @@ strings! {
     HelpBricks2 = "Prev and Next (or Down and Up) move the paddle, faster while held. OK launches the ball. Where the ball meets the paddle sets its way: the middle sends it nearly straight up, the ends off to the side. The ball speeds up a little as the level goes on.",
     HelpBricks3 = "Some bricks drop a capsule: catch it with the paddle. A bar widens the paddle, S slows the ball, three dots split it into three, C lets the paddle hold the ball (OK lets it go), + is a life. Back pauses the game.",
     HelpBricks4 = "The first eight levels are hand-made; after them (or from the start, with the Levels setting) they are generated, fuller and harder as you go.",
-    // M15 Books (BOOK-1). Built with and without the `books` feature (not
-    // in the firmware yet), so the numbers do not depend on it.
+    // M15 Books (BOOK-1). Built with and without the `books` feature (the
+    // firmware has it by default since BOOK-1/2), so the numbers do not
+    // depend on it.
     AppBooks = "Books",
     BooksSearching = "Looking for books",
     BooksNone = "No books found",
@@ -1031,6 +1032,23 @@ strings! {
     // Books on the player (BOOK-1/2 wiring): an EPUB's conversion waits
     // for the decoder arena, which a loaded track holds (a paused one too).
     BooksStopMusic = "Stop the music to prepare this book.",
+    // Settings › Storage and System › Diagnostics on the player (VER-13,
+    // DOC-2 findings, 2026-11-27).
+    CheckOk = "No problems found",
+    CheckBad = "Problems found",
+    CheckBadText = "Check the card on a computer.",
+    CheckStopped = "Check stopped",
+    CheckFailed = "The card could not be read",
+    Problems = "Problems",
+    CardFormatted = "Card formatted",
+    FormatFailed = "Format failed",
+    FormatFailedText = "Try again, or format the card on a computer.",
+    StorageBusy = "The card is busy",
+    Uptime = "Uptime",
+    Processor = "Processor",
+    CodeLoads = "Code loads",
+    AudioUnderruns = "Audio underruns",
+    StackFree = "Free stack",
     // SEQ-2: behind the `seq` feature (the firmware, which has no
     // Sequencer yet, cannot spare the read-only data: its stack margin is
     // within one 256-byte step of the budget). They are the last strings:
@@ -1146,9 +1164,9 @@ strings! {
     SeqNoFill = "None",
     #[cfg(feature = "seq")]
     SeqMore = "More",
-    // A11Y-1: the screen reader's settings, behind `screen-reader` (not in
-    // the firmware: no speech output there yet), after the Sequencer's
-    // block for the same reason as it.
+    // A11Y-1: the screen reader's settings, behind `screen-reader` (in the
+    // firmware by default since PG-2, with the speech voice), after the
+    // Sequencer's block for the same reason as it.
     #[cfg(feature = "screen-reader")]
     ScreenReader = "Screen reader",
     #[cfg(feature = "screen-reader")]

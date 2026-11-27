@@ -31,7 +31,7 @@ Power has its own times (below).
 * While something plays and you are not on Now Playing, the bottom row is a
   small player showing the title.
 * **Hold Back** from anywhere to get Home. **Hold Menu** from anywhere for
-  Quick settings: Now Playing, Lock, Bluetooth on/off, Output and more.
+  Quick settings: Now Playing, Lock, Bluetooth on/off, Sleep timer and more.
 * Destructive actions (factory reset) ask first, with the safe answer
   highlighted.
 

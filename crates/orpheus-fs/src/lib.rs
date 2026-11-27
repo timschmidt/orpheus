@@ -26,8 +26,10 @@ extern crate std;
 
 mod block;
 mod cache;
+mod care;
 mod dir;
 mod file;
+pub mod format;
 mod tables;
 pub mod unicode;
 mod volume;
@@ -37,6 +39,7 @@ pub mod host;
 
 pub use block::{BlockDevice, SECTOR_SIZE, Sector, SyncPoll};
 pub use cache::CacheSlot;
+pub use care::CheckReport;
 pub use dir::{DirCursor, DirEntry, Locator, MAX_NAME_UTF8, PathWalk, WalkCache};
 pub use file::{Extent, ExtentIter, File, OpenMode, SeekFrom};
 pub use volume::{DateTime, FsKind, MountOptions, Volume};

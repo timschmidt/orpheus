@@ -144,10 +144,12 @@ fn power_menu_actions() {
 
 #[test]
 fn quick_panel_changes_values_in_row() {
-    let s = sim("hold:menu expect-screen:QuickPanel down*4 next next");
+    // Rows: Lock, Bluetooth, Sleep timer, Brightness, Shuffle, Repeat,
+    // Equaliser (Output is hidden since 2026-11-27: no route to choose).
+    let s = sim("hold:menu expect-screen:QuickPanel down*3 next next");
     assert_eq!(s.sys.settings.get(id::BRIGHTNESS), 8);
-    let s = sim("hold:menu down*2 prev");
-    assert_eq!(s.sys.settings.get(id::OUTPUT), 1, "choices wrap");
+    let s = sim("hold:menu down*5 prev");
+    assert_eq!(s.sys.settings.get(id::REPEAT), 2, "choices wrap");
     let s = sim("hold:menu down ok");
     assert_eq!(s.sys.settings.get(id::BLUETOOTH), 1);
 }
