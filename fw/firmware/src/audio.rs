@@ -448,11 +448,19 @@ const SEED_US: [u32; KINDS] = [
     // into the sector cache; one sector written back with its FAT copy;
     // the sync and the clean flag)
     15_000,
+    // Books (`crate::books::chore`, one step of `orpheus_books::shelf::Desk`
+    // at a time, ≤ 16 sectors read and ≤ 12 written; never a folder made
+    // while playing): writes (a sector written back, a job's entry, the
+    // reading state), the library search (16 entries or a 512-byte head),
+    // reads (rows, an open, the 2 KiB window, an index chunk), a
+    // conversion piece (a 512-byte read, up to two writes), a layout
+    // piece (a 512-byte read, or 512 bytes of index written)
+    20_000, 20_000, 15_000, 15_000, 15_000,
     // requests: browse, want, text, queue-win, release, image, picture,
     // lib-list, rebuild, drain, sensor, alert, otp, delete, update, games
-    // (its first piece, as `job:games`)
+    // (its first piece, as `job:games`), books (a wake-up while playing)
     10_000, 15_000, 15_000, 2_000, 1_000, 1_000, 30_000, 20_000, 1_000, 15_000, 15_000, 1_000, 25_000, 30_000,
-    30_000, 15_000,
+    30_000, 15_000, 1_000,
 ];
 
 /// The chore kinds' measured needs (zeros: the seeds stand until measured;
@@ -1661,6 +1669,8 @@ enum Chore {
     Prepare,
     Serve,
     Job,
+    /// Books card work (`crate::books::chore`), after the listing pieces.
+    Books,
     Meta,
 }
 
@@ -1885,6 +1895,8 @@ fn chore_due(b: &mut Blk, ring: &Ring, srv: &Server, out: &mut PcmOut) -> Option
     } else if srv.has_job() && !tail {
         // A listing being made in pieces (Files while playing).
         (Chore::Job, K_JOB + srv.job_kind())
+    } else if crate::books::wants() && !tail {
+        (Chore::Books, K_JOB + media::JOB_BOOKS + crate::books::kind())
     } else if b.meta != 0 && b.join == 0 && u64::from(b.frames) * 1000 >= META_AFTER_MS * b.rate {
         // The gapless track's library place and art once its first seconds
         // have played.
@@ -2087,6 +2099,11 @@ async fn pause(
     while srv.has_job() && media::REQS.is_empty() && media::PLAY.is_empty() {
         srv.step(vol).await;
     }
+    // Books card work while the DAC is stopped (no scratch: the decoder
+    // is loaded; folders may be made).
+    if crate::books::wants() {
+        Apart(crate::books::run_paused(vol)).await;
+    }
 }
 
 /// The paused loops' wait (codecs, synth): 200 ms, or speech to take (the
@@ -2134,6 +2151,10 @@ async fn chores(
         }
     } else if due.what == Chore::Job {
         srv.step(vol).await;
+        T_SERVE.fetch_add(now32().wrapping_sub(t0), Ordering::Relaxed);
+        note_as(UB_SERVE, due.kind as u8, t0);
+    } else if due.what == Chore::Books {
+        Apart(crate::books::chore(vol)).await;
         T_SERVE.fetch_add(now32().wrapping_sub(t0), Ordering::Relaxed);
         note_as(UB_SERVE, due.kind as u8, t0);
     } else if b.meta == 1 {
@@ -3723,6 +3744,9 @@ async fn resume_at_start(srv: &mut Server) {
 #[allow(clippy::too_many_lines)]
 async fn idle(vol: &mut Volume<'static, Card>, ring: &mut Ring, arena: &mut [u8], srv: &mut Server) -> Idle {
     loop {
+        // Whatever the last pass did with the arena, an EPUB's scratch
+        // lent from it is not what its last step left (`crate::books`).
+        crate::books::arena_taken();
         // A games save or read left in pieces by playback: finished first
         // (outside a chore all at once), so that a card hand-over or the
         // power-off waiting in `pending` comes after it.
@@ -3738,6 +3762,12 @@ async fn idle(vol: &mut Volume<'static, Card>, ring: &mut Ring, arena: &mut [u8]
             // A listing left in pieces by playback: finished now.
             while srv.has_job() && !work_waiting() {
                 Apart(srv.step(vol)).await;
+            }
+            // Books card work (05 §7.15), before anything else uses the
+            // arena in this pass: its first 35,072 bytes are an EPUB's
+            // inflate window while the desk asks for it.
+            if crate::books::wants_idle() && !work_waiting() {
+                Apart(crate::books::run_idle(vol, arena)).await;
             }
             // The battery log (PWR-5) first: a minute's rows are small;
             // then the step counter's (SENS-1); an alert sounds (UI-5d).

@@ -463,6 +463,8 @@ impl Ui {
         crate::rec::stop_for_power_off().await;
         // The game in progress goes to its save file (05 §7.13).
         self.save_games(1500).await;
+        // The open book's reading position (05 §7.15).
+        crate::books::save_for_shutdown(1000).await;
         // The battery log's last row goes out with the card task's flush.
         crate::drain::power_off();
         crate::media::SHUT_DOWN.store(false, core::sync::atomic::Ordering::Release);
@@ -792,7 +794,12 @@ pub fn test_look(sid: orpheus_apps::settings::SettingId) -> Option<i16> {
     // them.
     let armed = look_armed_bit(sid.0)
         .is_some_and(|b| LOOK_ARMED.load(core::sync::atomic::Ordering::Relaxed) & b == 0);
-    let look = (0x0304..=0x030C).contains(&sid.0) || matches!(sid.0, 0x0401 | 0x0A01 | 0x0D03) || armed;
+    // Books' reading settings (0x0F01–0x0F07): the reader's pages and the
+    // library's scope in the suite's shots.
+    let look = (0x0304..=0x030C).contains(&sid.0)
+        || (0x0F01..=0x0F07).contains(&sid.0)
+        || matches!(sid.0, 0x0401 | 0x0A01 | 0x0D03)
+        || armed;
     (look && TEST_LOOK.load(core::sync::atomic::Ordering::Relaxed))
         .then(|| orpheus_apps::settings::def(sid).map_or(0, |d| d.default))
 }
@@ -1307,6 +1314,8 @@ pub async fn ui() {
         ui.fw.poll_picture(t.0);
         // Games: answers of the card task, the next card operation.
         ui.fw.games_poll(t.0);
+        // Books: card work changed the model.
+        ui.fw.books_poll();
         while let Some((k, p)) = ui.mapper.poll(t) {
             let r = ui.shell.key(&mut *ui.fw, k, p, t);
             ui.handle(r);
@@ -1369,6 +1378,8 @@ pub async fn ui() {
         }
         ui.draw(fb).await;
         publish_top(ui);
+        // The Books model goes back to the card task until the next loop.
+        crate::books::ui_release();
         BUSY_US.fetch_add((atj2157_hal::time::now_us() - w0) as u32, core::sync::atomic::Ordering::Relaxed);
     }
 }

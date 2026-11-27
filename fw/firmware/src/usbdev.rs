@@ -355,6 +355,10 @@ impl Target for Fw {
             crate::ui::request_screen_off();
             return true;
         }
+        // Books (BOOK-1/2 wiring): `books status` (RAM), `books test on|off`.
+        if let Some(rest) = data.strip_prefix(b"books ") {
+            return crate::books::test_command(rest);
+        }
         if CARD_WITH_USB.load(Ordering::Relaxed) {
             crate::audio::busy_reply();
             return true;

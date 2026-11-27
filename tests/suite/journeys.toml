@@ -318,6 +318,51 @@ rects = [
     { x = 122, y = 12, w = 6, h = 104, why = "scrollbar: the simulator and the firmware list five games (Salvo, Bricks); kept masked while the counts may differ" },
 ]
 
+# Books (M15, 05 §7.15; the BOOK-1/2 wiring): runs only on an image built
+# with the firmware feature `books` (`requires`; skipped on the shipping
+# image, which has no room for Books yet). The library is the suite's two
+# books (`--setup` puts them in /.orpheus/test/suite/books: a text of four
+# pages and the EPUB sample; `books test on` makes that folder the library,
+# a RAM flag): nothing outside /.orpheus is read for it, and Books writes
+# only its folders, library, cache and reading positions under /.orpheus
+# (rule 5). `books status` is read-only (the model as the card task left
+# it). The library is shot with the text focused (the EPUB's title, a
+# marquee when focused, would move). The text opens where a run left it;
+# three Prevs bring it to its first page whatever that was. Home's Books
+# cell: the player's Home has it only with the feature (then the
+# appearance gets `set:books=on` and this journey's `sim:` lines for it
+# go).
+[[journey]]
+name = "books"
+about = "Books (with the firmware feature `books`): the suite's library of two books, the text's first page, a page turned (books status page=1), back to the first page, back to the library and Home"
+setup = true
+requires = "books status ~ ^books: lib="
+script = """
+cmd: books test on ~ ^books test on
+sim: set:books=on set:bookstest=on
+prev*2 ok wait:500 expect-screen:Books
+dev: wait:3000
+cmd: books status ~ lib=ready n=2\\b
+down wait:300 shot:library
+ok wait:500 expect-screen:Reader
+dev: wait:2000
+prev prev prev wait:500
+cmd: books status ~ book=ready .* page=0\\b
+shot:page1
+next wait:500 shot:page2
+cmd: books status ~ book=ready .* page=1\\b
+prev wait:500
+back wait:300 expect-screen:Books
+back wait:300 expect-screen:Home
+cmd: books test off ~ ^books test off
+sim: set:bookstest=off set:books=off
+"""
+
+[journey.shot.library]
+rects = [
+    { x = 88, y = 14, w = 40, h = 40, why = "each book's progress: New before the text was first opened, 0 % after (its position is kept on the card)" },
+]
+
 # VER-13 (07 §5.12): Settings › Playback › Shuffle on the player. The
 # setting is changed only through the RAM-only settings test session (the
 # first line stops the journey unless the session is on: the owner's

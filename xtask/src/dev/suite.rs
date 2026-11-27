@@ -55,6 +55,12 @@ pub struct Journey {
     /// Needs the fixtures of `--setup`.
     #[serde(default)]
     pub setup: bool,
+    /// A feature the image may lack (BOOK-1/2 wiring: Books is behind the
+    /// firmware feature `books`): a test command and the expression its
+    /// reply must match (`TEXT ~ REGEX`, as `cmd:` lines) for the journey
+    /// to run; otherwise it is skipped (and passes, with a note).
+    #[serde(default)]
+    pub requires: Option<String>,
     pub script: String,
     /// States of the player the journey accepts (the first is the one the
     /// simulator dry run takes); none: the simulator's.
@@ -342,9 +348,10 @@ impl ShotResult {
 #[derive(Debug, Default)]
 pub struct JourneyResult {
     pub name: String,
-    pub error: Option<String>,
-    /// Skipped: the player lacks what the journey `needs` (why).
+    /// Not run: the player lacks what the journey `needs` or `requires`
+    /// (why).
     pub skipped: Option<String>,
+    pub error: Option<String>,
     pub shots: Vec<ShotResult>,
     pub cmds: Vec<(String, Result<String, String>)>,
     pub seconds: f32,
@@ -427,6 +434,20 @@ pub fn best_match<'a>(
     best.unwrap_or_else(|| (&refs[0], Compared::default(), Vec::new()))
 }
 
+/// `requires` (`TEXT ~ REGEX`): `None` if the player's reply to `TEXT`
+/// matches, else why the journey is skipped.
+fn missing_feature(p: &mut dyn Player, req: &str) -> Option<String> {
+    let (text, want) = req.split_once(" ~ ").map_or((req, None), |(t, w)| (t.trim(), Some(w.trim())));
+    let re = match want.map(regex::Regex::new).transpose() {
+        Ok(re) => re,
+        Err(e) => return Some(format!("bad `requires` expression: {e}")),
+    };
+    match player::command(p, text, re.as_ref(), 2000) {
+        Ok(_) => None,
+        Err(e) => Some(format!("`{text}`: {e:#}")),
+    }
+}
+
 /// Run one journey on a player; frames go to `out/<journey>/`.
 pub fn run_journey(
     p: &mut dyn Player,
@@ -458,6 +479,13 @@ pub fn run_journey(
             r.seconds = t0.elapsed().as_secs_f32();
             return r;
         }
+    }
+    if let Some(req) = &j.requires
+        && let Some(why) = missing_feature(p, req)
+    {
+        r.skipped = Some(why);
+        r.seconds = t0.elapsed().as_secs_f32();
+        return r;
     }
     let dir = out.join(&j.name);
     let _ = std::fs::create_dir_all(&dir);
@@ -585,6 +613,12 @@ pub fn fixtures() -> Vec<(String, Vec<u8>)> {
         buf.truncate(n);
         v.push((format!("{FIXTURES}/midi/{name}"), buf));
     }
+    // Books (BOOK-1/2 wiring): the `books` journey's library (`books test
+    // on`), as the simulator's `set:bookstest=on` writes it: a text of four
+    // pages and the EPUB sample (also the player check of an EPUB while
+    // music plays).
+    v.push((orpheus_sim::card::SUITE_TXT.to_string(), orpheus_sim::card::SUITE_BOOK.as_bytes().to_vec()));
+    v.push((orpheus_sim::card::SUITE_EPUB.to_string(), orpheus_sim::card::epub()));
     v
 }
 
@@ -659,6 +693,9 @@ pub fn write_report(out: &Path, player: &str, results: &[JourneyResult], notes: 
             );
         }
         t.push('\n');
+        if let Some(why) = &r.skipped {
+            let _ = writeln!(t, "    skipped: {why}");
+        }
         for s in r.shots.iter().filter(|s| s.screen != s.player_screen) {
             let _ = writeln!(t, "    {}: player on {}, simulator on {}", s.name, s.player_screen, s.screen);
         }
@@ -677,9 +714,6 @@ pub fn write_report(out: &Path, player: &str, results: &[JourneyResult], notes: 
         }
         if let Some(e) = &r.error {
             let _ = writeln!(t, "    ERROR: {e}");
-        }
-        if let Some(s) = &r.skipped {
-            let _ = writeln!(t, "    skipped: {s}");
         }
     }
     std::fs::write(out.join("summary.txt"), &t)?;
@@ -1028,6 +1062,40 @@ mod tests {
         assert!(to_home(&mut p, &homes, &masks).unwrap_err().to_string().contains("appearance"));
     }
 
+    /// A journey whose `requires` the player does not answer as asked
+    /// (an image without Books: `books: not in this build`) is skipped,
+    /// passes and says why; answered, it runs (BOOK-1/2 wiring).
+    #[test]
+    fn a_journey_the_image_cannot_run_is_skipped() {
+        let f = load().unwrap();
+        let j = |requires: &str| Journey {
+            name: "needs".into(),
+            about: String::new(),
+            card: false,
+            setup: false,
+            requires: Some(requires.into()),
+            needs: None,
+            script: "next back".into(),
+            variants: Vec::new(),
+            shot: BTreeMap::new(),
+        };
+        let masks = MaskFile::load(&suite_dir().join("masks.toml")).unwrap();
+        let homes = home_frames(&f.appearance).unwrap();
+        let out = std::env::temp_dir().join(format!("orpheus-skip-{}", std::process::id()));
+        std::fs::create_dir_all(&out).unwrap();
+        let mut p = SimPlayer::default();
+        let missing = j("books status ~ ^books: not in this build");
+        let exp = expected(&f, &[&missing]).unwrap();
+        let r = run_journey(&mut p, &f, &missing, &exp, &masks, &homes, &out);
+        assert!(r.pass() && r.skipped.is_some(), "{r:?}");
+        let t = write_report(&out, "simulator", &[r], &[]).unwrap();
+        assert!(t.contains("needs            skip") && t.contains("skipped: `books status`"), "{t}");
+        let there = j("books status ~ ^books: lib=");
+        let r = run_journey(&mut p, &f, &there, &exp, &masks, &homes, &out);
+        assert!(r.pass() && r.skipped.is_none(), "{r:?}");
+        let _ = std::fs::remove_dir_all(&out);
+    }
+
     #[test]
     fn a_failing_shot_is_reported() {
         let r = JourneyResult {
@@ -1068,6 +1136,11 @@ mod tests {
             if p.contains("/midi/") {
                 // A Standard MIDI File (SYN-3's fixtures).
                 assert_eq!(&data[..4], b"MThd", "{p}");
+                continue;
+            }
+            if p.contains("/books/") {
+                // The Books journey's library: a text and an EPUB (a zip).
+                assert!(p.ends_with(".txt") || data.starts_with(b"PK\x03\x04"), "{p}");
                 continue;
             }
             // Long enough to still play at the journey's `status` check.

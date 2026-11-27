@@ -1767,6 +1767,57 @@ as BOOK-1).** EPUB 2 and 3 convert into the same normalised stream and
   parts come out as `[damaged]` or as unreadable characters; font
   obfuscation does not matter (fonts are not read).
 
+**As built (BOOK-1/2 wiring, 2026-11-26): in the firmware behind its
+feature `books`, off** — with it the paged code needs 139 of the code
+window's 128 pages (Books ≈ 112 KB of code against 33 KB free; numbers and
+options in docs/STATUS.md). Everything below is built, host-tested and
+checked in a linked image (see STATUS), not run on the player.
+* **The split** (`orpheus_books::shelf`): `Shelf` is the screens' model
+  (5,476 B: the book with its 2 KiB window, contents and index rows, its
+  state; the library's rows and order) and only it changes on a request;
+  what a request asks of the card (open a book, write the reading state,
+  drop the open book's files or its layout) waits in it for the next step.
+  `Desk` is the card side (7,712 B: the job of the moment, the open book's
+  files, a 1 KiB I/O buffer and a directory entry). `Desk::step_with(&mut
+  Shelf, …)` is one step; `Books` keeps both (simulator, tests). The
+  step's buffers are the desk's and every job is built in a function of
+  its own: the step future 5,464 → 2,600 B (host), its poll frame on the
+  player 10,040 → 2,568 B; a book and the desk are reset in place (a
+  `Book` built and moved was 3.8 KB of the UI task's frame twice over).
+* **The model between the tasks** (`fw/firmware/src/books.rs`): two statics;
+  the UI takes the model at its first use in a UI loop and gives it back
+  at the loop's end; the card task takes it for one step at a time — in a
+  chore it only tries (a UI loop in progress: the next chore), elsewhere
+  it waits for the UI's release; the UI waits for a step in progress
+  (≤ one step: the card task preempts it). A data tag (0x102) wakes the UI,
+  which turns it into `other::BOOKS`.
+* **Card work while a track plays**: chores after the listing pieces, one
+  kind per `orpheus_books::shelf::Kind` (`job:bwrite`, `bscan`, `bread`,
+  `bconv`, `blay`: each its own measured need), steps while the chore's
+  budget lasts; no folder made (`Desk::mkdir` off: a folder that exists is
+  looked up, a missing one waits for the idle card task — making one zeroes
+  a cluster, 256 sectors on the owner's card); no scratch. **Paused**: steps
+  between the paused loop's requests (≤ 150 ms a pass), folders made, no
+  scratch (the decoder stays loaded). **No track loaded** (the idle loop):
+  steps until other work waits, paced (a rest as long as the step), with
+  the decoder arena's first 35,072 B lent while `Desk::needs_scratch`; the
+  idle loop counts every pass that may give the arena to something else,
+  and a lent step after one is a step without the scratch first (an entry
+  half decoded starts again, never from a window someone overwrote).
+* **The EPUB hint**: "Stop the music to prepare this book." (`Book::waiting`;
+  pausing keeps the decoder in the arena, so it says Stop).
+* **USB hand-over** (`Desk::suspend`, `Shelf::card_back`): the reading state
+  and the files jobs left are written and the cache flushed before the
+  card goes; afterwards the desk starts afresh and the open book opens
+  again at its saved position. **Power-off and restart**: the reader
+  closes (its position written, ≤ 1 s) before the card task shuts down.
+* **Test hooks**: `books status` (the model as the card task left it:
+  library and book phase, conversion, waiting, top, page, pages, steps,
+  lent steps, retaken scratches, a folder waiting), `books test on|off`
+  (`Scope::Test`: `/.orpheus/test/suite/books`, the suite's books), the
+  simulator's `set:bookstest=on`; the suite's `books` journey (skipped on
+  an image without the feature: `requires`).
+
 ### 7.16 Sequencer (drum machine and synth; M17; owner's requirement 2026-11-25)
 
 A step sequencer on `orpheus-synth` (04 §9): drum and synth tracks in

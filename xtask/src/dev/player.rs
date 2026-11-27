@@ -535,6 +535,14 @@ impl Player for SimPlayer {
             // TTS-3: the speech voice as the firmware's `ui speech` says it
             // (fw/firmware/src/speech.rs `status_reply`).
             "ui speech" => sim_speech(&self.sim),
+            // Books (BOOK-1/2 wiring), as the firmware's `books status`
+            // and `books test on|off` (`crate::books`).
+            "books status" => sim_books_status(&self.sim),
+            "books test on" | "books test off" => {
+                let on = text.ends_with("on");
+                self.sim.run_script(if on { "set:bookstest=on" } else { "set:bookstest=off" })?;
+                if on { "books test on" } else { "books test off" }.into()
+            }
             "fm status" => {
                 let i = self.sim.sys.radio.radio.info();
                 format!("fm status: phase={:?} khz={} rssi={}", i.phase, i.khz, i.rssi)
@@ -634,6 +642,40 @@ pub fn sim_speech(sim: &AppSim) -> String {
 
 /// `synth bench I [N] [BLOCKS]` on the host: the reply's words the
 /// simulator can know (no cycles), with the render's hash.
+/// `books status` as the firmware answers it (`fw/firmware/src/books/on.rs`).
+fn sim_books_status(sim: &AppSim) -> String {
+    use orpheus_apps::books::core::shelf::{LibPhase, Phase};
+    let b = &sim.sys.books;
+    let (l, k) = (&b.shelf.lib, &b.shelf.book);
+    let lib = match l.phase {
+        LibPhase::Loading => "loading",
+        LibPhase::Searching => "searching",
+        LibPhase::Ready => "ready",
+        LibPhase::Unknown => "unknown",
+    };
+    let book = match k.phase {
+        Phase::Opening => "opening",
+        Phase::Converting => "converting",
+        Phase::Ready => "ready",
+        Phase::Failed => "failed",
+        Phase::Closed => "closed",
+    };
+    let page = k.page_no.map_or("-".to_string(), |p| p.to_string());
+    format!(
+        "books: lib={lib} n={} found={} book={book} conv={} wait={} top={} page={page} pages={} laid={} \
+         steps={} lent=0 retaken=0 mkdir=0 test={}",
+        l.count,
+        l.found,
+        k.permille,
+        u8::from(k.waiting),
+        k.top.offset,
+        k.pages,
+        u8::from(k.complete),
+        b.shelf.steps,
+        u8::from(b.test),
+    )
+}
+
 fn sim_bench(t: &str) -> String {
     use orpheus_synth::bench;
     let mut w = t.split_whitespace().skip(2).map(str::parse::<u32>);

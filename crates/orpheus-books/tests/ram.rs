@@ -11,17 +11,19 @@ use orpheus_books::files::{BookState, LibRecord};
 use orpheus_books::inflate::{Inflate, SCRATCH};
 use orpheus_books::layout::{Liner, Pager, Paginator};
 use orpheus_books::opf::Doc;
-use orpheus_books::shelf::{Book, Library, Shelf, WINDOW};
+use orpheus_books::shelf::{Book, Books, Desk, Library, Shelf, WINDOW};
 use orpheus_books::xhtml::Xhtml;
 use orpheus_books::zip::{CdWalk, Name};
 
 #[test]
 fn ram_figures() {
     let rows = [
-        ("Shelf (all of it)", size_of::<Shelf>()),
+        ("Books (model and card side)", size_of::<Books>()),
+        ("Shelf (the model: the UI side)", size_of::<Shelf>()),
         ("  Book (text window, contents window, index cache, state)", size_of::<Book>()),
         ("  Library (sort order, row window)", size_of::<Library>()),
         ("  BookState (position, 12 bookmarks)", size_of::<BookState>()),
+        ("Desk (the card side: the work, files, I/O buffer)", size_of::<Desk>()),
         ("Converter (decoder, parser, writer)", size_of::<Converter>()),
         ("MetaReader (library search)", size_of::<MetaReader>()),
         ("Paginator", size_of::<Paginator>()),
@@ -52,7 +54,15 @@ fn ram_figures() {
     // (+2,360 B); the files a job leaves, kept until their entries are
     // written (`regress_abandoned_job_loses_no_clusters`), and a library
     // title to rewrite (+440 B).
-    assert!(size_of::<Shelf>() <= 12_224, "{} B", size_of::<Shelf>());
+    // The firmware wiring (2026-11-26) split it: the model the screens
+    // read (5,476 B: the book with its 2 KiB window, the library rows)
+    // and the card side (7,712 B: the work, the files, a 1 KiB I/O
+    // buffer and a directory entry, which were the step future's: 5,464
+    // -> 2,600 B, `tests/shelf.rs`); the search's directory entry is the
+    // desk's (-840 B in all).
+    assert!(size_of::<Books>() <= 13_248, "{} B", size_of::<Books>());
+    assert!(size_of::<Shelf>() <= 5_504, "{} B", size_of::<Shelf>());
+    assert!(size_of::<Desk>() <= 7_744, "{} B", size_of::<Desk>());
     assert!(size_of::<Epub>() <= 2_944, "{} B", size_of::<Epub>());
     assert!(size_of::<Liner>() + size_of::<Pager>() <= 160, "{} B", size_of::<Liner>() + size_of::<Pager>());
 }

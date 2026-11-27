@@ -106,9 +106,19 @@ pub const FIND_SETS: u32 = 16;
 /// Kinds of listing piece (`Server::job_kind`), each with its own measured
 /// need (`audio`'s chore costs): the count of a folder, the index file's
 /// open, the focused row's search, rows from the index, a window of an
-/// unsorted folder, an Up next title.
-pub const JOB_KINDS: usize = 7;
-pub const JOB_NAMES: [&str; JOB_KINDS] = ["count", "index", "focus", "rows", "win", "qtitle", "games"];
+/// unsorted folder, an Up next title, a games operation; then the Books
+/// card work's kinds from [`JOB_BOOKS`] on (`crate::books::kind`,
+/// `orpheus_books::shelf::Kind`: writes, the library search, reads, a
+/// conversion piece, a layout piece).
+pub const JOB_KINDS: usize = 7 + orpheus_books::shelf::KINDS;
+pub const JOB_BOOKS: usize = 7;
+pub const JOB_NAMES: [&str; JOB_KINDS] = [
+    "count", "index", "focus", "rows", "win", "qtitle", "games", "bwrite", "bscan", "bread", "bconv", "blay",
+];
+const _: () = {
+    let n = orpheus_books::shelf::KIND_NAMES;
+    assert!(n.len() == JOB_KINDS - JOB_BOOKS);
+};
 
 /// A listing being made while a track plays, one piece per chore.
 #[derive(Clone, Copy)]
@@ -188,10 +198,16 @@ pub enum Req {
     /// A Games card operation (`crate::games`: a save file, the score
     /// table): small, a chore of its own while playing.
     Games(crate::games::GamesJob),
+    /// Books card work was asked for (`crate::books`): idle, it runs now
+    /// (with the arena's scratch); while a track plays it is a chore of its
+    /// own (`crate::books::chore`), this request only wakes the task.
+    /// Never sent without the firmware feature `books`.
+    #[cfg_attr(not(feature = "books"), allow(dead_code))]
+    Books,
 }
 
 /// Request kinds ([`Req::kind`]) and their names for the log.
-pub const REQ_KINDS: usize = 16;
+pub const REQ_KINDS: usize = 17;
 pub const REQ_NAMES: [&str; REQ_KINDS] = [
     "browse",
     "want",
@@ -209,6 +225,7 @@ pub const REQ_NAMES: [&str; REQ_KINDS] = [
     "delete",
     "update",
     "games",
+    "books",
 ];
 
 impl Req {
@@ -233,6 +250,7 @@ impl Req {
             Req::Delete(_) => 13,
             Req::Update(_) => 14,
             Req::Games(_) => 15,
+            Req::Books => 16,
         }
     }
 
@@ -1111,6 +1129,14 @@ impl Server {
                 Own(self.text(vol, file, offset, scratch)).await;
                 true
             }
+            Req::Books => {
+                // Idle: the steps now, `scratch` the whole idle arena;
+                // playing: the chores take it (`audio::chore_due`).
+                if idle {
+                    Own(crate::books::run_idle(vol, scratch)).await;
+                }
+                true
+            }
             Req::QueueWin { first } if idle => {
                 Own(self.queue_win(vol, first)).await;
                 true
@@ -1792,6 +1818,9 @@ impl Server {
     /// Before the card goes to the USB host: no index is trusted after it
     /// comes back; a build in progress is given up and its files removed.
     pub async fn card_leaving(&mut self, vol: &mut Vol) {
+        // Books: the reading state and the files its jobs left, written
+        // before the card goes.
+        Own(crate::books::card_leaving(vol)).await;
         crate::library::card_leaving(self);
         // The host may rename or replace queued files: no Up next title is
         // kept across the hand-over.

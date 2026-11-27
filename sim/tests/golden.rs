@@ -303,6 +303,9 @@ fn books_cases(add: &mut dyn FnMut(String, String)) {
             format!("{} ok wait:50 ok wait:50 down ok wait:50 expect-screen:Reader next wait:50", open(3)),
         ),
         ("epub_medium", format!("set:0x0f01=1 {}", open(3))),
+        // On the player while a track is loaded (the decoder arena is not
+        // lent): the EPUB waits, with the hint.
+        ("epub_waiting", format!("{lib} set:bookscratch=off down*3 ok wait:200 expect-screen:Reader")),
         ("chapter_next", format!("{} hold:next wait:50", open(0))),
         ("end", format!("{} set:0x0f80=16 next*30 wait:50", open(6))),
         ("medium", format!("set:0x0f01=1 {}", open(0))),

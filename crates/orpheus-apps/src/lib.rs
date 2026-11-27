@@ -188,7 +188,9 @@ impl App {
             // On the player with GAME-2's integration (2026-11-25).
             #[cfg(feature = "games")]
             App::Games => true,
-            // Not in the firmware yet (BOOK-1: the feature is off there).
+            // Wired into the firmware (BOOK-1/2 wiring, 2026-11-26) behind
+            // its feature `books`, off: the code window has no room for it
+            // yet (docs/STATUS.md).
             #[cfg(feature = "books")]
             App::Books => false,
             // Not in the firmware yet (SEQ-1: no synth on the player).
@@ -217,7 +219,8 @@ mod tests {
     #[test]
     fn regress_every_app_is_on_the_players_home() {
         // Games too since GAME-2's integration (2026-11-25); Books not
-        // yet (BOOK-1: not in the firmware).
+        // yet (wired behind the firmware feature `books`, off: no room in
+        // the code window).
         for a in App::ALL {
             #[cfg(feature = "books")]
             if a == App::Books {

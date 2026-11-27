@@ -852,6 +852,16 @@ impl<S: Services + ?Sized> Screen<S> for ReaderScreen {
             Phase::Ready => {}
             Phase::Converting | Phase::Opening => {
                 g.text_in(4, h / 2 - 10, w - 8, b.title.as_str(), FontId::UiBold, fg, TextAlign::Center);
+                if b.waiting {
+                    // An EPUB waits for the inflate window, the decoder
+                    // arena (05 §7.15): no track may be loaded.
+                    let mut y = h / 2 + 10;
+                    g.wrap(self.lang.get(Str::BooksStopMusic), FontId::Ui, w - 16, |g, line| {
+                        g.text_in(0, y, w, line, FontId::Ui, dim, TextAlign::Center);
+                        y += 14;
+                    });
+                    return;
+                }
                 let prep = self.lang.get(Str::BooksPreparing);
                 g.text_in(4, h / 2 + 10, w - 8, prep, FontId::Ui, dim, TextAlign::Center);
                 if b.phase == Phase::Converting {
@@ -929,7 +939,7 @@ impl<S: Services + ?Sized> Screen<S> for ReaderScreen {
                 return;
             }
             _ => {
-                d.say(l.get(Str::BooksPreparing));
+                d.say(l.get(if b.waiting { Str::BooksStopMusic } else { Str::BooksPreparing }));
                 return;
             }
         }
