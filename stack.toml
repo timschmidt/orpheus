@@ -166,7 +166,8 @@ callers = [
     "*TaskStorage<firmware::__power_task::*>::poll",
     "firmware::usbdev::next_mode::{closure#0}",
     "firmware::usbdev::request_recovery",
-    "firmware::usbdev::__usb_task::__usb_task_inner_function::{closure#0}",
+    # (PERF-SD: the USB task's closure is inlined into its poll.)
+    "*TaskStorage<firmware::usbdev::__usb_task::*>::poll",
     "firmware::media::play",
     "firmware::media::ready",
     "firmware::ui::__ui_task::__ui_task_inner_function::{closure#0}",

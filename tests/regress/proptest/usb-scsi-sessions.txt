@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 405d4abc0d0812437cc1a76acee1a8903855df964221fed4285155d683f672d9 # shrinks to sel = 3, ops = [Cmd { dir_in: true, lun: false, len: 1, blocks: false, cdb: [0, 0, 0, 0, 0, 0], packets: [] }]

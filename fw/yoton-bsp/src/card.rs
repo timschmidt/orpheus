@@ -83,6 +83,8 @@ impl Card {
         let ch = unsafe { dma::Channel::steal(4) };
         ch.abort();
         self.sd = Sd::new(&sd::Pins { pads: &pins::SD_PADS, func: pins::SD_FUNC }, ch);
+        // The clock is back on CK24M (`Sd::new`): DEVPLL can stop.
+        atj2157_hal::clock::set_devpll(0);
         self.sd.init_card().await?;
         self.blocks = self.sd.blocks().min(u64::from(u32::MAX)) as u32;
         Ok(())
@@ -92,7 +94,41 @@ impl Card {
     pub fn stats(&self) -> sd::Stats {
         self.sd.stats
     }
+
+    /// The card's high-speed clock (PERF-SD, U-SD-1): DEVPLL at
+    /// [`DEVPLL_N`] × 6 MHz, CMD6 to high speed, then the fastest divider
+    /// at most `max_khz` (≤ 50 MHz). The clock it runs at (kHz): 24,000
+    /// when the card stays at default speed (it cannot switch, or
+    /// `max_khz` ≤ 25 MHz needs no switch). [`Self::reinit`] goes back
+    /// (the card leaves high speed only by CMD0) and stops DEVPLL.
+    pub async fn high_speed(&mut self, max_khz: u32) -> Result<u32, Error> {
+        const DEFAULT: u32 = 24_000;
+        let Some((word, khz)) = orpheus_sdcard::clock_word(2, DEVPLL_N * 6_000, max_khz.min(50_000)) else {
+            return Ok(DEFAULT);
+        };
+        if khz <= 25_000 {
+            return Ok(DEFAULT);
+        }
+        atj2157_hal::clock::set_devpll(DEVPLL_N);
+        let Some(status) = self.bounce.0.first_chunk_mut::<64>() else { return Ok(DEFAULT) };
+        match self.sd.high_speed(status, word).await {
+            Ok(true) => Ok(khz),
+            r => {
+                atj2157_hal::clock::set_devpll(0);
+                r.map(|_| DEFAULT)
+            }
+        }
+    }
+
+    /// The command delay chains (`SD_CTL` bits 23:16, `0x8F` the port's),
+    /// for trials of the high-speed timing (U-SD-1).
+    pub fn set_timing(delays: u8) {
+        Sd::set_timing(delays);
+    }
 }
+
+/// DEVPLL for the card's high-speed clock: 24 × 6 = 144 MHz, ÷3 = 48 MHz.
+pub const DEVPLL_N: u32 = 24;
 
 /// Card work with a deadline running now ([`Urgent`]): no rests.
 static URGENT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);

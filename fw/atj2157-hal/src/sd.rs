@@ -27,6 +27,15 @@ macro_rules! nap {
 }
 use orpheus_sdcard::{self as card, Cid, Csd, Ocr, R128, Status, cmd};
 
+/// Delay chains of every command (`CTL` RDELAY/WDELAY): the port's by
+/// default; [`Sd::set_timing`] changes them for the high-speed trials
+/// (U-SD-1, PERF-SD). One word for the one SD host.
+static TIMING: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(sd::VENDOR_CTL_TIMING);
+
+fn timing() -> u32 {
+    TIMING.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 use crate::dma::Channel;
 
 /// Driver errors.
@@ -112,6 +121,7 @@ impl Sd {
             gpio::mfp(usize::from(p)).write(pins.func | (drive << 12));
         }
         cmu::SD0CLK.write(CLK_IDENT);
+        TIMING.store(sd::VENDOR_CTL_TIMING, core::sync::atomic::Ordering::Relaxed);
         sd::EN.write(sd::VENDOR_EN_INIT);
         dma.enable_irq();
         let s = Self { dma, rca: 0, csd: None, cid: None, ocr: Ocr(0), flags: 0, stats: Stats::default() };
@@ -193,7 +203,7 @@ impl Sd {
         };
         sd::ARG.write(arg);
         sd::CMD.write(u32::from(index));
-        sd::CTL.write(sd::VENDOR_CTL_TIMING | tm | sd::ctl::TS);
+        sd::CTL.write(timing() | tm | sd::ctl::TS);
         if !self.wait_ts(Duration::from_millis(500)).await {
             self.stats.timeouts += 1;
             return Err(Error::Timeout);
@@ -291,17 +301,20 @@ impl Sd {
         if self.flags & HIGH_CAPACITY != 0 { lba } else { lba.wrapping_mul(512) }
     }
 
+    /// A command with a data phase of `blocks` blocks of `size` bytes
+    /// (512, or 64 for CMD6's status) by DMA to or from `buf`.
     async fn data_command(
         &mut self,
         index: u8,
-        lba: u32,
+        arg: u32,
         buf: *mut u8,
         blocks: u32,
+        size: u32,
         write: bool,
     ) -> Result<(), Error> {
         self.stats.commands += 1;
-        let len = blocks * 512;
-        sd::ARG.write(self.addr(lba));
+        let len = blocks * size;
+        sd::ARG.write(arg);
         sd::CMD.write(u32::from(index));
         sd::EN.set_bits(sd::en::AHB_DMA_SEL);
         let fifo = sd::DAT.addr() as u32;
@@ -310,10 +323,10 @@ impl Sd {
         } else {
             self.dma.start(pdma::VENDOR_MODE_SD_READ, fifo, buf as u32, len);
         }
-        sd::BLK_SIZE.write(512);
+        sd::BLK_SIZE.write(size);
         sd::BLK_NUM.write(blocks);
         let tm = if write { sd::ctl::TM_WRITE } else { sd::ctl::TM_READ };
-        sd::CTL.write(sd::VENDOR_CTL_DATA | sd::VENDOR_CTL_TIMING | tm);
+        sd::CTL.write(sd::VENDOR_CTL_DATA | timing() | tm);
         sd::CTL.set_bits(sd::ctl::TS);
         if !self.wait_ts(Duration::from_millis(1000)).await {
             self.dma.abort();
@@ -351,10 +364,11 @@ impl Sd {
         while done < total {
             let n = (total - done).min(MAX_BLOCKS);
             let p = buf[(done * 512) as usize..].as_mut_ptr();
+            let a = self.addr(lba + done);
             if n == 1 {
-                self.data_command(cmd::READ_SINGLE, lba + done, p, 1, false).await?;
+                self.data_command(cmd::READ_SINGLE, a, p, 1, 512, false).await?;
             } else {
-                let r = self.data_command(cmd::READ_MULTIPLE, lba + done, p, n, false).await;
+                let r = self.data_command(cmd::READ_MULTIPLE, a, p, n, 512, false).await;
                 let stop = self.command(cmd::STOP_TRANSMISSION, 0, Resp::R1b).await;
                 r?;
                 stop?;
@@ -373,10 +387,21 @@ impl Sd {
         while done < total {
             let n = (total - done).min(MAX_BLOCKS);
             let p = buf[(done * 512) as usize..].as_ptr().cast_mut();
+            let a = self.addr(lba + done);
             if n == 1 {
-                self.data_command(cmd::WRITE_SINGLE, lba + done, p, 1, true).await?;
+                self.data_command(cmd::WRITE_SINGLE, a, p, 1, 512, true).await?;
             } else {
-                let r = self.data_command(cmd::WRITE_MULTIPLE, lba + done, p, n, true).await;
+                // Pre-erase (ACMD23, SET_WR_BLK_ERASE_COUNT): the card may
+                // erase the blocks ahead of the data (SD Physical Layer
+                // §4.3.4; every SD card has it). PERF-SD.
+                // A hint only: a card that refuses it still takes the
+                // write.
+                // (CMD55 and ACMD23 written out: `app_command` would be a
+                // new function on the games' and playback clusters' paths.)
+                if self.command(cmd::APP_CMD, self.rca, Resp::R1).await.is_ok() {
+                    let _ = self.command(cmd::ACMD_SET_WR_BLK_ERASE_COUNT, n, Resp::R1).await;
+                }
+                let r = self.data_command(cmd::WRITE_MULTIPLE, a, p, n, 512, true).await;
                 let stop = self.command(cmd::STOP_TRANSMISSION, 0, Resp::R1b).await;
                 r?;
                 stop?;
@@ -386,6 +411,38 @@ impl Sd {
             done += n;
         }
         Ok(())
+    }
+
+    /// Switch the card to high-speed timing (CMD6 function group 1 = 1,
+    /// up to 50 MHz; SD Physical Layer §4.3.10) and then the clock to
+    /// `clk` (a `CMU_SD0CLK` word). `Ok(false)`: the card has no switch
+    /// command class (CSD CCC bit 10) or refused the function; the clock
+    /// stays. `status`: a word-aligned, DMA-reachable 64-byte buffer for
+    /// the switch status. U-SD-1, PERF-SD.
+    pub async fn high_speed(&mut self, status: &mut [u8; 64], clk: u32) -> Result<bool, Error> {
+        if self.csd.is_none_or(|c| c.ccc & card::CCC_SWITCH == 0) {
+            return Ok(false);
+        }
+        self.data_command(cmd::SWITCH_FUNC, card::SWITCH_HIGH_SPEED, status.as_mut_ptr(), 1, 64, false)
+            .await?;
+        if !card::switched_high_speed(status) {
+            return Ok(false);
+        }
+        // The card changes timing within 8 clocks of the status's end.
+        nap!(self, 100);
+        cmu::SD0CLK.write(clk);
+        Ok(true)
+    }
+
+    /// The data clock word (`CMU_SD0CLK`); [`CLK_FAST`] after `init_card`.
+    pub fn set_clock(&mut self, clk: u32) {
+        cmu::SD0CLK.write(clk);
+    }
+
+    /// The command delay chains (`CTL` bits 16–23: WDELAY `[19:16]`,
+    /// RDELAY `[23:20]`); the port's `0x8F` by default.
+    pub fn set_timing(delays: u8) {
+        TIMING.store(u32::from(delays) << 16, core::sync::atomic::Ordering::Relaxed);
     }
 
     /// Capacity in blocks (0 before init).

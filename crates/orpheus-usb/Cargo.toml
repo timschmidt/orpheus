@@ -11,9 +11,9 @@ orpheus-proto.workspace = true
 orpheus-fs = { path = "../orpheus-fs" }
 embassy-usb = { version = "0.6", default-features = false }
 embassy-usb-driver = "0.2"
+embassy-futures = "0.1"
 
 [dev-dependencies]
-embassy-futures = "0.1"
 orpheus-fs = { path = "../orpheus-fs", features = ["std"] }
 proptest.workspace = true
 

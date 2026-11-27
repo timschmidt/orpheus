@@ -1106,6 +1106,7 @@ dependencies = [
 name = "orpheus-usb"
 version = "0.1.0"
 dependencies = [
+ "embassy-futures",
  "embassy-usb",
  "embassy-usb-driver",
  "orpheus-fs",
@@ -1510,6 +1511,7 @@ dependencies = [
  "orpheus-input",
  "orpheus-power",
  "orpheus-proto",
+ "orpheus-sdcard",
  "orpheus-settings",
 ]
 

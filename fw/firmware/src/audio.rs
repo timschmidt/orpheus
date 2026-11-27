@@ -1196,19 +1196,27 @@ struct Pool {
 }
 static mut POOL: Pool = Pool { ring: [0; RING], arena: [0; ARENA] };
 
-/// The card reader's transfer buffer: the first 16 KiB of the decoder
-/// arena. Only while the card is with the USB task, when this task is
-/// parked in `CARD_BACK.receive()` and does not touch the arena.
+/// The card reader's transfer buffer, two 32 KiB halves (PERF-SD; 06
+/// §2.4): the stream ring and the first 48 KiB of the decoder arena, one
+/// contiguous 64 KiB (`Pool` is `repr(C)`). Only while the card is with
+/// the USB task, when this task is parked in `CARD_BACK.receive()` and
+/// touches neither (the speech it serves meanwhile uses the PCM ring in
+/// SRAM3; the ring's file state is dropped with the volume).
 ///
 /// # Safety
 /// Call only between receiving the card from `CARD_OUT` and sending it
 /// back on `CARD_BACK`, and drop the borrow before sending it back.
-pub unsafe fn usb_buffer() -> &'static mut [u8; 16384] {
-    // SAFETY: see above; the arena is 64 KiB, 8-byte aligned.
-    unsafe { &mut *((&raw mut POOL.arena).cast::<[u8; 16384]>()) }
+pub unsafe fn usb_buffer() -> &'static mut [u8; USB_BUFFER] {
+    // SAFETY: see above; the pool is 8-byte aligned and longer than
+    // `USB_BUFFER` (assertion below).
+    unsafe { &mut *((&raw mut POOL).cast::<[u8; USB_BUFFER]>()) }
 }
-/// USB Drive's extent table (USB-6): the 8 KiB after the transfer buffer.
-const EXTENTS_AT: usize = 16384;
+/// Bytes of [`usb_buffer`].
+pub const USB_BUFFER: usize = 64 * 1024;
+const _: () = assert!(USB_BUFFER <= RING + EXTENTS_AT);
+/// USB Drive's extent table (USB-6): the 8 KiB of the arena after the
+/// transfer buffer.
+const EXTENTS_AT: usize = 48 * 1024;
 const EXTENTS_LEN: usize = 8192;
 const _: () = assert!(EXTENTS_AT + EXTENTS_LEN + crate::library::STATE <= ARENA);
 
@@ -1224,8 +1232,9 @@ fn extent_area(arena: &mut [u8]) -> &mut [u8] {
 /// # Safety
 /// As [`usb_buffer`]; the borrow ends before the card goes back.
 pub unsafe fn usb_extents() -> &'static mut [u8] {
-    // SAFETY: see above; the bytes lie after `usb_buffer`'s 16 KiB and
-    // before the library state, inside the 8-byte aligned arena.
+    // SAFETY: see above; the bytes lie after `usb_buffer`'s 64 KiB (the
+    // ring and 48 KiB of the arena) and before the library state, inside
+    // the 8-byte aligned arena.
     unsafe {
         core::slice::from_raw_parts_mut((&raw mut POOL.arena).cast::<u8>().add(EXTENTS_AT), EXTENTS_LEN)
     }
@@ -3492,24 +3501,50 @@ async fn request_flow(
 
 // ------------------------------------------------------------ upload
 
-/// Length of the uploaded chunk waiting in the arena (0 = free). The chunk
-/// itself goes to the first 4 KiB of the decoder arena, which is idle while
-/// the card task runs the upload loop (and only then is `UPLOADING` set).
+/// A staging half handed to the card task (`devchan::upload`, PERF-SD):
+/// its bytes << 1 | which half; 0 = none. The two halves are the first
+/// 32 KiB of the decoder arena, idle while the card task runs the upload
+/// loop (and only then is `UPLOADING` set).
 static PUT_LEN: AtomicU32 = AtomicU32::new(0);
 static UPLOADING: AtomicBool = AtomicBool::new(false);
 static PUT_SIGNAL: embassy_sync::signal::Signal<CriticalSectionRawMutex, ()> =
     embassy_sync::signal::Signal::new();
+/// The staging state (the USB task's; the card task reads it at the end).
+static STAGE: critical_section::Mutex<core::cell::Cell<orpheus_proto::devchan::upload::Stage>> =
+    critical_section::Mutex::new(core::cell::Cell::new(orpheus_proto::devchan::upload::Stage {
+        next: 0,
+        half: 0,
+        fill: 0,
+    }));
 
-/// From the developer channel: queue a chunk for the open upload.
-pub fn put_chunk(data: &[u8]) -> bool {
-    if data.len() > 4096 || !UPLOADING.load(Ordering::Acquire) || PUT_LEN.load(Ordering::Acquire) != 0 {
+/// From the developer channel: chunk `seq` of the open upload into the
+/// staging half being filled; a full half goes to the card task.
+pub fn put_chunk(seq: u16, data: &[u8]) -> bool {
+    use orpheus_proto::devchan::upload::Put;
+    if !UPLOADING.load(Ordering::Acquire) {
         return false;
     }
-    // SAFETY: while UPLOADING is set the card task does not touch the arena
-    // except to copy a chunk out after PUT_LEN says one is there; PUT_LEN 0
-    // means it is done with the previous one.
-    unsafe { (&mut (*(&raw mut POOL)).arena)[..data.len()].copy_from_slice(data) };
-    PUT_LEN.store(data.len() as u32, Ordering::Release);
+    let busy = PUT_LEN.load(Ordering::Acquire) != 0;
+    let d = critical_section::with(|cs| {
+        let c = STAGE.borrow(cs);
+        let mut st = c.get();
+        let d = st.put(seq, data.len(), busy);
+        c.set(st);
+        d
+    });
+    let at = match d {
+        Put::Again => return true,
+        Put::Refuse => return false,
+        Put::Append { at } => at,
+        Put::HandOver { half, len, at } => {
+            PUT_LEN.store((len as u32) << 1 | u32::from(half), Ordering::Release);
+            at
+        }
+    };
+    // SAFETY: while UPLOADING is set the card task reads the arena's
+    // staging halves only from a half handed over in PUT_LEN, which
+    // `Stage::put` never fills until the card task cleared PUT_LEN.
+    unsafe { (&mut (*(&raw mut POOL)).arena)[at..at + data.len()].copy_from_slice(data) };
     PUT_SIGNAL.signal(());
     true
 }
@@ -3529,8 +3564,10 @@ async fn upload(vol: &mut Volume<'static, Card>, arena: &mut [u8], path: &str) {
             return;
         }
     };
+    use orpheus_proto::devchan::upload::{STAGE_HALF, Stage};
     let mut total = 0u64;
     PUT_LEN.store(0, Ordering::Release);
+    critical_section::with(|cs| STAGE.borrow(cs).set(Stage::default()));
     UPLOADING.store(true, Ordering::Release);
     reply(|w| {
         w.s(b"put 0");
@@ -3539,10 +3576,12 @@ async fn upload(vol: &mut Volume<'static, Card>, arena: &mut [u8], path: &str) {
         let idle = Timer::after_millis(orpheus_proto::devchan::UPLOAD_IDLE_MS);
         let cmd = match select3(PUT_SIGNAL.wait(), CMDS.receive(), idle).await {
             Either3::First(()) => {
-                let n = PUT_LEN.load(Ordering::Acquire) as usize;
-                if n > 0 {
-                    let r = vol.write(&mut f, &arena[..n]).await;
+                let p = PUT_LEN.load(Ordering::Acquire) as usize;
+                if p > 0 {
+                    let at = (p & 1) * STAGE_HALF;
+                    let r = vol.write(&mut f, &arena[at..at + (p >> 1)]).await;
                     PUT_LEN.store(0, Ordering::Release);
+                    let n = p >> 1;
                     if r.is_err() {
                         UPLOADING.store(false, Ordering::Release);
                         reply(|w| {
@@ -3561,7 +3600,17 @@ async fn upload(vol: &mut Volume<'static, Card>, arena: &mut [u8], path: &str) {
             Either3::Third(()) => None,
         };
         UPLOADING.store(false, Ordering::Release);
-        let ok = vol.close(f).await.is_ok() && vol.flush().await.is_ok();
+        // What is still staged: a half handed over, then the one filling.
+        let st = critical_section::with(|cs| STAGE.borrow(cs).get());
+        let p = PUT_LEN.swap(0, Ordering::AcqRel) as usize;
+        let mut ok = true;
+        for (at, n) in [((p & 1) * STAGE_HALF, p >> 1), (usize::from(st.half) * STAGE_HALF, st.fill)] {
+            if n > 0 {
+                ok &= vol.write(&mut f, &arena[at..at + n]).await.is_ok();
+                total += n as u64;
+            }
+        }
+        let ok = ok && vol.close(f).await.is_ok() && vol.flush().await.is_ok();
         let close = cmd.as_ref().map(|c| orpheus_proto::devchan::upload_cmd(&c.text[..c.len]));
         let said: &[u8] = match close {
             Some(orpheus_proto::devchan::UploadCmd::Close) if ok => b"closed ",
@@ -4112,6 +4161,9 @@ async fn idle(vol: &mut Volume<'static, Card>, ring: &mut Ring, arena: &mut [u8]
                     w.s(b"fcreate failed: not in the demo tree");
                 });
             }
+        } else if let Some(a) = text.strip_prefix("card bench") {
+            // PERF-SD: the card's throughput (`crate::bench`).
+            Apart(crate::bench::card_bench(vol, arena, a)).await;
         } else if let Some(p) = text.strip_prefix("fsize ") {
             // Size of a file, `size N PATH` (or `fsize: no such file
             // PATH`): the path makes a stale reply of the previous query
