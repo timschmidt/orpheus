@@ -304,6 +304,11 @@ pub async fn chore(vol: &mut Volume<'static, Card>) {
         return;
     }
     let admitted = kind();
+    // A piece with a deadline: no card rests in it (`yoton_bsp::card::pace`
+    // rested 4 ms after every 8 ms of card work, a third more on every
+    // step; the piece is bounded by its budget, so thread mode waits at
+    // most that long, as for the refill).
+    let _urgent = yoton_bsp::card::Urgent::enter();
     while crate::audio::piece_left() {
         if !step_once(vol, None, false).await || kind() != admitted {
             break;
