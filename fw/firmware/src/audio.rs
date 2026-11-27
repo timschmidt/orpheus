@@ -1931,10 +1931,26 @@ fn chore_due(b: &mut Blk, ring: &Ring, srv: &Server, out: &mut PcmOut) -> Option
         dec_us: b.dec.0,
     };
     let v = chore::decide(&a);
+    // `status`'s `due=`: the chore waiting, its need (ms), the headroom
+    // (frames), how long it has waited (ms), and the verdict.
+    let verdict = match v {
+        Verdict::Wait => 0,
+        Verdict::Run { .. } => 1,
+        Verdict::Starved { .. } => 2,
+    };
+    DUE.store(
+        (kind as u32) << 24 | (a.need_us / 1000).min(255) << 16 | (a.head.clamp(0, 0x3FFF) as u32) << 2 | verdict,
+        Ordering::Relaxed,
+    );
+    DUE_WAIT_MS.store(a.waited_us / 1000, Ordering::Relaxed);
     let budget = v.budget()?;
     b.chore_since = 0;
     Some(Due { what, kind, budget, starved: matches!(v, Verdict::Starved { .. }) })
 }
+
+/// The last chore decision (`chore_due`), for `status`'s `due=`.
+static DUE: AtomicU32 = AtomicU32::new(0);
+static DUE_WAIT_MS: AtomicU32 = AtomicU32::new(0);
 
 /// The battery or step log (kind `kind`) may write now: never forced (no
 /// wait), only roomy, only when its need fits, only when no chore waits.
@@ -3546,6 +3562,12 @@ pub fn status_reply() {
         // PG-2: loads that ran an instruction of cold code from a
         // trampoline (02 §3.6).
         w.s(t!(b" bounces=")).u(u64::from(atj2157_hal::pager::stats().bounces));
+        // The last chore decision: kind/need ms/headroom frames/waited
+        // ms/verdict (0 wait, 1 run, 2 starved).
+        let d = DUE.load(Ordering::Relaxed);
+        w.s(t!(b" due=")).u(u64::from(d >> 24)).s(b"/").u(u64::from(d >> 16 & 0xFF)).s(b"/");
+        w.u(u64::from(d >> 2 & 0x3FFF)).s(b"/").u(u64::from(DUE_WAIT_MS.load(Ordering::Relaxed)));
+        w.s(b"/").u(u64::from(d & 3));
         // The queue and the track (HIL tests need no key navigation).
         let (pos, len, shuffled, title, at_ms) = critical_section::with(|cs| {
             let p = media::PLAYER.borrow(cs).borrow();
