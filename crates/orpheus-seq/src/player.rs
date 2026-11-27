@@ -75,6 +75,8 @@
 
 use orpheus_synth::{Engine, Event, EventKind, Param, Patch};
 
+use crate::clock::{self, ClockEvent, Realtime};
+
 use crate::model::{
     ACCENT, ALL_TRACKS, LockParam, PATTERNS, PROB_LEVELS, PlayMode, Project, SYNTH_TRACKS, TRACKS,
 };
@@ -328,6 +330,7 @@ pub struct Sequencer {
     synth_sent: [[u8; 3]; SYNTH_TRACKS],
     drum_sent: [[f32; 3]; 2],
     hits: u64,
+    mclk: clock::State,
 }
 
 /// Where a piece's notes go: the engine (as events) or a dry run's
@@ -452,6 +455,7 @@ impl Sequencer {
             synth_sent: [[NO_LOCK; 3]; SYNTH_TRACKS],
             drum_sent: [[0.0, 1.0, 0.0]; 2],
             hits: 0,
+            mclk: clock::State::OFF,
         }
     }
 
@@ -490,6 +494,35 @@ impl Sequencer {
         self.n = 0;
         self.count_in = 0;
         self.release = true;
+        self.mclk.halt(self.clock);
+    }
+
+    /// Turn MIDI clock out on or off ([`crate::clock`]): on from the next
+    /// play; off sends Stop on the next frame if the clock is running.
+    pub fn set_midi_clock(&mut self, on: bool) {
+        self.mclk.on = on;
+        if !on {
+            self.mclk.halt(self.clock);
+        }
+    }
+
+    /// Whether MIDI clock out is on.
+    #[must_use]
+    pub const fn midi_clock(&self) -> bool {
+        self.mclk.on
+    }
+
+    /// Hand the MIDI clock's messages since the last call to `f`, in frame
+    /// order (call it after every render).
+    pub fn take_clock(&mut self, f: impl FnMut(ClockEvent)) {
+        self.mclk.take(f);
+    }
+
+    /// MIDI clock messages dropped because nobody took them
+    /// ([`clock::QUEUE`]).
+    #[must_use]
+    pub const fn clock_dropped(&self) -> u32 {
+        self.mclk.dropped
     }
 
     /// Playing (or about to start, or counting in).
@@ -771,6 +804,17 @@ impl Sequencer {
             }
             self.pending.copy_within(k..self.n, 0);
             self.n -= k;
+            if self.mclk.running {
+                let t = clock::tick_units(self.ratio);
+                loop {
+                    let f = self.to_frames(self.mclk.next);
+                    if f >= end {
+                        break;
+                    }
+                    self.mclk.push(f, Realtime::Clock);
+                    self.mclk.next += t;
+                }
+            }
             sink.end(end);
             pos = (end - self.clock) as usize;
         }
@@ -858,6 +902,7 @@ impl Sequencer {
 
     fn begin(&mut self, p: &Project, now: u64) {
         self.starting = false;
+        self.mclk.halt(now);
         self.n = 0;
         self.step = 0;
         self.entry = 0;
@@ -908,6 +953,8 @@ impl Sequencer {
     fn latch(&mut self, p: &Project) {
         if p.tempo() != self.tempo || self.opts.step_len.ratio() != self.ratio {
             // The new tempo or step length from this step on.
+            let ratio = self.opts.step_len.ratio();
+            self.mclk.reanchor(self.units, self.ratio, ratio);
             self.anchor = self.next;
             self.units = 0;
             self.tempo = p.tempo();
@@ -924,6 +971,12 @@ impl Sequencer {
             self.next = self.to_frames(self.units);
             self.count_in -= 1;
             return;
+        }
+        if self.count == 0 && self.mclk.on && !self.mclk.running {
+            // The first step: Start, and the first Clock on the same frame.
+            self.mclk.running = true;
+            self.mclk.next = self.units;
+            self.mclk.push(self.next, Realtime::Start);
         }
         if usize::from(self.step) >= p.pattern(usize::from(self.pattern)).len() {
             // Shortened under the cursor: the pattern ends here.

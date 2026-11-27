@@ -2009,7 +2009,8 @@ host and simulator.** Still off in the firmware (SYN-3). Module docs of
 * **Settings** (Sequencer › Menu › Settings, word `0x1180`): default kit,
   default pattern length, default swing (of new projects), metronome,
   count-in, step length, key clicks in play (off: "key click off while
-  playing"). MIDI clock out over USB is not built (with M16). With games,
+  playing"). MIDI clock out over USB is not a setting yet: its model is
+  built (below), the transport and the setting wait for M16. With games,
   Books and the Sequencer the settings store was full: 128 of 128 keys
   (VER-4, 2026-11-26: the store's index now holds 192 keys; 131 in use
   with every app, the Bluetooth address, the presets and the retired key).
@@ -2018,6 +2019,40 @@ host and simulator.** Still off in the firmware (SYN-3). Module docs of
   player 3,784 B (SEQ-1: 1,880: a 128-hit queue of 24-byte hits, the
   sounding-note tables), studio 40,144 B, a WAV export's own player
   3,808 B. Kit B costs 289 B + 16 B of names. The engine grew by the drum offsets of its 16 parts: 62,320 → 62,512 B.
+
+**As built (SEQ-2, 2026-11-27): MIDI clock out, the host-side model.**
+M16 (the USB audio personality that would carry a USB MIDI interface)
+is not built, so only the model is: `orpheus_seq::clock` and
+`Sequencer::set_midi_clock` / `take_clock` / `clock_dropped`. **Deferred
+to M16**: the USB MIDI streaming interface, sending each message when the
+DAC reaches its frame (less the USB latency), and the Sequencer setting
+"MIDI clock out" (with its `effects.toml` entry and differential tests
+then — a setting with nothing to switch is not added). Where the spec is
+silent, the simplest design was chosen:
+
+* **Messages**: Start (`0xFA`) on the first frame of the first step,
+  then 24 Clocks (`0xF8`) a quarter note, the first on Start's frame;
+  Stop (`0xFC`) on the first frame after a stop, when the clock is
+  turned off while running and before a restart (Play while playing:
+  Stop, Start). The count-in sends nothing (a receiver starts on the
+  downbeat). No Song Position Pointer and no Continue: Orpheus always
+  plays from the start of a pattern or the song, which Start means.
+  Turning the clock on takes effect at the next play.
+* **Timing**: the clock is the tempo, not the steps: 1/24 quarter in the
+  player's units (4,800 units for 1/16 steps, 2,400 for 1/8, 9,600 for
+  1/32) through the same units → frames map as every step, so clock *k*
+  is on start + ⌊*k* · rate · 250 / tempo⌋ (tempo in 1/100 BPM) for every
+  step length. With swing 50 every step starts on a clock; swing moves the
+  odd steps, not the clock (the receiver swings by itself; after an
+  odd-length pattern with swing the steps sit off the clock grid, as the
+  player's swing is a step length). A tempo or step-length change keeps
+  the clock's phase (the elapsed part of a clock carried in units) and
+  takes effect at the step the player changes on.
+* **Queue**: 32 messages of 8 bytes (frame, message in the top two bits)
+  in the player, taken after every render; a full queue drops and counts,
+  the phase goes on. At 240 BPM a block of up to 1/3 s fits.
+  `Realtime::usb_packet` gives the USB MIDI 1.0 event packet (code index
+  0xF, one byte). Player 3,784 → 4,056 B.
 
 ### 7.17 Signal generator (M18; owner's requirement 2026-11-25)
 
