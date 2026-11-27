@@ -250,6 +250,8 @@ async fn step_once(vol: &mut Volume<'static, Card>, scratch: Option<&mut [u8]>, 
     if !changed {
         WORK.store(false, Ordering::Release);
         IDLE_WORK.store(desk.needs_scratch(sh) || desk.wants_mkdir(), Ordering::Release);
+        // The clock floor the work had while a track played.
+        crate::audio::books_boost(false);
     }
     NEXT.store(desk.next_kind(sh).map_or(u8::MAX, |k| k as u8), Ordering::Relaxed);
     publish(sh, desk, lent);

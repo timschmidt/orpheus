@@ -297,6 +297,8 @@ static CODEC_FLOOR: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8:
 static DSP_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// A picture decodes (the card task, [`boost`]).
 static BOOST: AtomicBool = AtomicBool::new(false);
+/// Books card work waits while a track plays ([`books_boost`]).
+static BOOKS_BOOST: AtomicBool = AtomicBool::new(false);
 /// The loaded track is paused (`pause` until `resumed`): its floor is
 /// released and the governor treats it as nothing playing
 /// (`orpheus_power::governor::{audio_floor, floor_level}`; 2026-11-26).
@@ -315,7 +317,7 @@ fn dsp_clock_floor(dsp_active: bool) {
         CODEC_FLOOR.load(Ordering::Relaxed),
         dsp_active,
         PAUSED.load(Ordering::Relaxed),
-        BOOST.load(Ordering::Relaxed),
+        BOOST.load(Ordering::Relaxed) || BOOKS_BOOST.load(Ordering::Relaxed),
     );
     crate::CLOCK_FLOOR.store(floor, Ordering::Relaxed);
     crate::raise_to_floor(floor);
@@ -334,6 +336,17 @@ fn set_paused(on: bool) {
 pub(crate) fn boost(on: bool) {
     BOOST.store(on, Ordering::Relaxed);
     dsp_clock_floor(DSP_ACTIVE.load(Ordering::Relaxed));
+}
+
+/// Clock floor High while Books has card work and a track plays (the
+/// card task: `chore_due` while playing, `books` when the work is done).
+/// At Base an MP3 at 48 kHz left the DAC 2,283 frames ahead after every
+/// block, never roomy, and Books' steps (cold code paged in each time)
+/// took 15–39 ms: an open took 20 s and underran (BOOK-1/2b, 2026-11-27).
+pub(crate) fn books_boost(on: bool) {
+    if BOOKS_BOOST.swap(on, Ordering::Relaxed) != on {
+        dsp_clock_floor(DSP_ACTIVE.load(Ordering::Relaxed));
+    }
 }
 
 fn sound_active() -> bool {
@@ -1909,6 +1922,7 @@ fn chore_due(b: &mut Blk, ring: &Ring, srv: &Server, out: &mut PcmOut) -> Option
         // A listing being made in pieces (Files while playing).
         (Chore::Job, K_JOB + srv.job_kind())
     } else if crate::books::wants() && !tail {
+        books_boost(true);
         (Chore::Books, K_JOB + media::JOB_BOOKS + crate::books::kind())
     } else if b.meta != 0 && b.join == 0 && u64::from(b.frames) * 1000 >= META_AFTER_MS * b.rate {
         // The gapless track's library place and art once its first seconds
