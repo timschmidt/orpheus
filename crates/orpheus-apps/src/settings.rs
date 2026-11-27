@@ -95,7 +95,8 @@ pub enum Kind {
     Info(Info),
     /// Two-letter code packed as `(c0 << 8) | c1`; 0 = English.
     Language,
-    /// Bit `n` set = app `n` shown on Home (order of [`crate::App::ALL`]).
+    /// Bit `n` set = app `n` hidden from Home (order of
+    /// [`crate::App::ALL`]): an app added later is shown until hidden.
     HomeApps,
 }
 
@@ -224,7 +225,12 @@ pub const OUTPUT: &[Choice] = ch![S(Str::Headphones), S(Str::AppBluetooth)];
 ///   until 2026-11-26 (PWR-5): the governor now reaches 288 MHz by itself
 ///   when the load needs it, and Power mode (`0x0401`) is the only
 ///   setting it follows.
-pub const RETIRED: &[u16] = &[0x0301, 0x0C07];
+/// * `0x030B`: Settings › Display › Home screen as the apps *shown*
+///   (default every app) until 2026-11-27 (BOOK-1/2b): a mask saved when
+///   Home had twelve apps hid every app added after it (Books, bit 12, on
+///   the owner's player). Now [`id::HOME_HIDDEN`] (`0x030E`), the apps
+///   hidden: a new app is shown until hidden.
+pub const RETIRED: &[u16] = &[0x0301, 0x0C07, 0x030B];
 
 /// Settings-store key of the last connected Bluetooth device (6 bytes, as
 /// the module sends the address; the firmware's `bt::LAST_KEY`).
@@ -274,7 +280,10 @@ pub mod id {
     pub const ANIMATIONS: SettingId = SettingId(0x0308);
     pub const ROTATE: SettingId = SettingId(0x0309);
     pub const CLOCK_IN_BAR: SettingId = SettingId(0x030A);
-    pub const HOME_APPS: SettingId = SettingId(0x030B);
+    /// Settings › Display › Home screen: the apps hidden from Home (bit
+    /// `n`: `App::ALL[n]`; 0, the default, shows every app). `0x030B` (the
+    /// apps shown) is retired ([`RETIRED`]).
+    pub const HOME_HIDDEN: SettingId = SettingId(0x030E);
     /// Settings › Display › List roll-around (UI-8): 1 (default) every
     /// list rolls round at its ends, 0 the ends clamp.
     pub const LIST_ROLL: SettingId = SettingId(0x030C);
@@ -477,15 +486,9 @@ const DISPLAY: &[Setting] = &[
     // UI-8: on by default (the owner's requirement); shown before Home
     // screen as in 05 §7.11.
     t(0x030C, Str::ListRollAround, 1),
-    // Every app (Games, bit 11, with the `games` feature: on the player since
-    // GAME-2's integration).
-    Setting {
-        id: SettingId(0x030B),
-        label: Str::HomeScreen,
-        kind: Kind::HomeApps,
-        default: HOME_ALL,
-        pack: None,
-    },
+    // No app hidden: every app on Home, also those added after a choice
+    // was saved (BOOK-1/2b).
+    Setting { id: SettingId(0x030E), label: Str::HomeScreen, kind: Kind::HomeApps, default: 0, pack: None },
 ];
 
 const POWER: &[Setting] = &[
@@ -1587,7 +1590,7 @@ mod tests {
         let display = &GROUPS[2];
         assert_eq!(display.label, Str::GDisplay);
         let pos = display.items.iter().position(|s| s.id == id::LIST_ROLL).unwrap();
-        assert_eq!(display.items.get(pos + 1).map(|s| s.id), Some(id::HOME_APPS));
+        assert_eq!(display.items.get(pos + 1).map(|s| s.id), Some(id::HOME_HIDDEN));
         let mut c = SettingsCache::new();
         assert_eq!(c.get(id::LIST_ROLL), 1);
         assert!(c.set(id::LIST_ROLL, 0));
@@ -1669,7 +1672,7 @@ mod persistence {
                 }
             }
             Kind::Language => lang_code("ru"),
-            Kind::HomeApps => s.default & !1,
+            Kind::HomeApps => s.default | 1,
             Kind::Action(_) | Kind::Info(_) => s.default,
         }
     }

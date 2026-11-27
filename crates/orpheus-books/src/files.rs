@@ -14,6 +14,10 @@
 //! * `/.orpheus/books/<id>.pos`: position and bookmarks ([`BookState`]).
 //! * `/.orpheus/books/library.bin`: the library ([`LibHeader`], the sorted
 //!   order, [`LibRecord`]s).
+//! * `/.orpheus/cache/books/test.lib`: the same for the on-device suite's
+//!   books (`Scope::Test`, [`TEST_LIBRARY_PATH`]): a test never rewrites
+//!   the owner's library, and its books' reading state is kept in RAM
+//!   only (no `.pos` file is read or written for them, BOOK-1/2b).
 //! * `/.orpheus/cache/books/epub.man|.spn|.tgt`: the EPUB job's scratch
 //!   tables (manifest, spine, contents targets; [`EPUB_TABLES`]), made
 //!   again by every EPUB conversion.
@@ -28,6 +32,12 @@ use crate::norm::{Kind, TITLE_MAX, TocEntry};
 pub const BOOKS_DIR: &str = "/.orpheus/books";
 pub const CACHE_DIR: &str = "/.orpheus/cache/books";
 pub const LIBRARY_PATH: &str = "/.orpheus/books/library.bin";
+/// The library of the on-device suite's books (`Scope::Test`): in the
+/// cache folder, beside nothing of the owner's (BOOK-1/2b, 2026-11-27: the
+/// suite's library had replaced the owner's in [`LIBRARY_PATH`], so the
+/// owner's next visit searched the card again and lost every book's
+/// progress).
+pub const TEST_LIBRARY_PATH: &str = "/.orpheus/cache/books/test.lib";
 /// The EPUB job's scratch tables: manifest, spine, contents targets
 /// ([`crate::epub::Table`]).
 pub const EPUB_TABLES: [&str; 3] =

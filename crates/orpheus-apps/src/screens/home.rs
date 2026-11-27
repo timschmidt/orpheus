@@ -37,10 +37,10 @@ pub struct HomeScreen {
 impl HomeScreen {
     fn load<S: Services + ?Sized>(&mut self, svc: &S) {
         self.lang = svc.lang();
-        let mask = svc.setting(id::HOME_APPS);
+        let hidden = svc.setting(id::HOME_HIDDEN);
         self.n = 0;
         for app in App::GRID {
-            let shown = app == App::Settings || mask & (1 << app as u8) != 0;
+            let shown = app == App::Settings || hidden & (1 << app as u8) == 0;
             if shown && svc.app_available(app) {
                 self.apps[usize::from(self.n)] = app as u8;
                 self.n += 1;

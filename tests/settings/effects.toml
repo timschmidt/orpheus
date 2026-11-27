@@ -588,16 +588,16 @@ tests = ["sim/tests/settings_matrix.rs::matrix::s030a", "sim/web/src/audio.rs::t
 cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s030a"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s030a"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
 [[setting]]
-id = "0x030B"
-name = "Settings › Display › Home screen"
+id = "0x030E"
+name = "Settings › Display › Home screen (the apps hidden; 0x030B, the apps shown, retired 2026-11-27)"
 scope = "local"
-values = ["every app (16383)", "Games off (14335)"]
-default = 16383
+values = ["none hidden (0)", "Games hidden (2048)"]
+default = 0
 contexts = ["Home", "Home.Menu", "Home.Playing", "Volume", "Games", "speech", "speech-music"]
 unaffected = ["@screens", "@services", "audio"]
-oracle = "Home: the apps shown (a hidden app's cell is gone; reaching Games from Home lands elsewhere); the Home screen settings list. speech: the screen reader says the grid's count (\"1 of 11\")."
-tests = ["sim/tests/settings_matrix.rs::matrix::s030b", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
-cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s030b"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s030b"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "speech-music" = ["sim/tests/settings_matrix.rs::matrix::s030b"] }
+oracle = "Home: the apps shown (a hidden app's cell is gone; reaching Games from Home lands elsewhere; an app added after a choice was saved is shown); the Home screen settings list. speech: the screen reader says the grid's count (\"1 of 11\")."
+tests = ["sim/tests/settings_matrix.rs::matrix::s030e", "sim/tests/apps.rs::regress_home_hid_apps_added_after_the_mask_was_saved", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s030e"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s030e"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"], "speech-music" = ["sim/tests/settings_matrix.rs::matrix::s030e"], "Home" = ["sim/tests/settings_matrix.rs::matrix::s030e", "sim/tests/apps.rs::regress_home_hid_apps_added_after_the_mask_was_saved"] }
 
 [[setting]]
 id = "0x030C"

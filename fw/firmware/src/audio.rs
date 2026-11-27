@@ -3452,7 +3452,10 @@ pub fn put_chunk(data: &[u8]) -> bool {
 }
 
 /// Upload loop (`fcreate PATH`): appends chunks until `fclose` arrives as
-/// a command; writes only where the volume allows (`/.orpheus/`).
+/// a command; writes only where the volume allows (`/.orpheus/`). Any
+/// other command, or no chunk for `UPLOAD_IDLE_MS`, ends it as well (the
+/// file closed with what it has; the command served next:
+/// `orpheus_proto::devchan::upload_cmd`).
 async fn upload(vol: &mut Volume<'static, Card>, arena: &mut [u8], path: &str) {
     let mut f = match vol.open(path, OpenMode::Truncate).await {
         Ok(f) => f,
@@ -3470,8 +3473,9 @@ async fn upload(vol: &mut Volume<'static, Card>, arena: &mut [u8], path: &str) {
         w.s(b"put 0");
     });
     loop {
-        match select(PUT_SIGNAL.wait(), CMDS.receive()).await {
-            Either::First(()) => {
+        let idle = Timer::after_millis(orpheus_proto::devchan::UPLOAD_IDLE_MS);
+        let cmd = match select3(PUT_SIGNAL.wait(), CMDS.receive(), idle).await {
+            Either3::First(()) => {
                 let n = PUT_LEN.load(Ordering::Acquire) as usize;
                 if n > 0 {
                     let r = vol.write(&mut f, &arena[..n]).await;
@@ -3488,18 +3492,29 @@ async fn upload(vol: &mut Volume<'static, Card>, arena: &mut [u8], path: &str) {
                         w.s(b"put ").u(total);
                     });
                 }
+                continue;
             }
-            Either::Second(c) => {
-                if &c.text[..c.len] == b"fclose" {
-                    UPLOADING.store(false, Ordering::Release);
-                    let ok = vol.close(f).await.is_ok() && vol.flush().await.is_ok();
-                    reply(|w| {
-                        w.s(if ok { b"closed " } else { b"close failed " }).u(total);
-                    });
-                    return;
-                }
-            }
+            Either3::Second(c) => Some(c),
+            Either3::Third(()) => None,
+        };
+        UPLOADING.store(false, Ordering::Release);
+        let ok = vol.close(f).await.is_ok() && vol.flush().await.is_ok();
+        let close = cmd.as_ref().map(|c| orpheus_proto::devchan::upload_cmd(&c.text[..c.len]));
+        let said: &[u8] = match close {
+            Some(orpheus_proto::devchan::UploadCmd::Close) if ok => b"closed ",
+            Some(orpheus_proto::devchan::UploadCmd::Close) => b"close failed ",
+            Some(_) => b"upload aborted ",
+            None => b"upload timed out ",
+        };
+        reply(|w| {
+            w.s(said).u(total);
+        });
+        // The command that ended it is served next (the queue had room:
+        // this one was just taken from it).
+        if let Some(c) = cmd.filter(|_| close != Some(orpheus_proto::devchan::UploadCmd::Close)) {
+            let _ = CMDS.try_send(c);
         }
+        return;
     }
 }
 

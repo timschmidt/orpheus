@@ -382,7 +382,7 @@ fn values(id: u16) -> Vec<i16> {
         Kind::Language => vec![0, settings::lang_code("ru"), settings::lang_code("ja")],
         // Games off Home (the last cell before Settings: the other apps
         // keep their places, so the other journeys still find them).
-        Kind::HomeApps => vec![settings::HOME_ALL & !(1 << orpheus_apps::App::Games as u8)],
+        Kind::HomeApps => vec![1 << orpheus_apps::App::Games as u8],
         Kind::Action(_) | Kind::Info(_) => vec![],
     };
     all.into_iter().filter(|v| *v != d.default).collect()
@@ -1179,8 +1179,8 @@ mod matrix {
         row(0x030A);
     }
     #[test]
-    fn s030b() {
-        row(0x030B);
+    fn s030e() {
+        row(0x030E);
     }
     #[test]
     fn s030c() {

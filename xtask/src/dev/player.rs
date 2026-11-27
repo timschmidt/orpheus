@@ -849,7 +849,8 @@ mod tests {
         // through the simulator, which the player does not).
         let player: i16 =
             orpheus_apps::App::ALL.iter().filter(|a| a.on_player()).fold(0, |m, &a| m | 1 << a as u8);
-        assert_eq!(def(id::HOME_APPS).unwrap().default & player, 0x1FFF);
+        assert_eq!(player, 0x1FFF);
+        assert_eq!(def(id::HOME_HIDDEN).unwrap().default & player, 0, "none hidden");
         let mut p = SimPlayer::default();
         test_look(&mut p, true).unwrap();
         test_look(&mut p, false).unwrap();

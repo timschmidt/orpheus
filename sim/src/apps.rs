@@ -1081,24 +1081,24 @@ impl Host for HostServices {
             "volume" => self.volume = v.parse()?,
             "games" => {
                 self.games_on_home = on;
-                let mask = self.settings.get(id::HOME_APPS);
+                let hidden = self.settings.get(id::HOME_HIDDEN);
                 let bit = 1 << (App::Games as u8);
-                self.set_setting(id::HOME_APPS, if on { mask | bit } else { mask & !bit });
+                self.set_setting(id::HOME_HIDDEN, if on { hidden & !bit } else { hidden | bit });
             }
             "books" => {
                 self.books_on_home = on;
-                let mask = self.settings.get(id::HOME_APPS);
+                let hidden = self.settings.get(id::HOME_HIDDEN);
                 let bit = 1 << (App::Books as u8);
-                self.set_setting(id::HOME_APPS, if on { mask | bit } else { mask & !bit });
+                self.set_setting(id::HOME_HIDDEN, if on { hidden & !bit } else { hidden | bit });
                 // Home looks again even when the mask had the bit already.
-                self.events.push(Event::Service(ServiceEvent::SettingChanged(id::HOME_APPS.0)));
+                self.events.push(Event::Service(ServiceEvent::SettingChanged(id::HOME_HIDDEN.0)));
             }
             "seq" => {
                 self.seq_on_home = on;
-                let mask = self.settings.get(id::HOME_APPS);
+                let hidden = self.settings.get(id::HOME_HIDDEN);
                 let bit = 1 << (App::Sequencer as u8);
-                self.set_setting(id::HOME_APPS, if on { mask | bit } else { mask & !bit });
-                self.events.push(Event::Service(ServiceEvent::SettingChanged(id::HOME_APPS.0)));
+                self.set_setting(id::HOME_HIDDEN, if on { hidden & !bit } else { hidden | bit });
+                self.events.push(Event::Service(ServiceEvent::SettingChanged(id::HOME_HIDDEN.0)));
             }
             "seqdemo" => {
                 if self.seq.add_demo(&mut self.media).is_none() {

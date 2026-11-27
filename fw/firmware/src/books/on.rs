@@ -281,15 +281,20 @@ fn publish(sh: &Shelf, desk: &Desk, lent: bool) {
     });
 }
 
-/// A chore while a track plays (`audio::chores`): steps while the chore's
-/// budget lasts (the first always), no scratch, no folder made. Nothing if
-/// the UI holds the model (its loop is in progress): the next chore.
+/// A chore while a track plays (`audio::chores`): steps of the kind it
+/// was admitted for ([`kind`]) while the chore's budget lasts (the first
+/// always), no scratch, no folder made. Nothing if the UI holds the model
+/// (its loop is in progress): the next chore. A step of another kind
+/// waits for a chore of its own: its need is not the one this chore was
+/// measured and admitted with (BOOK-1/2b: a write after the reads of an
+/// open ran inside a `job:bread` piece).
 pub async fn chore(vol: &mut Volume<'static, Card>) {
     if !card_try() {
         return;
     }
+    let admitted = kind();
     while crate::audio::piece_left() {
-        if !step_once(vol, None, false).await {
+        if !step_once(vol, None, false).await || kind() != admitted {
             break;
         }
     }
