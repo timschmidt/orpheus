@@ -1011,6 +1011,7 @@ fn regress_book_open_was_one_long_step() {
     }
     put(&mut vol, "/.orpheus/test/suite/books/The Test Card.txt", &tale());
     put(&mut vol, "/.orpheus/test/suite/books/Another book.txt", &notes());
+    put(&mut vol, "/.orpheus/test/suite/books/Zebra, never opened.txt", &war());
     let (mut sh, mut desk) = (Shelf::new(), Desk::new());
     sh.request(Req::Library(Scope::Test));
     sh.request(Req::Params(P));
@@ -1048,6 +1049,20 @@ fn regress_book_open_was_one_long_step() {
         while block_on(desk.step_with(&mut sh, &mut vol, &Mono, None)) {}
     }
     assert!(most <= 6, "a step of an open read {most} sectors");
+    // A book never opened: its conversion starts, the text's and the
+    // contents' cache files made in steps of their own (one step made both
+    // with the head: 46 ms on the player, an underrun).
+    let mut most_io = 0;
+    sh.request(Req::Open(2));
+    for _ in 0..12 {
+        let (r0, w0) = (vol.device().reads, vol.device().writes);
+        block_on(desk.step_with(&mut sh, &mut vol, &Mono, None));
+        most_io = most_io.max(vol.device().reads - r0 + vol.device().writes - w0);
+    }
+    assert_eq!(sh.book.phase, Phase::Converting);
+    // Each a search of the cache folder (here 120 files beside the books':
+    // 24–33 sectors each); in one step they were 59.
+    assert!(most_io <= 40, "a step of a conversion's start did {most_io} sector reads and writes");
 }
 
 /// Regression (BOOK-1/2b, 2026-11-27): on the player a book sometimes

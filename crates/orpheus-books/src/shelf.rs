@@ -1699,6 +1699,17 @@ impl Desk {
     ) -> bool {
         let Work::Convert(job) = &mut self.work else { return false };
         let b = &mut sh.book;
+        // The contents file in a step of its own, after the text's (both
+        // in one step, with the head, were a 46-ms piece while music
+        // played: an underrun, BOOK-1/2b).
+        if !matches!(job.c, Parse::None) && job.norm.is_some() && job.toc.is_none() {
+            job.toc = vol.open(self.path.file(CACHE_DIR, b.id, "toc"), OpenMode::Truncate).await.ok();
+            if job.toc.is_none() {
+                b.phase = Phase::Failed;
+                drop_work(&mut self.work, &mut self.orphans);
+            }
+            return true;
+        }
         if matches!(job.c, Parse::Epub(_)) {
             return self.epub_step(sh, vol, scratch).await;
         }
@@ -1717,8 +1728,7 @@ impl Desk {
                 begin_plain(&mut job.c, b.format, &job.inbuf[..n], job.eof);
             }
             job.norm = vol.open(self.path.file(CACHE_DIR, b.id, "txt"), OpenMode::Truncate).await.ok();
-            job.toc = vol.open(self.path.file(CACHE_DIR, b.id, "toc"), OpenMode::Truncate).await.ok();
-            let (Some(norm), Some(_)) = (job.norm.as_mut(), job.toc.as_ref()) else {
+            let Some(norm) = job.norm.as_mut() else {
                 b.phase = Phase::Failed;
                 drop_work(&mut self.work, &mut self.orphans);
                 return true;
