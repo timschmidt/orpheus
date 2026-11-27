@@ -1009,6 +1009,21 @@ impl StorageService for Fw {
     fn storage(&mut self, req: StorageRequest) {
         self.actions.push(Action::Storage(req));
     }
+    fn storage_outcome(&self) -> orpheus_apps::services::StorageOutcome {
+        crate::care::outcome()
+    }
+}
+
+impl Fw {
+    /// Settings › Storage's card work ended (every UI loop).
+    pub fn care_poll(&mut self) {
+        if crate::care::take_changed() {
+            self.pending.push(Event::Service(ServiceEvent::Other {
+                kind: orpheus_apps::services::other::STORAGE,
+                value: 0,
+            }));
+        }
+    }
 }
 
 impl PlaybackService for Fw {
@@ -1511,11 +1526,6 @@ impl RecorderService for Fw {
         let d = crate::rec::rec_dir();
         (d != 0).then_some(DirId(d))
     }
-    fn rec_has_line_in(&self) -> bool {
-        // No line input on the YM03 that anyone has found (U-AUD-4); the
-        // developer command can still try `rec start line`.
-        false
-    }
 }
 
 impl RadioService for Fw {
@@ -1911,6 +1921,18 @@ impl SystemService for Fw {
         // T-6: stage 2's boot-info word for this start.
         let i = atj2157_hal::persist::boot_info()?;
         Some(orpheus_apps::services::BootSlot { running: i.slot()?, failed: i.tripped() })
+    }
+    /// System › Diagnostics (read-only; VER-13): the same counters as the
+    /// developer channel's `status` and `prof`.
+    #[inline(never)]
+    fn diagnostics(&self) -> orpheus_apps::services::Diagnostics {
+        orpheus_apps::services::Diagnostics {
+            uptime_s: u32::try_from(embassy_time::Instant::now().as_secs()).unwrap_or(u32::MAX),
+            cpu_mhz: u16::try_from(atj2157_hal::delay::core_hz() / 1_000_000).unwrap_or(0),
+            loads: atj2157_hal::pager::stats().loads,
+            underruns: crate::audio::UNDERRUNS.load(Ordering::Relaxed),
+            stack_free: u32::try_from(atj2157_hal::rt::stack_unused()).unwrap_or(0),
+        }
     }
 }
 

@@ -154,17 +154,67 @@ pub struct CardInfo {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum StorageRequest {
     RebuildLibrary,
+    /// Remove [`CACHE_DIRS`] (VER-13, 2026-11-27).
     ClearCaches,
-    /// Read-only scan.
+    /// Read every folder and follow every file's clusters; writes nothing
+    /// (`orpheus_fs::Volume::check`).
     CheckCard,
-    /// Erase and create a file system (confirmed by the user).
+    /// Erase and create a file system (confirmed by the user;
+    /// `orpheus_fs::format`: FAT32 to 32 GiB, exFAT above, in the card's
+    /// own partition).
     Format,
+}
+
+/// What Settings › Storage › Clear caches removes: what the player makes
+/// again from the card's files when it needs it (thumbnails and album art,
+/// the folder indexes, the books' indexes and conversions). Never the
+/// library, the queue, saves, bookmarks or anything outside `/.orpheus`.
+pub const CACHE_DIRS: [&str; 2] = ["/.orpheus/cache", "/.orpheus/index"];
+
+/// Folder levels Check card reads below the root (deeper folders are
+/// counted, not read): a music tree is about four deep; each level is a
+/// cursor in the card task's future (`.bss`).
+pub const CHECK_DEPTH: usize = 8;
+
+/// The last Settings › Storage card work (05 §7.11): `ServiceEvent::Other
+/// { kind: other::STORAGE }` when it ends.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct StorageOutcome {
+    /// What was asked (`None`: nothing since start-up).
+    pub req: Option<StorageRequest>,
+    /// Still running.
+    pub busy: bool,
+    /// Ended without a card error.
+    pub ok: bool,
+    /// Check card: folders and files read, problems found, and whether it
+    /// was stopped before its end (a request for the card came).
+    pub dirs: u32,
+    pub files: u32,
+    pub problems: u32,
+    pub stopped: bool,
 }
 
 pub trait StorageService {
     fn card(&self) -> CardState;
     fn card_info(&self) -> Option<CardInfo>;
     fn storage(&mut self, req: StorageRequest);
+    fn storage_outcome(&self) -> StorageOutcome;
+}
+
+/// System › Diagnostics (05 §7.11, read-only): what the player reports
+/// about itself.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Diagnostics {
+    /// Seconds since start-up.
+    pub uptime_s: u32,
+    /// The core clock now (MHz).
+    pub cpu_mhz: u16,
+    /// Code and data lines loaded from flash since start-up (the pager).
+    pub loads: u32,
+    /// Audio underruns counted since start-up.
+    pub underruns: u32,
+    /// Stack bytes never used since start-up.
+    pub stack_free: u32,
 }
 
 /// What plays (status bar, mini-player, lock screen, quick panel).
@@ -586,6 +636,8 @@ pub trait SystemService {
     fn boot_slot(&self) -> Option<BootSlot> {
         None
     }
+    /// System › Diagnostics.
+    fn diagnostics(&self) -> Diagnostics;
 }
 
 /// Which firmware slot runs, and which ones stage 2 gave up on first
@@ -967,8 +1019,6 @@ pub trait RecorderService {
     fn rec_name(&self) -> &str;
     /// The recordings folder, if there is one.
     fn rec_dir(&mut self) -> Option<DirId>;
-    /// The board has a line input.
-    fn rec_has_line_in(&self) -> bool;
 }
 
 // ---------------------------------------------------------------- Update
@@ -1081,9 +1131,10 @@ pub trait UpdateService {
 /// Settings › Recording › Source as a source.
 #[must_use]
 pub const fn rec_source(v: i16) -> RecSource {
+    // Value 2 (Line-in) was retired 2026-11-27: no line input on the
+    // board; the developer command can still try `rec start line`.
     match v {
         1 => RecSource::Fm,
-        2 => RecSource::Line,
         _ => RecSource::Mic,
     }
 }
@@ -1804,6 +1855,8 @@ pub mod other {
     pub const BOOKS: u16 = 10;
     /// Sequencer: a card request was answered (the list, the open project).
     pub const SEQ: u16 = 11;
+    /// Settings › Storage: card work ended (`StorageService::storage_outcome`).
+    pub const STORAGE: u16 = 12;
 }
 
 /// Browser order (Files menu › Sort).

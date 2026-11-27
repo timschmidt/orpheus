@@ -1,5 +1,6 @@
 //! The screen reader's toolkit side (A11Y-1, 05 §7.14), feature
-//! `screen-reader` (off in the firmware until its speech output exists).
+//! `screen-reader` (on in the firmware by default since PG-2, 2026-11-27,
+//! with the speech voice of `orpheus-tts`).
 //!
 //! * **Descriptions.** Every screen fills a [`Desc`] from
 //!   [`Screen::describe`](crate::nav::Screen::describe): a title, a "where am

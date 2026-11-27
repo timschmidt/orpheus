@@ -31,39 +31,36 @@ proptest.workspace = true
 
 [features]
 # M14 Games (GAME-0/1/3, 05 §7.13): the Games app, its screens, settings,
-# strings and `GamesService`. Off in the firmware until a stack-headroom
-# package makes room (the firmware's static stack margin is a few hundred
-# bytes and any static or resident growth costs 256 B of it); the
-# simulator, the browser build and the UI fuzzer turn it on.
+# strings and `GamesService`. On in the firmware (since STACK, 2026-11-25),
+# the simulator, the browser build and the UI fuzzer.
 games = ["dep:orpheus-games", "dep:orpheus-fs", "orpheus-ui/menu-key"]
-# Salvo, the artillery game (GAME-4/5): on in the simulator, the browser
-# build and the UI fuzzer; off in the firmware until there is static RAM
-# and stack for it (docs/STATUS.md, GAME-4/5).
+# Salvo, the artillery game (GAME-4/5): on in the firmware (since STACK,
+# 2026-11-25), the simulator, the browser build and the UI fuzzer.
 salvo = ["games", "orpheus-games/salvo"]
-# Bricks, the brick-breaking game (GAME-6): on in the simulator, the
-# browser build and the UI fuzzer; in the firmware only while its stack,
-# size and resident checks pass with it (docs/STATUS.md, GAME-6).
+# Bricks, the brick-breaking game (GAME-6): on in the firmware, the
+# simulator, the browser build and the UI fuzzer.
 bricks = ["games", "orpheus-games/bricks"]
 # M15 Books (BOOK-1, 05 §7.15): the Books app (library, reader, contents,
 # bookmarks, go to), its settings, strings and `BooksService` over the
-# `orpheus-books` core. On in the simulator, the browser build and the UI
-# fuzzer; off in the firmware until there is static RAM and stack for it
-# (docs/STATUS.md, BOOK-1).
+# `orpheus-books` core. On in the simulator, the browser build, the UI
+# fuzzer and the firmware (its default feature `books` since BOOK-1/2,
+# 2026-11-27).
 books = ["dep:orpheus-books", "orpheus-ui/book-fonts"]
 # MIDI files (MIDI-1, 04 §9): `.mid`, `.midi`, `.kar`, `.rmi` are audio in
 # Files and the library. On in the simulator (which plays them through
-# `orpheus-midi`); off in the firmware until SYN-3 plays them there.
+# `orpheus-midi`) and in the firmware (the synthesiser plays them there
+# since SYN-3, 2026-11-26).
 midi = []
 # M17 Sequencer (SEQ-1, 05 §7.16): the Sequencer app (project list, grid,
 # transport, step, track and mixer screens) and `SeqService` over the
-# `orpheus-seq` model. On in the simulator and the browser build; off in
-# the firmware until SYN-3 puts the synth on the player.
+# `orpheus-seq` model. On in the simulator and the browser build; not in
+# the firmware yet (no package has wired it there).
 seq = ["dep:orpheus-seq"]
 # A11Y-1 (05 §7.14): the screen reader's descriptions of every screen
 # (`Screen::describe`), its settings in Settings › Accessibility (strings,
-# rows, the word 0x0D61) and `services::reader_config`. On in the simulator
-# and the browser build; off in the firmware until its speech output exists
-# (TTS-3: no room for the speech engine yet).
+# rows, the word 0x0D61) and `services::reader_config`. On in the simulator,
+# the browser build and the firmware (its default feature `speech`, with the
+# speech voice, since PG-2, 2026-11-27).
 screen-reader = ["orpheus-ui/screen-reader"]
 
 [lints]

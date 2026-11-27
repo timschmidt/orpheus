@@ -374,8 +374,15 @@ impl Ui {
                     .store(services::usb_card_read_only(&*self.fw), core::sync::atomic::Ordering::Relaxed);
                 crate::usbdev::MODE.signal(p);
             }
-            if let Action::Storage(orpheus_apps::services::StorageRequest::RebuildLibrary) = a {
-                crate::media::request(crate::media::Req::Rebuild);
+            match a {
+                Action::Storage(orpheus_apps::services::StorageRequest::RebuildLibrary) => {
+                    crate::media::request(crate::media::Req::Rebuild);
+                }
+                // Clear caches, Check card, Format card (VER-13).
+                Action::Storage(r) => {
+                    let _ = crate::care::request(r);
+                }
+                _ => {}
             }
             if let Action::Power(p) = a {
                 match p {
@@ -1353,6 +1360,8 @@ pub async fn ui() {
         ui.fw.games_poll(t.0);
         // Books: card work changed the model.
         ui.fw.books_poll();
+        // Settings › Storage: card work ended.
+        ui.fw.care_poll();
         while let Some((k, p)) = ui.mapper.poll(t) {
             let r = ui.shell.key(&mut *ui.fw, k, p, t);
             ui.handle(r);

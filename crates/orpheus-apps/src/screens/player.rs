@@ -132,7 +132,6 @@ const M_CLEAR_AB: u16 = 52;
 const M_SPEED: u16 = 6;
 const M_EQ: u16 = 7;
 const M_SLEEP: u16 = 8;
-const M_OUTPUT: u16 = 9;
 const M_FOLDER: u16 = 10;
 const M_DELETE: u16 = 11;
 const M_DETAILS: u16 = 12;
@@ -890,7 +889,6 @@ impl<S: Services + ?Sized> Screen<S> for NowPlayingScreen {
             }
             Some(_) => {}
         }
-        let _ = M_OUTPUT;
         let _ = M_DETAILS;
     }
 
@@ -984,7 +982,6 @@ impl NowPlayingScreen {
             M_SPEED => return Nav::Push(CHOICE, Arg(u32::from(id::SPEED.0))),
             M_EQ => return Nav::Push(EQUALISER, Arg(0)),
             M_SLEEP => return Nav::Push(CHOICE, Arg(u32::from(id::SLEEP_TIMER.0))),
-            M_OUTPUT => return Nav::Push(CHOICE, Arg(u32::from(id::OUTPUT.0))),
             M_ALBUM | M_ARTIST => {
                 if let Some(n) = cx.svc.lib_now() {
                     let list = if mid == M_ALBUM {

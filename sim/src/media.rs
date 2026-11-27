@@ -246,9 +246,14 @@ impl Media {
         let disk = OverlayDisk::over(base.clone());
         // A card that does not mount keeps its cache (16 slots, once).
         let vol = block_on(Volume::mount(disk, cache, MountOptions::default())).ok()?;
+        Some(Self::from_volume(vol, base))
+    }
+
+    /// A fresh player state over a mounted card.
+    fn from_volume(vol: Volume<'static, OverlayDisk<'static>>, base: Base<'static>) -> Media {
         let mut dir_paths = HashMap::new();
         dir_paths.insert(0, String::new());
-        Some(Media {
+        Media {
             vol: Some(vol),
             base,
             duration_probe: None,
@@ -292,7 +297,86 @@ impl Media {
             last_change: None,
             marks: Vec::new(),
             played_ms: 0,
-        })
+        }
+    }
+
+    /// Settings › Storage › Format card (VER-13): the card task's work as
+    /// the firmware does it (`orpheus_fs::format` on the card's region,
+    /// then a fresh mount and player state); `false` if the format failed
+    /// (the card then reads as unformatted: no volume until a new image).
+    pub fn format_card(&mut self) -> bool {
+        let Some(v) = self.vol.take() else { return false };
+        let (mut disk, cache) = v.into_parts();
+        let mut buf = [[0u8; 512]; 32];
+        let ok = block_on(orpheus_fs::format::format(&mut disk, None, 0x4F52_5048, &mut buf)).is_ok();
+        match block_on(Volume::mount(disk, cache, MountOptions::default())) {
+            Ok(vol) if ok => {
+                *self = Self::from_volume(vol, self.base.clone());
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Settings › Storage › Clear caches: [`orpheus_apps::services::CACHE_DIRS`]
+    /// removed under the firmware's write prefix; `false` on a card error.
+    pub fn clear_caches(&mut self) -> bool {
+        let Some(v) = self.vol.as_mut() else { return false };
+        v.set_write_prefix(Some("/.orpheus"));
+        let mut buf = [0u8; 256];
+        let mut e = orpheus_fs::DirEntry::new();
+        let mut ok = true;
+        for d in orpheus_apps::services::CACHE_DIRS {
+            ok &= block_on(v.remove_tree(d, &mut buf, &mut e)).is_ok();
+        }
+        v.set_write_prefix(None);
+        ok &= block_on(v.flush()).is_ok();
+        ok
+    }
+
+    /// `set:cardbad=1`: write `/Damaged.bin` (three clusters) and free its
+    /// first cluster's link in every FAT (the simulated card is FAT16), so
+    /// Check card finds one problem.
+    pub fn damage_a_file(&mut self) {
+        let Some(v) = self.vol.as_mut() else { return };
+        let Ok(mut f) = block_on(v.open("/Damaged.bin", orpheus_fs::OpenMode::CreateNew)) else { return };
+        let _ = block_on(v.write(&mut f, &[0x5A; 6000]));
+        let first = f.first_cluster();
+        let _ = block_on(v.close(f));
+        let _ = block_on(v.flush());
+        let d = v.device();
+        let mut bs = [[0u8; 512]];
+        let _ = block_on(orpheus_fs::BlockDevice::read(d, 0, &mut bs));
+        let reserved = usize::from(u16::from_le_bytes([bs[0][14], bs[0][15]]));
+        let fat_len = usize::from(u16::from_le_bytes([bs[0][22], bs[0][23]]));
+        for k in 0..usize::from(bs[0][16]) {
+            let at = (reserved + k * fat_len) * 512 + first as usize * 2;
+            d.patch(at, 0);
+            d.patch(at + 1, 0);
+        }
+        let n = u32::try_from(fat_len * usize::from(bs[0][16])).unwrap_or(0);
+        v.invalidate_cached(u32::try_from(reserved).unwrap_or(0), n);
+    }
+
+    /// The developer command `ls PATH` as the firmware reads it: the names,
+    /// a `/` after a folder's (`None`: no such directory).
+    pub fn ls(&mut self, path: &str) -> Option<Vec<String>> {
+        let v = self.vol.as_mut()?;
+        let mut cur = block_on(v.open_dir(path)).ok()?;
+        let mut e = orpheus_fs::DirEntry::new();
+        let mut out = Vec::new();
+        while let Ok(true) = block_on(v.read_dir(&mut cur, &mut e)) {
+            out.push(format!("{}{}", e.name(), if e.is_dir() { "/" } else { "" }));
+        }
+        Some(out)
+    }
+
+    /// Settings › Storage › Check card: the read-only check.
+    pub fn check_card(&mut self) -> Option<orpheus_fs::CheckReport> {
+        let v = self.vol.as_mut()?;
+        let mut stack = [v.root(); orpheus_apps::services::CHECK_DEPTH];
+        let mut e = orpheus_fs::DirEntry::new();
+        block_on(v.check(&mut stack, &mut e, &mut |_| false)).ok()
     }
 
     /// Settings › Playback › Gapless and Auto-bookmark long files, as the

@@ -518,6 +518,52 @@ mod effects {
         assert_eq!(a, b, "the same tracks");
     }
 
+    /// The focused row's label and the list's length (screen reader).
+    fn rows(s: &mut AppSim) -> Vec<String> {
+        let focus = |s: &mut AppSim| {
+            let mut d = orpheus_ui::a11y::Desc::new();
+            s.shell.describe(&mut s.sys, &mut d);
+            d.focus.map(|f| (f.label.as_str().to_string(), f.count)).unwrap_or_default()
+        };
+        let (first, count) = focus(s);
+        let mut out = vec![first];
+        for _ in 1..count {
+            run(s, "down");
+            out.push(focus(s).0);
+        }
+        out
+    }
+
+    /// Regression (DOC-2 finding, 2026-11-27): Settings › Bluetooth ›
+    /// Output (0x0604, Headphones / Bluetooth) was offered in Settings and
+    /// the quick panel but nothing read it: the YM03 cannot route (the
+    /// Bluetooth module takes its audio after the headphone amplifier,
+    /// U-BT-2). It is hidden: neither list offers it, and a stored value
+    /// changes no frame.
+    #[test]
+    fn regress_output_setting_offered_without_effect() {
+        assert!(orpheus_apps::settings::hidden(orpheus_apps::settings::id::OUTPUT));
+        let mut q = sim("hold:menu expect-screen:QuickPanel");
+        let quick = rows(&mut q);
+        assert!(quick.iter().any(|r| r == "Bluetooth"), "{quick:?}");
+        assert!(!quick.iter().any(|r| r == "Output"), "{quick:?}");
+        let mut g = sim("goto:Settings wait:50");
+        let groups = rows(&mut g);
+        let bt = groups.iter().position(|r| r == "Bluetooth").expect("a Bluetooth group");
+        let mut b = sim(&format!("goto:Settings wait:50 down*{bt} ok wait:50"));
+        let items = rows(&mut b);
+        assert!(!items.is_empty() && !items.iter().any(|r| r == "Output"), "{items:?}");
+        for script in
+            ["hold:menu expect-screen:QuickPanel", &format!("goto:Settings wait:50 down*{bt} ok wait:50")]
+        {
+            assert_eq!(
+                frame(&format!("set:0x0604=0 {script}")),
+                frame(&format!("set:0x0604=1 {script}")),
+                "{script}"
+            );
+        }
+    }
+
     /// Settings › Playback › Seek step (0x0205): Next held on Now Playing
     /// seeks by the setting's step first (2, 5, 10 or 30 s), then faster;
     /// the place shows on Now Playing and in the player.

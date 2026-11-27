@@ -135,6 +135,10 @@ the player, but not yet tried by a person; the open checks are in
 - **Browser installer** (built; tried against a simulated player only, no
   release published yet): backup-first install, update, restore and
   recovery over WebUSB, with the same code as the command-line tools.
+- **Settings › Storage** (not yet checked on the player): Clear caches
+  (thumbnails, art, folder indexes), Check card (reads everything, changes
+  nothing) and Format card (FAT32 or exFAT in the card's own partition,
+  after a question); **System › Diagnostics**, a read-only page.
 
 ### Changed
 
@@ -151,9 +155,14 @@ the player, but not yet tried by a person; the open checks are in
   scales the volume).
 - The settings store holds 192 keys (was 128), in the same flash format.
 - Books and the speech voice are in the default firmware.
+- Settings › Recording › Source no longer offers Line-in (the player has
+  no line input); Settings › Bluetooth › Output is hidden (the headphone
+  jack and Bluetooth always carry the same sound).
 
 ### Fixed
 
+- Authenticator › Time check showed local time labelled UTC; it shows
+  UTC.
 - Music › Shuffle all restarted the player on a large library (the
   watchdog); USB could go deaf until a restart (USB-W1); a test request
   left in memory could make later starts return to USB recovery after
