@@ -12,7 +12,7 @@ of every session. Newest entries first in §3.
 | Player | **Runs Orpheus from NOR, full layout.** Stock firmware and the Rockbox port are erased. Card: **since 2026-11-27 a test card the owner says is safe to format** (permission to format given; CLAUDE.md rule 5); before that the owner's music card (exFAT/FAT, 238.3 GB), read only except `/.orpheus/` |
 | NOR | Sector 0: Rockbox-port stage 1 (unchanged). `0x001000`: full slot A (Orpheus, 544,768 B). `0x7DA000` settings, `0x7DE000` vault, `0x7DF400` Rust stage 2 (876 B, tries full A, full B, dual slot; no stock-firmware path; the T-6 fallback stage 2 (964 B) **installed and crash-tested 2026-11-24**; since UPD-1 two full slots A (`0x001000`) and B, 2,093,056 B each (image 1,605,632 B on 2026-11-27)). `0x7E0000–0x7FFFFF` vendor data, untouched. Backups: `yoton/dumps/nor_backup_8m.bin` (stock, verified), `local/nor-before-full.bin` (the chip just before the switch), `local/rockbox-nor-0x762000.bin`, `local/stage2-previous.bin`. Way back: `xtask dev restore vendor --i-have-a-backup` (`--verify` compares) |
 | Host | Fedora 43, Rust 1.98.1 pinned. Disk ≈ 60 GB free (2026-11-27; worker `target/` dirs deleted after each merge) |
-| Current milestone | (2026-11-27) On the player: Music, Files, Now Playing, Pictures, Bluetooth, Settings, Radio, Recorder, Steps, Tools, Authenticator, Games, MIDI, Books, speech and the screen reader (on-device suite 25/26 passing; `books` waits for BOOK-1/2b). Open: M13 measurements (owner's cables), M16 USB audio, M18 jack tools, BOOK-3, UI-6b, the VER packages, REL |
+| Current milestone | (2026-11-27) On the player: Music, Files, Now Playing, Pictures, Bluetooth, Settings, Radio, Recorder, Steps, Tools, Authenticator, Games, MIDI, Books, speech and the screen reader (on-device suite 28/28 with BOOK-1/2b). Open: M13 measurements (owner's cables), M16 USB audio, M18 jack tools, BOOK-3, UI-6b, the VER packages, REL |
 
 ## 2. Work packages
 
@@ -102,7 +102,7 @@ after 15:00 is on the new card, the 48 kHz test MP3s
 (`/.orpheus/test/mp3/a.mp3`, 150 s, 256 kbit/s, made with ffmpeg; `b.mp3`
 truncated by a USB reset mid-upload) instead of `/Knower`, fixtures
 re-uploaded with `suite --setup`. Main (`0ab7f404`, WEB-2, VER-13 Storage)
-merged in; the final image `24f3af06` is the merge plus this package.
+merged in; the final image `0f59fb28` is the merge plus this package.
 
 * **1. Suite books left state (journey failed).** The suite's books kept
   their reading positions and progress on the card like the owner's, and
@@ -179,16 +179,50 @@ merged in; the final image `24f3af06` is the merge plus this package.
   `dev prof --faults 30 --update-hot idle-home` made `hot.toml` cluster
   `idle-home` (18 code sections, 24 lines; 11 rodata). **≈ 190 → 135
   line loads/s** (`dev stats` 10 s apart: 195, 183, 184 → 138, 132, 138,
-  132; the suite's note 125/s; merged image 155/s, a different layout).
+  132; the suite's note 125/s). The merge with main moved the layout
+  (165/s, music stopped; 271/s with the reboot's reopened track paused);
+  the cluster made again on the merged image (5 code sections: the USB
+  task's loop, 11.7 KB, the UI task's, `next_mode`…; 24 lines): **127/s**
+  (130, 130, 121, 128) on `0f59fb28`.
 * **7. Check 3** ("Stop the music to prepare this book."): shown on the
   new card (its EPUB never converted): `books status` `book=converting
   wait=1`, the reader's hint; 1 underrun from the conversion's first
   piece (46 ms, fixed above, host-checked; not re-run on the player: the
   EPUB was then converted when playback stopped for the next update, and
   another name would change the suite's library).
-* **On the player, final image `24f3af06`**: SUITE; MIDI folder (test
-  look, `fe9757a5`… see below); idle Home; SOAK. Owner's settings:
-  SETTINGS.
+* **On the player, final image `0f59fb28`** (new card, test look):
+  * `dev suite`: **28 journeys passed, 0 failed** (`books` included; the
+    suite's note: idle Home 118 line loads/s, stack free 5,256 B). On the
+    way: `24f3af06` passed 27/28, `books` stopped at `lib=searching`
+    3 s after a library searched afresh (the file's new place): the
+    journey now waits 8 s for the library and 5 s for the text (converted
+    again after `storage_clear` emptied the cache); `storage_clear` then
+    `books` pass. The first `--setup` run on the new card failed
+    `nowplaying` once (`status` still `idle` 1.5 s after the first
+    `playdir`; passed when run again).
+  * **MIDI folder** (`playdir /.orpheus/test/suite/midi`, `status` every
+    9 s for 110 s): underruns **0/0/1** (Sound tour: `ub=synth:render:5ms`
+    at a 288 ↔ 192 MHz clock change, the synth governor's), run again
+    **0/0/0**; ≈ 1,100 line loads/s over the 110 s (the last ≈ 30 s idle).
+    On `ad9958ee` (before the merge) 0/0/0.
+  * **Idle Home**: 121–130 line loads/s (above).
+  * **`dev soak music --minutes 15 --music /.orpheus/test/mp3`: PASS, 18.2
+    min**, 13 actions, 113 samples (one folder: the new card has no
+    music): stack free min **5,256 B**, line loads/s mean 2,163 / max
+    3,608, evictions/s max 5,457, underruns 0, DAC headroom min 919
+    frames, card errors 0, uptime vs host −22 ppm, CPU idle 56 %. (On
+    `24f3af06`: PASS, mean 2,056 / max 4,741, headroom min 895, idle
+    59 %.) Not comparable with the owner's card's soaks (other folders).
+  * **Owner's settings: not written.** `settings changed` reads
+    `changed: 701=1 d50=10470 e80=20992` (`30b` gone: retired, above);
+    test session off, store ok, 26 keys.
+  * Ended in a reboot (the soak's): the player runs `0f59fb28` from slot
+    B (slot A holds `24f3af06`), Home, keys free, screen on, the last test
+    track (`/.orpheus/test/mp3/a.mp3`) reopened paused as after every
+    reboot. Left on the card under `/.orpheus/test/`: `mp3/a.mp3`,
+    `mp3/b.mp3` (truncated by the USB reset), `abandon.bin` (0 B, the
+    upload check), the suite's fixtures; `/.orpheus/cache/books/test.lib`
+    if a run recreated it before the move (Clear caches removes it).
 * **Gate** (merged tree): `cargo fmt --all --check` (root and fw);
   clippy `-D warnings` root (also `--no-default-features`), fw release
   (also `--no-default-features`, `-p firmware --features speech`);
@@ -10270,6 +10304,11 @@ Finding: 30-minute `mixed` soak, seed 1, 10.4 min, read in `radio-keys 8
 | 2026-11-27 | Idle Home on `bdebff77` | 199–219 line loads/s screen on (≈ 0.9 UI loops/s); 177/s screen off; 270/s with a MIDI file loaded paused | `dev stats` 5–10 s apart; `dev prof --faults 10` |
 | 2026-11-27 | Clock after MIDI on `bdebff77` | Base 48 within 3 s of `stop` and of the folder's end | `dev stats` |
 | 2026-11-27 | Firmware PG-2b, worker build | resident 60,336 B (+512: 505 B synth constants), code 127/128, rodata 46/64 (8 cold pages, 0 line conflicts), slot 1,482,752 B, stack margin 16,852 B | `xtask build`, `size`, `stack` |
+| 2026-11-27 | Book open under a 48 kHz, 256 kbit/s MP3 (new card, `fe9757a5`, BOOK-1/2b) | 4 opens, 0 underruns, 6–9 s each; open steps 4–37 ms (one file operation each); before (`69e78690`, old card, `/Knower`) `job:bread 83/29 ms`, 3 underruns at one open | `books status`, `status`, the log's `chore:` lines |
+| 2026-11-27 | Chore decision headroom, 48 kHz MP3 at Base | 2,283 frames after every block (roomy 2,304): a 34-ms need waited 5.9 s and more (`due=15/34/2283/5956/0`) | `status` `due=` |
+| 2026-11-27 | Idle Home, test look, music stopped (BOOK-1/2b) | ≈ 190 → 132–138 line loads/s with cluster `idle-home` (`ad9958ee`); merged with main 165 → 121–130 (`0f59fb28`); 271/s with a reopened track paused; suite note 118/s | `dev stats` 10 s apart |
+| 2026-11-27 | MIDI folder, test look, `0f59fb28` (new card) | underruns 0/0/1 (Sound tour: `ub=synth:render:5ms` at a 288↔192 clock change), again 0/0/0; ≈ 1,100 line loads/s over 110 s (≈ 30 s idle at the end) | `playdir …/midi`, `status` every 9 s, `dev stats` |
+| 2026-11-27 | Firmware BOOK-1/2b merged with main (`0f59fb28`) | resident 60,620 B, `.bss` 147,376 B, code 127/128 (8,202 B free), rodata 64/64, slot 1,630,208 B, stack margin 4,276 B | `xtask build`, `size`, `stack` |
 
 ## 5. Open questions for the user
 
