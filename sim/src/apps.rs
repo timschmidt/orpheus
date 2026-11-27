@@ -1262,6 +1262,15 @@ impl Host for HostServices {
         Some(services::key_timing(self))
     }
 
+    fn reader_config(&self) -> Option<orpheus_ui::a11y::Config> {
+        Some(services::reader_config(self))
+    }
+
+    fn set_reader(&mut self, on: bool) -> Vec<Event> {
+        self.set_setting(id::READER, i16::from(on));
+        Vec::new()
+    }
+
     fn backlight(&self, lit: bool, now_ms: u64) -> Option<u8> {
         services::backlight(self, lit, self.tools.ringing().is_some(), now_ms)
             .map(orpheus_power::backlight::Duty::get)

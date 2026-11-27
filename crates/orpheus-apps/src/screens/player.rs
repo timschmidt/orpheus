@@ -908,6 +908,49 @@ impl<S: Services + ?Sized> Screen<S> for NowPlayingScreen {
             menu_key: false,
         }
     }
+
+    /// The track (title, artist, playing or paused, its place in the
+    /// queue), the times; Up next and Details are lists.
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        let svc = &*cx.svc;
+        let l = self.lang;
+        d.title(l.get(Str::NowPlaying));
+        let p = svc.player();
+        let Some(t) = svc.track().filter(|_| p.queue_len > 0) else {
+            d.say(l.get(Str::NothingPlaying));
+            d.say(l.get(Str::NothingPlayingAction));
+            return;
+        };
+        if self.view == V_UP_NEXT {
+            let src = QueueSource { svc, base: p.queue_pos, len: p.queue_len.saturating_sub(p.queue_pos) };
+            d.list(&src, &self.list, "empty");
+            return;
+        }
+        if self.view == V_DETAILS {
+            let rows = Self::details(svc, l);
+            d.list(&rows, &self.list, "empty");
+            return;
+        }
+        let mut label = StrBuf::<96>::new();
+        label.push_str_or_ellipsis(t.title);
+        if !t.artist.is_empty() {
+            label.push_str(", ");
+            label.push_str_or_ellipsis(t.artist);
+        }
+        let state = match p.source {
+            Source::Paused => "paused",
+            Source::Playing => "playing",
+            _ => "stopped",
+        };
+        d.focus(orpheus_ui::a11y::Role::Text, label.as_str()).value(state).at(p.queue_pos, p.queue_len);
+        d.say(t.album);
+        let mut times = StrBuf::<32>::new();
+        push_time(&mut times, p.position_ms);
+        times.push_str(" of ");
+        push_time(&mut times, p.duration_ms);
+        d.say(times.as_str());
+    }
 }
 
 impl NowPlayingScreen {
@@ -1112,6 +1155,42 @@ impl<S: Services + ?Sized> Screen<S> for EqualiserScreen {
             is_player: true,
             ..Wants::default()
         }
+    }
+
+    /// The preset, the pre-amp and the band chosen with its gain.
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        let l = self.lang;
+        d.title(l.get(Str::Equaliser));
+        let preset = cx.svc.setting(id::EQUALISER);
+        let mut name = StrBuf::<24>::new();
+        if let Some(def) = settings::def(id::EQUALISER) {
+            settings::format_value(def, preset, l, &mut name);
+        }
+        d.say(name.as_str());
+        let gains = Self::gains(cx.svc);
+        let b = usize::from(self.band % 5);
+        let mut label = StrBuf::<16>::new();
+        let hz = EQ_BANDS_HZ[b];
+        if hz >= 1000 {
+            label.push_u32(hz / 1000);
+            if hz % 1000 != 0 {
+                label.push('.');
+                label.push_u32(hz % 1000 / 100);
+            }
+            label.push_str(" kHz");
+        } else {
+            label.push_u32(hz);
+            label.push_str(" Hz");
+        }
+        let mut v = StrBuf::<12>::new();
+        let g = gains[b];
+        if g > 0 {
+            v.push('+');
+        }
+        v.push_i32(i32::from(g));
+        v.push_str(" dB");
+        d.focus(orpheus_ui::a11y::Role::Slider, label.as_str()).value(v.as_str()).at(u32::from(self.band), 5);
     }
 }
 

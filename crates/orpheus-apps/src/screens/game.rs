@@ -583,6 +583,23 @@ impl<S: Services + ?Sized> Screen<S> for GameScreen {
             self.view = View::Playing;
         }
     }
+
+    /// The game and its state (playing, paused, over). The boards are not
+    /// described (A11Y-1 covers the menus around the games).
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, _cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        let l = self.lang;
+        d.title(l.get(self.game.label()));
+        d.say(match self.view {
+            View::Playing => "playing",
+            View::Paused => l.get(Str::GamePaused),
+            View::Ended => l.get(Str::GameOver),
+            View::Loading => "loading",
+        });
+        if matches!(self.view, View::Paused | View::Ended) {
+            d.say(l.get(Str::GameOkToContinue));
+        }
+    }
 }
 
 // ------------------------------------------------------------------ drawing

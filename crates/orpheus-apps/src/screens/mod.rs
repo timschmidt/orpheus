@@ -381,6 +381,17 @@ impl<S: Services + ?Sized> Screen<S> for AppScreen {
     fn restore(&mut self, cx: &mut Cx<'_, S>, r: &Resume) {
         each!(self, s => s.restore(cx, r));
     }
+    /// The screen's own description; a screen without a focus also says
+    /// its strip hint ("OK start · Next lap").
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        each!(self, s => s.describe(cx, d));
+        if d.focus.is_none()
+            && let orpheus_ui::nav::StripUse::Hint(h) = Screen::<S>::wants(self).strip
+        {
+            d.say(h);
+        }
+    }
 }
 
 impl<S: Services + ?Sized> ScreenSet<S> for AppScreen {

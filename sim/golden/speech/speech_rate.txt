@@ -1,0 +1,38 @@
+# A11Y-1 spoken journey `speech_rate` (sim/tests/screen_reader.rs)
+# set:0x1004=1 wait:2500 prev ok wait:2500 up wait:2000 ok wait:2500 down*4 wait:2500 ok wait:2500 up*4 wait:1500 back wait:3000
+     33 earcon reader-on
+     33 say Screen reader on
+     33 say Home. Music, button, 1 of 12
+   2500 stop
+   2500 say Settings, button, 12 of 12
+   2600 stop
+   2660 earcon enter
+   2660 say Settings. Sound, submenu, 1 of 13
+   5200 stop
+   5200 earcon wrap
+   5200 say Accessibility, submenu, 13 of 13
+   7300 stop
+   7360 earcon enter
+   7360 say Accessibility. Text size, Normal, submenu, 1 of 11
+   9900 stop
+   9900 say Hold delay, 0.5 s, submenu, 2 of 11
+  10000 stop
+  10000 say Key repeat, Normal, submenu, 3 of 11
+  10100 stop
+  10100 say Screen reader, switch, on, 4 of 11
+  10200 stop
+  10200 say Speech rate, 1.0 times, submenu, 5 of 11
+  12800 stop
+  12860 earcon enter
+  12860 say Speech rate. 1.0 times, adjustable
+  15400 stop
+  15400 say 1.25 times
+  15500 stop
+  15500 say 1.5 times
+  15600 stop
+  15600 say 1.75 times
+  15700 stop
+  15700 say 2.0 times
+  17360 earcon back
+  17360 say Accessibility. Speech rate, 2.0 times, submenu, 5 of 11
+audio 16000 Hz mono, 325872 samples, fnv64 ddb0f7ebf931c97c

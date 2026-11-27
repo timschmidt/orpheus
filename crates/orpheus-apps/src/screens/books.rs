@@ -538,6 +538,29 @@ impl<S: Services + ?Sized> Screen<S> for BookListScreen {
         self.list = l;
         self.want(cx);
     }
+
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        let l = self.lang;
+        d.title(self.title());
+        match self.kind {
+            BookList::Menu => d.list(&self.rows, &self.list, "empty"),
+            BookList::Library => {
+                let lib = &cx.svc.books().lib;
+                if lib.phase != LibPhase::Ready {
+                    d.say(l.get(Str::BooksSearching));
+                } else if lib.count == 0 {
+                    d.say(l.get(Str::BooksNone));
+                } else {
+                    d.list(&LibSrc::new(lib, self.list.top, l), &self.list, "empty");
+                }
+            }
+            BookList::Contents => d.list(&TocSrc::new(cx.svc.books(), self.list.top), &self.list, "empty"),
+            BookList::Bookmarks => {
+                d.list(&MarkSrc::new(cx.svc.books()), &self.list, l.get(Str::BooksBookmarks));
+            }
+        }
+    }
 }
 
 /// The library while it is read or searched, or when it is empty.
@@ -891,6 +914,51 @@ impl<S: Services + ?Sized> Screen<S> for ReaderScreen {
         self.turned = cx.now;
         self.ticking = auto_turn(cx.svc) > 0;
     }
+
+    /// The page's first words (the reading itself is read-aloud's,
+    /// BOOK-3) and how far into the book it is.
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        let l = self.lang;
+        let b = &cx.svc.books().book;
+        d.title(if b.title.is_empty() { l.get(Str::AppBooks) } else { b.title.as_str() });
+        match b.phase {
+            Phase::Ready => {}
+            Phase::Failed | Phase::Closed => {
+                d.say(l.get(Str::BooksFailed));
+                return;
+            }
+            _ => {
+                d.say(l.get(Str::BooksPreparing));
+                return;
+            }
+        }
+        let Some((base, win, _)) = b.window() else {
+            d.say("loading");
+            return;
+        };
+        let mut s = StrBuf::<96>::new();
+        let mut i = usize::try_from(b.top.offset.saturating_sub(base)).unwrap_or(usize::MAX);
+        while i < win.len() && s.len() < 90 {
+            let Some((it, k)) = item_at(win, i) else { break };
+            match it {
+                Item::Char(c) => {
+                    s.push(c);
+                }
+                Item::Para(_) => {
+                    s.push(' ');
+                }
+                Item::Style(_) => {}
+            }
+            i += k;
+        }
+        if s.as_str().trim().is_empty() {
+            s.push_str("blank");
+        }
+        let mut pm = StrBuf::<8>::new();
+        push_permille(&mut pm, b.read_permille());
+        d.focus(orpheus_ui::a11y::Role::Text, s.as_str()).value(pm.as_str());
+    }
 }
 
 /// Seconds per page of Auto page turn (0: off).
@@ -957,5 +1025,14 @@ impl<S: Services + ?Sized> Screen<S> for GotoScreen {
 
     fn restore(&mut self, _cx: &mut Cx<'_, S>, r: &Resume) {
         self.percent = u16::try_from(r.focus).unwrap_or(0).min(100);
+    }
+
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, _cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        d.title(self.lang.get(Str::BooksGoTo));
+        let mut v = StrBuf::<8>::new();
+        v.push_u32(u32::from(self.percent));
+        v.push_str(" %");
+        d.focus(orpheus_ui::a11y::Role::Slider, self.lang.get(Str::BooksGoTo)).value(v.as_str());
     }
 }

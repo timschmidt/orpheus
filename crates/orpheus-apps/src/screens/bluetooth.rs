@@ -463,6 +463,12 @@ impl<S: Services + ?Sized> Screen<S> for BluetoothScreen {
         l.set_focus(&self.rows, r.focus, visible(), cx.now);
         self.list = l;
     }
+
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, _cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        d.title(self.title());
+        d.list(&self.rows, &self.list, "empty");
+    }
 }
 
 /// Give up waiting for the module after this long (it cancels its own
@@ -600,5 +606,15 @@ impl<S: Services + ?Sized> Screen<S> for BtConnectScreen {
             strip: StripUse::Hint(self.lang.get(Str::HintBtConnect)),
             ..Wants::default()
         }
+    }
+
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, _cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        let l = self.lang;
+        d.title(l.get(Str::AppBluetooth));
+        d.say(l.get(if self.failed { Str::BtFailed } else { Str::BtConnecting }));
+        let mut name = StrBuf::<24>::new();
+        self.dev.push_label(&mut name);
+        d.say(name.as_str());
     }
 }

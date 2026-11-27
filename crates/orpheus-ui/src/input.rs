@@ -263,6 +263,14 @@ impl KeyMapper {
     pub fn any_down(&self) -> bool {
         self.keys.iter().any(|k| k.down)
     }
+
+    /// Forget that `raw` is down without a release (the first key of a
+    /// screen-reader chord, A11Y-1): no hold, repeat or release follows.
+    #[cfg(feature = "screen-reader")]
+    pub fn cancel(&mut self, raw: Key) {
+        let k = self.map(raw);
+        self.keys[k.index()].down = false;
+    }
 }
 
 /// Which keys work while the keys are locked or the screen is off
@@ -305,6 +313,12 @@ pub struct KeyGate {
     /// after the backlight timeout; 05 §6.3). Cleared when the screen goes
     /// off with Power.
     pub saver: bool,
+    /// **Keys with the screen off** while the screen reader is on (A11Y-1,
+    /// 05 §7.14 "fully usable with the screen off"): with the screen off
+    /// and the keys not locked every key goes to the UI (no waking press)
+    /// and the screen stays dark. Locked keys stay locked.
+    #[cfg(feature = "screen-reader")]
+    pub reader_keys: bool,
     swallowed: u16,
 }
 
@@ -316,8 +330,17 @@ impl KeyGate {
             locked: false,
             when_locked: LockedKeys::Volume,
             saver: false,
+            #[cfg(feature = "screen-reader")]
+            reader_keys: false,
             swallowed: 0,
         }
+    }
+
+    /// Forget a swallowed press of `k` (the first key of a screen-reader
+    /// chord, whose release the chord takes).
+    #[cfg(feature = "screen-reader")]
+    pub fn forget(&mut self, k: Key) {
+        self.swallowed &= !(1u16 << k.index());
     }
 
     /// A test tool took the player (the developer test look turned on):
@@ -360,6 +383,10 @@ impl KeyGate {
         }
         let restricted = !self.screen_on || self.locked;
         if !restricted {
+            return Gate::Pass(k, p);
+        }
+        #[cfg(feature = "screen-reader")]
+        if self.reader_keys && !self.locked {
             return Gate::Pass(k, p);
         }
         if self.allowed_locked(k) {

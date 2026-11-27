@@ -1378,6 +1378,30 @@ pub fn key_timing<S: SettingsService + ?Sized>(s: &S) -> orpheus_ui::input::Timi
     orpheus_ui::input::Timing::accessible(ms, repeat)
 }
 
+/// Settings › Accessibility › the screen reader (A11Y-1, 05 §7.14): what
+/// the reader and the speech service follow
+/// (`orpheus_ui::a11y::Config`).
+#[cfg(feature = "screen-reader")]
+#[must_use]
+pub fn reader_config<S: SettingsService + ?Sized>(s: &S) -> orpheus_ui::a11y::Config {
+    use orpheus_ui::a11y::{Config, Verbosity, WhereKeys};
+    let pitch = usize::try_from(s.setting(id::READER_PITCH))
+        .ok()
+        .and_then(|i| crate::settings::READER_PITCH_SEMITONES.get(i))
+        .copied()
+        .unwrap_or(0);
+    Config {
+        on: s.setting(id::READER) != 0,
+        rate: u8::try_from(s.setting(id::SPEECH_RATE)).unwrap_or(4).clamp(1, 40),
+        voice: u8::try_from(s.setting(id::READER_VOICE)).unwrap_or(0),
+        pitch,
+        verbosity: Verbosity::from_index(s.setting(id::VERBOSITY)),
+        earcons: s.setting(id::EARCONS) != 0,
+        where_keys: WhereKeys::from_index(s.setting(id::WHERE_KEYS)),
+        dark_keys: s.setting(id::DARK_KEYS) != 0,
+    }
+}
+
 /// Settings → Display → List roll-around (UI-8): what
 /// `orpheus_ui::shell::System::list_roll_around` answers, so every list
 /// follows the one stored setting.

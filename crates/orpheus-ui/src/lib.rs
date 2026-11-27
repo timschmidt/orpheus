@@ -11,6 +11,8 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "screen-reader")]
+pub mod a11y;
 pub mod color;
 pub mod event;
 pub mod font;

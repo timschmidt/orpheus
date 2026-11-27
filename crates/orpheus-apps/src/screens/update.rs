@@ -395,4 +395,64 @@ impl<S: Services + ?Sized> Screen<S> for UpdateScreen {
         };
         Wants { ticks: true, strip, title: Some(l.get(Str::UpdTitle)), ..Wants::default() }
     }
+
+    /// What the view shows: searching, the files (the focused one with
+    /// its version and size), a file's changes, the progress, the result.
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        let l = self.lang;
+        d.title(l.get(Str::UpdTitle));
+        match self.view {
+            View::Search => {
+                d.say(l.get(Str::UpdSearching));
+            }
+            View::List if self.info.files == 0 => {
+                d.say(l.get(Str::UpdNone));
+                d.say(l.get(Str::UpdNoneAction));
+            }
+            View::List => {
+                let mut head = StrBuf::<48>::new();
+                head.push_str(l.get(Str::UpdInstalledVersion));
+                head.push_str(": ");
+                head.push_str(cx.svc.version());
+                d.say(head.as_str());
+                if let Some(f) = cx.svc.update_file(usize::from(self.focus)) {
+                    let mut v = StrBuf::<48>::new();
+                    if f.installed {
+                        v.push_str(l.get(Str::UpdThisOne));
+                        v.push_str(" · ");
+                    }
+                    push_size(&mut v, u64::from(f.size));
+                    d.focus(orpheus_ui::a11y::Role::Item, f.version)
+                        .value(v.as_str())
+                        .at(u32::from(self.focus), u32::from(self.info.files));
+                }
+            }
+            View::Details => {
+                if let Some(f) = cx.svc.update_file(usize::from(self.chosen)) {
+                    d.say(f.version);
+                }
+                let changes = cx.svc.update_changes();
+                d.say(if changes.is_empty() { l.get(Str::UpdNoChanges) } else { changes });
+            }
+            View::Progress => {
+                d.say(self.version.as_str());
+                d.say(l.get(match self.info.phase {
+                    UpdPhase::Writing => Str::UpdWriting,
+                    UpdPhase::Verifying => Str::UpdVerifying,
+                    _ => Str::UpdChecking,
+                }));
+                d.say_u32("percent", u32::from(self.info.permille / 10));
+            }
+            View::Done => {
+                d.say(l.get(Str::UpdDone));
+                d.say(l.get(Str::UpdRestarting));
+            }
+            View::Failed => {
+                d.say(l.get(Str::UpdFailed));
+                d.say(l.get(Self::error_text(self.info.error)));
+                d.say(l.get(Str::UpdUnchanged));
+            }
+        }
+    }
 }

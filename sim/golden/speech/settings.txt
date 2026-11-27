@@ -1,0 +1,36 @@
+# A11Y-1 spoken journey `settings` (sim/tests/screen_reader.rs)
+# set:0x1004=1 wait:2500 prev wait:1500 ok wait:2500 down*2 wait:1500 ok wait:2500 down*5 wait:2000 ok wait:1500 back wait:2000 up wait:2000
+     33 earcon reader-on
+     33 say Screen reader on
+     33 say Home. Music, button, 1 of 12
+   2500 stop
+   2500 say Settings, button, 12 of 12
+   4100 stop
+   4160 earcon enter
+   4160 say Settings. Sound, submenu, 1 of 13
+   6700 stop
+   6700 say Playback, submenu, 2 of 13
+   6800 stop
+   6800 say Display, submenu, 3 of 13
+   8400 stop
+   8460 earcon enter
+   8460 say Display. Brightness, 6, submenu, 1 of 12
+  11000 stop
+  11000 say Backlight, 15 s, submenu, 2 of 12
+  11100 stop
+  11100 say Auto-lock, At once, submenu, 3 of 12
+  11200 stop
+  11200 say Theme, Dark, submenu, 4 of 12
+  11300 stop
+  11300 say Accent colour, Blue, submenu, 5 of 12
+  11400 stop
+  11400 say Wallpaper, None, submenu, 6 of 12
+  13500 stop
+  13560 earcon enter
+  13560 say Wallpaper. None, option, selected
+  15100 stop
+  15160 earcon back
+  15160 say Display. Wallpaper, None, submenu, 6 of 12
+  17200 stop
+  17200 say Accent colour, Blue, submenu, 5 of 12
+audio 16000 Hz mono, 328752 samples, fnv64 b4f2954bb8d4c50c

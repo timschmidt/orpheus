@@ -1327,7 +1327,8 @@ build, not yet run on the player).**
   speech volume relative to music, music ducking or pausing while speaking,
   key echo, earcons for list ends and roll-around, "where am I" and "time
   and battery" on a hold combination, and a toggle reachable from any
-  screen and from the first boot (hold Vol+ and Vol− together for 2 s).
+  screen and from the first boot (hold Vol+ and Vol− together for 2 s; as built
+  Back and Menu, A11Y-1: Vol+ and Vol− share ladder 1, §1).
   Fully usable with the screen off.
 * **Toolkit support**: every widget carries an accessible label and role;
   a host lint test fails for any focusable item without one; each journey
@@ -1407,6 +1408,122 @@ click.
   Cyrillic and Japanese) and `app_group12_*`; suite journey
   `settings_accessibility` (the test look reads the three settings as
   their defaults until a session sets them).
+
+**As built (A11Y-1, 2026-11-26; host and simulator; not in the firmware:
+features `orpheus-ui/screen-reader` and `orpheus-apps/screen-reader`, on
+in the simulator, the browser build and xtask, off in the firmware until
+its speech output exists).** Module docs (`orpheus_ui::a11y`) are the
+reference; in short:
+* **Descriptions** (`a11y::Desc`, 536 B on the host): a title, the focused element
+  (`Role`: item, submenu, switch, option, check box, button, adjustable,
+  tab, cell, key, text; label, value, `State` on/off, selected, checked;
+  unavailable; position "3 of 12" among the focusable rows, section
+  headers skipped, by row number past 512 rows; pending rows wait), a
+  "where am I" summary, the toast shown and the last volume step.
+  `Screen::describe` (feature-gated, default empty: the lint refuses it)
+  is implemented by every screen of `orpheus-apps` (39 types, 72 screens
+  by name); lists take their focus from the `ListView`'s row
+  (`Desc::list` over the screen's `ListSource`), so a list screen's
+  description is two lines. `Shell::describe` puts the open dialog (title,
+  text, focused button) or menu sheet ("Menu" or its title, the item)
+  over the screen's (whose title goes in `under`). `AppScreen::describe`
+  adds the strip hint to a screen without a focus. Not described: the
+  games' boards (title and state only: playing, paused, over), more than
+  the first 90 bytes of a text or book page (continuous reading is
+  read-aloud's, BOOK-3).
+* **The reader** (`a11y::Reader`, 296 B): compares each description
+  with the last and says: a new screen or overlay (title, ", menu" /
+  ", dialog", the dialog's text or the summary when there is no focus or
+  at Detailed, then the focus), a moved focus, a changed value or state
+  (only after a key: clocks and meters are said on request), a new toast
+  (after the rest), the volume ("Volume 12, maximum"). **Any key press or
+  repeat stops the current utterance first** (`SpeechService::stop`, the
+  firmware's `Stop::Now`); a screen raised by an event (an alarm) stops
+  it too. **Verbosity** (Brief: label, value, on/off; Normal: also the
+  role, "unavailable", the position; Detailed: also the summary on entry
+  and what OK does). **Earcons** (`a11y::Earcon`, tones as data:
+  `Tone { hz: [from, to], ms, level }`): enter (a deeper screen), back,
+  menu, dialog, wrap (a list rolled round, also by a page key), end (Up
+  or Down moved nothing), on, off, toast, reader on and off. Spoken text
+  is English (D-14): role and state words are the reader's, labels the
+  UI's strings; `push_speakable` turns the UI's symbols into words or
+  pauses (`·` a pause, `×` "times", `−` "minus", `—` alone "none",
+  arrows dropped, "Back + OK" "Back and OK").
+* **The speech service** (`a11y::SpeechService`: `stop`, `say`,
+  `earcon`, `configure`), what the firmware's speech voice will
+  implement; `a11y::UtteranceQueue<N>` is the fixed byte ring between
+  the reader and the synthesiser (texts ≤ 255 B and earcons; full: the
+  newest is dropped). The simulator's (`sim/src/speech.rs`) queues in a
+  1 KiB ring and renders with `orpheus_tts::Speaker` at 16 kHz mono in
+  simulated time (a stop cuts the audio where a listener hears it cut),
+  earcons as sine glides (`orpheus_synth::math::sin_turns`, the same
+  samples on every host); it logs every utterance, earcon and stop with
+  its time and hashes the whole output (FNV-1a 64).
+* **Chords** (`a11y::Chords`, on the raw key edges before the key
+  mapper, so they work from any screen, locked, with the screen off and
+  with the reader off). **The hardware cannot do Vol+ with Vol−** (both on
+  ladder 1, 05 §1: one key per ladder at a time), so the **toggle is Back
+  and Menu held 2 s** (one key of each ladder; no screen acts on either
+  going down). **Where am I** is a pair held for the hold delay (Settings ›
+  Accessibility › Where am I: Back + OK, the default, or Prev + Next, or
+  Off): the screen, what it is over, its summary and the focus at
+  Detailed verbosity; held on to 2 s, **the time and the battery**. The
+  second key of a pair starts the chord: the first is forgotten without a
+  release (`KeyMapper::cancel`, `KeyGate::forget`), both releases are
+  swallowed. The toggle is also the Settings row (no chord is the only
+  way, 05 §1).
+* **Screen-off operation** (Keys with screen off, on by default): with the
+  reader on, every key works while the screen is off (`KeyGate::
+  reader_keys`: no waking press; the screen stays dark) and the backlight
+  timeout does not lock the keys (`a11y::Config::timeouts`; Power still
+  locks). The simulator says "Keys locked" and "Unlocked" when Power locks
+  and unlocks (unlocked: the screen again) and says nothing that changes
+  under the lock while the screen is dark (the lock notice ending).
+* **Settings › Accessibility** (after A11Y-2's three rows): Screen reader
+  (`0x1004`, off), Speech rate (`0x1005`, stored on its own, a range of
+  quarters 1–40 shown "0.25×"–"10.0×": the owner's 0.25× steps, default
+  1×, on the slider), Voice (`0x1006`: Neutral, Low, Bright), Pitch
+  (`0x1007`: Lower, Low, Normal, High, Higher = −4, −2, 0, +2, +4
+  semitones), Verbosity (`0x1008`), Sound cues (`0x1009`, the earcons, on),
+  Where am I (`0x100A`), Keys with screen off (`0x100B`, on); the six
+  small ones packed into the word `0x0D61` (default 2896: every field's
+  default). `orpheus_apps::services::reader_config` maps them to
+  `a11y::Config`. Strings after the Sequencer's block, behind the feature.
+* **Simulator** (`Sim::a11y`, `Host::reader_config` / `set_reader`):
+  the reader looks after every key phase and every time step; script
+  commands `chord:back+menu[:ms]` and `expect-said:text`.
+* **Tests**: `orpheus-ui` unit tests (verbosity, moves, wrap, end,
+  values, events queued, pending rows, toasts, dialogs, menus, symbols,
+  the queue, chords, the lint, sizes); `sim/tests/screen_reader.rs`:
+  **the lint** (93 journeys reach all 72 screens; Down through every
+  focus and through each menu: 629 foci, each with a title, a label and
+  something to say at every verbosity; the coverage report
+  `target/orpheus/a11y-lint.txt` lists what is said on each), **spoken
+  journeys as goldens** (`sim/golden/speech/*.txt`: Home → Music →
+  Artists → an artist → an album → a song → Now Playing; Settings with a
+  sub-page and a choice; the speech rate on its slider; the factory-reset
+  dialog; the lock; the chords; keys with the screen off; interrupting;
+  each the exact sequence with times, and the audio's hash;
+  `ORPHEUS_SPEECH_WAVS=DIR` writes the WAVs), the behaviour (interrupt,
+  toggle, where am I and time, lock, earcons) and one differential test
+  per setting; the settings matrix rows `s1004–s100b` with a new service
+  context `speech` (the reader turned on by its journey on Home: two
+  moves and where am I; Language and Home screen now show there too).
+* **For the firmware** (TTS-3 / the package that wires speech): a
+  `SpeechService` over the speech voice (`Speaker` at 16 kHz while
+  nothing else plays, `Stop::Now` on `stop`, the `UtteranceQueue`, earcons
+  from `Earcon::tone`, `configure` to `set_speed` / `set_voice(Voice::
+  ALL[v].with_pitch(p))`); the UI task calls `Shell::describe` and
+  `Reader::observe` after each key phase and service event (and each tick
+  while the reader is on), `Chords` on the input task's raw edges before
+  the mapper, `KeyGate::reader_keys` and `Config::timeouts` as the
+  simulator does; RAM 536 B `Desc` + 296 B `Reader` + 24 B `Chords` +
+  the queue (512 B–1 KiB) + `Speaker` 3.4 KB (host sizes); code: the feature's toolkit and app code
+  (not measured on the player: with the feature off the firmware is
+  unchanged). Not done: speech volume relative to music, ducking or
+  pausing the music, key echo, track changes said on request away from
+  Now Playing, reduced motion's "long names are spoken" (the focus label
+  is always spoken whole), the games' boards.
 
 ### 7.15 Books (reader; M15; owner's requirement 2026-11-25)
 

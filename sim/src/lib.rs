@@ -26,6 +26,8 @@
 //! | `expect-typed:287082↵` | fail unless the fake computer on the USB keyboard received this (`↵` = Enter) |
 //! | `set:seq=on`, `set:seqdemo=1`, `set:seqcapture=on` | the Sequencer on Home, the demo project on the card, keep its audio (`seq.rs`) |
 //! | `set:games=off` | the Games app off Home (M14; on by default, as on the player) |
+//! | `chord:back+menu`, `chord:back+ok:800` | press two keys together, hold (2.1 s, or the given ms), release: the screen reader's toggle and where-am-I chords (A11Y-1) |
+//! | `expect-said:text` | fail unless the screen reader's last utterance contains `text` |
 //! | `set:gameseed=7`, `set:tiles=1.2.3…`, `set:blocksrows=12`, `set:solnear=4`, `set:gamesio=on` | Games: next seed, a 4096 board, a Blocks stack, an almost won Solitaire game, the firmware's deferred card queue (`games.rs`) |
 
 pub mod apps;
@@ -44,6 +46,7 @@ pub mod pictures;
 pub mod radio;
 pub mod recorder;
 pub mod seq;
+pub mod speech;
 pub mod steps;
 pub mod system;
 pub mod update;
@@ -51,6 +54,7 @@ pub mod update;
 pub mod window;
 
 use anyhow::{Context, Result, bail};
+use orpheus_ui::a11y::{self, Cause, Chord, Chords, Desc, Edge, Reader};
 use orpheus_ui::event::Event;
 use orpheus_ui::font::{GlyphCache, GlyphSource};
 use orpheus_ui::gfx::{DirtySet, FB_PIXELS, Fallback, Gfx};
@@ -140,6 +144,30 @@ pub trait Host: System + Default + Sized {
     fn backlight(&self, lit: bool, _now_ms: u64) -> Option<u8> {
         lit.then_some(orpheus_power::backlight::Duty::DEFAULT.get())
     }
+    /// The screen reader's settings (Settings › Accessibility, A11Y-1);
+    /// `None`: the host has no screen reader (no chords either).
+    fn reader_config(&self) -> Option<a11y::Config> {
+        None
+    }
+    /// Turn the screen reader on or off (the toggle chord); returns
+    /// service events to deliver.
+    fn set_reader(&mut self, _on: bool) -> Vec<Event> {
+        Vec::new()
+    }
+}
+
+/// The screen reader in the simulator (A11Y-1): the chords, the reader and
+/// the speech it renders.
+pub struct A11y {
+    pub chords: Chords,
+    pub reader: Reader,
+    pub speech: speech::SimSpeech,
+    /// The last description the reader looked at.
+    pub desc: Desc,
+    /// The reader was on at the last look.
+    on: bool,
+    /// The keys were locked at the last look.
+    locked: bool,
 }
 
 /// The simulator: frame buffer, input mapper, shell and fake services.
@@ -165,6 +193,8 @@ pub struct Sim<H: Host> {
     /// Backlight timeout and lock delay (05 §6.3), as the firmware's UI
     /// task runs them ([`Host::timeouts`]).
     pub timer: ScreenTimer,
+    /// The screen reader, when the host has one ([`Host::reader_config`]).
+    pub a11y: Option<Box<A11y>>,
 }
 
 /// The widget demo of UI-1.
@@ -222,9 +252,99 @@ impl<H: Host> Sim<H> {
             dirty_pixels: 0,
             notice_lit: false,
             timer: ScreenTimer::new(0),
+            a11y: None,
         };
+        if s.sys.reader_config().is_some() {
+            s.a11y = Some(Box::new(A11y {
+                chords: Chords::new(),
+                reader: Reader::new(),
+                speech: speech::SimSpeech::new(),
+                desc: Desc::new(),
+                on: false,
+                locked: false,
+            }));
+        }
         s.draw();
+        s.observe(Cause::Other);
         s
+    }
+
+    /// The screen reader looks at the screen after `cause` (A11Y-1): it
+    /// speaks what changed while it is on, announces itself when it comes
+    /// on or goes off.
+    pub fn observe(&mut self, cause: Cause) {
+        let Some(cfg) = self.sys.reader_config() else { return };
+        let Some(a) = self.a11y.as_mut() else { return };
+        if cfg.on != a.on {
+            a.on = cfg.on;
+            a.reader.reset();
+            if cfg.on {
+                a.reader.announce("Screen reader on", a11y::Earcon::ReaderOn, &cfg, &mut a.speech);
+            } else {
+                a.reader.announce("Screen reader off", a11y::Earcon::ReaderOff, &cfg, &mut a.speech);
+                return;
+            }
+        }
+        if !cfg.on {
+            return;
+        }
+        // Power locked or unlocked the keys: say so (unlocked: the screen
+        // is said again).
+        let locked = self.shell.gate.locked;
+        if locked != a.locked {
+            a.locked = locked;
+            if locked {
+                a.reader.announce("Keys locked", a11y::Earcon::Off, &cfg, &mut a.speech);
+            } else {
+                a.reader.announce("Unlocked", a11y::Earcon::On, &cfg, &mut a.speech);
+                a.reader.reset();
+            }
+        }
+        self.shell.describe(&mut self.sys, &mut a.desc);
+        if self.shell.gate.locked && !self.shell.gate.screen_on {
+            // Locked and dark: what changes under the lock is not said.
+            a.reader.note(&a.desc);
+            return;
+        }
+        a.reader.observe(&a.desc, cause, &cfg, &mut a.speech);
+    }
+
+    /// A chord the reader's detector recognised.
+    fn chord(&mut self, c: Chord) {
+        let Some(cfg) = self.sys.reader_config() else { return };
+        match c {
+            Chord::Toggle => {
+                let evs = self.sys.set_reader(!cfg.on);
+                self.deliver(evs);
+                self.settle();
+                self.observe(Cause::Other);
+            }
+            Chord::WhereAmI | Chord::TimeBattery if cfg.on => {
+                let status = self.sys.status();
+                let Some(a) = self.a11y.as_mut() else { return };
+                if c == Chord::WhereAmI {
+                    self.shell.describe(&mut self.sys, &mut a.desc);
+                    a.reader.where_am_i(&a.desc, &cfg, &mut a.speech);
+                } else {
+                    a.reader.time_battery(&status, &cfg, &mut a.speech);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The chords' next deadline.
+    fn chord_deadline(&self) -> Option<Instant> {
+        let a = self.a11y.as_ref()?;
+        a.chords.next_deadline(self.mapper.timing.hold)
+    }
+
+    /// The where-am-I pair while the reader is on.
+    fn where_keys(&self) -> a11y::WhereKeys {
+        match self.sys.reader_config() {
+            Some(c) if c.on => c.where_keys,
+            _ => a11y::WhereKeys::Off,
+        }
     }
 
     /// What the panel shows: the frame buffer, turned by 180° when the
@@ -332,6 +452,7 @@ impl<H: Host> Sim<H> {
             let r = self.shell.key(&mut self.sys, k, p, self.now);
             self.handle_requests(r);
             self.settle();
+            self.observe(Cause::Key(k, p));
         }
     }
 
@@ -344,11 +465,23 @@ impl<H: Host> Sim<H> {
             if let Some(d) = self.mapper.next_deadline() {
                 next = next.min(d.0.max(self.now.0 + 1));
             }
+            if let Some(d) = self.chord_deadline() {
+                next = next.min(d.0.max(self.now.0 + 1));
+            }
             let dt = next - self.now.0;
             self.now = Instant(next);
             self.sys.advance(dt);
+            if let Some(a) = self.a11y.as_mut() {
+                a.speech.advance(dt);
+                if let Some(c) = a.chords.poll(self.now, self.mapper.timing.hold) {
+                    self.chord(c);
+                }
+            }
             // The screen timers (backlight timeout, lock delay).
-            let t = self.sys.timeouts();
+            let mut t = self.sys.timeouts();
+            if let Some(c) = self.sys.reader_config() {
+                t = c.timeouts(t);
+            }
             if self.timer.step(&mut self.shell.gate, t, self.now.0) && self.shell.gate.locked {
                 self.shell.invalidate();
             }
@@ -360,19 +493,33 @@ impl<H: Host> Sim<H> {
                 self.settle();
             }
             self.draw();
+            self.observe(Cause::Other);
         }
     }
 
     pub fn press(&mut self, k: Key) {
         self.key_edge();
-        self.mapper.press(k, self.now);
+        let wk = self.where_keys();
+        let edge = self.a11y.as_mut().map_or(Edge::Pass, |a| a.chords.press(k, self.now, wk));
+        match edge {
+            Edge::Pass => self.mapper.press(k, self.now),
+            Edge::Swallow => {}
+            Edge::Start(first) => {
+                // The first key of the chord: forgotten without a release.
+                self.mapper.cancel(first);
+                self.shell.gate.forget(first);
+            }
+        }
         self.pump();
         self.draw();
     }
 
     pub fn release(&mut self, k: Key) {
         self.key_edge();
-        self.mapper.release(k, self.now);
+        let edge = self.a11y.as_mut().map_or(Edge::Pass, |a| a.chords.release(k));
+        if edge == Edge::Pass {
+            self.mapper.release(k, self.now);
+        }
         self.pump();
         self.draw();
     }
@@ -387,6 +534,22 @@ impl<H: Host> Sim<H> {
         if let Some(t) = self.sys.key_timing() {
             self.mapper.timing = t;
         }
+        // Settings › Accessibility › Keys with screen off (A11Y-1).
+        if let Some(c) = self.sys.reader_config() {
+            self.shell.gate.reader_keys = c.on && c.dark_keys;
+        }
+    }
+
+    /// Press `a`, then `b` 20 ms later, hold both for `ms`, release both
+    /// (the screen reader's chords).
+    pub fn chord_keys(&mut self, a: Key, b: Key, ms: u64) {
+        self.press(a);
+        self.advance(20);
+        self.press(b);
+        self.advance(ms);
+        self.release(b);
+        self.release(a);
+        self.advance(40);
     }
 
     /// Tap: press, 60 ms, release, 40 ms.
@@ -451,6 +614,20 @@ impl<H: Host> Sim<H> {
                     let n = self.shell.top_name();
                     if n != arg {
                         bail!("expected screen {arg}, top is {n}");
+                    }
+                }
+                "chord" => {
+                    let (keys, ms) = match arg.split_once(':') {
+                        Some((k, ms)) => (k, ms.parse()?),
+                        None => (arg, 2100),
+                    };
+                    let (a, b) = keys.split_once('+').context("chord:KEY+KEY[:ms]")?;
+                    self.chord_keys(key(a)?, key(b)?, ms);
+                }
+                "expect-said" => {
+                    let last = self.a11y.as_ref().and_then(|a| a.speech.last()).unwrap_or("");
+                    if !last.contains(arg) {
+                        bail!("expected the reader to say {arg:?}, it last said {last:?}");
                     }
                 }
                 "expect-typed" => {

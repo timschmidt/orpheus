@@ -148,6 +148,10 @@ pub struct Shell<T, S: ?Sized> {
     saver_drawn: Option<(u8, u8)>,
     /// The text size of the last draw (a change redraws everything).
     text: TextSize,
+    /// The last volume step (level, max), for the screen reader (said
+    /// also with the screen off, where no overlay shows).
+    #[cfg(feature = "screen-reader")]
+    volume_said: Option<(u8, u8)>,
     _svc: PhantomData<fn(&mut S)>,
 }
 
@@ -196,6 +200,8 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
             underlay_at: now,
             saver_drawn: None,
             text: svc.text_size(),
+            #[cfg(feature = "screen-reader")]
+            volume_said: None,
             _svc: PhantomData,
         };
         s.stack.push(NavEntry { id: root, arg, resume: Default::default() });
@@ -312,6 +318,10 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
         if matches!(k, Key::VolUp | Key::VolDown) {
             if matches!(p, KeyPhase::Down | KeyPhase::Repeat) {
                 let (level, max) = svc.volume_step(if k == Key::VolUp { 1 } else { -1 });
+                #[cfg(feature = "screen-reader")]
+                {
+                    self.volume_said = Some((level, max));
+                }
                 if self.gate.screen_on {
                     self.volume = Some(VolumeOverlay { level, max, until: now.add_ms(VOLUME_MS) });
                     self.volume_drawn = false;
@@ -772,6 +782,38 @@ impl<T: ScreenSet<S>, S: System + ?Sized> Shell<T, S> {
     #[must_use]
     pub fn top_id(&self) -> ScreenId {
         self.top.id()
+    }
+
+    /// What the screen reader says now (A11Y-1): the open dialog or menu
+    /// sheet (with the screen's title under it), else the top screen's own
+    /// description ([`Screen::describe`](crate::nav::Screen::describe));
+    /// the toast shown and the last volume step.
+    #[cfg(feature = "screen-reader")]
+    pub fn describe(&mut self, svc: &mut S, d: &mut crate::a11y::Desc) {
+        d.clear();
+        {
+            let cx = Cx { svc: &mut *svc, ui: &mut self.ui, now: self.now, roll: self.roll };
+            self.top.describe(&cx, d);
+        }
+        d.screen = self.top.id().0;
+        d.depth = u8::try_from(self.stack.len()).unwrap_or(u8::MAX);
+        if self.dialog.is_some() || self.sheet.is_some() {
+            let mut o = crate::a11y::Desc::new();
+            if let Some(dl) = &self.dialog {
+                dl.describe(&mut o);
+            } else if let Some(sh) = &self.sheet {
+                sh.describe(&mut o);
+            }
+            o.under = d.title;
+            o.screen = d.screen;
+            o.depth = d.depth;
+            *d = o;
+        }
+        if let Some(t) = &self.toast {
+            d.toast.push_str(t.text.as_str());
+            d.toast_at = t.until.0;
+        }
+        d.volume = self.volume_said;
     }
 }
 

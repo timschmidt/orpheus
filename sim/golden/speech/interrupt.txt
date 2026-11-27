@@ -1,0 +1,15 @@
+# A11Y-1 spoken journey `interrupt` (sim/tests/screen_reader.rs)
+# set:0x1004=1 wait:300 ok wait:200 down down down wait:2500
+     33 earcon reader-on
+     33 say Screen reader on
+     33 say Home. Music, button, 1 of 12
+    300 stop
+    360 earcon enter
+    360 say Music. Shuffle all, 1 of 10
+    600 stop
+    600 say Building library, unavailable, 2 of 10
+    700 stop
+    700 say Artists, submenu, unavailable, 3 of 10
+    800 stop
+    800 say Albums, submenu, unavailable, 4 of 10
+audio 16000 Hz mono, 63632 samples, fnv64 c15952e8ff2bf123

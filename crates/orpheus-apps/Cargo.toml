@@ -58,6 +58,12 @@ midi = []
 # `orpheus-seq` model. On in the simulator and the browser build; off in
 # the firmware until SYN-3 puts the synth on the player.
 seq = ["dep:orpheus-seq"]
+# A11Y-1 (05 §7.14): the screen reader's descriptions of every screen
+# (`Screen::describe`), its settings in Settings › Accessibility (strings,
+# rows, the word 0x0D61) and `services::reader_config`. On in the simulator
+# and the browser build; off in the firmware until its speech output exists
+# (TTS-3: no room for the speech engine yet).
+screen-reader = ["orpheus-ui/screen-reader"]
 
 [lints]
 workspace = true

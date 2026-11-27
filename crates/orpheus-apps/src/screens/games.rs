@@ -380,6 +380,12 @@ impl<S: Services + ?Sized> Screen<S> for GameListScreen {
         l.set_focus(&self.rows, r.focus, VISIBLE, cx.now);
         self.list = l;
     }
+
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, _cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        d.title(self.title());
+        d.list(&self.rows, &self.list, "empty");
+    }
 }
 
 /// How to play: the game's rules text, wrapped, Up/Down by line and
@@ -477,5 +483,15 @@ impl<S: Services + ?Sized> Screen<S> for GameHelpScreen {
 
     fn restore(&mut self, _cx: &mut Cx<'_, S>, r: &Resume) {
         self.top = u16::try_from(r.top).unwrap_or(0);
+    }
+
+    /// The rules, as far as the summary holds them.
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, _cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        d.title(self.lang.get(Str::GameHowToPlay));
+        d.say(self.lang.get(self.game.label()));
+        for para in self.game.help() {
+            d.say(self.lang.get(*para));
+        }
     }
 }

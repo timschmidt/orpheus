@@ -549,6 +549,45 @@ impl<S: Services + ?Sized> Screen<S> for UsbDriveScreen {
         l.set_focus(&self.rows, r.focus, visible(), cx.now);
         self.list = l;
     }
+
+    /// Home and Options are lists; Status says the image, its medium and
+    /// state, and what the computer read and wrote.
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        let l = self.lang;
+        match self.view {
+            DriveView::Status => {
+                let info = cx.svc.drive();
+                d.title(l.get(Str::AppUsbDrive));
+                d.say(cx.svc.drive_name());
+                if info.phase == DrivePhase::Failed {
+                    d.say(l.get(Str::DriveFailed));
+                    d.say(l.get(info.refusal.map_or(Str::DriveCardError, refusal_text)));
+                    return;
+                }
+                d.say(l.get(medium_label(info.medium)));
+                d.say(l.get(if info.read_only { Str::DriveReadOnly } else { Str::DriveReadWrite }));
+                d.say(l.get(match info.phase {
+                    DrivePhase::Attached if info.host => Str::DriveInUse,
+                    DrivePhase::Attached => Str::DriveWaiting,
+                    _ => Str::DrivePreparing,
+                }));
+                let mut b = StrBuf::<48>::new();
+                b.push_str(l.get(Str::DriveRead));
+                b.push(' ');
+                push_size(&mut b, info.bytes_read);
+                d.say(b.as_str());
+            }
+            DriveView::Options => {
+                d.title(if self.name.is_empty() { l.get(Str::AppUsbDrive) } else { self.name.as_str() });
+                d.list(&self.rows, &self.list, "empty");
+            }
+            _ => {
+                d.title(l.get(Str::AppUsbDrive));
+                d.list(&self.rows, &self.list, "empty");
+            }
+        }
+    }
 }
 
 #[cfg(test)]

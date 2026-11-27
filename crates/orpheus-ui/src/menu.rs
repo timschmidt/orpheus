@@ -172,6 +172,15 @@ impl MenuSheet {
         }
     }
 
+    /// What the screen reader says of the sheet (A11Y-1): its title (or
+    /// "Menu") and the focused item.
+    #[cfg(feature = "screen-reader")]
+    pub fn describe(&self, d: &mut crate::a11y::Desc) {
+        d.layer = crate::a11y::Layer::Menu;
+        d.title(self.items.title.unwrap_or("Menu"));
+        d.list(&self.items, &self.list, "empty");
+    }
+
     /// The parent id of the level shown.
     #[must_use]
     pub fn parent(&self) -> Option<u16> {

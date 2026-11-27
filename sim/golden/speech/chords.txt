@@ -1,0 +1,13 @@
+# A11Y-1 spoken journey `chords` (sim/tests/screen_reader.rs)
+# chord:back+menu wait:2500 chord:back+ok:800 wait:5000 chord:back+ok:2600 wait:3000 chord:back+menu wait:2000
+   2020 earcon reader-on
+   2020 say Screen reader on
+   2020 say Home. Music, button, 1 of 12
+   4660 stop
+   5180 say Home. Music, button, 1 of 12, OK to activate
+  11040 say Home. Music, button, 1 of 12, OK to activate
+  12540 stop
+  12540 say 12:41. Battery 72 percent
+  18200 earcon reader-off
+  18200 say Screen reader off
+audio 16000 Hz mono, 293120 samples, fnv64 219a8a74b6059bf7

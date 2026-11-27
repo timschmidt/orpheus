@@ -203,3 +203,32 @@ headphones at a low volume:
 
 Report anything that sounds wrong (which song, roughly when), and how
 seeking and pausing behave.
+
+## 34. The screen reader's speech (A11Y-1, 2026-11-26; on the computer, no player)
+
+The screen reader runs in the simulator only (the player has no speech
+output yet). The lead can give you eight WAV files (16 kHz mono, written by
+`ORPHEUS_SPEECH_WAVS=DIR cargo test -p orpheus-sim --test screen_reader
+spoken`), one per journey, with the text of each beside it
+(`sim/golden/speech/*.txt`: each line is the time in ms and what was
+said):
+
+* `music_to_now_playing`: Home → Music → Artists → an artist → an album →
+  a song → Now Playing.
+* `settings`: Settings › Display, down the rows, a choice, back.
+* `speech_rate`: Settings › Accessibility › Speech rate, raised from 1× to
+  2× in 0.25× steps (each step says its value at the new speed).
+* `dialog`: the factory-reset question and its buttons.
+* `lock`: Power locks, a key says the lock notice, Power unlocks.
+* `chords`: hold Back and Menu 2 s (reader on), Back and OK (where am I),
+  Back and OK longer (time and battery), Back and Menu again (off).
+* `screen_off`: the screen goes dark and the keys still work.
+* `interrupt`: keys pressed quickly cut what is being said.
+
+Listen for: is every phrase understandable at 1× (roles such as "submenu",
+"switch, on", positions "3 of 12")? Are the short sounds (entering a
+screen, going back, a menu, a list rolling round) helpful or annoying? Is
+too much or too little said? Which speech rate would you use? Please also
+say whether Back + Menu (2 s) is a good toggle and Back + OK a good "where
+am I" (Vol+ with Vol− cannot work: the player sees only one of those two
+keys at a time).

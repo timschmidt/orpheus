@@ -350,4 +350,15 @@ impl<S: Services + ?Sized> Screen<S> for LibraryScreen {
         self.focus_on(cx.svc, row.unwrap_or(r.focus).min(self.count.saturating_sub(1)), cx.now);
         self.want(cx.svc);
     }
+
+    #[cfg(feature = "screen-reader")]
+    fn describe(&self, cx: &Cx<'_, S>, d: &mut orpheus_ui::a11y::Desc) {
+        d.title(self.title());
+        if self.count == 0 {
+            d.say(if self.complete { self.lang.get(Str::NoMusic) } else { "loading" });
+            return;
+        }
+        let src = LibSource::new(&*cx.svc, self.lang, self.count, self.view.focus);
+        d.list(&src, &self.view, "empty");
+    }
 }

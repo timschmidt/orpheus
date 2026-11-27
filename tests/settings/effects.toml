@@ -98,7 +98,7 @@
 "Settings.Language" = "Settings › Language"
 "Settings.Storage" = "Settings › Storage"
 "Settings.System" = "Settings › System (first page)"
-"Settings.Accessibility" = "Settings › Accessibility (A11Y-2)"
+"Settings.Accessibility" = "Settings › Accessibility (A11Y-2; first page: the screen reader's on/off row)"
 "About" = "Settings › System › About"
 "HomeApps" = "Settings › Display › Home screen"
 "Games" = "the Games list"
@@ -118,6 +118,7 @@
 "radio-tuner" = "the FM tuner: band, frequency, stereo, seek after tuning and a seek"
 "recording" = "the recorder's file: name, format, length and content of a short recording"
 "usb-keyboard" = "what the computer receives on the USB keyboard (a typed code)"
+"speech" = "the screen reader's speech on Home with the reader on (A11Y-1): two moves and where am I; what was said (texts, earcons, stops) and the hash of the audio rendered through orpheus-tts"
 "usb-host" = "what the player offers a computer (the USB personality requested)"
 "bt-module" = "the Bluetooth module's state (power, reconnect)"
 "steps-counter" = "steps counted while walking"
@@ -155,7 +156,7 @@ screens = [
 ]
 services = [
     "playback", "radio-tuner", "recording", "usb-keyboard", "usb-host", "bt-module", "steps-counter",
-    "alarms", "sleep", "volume", "key-click", "seq-play",
+    "alarms", "sleep", "volume", "key-click", "seq-play", "speech",
 ]
 host = ["audio", "governor"]
 device = [
@@ -565,10 +566,10 @@ name = "Settings › Display › Rotate"
 scope = "global"
 values = ["off", "on"]
 default = 0
-contexts = ["@screens", "radio-tuner", "recording", "seq-play"]
+contexts = ["@screens", "radio-tuner", "recording", "seq-play", "speech"]
 unaffected = ["@services", "audio"]
 na = { "governor" = "review: the governor's only setting input is Power mode 0x0401 (fw ui.rs POWER_MODE → orpheus-power Governor::step)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's only setting input is Power mode 0x0401 (fw ui.rs POWER_MODE)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight follows the screen state (fw ui.rs: 12 on, 0 off), which only Backlight timeout 0x0302 and Screen saver 0x0307 drive", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date, Correction 0x0506 and Set from RDS 0x0507", "keys" = "review: which keys work while locked follows Keys when locked 0x0404 (KeyGate), and Lock delay 0x0303 locks them" }
-oracle = "Every screen: the panel shows the frame turned by 180° (simulator: Sim::panel; firmware: each flushed band turned and sent to the mirrored rows, the frame buffer stays upright) and Up/Down, Prev/Next swap (05 §4 \"Rotation\"): journeys by keys land elsewhere (the radio and recorder journeys open other apps, the Sequencer's opens another project). Held off under a host test's look."
+oracle = "Every screen: the panel shows the frame turned by 180° (simulator: Sim::panel; firmware: each flushed band turned and sent to the mirrored rows, the frame buffer stays upright) and Up/Down, Prev/Next swap (05 §4 \"Rotation\"): journeys by keys land elsewhere (the radio and recorder journeys open other apps, the Sequencer's opens another project). Held off under a host test's look. The screen reader's journey (speech) moves the other way and says other apps."
 tests = ["sim/tests/settings_matrix.rs::matrix::s0309", "crates/orpheus-ui/src/gfx.rs::tests::rotated_bands_make_the_frame_turned", "sim/tests/shell.rs::rotation_swaps_keys", "crates/orpheus-apps/src/services.rs::setting_effects::keys_rotation_animations_power_mode", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
 cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0309"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0309"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
@@ -591,9 +592,9 @@ name = "Settings › Display › Home screen"
 scope = "local"
 values = ["every app (16383)", "Games off (14335)"]
 default = 16383
-contexts = ["Home", "Home.Menu", "Home.Playing", "Volume", "Games"]
+contexts = ["Home", "Home.Menu", "Home.Playing", "Volume", "Games", "speech"]
 unaffected = ["@screens", "@services", "audio"]
-oracle = "Home: the apps shown (a hidden app's cell is gone; reaching Games from Home lands elsewhere); the Home screen settings list."
+oracle = "Home: the apps shown (a hidden app's cell is gone; reaching Games from Home lands elsewhere); the Home screen settings list. speech: the screen reader says the grid's count (\"1 of 11\")."
 tests = ["sim/tests/settings_matrix.rs::matrix::s030b", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
 cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s030b"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s030b"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 
@@ -1006,7 +1007,7 @@ name = "Settings › Language"
 scope = "global"
 values = ["English (0)", "Русский (\"ru\")", "日本語 (\"ja\")"]
 default = 0
-contexts = ["Home", "Home.Menu", "QuickPanel", "Volume", "PowerMenu", "Lock", "Charging", "UsbConnect", "Music", "MusicLibrary", "NowPlaying.Menu", "Equaliser", "Files.Menu", "Radio", "Bluetooth", "Recorder", "Recorder.Recording", "Steps", "Steps.Week", "Stopwatch", "Timer", "Alarms", "Alert", "UsbDrive", "Settings", "Settings.Sound", "Settings.Playback", "Settings.Display", "Settings.Power", "Settings.DateTime", "Settings.Bluetooth", "Settings.Radio", "Settings.Recording", "Settings.Usb", "Settings.Language", "Settings.Storage", "Settings.System", "About", "HomeApps", "Blocks", "Bricks", "GamePause", "BookMenu"]
+contexts = ["Home", "Home.Menu", "QuickPanel", "Volume", "PowerMenu", "Lock", "Charging", "UsbConnect", "Music", "MusicLibrary", "NowPlaying.Menu", "Equaliser", "Files.Menu", "Radio", "Bluetooth", "Recorder", "Recorder.Recording", "Steps", "Steps.Week", "Stopwatch", "Timer", "Alarms", "Alert", "UsbDrive", "Settings", "Settings.Sound", "Settings.Playback", "Settings.Display", "Settings.Power", "Settings.DateTime", "Settings.Bluetooth", "Settings.Radio", "Settings.Recording", "Settings.Usb", "Settings.Language", "Settings.Storage", "Settings.System", "About", "HomeApps", "Blocks", "Bricks", "GamePause", "BookMenu", "speech"]
 unaffected = ["@screens", "@services", "audio"]
 na = { "governor" = "review: the governor's only setting input is Power mode 0x0401 (fw ui.rs POWER_MODE → orpheus-power Governor::step)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's only setting input is Power mode 0x0401 (fw ui.rs POWER_MODE)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight level follows the screen state only (fw ui.rs: 12 on, 0 off); no setting reads into it", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date; no setting reads into the time keeping", "keys" = "review: the locked-keys rule is fixed (orpheus-ui KeyGate::new: volume keys); no setting reads into it" }
 oracle = "Every translated text on every screen (not file names, tags, book text or the screens without words)."
@@ -2295,10 +2296,10 @@ name = "Settings › Accessibility › Hold delay"
 scope = "global"
 values = ["0.5 s", "0.75 s", "1 s", "1.5 s", "2 s"]
 default = 0
-contexts = ["QuickPanel", "PowerMenu", "Settings.Accessibility", "radio-tuner", "recording", "keys"]
+contexts = ["QuickPanel", "PowerMenu", "Settings.Accessibility", "radio-tuner", "recording", "keys", "speech"]
 unaffected = ["@screens", "@services", "audio"]
 na = { "governor" = "review: the governor's only setting input is Power mode 0x0401 (fw ui.rs POWER_MODE → orpheus-power Governor::step)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's only setting input is Power mode 0x0401 (fw ui.rs POWER_MODE)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight follows the screen state (fw ui.rs: 12 on, 0 off), which only Backlight timeout 0x0302 and Screen saver 0x0307 drive", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date, Correction 0x0506 and Set from RDS 0x0507" }
-oracle = "Hold delay (A11Y-2, 05 §7.14 \"longer hold thresholds\"): every key's hold threshold (orpheus-ui Timing::accessible; firmware: the UI task's key mapper from apply_settings); Power's menu at 1.5 s or the delay when longer. A shorter press is a tap: the journeys that hold Menu (QuickPanel), Power (PowerMenu, at 2 s), Next (radio-tuner's seek) and OK (recording's stop) land elsewhere. keys: the mapper's phases (host tests) and on the player the suite journey settings_accessibility (a 0.7 s Menu press is a tap at 2 s, a 2.3 s one opens the quick panel)."
+oracle = "Hold delay (A11Y-2, 05 §7.14 \"longer hold thresholds\"): every key's hold threshold (orpheus-ui Timing::accessible; firmware: the UI task's key mapper from apply_settings); Power's menu at 1.5 s or the delay when longer. A shorter press is a tap: the journeys that hold Menu (QuickPanel), Power (PowerMenu, at 2 s), Next (radio-tuner's seek) and OK (recording's stop) land elsewhere. keys: the mapper's phases (host tests) and on the player the suite journey settings_accessibility (a 0.7 s Menu press is a tap at 2 s, a 2.3 s one opens the quick panel). speech: the screen reader's where-am-I pair fires at the hold delay (the journey holds it 0.7 s: nothing at 0.75 s and more, A11Y-1)."
 tests = ["sim/tests/settings_matrix.rs::matrix::s1002", "sim/tests/settings_matrix.rs::effects::hold_delay_moves_every_hold", "crates/orpheus-ui/src/input.rs::tests::accessible_hold_and_repeat", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
 cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s1002"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s1002"], "keys" = ["crates/orpheus-ui/src/input.rs::tests::accessible_hold_and_repeat", "sim/tests/settings_matrix.rs::effects::hold_delay_moves_every_hold", "suite:settings_accessibility"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 device = true
@@ -2327,6 +2328,129 @@ contexts = ["Settings.Accessibility"]
 oracle = "Not shown: holds the bits of Text size, Hold delay and Key repeat; each of those has its own entry and tests."
 tests = ["crates/orpheus-apps/src/settings.rs::tests::accessibility_packed"]
 cover = { "Settings.Accessibility" = ["crates/orpheus-apps/src/settings.rs::tests::accessibility_packed"] }
+
+# ---------------------------------------------------------------- Screen reader
+# A11Y-1 (05 §7.14): Settings › Accessibility, after the A11Y-2 rows, with
+# the feature `screen-reader` (simulator and browser build; not in the
+# firmware yet). Speech rate is stored on its own; the others are packed
+# into the word 0x0D61. The service context `speech` turns the reader on
+# (its journey sets 0x1004), so 0x1004 itself shows on its Settings row and
+# in a dedicated test.
+
+[[setting]]
+id = "0x1004"
+name = "Settings › Accessibility › Screen reader"
+scope = "global"
+values = ["off", "on"]
+default = 0
+contexts = ["Settings.Accessibility", "speech", "keys"]
+unaffected = ["@screens", "@services", "audio"]
+na = { "governor" = "review: the governor's only setting input is Power mode 0x0401 (fw ui.rs POWER_MODE → orpheus-power Governor::step)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's only setting input is Power mode 0x0401 (fw ui.rs POWER_MODE)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight follows the screen state (fw ui.rs: 12 on, 0 off), which only Backlight timeout 0x0302 and Screen saver 0x0307 drive", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date, Correction 0x0506 and Set from RDS 0x0507" }
+oracle = "The screen reader (A11Y-1): on, every screen, focus move, changed value, menu, dialog, toast and volume step is spoken (orpheus-ui a11y::Reader over Screen::describe, through the speech service: in the simulator orpheus-tts at 16 kHz), a key stops what is being said, the chords work (Back and Menu held 2 s: the toggle, also while off; the where-am-I pair) and, with Keys with screen off, the keys work with the screen dark; off, nothing is said (no speech rendered) and only the toggle chord is taken from the keys. The screens look the same either way; Settings.Accessibility shows the switch. speech: the matrix journey turns the reader on itself; the dedicated test shows off = silent. keys: the chords and the dark keys (dedicated tests)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s1004", "sim/tests/screen_reader.rs::screen_reader_speaks_only_when_on", "sim/tests/screen_reader.rs::toggle_chord", "sim/tests/screen_reader.rs::keys_work_with_the_screen_off", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s1004"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s1004"], "speech" = ["sim/tests/screen_reader.rs::screen_reader_speaks_only_when_on"], "keys" = ["sim/tests/screen_reader.rs::toggle_chord", "sim/tests/screen_reader.rs::keys_work_with_the_screen_off"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x1005"
+name = "Settings › Accessibility › Speech rate"
+scope = "global"
+values = [1, 2, 4, 8, 20, 40]
+default = 4
+contexts = ["speech"]
+unaffected = ["@screens", "@services", "audio"]
+na = { "governor" = "review: the governor's only setting input is Power mode 0x0401 (fw ui.rs POWER_MODE → orpheus-power Governor::step)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's only setting input is Power mode 0x0401 (fw ui.rs POWER_MODE)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight follows the screen state (fw ui.rs: 12 on, 0 off), which only Backlight timeout 0x0302 and Screen saver 0x0307 drive", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date, Correction 0x0506 and Set from RDS 0x0507", "keys" = "review: the screen reader is not in the firmware yet (A11Y-1: feature screen-reader off); in the simulator its keys follow 0x1004, 0x100A and 0x100B only" }
+oracle = "Speech rate 0.25×–10× in 0.25× steps (owner 2026-11-25; quarters 1–40, default 4 = 1×): the speech engine's speed (orpheus-tts Speed, durations from the front end, the pitch kept). speech: the same words, the audio of another length (matrix: its hash; dedicated: shorter at 2×, 10×, longer at 0.25×, 0.5×)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s1005", "sim/tests/screen_reader.rs::speech_rate_changes_how_fast", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s1005"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s1005"], "speech" = ["sim/tests/settings_matrix.rs::matrix::s1005", "sim/tests/screen_reader.rs::speech_rate_changes_how_fast"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x1006"
+name = "Settings › Accessibility › Voice"
+scope = "global"
+values = ["Neutral", "Low", "Bright"]
+default = 0
+contexts = ["speech"]
+unaffected = ["@screens", "@services", "audio"]
+na = { "governor" = "review: the governor's only setting input is Power mode 0x0401 (fw ui.rs POWER_MODE → orpheus-power Governor::step)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's only setting input is Power mode 0x0401 (fw ui.rs POWER_MODE)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight follows the screen state (fw ui.rs: 12 on, 0 off), which only Backlight timeout 0x0302 and Screen saver 0x0307 drive", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date, Correction 0x0506 and Set from RDS 0x0507", "keys" = "review: the screen reader is not in the firmware yet (A11Y-1: feature screen-reader off); in the simulator its keys follow 0x1004, 0x100A and 0x100B only" }
+oracle = "The speech engine's voice (orpheus-tts Voice::ALL: Neutral, Low, Bright). speech: the same words, another sound."
+tests = ["sim/tests/settings_matrix.rs::matrix::s1006", "sim/tests/screen_reader.rs::voice_and_pitch_change_the_sound", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s1006"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s1006"], "speech" = ["sim/tests/settings_matrix.rs::matrix::s1006", "sim/tests/screen_reader.rs::voice_and_pitch_change_the_sound"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x1007"
+name = "Settings › Accessibility › Pitch"
+scope = "global"
+values = ["Lower", "Low", "Normal", "High", "Higher"]
+default = 2
+contexts = ["speech"]
+unaffected = ["@screens", "@services", "audio"]
+na = { "governor" = "review: the governor's only setting input is Power mode 0x0401 (fw ui.rs POWER_MODE → orpheus-power Governor::step)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's only setting input is Power mode 0x0401 (fw ui.rs POWER_MODE)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight follows the screen state (fw ui.rs: 12 on, 0 off), which only Backlight timeout 0x0302 and Screen saver 0x0307 drive", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date, Correction 0x0506 and Set from RDS 0x0507", "keys" = "review: the screen reader is not in the firmware yet (A11Y-1: feature screen-reader off); in the simulator its keys follow 0x1004, 0x100A and 0x100B only" }
+oracle = "The voice's pitch moved by −4, −2, 0, +2, +4 semitones (orpheus-tts Voice::with_pitch). speech: the same words, another sound."
+tests = ["sim/tests/settings_matrix.rs::matrix::s1007", "sim/tests/screen_reader.rs::voice_and_pitch_change_the_sound", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s1007"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s1007"], "speech" = ["sim/tests/settings_matrix.rs::matrix::s1007", "sim/tests/screen_reader.rs::voice_and_pitch_change_the_sound"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x1008"
+name = "Settings › Accessibility › Verbosity"
+scope = "global"
+values = ["Brief", "Normal", "Detailed"]
+default = 1
+contexts = ["speech"]
+unaffected = ["@screens", "@services", "audio"]
+na = { "governor" = "review: the governor's only setting input is Power mode 0x0401 (fw ui.rs POWER_MODE → orpheus-power Governor::step)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's only setting input is Power mode 0x0401 (fw ui.rs POWER_MODE)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight follows the screen state (fw ui.rs: 12 on, 0 off), which only Backlight timeout 0x0302 and Screen saver 0x0307 drive", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date, Correction 0x0506 and Set from RDS 0x0507", "keys" = "review: the screen reader is not in the firmware yet (A11Y-1: feature screen-reader off); in the simulator its keys follow 0x1004, 0x100A and 0x100B only" }
+oracle = "How much is said of a focus (orpheus-ui a11y::Verbosity): Brief the label, value and on/off; Normal also the role, unavailable and the position (3 of 12); Detailed also the screen's summary on entry and what OK does. speech: other texts."
+tests = ["sim/tests/settings_matrix.rs::matrix::s1008", "sim/tests/screen_reader.rs::verbosity_changes_what_is_said", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s1008"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s1008"], "speech" = ["sim/tests/settings_matrix.rs::matrix::s1008", "sim/tests/screen_reader.rs::verbosity_changes_what_is_said"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x1009"
+name = "Settings › Accessibility › Sound cues"
+scope = "global"
+values = ["off", "on"]
+default = 1
+contexts = ["speech"]
+unaffected = ["@screens", "@services", "audio"]
+na = { "governor" = "review: the governor's only setting input is Power mode 0x0401 (fw ui.rs POWER_MODE → orpheus-power Governor::step)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's only setting input is Power mode 0x0401 (fw ui.rs POWER_MODE)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight follows the screen state (fw ui.rs: 12 on, 0 off), which only Backlight timeout 0x0302 and Screen saver 0x0307 drive", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date, Correction 0x0506 and Set from RDS 0x0507", "keys" = "review: the screen reader is not in the firmware yet (A11Y-1: feature screen-reader off); in the simulator its keys follow 0x1004, 0x100A and 0x100B only" }
+oracle = "Earcons (orpheus-ui a11y::Earcon: screen entered or left, menu, dialog, list end and roll-around, on/off, toast, the reader on and off): off, none (the same words). speech: the earcons logged and the audio."
+tests = ["sim/tests/settings_matrix.rs::matrix::s1009", "sim/tests/screen_reader.rs::earcons_follow_the_setting", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s1009"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s1009"], "speech" = ["sim/tests/settings_matrix.rs::matrix::s1009", "sim/tests/screen_reader.rs::earcons_follow_the_setting"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x100A"
+name = "Settings › Accessibility › Where am I"
+scope = "global"
+values = ["Off", "Back + OK", "Prev + Next"]
+default = 1
+contexts = ["speech", "keys"]
+unaffected = ["@screens", "@services", "audio"]
+na = { "governor" = "review: the governor's only setting input is Power mode 0x0401 (fw ui.rs POWER_MODE → orpheus-power Governor::step)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's only setting input is Power mode 0x0401 (fw ui.rs POWER_MODE)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight follows the screen state (fw ui.rs: 12 on, 0 off), which only Backlight timeout 0x0302 and Screen saver 0x0307 drive", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date, Correction 0x0506 and Set from RDS 0x0507" }
+oracle = "The where-am-I pair while the reader is on (orpheus-ui a11y::Chords): held for the hold delay, the screen, its summary and the focus at Detailed verbosity; held 2 s, the time and the battery. Off: no pair (the keys are keys). speech: the matrix journey holds Back and OK. keys: which pair is a chord (dedicated test)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s100a", "sim/tests/screen_reader.rs::where_am_i_keys_follow_the_setting", "sim/tests/screen_reader.rs::where_am_i_and_time", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s100a"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s100a"], "speech" = ["sim/tests/settings_matrix.rs::matrix::s100a", "sim/tests/screen_reader.rs::where_am_i_and_time"], "keys" = ["sim/tests/screen_reader.rs::where_am_i_keys_follow_the_setting"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x100B"
+name = "Settings › Accessibility › Keys with screen off"
+scope = "global"
+values = ["off", "on"]
+default = 1
+contexts = ["keys"]
+unaffected = ["@screens", "@services", "audio"]
+na = { "governor" = "review: the governor's only setting input is Power mode 0x0401 (fw ui.rs POWER_MODE → orpheus-power Governor::step)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's only setting input is Power mode 0x0401 (fw ui.rs POWER_MODE)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the backlight follows the screen state (fw ui.rs: 12 on, 0 off), which only Backlight timeout 0x0302 and Screen saver 0x0307 drive", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date, Correction 0x0506 and Set from RDS 0x0507" }
+oracle = "With the reader on (05 §7.14 fully usable with the screen off): on, every key works while the screen is off (KeyGate::reader_keys: no waking press) and stays dark, and the backlight timeout does not lock the keys (a11y::Config::timeouts; Power still does); off, the first key only wakes the screen and Auto-lock applies. Without the reader: nothing. keys: the dedicated test (the screen timers run there)."
+tests = ["sim/tests/settings_matrix.rs::matrix::s100b", "sim/tests/screen_reader.rs::keys_work_with_the_screen_off", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
+cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s100b"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s100b"], "keys" = ["sim/tests/screen_reader.rs::keys_work_with_the_screen_off"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
+
+[[setting]]
+id = "0x0D61"
+name = "(storage) the screen reader's settings, packed"
+scope = "local"
+values = ["bit fields of the screen reader's settings above"]
+default = 2896
+contexts = ["Settings.Accessibility"]
+oracle = "Not shown: holds the bits of Screen reader, Voice, Pitch, Verbosity, Sound cues, Where am I and Keys with screen off; each of those has its own entry and tests."
+tests = ["crates/orpheus-apps/src/settings.rs::tests::reader_packed"]
+cover = { "Settings.Accessibility" = ["crates/orpheus-apps/src/settings.rs::tests::reader_packed"] }
 
 # ---------------------------------------------------------------- Sequencer
 # SEQ-2 (05 §7.16 "Settings"): Sequencer › list › Menu › Settings, seven
