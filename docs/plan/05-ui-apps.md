@@ -300,7 +300,9 @@ for 1 s after each move).
 | Authenticator | USB Drive | Settings | |
 
 Up/Down/Prev/Next move in the grid (wrapping), OK opens. Order and visibility
-are editable in Settings → Display → Home screen. Apps whose hardware is absent
+are editable in Settings → Display → Home screen (stored as the apps *hidden*,
+key 0x030E since 2026-11-27, so an app added by a later firmware shows until
+the owner hides it; the old key 0x030B, the apps shown, is retired). Apps whose hardware is absent
 or unsupported in the running build (see 06-connectivity §"Bluetooth") are
 hidden, not greyed.
 

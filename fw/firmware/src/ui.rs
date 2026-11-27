@@ -1321,9 +1321,9 @@ pub async fn ui() {
         // VER-7: the test look switched: every screen reloads and redraws.
         if test_look_on() != seen_look {
             seen_look = !seen_look;
-            ui.fw
-                .pending
-                .push(Event::Service(ServiceEvent::SettingChanged(orpheus_apps::settings::id::HOME_HIDDEN.0)));
+            ui.fw.pending.push(Event::Service(ServiceEvent::SettingChanged(
+                orpheus_apps::settings::id::HOME_HIDDEN.0,
+            )));
             ui.shell.invalidate();
         }
         // VER-12: `settings test-set`, `ui screen-off`.

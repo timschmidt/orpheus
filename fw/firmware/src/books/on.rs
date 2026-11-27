@@ -75,6 +75,8 @@ struct Stat {
     lent: u32,
     retaken: u32,
     mkdir_wait: bool,
+    /// Chores that found the model held by the UI (nothing done).
+    busy: u32,
 }
 
 static STAT: Mutex<Cell<Stat>> = Mutex::new(Cell::new(Stat {
@@ -92,6 +94,7 @@ static STAT: Mutex<Cell<Stat>> = Mutex::new(Cell::new(Stat {
     lent: 0,
     retaken: 0,
     mkdir_wait: false,
+    busy: 0,
 }));
 
 /// Once, from `main`, before the tasks start. Not inlined: the values are
@@ -290,6 +293,12 @@ fn publish(sh: &Shelf, desk: &Desk, lent: bool) {
 /// open ran inside a `job:bread` piece).
 pub async fn chore(vol: &mut Volume<'static, Card>) {
     if !card_try() {
+        critical_section::with(|cs| {
+            let c = STAT.borrow(cs);
+            let mut s = c.get();
+            s.busy = s.busy.wrapping_add(1);
+            c.set(s);
+        });
         return;
     }
     let admitted = kind();
@@ -408,7 +417,8 @@ pub fn test_command(rest: &[u8]) -> bool {
 }
 
 /// `books: lib=ready n=2 found=2 book=ready conv=1000 wait=0 top=0 page=0
-/// pages=4 laid=1 steps=123 lent=0 retaken=0 mkdir=0 test=1`.
+/// pages=4 laid=1 steps=123 lent=0 retaken=0 mkdir=0 busy=0 test=1`
+/// (`busy`: chores that found the model held by the UI).
 fn status_reply() {
     let s = critical_section::with(|cs| STAT.borrow(cs).get());
     let lib: &[u8] = match s.lib {
@@ -436,6 +446,7 @@ fn status_reply() {
         w.s(b" pages=").u(u64::from(s.pages)).s(b" laid=").u(u64::from(s.complete));
         w.s(b" steps=").u(u64::from(s.steps)).s(b" lent=").u(u64::from(s.lent));
         w.s(b" retaken=").u(u64::from(s.retaken)).s(b" mkdir=").u(u64::from(s.mkdir_wait));
+        w.s(b" busy=").u(u64::from(s.busy));
         w.s(b" test=").u(u64::from(TEST.load(Ordering::Relaxed)));
     });
 }
