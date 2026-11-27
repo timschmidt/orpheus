@@ -231,6 +231,31 @@ symbols = [
     "firmware::sensor::trace_reply",
     "firmware::sensor::acc_command",
 ]
+# Never cold: an update's data path, which runs once per byte or per
+# 64-byte block over the whole 1.3 MB image (PG-2b, 2026-11-27). Cold, the
+# SHA-256 round loop of `compress256` straddled the physical line of its
+# round constants `K` (SRAM3 holds 16 lines for cold code and constants
+# together): two line loads per round, 129 rodata faults per block, 2.5 KB/s
+# instead of ≈ 35 KB/s, 8–9 min to write an image and a 16 KiB read-back
+# step of ≈ 6 s, which the watchdog (5.6 s) reset. Test
+# `rules::tests::regress_update_data_path_ran_from_the_rodata_window`.
+exclude = [
+    "<orpheus_update::install::Installer>::write::*",
+    "<orpheus_update::install::Installer>::take::*",
+    "<orpheus_update::install::Installer>::same::*",
+    "<orpheus_update::install::Installer>::program::*",
+    "<orpheus_update::install::Installer>::erase::*",
+    "<orpheus_update::install::Installer>::verify_step::*",
+    "<orpheus_update::install::Installer>::guard",
+    "<orpheus_update::slots::Target>::allows",
+    "<firmware::update::Nor as *",
+    "firmware::update::usb_out",
+    "firmware::update::with_usb*",
+    "firmware::update::poll",
+    "firmware::update::install_file*",
+    "<sha2::Sha256 as digest::Update>::update",
+    "sha2::sha256::*",
+]
 
 [bin.bringup-pagetoy]
 # Stand-in for the MemManage handler (fw/bringup/pagetoy).

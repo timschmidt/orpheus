@@ -294,6 +294,15 @@ pub const BLOCK: u32 = 256;
 pub const CLOCKS_MHZ: [u32; 3] = [144, 192, 288];
 /// The highest step (Max, 288 MHz).
 pub const TOP: u8 = 2;
+
+/// The `status` `clk=` of the synth's line: the clock step the governor
+/// asks for while a file plays, MHz; 0 when nothing plays (the step of
+/// the last file is history, and the clock governor has taken the clock
+/// back: the line's `cpu=` is the clock the core runs at).
+#[must_use]
+pub fn status_clock_mhz(step: u32, playing: bool) -> u32 {
+    if playing { CLOCKS_MHZ.get(step as usize).copied().unwrap_or(0) } else { 0 }
+}
 /// After an open or a seek nothing is measured for this long, ms (cold
 /// code paging, patch installs, the first notes).
 pub const WARM_MS: u32 = 250;
@@ -1318,6 +1327,19 @@ pub mod sim {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// PG-2b, 2026-11-27: `status` said `idle … clk=288/288` a minute and
+    /// more after a MIDI file stopped, while the core ran at 48 MHz (`dev
+    /// stats`): the line printed the last file's governor step as if it
+    /// were the clock. Idle, `clk=` is 0 now (`cpu=` the real clock).
+    #[test]
+    fn regress_idle_status_claimed_the_synth_clock() {
+        assert_eq!(status_clock_mhz(2, false), 0);
+        assert_eq!(status_clock_mhz(0, false), 0);
+        assert_eq!(status_clock_mhz(2, true), 288);
+        assert_eq!(status_clock_mhz(0, true), 144);
+        assert_eq!(status_clock_mhz(9, true), 0);
+    }
     use std::vec;
     use std::vec::Vec;
 

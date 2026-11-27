@@ -52,8 +52,11 @@ cargo xtask dev <subcommand>
                                 USB-6: put images into /.orpheus/images/, present each,
                                 read the whole block device, compare hashes, detach
   stage IMAGE|NAME|FILE.yfw      write a YFW1 slot to slot A (0x762000)
-  update FILE.ofw [--no-reboot]  firmware update through the running Orpheus
-                                (developer channel, inactive slot, no ADFU; UPD-1)
+  update FILE.ofw [--no-reboot] [--stop-after BYTES]
+                                firmware update through the running Orpheus
+                                (developer channel, inactive slot, no ADFU; UPD-1);
+                                --stop-after: write that much, then abort (timing the
+                                write path; with `prof --during`)
   slots                          ADFU: what full slots A and B hold, and which slot
                                 stage 2 started last (and after which failed, T-6)
   switch-slot                    ADFU: start the other slot next (recovery after an
@@ -252,10 +255,7 @@ fn dispatch(sub: &str, args: &mut Args) -> Result<String> {
                 g(16),
                 g(17),
                 g(18),
-                ["Low 24", "Base 48", "Mid 96", "High 144", "Turbo 192"]
-                    .get(g(19) as usize)
-                    .copied()
-                    .unwrap_or("?"),
+                clock_level_name(g(19)),
                 g(20),
                 // VER-12 words (21 is reset by this read).
                 if w.len() > 23 {
@@ -657,5 +657,29 @@ mod key_script_tests {
         assert_eq!(key_script(&mut Args::from_vec(words)).unwrap(), "up*3 wait:200 ok");
         let one = vec!["next*2 ok".to_string()];
         assert_eq!(key_script(&mut Args::from_vec(one)).unwrap(), "next*2 ok");
+    }
+}
+
+/// `dev stats` "clock level": the firmware's `clock::current() as u32`
+/// (`orpheus_power::clock::Level` order).
+fn clock_level_name(i: u32) -> String {
+    use orpheus_power::clock::Level;
+    match Level::ALL.get(i as usize) {
+        Some(l) => format!("{l:?} {}", l.mhz()),
+        None => "?".into(),
+    }
+}
+
+#[cfg(test)]
+mod stats_tests {
+    /// PG-2b, 2026-11-27: `dev stats` printed "clock level ?" at 288 MHz
+    /// (its own name table stopped at Turbo 192), so the real clock could
+    /// not be read while MIDI played at Max.
+    #[test]
+    fn regress_stats_clock_level_max_unnamed() {
+        assert_eq!(super::clock_level_name(1), "Base 48");
+        assert_eq!(super::clock_level_name(4), "Turbo 192");
+        assert_eq!(super::clock_level_name(5), "Max 288");
+        assert_eq!(super::clock_level_name(6), "?");
     }
 }

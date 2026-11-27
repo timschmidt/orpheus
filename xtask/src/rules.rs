@@ -178,6 +178,14 @@ pub struct Cluster {
     pub stop: Vec<String>,
     #[serde(default)]
     pub budget_lines: Option<u32>,
+    /// Constants of at most this many bytes that the cluster's code reads
+    /// directly (relocation edges; plain data, no pointers, not a merged
+    /// section) are resident instead of paged (PG-2b): small per-call
+    /// constants on the physical lines of a big table the cluster streams
+    /// through (the synth's wavetable takes 14 of the 16 rodata lines)
+    /// would be reloaded on every call.
+    #[serde(default)]
+    pub resident_constants: Option<u32>,
 }
 
 impl Cluster {
@@ -340,6 +348,65 @@ exclude = ["toy::settings::hot"]
     fn optional_patterns() {
         assert_eq!(optional_pattern("?*orpheus_tts::*"), (true, "*orpheus_tts::*"));
         assert_eq!(optional_pattern("*orpheus_tts::*"), (false, "*orpheus_tts::*"));
+    }
+
+    /// PG-2b, 2026-11-27: a firmware update from a PG-2 image (cold code in
+    /// the rodata window) took 8–9 min to write 1.3 MB (37.9 s before) and
+    /// the player reset during the read-back: SHA-256's round loop ran cold
+    /// and straddled the physical line of its round constants (two line
+    /// loads per round), and a 16 KiB read-back step outlasted the
+    /// watchdog. The update's per-byte and per-block code must never be
+    /// cold in the real `resident.toml`; its screens and checks may.
+    #[test]
+    fn regress_update_data_path_ran_from_the_rodata_window() {
+        let r = Rules::load(&crate::util::root().join("resident.toml"), "firmware").unwrap();
+        let cold = |sym: &str| r.cold.select(&sec(".text.x", "f.o", &[sym])).is_some();
+        for hot in [
+            "<orpheus_update::install::Installer>::write::<firmware::update::Nor>",
+            "<orpheus_update::install::Installer>::take::<firmware::update::Nor>",
+            "<orpheus_update::install::Installer>::same::<firmware::update::Nor>",
+            "<orpheus_update::install::Installer>::program::<firmware::update::Nor>",
+            "<orpheus_update::install::Installer>::erase::<firmware::update::Nor>",
+            "<orpheus_update::install::Installer>::verify_step::<firmware::update::Nor>",
+            "<orpheus_update::install::Installer>::guard",
+            "<orpheus_update::slots::Target>::allows",
+            "<firmware::update::Nor as orpheus_update::install::Flash>::read",
+            "firmware::update::usb_out",
+            "firmware::update::poll",
+            "firmware::update::install_file::{closure#0}",
+            "<sha2::Sha256 as digest::Update>::update",
+            "sha2::sha256::compress256",
+        ] {
+            assert!(!cold(hot), "{hot} is cold: the update's data path must stay in the code window");
+        }
+        for rare in [
+            "orpheus_update::ofw::check",
+            "<orpheus_update::install::Installer>::commit::<firmware::update::Nor>",
+            "<orpheus_apps::screens::update::UpdateScreen>::notice",
+            "sha2::sha512::compress512",
+            "sha1::block_api::compress",
+        ] {
+            assert!(cold(rare), "{rare} should stay cold");
+        }
+    }
+
+    /// PG-2b, 2026-11-27: at an idle Home the PG-2 image loaded ≈ 200
+    /// lines/s (≈ 120 before): `Fw::setting` (physical code lines 1–2)
+    /// and `SettingsCache::get` (line 2) evicted each other on every one
+    /// of the UI loop's ≈ 40 setting reads. The real `hot.toml` keeps a
+    /// setting's read path in one cluster (never conflicting with itself).
+    #[test]
+    fn regress_setting_reads_evicted_each_other() {
+        let hot = load_hot(&crate::util::root().join("hot.toml"), "firmware").unwrap();
+        let c = hot.iter().find(|c| c.name == "settings-get").expect("cluster settings-get");
+        for sym in [
+            "<firmware::services::Fw as orpheus_apps::services::SettingsService>::setting",
+            "<orpheus_apps::settings::SettingsCache>::get",
+            "orpheus_apps::settings::index",
+            "orpheus_apps::settings::def",
+        ] {
+            assert!(c.rank(&sec(".text.x", "f.o", &[sym])).is_some(), "{sym} not in settings-get");
+        }
     }
 
     #[test]

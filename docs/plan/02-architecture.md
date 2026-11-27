@@ -618,7 +618,25 @@ now runs from the rodata window instead:
   `rodata_code_pages` (`+0x50`) counts these pages, which the pager maps
   without execute-never (`PagerCore::init_with`). A section goes where it
   shares no physical line (offset in its group / 1 KiB) with a constant it
-  refers to, if a group has room there.
+  refers to: at the end of a group if that is clear, else at the first
+  clear line start after some padding (PG-2b), else in a new group while
+  the window has room; only then on a constant's line. The sections that
+  still share one come back into the code window before any warmer cold
+  code (`place_cold`), and `layout.json` gives them the reason
+  `cold-shared:` (the default image has none since PG-2b).
+* **What must never be cold** (PG-2b, 2026-11-27): code that runs per
+  byte or per block over large data. An update's data path (the
+  installer's write, program, erase and read-back, the USB and card
+  loops, SHA-256's `compress256` and `Sha256::update`) is excluded in
+  `[bin.firmware.cold] exclude` and in the code window: cold, the round
+  loop of `compress256` straddled the physical line of its round
+  constants `K`, two line loads per round — 129 rodata faults per 64-byte
+  block, 2.5 KB/s, 8–9 min to write a 1.3 MB image and a 16 KiB read-back
+  step of ≈ 6 s, which the watchdog (5.6 s) reset; through the card the
+  4 KiB steps starved the UI task and the watchdog reset the player
+  within 5 s. A PG-2 image (`bdebff77`) cannot install another image by
+  either path; only `dev stage` (ADFU) can replace it. The USB read-back
+  step is now also bounded in time (50 ms) as well as in bytes.
 * **Line conflicts and the trampoline.** Cold code shares SRAM3's two slots
   (16 lines) with the constants. An instruction can need a constant whose
   line maps onto the instruction's own physical line; loading it would

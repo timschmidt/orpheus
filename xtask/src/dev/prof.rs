@@ -39,9 +39,12 @@ use crate::rules;
 use crate::util::{log, out_dir, root};
 
 /// Subcommands `--during` may run: those that leave the firmware running
-/// and write no NOR.
-const DURING_OK: [&str; 14] = [
+/// and write no NOR — and `update` (UPD-1's approved path: the inactive
+/// slot only; give it `--no-reboot` or `--stop-after BYTES`, or the reboot
+/// loses the capture; PG-2b).
+const DURING_OK: [&str; 15] = [
     "soak",
+    "update",
     "keys",
     "cmd",
     "suite",

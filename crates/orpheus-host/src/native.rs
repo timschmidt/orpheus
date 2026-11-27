@@ -337,6 +337,15 @@ impl DevChannel {
     pub fn update(&mut self, file: &[u8], progress: crate::transport::Progress<'_>) -> Result<u8> {
         block_on(self.link.update(file, progress))
     }
+    /// The write path of an update only, then `ABORT` (`Link::update_part`).
+    pub fn update_part(
+        &mut self,
+        file: &[u8],
+        stop_after: Option<usize>,
+        progress: crate::transport::Progress<'_>,
+    ) -> Result<Option<u8>> {
+        block_on(self.link.update_part(file, stop_after, progress))
+    }
     /// Ask for a reboot (target per `devchan::REBOOT_*`).
     pub fn reboot(mut self, target: u16) {
         block_on(self.link.reboot(target));

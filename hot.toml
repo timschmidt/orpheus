@@ -13,7 +13,9 @@
 # physical line. `starts_over = "NAME"` starts a cluster on the physical
 # line NAME starts on (the code window before it left empty). The fault
 # profiler (WP-T-8, `xtask dev prof --update-hot`) regenerates clusters
-# from a capture; `cargo xtask hot --name NAME --write` from the static
+# from a capture; `resident_constants = N` makes the plain constants of at
+# most N bytes that the cluster's code reads resident (PG-2b); `cargo xtask
+# hot --name NAME --write` from the static
 # call graph: the paged code reachable from `from` (not entering `stop`),
 # closest first, within `budget_lines`, which `xtask stack --check` then
 # enforces for the reachable code outside the cluster and its `fits_with`.
@@ -580,10 +582,19 @@ symbols = [
 # with these). The outer loop
 # (`synth-block`: requests, the position, chores; every 4,096 frames or
 # when something waits) and the note path (`synth-note`) are outside.
+#
+# Its small constants (`resident_constants`: the clock steps, the `syn:`
+# field table, `match` lookup tables; ≈ 0.4 KB) are resident (PG-2b,
+# 2026-11-27): paged, they landed on physical rodata lines 5, 10 and 11,
+# inside the 14 lines the wavetable (`WAVES`, 14,336 B) takes in its group,
+# so every piece reloaded them and the render reloaded the wavetable after
+# it: 1,170 rodata faults/s in "Etude", 2,297 line loads/s (1,570/s
+# measured before PG-2), underruns from `ub: dec=`.
 [[cluster]]
 name = "synth-inner"
 bins = ["firmware"]
 fits_with = ["synth-render", "play-pcm"]
+resident_constants = 256
 symbols = [
     "firmware::audio::Apart<firmware::audio::synth::pieces::*>::poll",
     "firmware::audio::synth::plan_piece",
@@ -630,9 +641,11 @@ symbols = [
 # lines 9–10 (`render_i16`'s last, `synth-inner`'s first): two line loads
 # a slot in thread mode and two in the render after it (SYN-3,
 # 2026-11-26).
+# Its small constants are resident too (as `synth-inner`'s, PG-2b).
 [[cluster]]
 name = "synth-block"
 bins = ["firmware"]
+resident_constants = 256
 symbols = [
     "embassy_executor::raw::TaskStorage<firmware::__input_task::*>::poll",
     "<core::future::poll_fn::PollFn<<embassy_time::timer::Ticker>::next::*>::poll",
@@ -666,6 +679,25 @@ symbols = [
     "<orpheus_midi::seq::Sequencer>::unhold",
     "<orpheus_midi::player::MidiPlayer>::install",
     "<orpheus_synth::engine::Engine>::shed",
+]
+
+# A setting's read (`Fw::setting` with the test look's check,
+# `SettingsCache::get`, its index and definition lookups) and the UI
+# loop's readers that call it a dozen times in a row (the screen reader's
+# configuration, the screen timers). PG-2b, 2026-11-27: in PG-2's layout
+# `setting` (physical code lines 1–2) and `get`/`index` (line 2) evicted
+# each other on every call: ≈ 40 calls a UI loop, 200 line loads/s at an
+# idle Home (≈ 120 before). Together they never conflict with each other.
+[[cluster]]
+name = "settings-get"
+bins = ["firmware"]
+symbols = [
+    "<firmware::services::Fw as orpheus_apps::services::SettingsService>::setting",
+    "<orpheus_apps::settings::SettingsCache>::get",
+    "orpheus_apps::settings::index",
+    "orpheus_apps::settings::def",
+    "firmware::ui::reader::reader_cfg",
+    "orpheus_apps::services::screen_timeouts::<firmware::services::Fw>",
 ]
 
 # The paged toy: three functions spread over the generated code, packed
