@@ -1,62 +1,103 @@
-//! The demo content of the browser card (WEB-2): the tracks synthesised by
-//! [`crate::synth`] and encoded by `cargo xtask wasm --demo` (committed in
-//! `sim/web/demo/`), and texts and lyrics written for the demo. All of it
-//! is the project's own work under the project's licence.
+//! The demo card (WEB-2): real, freely licensed works — public-domain and
+//! CC0 recordings of Bach, Beethoven, Chopin, Satie, Sousa and Caruso, a
+//! LibriVox reading, a Mutopia MIDI file, paintings, a NASA photograph, a
+//! Hubble picture and two Project Gutenberg books — one for every format
+//! the browser build opens. `sim/web/demo/sources.toml` pins each by
+//! source page, URL and SHA-256 and says what was done to it;
+//! `cargo xtask wasm --demo` derives `sim/web/demo/card/` from it
+//! (committed, with `CREDITS.txt`). The page fetches the files packed as
+//! one bundle ([`crate::bundle`]); host tests read the directory.
 
-/// The committed encodings, in [`crate::synth::TRACKS`] order.
-pub const ENCODED: [&[u8]; 4] = [
-    include_bytes!("../demo/lyre.mp3"),
-    include_bytes!("../demo/tide.ogg"),
-    include_bytes!("../demo/bells.opus"),
-    include_bytes!("../demo/pulse.flac"),
-];
+use crate::card::File;
 
-/// The night-sky picture ([`crate::synth::lyra`]) as a baseline JPEG.
-pub const LYRA_JPG: &[u8] = include_bytes!("../demo/lyra.jpg");
+/// The tracks every test and the page's self-test rely on.
+pub const ARIA: &str = "/Music/Bach/Goldberg Variations/01 Aria.mp3";
+/// The FLAC excerpt (lossless, 44.1 kHz stereo).
+pub const VARIATION: &str = "/Music/Bach/Goldberg Variations/05 Variatio 4.flac";
+/// The MIDI file (the synthesiser plays it).
+pub const PRELUDE_MIDI: &str = "/MIDI/Bach - Prelude in C major, BWV 846.mid";
+/// The credits on the card.
+pub const CREDITS: &str = "/CREDITS.txt";
 
-/// Lyrics for the first track (written for the demo).
-pub const LYRE_LRC: &str = "[00:00.00](lyre)\n\
-[00:04.00]Strings of light in the morning air\n\
-[00:09.00]a lyre plays where the river bends\n\
-[00:14.00]every note a step back home\n\
-[00:19.00]do not look back until the song ends\n\
-[00:25.00](lyre)\n";
+/// Every file of a card tree, paths relative to `dir` with a leading
+/// `/`, sorted (the bundle's order).
+pub fn read_tree(dir: &std::path::Path) -> std::io::Result<Vec<File>> {
+    fn walk(base: &std::path::Path, dir: &std::path::Path, out: &mut Vec<File>) -> std::io::Result<()> {
+        for e in std::fs::read_dir(dir)? {
+            let p = e?.path();
+            if p.is_dir() {
+                walk(base, &p, out)?;
+            } else {
+                let rel = p.strip_prefix(base).map_err(std::io::Error::other)?;
+                let path: Vec<String> =
+                    rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+                out.push(File { path: format!("/{}", path.join("/")), data: std::fs::read(&p)? });
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    walk(dir, dir, &mut out)?;
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(out)
+}
 
-pub const ABOUT: &str = "Orpheus in your browser\n\
-\n\
-This card is a FAT32 image in your browser's memory. The music on it was \
-synthesised for the demo by the Orpheus project: plucked strings (MP3), \
-filtered noise (Ogg Vorbis), FM bells (Opus), a drum machine (FLAC) and \
-test tones (WAV). The pictures were drawn by the project too.\n\
-\n\
-Drop your own files onto the player and they appear in the folder \
-\"Your files\". They stay in this browser (IndexedDB) and are never \
-uploaded anywhere.\n\
-\n\
-Everything you see is the firmware's own code: the screens, the file \
-system, the music library, the decoders and the sound settings. Only the \
-drivers are replaced by the simulator's.\n";
+/// The committed demo set (`sim/web/demo/card/`), for host builds and tests.
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub fn committed() -> Vec<File> {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("demo/card");
+    read_tree(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+}
 
-pub const MYTH: &str = "The myth of Orpheus\n\
-\n\
-Orpheus was the finest singer of the old stories. When he played his lyre, \
-the rivers slowed to listen, the trees leaned closer and even the stones \
-were said to move.\n\
-\n\
-His wife Eurydice died from the bite of a snake on the day of their \
-wedding. Orpheus walked down into the underworld to bring her back. He \
-sang to the ferryman, to the three-headed dog at the gate and at last to \
-the king and queen of the dead, and for the first time the shadows wept.\n\
-\n\
-They let Eurydice go, on one condition: she would follow him up to the \
-light, and he must not look back at her until they had both left the \
-dark. Orpheus walked and played. He heard no footsteps behind him. At the \
-very edge of the daylight, afraid that he had been deceived, he turned \
-around, and saw her fall back into the shadows for ever.\n\
-\n\
-He sang of her for the rest of his life. When he died, the Muses \
-gathered the pieces of his lyre and set it among the stars, where you can \
-still find it: the small constellation Lyra, with the bright star Vega.\n\
-\n\
-A player named after him should at least know how to keep a song going \
-without looking back.\n";
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_set_has_every_format_and_its_credits() {
+        let files = committed();
+        let has = |ext: &str| files.iter().any(|f| f.path.to_lowercase().ends_with(ext));
+        for ext in [
+            ".mp3", ".flac", ".ogg", ".opus", ".spx", ".wav", ".aiff", ".au", ".mid", ".lrc", ".m3u8",
+            ".jpg", ".png", ".bmp", ".gif", ".qoi", ".epub", ".txt",
+        ] {
+            assert!(has(ext), "no {ext} file on the demo card");
+        }
+        for p in [ARIA, VARIATION, PRELUDE_MIDI, CREDITS] {
+            assert!(files.iter().any(|f| f.path == p), "{p}");
+        }
+        let credits = files.iter().find(|f| f.path == CREDITS).unwrap();
+        let credits = std::str::from_utf8(&credits.data).unwrap();
+        // Every other file is credited (the project's own files too).
+        for f in &files {
+            if f.path != CREDITS {
+                assert!(credits.contains(&f.path[1..]), "{} missing from CREDITS.txt", f.path);
+            }
+        }
+    }
+
+    /// Every picture decodes with the player's decoders (`orpheus-img`
+    /// through the simulator's viewer path) to a screen that is not blank.
+    #[test]
+    fn every_picture_decodes() {
+        let pics: Vec<_> = committed().into_iter().filter(|f| f.path.starts_with("/Pictures/")).collect();
+        assert_eq!(pics.len(), 5);
+        for f in pics {
+            let (px, info) = orpheus_sim::pictures::decode(&f.data, 128, 128, false, 0)
+                .unwrap_or_else(|e| panic!("{}: {e:?}", f.path));
+            assert!(info.width >= 184 && info.height >= 135, "{}: {}x{}", f.path, info.width, info.height);
+            let distinct: std::collections::BTreeSet<u16> = px.iter().copied().collect();
+            assert!(distinct.len() > 16, "{}: {} colours", f.path, distinct.len());
+        }
+    }
+
+    #[test]
+    fn the_bundle_carries_the_set() {
+        let files = committed();
+        let b = crate::bundle::encode(&files);
+        let back = crate::bundle::decode(&b).unwrap();
+        assert_eq!(back.len(), files.len());
+        assert!(back.iter().zip(&files).all(|(a, b)| a.path == b.path && a.data == b.data));
+    }
+}

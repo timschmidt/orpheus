@@ -8,6 +8,7 @@ mod args;
 mod brand;
 mod build;
 mod cover;
+mod demo;
 mod dev;
 mod drain;
 mod gate;
@@ -93,9 +94,16 @@ usage: cargo xtask <command> [options]
   wasm [--demo] [--record] [--test [--browser chromium|firefox]]
                                    Orpheus in the browser (WEB-2) into
                                    target/orpheus/site/try/pkg/ (pinned wasm-bindgen
-                                   and wasm-opt), size budget; --demo regenerates
-                                   sim/web/demo/ (ffmpeg), --record adds the sizes to
-                                   metrics/static.csv, --test runs the page's self-test
+                                   and wasm-opt), size budgets, the demo bundle
+                                   try/pkg/demo.bin; --demo downloads the sources of
+                                   sim/web/demo/sources.toml (SHA-256 checked) and
+                                   derives sim/web/demo/card/ (ffmpeg), --record adds the
+                                   sizes to metrics/static.csv, --test runs the page's
+                                   self-test
+  demo-card                        the player's demo card tree in target/orpheus/demo-card/:
+                                   the browser's files plus complete recordings and
+                                   full-size pictures (downloads into the cache, ffmpeg);
+                                   upload: `dev demo-card --outside-orpheus`
   settings-matrix [--check] [--strict] [--manifest PATH]
                                    setting -> effect coverage (VER-13, 07 §5.12): every
                                    setting of the tree against tests/settings/effects.toml
@@ -134,6 +142,7 @@ fn main() -> ExitCode {
         "brand" => brand::cmd(&mut args),
         "site" => site::cmd(&mut args),
         "wasm" => wasm::cmd(&mut args),
+        "demo-card" => demo::cmd(&mut args),
         "tts-lexicon" => tts::cmd(&mut args),
         "settings-matrix" => settings_matrix::cmd(&mut args),
         // `settings coverage` is the same report (VER-13).

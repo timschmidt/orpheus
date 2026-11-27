@@ -1,0 +1,3 @@
+# The demo card is byte-exact third-party content (sim/web/demo/sources.toml):
+# no line-ending conversion, e.g. of the Project Gutenberg text (CRLF).
+sim/web/demo/card/** -text

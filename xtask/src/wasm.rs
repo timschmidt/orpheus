@@ -6,15 +6,18 @@
 //! `wasm32-unknown-unknown` with the `web` profile, binds it with
 //! `wasm-bindgen` and optimises it with `wasm-opt`, into
 //! `target/orpheus/site/try/pkg/` (the page itself, `site/try/`, is copied
-//! by `xtask site`, which keeps `try/pkg`). Then checks the size budget of
-//! `budgets.toml` `[web]` (module + data + the page's scripts, gzip).
+//! by `xtask site`, which keeps `try/pkg`), packs the committed demo card
+//! (`sim/web/demo/card/`) into `try/pkg/demo.bin`, the page's one download
+//! of demo data. Then checks the size budgets of `budgets.toml` `[web]`
+//! (module + the page's scripts, gzip; the demo bundle, as served).
 //!
 //! The tools are pinned here: a `wasm-bindgen` or `wasm-opt` of another
 //! version on `PATH` is not used; the pinned one is installed with
 //! `cargo install --locked` into `target/orpheus/tools/` when missing.
 //!
-//! * `--demo` regenerates the demo tracks and picture in `sim/web/demo/`
-//!   (synthesised by `sim/web/src/synth.rs`, encoded by `ffmpeg`).
+//! * `--demo` downloads the demo card's sources pinned in
+//!   `sim/web/demo/sources.toml` (SHA-256 checked) and derives
+//!   `sim/web/demo/card/` and the credits with `ffmpeg` ([`crate::demo`]).
 //! * `--record` adds the sizes to `metrics/static.csv` (build id `web`).
 //! * `--test` runs the page's self-test in a headless browser
 //!   (`tests/web/try.mjs`, Node).
@@ -28,10 +31,6 @@ use anyhow::{Context, Result, bail};
 use crate::args::Args;
 use crate::util::{cargo, git_commit, git_date, log, out_dir, root, run};
 
-#[allow(dead_code, clippy::all, clippy::pedantic)]
-#[path = "../../sim/web/src/synth.rs"]
-mod synth;
-
 /// `wasm-bindgen` CLI: the same version as the `wasm-bindgen` crate in
 /// `Cargo.lock` (`sim/web/Cargo.toml` pins it).
 pub const WASM_BINDGEN: &str = "0.2.130";
@@ -39,6 +38,8 @@ pub const WASM_BINDGEN: &str = "0.2.130";
 pub const WASM_OPT: &str = "0.116.1";
 const WASM_OPT_BINARYEN: &str = "version 116";
 const TARGET: &str = "wasm32-unknown-unknown";
+/// The demo card's bundle in `try/pkg/` (`site/try/app.js` fetches it).
+const DEMO_BUNDLE: &str = "demo.bin";
 /// Features the Rust target enables by default (wasm-opt must accept them).
 const FEATURES: [&str; 6] = [
     "--enable-bulk-memory",
@@ -143,59 +144,6 @@ fn budget(key: &str) -> Result<u64> {
         .with_context(|| format!("budgets.toml: no [web] {key}"))
 }
 
-/// Synthesise the demo set and encode it with `ffmpeg` into `sim/web/demo/`.
-fn demo() -> Result<String> {
-    let src = out_dir().join("demo-src");
-    std::fs::create_dir_all(&src)?;
-    let dest = root().join("sim/web/demo");
-    std::fs::create_dir_all(&dest)?;
-    let ff = |args: &[&str]| -> Result<()> {
-        run(Command::new("ffmpeg").args(["-hide_banner", "-loglevel", "error", "-y"]).args(args))
-            .context("ffmpeg (needed for --demo only)")
-    };
-    let mut made = Vec::new();
-    for (i, t) in synth::TRACKS.iter().enumerate() {
-        let s = (t.synth)(t.rate, t.secs);
-        let wav = src.join(format!("{}.wav", t.file));
-        std::fs::write(&wav, synth::wav(&s, u16::from(t.channels)))?;
-        let out = dest.join(t.file);
-        let mut a: Vec<String> = vec!["-i".into(), wav.display().to_string()];
-        a.extend(["-map_metadata", "-1", "-fflags", "+bitexact", "-flags:a", "+bitexact"].map(String::from));
-        a.extend(t.encode.iter().map(|s| (*s).to_string()));
-        for (k, v) in [
-            ("title", t.title),
-            ("artist", synth::ARTIST),
-            ("album", synth::ALBUM),
-            ("track", &(i + 1).to_string()),
-        ] {
-            a.push("-metadata".into());
-            a.push(format!("{k}={v}"));
-        }
-        a.push(out.display().to_string());
-        ff(&a.iter().map(String::as_str).collect::<Vec<_>>())?;
-        made.push(format!("{} {} B", t.file, std::fs::metadata(&out)?.len()));
-    }
-    let (w, h) = synth::LYRA_SIZE;
-    let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
-    ppm.extend(synth::lyra(w, h).into_iter().flatten());
-    let p = src.join("lyra.ppm");
-    std::fs::write(&p, ppm)?;
-    let out = dest.join("lyra.jpg");
-    ff(&[
-        "-i",
-        &p.display().to_string(),
-        "-flags",
-        "+bitexact",
-        "-q:v",
-        "4",
-        "-pix_fmt",
-        "yuvj420p",
-        &out.display().to_string(),
-    ])?;
-    made.push(format!("lyra.jpg {} B", std::fs::metadata(&out)?.len()));
-    Ok(made.join(", "))
-}
-
 pub fn cmd(args: &mut Args) -> Result<String> {
     let regen = args.flag("demo");
     let record = args.flag("record");
@@ -203,7 +151,7 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     let browser = args.value("browser").unwrap_or_else(|| "chromium".into());
     let mut notes = Vec::new();
     if regen {
-        notes.push(format!("demo: {}", demo()?));
+        notes.push(format!("demo: {}", crate::demo::regenerate()?));
     }
     let bindgen = tool("wasm-bindgen", "wasm-bindgen-cli", WASM_BINDGEN, WASM_BINDGEN)?;
     let opt = tool("wasm-opt", "wasm-opt", WASM_OPT, WASM_OPT_BINARYEN)?;
@@ -220,12 +168,18 @@ pub fn cmd(args: &mut Args) -> Result<String> {
         .arg(&wasm))?;
     let bg = pkg.join("orpheus_web_bg.wasm");
     run(Command::new(&opt).arg("-O3").args(FEATURES).arg(&bg).arg("-o").arg(&bg))?;
+    // The demo card, fetched by the page next to the module (its own budget).
+    let bundle = crate::demo::bundle()?;
+    std::fs::write(pkg.join(DEMO_BUNDLE), &bundle)?;
 
     // Sizes: the module with its data, its glue, the page's own scripts.
     let mut total_gz = 0;
     let mut rows = Vec::new();
     let page = root().join("site/try");
     for f in files(&pkg).into_iter().chain(files(&page)) {
+        if f.file_name().is_some_and(|n| n == DEMO_BUNDLE) {
+            continue;
+        }
         let data = std::fs::read(&f)?;
         let gz = gzip_len(&data)?;
         total_gz += gz;
@@ -235,12 +189,17 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     }
     let wasm_raw = std::fs::metadata(&bg)?.len();
     let limit = budget("total_gzip_bytes")?;
+    let demo_limit = budget("demo_bytes")?;
+    let demo_gz = gzip_len(&bundle)?;
+    log(&format!("  {DEMO_BUNDLE:<24} {:>9} B  gzip {demo_gz:>9} B", bundle.len()));
     let verdict = format!(
-        "{} (module {} KB, {} KB with the page's files gzip; budget {} KB)",
+        "{} (module {} KB, {} KB with the page's files gzip, budget {} KB; demo card {} KB, budget {} KB)",
         pkg.display(),
         wasm_raw.div_ceil(1000),
         total_gz.div_ceil(1000),
-        limit / 1000
+        limit / 1000,
+        (bundle.len() as u64).div_ceil(1000),
+        demo_limit / 1000
     );
     if record {
         let commit = git_commit();
@@ -252,6 +211,7 @@ pub fn cmd(args: &mut Args) -> Result<String> {
             lines.push(row("web_file_bytes", name, *raw));
         }
         lines.push(row("web_total_gzip_bytes", "", total_gz));
+        lines.push(row("web_demo_bytes", DEMO_BUNDLE, bundle.len() as u64));
         crate::metrics::upsert(
             &root().join("metrics/static.csv"),
             crate::metrics::STATIC_HEADER,
@@ -263,7 +223,7 @@ pub fn cmd(args: &mut Args) -> Result<String> {
         )?;
         notes.push(format!("{} rows in metrics/static.csv", lines.len()));
     }
-    if total_gz > limit {
+    if total_gz > limit || bundle.len() as u64 > demo_limit {
         bail!("over budget: {verdict}");
     }
     // The browser installer (WEB-3): orpheus-host over WebUSB.

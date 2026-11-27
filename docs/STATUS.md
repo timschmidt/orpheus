@@ -55,7 +55,7 @@ of every session. Newest entries first in §3.
 | DOC-2 | done (host) | README rewrite, `docs/user/` (manual index, install/update/restore, keys, Music, Now Playing, Files, Pictures, Bluetooth, Settings, Performance, troubleshooting, FAQ; each ≤ 600 words, checked by `site --check`), screenshots `docs/shots/` from goldens (`xtask site shots`). User: read the manual once |
 | DOC-3 | done (host), except the clean-container CI run | `docs/dev/getting-started.md`, `architecture.md` (SVG diagrams in `docs/dev/img/`), `how-to/` (8 guides). `#![warn(missing_docs)]` on `orpheus-codecs`, the wav/mp3/flac/vorbis/speex codecs, `orpheus-fs`, `orpheus-settings` |
 | DOC-4 | done (host); workflows not run (no CI here) | CONTRIBUTING, CODE_OF_CONDUCT (Contributor Covenant 2.1), SECURITY, CHANGELOG, issue/PR templates, workflows `gate.yml`, `docs.yml`, `pages.yml` (actions pinned by SHA) |
-| WEB-2 | done (host); not yet on the live site (the lead pushes) | `cargo xtask wasm [--test] [--record] [--demo]` → `target/orpheus/site/try/pkg/`: `sim/web` (`orpheus-web`) = the `orpheus-apps` screens over the simulator's services, a FAT32 card built in the browser (synthesised demo set, the visitor's files, the saved library), the firmware's codecs + DSP chain into an AudioWorklet, key recorder/replayer in the `ui_keys` corpus format. Try-it page (`site/pages/try.md`, `site/try/`): SVG player with clickable keys, integer-scaled pixelated canvas, IndexedDB state and files, Factory reset, developer panel. Self-test `tests/web/try.mjs` passes in Chromium 155 and Firefox 157 (headless); in `pages.yml`. Safari not tested: user check 23 |
+| WEB-2 | done (host); not yet on the live site (the lead pushes) | `cargo xtask wasm [--test] [--record] [--demo]` → `target/orpheus/site/try/pkg/`: `sim/web` (`orpheus-web`) = the `orpheus-apps` screens over the simulator's services, a FAT32 card built in the browser (demo card of real, freely licensed works fetched as `pkg/demo.bin`, the visitor's files, the saved library), the firmware's codecs + DSP chain and the MIDI synthesiser into an AudioWorklet, key recorder/replayer in the `ui_keys` corpus format. Try-it page (`site/pages/try.md`, `site/try/`): SVG player with clickable keys, integer-scaled pixelated canvas, IndexedDB state and files, Factory reset, developer panel. Self-test `tests/web/try.mjs` passes in Chromium 155 and Firefox 157 (headless); in `pages.yml`. Safari not tested: user check 23. **Demo card (2026-11-27)**: `sim/web/demo/sources.toml` (17 works, SHA-256 pinned), `cargo xtask demo-card` + `dev demo-card --outside-orpheus` for the player (not run: user check 37) |
 | UPD-1 | **built (host + firmware), not yet run on the player** | `orpheus-update` (`.ofw` format, slot choice, power-loss-safe installer, recovery switch; power cut before every NOR operation tested), Settings › System › Update firmware (33 goldens), card and developer-channel (`UPDATE` 0x0D) paths, `xtask dev update/slots/switch-slot`, `.ofw` from `xtask build`. No RAM installer (full layout writes the inactive slot). Stage 2 fallback to the other slot (also a superseded one) after three failed starts: built in T-6, not yet installed. User check 27 |
 | WEB-3 | **built (host); not yet run against the player** | `orpheus-host` over one async `Transport` (nusb / WebUSB / mock player), flows (backup ×2, first install, restore, recovery) with sector-0 permit and resumable writes, `orpheus-install-web` (wasm), Install page with demo mode, WebUSB + MS OS 2.0 descriptors on the developer interface; `tests/web/install.mjs` Node suite + `--page` pass, `--device` HIL not run. No release published (manifest, payload licences: lead) |
 | WEB-1 | done (host); not published | `cargo xtask site [--check]` → `target/orpheus/site/`; Home, Manual, Developers, Hardware, Changelog, FAQ, Try it and Install (placeholders for WEB-2/WEB-3). Deploy only with repository variable `PAGES_ENABLED=true`. User: review the site |
@@ -86,6 +86,99 @@ of every session. Newest entries first in §3.
 | VER-4 (settings store keys) | **done (host + firmware built), not yet run on the player** | Store index 128 → 192 keys at 4 B a slot (was 8), same NOR format both ways (fixture from the old code, byte-equal images); cache write marks unlimited; 131 keys in use with every app (61 free), firmware 129; sector ceiling ≈ 209 settings keys (256 cannot fit one sector); .bss −1,248 B, stack margin 5,664 B; compaction no longer re-blesses a rotted value (session entry 2026-11-26 "VER-4: settings store index") |
 
 ## 3. Session log
+
+### 2026-11-27 — WEB-2 (demo card): real, freely licensed works in every format (worker, no hardware)
+
+Owner's requests (2026-11-27): high-quality, liberally licensed examples of
+every supported format on the demo card, pinned by reference, credited,
+no generated media; Project Gutenberg books; the full set on the player's
+test card. No `xtask dev` command was run (the brief).
+
+* **Formats (from the code)**: audio that really decodes — MP3 (Layer III
+  only; MP2/MP1 are listed by the browser but refused by the decoder),
+  FLAC, WAV/AIFF/AIFF-C/AU (one decoder), Ogg Vorbis, Ogg Opus, Ogg Speex;
+  MIDI `.mid`/`.kar`/`.rmi` through the synthesiser. Listed but not
+  decoded: M4A/MP4/AAC/ALAC, WavPack, APE, WMA, Ogg FLAC. Pictures: JPEG,
+  PNG, BMP, GIF (first frame), QOI. Books: EPUB, FB2, Markdown, text.
+  Text viewer: txt, lrc, cue, md, log, nfo. Playlists m3u/m3u8/pls are
+  recognised, not yet played ("not yet" notice). The browser build now
+  plays MIDI too (`audio::decode_midi`: `orpheus-midi` + `orpheus-synth`
+  at 48 kHz through the DSP chain; before, a `.mid` was silent there).
+* **Works** (`sim/web/demo/sources.toml`, each with source page, file URL,
+  SHA-256, licence, rights in composition/text *and* recording/scan,
+  credit, changes; licences checked on the source pages 2026-11-27): Bach
+  Aria + Variatio 4 (Kimiko Ishizaka, CC0; MP3, FLAC), Beethoven 5/i
+  (Skidmore College Orchestra via Musopen, PD; Ogg Vorbis), Caruso “Vesti
+  la giubba” 1907 (PD; Opus) with LRC from the Commons subtitle page
+  (CC BY-SA 3.0), Chopin Op. 9/2 (Peter Johnston, CC0; AIFF), Satie
+  Gymnopédie 1 (Daria Baiocchi, CC BY-SA 4.0; WAV), Sousa's Band 1909
+  Edison cylinder (PD; 8 kHz µ-law AU), LibriVox *Age of Fable* ch. 24
+  (PD; Speex), Mutopia BWV 846 (PD; MIDI), Corot (JPEG), Ring Nebula by
+  Judy Schmidt (CC BY 2.0; PNG), Hokusai (8-bit BMP), NASA Earthrise
+  (QOI), Muybridge (GIF, unmodified), Project Gutenberg #3327 EPUB and
+  #18343 text (unmodified, with the PG licence; fetched from PG's own
+  mirror `gutenberg.pglaf.org`, gutenberg.org was down for maintenance).
+  Rejected: a Commons Satie WAV whose recording had no stated rights;
+  Mutopia vocal MIDIs (lyric events without word breaks: a `.kar` would
+  have needed editing); PD-CH 78s (Swiss public domain only).
+* **Not represented**: `.kar` (no reputable PD/CC karaoke file found),
+  FB2 and Markdown books (no reputable source publishes them; converting
+  a Gutenberg file means stripping the PG marks), AIFF-C, MP2.
+* **Pipeline**: `cargo xtask wasm --demo` → `xtask/src/demo.rs`: curl with
+  a generic User-Agent into `target/orpheus/demo-cache/`, SHA-256 check,
+  ffmpeg excerpts into `sim/web/demo/card/` (committed), `CREDITS.txt` on
+  the card and `sim/web/demo/CREDITS.md` generated from the manifest
+  (a test fails when they are stale or a card file is not in the
+  manifest; manifest rules refuse NC/ND, unpinned and outside-tree
+  entries). The synthesiser of the old set (`sim/web/src/synth.rs`) and
+  its five files are gone; so are the drawn test pictures and tones.
+* **Fetched, not embedded**: every `xtask wasm` packs the committed card
+  into `try/pkg/demo.bin` (`sim/web/src/bundle.rs`: stored media,
+  deflated text, checked lengths); `app.js` fetches it while the module
+  compiles and hands it over with `Web::add_demo` (part of the library
+  fingerprint; `CARD_VERSION` 2). **Numbers**: module 1,215 KB gzip with
+  the page's files (was 2,394 KB with the old embedded set; budget 4 MB
+  unchanged); demo bundle 3,444 KB as served (new budget `demo_bytes`
+  3.5 MB); first screen 186 ms in the self-test.
+* **Player's card**: `cargo xtask demo-card` → `target/orpheus/demo-card/`
+  (33 files, 134 MB): the browser's excerpts plus the complete recordings
+  (Aria 320 kbit/s MP3, Variatio 4 96 kHz/24-bit FLAC, Beethoven Ogg,
+  Caruso Opus + full LRC, Chopin AIFF, Satie 24-bit WAV, Sousa AU, the
+  whole LibriVox chapter in Speex) and full-size pictures (the 7195 ×
+  5897 Corot JPEG, the 1548 × 1491 PNG, 1024-px BMP, 1200-px QOI), all
+  licences allowing it. `cargo xtask dev demo-card --outside-orpheus`
+  uploads it (skips files of the same size): new firmware test commands
+  `fcreate-demo PATH` (the write guard narrowed to the file's demo folder
+  for that upload, then back to `/.orpheus`) and `fsize PATH`; the paths
+  allowed are `orpheus_proto::devchan::DEMO_ROOTS` (`/Music`, `/MIDI`,
+  `/Pictures`, `/Books`, `/CREDITS.txt`, `/About this card.txt`);
+  `dev put` keeps `/.orpheus/` only unless `--outside-orpheus`. File
+  transfer copy documented in `docs/dev/getting-started.md` §4.
+  **CLAUDE.md rule 5 is unchanged** (the lead may want to note the
+  owner's test-card exception there).
+* **Firmware**: unchanged sizes against HEAD (resident 60,552 B, bss
+  147,352 B, stack worst 13,644 B, margin 4,276 B): `fcreate`/`fcreate-demo`
+  share one branch and `fsize` is its own future (a first cut grew the
+  idle loop's poll frame by 1,488 B and failed `stack --check`).
+* **Tests**: `regress_demo_upload_outside_the_demo_tree_is_refused`
+  (orpheus-proto), `regress_uploads_outside_orpheus_and_the_demo_tree_are_refused`
+  and `fsize_replies_are_matched_to_their_path` (xtask); every demo track
+  decodes to its excerpt length and the MIDI file renders and seeks
+  (orpheus-web); every picture decodes; the set has every format and
+  every file is in CREDITS; bundle round trip and hostile bundles;
+  manifest/committed-card/credits consistency; SRT → LRC.
+* **User check 37** (new): the demo card on the test card, every file.
+  On the host every file of `target/orpheus/demo-card/` decodes (the
+  complete tracks to their full lengths; the 7195 × 5897 JPEG in the
+  simulator's 64 KiB arena).
+* **Gate**: `cargo fmt --all --check` (and `fw/`); `cargo clippy
+  --workspace --all-targets -D warnings` (and `fw/`); `cargo test
+  --workspace` 2,267 passed, 0 failed, 14 ignored; `xtask wasm --test`
+  (budgets, installer suite, self-test in Chromium 155; Firefox self-test
+  passed too); `xtask site --check`; `xtask build`, `size --check`,
+  `check-resident`, `stack --check`. **Not run**: every `xtask dev` step
+  (the brief: `dev demo-card` was not run against the player), fuzz,
+  goldens unchanged (no screen changed).
 
 ### 2026-11-27 — SEQ-2: MIDI clock out as a host model; the rest of SEQ-2 was already merged (worker, no hardware)
 

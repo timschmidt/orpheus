@@ -64,7 +64,14 @@ cargo xtask dev <subcommand>
   install-stage2                 replace stage 2 at 0x7DF400 (keeps the vendor record copy)
   keys 'ok wait:300 hold:menu'  inject keys into running orpheus
   info                          developer-channel INFO of running orpheus
-  put LOCAL /.orpheus/PATH         upload a file to the card (through the firmware's FS)
+  put LOCAL /.orpheus/PATH [--outside-orpheus]
+                                upload a file to the card (through the firmware's FS);
+                                --outside-orpheus also allows the demo tree's folders
+                                (/Music, /MIDI, /Pictures, /Books, root CREDITS.txt; test card)
+  demo-card --outside-orpheus [--dir DIR]
+                                copy the demo card tree (`cargo xtask demo-card`,
+                                target/orpheus/demo-card/) onto the card, skipping files
+                                already there with the same size (owner's test card only)
   suite [NAME…] [--list] [--update-expected] [--setup] [--sim] [--no-reboot]
                                 on-device functional suite (VER-7): tests/suite/journeys.toml,
                                 shots vs the simulator under tests/suite/masks.toml;
@@ -113,44 +120,122 @@ cargo xtask dev <subcommand>
   reboot                        normal reboot through the developer channel (no recovery mode)
 ";
 
+/// Where an upload may write.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Scope {
+    /// Under `/.orpheus/` only (CLAUDE.md rule 5): every command but the
+    /// two below.
+    Orpheus,
+    /// Also the demo card tree (`orpheus_proto::devchan::DEMO_ROOTS`):
+    /// `put --outside-orpheus` and `demo-card --outside-orpheus` only, on
+    /// the owner's test card (owner, 2026-11-27).
+    DemoTree,
+}
+
+/// The firmware's test command buffer (`audio::CMD_LEN`).
+const CMD_LEN: usize = 120;
+
+/// The test command that opens `remote` for an upload, or why the path is
+/// refused: `fcreate` under `/.orpheus/`, `fcreate-demo` for a file of the
+/// demo tree when `scope` allows it, nothing else.
+pub(crate) fn create_command(remote: &str, scope: Scope) -> Result<String> {
+    let cmd = if remote.starts_with("/.orpheus/") && !remote.split('/').any(|c| c == "..") {
+        format!("fcreate {remote}")
+    } else if scope == Scope::DemoTree && orpheus_proto::devchan::demo_write_root(remote).is_some() {
+        format!("fcreate-demo {remote}")
+    } else if scope == Scope::DemoTree {
+        bail!(
+            "{remote}: uploads go under /.orpheus/ or, with --outside-orpheus, into the demo tree ({})",
+            orpheus_proto::devchan::DEMO_ROOTS.join(", ")
+        );
+    } else {
+        bail!("{remote}: uploads go under /.orpheus/ only (CLAUDE.md rule 5)");
+    };
+    if cmd.len() > CMD_LEN {
+        bail!("{remote}: path too long for the test command ({} bytes, at most {CMD_LEN})", cmd.len());
+    }
+    Ok(cmd)
+}
+
 /// Upload `data` to `remote` (under `/.orpheus/` only) through the
 /// firmware's file system (`fcreate`, `PUT` chunks, `fclose`).
 pub(super) fn put(data: &[u8], remote: &str) -> Result<String> {
-    if !remote.starts_with("/.orpheus/") {
-        bail!("uploads go under /.orpheus/ only (CLAUDE.md rule 5)");
+    put_in(data, remote, Scope::Orpheus)
+}
+
+fn put_in(data: &[u8], remote: &str, scope: Scope) -> Result<String> {
+    let cmd = create_command(remote, scope)?;
+    let d = orpheus_host::devchan::DevChannel::open(Duration::from_secs(3))?;
+    let t0 = std::time::Instant::now();
+    upload_with(&d, &cmd, data)?;
+    Ok(format!("{} bytes -> {remote} in {:.1} s", data.len(), t0.elapsed().as_secs_f32()))
+}
+
+/// The size of `remote` on the card (`fsize`), `None` if it is missing.
+fn remote_size(d: &orpheus_host::devchan::DevChannel, remote: &str) -> Result<Option<u64>> {
+    use orpheus_proto::devchan::REQ_TEST;
+    d.control_out(REQ_TEST, 0, 0, format!("fsize {remote}").as_bytes())?;
+    let t0 = std::time::Instant::now();
+    loop {
+        let r = String::from_utf8_lossy(&d.control_in(REQ_TEST, 0, 0, 1024)?).into_owned();
+        if let Some(size) = parse_fsize(&r, remote) {
+            return Ok(size);
+        }
+        if t0.elapsed() > Duration::from_secs(10) {
+            bail!("fsize {remote}: no answer (last reply `{r}`)");
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// The reply to `fsize PATH` for `remote`: `Some(Some(n))` for a file,
+/// `Some(None)` when it is missing, `None` for any other (stale) reply.
+fn parse_fsize(reply: &str, remote: &str) -> Option<Option<u64>> {
+    if let Some(rest) = reply.strip_prefix("size ") {
+        let (n, path) = rest.split_once(' ')?;
+        return if path == remote { n.parse().ok().map(Some) } else { None };
+    }
+    (reply.strip_prefix("fsize: no such file ")? == remote).then_some(None)
+}
+
+/// `dev demo-card --outside-orpheus [--dir DIR]`: copy the demo card tree
+/// (`cargo xtask demo-card`) onto the card, skipping files that are there
+/// with the same size.
+fn demo_card(args: &mut Args) -> Result<String> {
+    if !args.flag("outside-orpheus") {
+        bail!(
+            "demo-card writes outside /.orpheus/ (the demo tree's folders only; allowed by the owner on the \
+             test card, 2026-11-27): pass --outside-orpheus to confirm"
+        );
+    }
+    let dir = args.value("dir").map_or_else(|| out_dir().join("demo-card"), PathBuf::from);
+    let files = orpheus_web::demo::read_tree(&dir)
+        .with_context(|| format!("{} (build it with `cargo xtask demo-card`)", dir.display()))?;
+    if files.is_empty() {
+        bail!("{} is empty (cargo xtask demo-card)", dir.display());
+    }
+    // Every path is checked before the first write.
+    for f in &files {
+        create_command(&f.path, Scope::DemoTree)?;
     }
     let d = orpheus_host::devchan::DevChannel::open(Duration::from_secs(3))?;
-    let reply = |d: &orpheus_host::devchan::DevChannel| -> Result<String> {
-        Ok(String::from_utf8_lossy(&d.control_in(orpheus_proto::devchan::REQ_TEST, 0, 0, 256)?).into_owned())
-    };
-    let wait_for = |d: &orpheus_host::devchan::DevChannel, want: &str| -> Result<()> {
-        let t0 = std::time::Instant::now();
-        loop {
-            let r = reply(d)?;
-            if r == want {
-                return Ok(());
-            }
-            if r.contains("failed") {
-                bail!("player: {r}");
-            }
-            if t0.elapsed() > Duration::from_secs(10) {
-                bail!("timed out waiting for `{want}` (last reply `{r}`)");
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-    };
-    d.control_out(orpheus_proto::devchan::REQ_TEST, 0, 0, format!("fcreate {remote}").as_bytes())?;
-    wait_for(&d, "put 0")?;
+    let (mut sent, mut skipped, mut bytes) = (0, 0, 0u64);
     let t0 = std::time::Instant::now();
-    let mut sent = 0usize;
-    for chunk in data.chunks(1024) {
-        d.control_out(orpheus_proto::devchan::REQ_PUT, 0, 0, chunk)?;
-        sent += chunk.len();
-        wait_for(&d, &format!("put {sent}"))?;
+    for f in &files {
+        if remote_size(&d, &f.path)? == Some(f.data.len() as u64) {
+            skipped += 1;
+            continue;
+        }
+        log(&format!("  {} ({} KB)", f.path, f.data.len().div_ceil(1024)));
+        upload_with(&d, &create_command(&f.path, Scope::DemoTree)?, &f.data)?;
+        sent += 1;
+        bytes += f.data.len() as u64;
     }
-    d.control_out(orpheus_proto::devchan::REQ_TEST, 0, 0, b"fclose")?;
-    wait_for(&d, &format!("closed {sent}"))?;
-    Ok(format!("{sent} bytes -> {remote} in {:.1} s", t0.elapsed().as_secs_f32()))
+    Ok(format!(
+        "demo card: {sent} files uploaded ({} MB), {skipped} already there, in {:.0} s",
+        bytes.div_ceil(1 << 20),
+        t0.elapsed().as_secs_f32()
+    ))
 }
 
 pub fn cmd(args: &mut Args) -> Result<String> {
@@ -276,8 +361,10 @@ fn dispatch(sub: &str, args: &mut Args) -> Result<String> {
         "put" => {
             let local = args.positional("LOCAL file")?;
             let remote = args.positional("REMOTE path under /.orpheus/")?;
-            put(&std::fs::read(&local)?, &remote)
+            let scope = if args.flag("outside-orpheus") { Scope::DemoTree } else { Scope::Orpheus };
+            put_in(&std::fs::read(&local)?, &remote, scope)
         }
+        "demo-card" => demo_card(args),
         "suite" => suite::cmd(args),
         "fuzz-ui" => fuzz::cmd(args),
         "soak" => soak::cmd(args),
@@ -544,10 +631,12 @@ pub fn read_persistent(
 /// Upload `data` to `remote` (under `/.orpheus/`) through the firmware's
 /// file system: `fcreate`, 1 KiB PUT chunks, `fclose`.
 pub(crate) fn upload(d: &orpheus_host::devchan::DevChannel, remote: &str, data: &[u8]) -> Result<()> {
+    upload_with(d, &create_command(remote, Scope::Orpheus)?, data)
+}
+
+/// The upload itself, after `cmd` (from [`create_command`]).
+fn upload_with(d: &orpheus_host::devchan::DevChannel, cmd: &str, data: &[u8]) -> Result<()> {
     use orpheus_proto::devchan::{REQ_PUT, REQ_TEST};
-    if !remote.starts_with("/.orpheus/") {
-        bail!("uploads go under /.orpheus/ only (CLAUDE.md rule 5)");
-    }
     let wait_for = |want: &str| -> Result<()> {
         let t0 = std::time::Instant::now();
         loop {
@@ -564,7 +653,7 @@ pub(crate) fn upload(d: &orpheus_host::devchan::DevChannel, remote: &str, data: 
             std::thread::sleep(Duration::from_millis(5));
         }
     };
-    d.control_out(REQ_TEST, 0, 0, format!("fcreate {remote}").as_bytes())?;
+    d.control_out(REQ_TEST, 0, 0, cmd.as_bytes())?;
     wait_for("put 0")?;
     let mut sent = 0usize;
     for chunk in data.chunks(1024) {
@@ -681,5 +770,58 @@ mod stats_tests {
         assert_eq!(super::clock_level_name(4), "Turbo 192");
         assert_eq!(super::clock_level_name(5), "Max 288");
         assert_eq!(super::clock_level_name(6), "?");
+    }
+}
+
+#[cfg(test)]
+mod upload_guard_tests {
+    use super::*;
+
+    /// The developer-channel upload guard after the demo tree was allowed
+    /// (owner, 2026-11-27): the default scope still refuses everything
+    /// outside `/.orpheus/`, and `--outside-orpheus` adds exactly the demo
+    /// tree's folders and root files — never the root, other folders,
+    /// the firmware files or traversal.
+    #[test]
+    fn regress_uploads_outside_orpheus_and_the_demo_tree_are_refused() {
+        assert_eq!(
+            create_command("/.orpheus/test/a.bin", Scope::Orpheus).unwrap(),
+            "fcreate /.orpheus/test/a.bin"
+        );
+        assert_eq!(
+            create_command("/.orpheus/test/a.bin", Scope::DemoTree).unwrap(),
+            "fcreate /.orpheus/test/a.bin"
+        );
+        let demo = "/Music/Bach/Goldberg Variations/01 Aria.mp3";
+        assert!(create_command(demo, Scope::Orpheus).is_err(), "the default scope refuses the demo tree");
+        assert_eq!(create_command(demo, Scope::DemoTree).unwrap(), format!("fcreate-demo {demo}"));
+        assert!(create_command("/CREDITS.txt", Scope::DemoTree).is_ok());
+        for bad in [
+            "/update.yfw",
+            "/otpauth.txt",
+            "/Recordings/x.wav",
+            "/Music",
+            "/Music/../update.yfw",
+            "/.orpheus/../update.yfw",
+            "/Pictures/.hidden",
+            "Music/x.mp3",
+            "/",
+        ] {
+            for scope in [Scope::Orpheus, Scope::DemoTree] {
+                assert!(create_command(bad, scope).is_err(), "{bad} ({scope:?})");
+            }
+        }
+        let long = format!("/Music/{}.mp3", "x".repeat(120));
+        assert!(create_command(&long, Scope::DemoTree).is_err(), "longer than the firmware's buffer");
+    }
+
+    #[test]
+    fn fsize_replies_are_matched_to_their_path() {
+        assert_eq!(parse_fsize("size 1234 /Music/a b.mp3", "/Music/a b.mp3"), Some(Some(1234)));
+        assert_eq!(parse_fsize("fsize: no such file /Music/a.mp3", "/Music/a.mp3"), Some(None));
+        // A stale reply about the previous file, or another command's.
+        assert_eq!(parse_fsize("size 99 /Music/old.mp3", "/Music/a.mp3"), None);
+        assert_eq!(parse_fsize("closed 1024", "/Music/a.mp3"), None);
+        assert_eq!(parse_fsize("size x /Music/a.mp3", "/Music/a.mp3"), None);
     }
 }

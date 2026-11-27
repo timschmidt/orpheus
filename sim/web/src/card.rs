@@ -1,5 +1,6 @@
 //! The browser's card: a FAT32 image formatted here and filled through
-//! `orpheus-fs` (as the simulator's own card), with the demo set, the
+//! `orpheus-fs` (as the simulator's own card), with the demo set
+//! ([`crate::demo`]), the
 //! visitor's files under `/Your files` and, when the previous visit left
 //! one for the same set of files, the music library under
 //! `/.orpheus/library`.
@@ -8,9 +9,6 @@ use std::sync::Arc;
 
 use orpheus_fs::host::{RamDisk, block_on};
 use orpheus_fs::{CacheSlot, MountOptions, OpenMode, Volume};
-use orpheus_sim::pictures;
-
-use crate::{demo, synth};
 
 const SECTOR: usize = 512;
 /// The smallest card: FAT32 needs at least 65 525 clusters (one sector
@@ -77,28 +75,6 @@ pub struct File {
     pub data: Vec<u8>,
 }
 
-/// The demo set (synthesised test tones included).
-#[must_use]
-pub fn demo_files() -> Vec<File> {
-    let mut v = Vec::new();
-    let mut add = |path: &str, data: Vec<u8>| v.push(File { path: path.to_string(), data });
-    add("/About this card.txt", demo::ABOUT.as_bytes().to_vec());
-    for (t, data) in synth::TRACKS.iter().zip(demo::ENCODED) {
-        add(t.path, data.to_vec());
-    }
-    let lrc = synth::TRACKS[0].path.replace(".mp3", ".lrc");
-    add(&lrc, demo::LYRE_LRC.as_bytes().to_vec());
-    add("/Music/Test tones/Sweep 20 Hz to 20 kHz.wav", synth::wav(&synth::sweep(44_100, 10.0), 1));
-    add("/Music/Test tones/Left and right.wav", synth::wav(&synth::left_right(22_050, 6.0), 2));
-    add("/Pictures/Lyra.jpg", demo::LYRA_JPG.to_vec());
-    let (w, h) = (240, 150);
-    add("/Pictures/Lake.bmp", pictures::bmp(w, h, &pictures::lake(w, h)));
-    add("/Pictures/Tree.qoi", pictures::qoi(96, 128, &pictures::tree(96, 128)));
-    add("/Pictures/Aurora.qoi", pictures::qoi(w, h, &pictures::aurora(w, h)));
-    add("/Books/The myth of Orpheus.txt", demo::MYTH.as_bytes().to_vec());
-    v
-}
-
 /// A name for a visitor's file that the card accepts: no path, no
 /// characters FAT forbids, at most 200 characters.
 #[must_use]
@@ -126,11 +102,10 @@ fn parents(path: &str) -> Vec<String> {
     v
 }
 
-/// Build the card: the demo set, the visitor's files (renamed if their
+/// Build the card: the demo set (paths as on the card), the visitor's files (renamed if their
 /// name is taken) and the library files (`name` relative to the library
 /// folder). Returns the image and the paths of the visitor's files.
-pub fn build(user: &[File], library: &[File]) -> Result<(Arc<[u8]>, Vec<String>), String> {
-    let demo = demo_files();
+pub fn build(demo: &[File], user: &[File], library: &[File]) -> Result<(Arc<[u8]>, Vec<String>), String> {
     let content: usize = demo.iter().chain(user).chain(library).map(|f| f.data.len() + 4096).sum();
     let bytes = (content + content / 8 + (8 << 20)).max(MIN_BYTES).next_multiple_of(4 << 20);
     let sectors =
@@ -164,7 +139,7 @@ pub fn build(user: &[File], library: &[File]) -> Result<(Arc<[u8]>, Vec<String>)
         }
         block_on(vol.close(f)).map_err(|e| format!("{path}: {e:?}"))
     };
-    for f in &demo {
+    for f in demo {
         put(&mut vol, &f.path, &f.data)?;
     }
     let mut paths = Vec::new();
@@ -220,14 +195,15 @@ mod tests {
             File { path: "song.mp3".into(), data: vec![1; 3000] },
             File { path: "song.mp3".into(), data: vec![2; 10] },
         ];
-        let (img, paths) = build(&user, &[]).unwrap();
+        let demo = crate::demo::committed();
+        let (img, paths) = build(&demo, &user, &[]).unwrap();
         assert_eq!(paths, ["/Your files/song.mp3", "/Your files/song (2).mp3"]);
         let mut cache = vec![CacheSlot::EMPTY; 8];
         let mut vol =
             block_on(Volume::mount(RamDisk::from_bytes(img.to_vec()), &mut cache, MountOptions::default()))
                 .unwrap();
         assert_eq!(vol.kind(), orpheus_fs::FsKind::Fat32);
-        for f in demo_files() {
+        for f in demo {
             let mut h =
                 block_on(vol.open(&f.path, OpenMode::Read)).unwrap_or_else(|e| panic!("{}: {e:?}", f.path));
             assert_eq!(h.size() as usize, f.data.len(), "{}", f.path);

@@ -2746,6 +2746,22 @@ async fn ls(vol: &mut Volume<'static, Card>, path: &str) {
     });
 }
 
+/// `fsize PATH`: `size N PATH`, or `fsize: no such file PATH`.
+async fn fsize(vol: &mut Volume<'static, Card>, path: &str) {
+    match vol.open(path, OpenMode::Read).await {
+        Ok(f) => {
+            let n = f.size();
+            let _ = vol.close(f).await;
+            reply(|w| {
+                w.s(b"size ").u(n).s(b" ").s(path.as_bytes());
+            });
+        }
+        Err(_) => reply(|w| {
+            w.s(b"fsize: no such file ").s(path.as_bytes());
+        }),
+    }
+}
+
 /// Hand the card (the volume in `slot`) to the USB task and wait for it to
 /// come back, remounted into `slot` (`None` there if the remount failed).
 async fn release(slot: &mut Option<Volume<'static, Card>>) {
@@ -3991,16 +4007,42 @@ async fn idle(vol: &mut Volume<'static, Card>, ring: &mut Ring, arena: &mut [u8]
                     .s(b" us=")
                     .u(us);
             });
-        } else if let Some(p) = text.strip_prefix("fcreate ") {
+        } else if let Some((p, demo)) = text
+            .strip_prefix("fcreate ")
+            .map(|p| (p, false))
+            .or_else(|| text.strip_prefix("fcreate-demo ").map(|p| (p, true)))
+        {
             let mut pb = [0u8; CMD_LEN];
             let p = p.trim();
             pb[..p.len()].copy_from_slice(p.as_bytes());
             let path = core::str::from_utf8(&pb[..p.len()]).unwrap_or("");
-            // Parents one by one (only `/.orpheus/…` is writable).
-            for (i, _) in path.match_indices('/').skip(1) {
-                let _ = Apart(vol.create_dir(&path[..i])).await;
+            // `fcreate`: under `/.orpheus/` (the volume's write guard).
+            // `fcreate-demo`: the demo card tree outside it (`xtask dev
+            // demo-card --outside-orpheus`; the owner allowed it on the
+            // test card, 2026-11-27): only a file of
+            // `devchan::DEMO_ROOTS`, the guard narrowed to its folder for
+            // this one upload and put back after it. One branch for both
+            // keeps the card task's future (static RAM) as it was.
+            let root = if demo { orpheus_proto::devchan::demo_write_root(path) } else { Some("/.orpheus") };
+            if let Some(root) = root {
+                vol.set_write_prefix(Some(root));
+                // Parents one by one (only inside the guard).
+                for (i, _) in path.match_indices('/').skip(1) {
+                    let _ = Apart(vol.create_dir(&path[..i])).await;
+                }
+                Apart(upload(vol, arena, path)).await;
+                vol.set_write_prefix(Some("/.orpheus"));
+            } else {
+                reply(|w| {
+                    w.s(b"fcreate failed: not in the demo tree");
+                });
             }
-            Apart(upload(vol, arena, path)).await;
+        } else if let Some(p) = text.strip_prefix("fsize ") {
+            // Size of a file, `size N PATH` (or `fsize: no such file
+            // PATH`): the path makes a stale reply of the previous query
+            // unmistakable. For uploads that skip what is there.
+            // Its own future, as `ls`: the idle loop's poll frame stays small.
+            Apart(fsize(vol, p.trim())).await;
         } else if text == "fp" {
             // Test: f32 work through paged helpers inside the RT executor.
             let t0 = time::now_us();

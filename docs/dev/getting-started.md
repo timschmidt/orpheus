@@ -51,6 +51,7 @@ prints a one-line verdict last and fails with a non-zero exit code.
 | `gate --no-dev` | Everything a change must pass, without the player |
 | `brand`, `site` | Brand assets, the website and its screenshots |
 | `wasm [--test]` | The simulator in the browser (the website's Try it page), its size budget and self-test |
+| `demo-card` | The demo card tree for the player (§4) |
 | `dev …` | Talk to the player (below) |
 
 ## 4. The simulator
@@ -73,6 +74,34 @@ page): `cargo xtask site` then `cargo xtask wasm` builds the page into
 `xtask wasm` pins `wasm-bindgen` and `wasm-opt` and installs them into
 `target/orpheus/tools/` if they are missing; `--test` runs the page's
 self-test in headless Chromium (Node and Chromium needed).
+
+**The demo card.** The browser's card holds real, freely licensed works
+in every format the player opens (Bach, Beethoven, Caruso, Chopin, Satie,
+Sousa, a LibriVox reading, a Mutopia MIDI file, paintings and photographs,
+two Project Gutenberg books). They are pinned by source page, URL and
+SHA-256 in [`sim/web/demo/sources.toml`](../../sim/web/demo/sources.toml)
+with their licences; [`CREDITS.md`](../../sim/web/demo/CREDITS.md) and the
+card's `CREDITS.txt` are generated from it. `cargo xtask wasm --demo`
+downloads the sources (curl, ffmpeg) and rewrites the committed excerpts
+in `sim/web/demo/card/`; the page fetches them as one file,
+`try/pkg/demo.bin`, with its own size budget.
+
+`cargo xtask demo-card` builds the same set for the player, with the
+complete recordings and full-size pictures added, in
+`target/orpheus/demo-card/` (about 134 MB). Two ways to put it on a card:
+
+* **File transfer** (no tools): connect the player, choose *File
+  transfer* (Settings › USB), and copy the *contents* of
+  `target/orpheus/demo-card/` to the top of the card, for example
+  `cp -r target/orpheus/demo-card/. /run/media/$USER/<card>/`, then eject
+  the drive before unplugging. Any card reader works the same way.
+* **Developer channel**: `cargo xtask dev demo-card --outside-orpheus`
+  uploads the tree through the running firmware, skipping files already
+  there with the same size. It writes only into the tree's own folders
+  (`/Music`, `/MIDI`, `/Pictures`, `/Books`) and `/CREDITS.txt`,
+  `/About this card.txt`; the flag is required because this is the one
+  exception to the `/.orpheus/`-only rule below, allowed by the owner for
+  the test card (2026-11-27). Use it only on a card meant for testing.
 
 ## 5. Golden images
 
@@ -133,7 +162,8 @@ In plain words:
   firmware uses, and the charge current never goes above 200 mA.
 * **Tests end in a reboot**, never with the player switched off or
   waiting for a key.
-* **On the card, write only inside `/.orpheus/`.** Never format it.
+* **On the card, write only inside `/.orpheus/`.** Never format it. (The
+  one exception: the demo card tree on the owner's test card, above.)
 * **One program talks to the player at a time.** If it stops answering,
   wait two minutes for the watchdog and boot counter, then ask; do not
   retry blindly.

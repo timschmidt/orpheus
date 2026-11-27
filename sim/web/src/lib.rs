@@ -12,10 +12,10 @@
 #![deny(unsafe_code)]
 
 pub mod audio;
+pub mod bundle;
 pub mod card;
 pub mod demo;
 pub mod rec;
-pub mod synth;
 
 /// The `ui_keys` fuzz target's body; the browser uses its operation
 /// decoder (`command`) and limits.
@@ -40,7 +40,7 @@ use wasm_bindgen::prelude::*;
 
 /// Bumped when the demo set changes: a library saved for another card is
 /// not restored.
-const CARD_VERSION: u32 = 1;
+const CARD_VERSION: u32 = 2;
 /// The longest step simulated at once (a tab that slept catches up only
 /// this far).
 const MAX_STEP_MS: f64 = 5000.0;
@@ -62,6 +62,8 @@ fn start() {
 /// One session in the page.
 #[wasm_bindgen]
 pub struct Web {
+    /// The demo set ([`Web::add_demo`]).
+    demo: Vec<card::File>,
     user: Vec<card::File>,
     library: Vec<card::File>,
     base: Option<Arc<[u8]>>,
@@ -154,6 +156,7 @@ impl Web {
     #[must_use]
     pub fn new() -> Web {
         Web {
+            demo: Vec::new(),
             user: Vec::new(),
             library: Vec::new(),
             base: None,
@@ -163,6 +166,18 @@ impl Web {
             shown: None,
             rec: None,
             replay: VecDeque::new(),
+        }
+    }
+
+    /// The demo set: the page's `demo.bin` ([`bundle`]). Returns an error
+    /// message, or empty. Without it the card has only the visitor's files.
+    pub fn add_demo(&mut self, bundle: &[u8]) -> String {
+        match bundle::decode(bundle) {
+            Ok(files) => {
+                self.demo = files;
+                String::new()
+            }
+            Err(e) => e,
         }
     }
 
@@ -192,6 +207,10 @@ impl Web {
             }
         };
         eat(&CARD_VERSION.to_le_bytes());
+        for f in &self.demo {
+            eat(f.path.as_bytes());
+            eat(&(f.data.len() as u64).to_le_bytes());
+        }
         for f in &self.user {
             eat(f.path.as_bytes());
             eat(&(f.data.len() as u64).to_le_bytes());
@@ -202,7 +221,7 @@ impl Web {
     /// Build the card and start (again) from `state` ([`Web::state`]'s
     /// text, or empty for defaults). Returns an error message, or empty.
     pub fn boot(&mut self, state: &str) -> String {
-        let (base, paths) = match card::build(&self.user, &self.library) {
+        let (base, paths) = match card::build(&self.demo, &self.user, &self.library) {
             Ok(v) => v,
             Err(e) => return e,
         };
@@ -486,8 +505,15 @@ mod tests {
     use super::*;
     use orpheus_apps::services::LibraryState;
 
-    fn booted() -> Web {
+    /// A session with the demo set, as the page makes it.
+    fn with_demo() -> Web {
         let mut w = Web::new();
+        assert_eq!(w.add_demo(&bundle::encode(&demo::committed())), "");
+        w
+    }
+
+    fn booted() -> Web {
+        let mut w = with_demo();
         assert_eq!(w.boot(""), "");
         w
     }
@@ -531,8 +557,8 @@ mod tests {
     #[test]
     fn plays_a_demo_track_through_the_codecs() {
         let mut w = booted();
-        // Music › Folders › Orpheus demo › first track.
-        let path = synth::TRACKS[0].path;
+        // Music › Folders › Bach › Goldberg Variations › first track.
+        let path = demo::ARIA;
         w.sim.as_mut().unwrap().sys.media.set_resume_at(path, 2000);
         assert_eq!(w.run_script("ok wait:100 ok wait:200"), "");
         w.advance(10.0);
@@ -543,22 +569,23 @@ mod tests {
         let pcm = w.pull_audio(4410);
         assert_eq!(pcm.len(), 8820);
         assert_eq!(w.audio_rate(), 44_100);
-        assert!(w.info().contains("\"track\":\"/Music/Orpheus demo/01 Lyre Study.mp3\""));
+        assert!(w.info().contains(&format!("\"track\":\"{}\"", demo::ARIA)));
     }
 
     /// The self-test's key path from Home to the first demo track
     /// (`site/try/app.js`).
     #[test]
-    fn selftest_key_path_plays_the_lyre() {
+    fn selftest_key_path_plays_the_aria() {
         let mut w = booted();
         let mut seen = Vec::new();
-        for k in ["next", "ok", "down", "ok", "ok", "down", "ok"] {
+        // Files › Music › Bach › Goldberg Variations › 01 Aria.mp3.
+        for k in ["next", "ok", "down", "down", "ok", "ok", "ok", "ok"] {
             assert_eq!(w.run_script(&format!("{k} wait:250")), "");
             seen.push(w.screen());
         }
         w.advance(10.0);
         let now = w.sim().unwrap().sys.media.now_audio();
-        assert_eq!(now.map(|n| n.path).as_deref(), Some(synth::TRACKS[0].path), "{seen:?}");
+        assert_eq!(now.map(|n| n.path).as_deref(), Some(demo::ARIA), "{seen:?}");
     }
 
     #[test]
@@ -566,11 +593,11 @@ mod tests {
         let mut w = booted();
         w.sim.as_mut().unwrap().sys.set_setting(id::THEME, 1);
         w.sim.as_mut().unwrap().sys.volume = 17;
-        w.sim.as_mut().unwrap().sys.media.set_resume_at("/Music/Test tones/Left and right.wav", 1500);
+        w.sim.as_mut().unwrap().sys.media.set_resume_at("/Music/Satie/Gymnopédie No. 1.wav", 1500);
         let st = w.state();
         assert!(st.contains("vol 17"), "{st}");
-        assert!(st.contains("resume 1500 /Music/Test tones/Left and right.wav"), "{st}");
-        let mut w2 = Web::new();
+        assert!(st.contains("resume 1500 /Music/Satie/Gymnopédie No. 1.wav"), "{st}");
+        let mut w2 = with_demo();
         assert_eq!(w2.boot(&st), "");
         assert_eq!(w2.state(), st);
     }
@@ -579,7 +606,7 @@ mod tests {
     fn saved_library_is_reused() {
         let mut w = booted();
         let names: Vec<String> = w.library_names().lines().map(str::to_string).collect();
-        let mut w2 = Web::new();
+        let mut w2 = with_demo();
         for n in &names {
             let data = w.library_file(n);
             assert!(!data.is_empty());
@@ -593,9 +620,11 @@ mod tests {
 
     #[test]
     fn visitors_files_appear_and_change_the_fingerprint() {
-        let mut w = Web::new();
+        let mut w = with_demo();
         let f0 = w.fingerprint();
-        w.add_file("my song.wav".into(), synth::wav(&synth::left_right(8000, 1.0), 2));
+        assert_ne!(f0, Web::new().fingerprint(), "the demo set is part of it");
+        let wav = demo::committed().into_iter().find(|f| f.path.ends_with(".wav")).unwrap().data;
+        w.add_file("my song.wav".into(), wav);
         assert_ne!(w.fingerprint(), f0);
         assert_eq!(w.boot(""), "");
         assert_eq!(w.user_paths(), "/Your files/my song.wav");
