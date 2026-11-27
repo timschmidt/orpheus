@@ -203,6 +203,7 @@ pub fn image(seed: u8, res: u32, pages: u32) -> Vec<u8> {
         res_len: 0,
         verified: 0xFFFF_FFFF,
         build_id,
+        rodata_code_pages: 0,
     };
     img[..128].copy_from_slice(&h.to_bytes());
     img

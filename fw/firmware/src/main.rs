@@ -359,7 +359,7 @@ fn start_pager() -> bool {
             if hdr.layout == LAYOUT_FULL {
                 nor::allow_full_layout();
             }
-            pager::init(base + hdr.pages_off, hdr.code_pages, hdr.rodata_pages);
+            pager::init(base + hdr.pages_off, hdr.code_pages, hdr.rodata_pages, hdr.rodata_code_pages);
             true
         }
         _ => false,
@@ -389,6 +389,13 @@ extern "C" fn main() -> ! {
     hal::init();
     clock::set_level(Level::Base);
     log::line(if paged { b"fw: start (paged)" } else { b"fw: start (no pages)" });
+    // PG-2: how the stack guard is kept (01 §9 U-DWT-2).
+    log::line(match hal::rt::guard() {
+        hal::rt::Guard::Watchpoint => b"fw: stack guard: DWT watchpoint and canary",
+        hal::rt::Guard::Canary => b"fw: stack guard: canary",
+        hal::rt::Guard::Mpu => b"fw: stack guard: MPU",
+        hal::rt::Guard::None => b"fw: stack guard: none",
+    });
     // A test request from an earlier `dev ram` start survives warm reboots;
     // a start from flash is never a test.
     if persist::forget_stale_test() {
@@ -406,6 +413,10 @@ extern "C" fn main() -> ! {
     audio::init_chain();
     // The Books model and card side (statics both tasks use).
     books::init();
+    // The speech voice's speaker, built here rather than in its task (its
+    // frame belongs to start-up's stack, not thread mode's; PG-2).
+    #[cfg(feature = "speech")]
+    speech::init();
     let rt = executor::start_rt();
     rt.spawn(audio::audio().unwrap());
     rt.spawn(rt_beat().unwrap());

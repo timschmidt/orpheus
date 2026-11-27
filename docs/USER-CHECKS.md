@@ -252,6 +252,10 @@ fit its code space next to everything already there: they need about
   package), or
 * leave speech out of the player until then.
 
+**Settled by PG-2 (2026-11-27)**: the pager change (the second option) is
+built; speech fits and is in the default build, nothing compiled out. Only
+the listen below remains, once the lead has installed that build.
+
 Once a build with speech fits (`cargo xtask build --features speech`), with
 headphones: hold **Back + Menu** 2 s on Home (a rising tone, "Screen reader
 on", "Home. Music, button, 1 of 12"); move through Home, Settings ›

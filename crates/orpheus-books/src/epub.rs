@@ -271,6 +271,9 @@ fn rd64(b: &[u8], o: usize) -> u64 {
 impl Epub {
     /// Convert the book of `len` bytes.
     #[must_use]
+    // Inlined: `shelf::begin_epub` and `epub_head` then build it straight
+    // into the job instead of a 2.9 KB temporary copied after (PG-2).
+    #[inline(always)]
     pub fn new(len: u32) -> Epub {
         Epub {
             st: St::End { at: len.saturating_sub(BUF as u32) },
@@ -320,8 +323,14 @@ impl Epub {
 
     /// Read only the title, author and language (the library search).
     #[must_use]
+    #[inline(always)]
     pub fn library(len: u32) -> Epub {
-        Epub { meta_only: true, ..Epub::new(len) }
+        // Not `Epub { meta_only: true, ..Epub::new(len) }`: the struct
+        // update built a second 2.8 KB copy on the stack (the card task's
+        // deepest path, `shelf::epub_head`'s frame 5,784 B; PG-2).
+        let mut e = Epub::new(len);
+        e.meta_only = true;
+        e
     }
 
     #[must_use]

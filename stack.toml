@@ -65,6 +65,9 @@ indirect = [
         "*TaskStorage<firmware::bt::*>::poll",
         "*TaskStorage<firmware::fm::*>::poll",
         "*TaskStorage<firmware::sensor::*>::poll",
+        # The speech voice (feature `speech`, TTS-3; `?`: absent from a
+        # build without it).
+        "?*TaskStorage<firmware::speech::*>::poll",
     ] },
 ]
 
@@ -237,6 +240,13 @@ optional = true
 [[indirect]]
 callers = ["<orpheus_ui::widgets::list::ListView>::*"]
 targets = ["<* as orpheus_ui::widgets::list::ListSource>::*"]
+
+# The screen reader's description of a list (`Desc::list`, feature
+# `speech`): the same `dyn ListSource` (PG-2: first measured with it on).
+[[indirect]]
+callers = ["<orpheus_ui::a11y::Desc>::*"]
+targets = ["<* as orpheus_ui::widgets::list::ListSource>::*"]
+optional = true
 
 # `dyn GlyphSource`: the firmware never attaches a fallback font (no
 # implementation is linked), so the calls cannot happen.

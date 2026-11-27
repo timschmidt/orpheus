@@ -11,6 +11,11 @@ publish = false
 # firmware enables it: small images (the ymon payloads) have no room for
 # the profiler's code and state.
 prof = []
+# PG-2: cold code in the rodata window and the trampoline that runs an
+# instruction whose constant shares its physical line (`pager`,
+# `orpheus_pager::bounce`). Only the firmware enables it: without it such a
+# fault is fatal, as before PG-2, and the payloads keep their room.
+cold-code = []
 
 [dependencies]
 atj2157-pac = { path = "../../crates/atj2157-pac" }

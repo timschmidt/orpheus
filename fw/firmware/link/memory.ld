@@ -12,7 +12,10 @@ MEMORY
     SRAM0      (rwx) : ORIGIN = 0x00100000, LENGTH = 0x37400
     SRAM1      (rw)  : ORIGIN = 0x00158000, LENGTH = 0x8000
     PAGED_CODE (rx)  : ORIGIN = 0x00200000, LENGTH = 0x100000
-    PAGED_RO   (r)   : ORIGIN = 0x00340000, LENGTH = 0xC0000
+    /* Since PG-2 the rodata window is all of SRAM3's alias space (low
+     * halves only: the groups have fixed addresses); cold code groups
+     * (.px_gN) are executable. */
+    PAGED_RO   (rx)  : ORIGIN = 0x00300000, LENGTH = 0x100000
 }
 
 ORPHEUS_FLAT_PASS = 0;

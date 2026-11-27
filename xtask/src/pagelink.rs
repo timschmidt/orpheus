@@ -16,7 +16,10 @@
 //!    (`VA = 0x200000 + p * 8 KiB`), so code is one output section and a
 //!    function may cross page boundaries anywhere; rodata goes into 16 KiB
 //!    groups (two VA-contiguous pages at the start of each 32 KiB alias
-//!    block), first fit.
+//!    block), first fit. Cold code (`resident.toml` `[cold]`, PG-2) goes
+//!    into rodata groups of its own after the constants' (`.px_gN`,
+//!    executable pages), first fit, avoiding the physical lines of the
+//!    constants it refers to where it can.
 //! 4. Generate the pass-2 script (memory.ld, the page output sections at
 //!    their alias addresses, then layout.ld) and link again.
 //! 5. Check the final placement against the plan, extract the resident image
@@ -148,6 +151,23 @@ pub struct PagesInfo {
     /// start (what used to be alignment gaps).
     #[serde(default)]
     pub code_filler: u32,
+    /// Rodata pages (the last ones, counted in `rodata`) that hold cold code
+    /// (PG-2), and the bytes of that code.
+    #[serde(default)]
+    pub cold: u32,
+    #[serde(default)]
+    pub cold_bytes: u32,
+    /// Cold code sections that share a physical line of the rodata cache
+    /// with a constant they refer to (each such read is a bounce).
+    #[serde(default)]
+    pub cold_conflicts: u32,
+    /// Loads in cold code (not PC-relative), and those the trampoline
+    /// could not run (`orpheus_pager::bounce` refuses them: fatal should
+    /// their constant ever share their line).
+    #[serde(default)]
+    pub cold_loads: u32,
+    #[serde(default)]
+    pub cold_unbounceable: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -414,6 +434,13 @@ pub struct Plan {
     pub code_size: u32,
     /// Rodata groups: (node, offset) and used size.
     pub groups: Vec<(Vec<(usize, u32)>, u32)>,
+    /// Cold code groups, after the rodata groups (group index
+    /// `groups.len() + i`): (node, offset) and used size.
+    pub cold: Vec<(Vec<(usize, u32)>, u32)>,
+    /// Rodata pages (the last ones) that hold cold code.
+    pub nro_code: u32,
+    /// Cold sections that share a physical line with a constant they use.
+    pub cold_conflicts: u32,
     pub ncode: u32,
     pub nro: u32,
     /// Where the `hot.toml` clusters of code went.
@@ -432,13 +459,63 @@ impl Plan {
         for &(n, off, _) in &self.code {
             m.insert(n, code_page_va(0) + off);
         }
-        for (g, (secs, _)) in self.groups.iter().enumerate() {
+        for (g, (secs, _)) in self.all_groups().enumerate() {
             for &(n, off) in secs {
                 m.insert(n, ro_page_va(2 * g as u32) + off);
             }
         }
         m
     }
+
+    /// Rodata groups, then cold code groups, in rodata-window order.
+    pub fn all_groups(&self) -> impl Iterator<Item = &(Vec<(usize, u32)>, u32)> {
+        self.groups.iter().chain(&self.cold)
+    }
+
+    /// Output section name of window group `gi` (`.pr_gN` constants,
+    /// `.px_gN` cold code).
+    #[must_use]
+    pub fn group_name(&self, gi: usize) -> String {
+        if gi < self.groups.len() { format!(".pr_g{gi}") } else { format!(".px_g{gi}") }
+    }
+}
+
+/// The physical line of the rodata cache an address of the rodata window
+/// maps to (0–15: its offset in a 16 KiB group).
+const fn ro_line(va: u32) -> u32 {
+    (va - orpheus_pager::RO_WIN) % ALIAS_BLOCK / LINE_SIZE
+}
+
+/// Paged code that goes to the rodata window: matches `[cold]`, in no
+/// cluster, at most one rodata group. Returns the set and one warning per
+/// cold-matching section that could not go (too large).
+pub fn cold_set(
+    g: &Graph,
+    places: &[Place],
+    rules: &Rules,
+    hot: &[Cluster],
+) -> (BTreeSet<usize>, Vec<String>) {
+    let mut set = BTreeSet::new();
+    let mut warnings = Vec::new();
+    for (n, place) in places.iter().enumerate().take(g.nodes.len()) {
+        let s = &g.nodes[n];
+        if g.kinds[n] != Kind::Code || !matches!(place, Place::Paged(_)) || rules.cold.select(s).is_none() {
+            continue;
+        }
+        if hot.iter().any(|c| c.rank(s).is_some()) {
+            continue;
+        }
+        if s.size > RO_GROUP_SIZE {
+            warnings.push(format!(
+                "{} ({} B) is cold but larger than a rodata group: code window",
+                g.label(n),
+                s.size
+            ));
+            continue;
+        }
+        set.insert(n);
+    }
+    (set, warnings)
 }
 
 /// Physical lines of the code cache: it is direct-mapped, a line's place is
@@ -499,10 +576,91 @@ fn align_up(v: u32, a: u32) -> u32 {
     v.div_ceil(a) * a
 }
 
-/// Order and pack the paged sections.
+/// Code window pages that cold placement keeps free (02 §3.6): cold code
+/// comes back into the code window, the warmest first, while this much of
+/// it stays empty.
+pub const CODE_RESERVE_PAGES: u32 = 1;
+
+/// Pack with only as much cold code in the rodata window as the code window
+/// needs: all of `cold` first (the code window must fit then), then the
+/// warmest cold sections (the last `[cold]` patterns: `resident.toml`
+/// lists them coldest first) come back while the code window keeps
+/// [`CODE_RESERVE_PAGES`] free. Returns the plan and the cold set it used.
+pub fn place_cold(
+    g: &Graph,
+    places: &[Place],
+    hot: &[Cluster],
+    crates: &[String],
+    rules: &Rules,
+    cold: &BTreeSet<usize>,
+) -> Result<(Plan, BTreeSet<usize>)> {
+    let mut plan = pack_cold(g, places, hot, crates, cold)?;
+    let cap = (MAX_CODE_PAGES - CODE_RESERVE_PAGES) * PAGE_SIZE;
+    let rank = |n: usize| rules.cold.symbol_rank(&g.nodes[n]).unwrap_or(0);
+    let mut warm: Vec<usize> = cold.iter().copied().collect();
+    warm.sort_by(|&a, &b| rank(b).cmp(&rank(a)).then(g.nodes[a].addr.cmp(&g.nodes[b].addr)));
+    let mut set = cold.clone();
+    let mut size = plan.code_size;
+    let mut back = Vec::new();
+    for n in warm {
+        let s = &g.nodes[n];
+        let grown = align_up(size, s.align) + s.size;
+        if grown <= cap {
+            size = grown;
+            set.remove(&n);
+            back.push(n);
+        }
+    }
+    // The estimate ignores the fillers' and clusters' alignment: repack,
+    // and return the last ones taken back until the plan fits the reserve.
+    loop {
+        match pack_cold(g, places, hot, crates, &set) {
+            Ok(p) if p.code_size <= cap || back.is_empty() => {
+                plan = p;
+                break;
+            }
+            _ => {
+                let Some(n) = back.pop() else { break };
+                set.insert(n);
+            }
+        }
+    }
+    check_rodata(&plan)?;
+    Ok((plan, set))
+}
+
+/// The rodata window holds the constants' and the cold code's groups.
+pub fn check_rodata(plan: &Plan) -> Result<()> {
+    let ngroups = (plan.groups.len() + plan.cold.len()) as u32;
+    if ngroups > MAX_RO_GROUPS {
+        bail!(
+            "paged rodata and cold code need {ngroups} groups of 16 KiB ({} + {}), the window holds {MAX_RO_GROUPS}",
+            plan.groups.len(),
+            plan.cold.len()
+        );
+    }
+    Ok(())
+}
+
+/// Order and pack the paged sections (no cold code).
+#[cfg(test)]
 pub fn pack(g: &Graph, places: &[Place], hot: &[Cluster], crates: &[String]) -> Result<Plan> {
+    pack_cold(g, places, hot, crates, &BTreeSet::new())
+}
+
+/// Order and pack the paged sections; the `cold` code sections go to the
+/// rodata window.
+pub fn pack_cold(
+    g: &Graph,
+    places: &[Place],
+    hot: &[Cluster],
+    crates: &[String],
+    cold: &BTreeSet<usize>,
+) -> Result<Plan> {
     let paged = |k: Kind| -> Vec<usize> {
-        (0..g.nodes.len()).filter(|&n| g.kinds[n] == k && matches!(places[n], Place::Paged(_))).collect()
+        (0..g.nodes.len())
+            .filter(|&n| g.kinds[n] == k && matches!(places[n], Place::Paged(_)) && !cold.contains(&n))
+            .collect()
     };
     // Order: clusters (pattern order, then link order), then the rest by
     // crate and link order.
@@ -621,13 +779,59 @@ pub fn pack(g: &Graph, places: &[Place], hot: &[Cluster], crates: &[String]) -> 
         secs.push((n, off));
         *used = off + s.size;
     }
-    if plan.groups.len() as u32 > MAX_RO_GROUPS {
-        bail!("paged rodata needs {} groups of 16 KiB, the window holds {MAX_RO_GROUPS}", plan.groups.len());
+    // Cold code: groups of its own after the constants' (whole pages of
+    // executable code), first fit in crate and link order. Of the groups
+    // with room, the first where the section shares no physical line with
+    // a constant it refers to (such a read would bounce, 02 §3.6).
+    let ro_at = plan.addresses();
+    let data_lines = |n: usize| -> u32 {
+        g.edges[n]
+            .iter()
+            .filter(|&&m| g.kinds[m] == Kind::Rodata && !merged(&g.nodes[m]))
+            .filter_map(|&m| ro_at.get(&m).map(|&va| (va, g.nodes[m].size)))
+            .fold(0u32, |acc, (va, size)| {
+                let (a, b) = (ro_line(va), ro_line(va + size.max(1) - 1));
+                (a..=b).fold(acc, |x, l| x | 1 << l)
+            })
+    };
+    let lines_at = |off: u32, size: u32| -> u32 {
+        (off / LINE_SIZE..=(off + size.max(1) - 1) / LINE_SIZE).fold(0u32, |x, l| x | 1 << l)
+    };
+    let mut cold_order: Vec<usize> = cold.iter().copied().collect();
+    cold_order.sort_by(|&a, &b| crates[a].cmp(&crates[b]).then(g.nodes[a].addr.cmp(&g.nodes[b].addr)));
+    for n in cold_order {
+        let s = &g.nodes[n];
+        let want = data_lines(n);
+        let fits = |used: u32| align_up(used, s.align) + s.size <= RO_GROUP_SIZE;
+        let clear = |used: u32| lines_at(align_up(used, s.align), s.size) & want == 0;
+        let pick = plan
+            .cold
+            .iter()
+            .position(|(_, used)| fits(*used) && clear(*used))
+            .or_else(|| plan.cold.iter().position(|(_, used)| fits(*used)));
+        let gi = match pick {
+            Some(i) => i,
+            None => {
+                plan.cold.push((Vec::new(), 0));
+                plan.cold.len() - 1
+            }
+        };
+        let (secs, used) = &mut plan.cold[gi];
+        let off = align_up(*used, s.align);
+        if lines_at(off, s.size) & want != 0 {
+            plan.cold_conflicts += 1;
+        }
+        secs.push((n, off));
+        *used = off + s.size;
     }
-    plan.nro = match plan.groups.last() {
-        Some((_, used)) => 2 * (plan.groups.len() as u32 - 1) + used.div_ceil(PAGE_SIZE),
+    // (The rodata window's limit: `check_rodata`, after `place_cold` has
+    // brought back what the code window has room for.)
+    let ngroups = (plan.groups.len() + plan.cold.len()) as u32;
+    plan.nro = match plan.all_groups().last() {
+        Some((_, used)) => 2 * (ngroups - 1) + used.div_ceil(PAGE_SIZE),
         None => 0,
     };
+    plan.nro_code = if plan.cold.is_empty() { 0 } else { plan.nro - 2 * plan.groups.len() as u32 };
     Ok(plan)
 }
 
@@ -638,6 +842,7 @@ pub fn script(g: &Graph, plan: &Plan, script_dir: &Path, bin: &str) -> String {
     let _ = writeln!(s, "INCLUDE \"{}\"", script_dir.join("memory.ld").display());
     let _ = writeln!(s, "__orpheus_code_pages = {};", plan.ncode);
     let _ = writeln!(s, "__orpheus_rodata_pages = {};", plan.nro);
+    let _ = writeln!(s, "__orpheus_rodata_code_pages = {};", plan.nro_code);
     s.push_str("SECTIONS\n{\n");
     if !plan.code.is_empty() {
         let _ = writeln!(s, "    {CODE_OUT} {:#010x} :\n    {{", code_page_va(0));
@@ -656,9 +861,14 @@ pub fn script(g: &Graph, plan: &Plan, script_dir: &Path, bin: &str) -> String {
         }
         s.push_str("    } > PAGED_CODE\n");
     }
-    for (gi, (secs, _)) in plan.groups.iter().enumerate() {
-        let _ = writeln!(s, "    .pr_g{gi} {:#010x} :\n    {{", ro_page_va(2 * gi as u32));
-        for &(n, _) in secs {
+    for (gi, (secs, _)) in plan.all_groups().enumerate() {
+        let _ = writeln!(s, "    {} {:#010x} :\n    {{", plan.group_name(gi), ro_page_va(2 * gi as u32));
+        for &(n, off) in secs {
+            // Cold code keeps the offset the plan gave it (it may have
+            // skipped lines of a constant it uses).
+            if gi >= plan.groups.len() {
+                let _ = writeln!(s, "        . = {:#010x};", ro_page_va(2 * gi as u32) + off);
+            }
             let _ = writeln!(s, "        *(\"{}\")", g.nodes[n].name);
         }
         s.push_str("    } > PAGED_RO\n");
@@ -672,11 +882,10 @@ pub fn script(g: &Graph, plan: &Plan, script_dir: &Path, bin: &str) -> String {
             plan.code_size
         );
     }
-    for (gi, (_, used)) in plan.groups.iter().enumerate() {
-        let _ = writeln!(
-            s,
-            "ASSERT(SIZEOF(.pr_g{gi}) == {used:#x}, \"pagelink: .pr_g{gi} differs from the plan\");"
-        );
+    for (gi, (_, used)) in plan.all_groups().enumerate() {
+        let name = plan.group_name(gi);
+        let _ =
+            writeln!(s, "ASSERT(SIZEOF({name}) == {used:#x}, \"pagelink: {name} differs from the plan\");");
     }
     s
 }
@@ -722,7 +931,7 @@ pub fn extract(elf: &Path) -> Result<Extracted> {
             chunks.push((addr, sec.data()?.to_vec()));
         } else if name == CODE_OUT {
             x.code = sec.data()?.to_vec();
-        } else if let Some(gi) = name.strip_prefix(".pr_g") {
+        } else if let Some(gi) = name.strip_prefix(".pr_g").or_else(|| name.strip_prefix(".px_g")) {
             x.groups.insert(gi.parse().context("group index")?, sec.data()?.to_vec());
         } else if !nobits
             && matches!(sec.kind(), SectionKind::Text | SectionKind::Data | SectionKind::ReadOnlyData)
@@ -764,8 +973,7 @@ pub fn slot_image(
     resident: &[u8],
     entry: u32,
     store: &[u8],
-    ncode: u32,
-    nro: u32,
+    (ncode, nro, nro_code): (u32, u32, u32),
     layout: u32,
 ) -> (Vec<u8>, SlotHeader) {
     let resident_off = SECTOR;
@@ -791,6 +999,7 @@ pub fn slot_image(
         res_len: 0,
         verified: 0xFFFF_FFFF,
         build_id,
+        rodata_code_pages: nro_code,
     };
     let mut img = vec![0xFFu8; pages_off as usize + store.len()];
     img[..orpheus_proto::slot::HEADER_SIZE].copy_from_slice(&h.to_bytes());
@@ -842,7 +1051,9 @@ pub fn run(o: &Options) -> Result<Layout> {
         ));
     }
     let crates1 = crates(&g1);
-    let plan = pack(&g1, &places, &hot, &crates1)?;
+    let (cold_all, cold_warnings) = cold_set(&g1, &places, &rules, &hot);
+    warnings.extend(cold_warnings);
+    let (plan, cold) = place_cold(&g1, &places, &hot, &crates1, &rules, &cold_all)?;
     warnings.extend(fit_warnings(&hot, &plan.clusters));
 
     // Pass 2.
@@ -871,10 +1082,32 @@ pub fn run(o: &Options) -> Result<Layout> {
         }
     }
 
+    // Every load of cold code must be one the trampoline can run.
+    let (mut cold_loads, mut unbounceable) = (0u32, Vec::new());
+    for m in 0..g2.nodes.len() {
+        if g2.kinds[m] == Kind::Code
+            && matches!(orpheus_pager::Page::of(g2.nodes[m].addr), Some(orpheus_pager::Page::Rodata(_)))
+        {
+            let (n, refused) = g2.bounce_audit(m);
+            cold_loads += n;
+            unbounceable.extend(refused.into_iter().map(|(at, why)| (at, why, g2.label(m))));
+        }
+    }
+    if !unbounceable.is_empty() {
+        let first: Vec<String> =
+            unbounceable.iter().take(4).map(|(at, why, f)| format!("{at:#x} in {f} ({why:?})")).collect();
+        warnings.push(format!(
+            "{} of {cold_loads} loads in cold code cannot be bounced (fatal if their constant shares their line): {}",
+            unbounceable.len(),
+            first.join(", ")
+        ));
+    }
+
     // Images.
     let x = extract(&a.elf)?;
     let store = page_store(&x, plan.ncode, plan.nro)?;
-    let (slot, header) = slot_image(&x.resident, x.entry, &store, plan.ncode, plan.nro, o.layout);
+    let (slot, header) =
+        slot_image(&x.resident, x.entry, &store, (plan.ncode, plan.nro, plan.nro_code), o.layout);
     std::fs::write(&a.resident, &x.resident)?;
     std::fs::write(&a.pages, &store)?;
     std::fs::write(&a.yfw, &slot)?;
@@ -888,12 +1121,16 @@ pub fn run(o: &Options) -> Result<Layout> {
     // layout.json.
     let reasons: BTreeMap<&str, &Place> =
         g1.nodes.iter().zip(&places).map(|(s, p)| (s.name.as_str(), p)).collect();
+    let cold_names: BTreeSet<&str> = cold.iter().map(|&n| g1.nodes[n].name.as_str()).collect();
     let crates2 = crates(&g2);
     let sections = (0..g2.nodes.len())
         .map(|m| {
             let s = &g2.nodes[m];
             let kind = g2.kinds[m];
             let (placement, reason) = match reasons.get(s.name.as_str()) {
+                Some(Place::Paged(r)) if cold_names.contains(s.name.as_str()) => {
+                    ("paged", format!("cold:{r}"))
+                }
                 Some(Place::Paged(r)) => ("paged", r.clone()),
                 Some(Place::Resident(r)) => ("resident", r.clone()),
                 Some(Place::Ram) | None if kind == Kind::Ram => ("ram", String::new()),
@@ -934,10 +1171,10 @@ pub fn run(o: &Options) -> Result<Layout> {
             pages: plan.ncode,
         });
     }
-    for (gi, (_, used)) in plan.groups.iter().enumerate() {
+    for (gi, (_, used)) in plan.all_groups().enumerate() {
         groups.push(GroupInfo {
-            name: format!(".pr_g{gi}"),
-            kind: "rodata".into(),
+            name: plan.group_name(gi),
+            kind: if gi < plan.groups.len() { "rodata".into() } else { "cold".into() },
             va: ro_page_va(2 * gi as u32),
             size: *used,
             capacity: RO_GROUP_SIZE,
@@ -947,6 +1184,7 @@ pub fn run(o: &Options) -> Result<Layout> {
     }
     let code_bytes = plan.code.iter().map(|&(n, _, _)| g1.nodes[n].size).sum();
     let rodata_bytes = plan.groups.iter().flat_map(|(s, _)| s).map(|&(n, _)| g1.nodes[n].size).sum();
+    let cold_bytes = plan.cold.iter().flat_map(|(s, _)| s).map(|&(n, _)| g1.nodes[n].size).sum();
     let layout = Layout {
         format: 1,
         bin: o.bin.clone(),
@@ -981,6 +1219,11 @@ pub fn run(o: &Options) -> Result<Layout> {
             rodata_bytes,
             code_padding: plan.padding,
             code_filler: plan.filler,
+            cold: plan.nro_code,
+            cold_bytes,
+            cold_conflicts: plan.cold_conflicts,
+            cold_loads,
+            cold_unbounceable: unbounceable.len() as u32,
         },
         groups,
         clusters: plan.clusters.clone(),
@@ -1024,6 +1267,16 @@ pub fn print_summary(l: &Layout) {
         window.saturating_sub(used),
         l.pages.code_filler
     ));
+    if l.pages.cold > 0 {
+        log(&format!(
+            "  cold code in the rodata window: {} pages ({} B, {} sections share a line with a constant they use; {} of {} loads cannot be bounced)",
+            l.pages.cold,
+            l.pages.cold_bytes,
+            l.pages.cold_conflicts,
+            l.pages.cold_unbounceable,
+            l.pages.cold_loads
+        ));
+    }
     let closure: Vec<&SectionInfo> = l.sections.iter().filter(|s| s.reason.starts_with("closure:")).collect();
     log(&format!("  {} sections resident through the closure of {} roots", closure.len(), l.roots.len()));
     for c in &l.clusters {
@@ -1214,7 +1467,7 @@ sections = [".rodata.cst4"]
         assert_eq!(p[9], Place::Resident("fixed:mergeable".into()));
         let plan = pack(&g, &p, &[], &crates(&g)).unwrap();
         let s = script(&g, &plan, Path::new("/l"), "t");
-        assert!(s.contains(".pr_g0 0x00340000 :\n    {\n"), "{s}");
+        assert!(s.contains(".pr_g0 0x00300000 :\n    {\n"), "{s}");
         assert!(s.contains("*(\".rodata.str1.1\")"), "{s}");
         assert!(!s.contains("*(\".rodata.cst4\")"), "{s}");
     }
@@ -1370,11 +1623,11 @@ sections = [".rodata.cst4"]
         assert!(
             s.contains(".pg_code 0x00200000 :\n    {\n        . = ALIGN(0x400);\n        *(\".text.hot_a\")")
         );
-        assert!(s.contains(".pr_g1 0x00348000 :"));
+        assert!(s.contains(".pr_g1 0x00308000 :"));
         assert!(s.contains("ASSERT(SIZEOF(.pr_g0) == 0x3a98"));
         let addrs = plan.addresses();
-        assert_eq!(addrs[&13], 0x34_0000 + 9000);
-        assert_eq!(addrs[&12], 0x34_8000);
+        assert_eq!(addrs[&13], 0x30_0000 + 9000);
+        assert_eq!(addrs[&12], 0x30_8000);
     }
 
     /// `starts_over`: the cluster starts on the physical line of the one it
@@ -1413,7 +1666,7 @@ sections = [".rodata.cst4"]
     fn slot_image_layout() {
         let resident = vec![7u8; 5000];
         let store = vec![1u8; 3 * PAGE_SIZE as usize];
-        let (img, h) = slot_image(&resident, 0x10_0001, &store, 2, 1, LAYOUT_DUAL);
+        let (img, h) = slot_image(&resident, 0x10_0001, &store, (2, 1, 0), LAYOUT_DUAL);
         assert_eq!(h.resident_off, 0x1000);
         assert_eq!(h.pages_off, 0x3000);
         assert_eq!(img.len(), 0x3000 + 3 * 0x2000);
@@ -1424,7 +1677,7 @@ sections = [".rodata.cst4"]
         assert!(img[HEADER_SIZE..0x1000].iter().all(|&b| b == 0xFF));
         assert!(img[0x1000 + 5000..0x3000].iter().all(|&b| b == 0xFF));
         // Deterministic build id.
-        assert_eq!(slot_image(&resident, 0x10_0001, &store, 2, 1, LAYOUT_DUAL).1.build_id, h.build_id);
+        assert_eq!(slot_image(&resident, 0x10_0001, &store, (2, 1, 0), LAYOUT_DUAL).1.build_id, h.build_id);
     }
 
     #[test]
@@ -1443,5 +1696,146 @@ sections = [".rodata.cst4"]
         assert_eq!(s[0x6004], 0xFF);
         assert_eq!(s[0x8000], 0xCC); // rodata page 2 (group 1)
         assert!(page_store(&x, 1, 3).is_err());
+    }
+
+    /// Cold code (PG-2): its own groups after the constants', executable
+    /// pages counted at the end, placed clear of the lines of a constant
+    /// it refers to where a group has room there, else first fit; the
+    /// script places each section at the planned address.
+    #[test]
+    fn cold_code_goes_to_its_own_groups_clear_of_its_constants() {
+        let g = Graph::from_parts(
+            vec![
+                node(".text", ".text.hot", 600, 2, Some("app::hot")),
+                node(".text", ".text.cold_a", 3000, 2, Some("books::a")),
+                node(".text", ".text.cold_x", 15_000, 2, Some("books::x")),
+                node(".text", ".text.cold_b", 900, 4, Some("books::b")),
+                node(".rodata", ".rodata.t", 9000, 4, Some("app::T")),
+                node(".text", ".text.too_big", 17_000, 2, Some("books::big")),
+                node(".text", ".text.cold_c", 600, 4, Some("books::c")),
+            ],
+            // `cold_b` and `cold_c` read `T` (lines 0–8 of group 0).
+            &[(3, 4), (6, 4)],
+        );
+        let r = Rules::parse("roots = []\n[cold]\nsymbols = [\"books::*\"]\n", "t").unwrap();
+        let (p, _) = classify(&g, &r, &[]);
+        let (cold, w) = cold_set(&g, &p, &r, &[]);
+        assert_eq!(cold.iter().copied().collect::<Vec<_>>(), vec![1, 2, 3, 6]);
+        assert!(w[0].contains("books::big (17000 B) is cold but larger than a rodata group"), "{w:?}");
+        let plan = pack_cold(&g, &p, &[], &crates(&g), &cold).unwrap();
+        assert_eq!(plan.code.iter().map(|&(n, _, _)| n).collect::<Vec<_>>(), vec![0, 5]);
+        assert_eq!(plan.groups.len(), 1);
+        // `cold_a` at 0 of the first cold group, `cold_x` too large for its
+        // rest: a second group. `cold_b` would land on lines 2–3 of the
+        // first (T's) but finds line 14 of the second clear; `cold_c` has
+        // room only on T's lines (the first group): a conflict.
+        assert_eq!(plan.cold, vec![(vec![(1, 0), (6, 3000)], 3600), (vec![(2, 0), (3, 15_000)], 15_900)]);
+        assert_eq!(plan.cold_conflicts, 1);
+        // Pages: constants 0–1, cold 2 (one page) and 4–5: 6 in all, the
+        // last 4 code.
+        assert_eq!((plan.nro, plan.nro_code), (6, 4));
+        let a = plan.addresses();
+        assert_eq!((a[&1], a[&3], a[&6]), (ro_page_va(2), ro_page_va(4) + 15_000, ro_page_va(2) + 3000));
+        let s = script(&g, &plan, Path::new("/l"), "t");
+        assert!(
+            s.contains(".px_g1 0x00308000 :\n    {\n        . = 0x00308000;\n        *(\".text.cold_a\")"),
+            "{s}"
+        );
+        assert!(s.contains("        . = 0x00313a98;\n        *(\".text.cold_b\")"), "{s}");
+        assert!(s.contains("__orpheus_rodata_code_pages = 4;"), "{s}");
+        assert!(s.contains("ASSERT(SIZEOF(.px_g2) == 0x3e1c"), "{s}");
+    }
+
+    /// Only as much cold code leaves the code window as it needs: the
+    /// warmest (the last `[cold]` patterns) comes back while a page of the
+    /// window stays free.
+    #[test]
+    fn cold_code_leaves_the_code_window_only_as_needed() {
+        let g = Graph::from_parts(
+            vec![
+                node(".text", ".text.big", 1_030_000, 2, Some("app::big")),
+                node(".text", ".text.a", 6000, 2, Some("conv::a")),
+                node(".text", ".text.b", 4000, 2, Some("lib::b")),
+                node(".text", ".text.c", 3000, 2, Some("dev::c")),
+            ],
+            &[],
+        );
+        let r = Rules::parse("roots = []\n[cold]\nsymbols = [\"conv::*\", \"lib::*\", \"dev::*\"]\n", "t")
+            .unwrap();
+        let (p, _) = classify(&g, &r, &[]);
+        let (all, _) = cold_set(&g, &p, &r, &[]);
+        assert_eq!(all.len(), 3);
+        let (plan, cold) = place_cold(&g, &p, &[], &crates(&g), &r, &all).unwrap();
+        // 127 pages = 1,040,384 B: `dev::c` and `lib::b` come back
+        // (1,037,000 B), `conv::a` would not leave a page free.
+        assert_eq!(cold.into_iter().collect::<Vec<_>>(), vec![1]);
+        assert_eq!(plan.code_size, 1_037_000);
+        assert_eq!(plan.cold.len(), 1);
+        assert!(plan.code_size <= (MAX_CODE_PAGES - CODE_RESERVE_PAGES) * PAGE_SIZE);
+    }
+
+    /// Bug 2026-11-26/27 (TTS-3, BOOK-1/2 wiring): the speech voice with
+    /// the screen reader (133 pages) and Books (139) did not fit the
+    /// 128-page code window; both together needed 148 pages (1,206,358 B,
+    /// `xtask build --features speech,books`: "paged code needs 148
+    /// pages"), so neither could go into the image. PG-2 runs cold code
+    /// from the rodata window, which now covers all of SRAM3's aliases
+    /// (64 pages). The input is that build's paged sections
+    /// (`tests/regress/pagelink/speech-books-2026-11-27.txt`, replayed
+    /// through `pack_cold` without the relocation graph, so without the
+    /// constants' lines): without cold code the window overflows; with it
+    /// both windows keep room.
+    #[test]
+    fn regress_speech_and_books_did_not_fit_the_code_window() {
+        let text = std::fs::read_to_string(root().join("tests/regress/pagelink/speech-books-2026-11-27.txt"))
+            .expect("fixture");
+        let mut crate_names: Vec<String> = Vec::new();
+        let mut hot = Vec::new();
+        let mut nodes = Vec::new();
+        let mut node_crates = Vec::new();
+        let mut cold = BTreeSet::new();
+        for line in text.lines().filter(|l| !l.starts_with('#')) {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            match f[0] {
+                "crates" => crate_names = f[1..].iter().map(|s| (*s).to_string()).collect(),
+                "cluster" => hot.push(Cluster {
+                    name: f[2].into(),
+                    symbols: vec![format!("cl{}::*", f[1])],
+                    starts_over: (f[3] != "-").then(|| f[3].to_string()),
+                    ..Cluster::default()
+                }),
+                k => {
+                    let n = nodes.len();
+                    let size = u32::from_str_radix(f[1], 16).unwrap();
+                    let align = u32::from_str_radix(f[2], 16).unwrap();
+                    let sym = if f[4] == "-" { format!("s::x{n}") } else { format!("cl{}::m{n}", f[4]) };
+                    let (out, name) = if k == "c" {
+                        (".text", format!(".text.s{n}"))
+                    } else {
+                        (".rodata", format!(".rodata.s{n}"))
+                    };
+                    let mut s = node(out, &name, size, align, Some(&sym));
+                    s.addr = 0x1000_0000 + 4 * n as u32;
+                    nodes.push(s);
+                    node_crates.push(crate_names[f[3].parse::<usize>().unwrap()].clone());
+                    if f[5] == "1" {
+                        cold.insert(n);
+                    }
+                }
+            }
+        }
+        let g = Graph::from_parts(nodes, &[]);
+        let places = vec![Place::Paged("default".into()); g.nodes.len()];
+        let code: u32 =
+            (0..g.nodes.len()).filter(|&n| g.kinds[n] == Kind::Code).map(|n| g.nodes[n].size).sum();
+        assert!(code > 1_200_000, "{code} B of paged code");
+        let err = pack_cold(&g, &places, &hot, &node_crates, &BTreeSet::new()).unwrap_err();
+        // (148 pages in the build; the replay's fillers differ a little.)
+        assert!(err.to_string().contains("paged code needs 14"), "{err}");
+        let plan = pack_cold(&g, &places, &hot, &node_crates, &cold).unwrap();
+        assert!(plan.ncode <= MAX_CODE_PAGES - 3, "code window: {} pages", plan.ncode);
+        assert!(plan.nro < MAX_RO_PAGES, "rodata window: {} pages", plan.nro);
+        assert!(plan.nro_code >= 20 && plan.cold.len() as u32 * 2 >= plan.nro_code, "{}", plan.nro_code);
+        assert_eq!(plan.cold_conflicts, 0, "no graph, no constants' lines");
     }
 }

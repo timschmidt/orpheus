@@ -22,7 +22,8 @@
 //! | `+0x38` | resources: directory length |
 //! | `+0x3C` | verified: `0xFFFF_FFFF` until the firmware checked the pages, then 0 |
 //! | `+0x40` | build id (16 bytes) |
-//! | `+0x50..0x7C` | reserved (0) |
+//! | `+0x50` | pages: how many of the rodata pages (the last ones) hold code (PG-2; 0 before) |
+//! | `+0x54..0x7C` | reserved (0) |
 //! | `+0x7C` | header crc32 over `0x00..0x7C` with `verified` (+0x3C) read as `0xFFFF_FFFF` |
 
 use crate::hash::crc32_update;
@@ -58,6 +59,9 @@ pub struct SlotHeader {
     pub res_len: u32,
     pub verified: u32,
     pub build_id: [u8; 16],
+    /// The last `rodata_code_pages` of the rodata pages hold cold code
+    /// (executable; PG-2). 0 in headers written before.
+    pub rodata_code_pages: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,6 +99,7 @@ impl SlotHeader {
             (0x34, self.res_off),
             (0x38, self.res_len),
             (0x3C, self.verified),
+            (0x50, self.rodata_code_pages),
         ];
         for (o, v) in w {
             wr32(&mut b, o, v);
@@ -149,6 +154,7 @@ impl SlotHeader {
             res_len: r(0x38),
             verified: r(0x3C),
             build_id,
+            rodata_code_pages: r(0x50),
         })
     }
 }
@@ -166,6 +172,7 @@ mod tests {
             load_addr: 0x100000,
             entry: 0x100001,
             verified: 0xFFFF_FFFF,
+            rodata_code_pages: 5,
             ..Default::default()
         };
         let mut b = h.to_bytes();

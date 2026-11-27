@@ -9,7 +9,11 @@ ENTRY(payload_entry)
 MEMORY
 {
     PAYLOAD (rwx) : ORIGIN = 0x0011E000, LENGTH = 0x1800
-    /* Never touched: placement for the HAL's unused emergency stack. */
+    /* Between ymon's argument block and the data buffer, which neither
+       ymon (its stack grows down from 0x11E000) nor the host touches: the
+       payload's .bss (since PG-2, 2026-11-27: the pager handler's growth left
+       the 6 KiB loaded region 160 B short) and the HAL's unused emergency
+       stack. */
     SCRATCH (rw)  : ORIGIN = 0x00120000, LENGTH = 0x2000
 }
 
@@ -38,7 +42,7 @@ SECTIONS
         *(.bss .bss.*)
         . = ALIGN(4);
         __bss_end = .;
-    } > PAYLOAD
+    } > SCRATCH
 
     /* Pulled in by the HAL's fault shim, which never runs here: not
        loaded, nothing writes it. */

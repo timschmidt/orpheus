@@ -109,8 +109,15 @@ impl<'a> Machine<'a> {
     /// `nro` rodata pages, 8 KiB each), with the MPU in its initial state.
     #[must_use]
     pub fn new(store: &'a [u8], ncode: u32, nro: u32) -> Self {
+        Self::with_cold(store, ncode, nro, 0)
+    }
+
+    /// As [`Self::new`], the last `ro_code` rodata pages holding code (cold
+    /// code in the rodata window).
+    #[must_use]
+    pub fn with_cold(store: &'a [u8], ncode: u32, nro: u32, ro_code: u32) -> Self {
         let mut core = PagerCore::new();
-        core.init(ncode, nro);
+        core.init_with(ncode, nro, ro_code);
         let mut m = Self {
             core,
             store,
@@ -173,7 +180,11 @@ impl<'a> Machine<'a> {
                 self.mpu_on = true;
                 Ok(())
             }
-            Action::Load { map, nor_offset, phys, unmap } => {
+            // A bounce is a load as far as memory is concerned: the CPU then
+            // completes the access from the trampoline (`access` retries it
+            // with the data line mapped), and the next fetch of the
+            // instruction's line faults that line back in.
+            Action::Load { map, nor_offset, phys, unmap, bounce: _ } => {
                 self.mpu_on = false;
                 if let Some(u) = unmap {
                     self.apply_region(u);
@@ -268,7 +279,7 @@ impl<'a> Machine<'a> {
                 Some((p, _)) if p == page => {}
                 _ => return Err("MPU region and pager table disagree"),
             }
-            if r.xn() != matches!(page, Page::Rodata(_)) {
+            if r.xn() != self.core.xn(page) {
                 return Err("XN does not match the page kind");
             }
             let slot = page.slot();

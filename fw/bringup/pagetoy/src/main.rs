@@ -71,7 +71,7 @@ pub extern "C" fn toy_memmanage(addr: u32, pc: u32) -> u32 {
     }
     match core.fault(addr, pc) {
         Action::Remap(m) => code ^ m.rasr(),
-        Action::Load { map, nor_offset, phys, unmap } => {
+        Action::Load { map, nor_offset, phys, unmap, .. } => {
             code ^ map.rasr() ^ nor_offset ^ phys ^ unmap.map_or(0, |u| u.rasr())
         }
         Action::Fatal(_) => code ^ 1,

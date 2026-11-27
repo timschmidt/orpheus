@@ -163,9 +163,10 @@ core::arch::global_asm!(
     "    mov r1, lr",
     "    mrs r2, ipsr",
     "    push {{r4, lr}}",
-    "    bl orpheus_pager_fault",
+    "    bl {pager}",
     "    pop {{r4, pc}}",
     fault = sym fault_entry,
+    pager = sym crate::pager::orpheus_pager_fault,
     emerg = sym EMERGENCY_STACK,
     emerg_size = const EMERGENCY_STACK_BYTES,
 );
@@ -176,27 +177,118 @@ const EMERGENCY_STACK_BYTES: usize = 512;
 #[unsafe(link_section = ".uninit.emergency_stack")]
 static mut EMERGENCY_STACK: [u64; EMERGENCY_STACK_BYTES / 8] = [0; EMERGENCY_STACK_BYTES / 8];
 
-/// Size of the MPU stack guard at the bottom of the stack.
+/// Size of the stack guard at the bottom of the stack.
 pub const STACK_GUARD_BYTES: u32 = 256;
-/// MPU region used for the guard (02 §1.2: region 7, highest precedence).
+/// MPU region used for the guard in an image without the pager (02 §1.2:
+/// region 7, highest precedence). A paged image uses region 7 for SRAM3's
+/// RAM half since PG-2 (`orpheus_pager::mpu::RAM_REGION`).
 const GUARD_REGION: u32 = 7;
+/// The stack paint (`_start`).
+const PAINT: u32 = 0x5354_434B;
 
-/// Arm the stack guard: a no-access MPU region over the lowest 256 bytes of
-/// the stack. Faults there are recorded as `StackGuard`.
+/// How the stack guard is kept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Guard {
+    /// Not armed yet.
+    None = 0,
+    /// A no-access MPU region (images without the pager).
+    Mpu = 1,
+    /// The paint of the guard bytes, checked by the watchdog task
+    /// ([`guard_intact`]).
+    Canary = 2,
+    /// A DWT write watchpoint on the guard bytes (DebugMonitor, recorded as
+    /// a stack-guard fault), and the canary.
+    Watchpoint = 3,
+}
+
+static GUARD: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(Guard::None as u8);
+
+/// The guard in use.
+#[must_use]
+pub fn guard() -> Guard {
+    match GUARD.load(core::sync::atomic::Ordering::Relaxed) {
+        1 => Guard::Mpu,
+        2 => Guard::Canary,
+        3 => Guard::Watchpoint,
+        _ => Guard::None,
+    }
+}
+
+/// Arm the stack guard over the lowest 256 bytes of the stack. Without the
+/// pager: a no-access MPU region; faults there are recorded as
+/// `StackGuard`. In a paged image (MPU region 7 is SRAM3's RAM half,
+/// PG-2): a DWT data watchpoint on writes there when the core has a
+/// comparator (`DWT_CTRL.NUMCOMP`; not known on this chip, 01 §9
+/// U-DWT-1), whose DebugMonitor exception goes to the fault path, and in
+/// any case the canary the watchdog task checks ([`guard_intact`]).
 pub fn enable_stack_guard() {
     let base = ((&raw const __stack_bottom) as u32 + 255) & !255;
-    let mpu = |off: usize, v: u32| {
-        // SAFETY: MPU registers of the core.
-        unsafe { core::ptr::write_volatile((0xE000_ED90 + off) as *mut u32, v) };
+    let reg = |a: usize, v: u32| {
+        // SAFETY: core debug, DWT and MPU registers.
+        unsafe { core::ptr::write_volatile(a as *mut u32, v) };
     };
-    mpu(0x08, GUARD_REGION); // RNR
-    mpu(0x0C, base); // RBAR
+    let get = |a: usize| -> u32 {
+        // SAFETY: as above.
+        unsafe { core::ptr::read_volatile(a as *const u32) }
+    };
+    if crate::pager::armed() {
+        // DEMCR: TRCENA (the DWT) and MON_EN (DebugMonitor, priority 0 by
+        // reset: SHPR3[7:0]).
+        reg(0xE000_EDFC, get(0xE000_EDFC) | 1 << 24 | 1 << 16);
+        cortex_m::asm::dsb();
+        let kind = if get(0xE000_1000) >> 28 > 0 {
+            reg(0xE000_1020, base); // COMP0
+            reg(0xE000_1024, 8); // MASK0: ignore 8 address bits (256 B)
+            reg(0xE000_1028, 0b0110); // FUNCTION0: watchpoint on writes
+            Guard::Watchpoint
+        } else {
+            reg(0xE000_EDFC, get(0xE000_EDFC) & !(1 << 16 | 1 << 24));
+            Guard::Canary
+        };
+        GUARD.store(kind as u8, core::sync::atomic::Ordering::Relaxed);
+        cortex_m::asm::dsb();
+        cortex_m::asm::isb();
+        return;
+    }
+    reg(0xE000_ED98, GUARD_REGION); // RNR
+    reg(0xE000_ED9C, base); // RBAR
     // RASR: XN, AP = 0 (no access), SIZE = log2(256) - 1 = 7, ENABLE.
-    mpu(0x10, 1 << 28 | 7 << 1 | 1);
+    reg(0xE000_EDA0, 1 << 28 | 7 << 1 | 1);
     // CTRL: ENABLE | PRIVDEFENA (default map for everything else).
-    mpu(0x04, 0b101);
+    reg(0xE000_ED94, 0b101);
+    GUARD.store(Guard::Mpu as u8, core::sync::atomic::Ordering::Relaxed);
     cortex_m::asm::dsb();
     cortex_m::asm::isb();
+}
+
+/// Whether the guard bytes still hold the stack paint (always true with
+/// the MPU guard, whose bytes cannot be read).
+#[must_use]
+pub fn guard_intact() -> bool {
+    if !matches!(guard(), Guard::Canary | Guard::Watchpoint) {
+        return true;
+    }
+    let (g0, g1) = stack_guard_range();
+    let mut a = g0;
+    while a < g1 {
+        // SAFETY: the guard bytes are mapped SRAM0 (no MPU region over them
+        // in a paged image).
+        if unsafe { core::ptr::read_volatile(a as *const u32) } != PAINT {
+            return false;
+        }
+        a += 4;
+    }
+    true
+}
+
+/// The canary is broken: record a stack-guard fault and reboot.
+#[cold]
+pub fn guard_broken() -> ! {
+    // The record's kind follows from a "frame" inside the guard
+    // (`persist::record_fault`); its words are whatever overran it.
+    crate::persist::record_fault(stack_guard_range().0 as usize, 0, 12);
+    crate::wdt::reboot_after_fault()
 }
 
 /// Address range of the guard (for the fault record).

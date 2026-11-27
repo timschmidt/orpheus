@@ -38,6 +38,21 @@ impl Patterns {
         self.exclude.extend(o.exclude.iter().cloned());
     }
 
+    /// Index of the first symbol pattern that selects `s` (excludes
+    /// apply), if any.
+    pub fn symbol_rank(&self, s: &InputSection) -> Option<usize> {
+        s.symbols
+            .iter()
+            .filter_map(|sym| {
+                let name = demangle(&sym.name);
+                if self.exclude.iter().any(|p| symbol_matches(p, &name)) {
+                    return None;
+                }
+                self.symbols.iter().position(|p| symbol_matches(p, &name))
+            })
+            .min()
+    }
+
     /// The first pattern that selects `s`, as `kind:pattern`.
     pub fn select(&self, s: &InputSection) -> Option<String> {
         if let Some(p) = self.sections.iter().find(|p| glob(p, &s.name)) {
@@ -68,6 +83,8 @@ struct BinRules {
     resident: Patterns,
     #[serde(default)]
     paged: Patterns,
+    #[serde(default)]
+    cold: Patterns,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -81,6 +98,8 @@ struct RulesFile {
     resident: Patterns,
     #[serde(default)]
     paged: Patterns,
+    #[serde(default)]
+    cold: Patterns,
     #[serde(default)]
     bin: BTreeMap<String, BinRules>,
 }
@@ -96,6 +115,10 @@ pub struct Rules {
     /// Forced into pages even when reachable from a root (check-resident
     /// then reports it).
     pub paged: Patterns,
+    /// Paged code placed in the rodata window (cold code, PG-2: 02 §3.6)
+    /// instead of the code window, unless a `hot.toml` cluster claims it or
+    /// it is larger than a rodata group.
+    pub cold: Patterns,
 }
 
 impl Rules {
@@ -106,11 +129,18 @@ impl Rules {
 
     pub fn parse(text: &str, bin: &str) -> Result<Self> {
         let f: RulesFile = toml::from_str(text)?;
-        let mut r = Self { roots: f.roots, vector_skip: f.vector_skip, resident: f.resident, paged: f.paged };
+        let mut r = Self {
+            roots: f.roots,
+            vector_skip: f.vector_skip,
+            resident: f.resident,
+            paged: f.paged,
+            cold: f.cold,
+        };
         if let Some(b) = f.bin.get(bin) {
             r.roots.extend(b.roots.iter().cloned());
             r.resident.extend(&b.resident);
             r.paged.extend(&b.paged);
+            r.cold.extend(&b.cold);
         }
         Ok(r)
     }
@@ -190,6 +220,18 @@ pub fn parse_hot(text: &str) -> Result<Vec<Cluster>> {
     Ok(f.cluster)
 }
 
+/// A pattern of `hot.toml` (`stop`) or `stack.toml` (`targets`) that may
+/// match nothing: written with a leading `?` (the code of a firmware
+/// feature that a build may leave out, PG-2). Returns whether it may, and
+/// the pattern without the mark.
+#[must_use]
+pub fn optional_pattern(p: &str) -> (bool, &str) {
+    match p.strip_prefix('?') {
+        Some(rest) => (true, rest),
+        None => (false, p),
+    }
+}
+
 pub fn symbol_matches(pat: &str, demangled: &str) -> bool {
     glob(pat, demangled) || glob(pat, demangled.trim_start_matches('<'))
 }
@@ -262,6 +304,9 @@ exclude = ["*::TaskStorage<*>::poll"]
 roots = ["toy_memmanage"]
 [bin.toy.paged]
 symbols = ["*planted*"]
+[bin.toy.cold]
+symbols = ["toy::settings::*"]
+exclude = ["toy::settings::hot"]
 "#,
             "toy",
         )
@@ -280,6 +325,8 @@ symbols = ["*planted*"]
         );
         assert!(pick(&sec(".text.z", "a.o", &["<embassy_executor::raw::SyncExecutor>::poll"])).is_some());
         assert!(r.paged.select(&sec(".text.p", "a.o", &["toy::planted_violation"])).is_some());
+        assert!(r.cold.select(&sec(".text.c", "a.o", &["toy::settings::draw"])).is_some());
+        assert!(r.cold.select(&sec(".text.c", "a.o", &["toy::settings::hot"])).is_none());
         assert!(
             Rules::parse("roots = []\n", "other")
                 .unwrap()
@@ -287,6 +334,12 @@ symbols = ["*planted*"]
                 .select(&sec(".t", "a", &["planted"]))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn optional_patterns() {
+        assert_eq!(optional_pattern("?*orpheus_tts::*"), (true, "*orpheus_tts::*"));
+        assert_eq!(optional_pattern("*orpheus_tts::*"), (false, "*orpheus_tts::*"));
     }
 
     #[test]

@@ -64,6 +64,7 @@ SRAM0 224 KiB  0x100000 ┌─────────────────�
 SRAM1  32 KiB  0x158000   frame buffer 128×128 RGB565 (exactly 32 KiB)
 SRAM2  32 KiB  0x200000   code page cache: 4 slots × 8 KiB (32 lines of 1 KiB)
 SRAM3  32 KiB  0x300000   rodata page cache: 2 slots × 8 KiB        (0x300000–0x303FFF)
+                          (constants and, since PG-2, cold code: §3.6)
                0x304000   PCM output ring 12 KiB · log ring 2 KiB · pager tables
                           and other must-not-move statics 2 KiB     (0x304000–0x307FFF)
                           as built: 0x307000 profiler block 2 KiB (T-8,
@@ -87,7 +88,14 @@ Notes:
   nested interrupt frames. Big work buffers never go on the stack; decoders
   get their scratch from the arena. The stack is painted at boot and its
   high-water mark is part of every HIL report.
-* **Stack guard.** MPU region 7 (highest precedence) is a 256-byte no-access
+* **Stack guard.** *(Since PG-2, 2026-11-27, a paged image uses region 7
+  for SRAM3's RAM half (§3.1) and keeps the guard as a canary — the
+  lowest 256 bytes keep their paint, checked by the watchdog task before
+  every feed (`rt::guard_intact`; a broken canary is recorded as a
+  stack-guard fault) — plus a DWT write watchpoint on the same bytes where
+  the core has a comparator (01 §9 U-DWT-2); the start-up log says which.
+  Images without the pager keep the MPU guard below.)* MPU region 7
+  (highest precedence) is a 256-byte no-access
   region at the stack limit; hitting it is a fatal fault with a clear record.
   The pager therefore has six pool regions instead of the Rockbox port's seven
   (§3.3). If measurement shows this costs page faults, replace the guard with
@@ -387,13 +395,19 @@ page of non-resident code its own virtual address:
 
 ```
 code page p   : VA = 0x200000 + (p >> 2) * 0x8000 + (p & 3) * 0x2000     slot = p & 3   (SRAM2)
-rodata page q : VA = 0x340000 + (q >> 1) * 0x8000 + (q & 1) * 0x2000     slot = q & 1   (SRAM3, low half)
+rodata page q : VA = 0x300000 + (q >> 1) * 0x8000 + (q & 1) * 0x2000     slot = q & 1   (SRAM3, low half)
 ```
 
-Up to 128 code pages (1 MiB) and 48 rodata pages (384 KiB) can exist.
+Up to 128 code pages (1 MiB) and 64 rodata pages (512 KiB) can exist. The
+last rodata pages may hold cold code (§3.6).
 
-MPU region 0 denies `0x200000–0x3FFFFF` except its sub-region
-`0x300000–0x33FFFF`, where SRAM3 is plain RAM. Pool regions each map one page
+MPU region 0 denies `0x200000–0x3FFFFF`, all of it; region 7 grants
+SRAM3's RAM half at its first alias, `0x304000–0x307FFF`, as plain RAM
+(read/write, execute-never). Until PG-2 (2026-11-27) region 0's
+sub-region `0x300000–0x33FFFF` was disabled instead, so SRAM3 was plain RAM
+there: 256 KiB of alias space for 16 KiB of RAM, which kept 16 rodata pages
+out of the window (it began at `0x340000`, 48 pages), and region 7 was the
+stack guard (§1.2). Pool regions each map one page
 (8 KiB, eight 1 KiB sub-regions) with only the **lines** actually loaded
 enabled. Touching anything else raises MemManage. The handler:
 
@@ -462,7 +476,8 @@ exactly, with host tests replaying recorded traces, 07 §3.1).
   cache and region pool as a pure data structure (`PagerCore`, host-testable),
   the MemManage entry in `global_asm!`, the NOR line reader (shared with the
   NOR driver), statistics, optional fault log ring, the stack guard region.
-  Six pool regions (1–6), region 0 deny, region 7 stack guard.
+  Six pool regions (1–6), region 0 deny, region 7 SRAM3's RAM half (the
+  stack guard until PG-2, §1.2).
 * Sections larger than a page: pages `4k … 4k+3` of one alias block are
   contiguous in virtual address space, so a code section may cross page
   boundaries **inside a 32 KiB group** but never across groups. Rodata groups
@@ -575,6 +590,69 @@ interleaved in `AnyDecoder::decode`). Clusters `mp3-frame` (11 lines) +
 `flac-frame` (9) lands on `mp3-frame`'s; `steps-sample` (4) on the end of
 `play-fill`. Before: `play-block` was 77 lines and its MP3 frame lines
 shared physical lines with the PCM push loop's.
+
+### 3.6 Cold code in the rodata window (PG-2, 2026-11-27)
+
+The code window was full: 124 of its 128 pages, and the speech voice with
+the screen reader (TTS-3: 133 pages) and Books (BOOK-1/2: 139) were built
+but could not go in; together they needed 148 pages (1,206,358 B). SRAM2's
+aliases end at 1 MiB (`0x400000` and above read as unmapped, 01 §9
+U-MEM-4), so the window cannot grow. Paged code that no deadline waits for
+now runs from the rodata window instead:
+
+* **What is cold**: `resident.toml` `[bin.firmware.cold]` — Books (its
+  shelf, desk, converter, EPUB/FB2 readers, layout and screens), the
+  authenticator and its hashes, firmware updates, the music library's
+  build, rare settings screens, the developer channel's commands and
+  replies. A `hot.toml` cluster always keeps its code in the code window,
+  and `xtask stack --check` fails when a cluster's path (`from`) reaches
+  cold code. Sections larger than a rodata group (16 KiB) stay in the code
+  window (pagelink warns: Books' `Desk::step_with`, 18 KB).
+* **Placement** (`xtask pagelink`): only as much as the code window needs
+  leaves it — all cold code is placed first, then the warmest (the end of
+  the `[cold]` list, which runs coldest first) comes back while one code
+  page stays free (`place_cold`, `CODE_RESERVE_PAGES`), so the two windows
+  share the free room. In the rodata window it goes after the constants'
+  groups, in groups of its own (`.px_gN`, first fit in crate and link
+  order); the header's
+  `rodata_code_pages` (`+0x50`) counts these pages, which the pager maps
+  without execute-never (`PagerCore::init_with`). A section goes where it
+  shares no physical line (offset in its group / 1 KiB) with a constant it
+  refers to, if a group has room there.
+* **Line conflicts and the trampoline.** Cold code shares SRAM3's two slots
+  (16 lines) with the constants. An instruction can need a constant whose
+  line maps onto the instruction's own physical line; loading it would
+  overwrite the code being executed (impossible in the code window, which
+  holds no constants: there it stays fatal, `Fatal::LineConflict`). The
+  pager loads the data line anyway (`Action::Load { bounce }`), first
+  copying the instruction — read from the page store — into a trampoline
+  in resident RAM, one 32-byte slot per exception nesting depth (thread
+  mode and levels 3–1: a slot in use belongs to a context that only a
+  deeper one preempts), and returns into it: `[IT <state>] <load> [rest of
+  the IT block] [nop] ldr.w pc, [pc]; .word resume|1`. The load completes
+  with its data mapped, the jump comes back after it, and the
+  instruction's line faults back in. Only position-independent
+  instructions are copied (`orpheus_pager::bounce`: loads of every width,
+  LDRD, LDM/POP, VLDR/VLDM with a base other than the PC; in an IT block
+  also ordinary data processing, stores and a final `BX`/`POP {pc}`);
+  anything else stays fatal. pagelink audits every load of cold code with
+  the same decoder (`0 of 1,290 loads cannot be bounced` in the default
+  image, 0 of 5,313 with Books). A bounce costs two line loads; a loop over a conflicting
+  constant pays that per access — the reason only cold code goes there.
+* **The hardware question**: SRAM3 must be executable through the code
+  bus. The datasheet does not say (SRAM2/3 are not in its memory map);
+  SRAM2 executes [HW], SRAM3 is read through the same region [HW], and an
+  unmapped code-region read returns the same `0xE800E800` to a data read
+  as the bank-tag hardware gives an instruction fetch, which suggests one
+  decoder for both buses [inferred] (01 §9 U-MEM-2). The first cold
+  function the player runs answers it (in the default image: opening the
+  Authenticator).
+* **As built** (default features: speech on): code 127/128 pages (8 KB
+  free), rodata 45/64 (7 of them cold code, 49 KB: updates, the
+  authenticator, the library build, rare screens); with Books too: code
+  127/128, rodata 62/64 (20 cold pages, 163 KB).
+  Resident +2.4 KB (the decoder and trampoline, 1.8 KB), `.bss` +176 B
+  (`.uninit`: five slots and the fetch buffer).
 
 ### 4.1 Priority levels
 

@@ -25,7 +25,14 @@
 # freed; 8 KiB of it moves to `bss_bytes`, the rest stays here as room
 # (17.3 KB) for resident growth (USB audio's handlers, the speech path).
 # The two budgets' sum is unchanged (208,896 B), so the stack's floor is.
-resident_bytes = 73728          # 72 KiB
+# 2026-11-27 (PG-2, cold code; speech on): 72 -> 60 KiB, the 12 KiB to
+# `bss_bytes` (their sum unchanged, so the stack's floor is). Measured
+# 59,824 B with the default features (speech) and 60,172 B with Books too
+# (text 30,656: +2.4 KB for the pager's trampoline (`orpheus_pager::bounce`,
+# the instruction decoder, 1.8 KB) and the DWT/canary stack guard; data
+# +284 B, the speech voice's statics). Reason: the speech voice and Books
+# need static RAM (`.bss`, below) that the resident room had.
+resident_bytes = 61440          # 60 KiB
 # Static RAM in SRAM0 (.bss + .uninit, excluding the stack).
 # 2026-11-24: 20 -> 124 KiB. Measured 123,000 B. Reason: the mode pool is
 # not a separate region yet; the decoder arena (64 KiB) and the stream ring
@@ -39,7 +46,12 @@ resident_bytes = 73728          # 72 KiB
 # the speech engine (8 KiB, [tts]) and the features after it need static
 # RAM. Stack: 45,568 B usable at today's sizes (`stack --check` margin
 # 31,068 B); with both budgets full it is what it was.
-bss_bytes = 135168              # 132 KiB
+# 2026-11-27 (PG-2): 132 -> 144 KiB (resident gave 12 KiB). Measured
+# 134,216 B with the default features (the speech voice +9.9 KB, TTS-3)
+# and 147,456 B with Books too (+13.2 KB, BOOK-1/2: the shelf and the
+# desk). The pager's trampolines (5 × 32 B) and its fetch buffer are in
+# `.uninit` (176 B, counted here).
+bss_bytes = 147456              # 144 KiB
 caches_bytes = 8192
 mode_pool_bytes = 106496        # 104 KiB
 stack_bytes = 12288             # 12 KiB
@@ -76,9 +88,12 @@ stack_static_margin_bytes = 4096
 slot_bytes_dual = 491520        # 480 KiB
 # Full layout (02 §2.4, D-2 decided 2026-11-24): slot A 0x1000..0x200000.
 slot_bytes_full = 2093056       # 2044 KiB
-# Page store (02 §3.1): what the alias windows can address.
+# Page store (02 §3.1): what the alias windows can address. 2026-11-27
+# (PG-2): the rodata window covers all of SRAM3's aliases (48 -> 64
+# pages; MPU region 7 grants SRAM3's RAM half instead of a 256 KiB hole
+# in the deny region), and its last pages may hold cold code (02 §3.6).
 code_pages = 128
-rodata_pages = 48
+rodata_pages = 64
 # Panic sites in the resident image (core::panicking callers). Growth needs
 # a STATUS.md entry.
 resident_panic_sites = 0
@@ -133,7 +148,7 @@ max_recordings = 24
 image_bytes = 98304             # 96 KiB
 # Paged bring-up images (fw/bringup/pagetoy): the window limits.
 code_pages = 128
-rodata_pages = 48
+rodata_pages = 64
 slot_bytes_dual = 491520
 
 [stage2]

@@ -461,8 +461,9 @@ impl Analysis {
             }
             let mut targets = Vec::new();
             for t in &e.targets {
-                let v = self.find(t);
-                if v.is_empty() {
+                let (may_be_absent, pat) = crate::rules::optional_pattern(t);
+                let v = self.find(pat);
+                if v.is_empty() && !may_be_absent {
                     missing.push(format!("target `{t}` matches nothing"));
                 }
                 targets.extend(v);
