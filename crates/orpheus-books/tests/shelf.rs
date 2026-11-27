@@ -961,7 +961,10 @@ fn regress_suite_books_left_their_reading_state() {
     // No state file for the suite's book; the owner's library untouched.
     let id = files::book_id("/.orpheus/test/suite/books/card.txt");
     let mut p = files::PathBuf::new();
-    assert!(!block_on(vol.exists(p.file(files::BOOKS_DIR, id, "pos"))).unwrap(), "no .pos for the suite's book");
+    assert!(
+        !block_on(vol.exists(p.file(files::BOOKS_DIR, id, "pos"))).unwrap(),
+        "no .pos for the suite's book"
+    );
     assert_eq!(read_file(&mut vol, files::LIBRARY_PATH), owner_lib, "the owner's library file");
     assert!(block_on(vol.exists(files::TEST_LIBRARY_PATH)).unwrap());
 

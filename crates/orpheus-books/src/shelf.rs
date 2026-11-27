@@ -545,7 +545,14 @@ struct SaveRec {
 
 impl SaveRec {
     fn of(b: &Book) -> SaveRec {
-        SaveRec { id: b.id, rec: b.rec, row: b.row, text_len: b.text_len, state: b.state, ram_only: b.ram_only }
+        SaveRec {
+            id: b.id,
+            rec: b.rec,
+            row: b.row,
+            text_len: b.text_len,
+            state: b.state,
+            ram_only: b.ram_only,
+        }
     }
 }
 
@@ -1631,7 +1638,9 @@ impl Desk {
                     Ok(mut f) => {
                         let ok = vol.read_exact_or_eof(&mut f, &mut h).await.is_ok_and(|n| n == NORM_HEADER);
                         NormHeader::decode(&h)
-                            .filter(|h| ok && h.complete && h.src_size == b.src_size && h.src_stamp == b.src_stamp)
+                            .filter(|h| {
+                                ok && h.complete && h.src_size == b.src_size && h.src_stamp == b.src_stamp
+                            })
                             .map(|h| (h, f))
                     }
                     Err(_) => None,

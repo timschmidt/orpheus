@@ -1127,6 +1127,15 @@ impl Host for HostServices {
                 self.seq.noted = Some(format!("{} {} {}", p.kit_name(), p.pattern(0).len(), p.swing()));
             }
             "booksteps" => self.books.per_step = v.parse()?,
+            // The open book could not be read (its golden: the message
+            // wrapped, BOOK-1/2b).
+            "bookfail" => {
+                self.books.shelf.book.phase = orpheus_books::shelf::Phase::Failed;
+                self.events.push(Event::Service(ServiceEvent::Other {
+                    kind: orpheus_apps::services::other::BOOKS,
+                    value: 0,
+                }));
+            }
             "bookscratch" => self.books.lend = on,
             // The on-device suite's books (as the player's `books test
             // on`): its fixture folder is the library.

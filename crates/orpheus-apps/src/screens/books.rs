@@ -872,7 +872,13 @@ impl<S: Services + ?Sized> Screen<S> for ReaderScreen {
                 return;
             }
             Phase::Failed | Phase::Closed => {
-                g.text_in(0, h / 2, w, self.lang.get(Str::BooksFailed), FontId::Ui, fg, TextAlign::Center);
+                // Wrapped: on one line it was cut off ("The book could not
+                // b…", BOOK-1/2b).
+                let mut y = h / 2 - 7;
+                g.wrap(self.lang.get(Str::BooksFailed), FontId::Ui, w - 16, |g, line| {
+                    g.text_in(0, y, w, line, FontId::Ui, fg, TextAlign::Center);
+                    y += 14;
+                });
                 return;
             }
         }
