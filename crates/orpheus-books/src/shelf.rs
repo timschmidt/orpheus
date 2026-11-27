@@ -1283,10 +1283,15 @@ impl Desk {
             self.load_library(sh, vol).await;
             return true;
         }
+        // Rows already loaded: nothing done, and the work below goes on in
+        // this step. (Returning "nothing to do" here ended the firmware's
+        // card work with an open still pending: the book never opened,
+        // BOOK-1/2b.)
         if let Some(first) = sh.lib.want
             && sh.lib.phase == LibPhase::Ready
+            && self.rows_step(sh, vol, first).await
         {
-            return self.rows_step(sh, vol, first).await;
+            return true;
         }
         // 3. Opening a book.
         if let Some(row) = sh.open.take() {

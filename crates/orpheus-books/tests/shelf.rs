@@ -1049,3 +1049,50 @@ fn regress_book_open_was_one_long_step() {
     }
     assert!(most <= 6, "a step of an open read {most} sectors");
 }
+
+/// Regression (BOOK-1/2b, 2026-11-27): on the player a book sometimes
+/// never opened ("The book could not be read.", `books status`
+/// `book=closed` or `opening` with its step count frozen until the
+/// library was entered again), typically after another book was read and
+/// the library shown again. The library screen asks for its rows when it
+/// shows; with every row already loaded that step did nothing and said so
+/// ("nothing to do"), and the firmware ends its card work at such a step
+/// (it waits for the next request): the open asked for in the same
+/// breath was never run. A step now goes on to the next work when the
+/// rows are loaded already; here, as the firmware runs it, until the
+/// first step that does nothing.
+#[test]
+fn regress_open_after_loaded_rows_never_ran() {
+    use orpheus_books::shelf::Desk;
+    let Some(disk) = image(false) else { return };
+    let mut cache = vec![CacheSlot::EMPTY; 8];
+    let dev = Counting { disk, reads: 0, writes: 0 };
+    let mut vol: Vol<'_> = block_on(Volume::mount(dev, &mut cache, MountOptions::default())).unwrap();
+    block_on(vol.create_dir("/Books")).unwrap();
+    put(&mut vol, "/Books/a.txt", &tale());
+    put(&mut vol, "/Books/b.md", &notes());
+    let (mut sh, mut desk) = (Shelf::new(), Desk::new());
+    // As the firmware's card task: steps until one does nothing.
+    let work = |sh: &mut Shelf, desk: &mut Desk, vol: &mut Vol<'_>| {
+        let mut n = 0;
+        while block_on(desk.step_with(sh, vol, &Mono, None)) {
+            n += 1;
+            assert!(n < 100_000);
+        }
+    };
+    sh.request(Req::Library(Scope::BooksFolder));
+    sh.request(Req::Params(P));
+    sh.request(Req::Rows(0));
+    work(&mut sh, &mut desk, &mut vol);
+    assert_eq!(sh.lib.count, 2);
+    for round in 0..2 {
+        // Back in the library (its rows asked for again), then a book.
+        sh.request(Req::Rows(0));
+        sh.request(Req::Open(round));
+        work(&mut sh, &mut desk, &mut vol);
+        assert_eq!(sh.book.phase, Phase::Ready, "round {round}");
+        assert!(sh.book.window().is_some() && sh.book.page_no.is_some(), "round {round}");
+        sh.request(Req::Close);
+        work(&mut sh, &mut desk, &mut vol);
+    }
+}
