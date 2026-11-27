@@ -333,6 +333,9 @@ rects = [
 # page. `books status` is read-only (the model as the card task left it).
 # The library is shot with the text focused (the EPUB's title, a marquee
 # when focused, would move). Home's Books cell is the one before Settings.
+# 8 s for the library: when its file is missing (a new card, Clear caches
+# before BOOK-1/2b moved it) the folder is searched and the EPUB's title
+# read, `lib=searching` still after 3 s on the player.
 [[journey]]
 name = "books"
 about = "Books (with the firmware feature `books`): the suite's library of two books, the text's first page, a page turned (books status page=1), back to the first page, back to the library and Home"
@@ -342,7 +345,7 @@ script = """
 cmd: books test on ~ ^books test on
 sim: set:bookstest=on
 prev*2 ok wait:500 expect-screen:Books
-dev: wait:3000
+dev: wait:8000
 cmd: books status ~ lib=ready n=2\\b
 down wait:300 shot:library
 ok wait:500 expect-screen:Reader
