@@ -82,6 +82,7 @@ of every session. Newest entries first in §3.
 | A11Y-2 | **built (host + simulator + firmware), not yet run on the player**; journey `settings_accessibility` and user check 31 | Settings › Accessibility (Text size Normal/Large/Extra large, Hold delay 0.5–2 s, Key repeat Normal/Slow/Slower; packed in `0x0D60`), Themes White on black / Black on white (≥ 7:1), reduced motion = Animations off (spinner still, blinks lit), Key click Presses and holds (hold confirmation); 63 `a11y_*` goldens (session entry 2026-11-26 "A11Y-2") |
 | A11Y-1 | **done (host + simulator)**; in the firmware with TTS-3 (feature `speech`, **on by default since PG-2**, not yet run on the player); **user check: listen to the spoken journeys** | Screen reader: `orpheus_ui::a11y` (descriptions, `Reader`, `SpeechService`, `UtteranceQueue`, earcons, chords) behind `screen-reader`; every one of the apps' 72 screens describes itself (lint: 629 foci, every screen reached); Settings › Accessibility: Screen reader, Speech rate 0.25×–10× in 0.25× steps, Voice, Pitch, Verbosity, Sound cues, Where am I, Keys with screen off, Speech volume and Music while speaking (TTS-3); toggle = hold Back + Menu 2 s (Vol+ + Vol− share a ladder); 8 spoken-journey goldens with audio hashes; matrix contexts `speech`, `speech-music` (session entries 2026-11-26 "A11Y-1", 2026-11-27 "TTS-3") |
 | VER-13 Brightness (U-PWM-3) | **built (host + simulator + firmware), not yet run on the player**; journey `settings_brightness` and user check 32 | Settings › Display › Brightness = the stock levels 1–11 (default 6) on the stock PWM4 duties, live; key `0x030D` (old `0x0301` retired); alert flash 15 / 3 (never 16); `ui top` `bl=` |
+| VER-3 | **done (host)** | Adversarial-input suites in 27 crates (`tests/adversarial.rs`, shared helper `tests/adversarial.rs`; 99 tests, 24 `proptest` properties with fixed seeds, failures recorded in `tests/regress/proptest/`); 3 bugs fixed (F-GAME-1, F-SET-3, F-SET-4); inventory and what is not covered: `docs/verification/baseline-2026-11.md` §9 (session entry 2026-11-27 "VER-3") |
 | VER-4 (settings store keys) | **done (host + firmware built), not yet run on the player** | Store index 128 → 192 keys at 4 B a slot (was 8), same NOR format both ways (fixture from the old code, byte-equal images); cache write marks unlimited; 131 keys in use with every app (61 free), firmware 129; sector ceiling ≈ 209 settings keys (256 cannot fit one sector); .bss −1,248 B, stack margin 5,664 B; compaction no longer re-blesses a rotted value (session entry 2026-11-26 "VER-4: settings store index") |
 
 ## 3. Session log
@@ -131,6 +132,72 @@ in 05 §7.16 ("As built (SEQ-2, 2026-11-27): MIDI clock out …").
   M16, a DAW following the Sequencer's clock.
 * **Cleanup**: the SEQ-1 and SEQ-2 package rows had landed in the session
   log by merges; moved into §2's table.
+
+### 2026-11-27 — VER-3: adversarial inputs (worker, no hardware)
+
+* **Suites**: a `tests/adversarial.rs` in every crate that reads outside
+  data — `orpheus-update` (`.ofw`, `UPDATE` requests in any order with
+  power cuts), `orpheus-usb` (every SCSI opcode × CDB length × fill × unit,
+  LBA/count/allocation edges, CBW cut/damaged, devchan every request),
+  `orpheus-fs` (cyclic/broken FAT chains, exFAT root loop, boot-sector
+  edges, hostile names + fsck, write-prefix escapes, locator edges), the
+  codecs (every seed cut in its headers, arena one byte short and reused,
+  WAV/FLAC/Ogg/ID3 field edges, tag readers), `orpheus-img`,
+  `orpheus-books` (zip field edges, CD lies, hostile paths, markup soup),
+  `orpheus-midi`, `orpheus-synth`, `orpheus-seq`, `orpheus-games` (saves
+  with a right CRC), `orpheus-steps`, `orpheus-apps` (settings records,
+  stepping), `orpheus-fm` (RDS, presets), `orpheus-hid`, `orpheus-bt`
+  (events × lengths × checksums × chunking; requests and events in any
+  order), `orpheus-pager` (traces in any order with shrinking), the
+  simulator (a hostile language pack on every screen), and seed sweeps
+  through the fuzz bodies for otp, proto, settings, index, library,
+  player, sdcard, input, power, tts. Shared helper `tests/adversarial.rs`:
+  `prefixes`, `damaged`, `edges`, `hostile_names`, `seeds`, `sweep`,
+  `config` (proptest: fixed seed per property, ChaCha, failures recorded
+  in `tests/regress/proptest/<name>.txt`). `proptest` 1.12 is a workspace
+  dev-dependency only (default features off: no fork, no timeout).
+* **Counts**: 99 tests in 27 files, 24 of them `proptest` properties
+  (64–512 cases each), 1 `#[ignore]`d (every byte of every codec seed:
+  `cargo test -p orpheus-codec-conformance --test adversarial --
+  --ignored`; run once: **passed, 2,309 s**, every byte of all 115 seeds,
+  no finding). Each suite alone
+  ≤ 6 s; `cargo test --workspace` 196 s (165 s before, both including the
+  incremental build).
+* **Bugs found and fixed** (each with `regress_*`, input under
+  `tests/regress/`, a row in `docs/regressions.md`, checked failing
+  without the fix):
+  * F-GAME-1 `Bricks::check` (run by `decode` on every save from the
+    card) overflowed on a save with a right CRC and a large broken-brick
+    counter or paddle/ball position — a panic in the simulator/browser, a
+    wrapped score sum in the firmware that could load an unreachable
+    state. `regress_bricks_save_check_overflow`,
+    `tests/regress/games_save/`.
+  * F-SET-3 `Setting::step` overflowed `i16` at the ends of the packed
+    words' full-`i16` ranges (0x0D60, 0x0D61). `regress_setting_step_overflow`,
+    `tests/regress/apps_settings/step-at-i16-limits`.
+  * F-SET-4 `format_value` of the Speech rate (`Unit::Quarters`) overflowed
+    `u16` beyond ±2,621. `regress_speech_rate_format_overflow`,
+    `tests/regress/apps_settings/format-quarters-out-of-range`.
+* **Oracle corrections** (by design): Vorbis refuses a short arena at its
+  first `decode` (set-up header) with `ArenaTooSmall`; PNG/JPEG check
+  their need with slack, so the exact used size may be refused with
+  `Arena`; a decoded game save is not the identity (Solitaire's cards in
+  hand, Salvo's shot in flight); a repeated update piece with other bytes
+  fails the update.
+* **Not covered yet** (baseline §9.3): `orpheus-audio` ring with arbitrary
+  read sizes, `orpheus-dsp` float extremes, `orpheus-ui`, `orpheus-rec`,
+  the host tools against garbled device responses, `xtask` inputs,
+  firmware-only concurrency (VER-7/8).
+* **Firmware** (`orpheus-games` and `orpheus-apps` changed): `xtask build`
+  ok — resident 60,336 B, **127/128 code pages (8,362 B free)**, 46/64
+  rodata, slot 1,482,752 B; `stack --check` 14,820 B of 31,232 B (margin
+  16,412 B); `size --check` ok (bss 134,368 B); `check-resident` ok.
+* Gate: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets
+  -- -D warnings`, `cargo test --workspace`, `cargo xtask settings-matrix
+  --check` (99.6 %, 0 errors) pass; `xtask build`, `stack --check`, `size
+  --check`, `check-resident` pass; device steps not run (host-only
+  package).
+* No user checks.
 
 ### 2026-11-27 — PG-2 / PG-2b on the player; ls fixes (lead)
 

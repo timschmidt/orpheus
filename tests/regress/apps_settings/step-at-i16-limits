@@ -1,0 +1,6 @@
+# Setting::step at the ends of a range reaching the i16 limits (VER-3,
+# 2026-11-27): setting id, value, direction.
+0x0D60 32767 1
+0x0D60 -32768 -1
+0x0D61 32767 1
+0x0D61 -32768 -1

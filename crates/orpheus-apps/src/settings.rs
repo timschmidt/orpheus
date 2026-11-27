@@ -147,13 +147,19 @@ impl Setting {
     /// ranges clamp, toggles flip.
     #[must_use]
     pub fn step(&self, v: i16, dir: i16) -> i16 {
+        // In i32: a range reaching the i16 limits (the packed accessibility
+        // and screen-reader words) overflowed at its ends (VER-3,
+        // 2026-11-27).
+        let (v32, d32) = (i32::from(v), i32::from(dir));
         match self.kind {
             Kind::Toggle => 1 - v.clamp(0, 1),
             Kind::Choice(c) => {
-                let n = i16::try_from(c.len()).unwrap_or(1).max(1);
-                (v + dir).rem_euclid(n)
+                let n = i32::try_from(c.len()).unwrap_or(1).max(1);
+                (v32 + d32).rem_euclid(n) as i16
             }
-            Kind::Range { min, max, step, .. } => (v + dir * step).clamp(min, max),
+            Kind::Range { min, max, step, .. } => {
+                (v32 + d32 * i32::from(step)).clamp(i32::from(min), i32::from(max)) as i16
+            }
             _ => v,
         }
     }
@@ -980,7 +986,8 @@ pub fn format_value<const N: usize>(s: &Setting, v: i16, lang: Lang, out: &mut S
                 out.push_str(" m/s");
             }
             #[cfg(feature = "screen-reader")]
-            Unit::Quarters => format_choice(Choice::Speed(v.unsigned_abs() * 25), lang, out),
+            // Saturating: any i16 may be shown (VER-3, 2026-11-27).
+            Unit::Quarters => format_choice(Choice::Speed(v.unsigned_abs().saturating_mul(25)), lang, out),
         },
         _ => {}
     }

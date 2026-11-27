@@ -11,5 +11,8 @@ publish = false
 orpheus-synth = { path = "../orpheus-synth" }
 orpheus-midi = { path = "../orpheus-midi" }
 
+[dev-dependencies]
+proptest.workspace = true
+
 [lints]
 workspace = true

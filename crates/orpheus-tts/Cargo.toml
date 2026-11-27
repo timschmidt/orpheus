@@ -20,6 +20,9 @@ build = []
 # samples and the delay).
 orpheus-synth = { path = "../orpheus-synth", default-features = false }
 
+[dev-dependencies]
+proptest.workspace = true
+
 [lints]
 workspace = true
 

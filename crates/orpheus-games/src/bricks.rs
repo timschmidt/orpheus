@@ -1338,8 +1338,10 @@ impl Bricks {
     /// The invariants, for tests and fuzzing: `Err` names the first one
     /// broken.
     pub fn check(&self) -> Result<(), &'static str> {
+        // Values come from save files (`decode`): compared without sums
+        // that can overflow (VER-3, 2026-11-27).
         let (px, pw) = (self.paddle_x, i32::from(self.paddle_w));
-        if px < 0 || px + pw * ONE > FIELD_W * ONE {
+        if px < 0 || px > FIELD_W * ONE - pw * ONE {
             return Err("paddle outside the walls");
         }
         let base = self.cfg.base_width();
@@ -1356,7 +1358,7 @@ impl Bricks {
             if b.ang > 6 {
                 return Err("ball angle");
             }
-            if b.x < 0 || b.x + BALL * ONE > FIELD_W * ONE || b.y < 0 {
+            if b.x < 0 || b.x > FIELD_W * ONE - BALL * ONE || b.y < 0 {
                 return Err("ball inside a wall");
             }
             if b.y >= FIELD_H * ONE {
@@ -1381,9 +1383,14 @@ impl Bricks {
         if self.left != self.count_left() {
             return Err("bricks left miscounted");
         }
-        let points = self.broken.iter().zip(1u32..).map(|(&n, s)| n * s * BRICK_POINTS).sum::<u32>()
-            + u32::from(self.cleared) * CLEAR_POINTS;
-        if self.score != points {
+        let points = self
+            .broken
+            .iter()
+            .zip(1u64..)
+            .map(|(&n, s)| u64::from(n) * s * u64::from(BRICK_POINTS))
+            .sum::<u64>()
+            + u64::from(self.cleared) * u64::from(CLEAR_POINTS);
+        if u64::from(self.score) != points {
             return Err("score does not follow the bricks broken");
         }
         if self.lives > MAX_LIVES {

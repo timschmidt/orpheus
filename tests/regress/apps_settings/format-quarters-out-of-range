@@ -1,0 +1,5 @@
+# format_value of the Speech rate (Unit::Quarters) out of its range
+# (VER-3, 2026-11-27): setting id, value.
+0x1005 32767
+0x1005 -32768
+0x1005 2622

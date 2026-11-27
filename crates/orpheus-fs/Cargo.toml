@@ -15,6 +15,7 @@ std = []
 
 [dev-dependencies]
 orpheus-fs = { path = ".", features = ["std"] }
+proptest.workspace = true
 
 [lints]
 workspace = true

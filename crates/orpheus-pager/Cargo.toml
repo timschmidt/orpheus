@@ -13,6 +13,7 @@ sim = []
 
 [dev-dependencies]
 orpheus-pager = { path = ".", features = ["sim"] }
+proptest.workspace = true
 
 [lints]
 workspace = true

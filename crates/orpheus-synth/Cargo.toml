@@ -32,3 +32,4 @@ harness = false
 
 [dev-dependencies]
 bytemuck = { version = "1.25", default-features = false, features = ["derive", "min_const_generics"] }
+proptest.workspace = true

@@ -14,6 +14,7 @@ bytemuck = { version = "1.25", default-features = false, features = ["derive", "
 
 [dev-dependencies]
 orpheus-meta = { path = "../orpheus-meta" }
+proptest.workspace = true
 
 [lints]
 workspace = true

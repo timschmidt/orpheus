@@ -397,3 +397,99 @@ counts (the verified-file oracles apply to unrepaired headers only);
 `Command::Requeue` keeps the current position inside a non-empty queue by
 contract (`queue::edit`); Now Playing's Levels view redraws at most every
 66 ms by design.
+
+## 9. VER-3: adversarial inputs (2026-11-27)
+
+Written on commit `222b93b9` (host only; 07 §3.7). Every crate that
+reads outside data has a `tests/adversarial.rs` (27 suites, 99 tests of
+which 24 are `proptest` properties, one `#[ignore]`d long run), built from
+the shared `tests/adversarial.rs`:
+
+* `prefixes` (cut at every byte), `damaged` (every byte replaced by its
+  complement, 0x00 and 0xFF), `edges` (a field at 0, 1, real − 1, real,
+  real + 1, half, max − 1, max), `put_le`/`put_be`, `hostile_names`
+  (empty, dots, control characters, separators, FAT-invalid characters,
+  RTL override, combining and zero-width marks, astral and private-use
+  characters, 255/256/4096-byte names), `seeds` (the committed
+  `tests/fuzz-corpus/<target>/seed-*` files);
+* `sweep(data, skip, head, body)`: the generic table for a format without
+  spelled-out fields — cut at every byte of the head and at 64 points
+  beyond, every head byte damaged, a 16- and a 32-bit field at every head
+  offset in both byte orders at 0/1/max−1/max — run through the crate's
+  fuzz body, so the oracles are the bodies' (§8.1);
+* `config(name, cases)`: the proptest configuration — a fixed seed per
+  property (FNV-1a of its name; ChaCha), no forking, shrinking, failures
+  recorded in `tests/regress/proptest/<name>.txt` and replayed first.
+
+The oracles are the fuzz bodies' where a crate has them, plus suite
+specific ones (below). Run time: every suite under 6 s alone at the test
+profile (codecs 5.5 s, fs 4 s, tts 2.3 s, otp 2.3 s, the rest < 1.5 s);
+`cargo test --workspace` measured in the STATUS entry.
+
+### 9.1 Inventory: covered
+
+Ordered by exposure (card and USB first).
+
+| Input (where it comes from) | Suite | Adversarial cases | Oracles beyond "no panic, no hang" |
+|---|---|---|---|
+| `.ofw` update files (card, developer channel `UPDATE`, browser installer) | `orpheus-update` | header and slot header cut at every byte; every header byte damaged with the CRC made right; image/change-list/header-size/version fields and every slot-header word at their edges; any header bytes (proptest, half with magic/CRC right); `UPDATE` requests in any order — pieces of any size in and out of order, repeats, garbage, read-back steps of any size, commit/abort/start at any time, a power cut anywhere (proptest, 192 × ≤ 100 steps) | `check` accepts only bounds inside the image; never a write outside the target slot or over unerased bits; a repeat of a taken piece is accepted; after any sequence and a cut stage 2 starts the old image, or the new one only complete and verified |
+| FAT12/16/32 and exFAT card (any card) | `orpheus-fs` | 15 FAT patches per kind (self loops and two-cycles under a directory and a file, chains into free/reserved/out-of-range/bad/end values, one chain into the other); exFAT root-directory chain loops; every boot-sector geometry field at its edges (FAT12/16/32, exFAT); hostile names created, listed, read back and `fsck`-checked; escape paths under the `/.orpheus` write prefix; locators (index/queue files) with `dir`/`index` at their edges; any FAT entries (proptest) | every listing, lookup, read, extent walk, growth, truncation, removal, rename and flush ends within 20 s (a watchdog bound); names made are listed and read back; nothing written outside the prefix |
+| Audio files: WAV/AIFF/AU, MP3, FLAC, Ogg Vorbis/Opus/Speex, tags (ID3v2, Vorbis comment, RIFF INFO), LRC/SYLT | `orpheus-codec-conformance` | every seed (115 conformance files) cut at every byte of its first 640 bytes and at 24 points beyond, forced decoder and probed, on the device ring with 509-byte refills (`--ignored`: every byte of every file; run once, passed in 2,309 s); the arena one byte short of `inspect`'s plan, half, zero; the arena filled with another track's bytes; WAV chunk and `fmt ` fields, FLAC metadata lengths, block types and STREAMINFO fields, Ogg segment counts, lacing values, granule, sequence and header type, ID3v2 tag and frame sizes and flags for eight frame kinds at their edges; tag readers on every cut and damaged header byte; hostile LRC lines | the fuzz bodies' verdict (no broken `NeedData` contract, an end within budget); a short arena is refused by `open` or ends with `ArenaTooSmall` after the same PCM; a reused arena decodes exactly as a zeroed one |
+| Pictures: JPEG, PNG, GIF, BMP, QOI (card, album art) | `orpheus-img` | every picture cut at every byte of its first KiB; the arena at what a decode used, one byte less, half, 64, 0, and reused; width/height/depth/colour type/interlace (PNG with the IHDR CRC made right), BMP size/offset/header/bit fields and negative heights, GIF screen/descriptor sizes and packed field, QOI sizes/channels, JPEG SOFn fields and every segment length at their edges; a real header then noise (proptest) | the sink contract (`common::Capture`); a reused arena decodes the same; a short arena gives only `Arena` or a cheaper mode; each variant within 10 s |
+| Books: EPUB (zip, inflate, XML, OPF, XHTML), TXT, Markdown, FB2 | `orpheus-books` | both EPUB samples cut at every byte of head and tail and at 150 points; every local-header, central-entry and end-record field at its edges; central entries pointing at the start, the end record or themselves; the directory offset at each entry; the archive twice; 3,000 empty entries; hostile names as entry names, manifest hrefs, the container's rootfile and the package itself; markup soup in a chapter (with up to 2,000 nested `<div>`), the OPF as soup, TXT/MD/FB2 soup (proptest) | the bodies': bounded work per step, a well-formed stream, contents inside the text |
+| MIDI files (SMF 0/1/2, RMID, karaoke) | `orpheus-midi` | every seed swept; header length/format/track count/division (ticks and SMPTE) and each track length at their edges; non-track chunks; RMID wrapper sizes; overlong and unterminated delta times, running status with no status, meta and SysEx lengths past the chunk, real-time and undefined status bytes, every channel message with 0x7F/0xFF data, every program/bank, 1,000 hanging notes, hostile lyric text; 70 tracks, empty tracks, a lying track count; event soup (proptest) | the body's: parser progress and end, samples finite in [−1, 1], positions inside the song |
+| Synth sound banks, sample WAVs, event streams | `orpheus-synth` | every `bank_decode`, `wav_parse` and `synth_events` seed swept; every event op × part/note/velocity classes × NaN, ±∞, subnormal, ±max, −0 parameters at every rate; event records in any order (proptest) | round trips, finite bounded output, voice bound |
+| Sequencer projects | `orpheus-seq` | the small seeds swept with the CRC made right and as they are; any record bytes with a right CRC (proptest) | load → save → load identity, bounded play and export |
+| Game saves and the score table (`/.orpheus/`) | `orpheus-games` | a save of every game (Blocks, 4096, Solitaire, Salvo, Bricks) cut at every byte, cut and resealed (consistent but short), every payload byte damaged with the CRC right, every kind × versions, length field at its edges; score tables with every count and too few/many records; any payload bytes with the CRC right (proptest) | a loaded save survives 400 inputs and steps and what the game then writes loads again; never loaded as another game |
+| Step history `/.orpheus/steps.bin`, accelerometer samples, trace files | `orpheus-steps` | file cut at every byte, damaged, resealed; any days and counts with the CRC right, rolled to any day (proptest); samples at ±full scale, square waves, magnitudes at `i32` limits, any rate; hostile trace lines | what is written reads back; at most one step per two samples |
+| Index, library, queue and resume files | `orpheus-index`, `orpheus-library`, `orpheus-player` | every seed of `index_open`, `library_open`, `player_queue`, `player_resume` swept | the bodies' (§8.1) |
+| `otpauth://` import file | `orpheus-otp` | every `otp_uri` seed swept | the body's round trips and limits |
+| Language packs (`.ylang`, card or NOR) | `orpheus-sim` | a pack whose every string is hostile (400 wide glyphs, control characters, 60 combining marks, RTL, zero-width, astral/private-use, format strings, spaces, mixed scripts) on every screen of the UI fuzzer's list with keys, menus, card and battery events, every Settings row; a cut or damaged pack header; any table entries and data (proptest) | dirty rectangles inside the panel; navigation depth; a full redraw equals the incremental frame; strings are UTF-8 or English |
+| Text to speak (book text, names, tags), the lexicon | `orpheus-tts` | every `tts_text`, `tts_lexicon`, `tts_synth` seed swept | the bodies' |
+| SCSI/MMC commands and the Bulk-Only Transport (USB disk, CD-ROM, card reader) | `orpheus-usb` | every opcode × CDB length 1–16 × five fills × eight unit kinds; READ/WRITE (10/12/16) LBA and count at their edges around the medium's end; 16 allocation-length commands at their edges and every shorter CDB; the CBW cut and damaged at every byte and its CDB length byte 0–255; transfer lengths at their edges in both directions and block units; sessions of commands, data and garbage packets in any order (proptest) | the body's: medium inside, nothing on read-only or absent units, CSW tag/status/residue, replies within transfer and allocation lengths, failures with sense data |
+| Developer-channel requests | `orpheus-usb` | every request code × ten request types × `wLength` and `wValue` edges × data and buffer sizes; requests in any order (proptest) | the body's: only vendor/device requests claimed, replies within `wLength`, PEEK only in development builds, reboots only for REBOOT |
+| HID keyboard text (`kbd type`, codes) | `orpheus-hid` | hostile names and layout-special characters in all four layouts, keypad digits on and off, delays at their edges, aborts after 1–3 reports; layout codes of any bytes; any text (proptest) | `check` names an untypable character or the fake host gets exactly the text; no overlap, nothing held, at most two reports per character |
+| Bluetooth module UART | `orpheus-bt` | both seeds swept; every event id (and 0x00/0x7F/0xFF) × parameter lengths up to one past the limit × a wrong checksum, the length field at its edges and a stray sync byte, between good frames, in every chunk size 1–17; requests, events, acknowledges, time and power in any order (proptest, 512) | the bodies': chunking-independent frames, no restricted command (rule 6), nothing sent while off, list bounds |
+| Settings store sectors, vault sector, NOR/RAM records | `orpheus-settings`, `orpheus-otp`, `orpheus-proto` | every `settings_mount`, `otp_vault`, `proto_records` seed swept | the bodies' models across remounts and power cuts |
+| Settings values (any record the store hands back) | `orpheus-apps` | every setting × `i16` edges and its own range/choice edges × record lengths 0/1/2/3; stepping both ways from every valid value; the RAM cache loading any record; file references from any bytes; any records then sets (proptest) | a value reaching the UI is valid; stepping stays valid; ranges on their step grid |
+| RDS groups (over the air), FM presets (settings store) | `orpheus-fm` | every group type and version with extreme payloads and error levels; station, text A/B and clock changing every group; clock groups at their edges; preset lists of any bytes and lengths; any groups, any presets (proptest) | service name and text within their lengths, text to UTF-8 whole characters into any buffer, plausible clock; only plausible presets |
+| SD card registers, key ladder, charger and gauge samples | `orpheus-sdcard`, `orpheus-input`, `orpheus-power` | every `sd_registers`, `input_samples`, `power_samples` seed swept | the bodies' (charge code never above the 200 mA code) |
+| Pager access traces | `orpheus-pager` | any store size up to the window limits with cold code, fetches and reads of any length at any address, cold code reading its constants, in any order (proptest, shrinking; `traces.rs` has fixed-seed random traces) | no physical line mapped twice, mapped lines hold their page's data, tables agree with the MPU, data equal to the store, only documented fatal faults |
+
+### 9.2 Findings
+
+| Id | Where | What | Test, input | State |
+|---|---|---|---|---|
+| F-GAME-1 | `orpheus-games` `Bricks::check` (run by `decode`) | A save with a right CRC and a broken-brick counter of 0x8000_0000, or the paddle or a ball at `i32::MAX`, overflowed `n * s * BRICK_POINTS` / `x + w * ONE`: a panic in the simulator and browser build; in the firmware (overflow checks off) a wrapped sum that could match the stored score and load an unreachable state | `regress_bricks_save_check_overflow`; `tests/regress/games_save/bricks-{broken,paddle}-overflow` | **fixed**: comparisons rearranged, the score sum in `u64` |
+| F-SET-3 | `orpheus-apps` `Setting::step` | `v + dir * step` in `i16` overflowed at the ends of a range reaching the `i16` limits (the packed words 0x0D60, 0x0D61) | `regress_setting_step_overflow`; `tests/regress/apps_settings/step-at-i16-limits` | **fixed**: in `i32`, clamped |
+| F-SET-4 | `orpheus-apps` `format_value` (`Unit::Quarters`, screen reader) | `|v| * 25` in `u16` overflowed beyond ±2,621 | `regress_speech_rate_format_overflow`; `tests/regress/apps_settings/format-quarters-out-of-range` | **fixed**: saturating |
+
+Oracle corrections (by design, not bugs): Vorbis parses its set-up header
+in the first `decode`, so an arena one byte short is refused there with
+`ArenaTooSmall`, not by `open`; the picture decoders check their need with
+slack before allocating (PNG: 16 bytes and a palette reserve; JPEG falls
+back to a cheaper mode), so an arena of exactly the bytes a decode used
+may be refused with `Arena`; a decoded game save is not the identity
+(Solitaire does not save the cards in hand, Salvo saves a shot in flight
+as settled and plans the computer's turn again on load, drawing on its
+generator); a repeat of an update piece with different bytes fails the
+update with `Verify` (by design: the host resends the same bytes).
+
+### 9.3 Not covered yet
+
+* `orpheus-audio` stream ring under arbitrary read sizes beyond what the
+  conformance driver does; `orpheus-dsp` parameter extremes (NaN/∞ cannot
+  come from the validated settings, but the chain's API takes floats);
+  `orpheus-ui` (fonts are built in; zero-size widgets); `orpheus-rec`
+  (writes only; a recording cut by a power loss is read by the codecs'
+  suites as a WAV/FLAC).
+* Host tools: `orpheus-host` and `orpheus-install-web` against garbled
+  device responses (ADFU, BOT, ymon, developer channel) — needs the mock
+  `Transport` to inject them; `xtask` inputs (`layout.json`, ELF, maps).
+* Resource exhaustion beyond arenas: the card task's job budgets and the
+  books scratch (`epub.rs::the_scratch` exists) were not driven to their
+  limits here; RAM exhaustion of the simulator's caches.
+* Concurrency and order abuse inside the firmware (card hand-over between
+  USB and the card task, requests during an update from the card): the
+  logic is firmware code; VER-7/VER-8 cover it on the player.
+* Open findings unchanged: F-SET-2, F-UI-1, F-UI-4 (§8.4).

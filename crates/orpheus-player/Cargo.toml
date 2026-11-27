@@ -11,6 +11,7 @@ orpheus-fs = { path = "../orpheus-fs" }
 orpheus-proto = { path = "../orpheus-proto" }
 
 [dev-dependencies]
+proptest.workspace = true
 orpheus-fs = { path = "../orpheus-fs", features = ["std"] }
 
 [lints]
