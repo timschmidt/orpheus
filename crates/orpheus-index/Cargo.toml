@@ -12,6 +12,7 @@ orpheus-apps = { path = "../orpheus-apps" }
 orpheus-fs = { path = "../orpheus-fs" }
 
 [dev-dependencies]
+proptest.workspace = true
 orpheus-audio = { path = "../orpheus-audio" }
 orpheus-fs = { path = "../orpheus-fs", features = ["std"] }
 

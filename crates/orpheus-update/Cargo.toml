@@ -14,5 +14,9 @@ std = []
 orpheus-proto.workspace = true
 sha2 = { version = "0.11", default-features = false }
 
+[dev-dependencies]
+orpheus-update = { path = ".", features = ["std"] }
+proptest.workspace = true
+
 [lints]
 workspace = true

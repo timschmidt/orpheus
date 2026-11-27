@@ -24,3 +24,4 @@ workspace = true
 [dev-dependencies]
 bytemuck = { version = "1.25", default-features = false, features = ["derive", "min_const_generics"] }
 orpheus-proto = { path = "../orpheus-proto" }
+proptest.workspace = true

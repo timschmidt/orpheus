@@ -55,5 +55,6 @@ workspace = true
 [dev-dependencies]
 # VER-13: the settings matrix reads tests/settings/effects.toml.
 toml = "0.8"
+proptest.workspace = true
 orpheus-codec-flac = { path = "../crates/codecs/flac" }
 orpheus-codec-wav = { path = "../crates/codecs/wav" }

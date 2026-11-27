@@ -14,5 +14,8 @@ orpheus-meta = { path = "../../orpheus-meta" }
 orpheus-ogg = { path = "../ogg" }
 md-5 = "0.10"
 
+[dev-dependencies]
+proptest.workspace = true
+
 [lints]
 workspace = true

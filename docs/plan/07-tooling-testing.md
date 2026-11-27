@@ -346,6 +346,14 @@ magic/version/CRC, deep or cyclic structures, hostile names, arenas one byte
 too small, and requests in every order; plus `proptest` properties with
 recorded seeds.
 
+As built (VER-3, 2026-11-27): a `tests/adversarial.rs` in every crate
+that reads outside data, from the shared `tests/adversarial.rs` (cuts,
+damaged bytes, field edges, hostile names, `sweep` of the committed fuzz
+seeds through the fuzz bodies, `config` for `proptest`: a fixed seed per
+property, failures recorded in `tests/regress/proptest/`). Long runs are
+`#[ignore]`d. Inventory, findings and what is not covered yet:
+`docs/verification/baseline-2026-11.md` §9.
+
 ### 3.8 UI sequence fuzzing on the host
 
 A fuzz target drives the simulator with arbitrary key/timing/event sequences

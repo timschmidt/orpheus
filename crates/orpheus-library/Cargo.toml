@@ -16,6 +16,7 @@ orpheus-meta = { path = "../orpheus-meta" }
 orpheus-player = { path = "../orpheus-player" }
 
 [dev-dependencies]
+proptest.workspace = true
 orpheus-fs = { path = "../orpheus-fs", features = ["std"] }
 
 [lints]

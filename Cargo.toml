@@ -28,6 +28,9 @@ manual_is_multiple_of = "allow"
 
 [workspace.dependencies]
 orpheus-proto = { path = "crates/orpheus-proto" }
+# Property tests of the adversarial-input suites (VER-3; host only,
+# dev-dependency). No forking, no timeouts: deterministic, single process.
+proptest = { version = "1.11", default-features = false, features = ["std"] }
 
 [profile.release]
 opt-level = "s"
