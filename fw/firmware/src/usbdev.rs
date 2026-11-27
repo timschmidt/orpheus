@@ -134,8 +134,8 @@ impl Target for Fw {
     fn development(&self) -> bool {
         true
     }
-    fn put(&mut self, data: &[u8]) -> bool {
-        crate::audio::put_chunk(data)
+    fn put(&mut self, seq: u16, data: &[u8]) -> bool {
+        crate::audio::put_chunk(seq, data)
     }
     fn set_time(&mut self, t: [u8; 7]) -> bool {
         atj2157_hal::rtc_clock::set(atj2157_hal::rtc_clock::DateTime {
@@ -163,6 +163,15 @@ impl Target for Fw {
         }
         if data == b"usb dev" {
             MODE.signal(Personality::Dev);
+            return true;
+        }
+        // PERF-SD: the card reader's high-speed card clock, `card hs on|off`
+        // (takes effect at the next `usb msc`).
+        if let Some(on) = data.strip_prefix(b"card hs ") {
+            CARD_HS.store(on == b"on", Ordering::Relaxed);
+            crate::audio::reply(|w| {
+                w.s(if on == b"on" { b"card hs on" } else { b"card hs off" });
+            });
             return true;
         }
         // USB-6: `usb image <path> [cd|disk|fixed] [ro|rw]`, `usb image status`.
@@ -703,6 +712,52 @@ impl embassy_usb::Handler for MscClass {
     }
 }
 
+/// The mass-storage bulk endpoints with whole data pieces per DMA start
+/// (PERF-SD): IN sends a piece as one transfer (≤ 64 KiB per start), OUT
+/// takes a data phase's known length with one DMA (`read_exact`).
+struct BulkIn(usb::EndpointIn);
+struct BulkOut(usb::EndpointOut);
+impl embassy_usb_driver::Endpoint for BulkIn {
+    fn info(&self) -> &embassy_usb_driver::EndpointInfo {
+        embassy_usb_driver::Endpoint::info(&self.0)
+    }
+    async fn wait_enabled(&mut self) {
+        embassy_usb_driver::Endpoint::wait_enabled(&mut self.0).await;
+    }
+}
+impl embassy_usb_driver::EndpointIn for BulkIn {
+    async fn write(&mut self, buf: &[u8]) -> Result<(), embassy_usb_driver::EndpointError> {
+        embassy_usb_driver::EndpointIn::write(&mut self.0, buf).await
+    }
+}
+impl orpheus_usb::msc::bot::BulkIn for BulkIn {
+    async fn send(&mut self, buf: &[u8]) -> Result<(), embassy_usb_driver::EndpointError> {
+        embassy_usb_driver::EndpointIn::write(&mut self.0, buf).await
+    }
+}
+impl embassy_usb_driver::Endpoint for BulkOut {
+    fn info(&self) -> &embassy_usb_driver::EndpointInfo {
+        embassy_usb_driver::Endpoint::info(&self.0)
+    }
+    async fn wait_enabled(&mut self) {
+        embassy_usb_driver::Endpoint::wait_enabled(&mut self.0).await;
+    }
+}
+impl embassy_usb_driver::EndpointOut for BulkOut {
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, embassy_usb_driver::EndpointError> {
+        embassy_usb_driver::EndpointOut::read(&mut self.0, buf).await
+    }
+}
+impl orpheus_usb::msc::bot::BulkOut for BulkOut {
+    async fn receive(&mut self, buf: &mut [u8]) -> Result<usize, embassy_usb_driver::EndpointError> {
+        self.0.read_exact(buf).await
+    }
+}
+
+/// The card reader asks for the card's high-speed clock (CMD6, 48 MHz from
+/// DEVPLL; PERF-SD, U-SD-1). Test command `card hs on|off`.
+pub static CARD_HS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 /// Card as the MSC block device (512-byte blocks).
 struct CardDev<'a>(&'a mut yoton_bsp::card::Card);
 impl orpheus_usb::msc::BlockDevice for CardDev<'_> {
@@ -780,17 +835,23 @@ async fn run_msc() -> Personality {
     let mut card = crate::audio::CARD_OUT.receive().await;
     atj2157_hal::log::line(b"usb: card reader on");
     let blocks = u64::from(yoton_bsp::card::BlockDevice::sector_count(&card));
-    let next = {
+    let next = 'msc: {
         let mut b = builder("YM03 card reader");
         // SAFETY: as in `builder`.
         b.handler(unsafe { &mut *(&raw mut MSC_CLASS) });
         let mut func = b.function(0x08, 0x06, 0x50);
         let mut iface = func.interface();
         let mut alt = iface.alt_setting(0x08, 0x06, 0x50, None);
-        let ep_in = alt.endpoint_bulk_in(None, 512);
-        let ep_out = alt.endpoint_bulk_out(None, 512);
+        let ep_in = BulkIn(alt.endpoint_bulk_in(None, 512));
+        let ep_out = BulkOut(alt.endpoint_bulk_out(None, 512));
         drop(func);
         let mut dev = b.build();
+        if CARD_HS.load(Ordering::Relaxed) {
+            let khz = card.high_speed(50_000).await.unwrap_or(0);
+            let mut l = log::LineBuf::new();
+            l.push_str("usb: card clock ").push_u32(khz).push_str(" kHz");
+            l.emit();
+        }
         let unit = orpheus_usb::msc::scsi::Unit {
             kind: orpheus_usb::msc::scsi::DeviceKind::Disk,
             removable: true,
@@ -805,7 +866,21 @@ async fn run_msc() -> Personality {
         // SAFETY: the card is with this task until `CARD_BACK.send` below,
         // after this scope (and the borrow) ends.
         let buf = unsafe { crate::audio::usb_buffer() };
-        let mut bot = orpheus_usb::msc::bot::Bot::new(ep_in, ep_out, CardDev(&mut card), unit, buf);
+        // The whole card as one run of an image (PERF-SD): the transport is
+        // compiled once, for the USB Drive's `ImageDevice`, not twice (the
+        // code window is full). Writes stay refused in the read-only test
+        // mode by the unit as well as by the device.
+        let mut whole = [orpheus_usb::msc::extent::Extent::default()];
+        let mut table = orpheus_usb::msc::extent::ExtentTable::new(&mut whole);
+        let _ = table.push(0, blocks as u32);
+        let Ok(mut image) =
+            orpheus_usb::msc::extent::ImageDevice::new(CardDev(&mut card), table, blocks * 512, 512)
+        else {
+            // (Never: one run covers the card.) The card still goes back.
+            break 'msc Personality::Dev;
+        };
+        image.set_writable(!unit.read_only);
+        let mut bot = orpheus_usb::msc::bot::Bot::new(ep_in, ep_out, image, unit, buf);
         let pump = async {
             loop {
                 embassy_usb_driver::Endpoint::wait_enabled(&mut bot.ep_in).await;
@@ -890,8 +965,8 @@ async fn run_image() -> Personality {
         let mut func = b.function(0x08, 0x06, 0x50);
         let mut iface = func.interface();
         let mut alt = iface.alt_setting(0x08, 0x06, 0x50, None);
-        let ep_in = alt.endpoint_bulk_in(None, 512);
-        let ep_out = alt.endpoint_bulk_out(None, 512);
+        let ep_in = BulkIn(alt.endpoint_bulk_in(None, 512));
+        let ep_out = BulkOut(alt.endpoint_bulk_out(None, 512));
         drop(func);
         let mut dev = b.build();
         // SAFETY: the card is with this task until `CARD_BACK.send` below,

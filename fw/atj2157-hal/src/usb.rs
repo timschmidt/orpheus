@@ -157,7 +157,38 @@ static DELAY_AFTER: AtomicU32 = AtomicU32::new(0);
 struct Aligned<const N: usize>([u8; N]);
 static mut SETUP_BUF: Aligned<8> = Aligned([0; 8]);
 static mut EP0_BUF: Aligned<64> = Aligned([0; 64]);
-static mut BOUNCE: [Aligned<512>; FIFOS] = [const { Aligned([0; 512]) }; FIFOS];
+/// One bounce buffer for the data FIFOs' transfers whose buffer the DMA
+/// cannot reach (unaligned, or outside SRAM0): one packet at a time, held
+/// by a [`Bounce`] guard. One, not one per FIFO (PERF-SD: 1.5 KiB of
+/// static RAM): the personalities' bulk traffic is one transfer at a time
+/// (mass storage) or aligned, and the mass-storage data pieces never
+/// bounce (`orpheus_usb::msc::bot` uses the pool's halves and aligned
+/// CBW/CSW buffers).
+static mut BOUNCE: Aligned<512> = Aligned([0; 512]);
+static BOUNCE_HELD: AtomicBool = AtomicBool::new(false);
+
+/// The bounce buffer, taken: released when dropped (also when a transfer
+/// is cut off).
+struct Bounce;
+
+impl Bounce {
+    async fn take() -> Self {
+        while BOUNCE_HELD.swap(true, Ordering::Acquire) {
+            Timer::after_micros(50).await;
+        }
+        Bounce
+    }
+    fn buf(&mut self) -> &mut [u8; 512] {
+        // SAFETY: only the holder of the one `Bounce` reaches the buffer.
+        unsafe { &mut (*(&raw mut BOUNCE)).0 }
+    }
+}
+
+impl Drop for Bounce {
+    fn drop(&mut self) {
+        BOUNCE_HELD.store(false, Ordering::Release);
+    }
+}
 
 fn dma_reachable(p: *const u8, len: usize) -> bool {
     let a = p as usize;
@@ -253,9 +284,10 @@ enum Fail {
     Overtaken,
 }
 
-/// Wait for a USB DMA channel: `done` / `err` bits of `DMA_STAT`.
-/// `watch_setup`: give up when a newer SETUP arrives (EP0 data stages).
-async fn dma_wait(done: u32, err: u32, watch_setup: bool) -> Result<(), Fail> {
+/// Wait for a USB DMA channel: `done` / `err` bits of `DMA_STAT`, at most
+/// `limit_ms`. `watch_setup`: give up when a newer SETUP arrives (EP0 data
+/// stages).
+async fn dma_wait(done: u32, err: u32, watch_setup: bool, limit_ms: u16) -> Result<(), Fail> {
     let start = Instant::now();
     // A reset since the start ends the transfer. (Not the sticky
     // `BUS_EVENTS` bit: it stays set until `Bus::poll` runs, so every DMA
@@ -281,7 +313,7 @@ async fn dma_wait(done: u32, err: u32, watch_setup: bool) -> Result<(), Fail> {
         }
         spins += 1;
         if spins > 200 {
-            if start.elapsed() > Duration::from_millis(500) {
+            if start.elapsed() > Duration::from_millis(u64::from(limit_ms)) {
                 DMA_ERRORS.fetch_add(1, Ordering::Relaxed);
                 return Err(Fail::Timeout);
             }
@@ -318,7 +350,7 @@ async fn ep0_dma(addr: u32, len: usize, input: bool, watch_setup: bool) -> Resul
     DMA_EN.write(1);
     let guard = Ep0Dma;
     DMA0_CTL.set_bits(UDMA_START);
-    let r = dma_wait(1, 1 << 16, watch_setup).await;
+    let r = dma_wait(1, 1 << 16, watch_setup, DMA_MS).await;
     if r.is_ok() {
         core::mem::forget(guard);
     }
@@ -931,24 +963,36 @@ impl drv::EndpointIn for EndpointIn {
             // driver (U-USB-2); report success so callers proceed.
             return Ok(());
         }
-        let mut addr = buf.as_ptr() as u32;
-        if !dma_reachable(buf.as_ptr(), buf.len()) {
-            let n = buf.len().min(512);
-            // SAFETY: bounce buffer k is used only by FIFO k's endpoint.
-            let b = unsafe { &mut (*(&raw mut BOUNCE))[k].0 };
-            b[..n].copy_from_slice(&buf[..n]);
-            addr = b.as_ptr() as u32;
+        // One DMA start per 64 KiB: the controller packetises it. A buffer
+        // the DMA cannot reach goes through the bounce buffer 512 B at a
+        // time (before PERF-SD a longer one sent the bounce buffer's
+        // 512 B and then whatever followed it).
+        let direct = dma_reachable(buf.as_ptr(), buf.len());
+        let mut bounce = if direct { None } else { Some(Bounce::take().await) };
+        for piece in buf.chunks(if direct { 65536 } else { 512 }) {
+            let mut addr = piece.as_ptr() as u32;
+            if let Some(b) = bounce.as_mut() {
+                let b = b.buf();
+                b[..piece.len()].copy_from_slice(piece);
+                addr = b.as_ptr() as u32;
+            }
+            dmak_ctl(k).write(((piece.len() as u32) << 8) | UDMA_IN);
+            dmak_addr(k).write(addr);
+            DMA_EN.write(1);
+            dmak_ctl(k).set_bits(UDMA_START);
+            if dma_wait(1 << (1 + k), 1 << (17 + k), false, DMA_MS).await.is_err() {
+                return Err(bulk_fail(k));
+            }
         }
-        dmak_ctl(k).write(((buf.len().min(65536) as u32) << 8) | UDMA_IN);
-        dmak_addr(k).write(addr);
-        DMA_EN.write(1);
-        dmak_ctl(k).set_bits(UDMA_START);
-        match dma_wait(1 << (1 + k), 1 << (17 + k), false).await {
-            Ok(()) => Ok(()),
-            Err(_) => Err(bulk_fail(k)),
-        }
+        Ok(())
     }
 }
+
+/// A DMA's time limit (IN data, EP0, one OUT packet).
+const DMA_MS: u16 = 500;
+/// The time limit of an OUT data phase's DMA ([`EndpointOut::read_exact`]):
+/// the host sends when it is ready.
+const OUT_DATA_MS: u16 = 2000;
 
 /// A bulk DMA on FIFO `k` failed: abort it, record it.
 fn bulk_fail(k: usize) -> EndpointError {
@@ -999,22 +1043,67 @@ impl drv::EndpointOut for EndpointOut {
             return Err(EndpointError::BufferOverflow);
         }
         let direct = dma_reachable(buf.as_ptr(), n);
-        // SAFETY: bounce buffer k belongs to this endpoint.
-        let bounce = unsafe { &mut (*(&raw mut BOUNCE))[k].0 };
-        let addr = if direct { buf.as_mut_ptr() as u32 } else { bounce.as_mut_ptr() as u32 };
+        let mut bounce = if direct { None } else { Some(Bounce::take().await) };
+        let addr = match bounce.as_mut() {
+            Some(b) => b.buf().as_mut_ptr() as u32,
+            None => buf.as_mut_ptr() as u32,
+        };
         dmak_ctl(k).write((n as u32) << 8);
         dmak_addr(k).write(addr);
         DMA_EN.write(1);
         dmak_ctl(k).set_bits(UDMA_START);
-        if dma_wait(1 << (1 + k), 1 << (17 + k), false).await.is_err() {
+        if dma_wait(1 << (1 + k), 1 << (17 + k), false, DMA_MS).await.is_err() {
             let e = bulk_fail(k);
             fibc(k).set_bits(FIBC_FFRST);
             return Err(e);
         }
-        if !direct {
-            buf[..n].copy_from_slice(&bounce[..n]);
+        if let Some(b) = bounce.as_mut() {
+            buf[..n].copy_from_slice(&b.buf()[..n]);
         }
         Ok(n)
+    }
+}
+
+impl EndpointOut {
+    /// Receive exactly `buf.len()` bytes: one DMA start per 64 KiB, the
+    /// controller taking the packets as they arrive (the ROM's WRITERAM
+    /// command does this [ROM 0x620]; `yoton/re/usb_controller.md` §5),
+    /// instead of an interrupt, a byte count and a DMA per packet. For a
+    /// data phase whose length the class knows (mass storage, PERF-SD): the
+    /// host's packets must fill it, a short one leaves the DMA waiting
+    /// until [`OUT_DATA_MS`] and fails. A buffer the DMA cannot reach is
+    /// read packet by packet.
+    pub async fn read_exact(&mut self, buf: &mut [u8]) -> Result<usize, EndpointError> {
+        use drv::EndpointOut as _;
+        if !dma_reachable(buf.as_ptr(), buf.len()) {
+            let mps = usize::from(self.info.max_packet_size).max(1);
+            let mut got = 0;
+            while got < buf.len() {
+                let end = (got + mps).min(buf.len());
+                let n = self.read(&mut buf[got..end]).await?;
+                got += n;
+                if n < mps {
+                    break;
+                }
+            }
+            return Ok(got);
+        }
+        let k = self.k;
+        for piece in buf.chunks_mut(65536) {
+            if !CONFIGURED.load(Ordering::Acquire) {
+                return Err(EndpointError::Disabled);
+            }
+            dmak_ctl(k).write((piece.len() as u32) << 8);
+            dmak_addr(k).write(piece.as_mut_ptr() as u32);
+            DMA_EN.write(1);
+            dmak_ctl(k).set_bits(UDMA_START);
+            if dma_wait(1 << (1 + k), 1 << (17 + k), false, OUT_DATA_MS).await.is_err() {
+                let e = bulk_fail(k);
+                fibc(k).set_bits(FIBC_FFRST);
+                return Err(e);
+            }
+        }
+        Ok(buf.len())
     }
 }
 

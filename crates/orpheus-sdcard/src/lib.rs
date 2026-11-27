@@ -29,6 +29,8 @@ pub mod cmd {
     /// Application commands (after CMD55).
     pub const ACMD_SET_BUS_WIDTH: u8 = 6;
     pub const ACMD_SD_STATUS: u8 = 13;
+    /// Pre-erase count before a multi-block write (SET_WR_BLK_ERASE_COUNT).
+    pub const ACMD_SET_WR_BLK_ERASE_COUNT: u8 = 23;
     pub const ACMD_SEND_OP_COND: u8 = 41;
     pub const ACMD_SEND_SCR: u8 = 51;
 }
@@ -37,6 +39,32 @@ pub mod cmd {
 pub const IF_COND_ARG: u32 = 0x1AA;
 /// ACMD41 argument: HCS (high capacity supported) + 3.2–3.4 V window.
 pub const OP_COND_ARG: u32 = (1 << 30) | 0x0030_0000;
+
+/// CSD card command classes: class 10, the switch function (CMD6).
+pub const CCC_SWITCH: u16 = 1 << 10;
+/// CMD6 argument: set mode, function group 1 (access mode) = 1 (high
+/// speed, SDR25 up to 50 MHz), the other groups unchanged (0xF).
+pub const SWITCH_HIGH_SPEED: u32 = 0x80FF_FFF1;
+
+/// The 64-byte CMD6 status (512 bits, most significant first): did the
+/// card select function 1 of group 1? Bits 379:376 hold the function
+/// selected in group 1 (0xF: the switch failed); bits 511:496 the maximum
+/// current, 0 meaning the function would draw too much (SD Physical
+/// Layer §4.3.10.4, table 4-13).
+#[must_use]
+pub fn switched_high_speed(status: &[u8; 64]) -> bool {
+    status[16] & 0x0F == 1 && (status[0] != 0 || status[1] != 0)
+}
+
+/// The `CMU_SD0CLK` word for the fastest card clock at most `max_khz`
+/// from a source of `src_khz`, with the clock it gives (kHz): `source`
+/// is the register's source code (\[DS\] §4.3.3.3: 0 CK24M, 1 COREPLL, 2
+/// DEVPLL), the divider ÷1 … ÷16 in bits 3:0. `None` when even ÷16 is
+/// too fast.
+#[must_use]
+pub fn clock_word(source: u32, src_khz: u32, max_khz: u32) -> Option<(u32, u32)> {
+    (1..=16u32).find(|d| src_khz / d <= max_khz).map(|d| (source << 8 | (d - 1), src_khz / d))
+}
 
 /// OCR (R3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -257,6 +285,39 @@ mod tests {
         assert_eq!(&c.name, b"SN64G");
         assert_eq!(c.serial, 0x1234_5678);
         assert_eq!(c.date, (2021, 3));
+    }
+
+    #[test]
+    fn high_speed_switch_status() {
+        // A card that switched: 200 mA max current, group 1 function 1.
+        let mut st = [0u8; 64];
+        st[0] = 0x00;
+        st[1] = 0xC8;
+        st[16] = 0x01;
+        assert!(switched_high_speed(&st));
+        // Function 0xF: the switch failed.
+        st[16] = 0x0F;
+        assert!(!switched_high_speed(&st));
+        // Group 2's nibble does not count.
+        st[16] = 0x11;
+        assert!(switched_high_speed(&st));
+        // Zero current: the function is not available at this power.
+        st[1] = 0;
+        assert!(!switched_high_speed(&st));
+        assert_eq!(SWITCH_HIGH_SPEED >> 31, 1);
+        assert_eq!(SWITCH_HIGH_SPEED & 0xF, 1);
+    }
+
+    #[test]
+    fn clock_words() {
+        // DEVPLL 144 MHz: ÷3 = 48 MHz high speed, ÷6 = 24 MHz default.
+        assert_eq!(clock_word(2, 144_000, 50_000), Some((0x202, 48_000)));
+        assert_eq!(clock_word(2, 144_000, 25_000), Some((0x205, 24_000)));
+        // The vendor's 180 MHz ÷8 = 22.5 MHz.
+        assert_eq!(clock_word(2, 180_000, 24_000), Some((0x207, 22_500)));
+        // CK24M ÷1.
+        assert_eq!(clock_word(0, 24_000, 25_000), Some((0, 24_000)));
+        assert_eq!(clock_word(2, 288_000, 10_000), None);
     }
 
     #[test]

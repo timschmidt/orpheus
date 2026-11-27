@@ -129,6 +129,73 @@ pub fn upload_cmd(cmd: &[u8]) -> UploadCmd {
 /// chunk as soon as the last one is answered (and gives up after 10 s).
 pub const UPLOAD_IDLE_MS: u64 = 10_000;
 
+/// Upload staging (PERF-SD): `REQ_PUT` chunks (≤ 1 KiB, `wValue` = the
+/// chunk's sequence number from 0, wrapping) are gathered in one of two
+/// [`STAGE_HALF`]-byte halves while the card task writes the other, so
+/// the host sends without waiting for each chunk's card write (before:
+/// one chunk, one write, one reply poll: ≈ 24 KB/s for the demo set,
+/// 2026-11-27). A refused chunk (both halves taken, or out of order) is
+/// sent again; a chunk sent again after it was taken (the host missed the
+/// status stage) is taken once.
+pub mod upload {
+    /// Bytes of one staging half.
+    pub const STAGE_HALF: usize = 16 * 1024;
+
+    /// What to do with one chunk.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Put {
+        /// The last chunk taken, sent again: accept it and drop it.
+        Again,
+        /// Not now (refuse; the host sends it again) or never (out of
+        /// order, too long).
+        Refuse,
+        /// Copy it to byte `at` of the staging area.
+        Append { at: usize },
+        /// Hand the filling half (`len` bytes) to the card, then copy the
+        /// chunk to byte `at` (the start of the other half).
+        HandOver { half: u8, len: usize, at: usize },
+    }
+
+    /// The staging state: the next sequence number, the half being filled
+    /// and its bytes.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct Stage {
+        pub next: u16,
+        pub half: u8,
+        pub fill: usize,
+    }
+
+    impl Stage {
+        /// Decide on chunk `seq` of `len` bytes; `busy`: a handed-over half
+        /// is still being written. Updates the state for what it returns.
+        pub fn put(&mut self, seq: u16, len: usize, busy: bool) -> Put {
+            if seq == self.next.wrapping_sub(1) && (self.fill > 0 || self.next != 0) {
+                return Put::Again;
+            }
+            if seq != self.next || len > STAGE_HALF {
+                return Put::Refuse;
+            }
+            let r = if self.fill + len <= STAGE_HALF {
+                Put::Append { at: usize::from(self.half) * STAGE_HALF + self.fill }
+            } else if busy {
+                return Put::Refuse;
+            } else {
+                let r = Put::HandOver {
+                    half: self.half,
+                    len: self.fill,
+                    at: usize::from(self.half ^ 1) * STAGE_HALF,
+                };
+                self.half ^= 1;
+                self.fill = 0;
+                r
+            };
+            self.fill += len;
+            self.next = self.next.wrapping_add(1);
+            r
+        }
+    }
+}
+
 /// WebUSB `bVendorCode`: the browser asks for the landing page with
 /// `GET_URL` (`bRequest` = this, `wIndex` = 2). Outside the request numbers
 /// above.
@@ -338,6 +405,37 @@ pub mod usb {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn upload_stage_double_buffers_and_takes_retries_once() {
+        use super::upload::{Put, STAGE_HALF, Stage};
+        let mut st = Stage::default();
+        let k = 1024;
+        // 16 chunks fill half 0; the 17th hands it over.
+        for i in 0..16u16 {
+            assert_eq!(st.put(i, k, false), Put::Append { at: usize::from(i) * k });
+        }
+        // A retry of chunk 15 (status stage lost): taken once.
+        assert_eq!(st.put(15, k, false), Put::Again);
+        assert_eq!(st.put(16, k, false), Put::HandOver { half: 0, len: STAGE_HALF, at: STAGE_HALF });
+        for i in 17..32u16 {
+            assert_eq!(st.put(i, k, true), Put::Append { at: STAGE_HALF + usize::from(i - 16) * k });
+        }
+        // Half 1 full and half 0 still being written: refused, then taken.
+        assert_eq!(st.put(32, k, true), Put::Refuse);
+        assert_eq!(st.put(32, k, false), Put::HandOver { half: 1, len: STAGE_HALF, at: 0 });
+        // Out of order, too long: refused, state unchanged.
+        assert_eq!(st.put(40, k, false), Put::Refuse);
+        assert_eq!(st.put(33, STAGE_HALF + 1, false), Put::Refuse);
+        assert_eq!(st, Stage { next: 33, half: 0, fill: k });
+        // Short chunks pack; sequence numbers wrap.
+        let mut st = Stage { next: u16::MAX, half: 0, fill: 0 };
+        assert_eq!(st.put(u16::MAX, 100, false), Put::Append { at: 0 });
+        assert_eq!(st.put(0, 13, false), Put::Append { at: 100 });
+        assert_eq!(st.put(0, 13, false), Put::Again);
+        // A fresh stage has nothing to take again.
+        assert_eq!(Stage::default().put(u16::MAX, 1, false), Put::Refuse);
+    }
+
     use super::*;
 
     /// The demo-tree upload guard (owner's permission of 2026-11-27, the

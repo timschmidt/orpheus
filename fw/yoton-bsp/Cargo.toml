@@ -11,6 +11,7 @@ atj2157-hal = { path = "../atj2157-hal" }
 orpheus-proto.workspace = true
 embassy-time = "0.5"
 orpheus-fs = { path = "../../crates/orpheus-fs" }
+orpheus-sdcard = { path = "../../crates/orpheus-sdcard" }
 orpheus-settings = { path = "../../crates/orpheus-settings" }
 embassy-futures = "0.1"
 orpheus-power = { path = "../../crates/orpheus-power" }

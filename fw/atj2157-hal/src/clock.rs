@@ -22,6 +22,19 @@ pub fn rom_state() {
     crate::delay::set_core_hz(48_000_000);
 }
 
+/// DEVPLL at `n` × 6 MHz (`n` 6…31: 36…186 MHz, the vendor's accepted
+/// range; system.md §1.1), 0 = off. The vendor runs it at 180 MHz always;
+/// Orpheus only while the card has its high-speed clock (PERF-SD: the card
+/// reader), and nothing else takes its clock from it.
+pub fn set_devpll(n: u32) {
+    if n == 0 {
+        cmu::DEVPLL_CTL.write(0);
+        return;
+    }
+    cmu::DEVPLL_CTL.write(cmu::corepll::EN | n.clamp(6, 31));
+    crate::delay::spin_us(cmu::corepll::SETTLE_US);
+}
+
 /// Core performance levels (03-hal-drivers §2.1), their clocks and supply
 /// codes, and the order of a switch: host-tested in `orpheus_power::clock`.
 pub use orpheus_power::clock::Level;

@@ -667,11 +667,28 @@ fn upload_with(d: &orpheus_host::devchan::DevChannel, cmd: &str, data: &[u8]) ->
     };
     d.control_out(REQ_TEST, 0, 0, cmd.as_bytes())?;
     wait_for("put 0")?;
+    // Chunks numbered in `wValue`, sent back to back: the player stages
+    // them (`orpheus_proto::devchan::upload`) and refuses one while both
+    // halves wait for the card; a refused chunk is sent again (PERF-SD:
+    // ≈ 24 KB/s with a reply poll per chunk before).
     let mut sent = 0usize;
-    for chunk in data.chunks(1024) {
-        d.control_out(REQ_PUT, 0, 0, chunk)?;
+    for (seq, chunk) in data.chunks(1024).enumerate() {
+        let t0 = std::time::Instant::now();
+        let mut tries = 0u32;
+        while d.control_out(REQ_PUT, seq as u16, 0, chunk).is_err() {
+            tries += 1;
+            if tries % 64 == 0 {
+                let r = String::from_utf8_lossy(&d.control_in(REQ_TEST, 0, 0, 256)?).into_owned();
+                if r.contains("failed") || r.contains("aborted") || r.contains("timed out") {
+                    bail!("player: {r}");
+                }
+            }
+            if t0.elapsed() > Duration::from_secs(10) {
+                bail!("chunk {seq} refused for 10 s");
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
         sent += chunk.len();
-        wait_for(&format!("put {sent}"))?;
     }
     d.control_out(REQ_TEST, 0, 0, b"fclose")?;
     wait_for(&format!("closed {sent}"))

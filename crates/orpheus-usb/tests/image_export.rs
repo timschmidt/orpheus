@@ -165,6 +165,8 @@ impl EndpointIn for In {
         Ok(())
     }
 }
+impl orpheus_usb::msc::bot::BulkIn for In {}
+impl orpheus_usb::msc::bot::BulkOut for Out {}
 impl Endpoint for Out {
     fn info(&self) -> &EndpointInfo {
         &self.info

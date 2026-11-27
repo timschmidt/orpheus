@@ -23,6 +23,7 @@
 #![allow(clippy::deref_addrof)]
 
 mod audio;
+mod bench;
 mod books;
 mod bt;
 mod care;

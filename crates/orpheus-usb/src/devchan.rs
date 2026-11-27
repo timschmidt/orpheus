@@ -38,8 +38,9 @@ pub trait Target {
     fn request_reboot(&mut self, target: u16);
     /// Whether development-only requests (PEEK) are allowed.
     fn development(&self) -> bool;
-    /// PUT OUT: data for the file being uploaded. Returns false when busy.
-    fn put(&mut self, _data: &[u8]) -> bool {
+    /// PUT OUT: chunk `seq` (`wValue`; `devchan::upload`) of the file being
+    /// uploaded. Returns false when busy (the host sends it again).
+    fn put(&mut self, _seq: u16, _data: &[u8]) -> bool {
         false
     }
     /// TIME OUT: set the clock (UTC: year u16 LE, month, day, hour, minute,
@@ -112,7 +113,7 @@ impl<T: Target> Handler for DevChannel<T> {
                 _ => OutResponse::Rejected,
             },
             REQ_PUT => {
-                if self.target.put(data) {
+                if self.target.put(req.value, data) {
                     OutResponse::Accepted
                 } else {
                     OutResponse::Rejected

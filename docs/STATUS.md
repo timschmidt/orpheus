@@ -33,6 +33,7 @@ of every session. Newest entries first in §3.
 | PWR-5 (D-4) | Max level verified on the player (2026-11-24); **D-4 revision built 2026-11-26 (host + firmware build), not yet run on the player**: Settings › System › Performance removed (key `0x0C07` retired), the governor reaches 288 MHz by itself, Power mode as the owner defined it; battery logger and `xtask drain report` built (not yet run) | Lead's checks in the session entry "PWR-5: Performance removed …"; U-PWR-5 (USB at 24 MHz), U-PWR-6 (power per level, M13); user check 19 (drain per Power mode, unplugged) |
 | PWR-3a | mostly done (device) | Power-off: card flushed, Bluetooth 0x24, screen off, vendor PMU sequence (wake on long press or USB plug-in); in test mode a reboot instead (verified). Auto-off (setting, no key, nothing playing, no cable) and low-battery off (< 3.30 V for 10 s, no cable) through the same path — not testable with the cable in: user checks 11 and 15. Alarm wake not done |
 | RTC-1 | done (device) | set/read over the developer channel (`xtask dev time [--set]`); alarm untested; once lost after a ymon reset (U-RTC open) |
+| PERF-SD | **round 1 merged (2026-11-27), on the player**; round 2 open | Card reader 2.3 → 3.5 MB/s read, 2.5 MB/s write, 128 MiB integrity OK; dev-channel upload 24 → 45 KB/s; high-speed SD not working yet (session entry "PERF-SD") |
 | USB-4 | done (device) | Card-reader personality: card handed between the card task and USB; write-protected test mode; mid-track switch and hand-back verified. 2.3 MB/s read (open) |
 | FS-1 | done | `orpheus-fs` |
 | FS-2 / AU-5 firmware | first cut on the player; **`orpheus-player` wired in; gapless hand-over and queue edits (built, not yet run on the player)** | Files lists the card (sorted through the directory index since AU-12 firmware), text viewer window, Now Playing. The card task drives `orpheus_player::Player`: folder queue in RAM and `/.orpheus/queue.bin`, resume record and bookmarks in `/.orpheus/player.bin`, seek, shuffle/repeat (settings), A–B, sleep timer, Up next. Gapless read-ahead (`orpheus_audio::StreamRing`) and decoder re-open with the DAC running; Up next remove/move, Play next, Add to queue (256 max). Not done: fades. User checks 13, 17 |
@@ -87,6 +88,54 @@ of every session. Newest entries first in §3.
 | VER-4 (settings store keys) | **done, on the player** (store mounts on every boot since the 2026-11-26 read-race fix; owner's settings intact) | Store index 128 → 192 keys at 4 B a slot (was 8), same NOR format both ways (fixture from the old code, byte-equal images); cache write marks unlimited; 131 keys in use with every app (61 free), firmware 129; sector ceiling ≈ 209 settings keys (256 cannot fit one sector); .bss −1,248 B, stack margin 5,664 B; compaction no longer re-blesses a rotted value (session entry 2026-11-26 "VER-4: settings store index") |
 
 ## 3. Session log
+
+### 2026-11-27 — PERF-SD: SD and USB mass storage throughput, first round (worker, finished by the lead, player)
+
+Owner's priority (PLAN §1, 2026-11-27). The worker built the first round
+and was stopped by a session restart before measuring; the lead merged
+main, measured on the player and merged. Test card (58.2 GB, FAT32
+`FF7D-276D`), build `e5568236` + main.
+
+* **Built** (worker): the card reader's BOT transport double-buffered
+  (`orpheus-usb` `msc/bot.rs`: card and USB overlap; whole-piece USB DMA in
+  `atj2157-hal` `usb.rs`); `Card::high_speed` and `card hs on|off` (50 MHz
+  timing, U-SD-1, **not working yet**: `card bench 16 hs` fails at the
+  first file create, `bench failed create state=3256 cmd=88`); `card bench
+  [MiB] [hs [XX]]` (`fw/firmware/src/bench.rs`: file-system write and
+  read-back of `/.orpheus/test/bench.bin` in 32 KiB pieces, data checked,
+  file removed); staged developer-channel uploads (`REQ_PUT` chunks
+  numbered in `wValue`, gathered in two halves while the card task writes
+  the other: `orpheus_proto::devchan::upload`).
+* **Measured on the player** (MB/s = 10^6 B/s from `dd`, KB/s from the
+  firmware):
+
+  | Path | Before | Now | Target (06 §2.4) |
+  |---|---|---|---|
+  | Card reader read, host `dd` 128 MiB `iflag=direct` | 2.3 MB/s (USB-4) | **3.5 MB/s** | ≥ 10 |
+  | Card reader write, host `dd` 128 MiB `oflag=direct` | — | **2.5 MB/s** | ≥ 5 |
+  | Integrity, 128 MiB random written and read back | — | identical (SHA-256) | 1 GiB |
+  | `card bench 16`, Base 48 MHz, SD 24 MHz 4-bit | — | w 3,066 / r 3,627 KB/s | |
+  | `card bench 16`, High 144 MHz | — | w 3,004 / r 4,614 KB/s | |
+  | `card bench 16`, Max 288 MHz | — | w 3,797 / r 4,956 KB/s | |
+  | Developer-channel upload | ≈ 24 KB/s (demo set, 134 MB in 5,550 s) | **≈ 45 KB/s** (4 MiB in 94 s) | |
+
+  The raw SD rate recorded earlier is 9.3 MB/s (24 MHz 4-bit, 64 KiB
+  requests), so per-transfer overhead in the driver/file layers and the
+  missing 50 MHz timing are what stand between here and the targets. The
+  card reader switched with `usb msc` and back with `usb dev` without a
+  key press.
+* **Checks**: host 2,308 tests pass; `xtask build` ok (128 code + 64
+  rodata pages, resident 60,672 B, `.bss` 146,160 B), check-resident,
+  `size --check`, `stack --check` (margin 5,556 B); `dev suite` **28/28**
+  (incl. `storage` and `storage_clear`, first run on the player);
+  `dev soak music --minutes 15` **PASS** (stack free min 6,536 B,
+  underruns 0, card errors 0, headroom min 935 frames, CPU idle 59 %).
+* **Next (PERF-SD round 2)**: make 50 MHz high-speed timing work (the
+  create failure), cut the per-piece overhead (larger multi-block
+  transfers, fewer round trips per 32 KiB), clock floor High while the
+  card reader runs, a bulk-endpoint upload for the developer channel,
+  throughput budgets in `budgets.toml`, the 1 GiB integrity run. Left on
+  the card: `/.orpheus/test/up.bin` (4 MiB upload test; no delete command).
 
 ### 2026-11-27 — BOOK-1/2b: Books' open-findings fixed on the player (worker, player)
 

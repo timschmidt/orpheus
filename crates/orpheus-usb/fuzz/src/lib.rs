@@ -84,6 +84,9 @@ impl EndpointIn for In {
     }
 }
 
+impl orpheus_usb::msc::bot::BulkIn for In {}
+impl orpheus_usb::msc::bot::BulkOut for Out {}
+
 /// Bulk OUT: the host's packets; empty = the bus went away.
 pub struct Out {
     info: EndpointInfo,
@@ -316,7 +319,19 @@ pub fn usb_scsi(data: &[u8]) {
             assert_eq!(sent_bytes, 0, "data sent for an OUT transfer");
         }
         if csw[12] == 0 && cbw.dir_in {
-            assert_eq!(residue as usize, cbw.len as usize - sent_bytes, "residue of a good IN transfer");
+            // The data, then (BOT §6.7, Hi > Di) zeros up to the transfer
+            // length when the data ended on a packet boundary.
+            let data = cbw.len as usize - residue as usize;
+            if sent_bytes != data {
+                assert_eq!(sent_bytes, cbw.len as usize, "padding stops short of the transfer length");
+                assert_eq!(data % usize::from(mps), 0, "padding after a short packet");
+                let all: Vec<u8> = data_out.concat();
+                assert!(all[data..].iter().all(|&b| b == 0), "padding that is not zeros");
+            }
+        }
+        if csw[12] == 1 && cbw.dir_in && sent_bytes > 0 {
+            // A failed IN phase is completed with zeros too.
+            assert!(sent_bytes == cbw.len as usize || sent_bytes % usize::from(mps) != 0);
         }
     }
     if bot.unit.read_only || !bot.unit.present {
@@ -375,7 +390,7 @@ impl Target for Fake {
     fn development(&self) -> bool {
         self.development
     }
-    fn put(&mut self, data: &[u8]) -> bool {
+    fn put(&mut self, _seq: u16, data: &[u8]) -> bool {
         self.put.extend_from_slice(data);
         self.put.len() < 4096
     }
