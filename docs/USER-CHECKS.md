@@ -48,7 +48,7 @@ the result and date. "Blocking" entries hold up the package named.
 | 27 | UPD-1 / WEB-3 | no | **A first-time user updates from the page** (ask someone who has not used the project's tools; the lead first publishes a release with `install/release/manifest.json`, or gives them an `.ofw` file). With Orpheus running and the player plugged in, open the site's **Install** page in Chrome or Edge on their computer (Windows, macOS or Linux with the udev rule) and let them follow the page alone: Choose the player → Update Orpheus. Do not help unless they are stuck for more than a minute. Afterwards on the player: Settings › System › About shows the new version. Second part, on the player only: copy the same `.ofw` file to the card's top folder, Settings › System › Update firmware, choose it, OK, Install | The page finds the player without a driver (Chrome may first offer the page as the device's landing page), shows the progress, restarts the player and says "Done: Orpheus … is running" within about 2 minutes; the player's music, settings and card are unchanged. On the player: the file is listed with its version, OK shows its change list, Install shows checking, writing and verifying with a bar, then "Update installed" and a restart into the new version. Report every place they hesitated or misread something, the browser and operating system, and anything that needed a cable re-plug | |
 
 | 28 | USB-W1 | no | USB comes back by itself, after the next install. With music playing and the player on the computer (any personality is fine; the lead's tools need not run): (a) pull the cable out and put it back in, five times, sometimes quickly (under a second), sometimes after 10 s; (b) put the computer to sleep for a minute and wake it; (c) plug the player into a phone charger for a minute, then back into the computer; (d) leave it plugged in, untouched, for an hour | Each time the computer sees the player again within about 5 s (the developer channel answers, or the card shows up again in File transfer); the music never stops and the player never restarts (on (d) as well: an idle computer is not a reason to restart). Report any time the computer did not see it again, any restart (the start-up screen, or the music starting from the beginning), and how long it took | |
-| 29 | GAME-1…6 | Play Blocks, 4096, Solitaire, Salvo and Bricks by hand (Home › Games): moves, saves and Continue, settings | All play correctly | **Owner 2026-11-27: "I tested games, which all worked well."** |
+| 35 | GAME-1…6 | Play Blocks, 4096, Solitaire, Salvo and Bricks by hand (Home › Games): moves, saves and Continue, settings | All play correctly | **Owner 2026-11-27: "I tested games, which all worked well."** |
 
 ## Template for workers
 
@@ -203,6 +203,8 @@ headphones at a low volume:
 
 Report anything that sounds wrong (which song, roughly when), and how
 seeking and pausing behave.
+
+**Result (owner 2026-11-27):** "I played midi files which all worked well as well."
 
 ## 34. The screen reader's speech (A11Y-1, 2026-11-26; on the computer, no player)
 

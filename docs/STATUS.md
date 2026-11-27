@@ -91,8 +91,8 @@ of every session. Newest entries first in §3.
   visible).
 * The owner changed Salvo's settings by hand (`e80=20992` stored); the
   settings baseline for test runs is now `701=1 d50=10470 e80=20992`.
-* **Owner 2026-11-27: games tested by hand, "all worked well"** (user
-  check recorded).
+* **Owner 2026-11-27: games tested by hand, "all worked well"**; **MIDI
+  files played by hand, "all worked well as well"** (user checks 35 and 33).
 
 ### 2026-11-26 — PG-1: resident room (the UI font and the merged strings paged; the code window's gaps filled) (worker, no hardware)
 
