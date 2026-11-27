@@ -73,7 +73,7 @@ of every session. Newest entries first in §3.
 | VER-13 | **tool and matrix done (host + simulator); device journeys pass on the player (2026-11-27)** | `cargo xtask settings-matrix [--check] [--strict]` (alias `settings coverage`; in `test all`, `--strict` in `gate --m11`); manifest for all 162 settings of the tree; simulator matrix over 59 screen + 10 service contexts (`sim/tests/settings_matrix.rs`), host tests for sound, governor, steps, recorder split, persistence/defaults/clamping/migration per kind; journey `settings_shuffle` (RAM-only session). 9,365 / 9,412 matrix cells covered; 22 settings have no effect to show (not wired) and 47 contexts are reviewed exclusions (session entry 2026-11-26 "VER-13") |
 | VER-13 (Display, Power, Date & time, USB) | **on the player** (suites `settings_screen_timers`, `settings_screen_saver` pass 2026-11-27) | Backlight timeout, Lock delay, Screen saver, Animations, Rotate (software 180°), Power mode, Keys when locked (transport to playback), Time zone, Correction, Set from RDS (group 4A), Read-only card, Developer channel (held on under any host test; the session refuses it) have their effects; journeys `settings_screen_timers`, `settings_screen_saver`; Brightness (missing stock duty values, U-PWM-3) and Wallpaper (Set as wallpaper not built) left; stack margin 4,568 B, .bss 125,352 B. User check 30 (session entry 2026-11-26 "VER-13: Display, Power, Date & time and USB") |
 | GAME-6 Bricks (M14) | **built (host + simulator + firmware), not yet run on the player** | Brick breaker of our own: integer physics with one-pixel sub-steps (no tunnelling at any speed, no floating point), paddle angles, 1–3-hit and unbreakable bricks, 8 hand-made + generated levels, five power-ups, lives, scores, saves; 7 settings packed into 1 word; 47 goldens; fuzz `bricks_keys`. In the firmware (`orpheus-apps/bricks`): stack margin 4,116 B unchanged. Lead: session entry 2026-11-25 "GAME-6" |
-| BOOK-1/2 wiring | **on by default since 2026-11-27, on the player** (`fa301aaf`: 127/128 code + 61/64 rodata pages, stack margin 4,276 B; suite 26/26 with `books`). **Open: opening a book while MP3 plays gives ≈ 2 underruns (`job:bread` pieces of 49–256 ms), one "The book could not be opened" (intermittent); idle Home 193 loads/s (was 138)** (session entry 2026-11-27 "BOOK-1/2: Books on by default") | `Shelf` (screens' model) / `Desk` (card side) split, step future 5,464 → 2,600 B; chores `job:bwrite…blay` while playing (no folder made, no scratch), steps while paused, idle with the arena's first 35,072 B lent; "Stop the music to prepare this book."; `books status`, `books test on\|off`; suite journey `books` (`requires`: skipped without the feature) (session entry 2026-11-26 "BOOK-1/2 wiring") |
+| BOOK-1/2 wiring | **on by default since 2026-11-27, on the player**; BOOK-1/2b (2026-11-27) fixed its findings: opens under music in steps with 0 underruns (6–9 s each with a 48 kHz MP3), the frozen "could not be read" (three causes), the suite's books in RAM, Home apps as a hidden mask (0x030E), the abandoned upload, idle Home 135 loads/s (session entry 2026-11-27 "BOOK-1/2b") | `Shelf` (screens' model) / `Desk` (card side) split, step future 5,464 → 2,600 B; chores `job:bwrite…blay` while playing (no folder made, no scratch), steps while paused, idle with the arena's first 35,072 B lent; "Stop the music to prepare this book."; `books status`, `books test on\|off`; suite journey `books` (`requires`: skipped without the feature) (session entry 2026-11-26 "BOOK-1/2 wiring") |
 | BOOK-2 | **done (host + simulator)**; not in the firmware (as BOOK-1; the scratch is the decoder arena, see session entry) | EPUB 2/3 in `orpheus-books`: zip (end record, streamed central directory, CRC, zip64/encrypted/method refusals), `no_std` inflate (48 B state; 32 KiB window + 2,304 B tables lent: 35,072 B), container/OPF/nav/NCX, XHTML reduction over the XML tokenizer split out of FB2, contents positions from anchors, all in bounded steps into BOOK-1's stream; library titles from the package; 12 new goldens; fuzz targets `books_zip`, `books_epub` (session entry 2026-11-25 "BOOK-2") |
 | MIDI-1 | **done (host + simulator)**; on the player since SYN-3; **user check: listen to the three MIDI renders** | `orpheus-midi`: Standard MIDI File parser (formats 0/1/2, running status, meta and SysEx, SMPTE, RMID) streamed through 64 track cursors of 64-byte windows that ask for bytes (`Need`/`supply`), nothing trusted; exact tick→frame clock through tempo changes; sequencer (CC 1/6/7/10/11/38/64/91/93/96–101/120–127, RPN bend range, pressure, programs, kits on channel 10, mute/solo); own GM set of 32 sounds for the 128 programs (`data/gm-sounds.osb`); `MidiPlayer`: open/scan, render, bounded-step seek (bit-exact where nothing sounds across the target), duration/position, `.kar`/lyric events; Files plays `.mid`/`.kar` in the simulator with Now Playing lyrics; player 70,224 B; estimate ≈ 117 MHz at 48 kHz for a 10–11-voice song: High clock (session entry 2026-11-25 "MIDI-1") |
 | SYN-3 | **done (firmware build)**; bench run on the player 2026-11-26 (costs measured); load governor run on the player (`78b316b5`: no reset, but every song stopped at `ratio=400`); measurement fix and clock-up (D-4) on the player (`8240f128`: ratio right, 288 MHz, but paging 200–250 %); paging fix on the player (`4e1e9a49`: every song to its end, `pg=` 3–15 %); shed-state, rest and key-tick fixes on the player (`7f26ae50`: all to the end, 20 underruns in 107 s at `load=` 25–40 %); rests that end when thread mode sleeps on the player (`b694ac61`: underruns 18/3/9 per song at `load=` 24–46 %); **budget that follows the PCM ring, main loop off the synth's lines, USB supervisor without its 20 ms timer built, not yet run on the player: lead's checks in the session entry 2026-11-26 "SYN-3: thread mode's line loads"**; owner decision: half rate for heavy MIDI files (04 §9) | The synthesiser on the player: a synth source beside the codecs (`orpheus_audio::synth`), the engine and the MIDI player built in place in the pool (stream ring + decoder arena, 80,816 B; MIDI state ≈ 71,960 B), the MIDI file through a 13-block card cache (`orpheus_midi::cache`), 44.1 kHz into the DAC ring through the DSP chain, clock floor High raised to Turbo/Max by the load governor before anything is shed (`orpheus_synth::load`: 55 % of real time, down to 30 % while the PCM ring runs short; then chorus, delay, reverb, voices shed at Max; compute measured apart from paging, warm-up 250 ms, rise ≤ 3 % a block), 4 ms pieces and pace-rule rests (thread mode always runs; a rest ends once thread mode sleeps); underruns never end a song (only "nothing can play"); `.mid`/`.kar` play from Files and Music with seek and pause; `synth bench` (36 loads, cycles, host hashes); 125/128 code pages, stack margin 5,212 B (session entries 2026-11-26 "SYN-3", "SYN-3: load governor" and "SYN-3: governor ratio measured right") |
@@ -87,6 +87,121 @@ of every session. Newest entries first in §3.
 | VER-4 (settings store keys) | **done, on the player** (store mounts on every boot since the 2026-11-26 read-race fix; owner's settings intact) | Store index 128 → 192 keys at 4 B a slot (was 8), same NOR format both ways (fixture from the old code, byte-equal images); cache write marks unlimited; 131 keys in use with every app (61 free), firmware 129; sector ceiling ≈ 209 settings keys (256 cannot fit one sector); .bss −1,248 B, stack margin 5,664 B; compaction no longer re-blesses a rotted value (session entry 2026-11-26 "VER-4: settings store index") |
 
 ## 3. Session log
+
+### 2026-11-27 — BOOK-1/2b: Books' open-findings fixed on the player (worker, player)
+
+Brief: the BOOK-1/2 findings — the `books` journey failing on reading
+progress left by earlier runs, Books hidden on the owner's Home, ≈ 2
+underruns at every open under MP3, the intermittent "could not be read",
+the abandoned-upload hang, idle Home at 193 loads/s, check 3. Player:
+exclusive use; `dev backup-verify` ok before the first write; images
+installed with `dev update` only (slots A/B alternately, 44–56 s each).
+**The owner replaced the microSD card mid-session** (a different card,
+nearly empty: no music folders, `/.orpheus/` new): every number below
+after 15:00 is on the new card, the 48 kHz test MP3s
+(`/.orpheus/test/mp3/a.mp3`, 150 s, 256 kbit/s, made with ffmpeg; `b.mp3`
+truncated by a USB reset mid-upload) instead of `/Knower`, fixtures
+re-uploaded with `suite --setup`. Main (`0ab7f404`, WEB-2, VER-13 Storage)
+merged in; the final image `24f3af06` is the merge plus this package.
+
+* **1. Suite books left state (journey failed).** The suite's books kept
+  their reading positions and progress on the card like the owner's, and
+  their library (`Scope::Test`) *replaced the owner's* `library.bin`
+  (the owner's next visit searched the card again and lost every book's
+  progress). Now the suite's books are `Book::ram_only`: no `.pos` is read
+  or written, no progress, a SaveRec for them is dropped; their library
+  is `/.orpheus/test/suite/books/.library` (a hidden name beside them; in
+  the cache folder first, but Settings › Storage › Clear caches then made
+  `/.orpheus/cache` again when Books reloaded it: `storage_clear` failed
+  once on the merged image). The journey lost its `prev*7`.
+  `regress_suite_books_left_their_reading_state`. Old `.pos` files of
+  the test books (`/.orpheus/books/<id>.pos` on the owner's old card) are
+  ignored now, not deleted (there is no delete command).
+* **2. Home apps.** Settings › Display › Home screen is now stored as the
+  apps *hidden* (key **0x030E**, default 0); **0x030B** (the apps shown)
+  is retired (`settings::RETIRED`, skipped when the store loads). **What
+  happens to the owner's setting:** their stored `0x030B = 0x0FFF`
+  (every app of the twelve; "changed: 30b=4095" in the last session) is no
+  longer read; `0x030E` is not in their store, so it reads the default,
+  nothing hidden: Home shows all thirteen apps, Books before Settings.
+  Nothing is written by the update; the old record stays in NOR until the
+  store compacts. `settings changed` no longer lists `30b`.
+  `regress_home_hid_apps_added_after_the_mask_was_saved`; effects entry
+  0x030E, `settings_matrix::s030e`; 05 §3 updated.
+* **3. Underruns at an open.** Three causes:
+  * the open was one step of five path walks (25 sectors on the host
+    image; 49–77 ms, once 256 ms on the owner's card). Now a step per file
+    operation (`Desk::open_more`: record, entry, state, cache header,
+    contents / source); a conversion's text and contents files in steps
+    of their own (one step made both: `job:bconv 46/26 ms`, an underrun at
+    check 3). `regress_book_open_was_one_long_step` (25 → 7 sectors; a
+    conversion's start 59 → ≤ 40).
+  * a Books chore ran steps of any kind after the one it was admitted
+    for (a write inside a `job:bread` piece): `books::chore` stops at a
+    kind change.
+  * at Base clock the steps (cold code paged in each time) took 15–42 ms;
+    the clock floor is High while Books has card work and a track plays
+    (`audio::books_boost`); Books chores take no card rests (`Urgent`).
+  Measured (`24f3af06`'s predecessor `fe9757a5`, 48 kHz MP3, test look):
+  **four opens, 0 underruns**, each 6–9 s (steps 4–37 ms, one per
+  chore at the starvation path: the need, 21–36 ms, rarely fits the
+  ≤ 28 ms budget a 48 kHz MP3 leaves). Before (`69e78690`, the owner's
+  old card, `/Knower`): `job:bread 83/29 ms`, 3 underruns at one open.
+* **4. "Could not be read" / steps frozen.** Reproduced on the new card
+  (Books → the text, music playing: `book=closed`, `steps=3` for
+  minutes). Causes, each fixed with a test:
+  1. the library screen asks for its rows on showing; with all rows
+     loaded that step returned "nothing to do", which ends the firmware's
+     card work (`WORK` cleared): the open queued with it never ran
+     (`regress_open_after_loaded_rows_never_ran`);
+  2. a close still pending when another book was opened marked the new
+     book Closed, which the reader shows as the failure
+     (`shelf::tests::regress_close_then_open_marked_the_book_closed`);
+  3. **the chore rule could hold a chore for ever**: with a 48 kHz MP3 at
+     Base the DAC is 2,283 frames ahead after every block, 21 short of
+     roomy, so a chore whose need (34 ms) no budget covered never reached
+     the starvation path (`status` now ends its ring line with `due=`
+     kind/need ms/headroom/waited ms/verdict: `due=15/34/2283/5956/0`).
+     After twice `STARVE_US` a chore now runs at 7/8 of roomy
+     (`chore::NEARLY_ROOMY`; `regress_a_chore_starved_for_ever_below_a_roomy_dac`).
+  The message is wrapped (two lines; goldens `books_failed_{dark,light}`,
+  `set:bookfail=on`). `books status` has `busy=` (chores that found the
+  model held by the UI: 3 and 24 in the runs above, not a cause).
+* **5. Abandoned upload.** Any other test command now ends an open upload
+  (file closed with what it has, `upload aborted N`, the command served
+  next) and 10 s without a chunk closes it (`upload timed out N`;
+  `devchan::upload_cmd`, `UPLOAD_IDLE_MS`). On the player: `fcreate` then
+  `ls` → `put 0`, then the listing; `fcreate` alone → `upload timed out
+  0` after 13 s; a `dev put` cut by a USB reset (host side) → the next
+  `ls` answered. `regress_abandoned_upload_took_every_command`.
+* **6. Idle Home.** `dev prof --faults` at idle Home: spread over the USB
+  task, `embassy_usb`'s run and poll, the UI task, `Timer::poll` — layout.
+  `dev prof --faults 30 --update-hot idle-home` made `hot.toml` cluster
+  `idle-home` (18 code sections, 24 lines; 11 rodata). **≈ 190 → 135
+  line loads/s** (`dev stats` 10 s apart: 195, 183, 184 → 138, 132, 138,
+  132; the suite's note 125/s; merged image 155/s, a different layout).
+* **7. Check 3** ("Stop the music to prepare this book."): shown on the
+  new card (its EPUB never converted): `books status` `book=converting
+  wait=1`, the reader's hint; 1 underrun from the conversion's first
+  piece (46 ms, fixed above, host-checked; not re-run on the player: the
+  EPUB was then converted when playback stopped for the next update, and
+  another name would change the suite's library).
+* **On the player, final image `24f3af06`**: SUITE; MIDI folder (test
+  look, `fe9757a5`… see below); idle Home; SOAK. Owner's settings:
+  SETTINGS.
+* **Gate** (merged tree): `cargo fmt --all --check` (root and fw);
+  clippy `-D warnings` root (also `--no-default-features`), fw release
+  (also `--no-default-features`, `-p firmware --features speech`);
+  `cargo test --workspace` **2,297 passed, 0 failed, 14 ignored** (234
+  binaries); `settings-matrix --check` (184 settings, 0 errors); `cargo
+  xtask build` (**code 127/128, rodata 64/64**, resident 60,620 B, `.bss`
+  147,376 B, slot 1,630,208 B); `check-resident` ok; `size --check`
+  within budgets; `stack --check` margin **4,276 B**; `test pagelink`
+  passed. Not run: `brand`, `site --check`, the fuzz runs of `xtask test
+  all`.
+* **Open**: an open under MP3 takes 6–9 s (no underruns; each step waits
+  for headroom); a gapless MP3 join's preparation underran once
+  (`ub=prep:23ms`, not Books); the rodata window is full (64/64) on main.
 
 ### 2026-11-27 — VER-13: the DOC-2 findings fixed; Storage and Diagnostics on the player (worker, no hardware)
 
