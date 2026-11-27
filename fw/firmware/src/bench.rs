@@ -3,13 +3,16 @@
 //! (default 8, at most 256) under `/.orpheus/test/` is written and read
 //! back in 32 KiB pieces (the file system turns whole sectors of a cluster
 //! run into one multi-block transfer straight into the piece), the data
-//! checked, the file removed. No rests between pieces (`Urgent`): the
-//! card's own speed, not the playback pacing. With `hs` the card runs at
-//! its high-speed clock for the run (`Card::high_speed`) and is
-//! re-initialised to the default clock after.
+//! checked, the file removed. The rates count the pieces' own time: the
+//! card task rests 2 ms after each piece (thread mode must run: a 16 MiB
+//! run without rests starved the UI into the watchdog, 2026-11-27). With
+//! `hs` the card runs at its high-speed clock for the run
+//! (`Card::high_speed`), with `hs XX` and the delay chains `XX` (hex,
+//! `SD_CTL` bits 23:16; U-SD-1), and is re-initialised to the default
+//! clock after.
 //!
 //! Reply: `bench w=<KB/s> r=<KB/s> mib=<n> bad=<words> clk=<level> sd=<kHz>`
-//! or `bench failed <step>`.
+//! or `bench failed <step> state=<SD_STATE> cmd=<index>`.
 
 use atj2157_hal::time;
 use orpheus_fs::{OpenMode, Volume};
@@ -46,22 +49,29 @@ pub async fn card_bench(vol: &mut Volume<'static, Card>, arena: &mut [u8], args:
     let mut it = args.split_whitespace();
     let mib: u32 = it.next().and_then(|a| a.parse().ok()).unwrap_or(8).clamp(1, 256);
     let hs = it.next() == Some("hs");
+    let delays = it.next().and_then(|t| u8::from_str_radix(t, 16).ok());
     let Some(buf) = arena.get_mut(..PIECE) else { return };
-    let _urgent = yoton_bsp::card::Urgent::enter();
     let khz = if hs { vol.device().high_speed(50_000).await.unwrap_or(0) } else { 24_000 };
+    if let Some(d) = delays {
+        Card::set_timing(d);
+    }
     let _ = vol.create_dir(DIR).await;
     let pieces = mib * (1024 * 1024 / PIECE as u32);
     let bytes = u64::from(pieces) * PIECE as u64;
-    let t0 = time::now_us();
     let mut failed: Option<&[u8]> = None;
+    let (mut tw, mut tr) = (0u64, 0u64);
     match vol.open(PATH, OpenMode::Truncate).await {
         Ok(mut f) => {
             for k in 0..pieces {
                 fill(buf, k);
-                if vol.write(&mut f, buf).await.is_err() {
+                let t = time::now_us();
+                let r = vol.write(&mut f, buf).await;
+                tw += time::now_us() - t;
+                if r.is_err() {
                     failed = Some(b"write");
                     break;
                 }
+                embassy_time::Timer::after_millis(2).await;
             }
             if vol.close(f).await.is_err() || vol.flush().await.is_err() {
                 failed = failed.or(Some(b"close"));
@@ -69,24 +79,27 @@ pub async fn card_bench(vol: &mut Volume<'static, Card>, arena: &mut [u8], args:
         }
         Err(_) => failed = Some(b"create"),
     }
-    let t1 = time::now_us();
     let mut bad = 0u32;
     if failed.is_none() {
         match vol.open(PATH, OpenMode::Read).await {
             Ok(mut f) => {
                 for k in 0..pieces {
-                    if vol.read(&mut f, buf).await.ok() != Some(PIECE) {
+                    let t = time::now_us();
+                    let r = vol.read(&mut f, buf).await;
+                    tr += time::now_us() - t;
+                    if r.ok() != Some(PIECE) {
                         failed = Some(b"read");
                         break;
                     }
                     bad += check(buf, k);
+                    embassy_time::Timer::after_millis(2).await;
                 }
                 let _ = vol.close(f).await;
             }
             Err(_) => failed = Some(b"open"),
         }
     }
-    let t2 = time::now_us();
+    let st = vol.device().stats();
     let _ = vol.remove(PATH).await;
     let _ = vol.flush().await;
     if hs && vol.device().reinit().await.is_err() {
@@ -95,13 +108,18 @@ pub async fn card_bench(vol: &mut Volume<'static, Card>, arena: &mut [u8], args:
     let lvl = atj2157_hal::clock::current() as u64;
     reply(|w| {
         if let Some(step) = failed {
-            w.s(b"bench failed ").s(step);
+            w.s(b"bench failed ")
+                .s(step)
+                .s(b" state=")
+                .u(u64::from(st.last_err_state))
+                .s(b" cmd=")
+                .u(u64::from(st.last_err_cmd));
             return;
         }
         w.s(b"bench w=")
-            .u(kbps(bytes, t1 - t0))
+            .u(kbps(bytes, tw))
             .s(b" r=")
-            .u(kbps(bytes, t2 - t1))
+            .u(kbps(bytes, tr))
             .s(b" mib=")
             .u(u64::from(mib))
             .s(b" bad=")

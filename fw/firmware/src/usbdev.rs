@@ -165,6 +165,15 @@ impl Target for Fw {
             MODE.signal(Personality::Dev);
             return true;
         }
+        // PERF-SD: the card reader's high-speed card clock, `card hs on|off`
+        // (takes effect at the next `usb msc`).
+        if let Some(on) = data.strip_prefix(b"card hs ") {
+            CARD_HS.store(on == b"on", Ordering::Relaxed);
+            crate::audio::reply(|w| {
+                w.s(if on == b"on" { b"card hs on" } else { b"card hs off" });
+            });
+            return true;
+        }
         // USB-6: `usb image <path> [cd|disk|fixed] [ro|rw]`, `usb image status`.
         if let Some(rest) = data.strip_prefix(b"usb image ") {
             if crate::drive::test_command(rest) {
@@ -747,7 +756,7 @@ impl orpheus_usb::msc::bot::BulkOut for BulkOut {
 
 /// The card reader asks for the card's high-speed clock (CMD6, 48 MHz from
 /// DEVPLL; PERF-SD, U-SD-1). Test command `card hs on|off`.
-pub static CARD_HS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+pub static CARD_HS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// Card as the MSC block device (512-byte blocks).
 struct CardDev<'a>(&'a mut yoton_bsp::card::Card);
