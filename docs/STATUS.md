@@ -79,6 +79,20 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-27 — PG-1 on the player; games checked by the owner (lead)
+
+* PG-1 (`5cba1d97`: resident 81,876 → 56,036 B) on the player: suite all
+  journeys but `midi` passed (idle Home 122 line loads/s, was ≈ 700; stack
+  free 32,912 B); `midi` failed only on a stale check (`vlim=16 over=0`:
+  Etude sheds at 288 by design, D-4) — the check now asks for voices and no
+  underruns only, and passes on the player. MIDI run: one underrun event
+  over the three songs, `pg=` 2–6 % (the paged UI font costs nothing
+  visible).
+* The owner changed Salvo's settings by hand (`e80=20992` stored); the
+  settings baseline for test runs is now `701=1 d50=10470 e80=20992`.
+* **Owner 2026-11-27: games tested by hand, "all worked well"** (user
+  check recorded).
+
 ### 2026-11-26 — PG-1: resident room (the UI font and the merged strings paged; the code window's gaps filled) (worker, no hardware)
 
 Brief: resident 81,875 of 81,920 B (45 B left), code window 125/128
