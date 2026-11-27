@@ -361,7 +361,7 @@ fn books_cases(add: &mut dyn FnMut(String, String)) {
 /// every language until the packs have them, so Dark and Light in
 /// English, and three in Amber (Solitaire's suits by shape alone).
 fn games_cases(add: &mut dyn FnMut(String, String)) {
-    let list = "set:games=on set:gameseed=7 prev*2 ok wait:100 expect-screen:Games";
+    let list = "set:games=on set:gameseed=7 prev*3 ok wait:100 expect-screen:Games";
     let blocks = format!("{list} ok wait:100 expect-screen:Blocks");
     let tiles = format!("{list} down ok wait:100 expect-screen:Game4096");
     let play = format!("{blocks} ok wait:1500 next next up wait:200");

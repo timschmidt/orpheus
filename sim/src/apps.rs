@@ -123,9 +123,9 @@ pub struct HostServices {
     pub games_on_home: bool,
     /// The Books app (M15, BOOK-1): the model and its card work.
     pub books: SimBooks,
-    /// Books on Home: off by default (the goldens' Home predates it), on
-    /// the player since the BOOK-1/2 wiring: `set:books=on` (the on-device
-    /// suite's appearance has it).
+    /// Books on Home (the cell before Settings): on, as on the player since
+    /// BOOK-1/2 (2026-11-27, firmware feature `books` on by default);
+    /// `set:books=off` takes it off.
     pub books_on_home: bool,
     /// The Sequencer (M17, SEQ-1): the studio, the synth, its files.
     pub seq: SimSeq,
@@ -218,7 +218,7 @@ impl HostServices {
             games: SimGames::default(),
             games_on_home: true,
             books: SimBooks::default(),
-            books_on_home: false,
+            books_on_home: true,
             seq: SimSeq::default(),
             seq_on_home: false,
             clicks: 0,
@@ -695,10 +695,8 @@ impl SystemService for HostServices {
     }
 
     fn app_available(&self, app: App) -> bool {
-        // As the player (M14); `set:games=off` takes it away. Books is on
-        // the player since the BOOK-1/2 wiring, here with `set:books=on`
-        // (the goldens' Home has twelve apps; the on-device suite's
-        // appearance turns it on).
+        // As the player (M14, M15); `set:games=off` and `set:books=off`
+        // take them away.
         match app {
             App::Games => self.games_on_home,
             App::Books => self.books_on_home,

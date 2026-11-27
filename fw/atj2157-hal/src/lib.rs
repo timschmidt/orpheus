@@ -57,7 +57,9 @@ pub fn init() {
 /// Default panic behaviour for images: record and reboot (to ADFU when a
 /// host test asked for it).
 pub fn panic(info: &core::panic::PanicInfo) -> ! {
-    let mut buf = log::LineBuf::new();
+    // Straight into the fault record: no line buffer on the stack (it is
+    // the bottom of the deepest paths, BOOK-1/2).
+    let mut buf = persist::PanicText::start();
     if let Some(loc) = info.location() {
         let f = loc.file();
         // Keep the tail of the path so the line number fits.
@@ -83,6 +85,6 @@ pub fn panic(info: &core::panic::PanicInfo) -> ! {
         buf.push_str(" ");
         buf.push_str(m);
     }
-    persist::record_panic(buf.as_bytes(), 0);
+    buf.finish(0);
     wdt::reboot_after_fault()
 }

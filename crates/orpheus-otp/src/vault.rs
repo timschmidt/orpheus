@@ -713,6 +713,15 @@ impl Drop for Key {
     }
 }
 
+/// A finished [`RekeyJob`] ([`RekeyJob::finish`]): the new key and its
+/// header fields, for [`Vault::finish_create`] and [`Vault::finish_rekey`].
+pub struct Rekeyed {
+    key: Key,
+    salt: [u8; SALT_LEN],
+    kind: SecretKind,
+    iterations: u32,
+}
+
 /// A started create or change of PIN: a new salt, the derivation in steps
 /// ([`RekeyJob::step`]) so the caller can yield.
 pub struct RekeyJob {
@@ -726,6 +735,18 @@ impl RekeyJob {
     /// Run up to `n` iterations; `true` when the key is ready.
     pub fn step(&mut self, n: u32) -> bool {
         self.kdf.step(n)
+    }
+
+    /// The derived key with the header fields it goes with (all
+    /// iterations run first). BOOK-1/2 (2026-11-27): the sealing futures
+    /// take this (≈ 60 B) instead of the job (≈ 240 B with the PRF's
+    /// state), which the firmware's `block_on` frame held and copied
+    /// under the sealing's hashing (2,692 B, the UI task's deepest path).
+    #[must_use]
+    pub fn finish(mut self) -> Rekeyed {
+        while !self.kdf.step(u32::MAX) {}
+        let RekeyJob { kdf, salt, kind, iterations } = self;
+        Rekeyed { key: Key(kdf.finish()), salt, kind, iterations }
     }
 
     /// Iterations still to run, of [`RekeyJob::iterations`].
@@ -835,11 +856,10 @@ impl<S: Storage> Vault<S> {
     /// [`RekeyJob`]; returns its key.
     pub async fn finish_create(
         &mut self,
-        job: RekeyJob,
+        job: Rekeyed,
         rng: &mut impl Entropy,
     ) -> Result<Key, VaultError<S::Error>> {
-        let RekeyJob { kdf, salt, kind, iterations } = job;
-        let key = Key(kdf.finish());
+        let Rekeyed { key, salt, kind, iterations } = job;
         self.new_header(&salt, kind, iterations);
         let mut empty = [0u8; 1];
         self.seal(&key.0, &mut empty, rng).await?;
@@ -850,12 +870,11 @@ impl<S: Storage> Vault<S> {
     /// key) under a new salt and key; returns the new key.
     pub async fn finish_rekey(
         &mut self,
-        job: RekeyJob,
+        job: Rekeyed,
         p: &mut Payload<'_>,
         rng: &mut impl Entropy,
     ) -> Result<Key, VaultError<S::Error>> {
-        let RekeyJob { kdf, salt, kind, iterations } = job;
-        let key = Key(kdf.finish());
+        let Rekeyed { key, salt, kind, iterations } = job;
         let old = self.hdr;
         self.new_header(&salt, kind, iterations);
         let r = self.seal(&key.0, &mut p.buf[..p.len], rng).await;
@@ -1568,14 +1587,14 @@ mod tests {
                 steps += 1;
             }
             assert!(steps + 1 >= IT / 64);
-            let k = v.finish_create(job, &mut rng).await.unwrap();
+            let k = v.finish_create(job.finish(), &mut rng).await.unwrap();
             assert_eq!(v.count(&k).await.unwrap(), 0);
             let mut p = v.open(&k, &mut buf).await.unwrap();
             p.push::<Cut>(&totp("A", b"aaaaaaaaaa")).unwrap();
             v.save_payload(&k, &mut p, &mut rng).await.unwrap();
             let mut job = Vault::<&mut Nor>::begin_rekey(b"2222", SecretKind::Pin, DEV, IT, &mut rng);
             while !job.step(500) {}
-            let k2 = v.finish_rekey(job, &mut p, &mut rng).await.unwrap();
+            let k2 = v.finish_rekey(job.finish(), &mut p, &mut rng).await.unwrap();
             drop(p);
             assert_eq!(v.read_entry(&k2, 0).await.unwrap().issuer.as_str(), "A");
             assert_eq!(key_unlock(&mut v, b"1111", 64).await.err(), Some(VaultError::WrongKey));

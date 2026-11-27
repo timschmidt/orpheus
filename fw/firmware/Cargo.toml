@@ -52,17 +52,15 @@ critical-section = "1.2"
 # (2026-11-27): with cold code in the rodata window (02 §3.6, 7 pages) the
 # image takes 127 of the 128 code pages (one kept free) and 45 of the 64
 # rodata pages; `.bss` +9.9 KB, stack margin 17 KB.
-default = ["speech"]
+default = ["speech", "books"]
 speech = ["orpheus-ui/screen-reader", "orpheus-apps/screen-reader", "dep:orpheus-tts"]
 # Books on the player (M15, 05 §7.15; the BOOK-1/2 wiring): the Books app,
-# its card work in the card task (`src/books.rs`). Fits since PG-2 (with
-# speech: 127 of 128 code pages, 62 of 64 rodata pages, `.bss` 147,456 B)
-# but still off: with speech the static stack margin is 3,460 B, under
-# the 4,096 B of `budgets.toml` (STATUS 2026-11-27 "PG-2"), and the suite's
-# Home journeys need their Books update (STATUS "BOOK-1/2 wiring").
-# `cargo xtask build --features books` builds it (touch `src/main.rs`
-# first when the last build had other features: cargo may keep the
-# other link).
+# its card work in the card task (`src/books.rs`). On by default since
+# BOOK-1/2 (2026-11-27): with speech the image takes 128 of the 128 code
+# pages and 63 of the 64 rodata pages, `.bss` 147,352 B, static stack
+# margin 4,276 B (STATUS 2026-11-27 "BOOK-1/2: Books on by default").
+# Touch `src/main.rs` before a build with other features (cargo may keep
+# the other link).
 books = ["orpheus-apps/books"]
 
 [lints]

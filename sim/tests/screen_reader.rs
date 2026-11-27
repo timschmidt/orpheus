@@ -82,7 +82,7 @@ const BOOKS: &str = "set:books=on goto:Books wait:50 expect-screen:Books";
 const SEQ: &str = "set:seq=on set:seqdemo=1 goto:Sequencer wait:50 expect-screen:Sequencer";
 const GRID: &str = "set:seq=on set:seqdemo=1 goto:Sequencer wait:50 down ok wait:50 expect-screen:SeqGrid";
 const DRIVE: &str = "down*2 next ok wait:100 expect-screen:UsbDrive";
-const GAMES: &str = "set:games=on set:gameseed=7 prev*2 ok wait:100 expect-screen:Games";
+const GAMES: &str = "set:games=on set:gameseed=7 prev*3 ok wait:100 expect-screen:Games";
 
 /// (what, journey from a fresh simulator): together every screen.
 fn lint_journeys() -> Vec<(&'static str, String)> {
@@ -516,7 +516,7 @@ fn a_key_interrupts() {
     run(&mut s, "down");
     let l = log(&s);
     let stop = l.iter().position(|x| matches!(x, Said::Stop(_))).expect("stopped");
-    assert!(matches!(&l[stop + 1], Said::Text(_, t) if t.contains("5 of 12")), "{l:?}");
+    assert!(matches!(&l[stop + 1], Said::Text(_, t) if t.contains("5 of 13")), "{l:?}");
 }
 
 /// The toggle chord (Back and Menu held 2 s) turns the reader on and off
@@ -776,10 +776,10 @@ fn keys_work_with_the_screen_off() {
     };
     let (lit_on, said_on, bl_on) = run_with(1);
     assert!(!lit_on && bl_on == 0, "the screen stays dark");
-    assert!(said_on.last().unwrap().contains("5 of 12"), "Down moved the focus: {said_on:?}");
+    assert!(said_on.last().unwrap().contains("5 of 13"), "Down moved the focus: {said_on:?}");
     let (lit_off, said_off, _) = run_with(0);
     assert!(lit_off, "the key woke the screen");
-    assert!(!said_off.iter().any(|t| t.contains("5 of 12")), "and did nothing else: {said_off:?}");
+    assert!(!said_off.iter().any(|t| t.contains("5 of 13")), "and did nothing else: {said_off:?}");
     // Without the reader the setting does nothing.
     let s = sim("set:0x100b=1 set:timers=run set:0x0302=0 wait:8000 down wait:100");
     assert!(s.shell.gate.screen_on, "woken");

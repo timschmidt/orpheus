@@ -612,7 +612,8 @@ fn align_up(v: u32, a: u32) -> u32 {
 
 /// Code window pages that cold placement keeps free (02 §3.6): cold code
 /// comes back into the code window, the warmest first, while this much of
-/// it stays empty.
+/// it stays empty — unless the rodata window cannot hold the rest, then
+/// the code window fills up ([`place_cold`]).
 pub const CODE_RESERVE_PAGES: u32 = 1;
 
 /// Pack with only as much cold code in the rodata window as the code window
@@ -623,6 +624,13 @@ pub const CODE_RESERVE_PAGES: u32 = 1;
 /// still share a physical line with a constant they read come back
 /// (PG-2b: a loop there pays two line loads per pass; SHA-256's rounds ran
 /// an update at 2.5 KB/s). Returns the plan and the cold set it used.
+///
+/// When the rodata window cannot hold what is left cold with the reserve
+/// kept, the reserve goes too (BOOK-1/2, 2026-11-27: speech and Books
+/// with PG-2b's padded cold placement needed 33 of the 32 rodata groups,
+/// 3,714 B over, with the code window at 127 pages): the two windows
+/// share the free room, and when there is none the code window takes
+/// what it can.
 pub fn place_cold(
     g: &Graph,
     places: &[Place],
@@ -631,8 +639,27 @@ pub fn place_cold(
     rules: &Rules,
     cold: &BTreeSet<usize>,
 ) -> Result<(Plan, BTreeSet<usize>)> {
+    let kept = place_cold_reserving(g, places, hot, crates, rules, cold, CODE_RESERVE_PAGES)?;
+    if check_rodata(&kept.0).is_ok() {
+        return Ok(kept);
+    }
+    let all = place_cold_reserving(g, places, hot, crates, rules, cold, 0)?;
+    check_rodata(&all.0)?;
+    Ok(all)
+}
+
+/// [`place_cold`] with `reserve` code pages kept free.
+fn place_cold_reserving(
+    g: &Graph,
+    places: &[Place],
+    hot: &[Cluster],
+    crates: &[String],
+    rules: &Rules,
+    cold: &BTreeSet<usize>,
+    reserve: u32,
+) -> Result<(Plan, BTreeSet<usize>)> {
     let mut plan = pack_cold(g, places, hot, crates, cold)?;
-    let cap = (MAX_CODE_PAGES - CODE_RESERVE_PAGES) * PAGE_SIZE;
+    let cap = (MAX_CODE_PAGES - reserve) * PAGE_SIZE;
     let rank = |n: usize| rules.cold.symbol_rank(&g.nodes[n]).unwrap_or(0);
     let mut warm: Vec<usize> = cold.iter().copied().collect();
     warm.sort_by(|&a, &b| rank(b).cmp(&rank(a)).then(g.nodes[a].addr.cmp(&g.nodes[b].addr)));
@@ -689,7 +716,6 @@ pub fn place_cold(
             }
         }
     }
-    check_rodata(&plan)?;
     Ok((plan, set))
 }
 
@@ -863,11 +889,36 @@ pub fn pack_cold(
     };
     let mut cold_order: Vec<usize> = cold.iter().copied().collect();
     cold_order.sort_by(|&a, &b| crates[a].cmp(&crates[b]).then(g.nodes[a].addr.cmp(&g.nodes[b].addr)));
+    // The padding left before a section moved to a clear line, per cold
+    // group: (start, end) of each hole. Later sections fill them first
+    // (BOOK-1/2, 2026-11-27: with Books the holes were 32 KB of the 23
+    // cold pages, and the code window had to take the rest).
+    let mut holes: Vec<Vec<(u32, u32)>> = Vec::new();
     for n in cold_order {
         let s = &g.nodes[n];
         let want = data_lines(n);
         let fits = |off: u32| off + s.size <= RO_GROUP_SIZE;
         let clear = |off: u32| lines_at(off, s.size) & want == 0;
+        // A hole with a clear place: its start, or a line start inside it.
+        let in_hole = |&(a, b): &(u32, u32)| -> Option<u32> {
+            let first = align_up(a, s.align);
+            std::iter::once(first)
+                .chain((first / LINE_SIZE + 1..=b / LINE_SIZE).map(|l| l * LINE_SIZE))
+                .find(|&off| off + s.size <= b && clear(off))
+        };
+        if let Some((gi, hi, off)) = holes.iter().enumerate().find_map(|(gi, hs)| {
+            hs.iter().enumerate().find_map(|(hi, h)| in_hole(h).map(|off| (gi, hi, off)))
+        }) {
+            let (a, b) = holes[gi][hi];
+            holes[gi].remove(hi);
+            for h in [(a, off), (off + s.size, b)] {
+                if h.1 > h.0 {
+                    holes[gi].push(h);
+                }
+            }
+            plan.cold[gi].0.push((n, off));
+            continue;
+        }
         // Where in a group with `used` bytes: at its end, or (PG-2b) at the
         // first later line start clear of the constants' lines.
         let spot = |used: u32| -> Option<u32> {
@@ -900,6 +951,7 @@ pub fn pack_cold(
             Some(i) => i,
             None => {
                 plan.cold.push((Vec::new(), 0));
+                holes.push(Vec::new());
                 plan.cold.len() - 1
             }
         };
@@ -909,8 +961,16 @@ pub fn pack_cold(
             plan.cold_conflicts += 1;
             plan.conflicted.push(n);
         }
+        if off > *used {
+            holes[gi].push((*used, off));
+        }
         secs.push((n, off));
         *used = off + s.size;
+    }
+    // The linker script places a group's sections in order (`. = addr`
+    // never moves back).
+    for (secs, _) in &mut plan.cold {
+        secs.sort_by_key(|&(_, off)| off);
     }
     // (The rodata window's limit: `check_rodata`, after `place_cold` has
     // brought back what the code window has room for.)
@@ -1842,6 +1902,71 @@ sections = [".rodata.cst4"]
         assert!(s.contains("        . = 0x00313a98;\n        *(\".text.cold_b\")"), "{s}");
         assert!(s.contains("__orpheus_rodata_code_pages = 4;"), "{s}");
         assert!(s.contains("ASSERT(SIZEOF(.px_g2) == 0x3e1c"), "{s}");
+    }
+
+    /// BOOK-1/2 (2026-11-27): with the rodata window full, cold code that
+    /// the code window's reserve page could hold stayed cold and the build
+    /// failed ("need 33 groups of 16 KiB, the window holds 32"); the reserve
+    /// now gives way.
+    #[test]
+    fn regress_reserve_page_kept_while_the_rodata_window_overflowed() {
+        let names: Vec<String> = (0..MAX_RO_GROUPS - 1).map(|i| format!(".rodata.t{i}")).collect();
+        let mut nodes = vec![
+            node(".text", ".text.big", 1_035_000, 2, Some("app::big")),
+            node(".text", ".text.a", 10_000, 2, Some("books::a")),
+            node(".text", ".text.b", 10_000, 2, Some("books::b")),
+        ];
+        for n in &names {
+            nodes.push(node(".rodata", n, RO_GROUP_SIZE, 4, None));
+        }
+        let g = Graph::from_parts(nodes, &[]);
+        let r = Rules::parse("roots = []\n[cold]\nsymbols = [\"books::*\"]\n", "t").unwrap();
+        let (p, _) = classify(&g, &r, &[]);
+        let (all, _) = cold_set(&g, &p, &r, &[]);
+        assert_eq!(all.len(), 2);
+        // Kept, the reserve leaves both cold: 31 + 2 groups.
+        let (kept, _) = place_cold_reserving(&g, &p, &[], &crates(&g), &r, &all, CODE_RESERVE_PAGES).unwrap();
+        assert!(check_rodata(&kept).is_err());
+        let (plan, cold) = place_cold(&g, &p, &[], &crates(&g), &r, &all).unwrap();
+        assert_eq!(cold.len(), 1);
+        assert_eq!(plan.code_size, 1_045_000);
+        assert!(check_rodata(&plan).is_ok());
+    }
+
+    /// BOOK-1/2 (2026-11-27): speech and Books did not fit (33 of the 32
+    /// rodata groups, `xtask build --features books`: "paged rodata and cold
+    /// code need 33 groups"): the padding PG-2b leaves before a section moved
+    /// clear of its constants' lines was never used again (32 KB of 23 cold
+    /// pages). Later sections now fill those holes first, and the script
+    /// still places each group's sections in address order.
+    #[test]
+    fn regress_cold_padding_was_never_filled() {
+        let g = Graph::from_parts(
+            vec![
+                node(".text", ".text.hot", 600, 2, Some("app::hot")),
+                node(".text", ".text.cold_a", 3000, 2, Some("books::a")),
+                node(".rodata", ".rodata.t", 9000, 4, Some("app::T")),
+                node(".text", ".text.cold_c", 600, 4, Some("books::c")),
+                node(".text", ".text.cold_d", 2000, 4, Some("books::d")),
+                node(".text", ".text.cold_e", 7000, 4, Some("books::e")),
+            ],
+            // `cold_c` reads `T` (lines 0–8): after `cold_a` it moves to
+            // line 9, leaving 3000..9216 empty.
+            &[(3, 2)],
+        );
+        let r = Rules::parse("roots = []\n[cold]\nsymbols = [\"books::*\"]\n", "t").unwrap();
+        let (p, _) = classify(&g, &r, &[]);
+        let (cold, _) = cold_set(&g, &p, &r, &[]);
+        let plan = pack_cold(&g, &p, &[], &crates(&g), &cold).unwrap();
+        // `cold_d` in the hole after `cold_a`; `cold_e` (7,000 B) fits
+        // neither the rest of the hole nor the group's end: a new group.
+        assert_eq!(plan.cold[0].0, vec![(1, 0), (4, 3000), (3, 9216)]);
+        assert_eq!(plan.cold.len(), 2);
+        assert_eq!(plan.cold[1].0, vec![(5, 0)]);
+        assert_eq!(plan.cold_conflicts, 0);
+        let s = script(&g, &plan, Path::new("/l"), "t");
+        let (d, c) = (s.find(".text.cold_d").unwrap(), s.find(".text.cold_c").unwrap());
+        assert!(d < c, "{s}");
     }
 
     /// Only as much cold code leaves the code window as it needs: the

@@ -2,7 +2,7 @@
 # set:library=ready set:0x1004=1 wait:2500 ok wait:2500 down wait:2000 ok wait:2500 down wait:1500 ok wait:2000 ok wait:2500 ok wait:3000 expect-screen:NowPlaying
      33 earcon reader-on
      33 say Screen reader on
-     33 say Home. Music, button, 1 of 12
+     33 say Home. Music, button, 1 of 13
    2500 stop
    2560 earcon enter
    2560 say Music. Shuffle all, 1 of 9

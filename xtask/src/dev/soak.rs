@@ -186,9 +186,9 @@ impl App {
             .find(|a| a.name() == s)
     }
     /// Home position (the player's grid: `App::GRID` without the apps not
-    /// on the player, such as Books, which the workspace's `orpheus-apps`
-    /// has through the simulator; Games before Settings since GAME-2) and
-    /// screen name.
+    /// on the player, such as the Sequencer, which the workspace's
+    /// `orpheus-apps` has through the simulator; Games and Books before
+    /// Settings since GAME-2 and BOOK-1/2) and screen name.
     fn home(self) -> (usize, &'static str) {
         let at = |a: orpheus_apps::App| {
             orpheus_apps::App::GRID.iter().filter(|g| g.on_player()).position(|&g| g == a).unwrap_or(0)
@@ -3646,10 +3646,11 @@ mod tests {
     }
 
     /// Home positions follow the grid (Games before Settings since GAME-2:
-    /// Settings moved from 10 to 11); `browse games` parses.
+    /// Settings moved from 10 to 11; Books since BOOK-1/2: 12); `browse
+    /// games` parses.
     #[test]
     fn browse_targets_on_home() {
-        assert_eq!(App::Settings.home(), (11, "Settings"));
+        assert_eq!(App::Settings.home(), (12, "Settings"));
         assert_eq!(App::Games.home(), (10, "Games"));
         assert_eq!(App::Pictures.home().0, 5);
         let a = Action::parse("browse games 20 3").unwrap();

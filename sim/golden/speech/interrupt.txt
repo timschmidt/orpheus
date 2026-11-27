@@ -2,7 +2,7 @@
 # set:0x1004=1 wait:300 ok wait:200 down down down wait:2500
      33 earcon reader-on
      33 say Screen reader on
-     33 say Home. Music, button, 1 of 12
+     33 say Home. Music, button, 1 of 13
     300 stop
     360 earcon enter
     360 say Music. Shuffle all, 1 of 10

@@ -318,9 +318,20 @@ impl<S: Storage> Authenticator<S> {
 
     /// [`finish`](Self::finish) for [`Work::Create`] (another kind:
     /// [`Event::Failed`]).
-    pub async fn finish_create(&mut self, mut job: Job, now_ms: u64) -> Event {
-        while !job.step(u32::MAX) {}
-        let JobKind::Create(j) = job.kind else { return Event::Failed };
+    ///
+    /// The derivation runs to its end when this is called; the future
+    /// holds only its result (BOOK-1/2: the job moved into the future was
+    /// copied on the firmware's stack under the sealing).
+    pub fn finish_create(&mut self, job: Job, now_ms: u64) -> impl Future<Output = Event> + '_ {
+        let j = match job.kind {
+            JobKind::Create(j) => Some(j.finish()),
+            _ => None,
+        };
+        self.create_with(j, now_ms)
+    }
+
+    async fn create_with(&mut self, j: Option<crate::vault::Rekeyed>, now_ms: u64) -> Event {
+        let Some(j) = j else { return Event::Failed };
         match self.vault.finish_create(j, &mut self.pool).await {
             Ok(k) => {
                 self.key = Some(k);
@@ -338,9 +349,29 @@ impl<S: Storage> Authenticator<S> {
 
     /// [`finish`](Self::finish) for [`Work::ChangePin`] (another kind:
     /// [`Event::Failed`]).
-    pub async fn finish_change(&mut self, mut job: Job, now_ms: u64, scratch: &mut [u8]) -> Event {
-        while !job.step(u32::MAX) {}
-        let JobKind::Change(j) = job.kind else { return Event::Failed };
+    ///
+    /// The derivation runs to its end when this is called (as
+    /// [`finish_create`](Self::finish_create)).
+    pub fn finish_change<'a>(
+        &'a mut self,
+        job: Job,
+        now_ms: u64,
+        scratch: &'a mut [u8],
+    ) -> impl Future<Output = Event> + 'a {
+        let j = match job.kind {
+            JobKind::Change(j) => Some(j.finish()),
+            _ => None,
+        };
+        self.change_with(j, now_ms, scratch)
+    }
+
+    async fn change_with(
+        &mut self,
+        j: Option<crate::vault::Rekeyed>,
+        now_ms: u64,
+        scratch: &mut [u8],
+    ) -> Event {
+        let Some(j) = j else { return Event::Failed };
         let Some(old) = self.key.take() else { return Event::Failed };
         let r = match self.vault.open(&old, scratch).await {
             Ok(mut p) => self.vault.finish_rekey(j, &mut p, &mut self.pool).await,

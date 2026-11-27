@@ -2,9 +2,9 @@
 # set:0x1004=1 wait:2500 prev ok wait:2500 up wait:2000 ok wait:2500 down*4 wait:2500 ok wait:2500 up*4 wait:1500 back wait:3000
      33 earcon reader-on
      33 say Screen reader on
-     33 say Home. Music, button, 1 of 12
+     33 say Home. Music, button, 1 of 13
    2500 stop
-   2500 say Settings, button, 12 of 12
+   2500 say Settings, button, 13 of 13
    2600 stop
    2660 earcon enter
    2660 say Settings. Sound, submenu, 1 of 13

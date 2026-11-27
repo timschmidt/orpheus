@@ -88,7 +88,9 @@ fn on_t1() {
         rtc::t_ctl(T_ALARM).write(rtc::tctl::ZIPD);
         let a = DRIVER.alarms.borrow(cs);
         a.set(a.get().wrapping_add(1));
-        DRIVER.rearm(cs);
+        if let Ok(mut q) = DRIVER.queue.borrow(cs).try_borrow_mut() {
+            DRIVER.rearm(cs, &mut q);
+        }
     });
 }
 
@@ -107,9 +109,12 @@ impl TimeDriver {
     }
 
     /// Program T1 for the queue's next deadline; loop while deadlines have
-    /// already passed.
-    fn rearm(&self, cs: CriticalSection) {
-        let mut q = self.queue.borrow(cs).borrow_mut();
+    /// already passed. The caller holds the queue (`try_borrow_mut`: inside
+    /// the critical section nothing else does). BOOK-1/2 (2026-11-27): a
+    /// `borrow_mut` here put `panic_already_borrowed` and the panic handler
+    /// (248 B) under every timer wait — the bottom of the deepest stack
+    /// paths (the card task's file opens, the SD driver's waits).
+    fn rearm(&self, cs: CriticalSection, q: &mut Queue) {
         loop {
             let now = self.now_cs(cs);
             let next = q.next_expiration(now);
@@ -161,10 +166,10 @@ pub fn now_us() -> u64 {
 #[inline(never)]
 pub(crate) fn schedule_wake(at_us: u64, waker: &Waker) {
     critical_section::with(|cs| {
-        let changed =
-            DRIVER.queue.borrow(cs).try_borrow_mut().is_ok_and(|mut q| q.schedule_wake(at_us, waker));
-        if changed {
-            DRIVER.rearm(cs);
+        if let Ok(mut q) = DRIVER.queue.borrow(cs).try_borrow_mut()
+            && q.schedule_wake(at_us, waker)
+        {
+            DRIVER.rearm(cs, &mut q);
         }
     });
 }

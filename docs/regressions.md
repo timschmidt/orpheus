@@ -88,6 +88,7 @@ then passed with it).
 | PG-2b: MIDI underran more after PG-2 — the synth's per-piece constants on the wavetable's rodata lines (1,170 rodata faults/s, 2,297 line loads/s in "Etude") | 11-27 | PG-2b | `pagelink::tests::regress_synth_piece_constants_on_the_wavetable_lines`; `playdir …/midi` underruns, `dev stats` loads/s | new, R (device check pending) |
 | PG-2b: idle Home ≈ 200 line loads/s (≈ 120 before): `Fw::setting` and `SettingsCache::get` on one physical code line (the 2026-11-25 bug again, by layout) | 11-27 | PG-2b | `rules::tests::regress_setting_reads_evicted_each_other`; the suite's idle-Home check | new, R (device check pending) |
 | PG-2b: `status` said `idle … clk=288/288` long after MIDI stopped (the synth's last step, not the clock); `dev stats` printed `clock level ?` at 288 MHz | 11-27 | PG-2b | `orpheus_synth::load::tests::regress_idle_status_claimed_the_synth_clock`, `xtask` `dev::stats_tests::regress_stats_clock_level_max_unnamed` | new |
+| BOOK-1/2: the default image with speech and Books did not link after PG-2b ("paged rodata and cold code need 33 groups of 16 KiB, the window holds 32"): the padding before a cold section moved clear of its constants was never reused (32 KB), and the code window's reserve page stayed empty while the rodata window overflowed | 11-27 | BOOK-1/2 | `xtask` `pagelink::tests::regress_cold_padding_was_never_filled`, `regress_reserve_page_kept_while_the_rodata_window_overflowed`; `cargo xtask build` | new |
 
 ## Test-infrastructure fixes (no `regress_` test needed)
 

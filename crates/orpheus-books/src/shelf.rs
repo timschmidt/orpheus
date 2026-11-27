@@ -1207,7 +1207,7 @@ impl Desk {
             if let Ok(mut lf) = vol.open(LIBRARY_PATH, OpenMode::ReadWrite).await {
                 lf.set_position(files::lib_record_at(rec) + files::LIB_NAMES_AT as u64);
                 if vol.write(&mut lf, &self.io[..files::LIB_NAMES]).await.is_ok() {
-                    let _ = vol.close(lf).await;
+                    let _ = vol.flush_file(&mut lf).await;
                 }
             }
             self.flush = true;
@@ -1520,7 +1520,7 @@ impl Desk {
         if let Some(mut f) = job.lib.take() {
             f.set_position(0);
             let _ = vol.write(&mut f, head).await;
-            let _ = vol.close(f).await;
+            let _ = vol.flush_file(&mut f).await;
         }
         lib.count = job.count;
         lib.found = job.count;
@@ -1847,13 +1847,13 @@ impl Desk {
             && let Ok(mut f) = vol.open(path, OpenMode::Truncate).await
             && vol.write(&mut f, data).await.is_ok()
         {
-            let _ = vol.close(f).await;
+            let _ = vol.flush_file(&mut f).await;
         }
         // The library's progress for this book.
         if let Ok(mut lf) = vol.open(LIBRARY_PATH, OpenMode::ReadWrite).await {
             lf.set_position(files::lib_record_at(rec) + LIB_PROGRESS_AT as u64);
             if vol.write(&mut lf, &progress.to_le_bytes()).await.is_ok() {
-                let _ = vol.close(lf).await;
+                let _ = vol.flush_file(&mut lf).await;
             }
         }
         self.flush = true;

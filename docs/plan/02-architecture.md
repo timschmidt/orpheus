@@ -623,7 +623,14 @@ now runs from the rodata window instead:
   the window has room; only then on a constant's line. The sections that
   still share one come back into the code window before any warmer cold
   code (`place_cold`), and `layout.json` gives them the reason
-  `cold-shared:` (the default image has none since PG-2b).
+  `cold-shared:` (the default image has none since PG-2b). The padding
+  left before such a moved section is a hole that later sections fill
+  first (BOOK-1/2, 2026-11-27: with Books the holes were 32 KB of 23 cold
+  pages; the linker script still gets each group's sections in address
+  order). When the rodata window cannot hold what is left cold with the
+  code window's reserve page kept, the reserve goes too (`place_cold`):
+  the two windows share the free room, and when there is none the code
+  window takes what it can.
 * **What must never be cold** (PG-2b, 2026-11-27): code that runs per
   byte or per block over large data. An update's data path (the
   installer's write, program, erase and read-back, the USB and card
@@ -665,10 +672,11 @@ now runs from the rodata window instead:
   decoder for both buses [inferred] (01 §9 U-MEM-2). The first cold
   function the player runs answers it (in the default image: opening the
   Authenticator).
-* **As built** (default features: speech on): code 127/128 pages (8 KB
-  free), rodata 45/64 (7 of them cold code, 49 KB: updates, the
-  authenticator, the library build, rare screens); with Books too: code
-  127/128, rodata 62/64 (20 cold pages, 163 KB).
+* **As built** (PG-2, speech on): code 127/128 pages (8 KB free), rodata
+  45/64 (7 of them cold code, 49 KB: updates, the authenticator, the
+  library build, rare screens). **Since BOOK-1/2 (2026-11-27) the default
+  image has speech and Books**: see STATUS 2026-11-27 "BOOK-1/2: Books on
+  by default" for the pages (both windows are nearly full).
   Resident +2.4 KB (the decoder and trampoline, 1.8 KB), `.bss` +176 B
   (`.uninit`: five slots and the fetch buffer).
 
