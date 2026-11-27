@@ -14,14 +14,14 @@ in the plan.
 | Flash | 8 MiB SPI NOR, not memory-mapped | Firmware, settings, boot stage; code is paged into RAM 1 KiB at a time |
 | Screen | 128 × 128 colour LCD, 16-bit colour, backlight | Every pixel drawn by Orpheus, updated by DMA |
 | Keys | Ten: Up, Down, Prev, Next, OK, Menu, Back, Vol+, Vol−, Power | One meaning per key on every screen |
-| Card | microSD, FAT32 or exFAT | Music, pictures, the library index; writes only in `/.orpheus/` |
+| Card | microSD, FAT32 or exFAT | Music, pictures, books, the library index; writes only in `/.orpheus/` and the Recorder's `/Recordings` |
 | Audio out | DAC with hardware volume and a headphone amplifier | Music fed by DMA; volume in hardware |
-| Bluetooth | A transmitter module on a serial link, fed with the analogue audio | Pairing, connecting, sending audio |
-| USB | USB 2.0 device | Card reader, developer channel; disk images and a keyboard for one-time codes planned |
-| FM tuner | RDA5807-family | Planned (Radio) |
-| Motion sensor | 3-axis accelerometer (no gyroscope) | Planned (Steps) |
-| Microphone | Analogue input | Planned (Recorder) |
-| Clock | Real-time clock with alarm | Clock on the status bar and lock screen |
+| Bluetooth | A transmitter module on a serial link, fed with the analogue audio | Pairing, connecting, sending audio; a presenter remote is being investigated |
+| USB | USB 2.0 device | Card reader, developer channel, disk and CD images for a computer, a keyboard that types one-time codes, firmware updates |
+| FM tuner | RDA5807-family | Radio with presets, scanning and RDS; the audio takes the analogue path past the processor |
+| Motion sensor | 3-axis accelerometer (no gyroscope) | Step counter, sampled at 25 Hz |
+| Microphone | Analogue input | Recorder (microphone and radio) |
+| Clock | Real-time clock with alarm | Clock on the status bar and lock screen, alarms while the player is on |
 | Battery | Lithium cell, charger in the power-management unit | Charged at the original firmware's current (200 mA code); level and charge state shown |
 
 ## What makes it interesting

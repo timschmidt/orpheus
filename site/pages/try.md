@@ -58,14 +58,20 @@ trackers.
 
 ## What is real and what is simulated
 
-Real: the apps and screens, the key handling, the FAT file system, the music
+Real: the apps and screens (also the games and Books; the Sequencer, which
+is not on the player yet, is hidden from Home: type
+`orpheus.web.run_script('set:seq=on')` in the browser console), the key handling, the FAT file system, the music
 library and its index, the tag and lyrics readers, the picture decoders, the
 audio decoders and the DSP chain (equaliser, bass, balance, crossfeed,
 channels). The volume curve is the player's.
 
-Simulated: battery, charger, clock, Bluetooth, the FM tuner and the step
-counter. The player's drivers, its paged memory and its boot stages do not
-run here; the hardware tests cover those.
+Silent here: sound comes from the audio decoders only, so MIDI files, the
+Sequencer and the screen reader's speech make no sound on this page (on the
+player MIDI files and speech play).
+
+Simulated: battery, charger, clock, Bluetooth, the FM tuner, the recorder's
+input and the step counter. The player's drivers, its paged memory and its
+boot stages do not run here; the hardware tests cover those.
 
 ## The desktop simulator
 

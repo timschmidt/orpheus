@@ -87,6 +87,44 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-27 — DOC-2 refresh: docs and site brought up to date (worker, no hardware)
+
+Owner's request: "ensure the web page and documentation is up to date and
+reflects current status". Each claim checked against §2, the session
+entries, USER-CHECKS.md and the code; three states used throughout:
+works (used on the player), on the player but being checked (suite
+passes there, a person's check open), simulator only / planned.
+
+* **Changed**: README (status 2026-11-27, MIDI, new shots), CHANGELOG
+  [Unreleased] (Added/Changed/Fixed/Known issues to 2026-11-27),
+  SECURITY.md (Authenticator built; fixed device label, no passphrase),
+  `docs/dev/architecture.md` (cold code in the rodata window, clock
+  governor and Power modes, card task and speech), `docs/user/` README,
+  settings, power, install (update paths and their state; browser
+  installer untried on a real player), keys (chords; power menu without
+  Start original firmware), music (MIDI), now-playing, files, faq,
+  troubleshooting, usb-drive; site `index.html`, `install.md`, `try.md`,
+  `hardware.md`.
+* **New manual pages** (each ≤ 600 words): radio, recorder, steps,
+  stopwatch, authenticator, games, salvo, bricks, books, books-reading,
+  accessibility, screen-reader, sequencer; 39 new shots in `docs/shots/`.
+* **Gate**: `cargo xtask site --check` (134 files, Home 78 KB) and `site
+  shots --check` pass; `cargo test -p xtask` passes; no code changed, so
+  the workspace tests were not rerun.
+* **Found (not fixed; for the lead)**: §2 rows stale against later
+  entries — T-6 and §1's NOR row ("fallback not installed"; installed and
+  crash-tested 2026-11-24), AU-13/UI-5b, OTP-2, SENS-1, UI-5c/5d, A11Y-1/2,
+  TTS-3 ("not yet run on the player"; the suite runs them since PG-2), and
+  user-check numbers in rows 48/50/52/62 differ from USER-CHECKS.md.
+  Firmware: Storage › Clear caches / Check card / Format card and System ›
+  Diagnostics do nothing on the player (only RebuildLibrary is wired,
+  `fw/firmware/src/ui.rs`); Settings › Recording › Source offers Line-in
+  though the board has none; Authenticator › Time check labels local
+  time "UTC" (`screens/auth.rs`); the Sequencer is hidden from Home in
+  the simulator and the Try it page (`set:seq=on`); game sound effects
+  (05 §7.13) are not built; stale "not in the firmware" comments in
+  `orpheus-apps/Cargo.toml`, `strings.rs` and `orpheus-ui/src/a11y.rs`.
+
 ### 2026-11-27 — SEQ-2: MIDI clock out as a host model; the rest of SEQ-2 was already merged (worker, no hardware)
 
 Host only (no `xtask dev`: the brief). The brief asked for all of SEQ-2;

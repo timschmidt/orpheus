@@ -10,6 +10,11 @@ the steps you confirm, nor the data the original firmware keeps at its
 end. Not sure? [Try the installer on a simulated player](install.html?demo)
 first.
 
+**State on 2026-11-27:** this page has been tested against a simulated
+player only, not yet against a real one, and no release has been
+published, so there is no release file to install yet: an update needs an
+`.ofw` file you built yourself. The command line below is the tested way.
+
 <link rel="stylesheet" href="install/install.css">
 <div class="inst-note" id="inst-unsupported" hidden>
 <p><b>This browser cannot talk to USB devices.</b> Firefox and Safari do

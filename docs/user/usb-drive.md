@@ -2,8 +2,9 @@
 
 USB Drive shows a disk image from the card to a computer as a CD-ROM or a
 USB disk. The computer can then start from it: an installer, a rescue
-system or a live Linux. **In progress**: built and tested in the
-simulator; it has not run on the player yet.
+system or a live Linux. On the player a Linux computer read a test disk
+image and a test CD image byte for byte; starting a real computer from
+one has not been checked by a person yet.
 
 ![USB Drive](../shots/drive_home_dark_latin.png)
 
