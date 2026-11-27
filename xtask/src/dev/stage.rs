@@ -211,6 +211,7 @@ pub fn cmd_update(args: &mut Args) -> Result<String> {
     use std::time::Duration;
     let path = args.positional("FILE.ofw")?;
     let reboot = !args.flag("no-reboot");
+    let stop_after = args.value("stop-after").map(|s| crate::args::num(&s)).transpose()?;
     let file = std::fs::read(&path).with_context(|| format!("read {path}"))?;
     let (h, _) = check_file(&file)?;
     log(&format!(
@@ -222,12 +223,21 @@ pub fn cmd_update(args: &mut Args) -> Result<String> {
     let mut d = DevChannel::open(Duration::from_secs(3))?;
     let t0 = std::time::Instant::now();
     let mut last = 0u64;
-    let slot = d.update(&file, &mut |what, done, total| {
+    let slot = d.update_part(&file, stop_after.map(|n| n as usize), &mut |what, done, total| {
         if done >= last + 0x4_0000 || done == total {
             last = done;
             log(&format!("  {what} {done} / {total}"));
         }
     })?;
+    let Some(slot) = slot else {
+        // `--stop-after`: the write path measured, nothing committed.
+        let n = stop_after.unwrap_or(0);
+        let secs = t0.elapsed().as_secs_f32();
+        return Ok(format!(
+            "stopped after {n} bytes in {secs:.1} s ({:.1} KB/s), aborted (nothing committed)",
+            n as f32 / 1000.0 / secs.max(0.001)
+        ));
+    };
     let name = ["A", "B"].get(usize::from(slot)).copied().unwrap_or("?");
     log(&format!("written and verified into slot {name} in {:.1} s", t0.elapsed().as_secs_f32()));
     if !reboot {

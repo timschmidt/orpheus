@@ -642,6 +642,10 @@ fn with_usb(f: impl FnOnce(&mut Installer) -> Result<(), Error>) -> bool {
 
 /// Bytes read back per [`poll`] (in 256-byte pieces).
 const POLL_BYTES: usize = 16 * 1024;
+/// And at most this long per [`poll`] (PG-2b: a read-back step that ran
+/// ≈ 6 s at 2.5 KB/s kept the USB task from its supervisor and the
+/// watchdog reset the player; at the normal rate 16 KiB take a few ms).
+const POLL_US: u64 = 50_000;
 
 /// A USB update is committed and its read-back or switch not done: [`poll`]
 /// has work (the USB supervisor then runs it every 20 ms). In the USB task.
@@ -668,7 +672,8 @@ pub fn poll() {
     if inst.phase() == Phase::Verifying {
         let mut buf = [0u8; 256];
         let mut done = 0;
-        while done < POLL_BYTES {
+        let t0 = atj2157_hal::time::now_us();
+        while done < POLL_BYTES && atj2157_hal::time::now_us() - t0 < POLL_US {
             match inst.verify_step(&mut Nor, &mut buf) {
                 Ok(true) => break,
                 Ok(false) => done += buf.len(),

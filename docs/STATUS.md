@@ -21,6 +21,7 @@ of every session. Newest entries first in §3.
 | T-1, T-2, T-4a, HAL-0, HAL-1, T-5 | done | see earlier log entries |
 | T-3, PG-1 | done | pagelink, PagerCore, check-resident; demand paging on the player (8 KiB pages, 1 KiB lines) |
 | PG-2 | **built (worker, no hardware); speech on in the default image, Books fits but stays off** (static stack margin 3,708 of 4,096 B with both) | Cold code runs from the rodata window, which spans all of SRAM3's aliases (48 → 64 pages; MPU region 7 grants SRAM3's RAM half, the stack guard becomes a canary + DWT watchpoint); a trampoline runs an instruction whose constant shares its physical line (`orpheus_pager::bounce`); `resident.toml` `[bin.firmware.cold]`. Player checks in the session entry; U-MEM-2 (SRAM3 execution) is the first |
+| PG-2b | **built (host + firmware); causes measured on the player (`bdebff77`); the fixed image is not on the player** (a PG-2 image cannot install another by USB or card: `dev stage` + `dev reset`, owner's OK) | Update data path never cold (SHA-256 round loop straddled its constants' line: 2.5 KB/s, watchdog in the read-back); cold placement pads to a clear line, conflicts back first; synth per-piece constants resident (`hot.toml resident_constants`); cluster `settings-get`; status `clk=`/`cpu=`, `dev stats` names Max; `dev update --stop-after`, `prof --during update` (session entry 2026-11-27 "PG-2b") |
 | T-6 | started | Rust NOR payload `fw/payloads/norprog` (erase/program, full-layout guard); ymon and nordump still the reference repo's C payloads. **Stage 2 slot fallback built and host-tested, not yet installed** (`orpheus_proto::boot::decide`; 964 B; lead's `install-stage2` + crash test: session entry 2026-11-24 "T-6 (stage2)") |
 | T-8 | **built (host + firmware), not yet run on the player** | PC sampler (T2, level 0) and pager fault log into the 2 KiB profiler block at `0x307000` (SRAM3), `prof pc\|faults on\|burst`, `prof off\|status`; `cargo xtask dev prof --pc\|--faults S [--during "soak --replay F"] [--only TEXT] [--update-hot NAME]`, `cargo xtask prof DIR`; reports in `target/orpheus/prof/<stamp>/`. Resident +656 B. User/lead check: U-TMR-1 and the Pictures-while-playing profile (session entry 2026-11-25 "T-8") |
 | AU-PERF | **built (host + firmware), not yet run on the player** | Playback per block out of the large async functions (`play_block` + small named functions, `Apart` poll boundaries, `orpheus_audio::pcm::Feeder`), codecs' `decode` not inlined, DSP stage mask kept, clusters `mp3-frame` 11 + `play-block` 15 + `play-fill` 6 = 32 lines (no shared physical line; `fits_with` check), 53 % of the measured fault loads in that set or gone; stack on the playback wake-up 6.6 → 1.5 KB; soft I2C timed on T0 (true 100 kHz, was ≈ 30 kHz: sample ≈ 2.7 → 1.0 ms), `acc bus`. Lead: profiles and checks in the session entry 2026-11-25 "AU-PERF"; U-I2C-1. **Up next titles: `seek_dir` per cluster (3,507 → 7 steps per title on 128 KiB exFAT), window keeps its titles (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: Up next titles cheap". **Chore budgets: every chore runs only when the headroom less a decoder margin covers its measured need, splittable ones stop at the budget (`orpheus_audio::chore`, host model; built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: chore budgets". **Listing pieces reopen the index file from its entry (no path walk after `job:index`), the need counts a piece's fixed cost (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: listing pieces reopen the index file" **The 55 ms `serve` block: precise `ub=` labels (`ub=serve:picture`, `job:rows`, `req:skip`, …), DAC start forgets the candidate, large overruns always logged, RAM-only pieces do not lower a need, soak reads at every action's end (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: the 55 ms `serve` block". **`job:index` in stretches of 16 entry sets (`Volume::walk_step`, `CardIo::find_index`); removing a file no longer empties the walk cache (index builds did, and the next lookup searched the root: 52–60 ms) (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: `job:index` in stretches" **Games saves rewritten in place, a new file's allocation searched in steps of 8 sectors (the 41 ms first piece of every save: 452 bitmap reads from the start; built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: games saves in place" **Games pieces' code in one cluster (`games-io`, 14 lines beside `play-fill` and `dir-walk`; `cargo xtask hot`, a line budget in `stack --check`; built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: the games pieces' code in one cluster" |
@@ -82,6 +83,138 @@ of every session. Newest entries first in §3.
 | VER-4 (settings store keys) | **done (host + firmware built), not yet run on the player** | Store index 128 → 192 keys at 4 B a slot (was 8), same NOR format both ways (fixture from the old code, byte-equal images); cache write marks unlimited; 131 keys in use with every app (61 free), firmware 129; sector ceiling ≈ 209 settings keys (256 cannot fit one sector); .bss −1,248 B, stack margin 5,664 B; compaction no longer re-blesses a rotted value (session entry 2026-11-26 "VER-4: settings store index") |
 
 ## 3. Session log
+
+### 2026-11-27 — PG-2b: PG-2's update, MIDI, clock and idle regressions (worker, player)
+
+Brief: the lead's four findings on PG-2 (`bdebff77`): updates broken, MIDI
+underruns in "Etude", the clock "stuck" at 288 MHz after MIDI, then idle
+paging, the suite and a soak. The player ran `bdebff77` from slot A
+throughout; `dev backup-verify` ok; **no slot was made valid, nothing
+committed** (one aborted 32 KiB partial write into slot B, one card
+install that reset before it wrote anything).
+
+* **1. Updates — cause (measured).** `cargo xtask dev prof --pc --during
+  "update …edd929c4.ofw --stop-after 32768"` (new: `--stop-after` writes
+  that much and sends ABORT; `update` allowed in `prof --during`): 32 KiB
+  in 13.1 s = **2.5 KB/s**, **88.9 % of the samples in
+  `sha2::sha256::compress256`** (cold, rodata window), pager 5,300 line
+  loads/s, **129 rodata faults per 64-byte block**. In `bdebff77`
+  `compress256` sits at `0x3abad0–0x3abc9a`, physical lines 14–15; its
+  round loop crosses into line 15, where the round constants `K`
+  (`0x35bd08`) live: every round loads K's line over the loop's code and
+  the next fetch loads it back. The write took 8–9 min; the USB read-back
+  reads 16 KiB per supervisor poll in the USB task (≈ 6 s at that rate), so
+  thread mode stops, the watchdog task cannot feed, and the watchdog
+  (5.6 s) resets — the lead's 02:00:28 reset (no fault record: a watchdog
+  reset writes none). **The card path is no way round**: Settings › System
+  › Update firmware with the image in `/.orpheus/update/` (put there with
+  `dev put`, 59 s) reset the player ≈ 5 s after Install: the card task
+  hashes 4 KiB per step (≈ 1.6 s) on the RT executor with 1 ms breaks, the
+  UI loop (≈ 27 ms of work) cannot finish, `UI_BEAT` stops, no feed. **A
+  PG-2 image cannot install another image**; `dev stage` (ADFU) is the only
+  way, and it needs `dev reset` after it (owner's OK, the lead's rule), so
+  the fixed image is not on the player.
+* **1. Fixes.** (a) `resident.toml [bin.firmware.cold] exclude`: the
+  installer's write/take/same/program/erase/verify_step/guard,
+  `Target::allows`, the `Nor` adapter, `usb_out`/`with_usb`/`poll`,
+  `install_file`, `Sha256::update` and `sha2::sha256::*` stay in the code
+  window (SHA-1/512 and the rest of the update screens stay cold).
+  (b) `pagelink` cold placement: a section goes at a group's end if that
+  is clear of the constants it reads, else at the first clear line start
+  after padding, else into a new group while the window has room; sections
+  still sharing a line come back into the code window before warmer cold
+  code; `layout.json` reason `cold-shared:`. Default image: **0 conflicts**
+  (was 8), cold code 8 rodata pages (was 6), rodata 46/64. (c) The USB
+  read-back step is bounded to 50 ms as well as 16 KiB.
+* **2. MIDI — cause (measured, `bdebff77`).** `playdir
+  /.orpheus/test/suite/midi` (owner's look, cable): "Etude" `underruns=2`
+  (`ub: dec=2`, shed 46, `pg=` 4–10 %, `clk=288/288`), "Hill Song" 1,
+  "Sound tour" 0 — fewer than the lead's 3/10 but more than the ≈ 1 event
+  of the whole run before PG-2. `dev prof --faults 25` during "Etude":
+  **2,297 line loads/s** (before PG-2: 1,570/s, STATUS `e1a0dc7c`), 35 % of
+  the faults rodata (1,170/s), from `plan_piece`, `Engine::estimate`,
+  `after_piece`, `Governor::over_budget/lower` and the outer loop's poll
+  reading 12–24-byte anonymous constants (clock steps `CLOCKS_MHZ`, the
+  `syn:` field tables, `match` lookup tables) that PG-2's new rodata order
+  put on physical lines 5, 10 and 11 — inside the 14 lines (0–13) the
+  wavetable `WAVES` takes: each piece reloads them, then the render
+  reloads the wavetable. The other suspects (the canary check, the speech
+  task, the code window at 127/128) were not isolated: an A/B against the
+  pre-PG-2 image needs a working update first.
+* **2. Fix.** `hot.toml` `resident_constants = N` (new cluster field;
+  `pagelink::cluster_constants`): plain constants of ≤ N bytes (no
+  pointers, not merged) that a cluster's code reads directly are resident.
+  `synth-inner` and `synth-block` take 256: **28 constants, 505 B**
+  resident (resident image 59,824 → 60,336 B, budget 61,440). What is left
+  paged of the per-piece code's rodata is `WAVES` and panic locations
+  (16 B, read only on a panic). **Not measured on the player** (the fixed
+  image is not installed); no A/B against the pre-PG-2 image either (same
+  reason).
+* **3. Clock — cause (measured).** The clock *is* released: `dev stats`
+  `clock level Base 48` 3, 10, 20 and 45 s after a mid-song `stop` and 5,
+  45 and 90 s after the folder's natural end (switches stop). The
+  `status` line's `clk=288/288` is the synth governor's last step (`syn:`
+  field, kept after the file), not the clock; `clk=144/144` after a boot
+  is the same field's initial step. And `dev stats` printed `clock level
+  ?` at 288 MHz (its name table stopped at Turbo). **Fixes**: `syn: clk=`
+  is the governor's step only while something plays (0 idle,
+  `orpheus_synth::load::status_clock_mhz`), new `cpu=` = the clock the
+  core runs at; `dev stats` names every `Level` (`Max 288`).
+* **4. Idle Home (measured, `bdebff77`)**: screen on, test look, nothing
+  loaded: **199–219 line loads/s** (`dev stats` 5–10 s apart; ≈ 0.9 UI
+  loops/s); screen off and locked 177/s; with "Etude" loaded paused after a
+  reboot 270/s. `dev prof --faults 10`: top `Fw::setting` (≈ 40/s) and
+  `SettingsCache::get`: `setting` on physical code lines 1–2, `get` and
+  `index` on line 2, so every one of the loop's ≈ 40 setting reads (the
+  screen timers, the key timing, the screen reader's configuration —
+  new in the image with PG-2) reloaded both — the 2026-11-25 idle-thrash
+  bug again, by layout. **Fix**: cluster `settings-get` (`Fw::setting`,
+  `SettingsCache::get`, `index`, `def`, `reader_cfg`, `screen_timeouts`:
+  924 B, one line). Not measured on the player.
+* **Not run** (the fixed image is not on the player): the update timing
+  from the fixed image, the MIDI A/B, the idle rate after the fixes, `dev
+  suite`, `dev soak music`.
+* **Tests** (each fails without its fix): `xtask`
+  `rules::tests::regress_update_data_path_ran_from_the_rodata_window`
+  (the real `resident.toml`), `pagelink::tests::cold_code_that_conflicts_with_its_constants_comes_back_first`,
+  `cold_code_goes_to_its_own_groups_clear_of_its_constants` (now: padded
+  to line 9, no conflict), `pagelink::tests::regress_synth_piece_constants_on_the_wavetable_lines`,
+  `rules::tests::regress_setting_reads_evicted_each_other`,
+  `dev::stats_tests::regress_stats_clock_level_max_unnamed`;
+  `orpheus_synth::load::tests::regress_idle_status_claimed_the_synth_clock`.
+  `docs/regressions.md` rows.
+* **Hardware facts** (01 §9): **U-MEM-2 answered** (SRAM3 executes: the
+  lead's PG-2 run, Authenticator from the rodata window) and **U-DWT-2
+  answered** (`fw: stack guard: DWT watchpoint and canary`: ≥ 1
+  comparator). 02 §3.6: what must never be cold, the placement.
+* **Gate**: host `cargo fmt --all --check`, `cargo clippy --workspace
+  --all-targets -- -D warnings`, `cargo test --workspace` **2,149 passed,
+  0 failed, 13 ignored** (203 binaries), `cargo xtask settings-matrix
+  --check` (184 settings, 0 errors); fw fmt, `cargo clippy --workspace
+  --release -- -D warnings` (also `-p firmware --features books` and
+  `--no-default-features`), `cargo xtask build` (127 code + 46 rodata
+  pages, resident 60,336 B, slot 1,482,752 B), `check-resident` ok (64
+  sections, 21 roots, none paged), `size --check` within budgets,
+  `stack --check` margin 16,852 B, `cargo xtask test pagelink` passed.
+  Budgets unchanged.
+* **For the lead — installing the fix** (needs the owner's OK for `dev
+  reset`; one process at a time): `cargo xtask build` on this branch;
+  `cargo xtask dev backup-verify`; `cargo xtask dev stage
+  target/orpheus/firmware.yfw` (slot A, ADFU); `cargo xtask dev reset`;
+  `cargo xtask dev info` (the new build id), `dev cmd 'boot status'` →
+  slot A. Then, with the fixed image running:
+  1. `cargo xtask dev update target/orpheus/orpheus-*.ofw` (same build into
+     B): expect ≈ 40 s and "running … from slot B" (both slots valid
+     again). `dev prof --pc --during "update FILE --no-reboot"` shows
+     where the time goes if not.
+  2. `ui test-look on`; `dev cmd 'playdir /.orpheus/test/suite/midi'`,
+     `status` every ~9 s: Etude/Hill Song/Sound tour underruns against
+     today's 2/1/0 and the pre-PG-2 ≈ 1 event; `dev stats` twice during
+     Etude: loads/s against 2,297 (now) and 1,570 (pre-PG-2); `status`
+     `cpu=` 288 while it plays, `clk=0/288 cpu=48` once stopped.
+  3. Idle Home with the test look: `dev stats` twice 10 s apart against
+     ≈ 200/s now and ≈ 120/s (PG-1).
+  4. `cargo xtask dev suite`; `cargo xtask dev soak music --minutes 15`.
 
 ### 2026-11-27 — PG-2: cold code in the rodata window; speech in the image, Books fits (worker, no hardware)
 
@@ -9425,6 +9558,11 @@ Finding: 30-minute `mixed` soak, seed 1, 10.4 min, read in `radio-keys 8
 | 2026-11-25 | Firmware with `job:index` in stretches, worker worktree build | resident 80,108 B, `__image_end` 0x1138ec, `__bss_end` 0x131b00, `__stack_bottom` 0x131d00 (all unchanged); 108 code pages (was 107), slot 1,118,208 B; nested worst stack 21,812 of 22,016 B (was 21,820) | `xtask build`, `xtask stack --check`, `nm` |
 | 2026-11-26 | Synth code paging, the three demo songs whole (unicorn harness of the per-piece work, mapped onto `layout.json`, 32-line cache model), "Etude" / "Hill Song" / "Sound tour" at 288 MHz | before (build `8240f128` layout): Etude 96 line loads a piece (80 in the render), `pg=` ≈ 240 % render only, 290 % in all; after (SYN-3 paging): 2.3 / 2.3 / 1.8 loads a piece, `pg=` render only 3.2 / 3.3 / 2.4 %, in all 6.9 / 7.0 / 5.3 % | model; on the player: lead's checks in the session entry |
 | 2026-11-26 | Firmware with the UI font in two paged pieces, merged strings paged, cluster-start gaps filled (PG-1, resident room), worker worktree build | resident 81,876 → 56,036 B (`size` 56,033; rodata 37,167 → 11,325; text 28,304 and data 16,404 unchanged), `.bss` 124,296 B, code 125 → 124 pages (33,114 B of the window free; 7,458 B of cold code in cluster-start lines), rodata 28 → 30 of 48 pages, slot 1,339,392 → 1,323,008 B, stack usable 45,568 B, margin 5,212 → 31,068 B; opt-level `"z"` for 14 cold crates (measured, not kept): code −14.6 KB, rodata +5.4 KB | `xtask build`, `size --check`, `stack --check` |
+| 2026-11-27 | Firmware update write path from a PG-2 image (`bdebff77`, SHA-256 cold on its constants' line) | 2.5 KB/s (32 KiB in 13.1 s); 5,300 line loads/s; 129 rodata faults per 64-byte block; 88.9 % of PC samples in `compress256` | `dev prof --pc --during "update … --stop-after 32768"` |
+| 2026-11-27 | MIDI "Etude" on `bdebff77` | 2,297 line loads/s (1,170 rodata faults/s); underruns 2 (Hill Song 1, Sound tour 0) | `dev prof --faults 25`; `playdir …/midi`, `status` |
+| 2026-11-27 | Idle Home on `bdebff77` | 199–219 line loads/s screen on (≈ 0.9 UI loops/s); 177/s screen off; 270/s with a MIDI file loaded paused | `dev stats` 5–10 s apart; `dev prof --faults 10` |
+| 2026-11-27 | Clock after MIDI on `bdebff77` | Base 48 within 3 s of `stop` and of the folder's end | `dev stats` |
+| 2026-11-27 | Firmware PG-2b, worker build | resident 60,336 B (+512: 505 B synth constants), code 127/128, rodata 46/64 (8 cold pages, 0 line conflicts), slot 1,482,752 B, stack margin 16,852 B | `xtask build`, `size`, `stack` |
 
 ## 5. Open questions for the user
 

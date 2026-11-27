@@ -240,6 +240,38 @@ pub enum Place {
     Paged(String),
 }
 
+/// `hot.toml` `resident_constants` (PG-2b): the small plain constants a
+/// cluster's paged code reads directly become resident. Returns how many
+/// sections and bytes.
+pub fn cluster_constants(g: &Graph, places: &mut [Place], hot: &[Cluster]) -> (usize, u32) {
+    let (mut n_secs, mut bytes) = (0, 0);
+    for c in hot {
+        let Some(max) = c.resident_constants else { continue };
+        for n in 0..g.nodes.len() {
+            if g.kinds[n] != Kind::Code
+                || !matches!(places[n], Place::Paged(_))
+                || c.rank(&g.nodes[n]).is_none()
+            {
+                continue;
+            }
+            for &m in &g.edges[n] {
+                let s = &g.nodes[m];
+                if g.kinds[m] == Kind::Rodata
+                    && matches!(places[m], Place::Paged(_))
+                    && !merged(s)
+                    && s.size <= max
+                    && g.edges[m].is_empty()
+                {
+                    places[m] = Place::Resident(format!("cluster-constants:{}", c.name));
+                    n_secs += 1;
+                    bytes += s.size;
+                }
+            }
+        }
+    }
+    (n_secs, bytes)
+}
+
 /// Resolve the hard roots to nodes: `(pattern, nodes)`.
 pub fn resolve_roots(g: &Graph, rules: &Rules) -> Vec<(String, Vec<usize>)> {
     rules
@@ -441,6 +473,8 @@ pub struct Plan {
     pub nro_code: u32,
     /// Cold sections that share a physical line with a constant they use.
     pub cold_conflicts: u32,
+    /// Those sections (nodes).
+    pub conflicted: Vec<usize>,
     pub ncode: u32,
     pub nro: u32,
     /// Where the `hot.toml` clusters of code went.
@@ -585,7 +619,10 @@ pub const CODE_RESERVE_PAGES: u32 = 1;
 /// needs: all of `cold` first (the code window must fit then), then the
 /// warmest cold sections (the last `[cold]` patterns: `resident.toml`
 /// lists them coldest first) come back while the code window keeps
-/// [`CODE_RESERVE_PAGES`] free. Returns the plan and the cold set it used.
+/// [`CODE_RESERVE_PAGES`] free. Before those, the cold sections that
+/// still share a physical line with a constant they read come back
+/// (PG-2b: a loop there pays two line loads per pass; SHA-256's rounds ran
+/// an update at 2.5 KB/s). Returns the plan and the cold set it used.
 pub fn place_cold(
     g: &Graph,
     places: &[Place],
@@ -602,7 +639,33 @@ pub fn place_cold(
     let mut set = cold.clone();
     let mut size = plan.code_size;
     let mut back = Vec::new();
+    // Conflicts first: cold code that shares a physical line with a
+    // constant it reads even after `pack_cold` looked for a clear place
+    // (PG-2b: a loop there pays two line loads per pass). A few rounds:
+    // bringing some back moves the rest.
+    for _ in 0..4 {
+        let mut moved = false;
+        for &n in &plan.conflicted {
+            let s = &g.nodes[n];
+            let grown = align_up(size, s.align) + s.size;
+            if set.contains(&n) && grown <= cap {
+                size = grown;
+                set.remove(&n);
+                back.push(n);
+                moved = true;
+            }
+        }
+        if !moved {
+            break;
+        }
+        plan = pack_cold(g, places, hot, crates, &set)?;
+        size = plan.code_size;
+    }
+    // Then the warmest.
     for n in warm {
+        if !set.contains(&n) {
+            continue;
+        }
         let s = &g.nodes[n];
         let grown = align_up(size, s.align) + s.size;
         if grown <= cap {
@@ -612,7 +675,8 @@ pub fn place_cold(
         }
     }
     // The estimate ignores the fillers' and clusters' alignment: repack,
-    // and return the last ones taken back until the plan fits the reserve.
+    // and return the last ones taken back until the plan fits the reserve
+    // (the warm ones go out again first, the conflicts last).
     loop {
         match pack_cold(g, places, hot, crates, &set) {
             Ok(p) if p.code_size <= cap || back.is_empty() => {
@@ -802,13 +866,36 @@ pub fn pack_cold(
     for n in cold_order {
         let s = &g.nodes[n];
         let want = data_lines(n);
-        let fits = |used: u32| align_up(used, s.align) + s.size <= RO_GROUP_SIZE;
-        let clear = |used: u32| lines_at(align_up(used, s.align), s.size) & want == 0;
-        let pick = plan
+        let fits = |off: u32| off + s.size <= RO_GROUP_SIZE;
+        let clear = |off: u32| lines_at(off, s.size) & want == 0;
+        // Where in a group with `used` bytes: at its end, or (PG-2b) at the
+        // first later line start clear of the constants' lines.
+        let spot = |used: u32| -> Option<u32> {
+            let end = align_up(used, s.align);
+            if !fits(end) {
+                return None;
+            }
+            if clear(end) {
+                return Some(end);
+            }
+            (end / LINE_SIZE + 1..RO_GROUP_SIZE / LINE_SIZE)
+                .map(|l| l * LINE_SIZE)
+                .find(|&off| fits(off) && clear(off))
+        };
+        // The first group with a clear place at its end, then the first
+        // with one after some padding, then a new group (if the window has
+        // room for it), and last the first that fits (a conflict).
+        let at_end = plan
             .cold
             .iter()
-            .position(|(_, used)| fits(*used) && clear(*used))
-            .or_else(|| plan.cold.iter().position(|(_, used)| fits(*used)));
+            .position(|(_, used)| fits(align_up(*used, s.align)) && clear(align_up(*used, s.align)));
+        let padded = || plan.cold.iter().position(|(_, used)| spot(*used).is_some());
+        let room = (plan.groups.len() + plan.cold.len()) < MAX_RO_GROUPS as usize;
+        let pick = match at_end.or_else(padded) {
+            Some(i) => Some(i),
+            None if room && spot(0).is_some() => None,
+            None => plan.cold.iter().position(|(_, used)| fits(align_up(*used, s.align))),
+        };
         let gi = match pick {
             Some(i) => i,
             None => {
@@ -817,9 +904,10 @@ pub fn pack_cold(
             }
         };
         let (secs, used) = &mut plan.cold[gi];
-        let off = align_up(*used, s.align);
+        let off = spot(*used).unwrap_or(align_up(*used, s.align));
         if lines_at(off, s.size) & want != 0 {
             plan.cold_conflicts += 1;
+            plan.conflicted.push(n);
         }
         secs.push((n, off));
         *used = off + s.size;
@@ -1030,7 +1118,13 @@ pub fn run(o: &Options) -> Result<Layout> {
     rules.paged.symbols.extend(o.force_paged.iter().cloned());
     let hot = rules::load_hot(&root().join("hot.toml"), &o.bin)?;
     let roots = resolve_roots(&g1, &rules);
-    let (places, mut warnings) = classify(&g1, &rules, &roots);
+    let (mut places, mut warnings) = classify(&g1, &rules, &roots);
+    let (nc, nc_bytes) = cluster_constants(&g1, &mut places, &hot);
+    if nc > 0 {
+        log(&format!(
+            "  {nc} small constants of clusters' code resident ({nc_bytes} B, hot.toml resident_constants)"
+        ));
+    }
     let big = oversized(&g1, &places);
     if !big.is_empty() {
         bail!(
@@ -1122,6 +1216,7 @@ pub fn run(o: &Options) -> Result<Layout> {
     let reasons: BTreeMap<&str, &Place> =
         g1.nodes.iter().zip(&places).map(|(s, p)| (s.name.as_str(), p)).collect();
     let cold_names: BTreeSet<&str> = cold.iter().map(|&n| g1.nodes[n].name.as_str()).collect();
+    let shared: BTreeSet<&str> = plan.conflicted.iter().map(|&n| g1.nodes[n].name.as_str()).collect();
     let crates2 = crates(&g2);
     let sections = (0..g2.nodes.len())
         .map(|m| {
@@ -1129,7 +1224,9 @@ pub fn run(o: &Options) -> Result<Layout> {
             let kind = g2.kinds[m];
             let (placement, reason) = match reasons.get(s.name.as_str()) {
                 Some(Place::Paged(r)) if cold_names.contains(s.name.as_str()) => {
-                    ("paged", format!("cold:{r}"))
+                    // `cold-shared:`: on a physical line of a constant it reads.
+                    let tag = if shared.contains(s.name.as_str()) { "cold-shared" } else { "cold" };
+                    ("paged", format!("{tag}:{r}"))
                 }
                 Some(Place::Paged(r)) => ("paged", r.clone()),
                 Some(Place::Resident(r)) => ("resident", r.clone()),
@@ -1728,14 +1825,15 @@ sections = [".rodata.cst4"]
         // `cold_a` at 0 of the first cold group, `cold_x` too large for its
         // rest: a second group. `cold_b` would land on lines 2–3 of the
         // first (T's) but finds line 14 of the second clear; `cold_c` has
-        // room only on T's lines (the first group): a conflict.
-        assert_eq!(plan.cold, vec![(vec![(1, 0), (6, 3000)], 3600), (vec![(2, 0), (3, 15_000)], 15_900)]);
-        assert_eq!(plan.cold_conflicts, 1);
+        // room at an end only on T's lines (the first group) and goes to
+        // the first line after them there (PG-2b), line 9: no conflict.
+        assert_eq!(plan.cold, vec![(vec![(1, 0), (6, 9216)], 9816), (vec![(2, 0), (3, 15_000)], 15_900)]);
+        assert_eq!(plan.cold_conflicts, 0);
         // Pages: constants 0–1, cold 2 (one page) and 4–5: 6 in all, the
         // last 4 code.
         assert_eq!((plan.nro, plan.nro_code), (6, 4));
         let a = plan.addresses();
-        assert_eq!((a[&1], a[&3], a[&6]), (ro_page_va(2), ro_page_va(4) + 15_000, ro_page_va(2) + 3000));
+        assert_eq!((a[&1], a[&3], a[&6]), (ro_page_va(2), ro_page_va(4) + 15_000, ro_page_va(3) + 1024));
         let s = script(&g, &plan, Path::new("/l"), "t");
         assert!(
             s.contains(".px_g1 0x00308000 :\n    {\n        . = 0x00308000;\n        *(\".text.cold_a\")"),
@@ -1771,6 +1869,76 @@ sections = [".rodata.cst4"]
         assert_eq!(cold.into_iter().collect::<Vec<_>>(), vec![1]);
         assert_eq!(plan.code_size, 1_037_000);
         assert_eq!(plan.cold.len(), 1);
+        assert!(plan.code_size <= (MAX_CODE_PAGES - CODE_RESERVE_PAGES) * PAGE_SIZE);
+    }
+
+    /// PG-2b, 2026-11-27: MIDI ("Etude") underran more after PG-2 (3–10
+    /// underruns where ≈ 1 had been, `ub: dec=`): the synth's per-piece
+    /// code read small anonymous constants (clock steps, field tables,
+    /// switch tables) that PG-2's new rodata order put on physical lines
+    /// 5, 10 and 11, inside the wavetable's 14 lines: 1,170 rodata
+    /// faults/s, 2,297 line loads/s. `resident_constants` makes a
+    /// cluster's small plain constants resident; the real `hot.toml` asks
+    /// it for the synth's per-piece and outer-loop clusters.
+    #[test]
+    fn regress_synth_piece_constants_on_the_wavetable_lines() {
+        let g = Graph::from_parts(
+            vec![
+                node(".text", ".text.plan", 400, 2, Some("synth::plan_piece")),
+                node(".rodata", ".rodata..Lanon.1", 12, 4, None),
+                node(".rodata", ".rodata.waves", 14_336, 4, Some("synth::WAVES")),
+                node(".rodata", ".rodata.ptrs", 16, 4, None),
+                node(".text", ".text.other", 100, 2, Some("ui::draw")),
+                node(".rodata", ".rodata..Lanon.2", 12, 4, None),
+            ],
+            // plan reads the 12-byte constant, the table, a table of
+            // pointers (to `other`); `other` reads its own constant.
+            &[(0, 1), (0, 2), (0, 3), (3, 4), (4, 5)],
+        );
+        let r = Rules::parse("roots = []\n", "t").unwrap();
+        let (mut p, _) = classify(&g, &r, &[]);
+        let hot = vec![Cluster {
+            name: "synth-inner".into(),
+            symbols: vec!["synth::plan_piece".into()],
+            resident_constants: Some(256),
+            ..Cluster::default()
+        }];
+        assert_eq!(cluster_constants(&g, &mut p, &hot), (1, 12));
+        assert!(matches!(&p[1], Place::Resident(r) if r == "cluster-constants:synth-inner"));
+        assert!(matches!(p[2], Place::Paged(_)), "the wavetable is larger than the limit");
+        assert!(matches!(p[3], Place::Paged(_)), "a table with pointers stays paged");
+        assert!(matches!(p[5], Place::Paged(_)), "another cluster's constant");
+        let real = rules::load_hot(&root().join("hot.toml"), "firmware").unwrap();
+        for name in ["synth-inner", "synth-block"] {
+            let c = real.iter().find(|c| c.name == name).unwrap();
+            assert!(c.resident_constants.is_some_and(|n| n >= 24), "{name}: resident_constants");
+        }
+    }
+
+    /// PG-2b (2026-11-27): a cold section that shares a physical line with
+    /// a constant it reads comes back into the code window before warmer
+    /// ones (SHA-256's rounds over its `K` ran an update at 2.5 KB/s).
+    #[test]
+    fn cold_code_that_conflicts_with_its_constants_comes_back_first() {
+        let g = Graph::from_parts(
+            vec![
+                node(".text", ".text.big", 1_030_000, 2, Some("app::big")),
+                node(".text", ".text.warm", 6000, 2, Some("dev::warm")),
+                node(".text", ".text.rounds", 6000, 2, Some("sha::rounds")),
+                // A whole group of constants: every cold line conflicts.
+                node(".rodata", ".rodata.k", 16_384, 4, Some("sha::K")),
+            ],
+            &[(2, 3)],
+        );
+        let r = Rules::parse("roots = []\n[cold]\nsymbols = [\"sha::*\", \"dev::*\"]\n", "t").unwrap();
+        let (p, _) = classify(&g, &r, &[]);
+        let (all, _) = cold_set(&g, &p, &r, &[]);
+        assert_eq!(all.iter().copied().collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(pack_cold(&g, &p, &[], &crates(&g), &all).unwrap().cold_conflicts, 1);
+        // Room for one of the two (10,384 B): the conflict, not the warmer.
+        let (plan, cold) = place_cold(&g, &p, &[], &crates(&g), &r, &all).unwrap();
+        assert_eq!(cold.into_iter().collect::<Vec<_>>(), vec![1]);
+        assert_eq!(plan.cold_conflicts, 0);
         assert!(plan.code_size <= (MAX_CODE_PAGES - CODE_RESERVE_PAGES) * PAGE_SIZE);
     }
 

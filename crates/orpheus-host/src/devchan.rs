@@ -104,6 +104,19 @@ impl<T: Transport> Link<T> {
     /// switch. Does not reboot (see [`Link::reboot`]). Returns the target
     /// slot index.
     pub async fn update(&mut self, file: &[u8], progress: Progress<'_>) -> Result<u8> {
+        self.update_part(file, None, progress).await?.ok_or_else(|| anyhow!("update stopped"))
+    }
+
+    /// As [`Link::update`]; with `stop_after`, only the chunks that start
+    /// below that many image bytes, then `ABORT` (a measurement of the
+    /// write path: nothing is committed, the target stays invalid as it
+    /// was from `BEGIN` on). `Ok(None)` when stopped.
+    pub async fn update_part(
+        &mut self,
+        file: &[u8],
+        stop_after: Option<usize>,
+        progress: Progress<'_>,
+    ) -> Result<Option<u8>> {
         let (h, _) = check_file(file)?;
         let image = &file[ofw::HEADER_SIZE..];
         let mut begin = Vec::with_capacity(wire::BEGIN_LEN);
@@ -114,6 +127,10 @@ impl<T: Transport> Link<T> {
         }
         let total = u64::from(h.image_len);
         for (i, c) in image.chunks(wire::CHUNK).enumerate() {
+            if stop_after.is_some_and(|n| i * wire::CHUNK >= n) {
+                let _ = self.control_out(REQ_UPDATE, wire::OP_ABORT, 0, &[]).await;
+                return Ok(None);
+            }
             let idx = u16::try_from(i).map_err(|_| anyhow!("image too large"))?;
             // One retry: a lost acknowledgement makes the player see the
             // chunk again, which it compares instead of writing.
@@ -137,7 +154,7 @@ impl<T: Transport> Link<T> {
                 continue;
             };
             match s.state {
-                State::Done => return Ok(s.slot),
+                State::Done => return Ok(Some(s.slot)),
                 State::Failed => {
                     bail!("update failed: {}", s.error().map_or("unknown error", UpdError::text))
                 }
