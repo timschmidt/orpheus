@@ -1028,6 +1028,9 @@ strings! {
     SeqDeleted = "Project deleted",
     SeqHintMixer = "OK mute · hold: solo",
     SeqHintValues = "◀▶ change · OK on/off",
+    // Books on the player (BOOK-1/2 wiring): an EPUB's conversion waits
+    // for the decoder arena, which a loaded track holds (a paused one too).
+    BooksStopMusic = "Stop the music to prepare this book.",
     // SEQ-2: behind the `seq` feature (the firmware, which has no
     // Sequencer yet, cannot spare the read-only data: its stack margin is
     // within one 256-byte step of the budget). They are the last strings:

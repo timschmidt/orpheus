@@ -223,6 +223,16 @@ targets = ["firmware::pictures::ui_cancelled"]
 callers = ["<orpheus_index::extsort::ExtSort>::pick::*", "orpheus_index::build::heapsort_by::*"]
 targets = ["orpheus_library::build::pre::*", "orpheus_library::build::str_cmp"]
 
+# Books (firmware feature `books`, off in the shipping image: `optional`):
+# the converter's and the EPUB job's `dyn Sink` (the output buffer, the
+# EPUB title reader's discard, the meta reader's emitter, the watched
+# writer) and the layout's `dyn Metrics` (the reading faces); its line and
+# page callbacks are generic (static calls).
+[[indirect]]
+callers = ["<orpheus_books::*", "orpheus_books::*"]
+targets = ["<* as orpheus_books::norm::Sink>::*", "<* as orpheus_books::layout::Metrics>::*"]
+optional = true
+
 # `dyn ListSource`, `dyn GlyphSource` (orpheus-ui).
 [[indirect]]
 callers = ["<orpheus_ui::widgets::list::ListView>::*"]

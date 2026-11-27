@@ -70,6 +70,7 @@ of every session. Newest entries first in §3.
 | VER-13 | **tool and matrix done (host + simulator); one device journey (not yet run on the player)** | `cargo xtask settings-matrix [--check] [--strict]` (alias `settings coverage`; in `test all`, `--strict` in `gate --m11`); manifest for all 162 settings of the tree; simulator matrix over 59 screen + 10 service contexts (`sim/tests/settings_matrix.rs`), host tests for sound, governor, steps, recorder split, persistence/defaults/clamping/migration per kind; journey `settings_shuffle` (RAM-only session). 9,365 / 9,412 matrix cells covered; 22 settings have no effect to show (not wired) and 47 contexts are reviewed exclusions (session entry 2026-11-26 "VER-13") |
 | VER-13 (Display, Power, Date & time, USB) | **built (host + simulator + firmware), not yet run on the player** | Backlight timeout, Lock delay, Screen saver, Animations, Rotate (software 180°), Power mode, Keys when locked (transport to playback), Time zone, Correction, Set from RDS (group 4A), Read-only card, Developer channel (held on under any host test; the session refuses it) have their effects; journeys `settings_screen_timers`, `settings_screen_saver`; Brightness (missing stock duty values, U-PWM-3) and Wallpaper (Set as wallpaper not built) left; stack margin 4,568 B, .bss 125,352 B. User check 30 (session entry 2026-11-26 "VER-13: Display, Power, Date & time and USB") |
 | GAME-6 Bricks (M14) | **built (host + simulator + firmware), not yet run on the player** | Brick breaker of our own: integer physics with one-pixel sub-steps (no tunnelling at any speed, no floating point), paddle angles, 1–3-hit and unbreakable bricks, 8 hand-made + generated levels, five power-ups, lives, scores, saves; 7 settings packed into 1 word; 47 goldens; fuzz `bricks_keys`. In the firmware (`orpheus-apps/bricks`): stack margin 4,116 B unchanged. Lead: session entry 2026-11-25 "GAME-6" |
+| BOOK-1/2 wiring | **built behind the firmware feature `books`, off: no room in the code window** (139 of 128 pages with it; options in the session entry) | `Shelf` (screens' model) / `Desk` (card side) split, step future 5,464 → 2,600 B; chores `job:bwrite…blay` while playing (no folder made, no scratch), steps while paused, idle with the arena's first 35,072 B lent; "Stop the music to prepare this book."; `books status`, `books test on\|off`; suite journey `books` (`requires`: skipped without the feature) (session entry 2026-11-26 "BOOK-1/2 wiring") |
 | BOOK-2 | **done (host + simulator)**; not in the firmware (as BOOK-1; the scratch is the decoder arena, see session entry) | EPUB 2/3 in `orpheus-books`: zip (end record, streamed central directory, CRC, zip64/encrypted/method refusals), `no_std` inflate (48 B state; 32 KiB window + 2,304 B tables lent: 35,072 B), container/OPF/nav/NCX, XHTML reduction over the XML tokenizer split out of FB2, contents positions from anchors, all in bounded steps into BOOK-1's stream; library titles from the package; 12 new goldens; fuzz targets `books_zip`, `books_epub` (session entry 2026-11-25 "BOOK-2") |
 | MIDI-1 | **done (host + simulator)**; on the player since SYN-3; **user check: listen to the three MIDI renders** | `orpheus-midi`: Standard MIDI File parser (formats 0/1/2, running status, meta and SysEx, SMPTE, RMID) streamed through 64 track cursors of 64-byte windows that ask for bytes (`Need`/`supply`), nothing trusted; exact tick→frame clock through tempo changes; sequencer (CC 1/6/7/10/11/38/64/91/93/96–101/120–127, RPN bend range, pressure, programs, kits on channel 10, mute/solo); own GM set of 32 sounds for the 128 programs (`data/gm-sounds.osb`); `MidiPlayer`: open/scan, render, bounded-step seek (bit-exact where nothing sounds across the target), duration/position, `.kar`/lyric events; Files plays `.mid`/`.kar` in the simulator with Now Playing lyrics; player 70,224 B; estimate ≈ 117 MHz at 48 kHz for a 10–11-voice song: High clock (session entry 2026-11-25 "MIDI-1") |
 | SYN-3 | **done (firmware build)**; bench run on the player 2026-11-26 (costs measured); load governor run on the player (`78b316b5`: no reset, but every song stopped at `ratio=400`); measurement fix and clock-up (D-4) on the player (`8240f128`: ratio right, 288 MHz, but paging 200–250 %); paging fix on the player (`4e1e9a49`: every song to its end, `pg=` 3–15 %); shed-state, rest and key-tick fixes on the player (`7f26ae50`: all to the end, 20 underruns in 107 s at `load=` 25–40 %); rests that end when thread mode sleeps on the player (`b694ac61`: underruns 18/3/9 per song at `load=` 24–46 %); **budget that follows the PCM ring, main loop off the synth's lines, USB supervisor without its 20 ms timer built, not yet run on the player: lead's checks in the session entry 2026-11-26 "SYN-3: thread mode's line loads"**; owner decision: half rate for heavy MIDI files (04 §9) | The synthesiser on the player: a synth source beside the codecs (`orpheus_audio::synth`), the engine and the MIDI player built in place in the pool (stream ring + decoder arena, 80,816 B; MIDI state ≈ 71,960 B), the MIDI file through a 13-block card cache (`orpheus_midi::cache`), 44.1 kHz into the DAC ring through the DSP chain, clock floor High raised to Turbo/Max by the load governor before anything is shed (`orpheus_synth::load`: 55 % of real time, down to 30 % while the PCM ring runs short; then chorus, delay, reverb, voices shed at Max; compute measured apart from paging, warm-up 250 ms, rise ≤ 3 % a block), 4 ms pieces and pace-rule rests (thread mode always runs; a rest ends once thread mode sleeps); underruns never end a song (only "nothing can play"); `.mid`/`.kar` play from Files and Music with seek and pause; `synth bench` (36 loads, cycles, host hashes); 125/128 code pages, stack margin 5,212 B (session entries 2026-11-26 "SYN-3", "SYN-3: load governor" and "SYN-3: governor ratio measured right") |
@@ -79,6 +80,176 @@ of every session. Newest entries first in §3.
 | VER-4 (settings store keys) | **done (host + firmware built), not yet run on the player** | Store index 128 → 192 keys at 4 B a slot (was 8), same NOR format both ways (fixture from the old code, byte-equal images); cache write marks unlimited; 131 keys in use with every app (61 free), firmware 129; sector ceiling ≈ 209 settings keys (256 cannot fit one sector); .bss −1,248 B, stack margin 5,664 B; compaction no longer re-blesses a rotted value (session entry 2026-11-26 "VER-4: settings store index") |
 
 ## 3. Session log
+
+### 2026-11-26 — BOOK-1/2 wiring: Books in the firmware, behind a feature (worker, no hardware)
+
+Brief: Books on the player (the `Shelf` split, card work as paced chores,
+the EPUB's inflate window from the decoder arena, the fonts, Books on,
+observables and a suite journey). Nothing run on the player (the brief).
+Design and as-built: 05 §7.15 "As built (BOOK-1/2 wiring)".
+
+* **Books does not fit the code window: it is built behind the firmware
+  feature `books`, off.** With it the paged code needs **139 of the 128
+  pages** (1,131,550 B of 1,048,576 B: 82,974 B over; the window had
+  33 KB free). Books is ≈ 112 KB of code: `orpheus-books` 92 KB (the
+  shelf's step state machines 25 KB, the converter 21 KB, EPUB 13 KB, OPF
+  6.7 KB, layout 4.7 KB, FB2 4.5 KB, inflate 3.2 KB …), its screens 12 KB,
+  the firmware module 8 KB. Measured, not kept: `opt-level = "z"` for
+  `orpheus-books` saves 10 KB (138 pages). The shipping image is unchanged
+  apart from no-op hooks (below); `cargo xtask build --features books`
+  builds the Books image (it stops at pagelink today);
+  `App::Books.on_player()` stays false; the suite's `books` journey is
+  skipped on an image without it.
+* **Measured with Books in a linked image** (Opus, Speex and Vorbis left
+  out for the measurement only, `orpheus-codecs` features `wav,mp3,flac`;
+  not committed): 124 code + 28 rodata pages, `check-resident` ok,
+  **stack**: card task (RT) 8,144 → **11,048 B** (+2,904: a Books step under
+  the idle loop's request serving), UI task unchanged (5,188 B), nested
+  worst case 17,404 B of 32,768 B usable (margin 15,364 B; usable falls
+  with `.bss`); `stack --check` with Books has one problem of its own: the
+  `games-io` cluster's `Volume::flush_step` and `rewrite` are now shared
+  with Books' code and placed outside it (15 of 14 lines: `cargo xtask hot
+  --name games-io --write` when Books goes in). **`.bss` +13,240 B** (all
+  codecs: 137,544 B against the 135,168 B budget: 2,376 B over; with the
+  speech engine's 8 KiB more). The 20 px face (`book-fonts`, 20 KB, paged
+  since PG-1) comes with the feature; rodata pages are not the limit.
+* **Options for the lead / owner** (not decided here): (1) a pager change —
+  cold code in the rodata alias window's free pages (18 of 48, 144 KiB:
+  Books' code would fit; execute from the two SRAM3 slots the fonts use,
+  so the line thrash needs measuring) — a package of its own; (2) a code
+  size package across the firmware (the `firmware` crate is 295 KB of code,
+  `orpheus-apps` 150 KB: async state machines); (3) a codec out of the
+  image (Opus + Speex + Vorbis ≈ 96 KB) — the owner's decision. RAM then:
+  `resident_bytes` has 17 KB room, so moving 8 KiB of it to `bss_bytes`
+  (their sum unchanged) covers Books; with the speech engine too it needs
+  ≈ 10 KB more.
+* **`orpheus-books`, the split**: `Shelf` (the screens' model, **5,476 B**)
+  changes only on requests; what a request asks of the card waits in it
+  (open, save, close, drop the open book's files or its layout). `Desk`
+  (the card side, **7,712 B**) holds the job, the files, a 1 KiB I/O
+  buffer and a directory entry; `Desk::step_with(&mut Shelf, …)` is one
+  step; `Books` keeps both (simulator, tests: `Deref` to the model). In all
+  13,192 B (was 12,160 B in one `Shelf`; the search's directory entry is
+  the desk's). Step future **5,464 → 2,600 B** (host; the steps' buffers in
+  the desk: index chunks, the layout's last write, the library header,
+  records and the reading state; the rest is mostly the file system's own
+  futures: a path walk's open is 1,608 B). On the player: `step_with`'s
+  poll frame 10,040 → 2,568 B (each job, the EPUB job and the readers built
+  in a function of its own), `save_state` 3,072 B → small, `Shelf::request`
+  3,992 + 1,360 B (a `Book` built and moved for Open) → in place
+  (`Book::reset`, `BookState::clear`, `LibRecord::clear`), `Desk::reset` in
+  place (7.7 KB).
+* **Card work rules** (`orpheus-books`): `Desk::mkdir` — off while music
+  plays: a folder that exists is looked up (`open_dir`), a missing one
+  waits (`Desk::wants_mkdir`, the step reports nothing done, nothing
+  written); `Desk::next_kind` (`Kind`: write, search, read, conversion,
+  layout) for the chore costs; `Desk::suspend` / `Shelf::card_back` for the
+  USB hand-over; `Scope::Test` (`/.orpheus/test/suite/books`).
+* **Firmware** (`fw/firmware/src/books.rs`, `books/on.rs`; feature `books`;
+  without it the functions are no-ops and the card task and UI call them
+  unconditionally): the model and the desk in two statics; the UI takes
+  the model at its first use in a UI loop and gives it back at the loop's
+  end (`ui_release` in `ui.rs`); the card task takes it per step (chores
+  only try; elsewhere it waits for the UI). While a track plays: chore
+  kinds `job:bwrite`, `bscan`, `bread`, `bconv`, `blay` (`media::JOB_KINDS`
+  7 → 12; seeds 20, 20, 15, 15, 15 ms) after the listing pieces,
+  `audio::piece_left` before each step, no folder made, no scratch.
+  Paused: steps between the paused loop's requests (≤ 150 ms a pass, a
+  rest as long as each step), folders made, no scratch. Idle:
+  `books::run_idle` before anything else in the pass (and on `Req::Books`,
+  `REQ_KINDS` 16 → 17, which wakes the idle loop), the arena's first
+  35,072 B lent while `Desk::needs_scratch`; every idle pass counts as the
+  arena given away (`books::arena_taken`), and a lent step after one is
+  first a step without it (an entry half decoded starts again rather than
+  inflating from a window something else overwrote). Data tag 0x102 →
+  `other::BOOKS`. With the feature, Home shows Books (`app_available`;
+  `App::on_player`, which the host tools use for the shipping image,
+  does not). USB hand-over: `Server::card_leaving` writes the reading
+  state and the jobs' files first; power-off and restart close the reader
+  (position written, ≤ 1 s). The test look reads Books' settings
+  0x0F01–0x0F07 as their defaults.
+* **The EPUB hint** is **"Stop the music to prepare this book."**, not
+  "Pause …": a paused track keeps its decoder in the arena (the play loop
+  stays in `pause`), so only Stop frees the window (new string
+  `BooksStopMusic`, above the `seq` block: numbers unchanged). The reader's
+  waiting state shows it and the screen reader says it; golden
+  `books_epub_waiting` (dark, light; looked at).
+* **Observables** (developer channel, read-only for the card): `books
+  status` → `books: lib=ready n=2 found=2 book=ready conv=1000 wait=0 top=…
+  page=0 pages=4 laid=1 steps=… lent=… retaken=… mkdir=0 test=1` (the model
+  as the card task left it; `books: not in this build` without the
+  feature); `books test on|off` (the suite's folder is the library, RAM).
+* **Suite**: journeys may name `requires = "CMD ~ REGEX"`: skipped (and
+  passing, "skip" in the report) when the reply does not match; journey
+  **`books`** (`setup`; `requires = "books status ~ ^books: lib="`): the
+  library (the text focused; progress masked), the text's first page (three
+  Prevs from wherever a run left it), a page turned (`books status`
+  page=1), back, library, Home. `--setup` uploads
+  `/.orpheus/test/suite/books/test-card.txt` (our own text, four pages) and
+  `lighthouse.epub` (the simulator's EPUB sample); the simulator's
+  `set:bookstest=on` writes the same files. Expected frames `books/library`,
+  `page1`, `page2` (looked at). When Books goes into the image: the suite's
+  appearance gets `set:books=on`, `home` takes `next shot:home_books`
+  before Settings, `games` starts with `prev*3`, this journey's `sim:
+  set:books=on/off` go, and the expected frames are blessed again.
+* **`xtask stack`**: `[[indirect]]` entries may be `optional` (callers all
+  absent: skipped); `stack.toml` has one for Books' `dyn Sink` and
+  `dyn Metrics` calls.
+* **Tests**: `orpheus-books` `tests/shelf.rs` `split_on_fat32`,
+  `split_on_exfat` (the model and the desk apart: no folder made while
+  "music plays", the work waits with nothing written; library, conversion,
+  layout and pages with ≤ 12 sectors written in any step — measured 11 on
+  FAT32 and 8 on exFAT: the search's last step and conversion writes on
+  512-byte-cluster images; `next_kind` none ⇒ nothing done; `suspend`
+  writes the position, leaves no dirty sector and the book reopens at the
+  same top; fsck clean); the step-future ratchet (≤ 2,816 B); `ram.rs`
+  ratchets (`Books` 13,248, `Shelf` 5,504, `Desk` 7,744 B);
+  `shelf::tests::book_reset_is_a_fresh_book`; `xtask`
+  `stack::tests::optional_indirect_entries_may_be_absent`,
+  `suite::tests::a_journey_the_image_cannot_run_is_skipped`; the
+  simulator's Books tests and goldens (one new pair) and the suite's
+  simulator run (`suite_passes_on_the_simulator`) pass. No bug found in
+  shipped code (no `regress_` test): the frames above were Books-only.
+* **Default build** (Books off): resident 56,036 B (unchanged), `.bss`
+  124,304 B (+8: the chore cost table's six new kinds), 124 code + 30
+  rodata pages, stack margin 31,068 B (unchanged).
+* **Gate**: host `cargo fmt --all --check`; `cargo clippy --workspace
+  --all-targets -- -D warnings` clean, and `orpheus-apps` alone with
+  features none, `books`, `games,books`; `cargo test --workspace` **2,109
+  passed, 0 failed, 13 ignored** (203 binaries; fuzz corpora replayed);
+  `cargo xtask settings-matrix --check` (182 settings, 0 errors). fw: `cargo
+  fmt --all --check`; `cargo clippy --workspace --release -- -D warnings`
+  and `-p firmware --features books` clean; `cargo xtask build` ok
+  (resident 56,036 B, 124 code + 30 rodata pages, slot 1,323,008 B);
+  `check-resident` ok (59 sections from 21 roots, none paged); `size
+  --check` within budgets (resident 56,033 B, `.bss` 124,304 B); `stack
+  --check` margin 31,068 B. **Not run**: any `xtask dev` step (the brief),
+  `brand`, `site --check`, `xtask test all`'s cargo-fuzz runs (nightly).
+  The root disk filled during the run (other worktrees' builds): my
+  incremental caches and `fw/target` were deleted to finish.
+* **Lead's checks on the player.** With the shipping image nothing of
+  Books runs; `cargo xtask dev suite` should pass as before with `books`
+  reported as skipped (`books status` answers `books: not in this build`).
+  With a Books image (once there is room; for a trial, the measurement
+  build above: `orpheus-codecs` without Opus, Speex and Vorbis, `cargo
+  xtask build --features books` — `stack --check` then also reports the
+  missing `ogg` callers and the `games-io` cluster; the owner's decision
+  whether to install it):
+  1. `cargo xtask dev suite --setup books`: library, page 1, page 2 as
+     expected; `books status` lib=ready n=2, page=0 then page=1.
+  2. Underruns while opening and converting during MP3: play an MP3
+     folder of the owner's music, `cargo xtask dev cmd 'books test on'`,
+     open Books, open "The Test Card" (deletes nothing; its cache under
+     `/.orpheus/cache/books/`), turn pages, then `cargo xtask dev cmd
+     status` every ~5 s: `underruns=0`; `chore:` lines name `job:bread`,
+     `job:bconv`, `job:blay`, `job:bwrite` with their budgets (a first
+     run on a card without `/.orpheus/books` waits in "Looking for books"
+     until the music stops: `books status` mkdir=1).
+  3. The EPUB while music plays: open "The Lighthouse Keeper": the reader
+     shows "Stop the music to prepare this book." (`books status` wait=1,
+     lent= unchanged); `cargo xtask dev cmd stop`: within a few seconds
+     conv rises to 1000 and the first page shows (lent= grows, retaken=
+     1 at most); play again and turn pages (no conversion: cached).
 
 ### 2026-11-27 — PG-1 on the player; games checked by the owner (lead)
 

@@ -16,7 +16,7 @@ mod kit;
 use orpheus_books::files::{self, CACHE_DIR, LibRecord, NORM_HEADER, PROGRESS_NEW};
 use orpheus_books::layout::{self, Line, Mark, Metrics, Params, Skip};
 use orpheus_books::norm::{BOLD, Item, item_at};
-use orpheus_books::shelf::{LibPhase, Phase, Req, Scope, Shelf};
+use orpheus_books::shelf::{Books, LibPhase, Phase, Req, Scope, Shelf};
 use orpheus_fs::host::{RamDisk, block_on};
 use orpheus_fs::{BlockDevice, CacheSlot, MountOptions, OpenMode, Sector, Volume};
 
@@ -203,10 +203,10 @@ fn fill(vol: &mut Vol<'_>) {
 }
 
 /// Steps until `done`; the most sectors any one step read and wrote.
-fn run(shelf: &mut Shelf, vol: &mut Vol<'_>, mut done: impl FnMut(&Shelf) -> bool) -> (u64, u64, u32) {
+fn run(shelf: &mut Books, vol: &mut Vol<'_>, mut done: impl FnMut(&Shelf) -> bool) -> (u64, u64, u32) {
     let (mut r, mut w, mut n) = (0, 0, 0);
     for _ in 0..200_000 {
-        if done(shelf) {
+        if done(&shelf.shelf) {
             return (r, w, n);
         }
         let (r0, w0) = (vol.device().reads, vol.device().writes);
@@ -218,7 +218,7 @@ fn run(shelf: &mut Shelf, vol: &mut Vol<'_>, mut done: impl FnMut(&Shelf) -> boo
     panic!("never done");
 }
 
-fn idle(shelf: &mut Shelf, vol: &mut Vol<'_>) {
+fn idle(shelf: &mut Books, vol: &mut Vol<'_>) {
     for _ in 0..200_000 {
         if !block_on(shelf.step(vol, &Mono)) {
             return;
@@ -227,7 +227,7 @@ fn idle(shelf: &mut Shelf, vol: &mut Vol<'_>) {
     panic!("never idle");
 }
 
-fn titles(shelf: &mut Shelf, vol: &mut Vol<'_>) -> Vec<(String, String)> {
+fn titles(shelf: &mut Books, vol: &mut Vol<'_>) -> Vec<(String, String)> {
     shelf.request(Req::Rows(0));
     idle(shelf, vol);
     (0..shelf.lib.count)
@@ -298,7 +298,7 @@ fn book(exfat: bool) {
     vol.set_write_prefix(Some("/.orpheus"));
 
     // The library: /Books only, sorted by title, titles from the files.
-    let mut shelf = Shelf::new();
+    let mut shelf = Books::new();
     shelf.request(Req::Library(Scope::BooksFolder));
     let (r, w, _) = run(&mut shelf, &mut vol, |s| s.lib.phase == LibPhase::Ready);
     // Making a folder zeroes its cluster (4 KiB here: 8 sectors and the
@@ -401,7 +401,7 @@ fn book(exfat: bool) {
     let progress = shelf.lib.row(war_row).unwrap().progress;
     assert!((700..=800).contains(&progress), "{progress}");
 
-    let mut again = Shelf::new();
+    let mut again = Books::new();
     again.request(Req::Library(Scope::BooksFolder));
     idle(&mut again, &mut vol);
     again.request(Req::Params(P));
@@ -494,7 +494,7 @@ fn changed_book_is_converted_again() {
     let mut vol: Vol<'_> = block_on(Volume::mount(dev, &mut cache, MountOptions::default())).unwrap();
     block_on(vol.create_dir("/Books")).unwrap();
     put(&mut vol, "/Books/a.txt", b"First version.\n");
-    let mut shelf = Shelf::new();
+    let mut shelf = Books::new();
     shelf.request(Req::Library(Scope::BooksFolder));
     shelf.request(Req::Params(P));
     idle(&mut shelf, &mut vol);
@@ -517,14 +517,14 @@ fn changed_book_is_converted_again() {
 /// a request takes effect in a step); the most sectors any one step read
 /// and wrote, and the steps.
 fn run_lent(
-    shelf: &mut Shelf,
+    shelf: &mut Books,
     vol: &mut Vol<'_>,
     mut scratch: Option<&mut [u8]>,
     mut done: impl FnMut(&Shelf) -> bool,
 ) -> (u64, u64, u32) {
     let (mut r, mut w, mut n) = (0, 0, 0);
     for _ in 0..400_000 {
-        if n > 0 && done(shelf) {
+        if n > 0 && done(&shelf.shelf) {
             return (r, w, n);
         }
         let (r0, w0) = (vol.device().reads, vol.device().writes);
@@ -536,7 +536,7 @@ fn run_lent(
     panic!("never done");
 }
 
-fn idle_lent(shelf: &mut Shelf, vol: &mut Vol<'_>, mut scratch: Option<&mut [u8]>) {
+fn idle_lent(shelf: &mut Books, vol: &mut Vol<'_>, mut scratch: Option<&mut [u8]>) {
     for _ in 0..400_000 {
         if !block_on(shelf.step_with(vol, &Mono, scratch.as_deref_mut())) {
             return;
@@ -560,12 +560,17 @@ fn epub_books(exfat: bool) {
     let mut scratch = vec![0u8; orpheus_books::inflate::SCRATCH];
 
     // The search without the scratch: EPUB titles are the file names.
-    let mut shelf = Shelf::new();
+    let mut shelf = Books::new();
     {
         // The step futures (card task frames on the player; host sizes).
         let a = core::mem::size_of_val(&shelf.step(&mut vol, &Mono));
         let b = core::mem::size_of_val(&shelf.step_with(&mut vol, &Mono, None));
-        eprintln!("Shelf::step future {a} B, step_with {b} B");
+        eprintln!("Books::step future {a} B, step_with {b} B");
+        // A ratchet (BOOK-1/2 wiring, 2026-11-26): 5,464 -> 2,600 B with
+        // the steps' buffers, the open's directory entry and the
+        // library's record and reader in the desk; the rest is mostly the
+        // file system's own futures (a path walk's open: 1,608 B here).
+        assert!(b <= 2_816, "step_with future {b} B");
     }
     shelf.request(Req::Library(Scope::BooksFolder));
     run_lent(&mut shelf, &mut vol, None, |s| s.lib.phase == LibPhase::Ready);
@@ -658,19 +663,21 @@ fn epub_books(exfat: bool) {
     idle_lent(&mut shelf, &mut vol, None);
 
     // The EPUB 2 book; the broken one fails.
-    shelf.request(Req::Open(row_of(&shelf, "Winter Harbour")));
+    let row = row_of(&shelf, "Winter Harbour");
+    shelf.request(Req::Open(row));
     run_lent(&mut shelf, &mut vol, Some(&mut scratch), |s| s.book.phase == Phase::Ready && s.book.complete);
     assert_eq!(shelf.book.toc_count, 3);
     assert_eq!(view_lines(&shelf).0[0], "I. The Ice");
     shelf.request(Req::Close);
     idle_lent(&mut shelf, &mut vol, None);
-    shelf.request(Req::Open(row_of(&shelf, "broken")));
+    let row = row_of(&shelf, "broken");
+    shelf.request(Req::Open(row));
     run_lent(&mut shelf, &mut vol, Some(&mut scratch), |s| s.book.phase == Phase::Failed);
     // (Its files' entries are written in the steps after.)
     idle_lent(&mut shelf, &mut vol, None);
 
     // A book first listed by its file name gets its title on opening.
-    let mut other = Shelf::new();
+    let mut other = Books::new();
     other.request(Req::Rescan(Scope::BooksFolder));
     run_lent(&mut other, &mut vol, None, |s| s.lib.phase == LibPhase::Ready && s.lib.count == 3);
     other.request(Req::Params(P));
@@ -721,7 +728,7 @@ fn regress_abandoned_job_loses_no_clusters() {
     put(&mut vol, "/Books/b.txt", &tale());
     put(&mut vol, "/Books/c.epub", &kit::epub3());
     let mut scratch = vec![0u8; orpheus_books::inflate::SCRATCH];
-    let mut shelf = Shelf::new();
+    let mut shelf = Books::new();
     shelf.request(Req::Library(Scope::BooksFolder));
     shelf.request(Req::Params(P));
     idle(&mut shelf, &mut vol);
@@ -748,4 +755,124 @@ fn regress_abandoned_job_loses_no_clusters() {
     block_on(vol.flush()).unwrap();
     let (dev, _) = block_on(vol.unmount());
     fsck(&dev.disk, false);
+}
+
+/// One step of the split as the firmware runs it: the model (`Shelf`) and
+/// the card side (`Desk`) apart. Before the step, `Desk::next_kind`
+/// predicts; nothing predicted means nothing done. The sectors written.
+fn split_step(sh: &mut Shelf, desk: &mut orpheus_books::shelf::Desk, vol: &mut Vol<'_>) -> (bool, u64) {
+    let kind = desk.next_kind(sh);
+    let w0 = vol.device().writes;
+    let changed = block_on(desk.step_with(sh, vol, &Mono, None));
+    if kind.is_none() {
+        assert!(!changed, "a step did work no kind predicted");
+    }
+    (changed, vol.device().writes - w0)
+}
+
+/// BOOK-1/2 wiring (2026-11-26): the model and the card side apart, as on
+/// the player. While music plays (`mkdir` off) a missing folder is not
+/// made: the work waits (`wants_mkdir`, the step reports nothing done,
+/// nothing written, no folder made); once the folders are there the
+/// library search, a book's conversion, its layout and every page go on
+/// with no step writing more than BOOK-1's 12 sectors (measured here: 11
+/// on FAT32 and 8 on exFAT, the search's last step and a conversion's
+/// write: cluster allocations and the sector cache's write-backs on these
+/// 512-byte-cluster images; a folder made zeroes a cluster: 256 sectors on
+/// the owner's card). The card hand-over (`suspend`) writes the reading
+/// position, leaves the volume clean and reopens the book there.
+fn split(exfat: bool) {
+    use orpheus_books::shelf::Desk;
+    let Some(disk) = image(exfat) else { return };
+    let mut cache = vec![CacheSlot::EMPTY; 8];
+    let dev = Counting { disk, reads: 0, writes: 0 };
+    let mut vol: Vol<'_> = block_on(Volume::mount(dev, &mut cache, MountOptions::default())).unwrap();
+    block_on(vol.create_dir("/Books")).unwrap();
+    put(&mut vol, "/Books/tale.txt", &tale());
+    block_on(vol.flush()).unwrap();
+    vol.set_write_prefix(Some("/.orpheus"));
+    let (mut sh, mut desk) = (Shelf::new(), Desk::new());
+
+    // Music plays: no folder made, the work waits for the idle card task.
+    desk.mkdir = false;
+    sh.request(Req::Library(Scope::BooksFolder));
+    sh.request(Req::Params(P));
+    let w0 = vol.device().writes;
+    for _ in 0..4 {
+        if !split_step(&mut sh, &mut desk, &mut vol).0 {
+            break;
+        }
+    }
+    assert!(desk.wants_mkdir(), "a folder is missing");
+    assert_eq!(vol.device().writes, w0, "nothing written while the folder waits");
+    assert!(!split_step(&mut sh, &mut desk, &mut vol).0, "the step does nothing");
+    // The music stops: the folders are made (all four, one per step,
+    // before the search writes its file).
+    desk.mkdir = true;
+    for _ in 0..16 {
+        split_step(&mut sh, &mut desk, &mut vol);
+        if sh.lib.phase == LibPhase::Searching && block_on(vol.open_dir(files::CACHE_DIR)).is_ok() {
+            break;
+        }
+    }
+    assert!(!desk.wants_mkdir());
+    // The music plays again: everything else, in small writes.
+    desk.mkdir = false;
+    let most = std::cell::Cell::new(0);
+    let go = |sh: &mut Shelf, desk: &mut Desk, vol: &mut Vol<'_>, done: &dyn Fn(&Shelf) -> bool| {
+        for _ in 0..200_000 {
+            if done(sh) {
+                return;
+            }
+            let (_, w) = split_step(sh, desk, vol);
+            most.set(most.get().max(w));
+        }
+        panic!("never done");
+    };
+    go(&mut sh, &mut desk, &mut vol, &|s| s.lib.phase == LibPhase::Ready && s.lib.count == 1);
+    sh.request(Req::Open(0));
+    go(&mut sh, &mut desk, &mut vol, &|s| s.book.phase == Phase::Ready && s.book.complete);
+    let pages = sh.book.pages;
+    assert!(pages > 3, "{pages} pages");
+    // Every page, as the reader turns them.
+    for _ in 0..3 {
+        go(&mut sh, &mut desk, &mut vol, &|s| s.book.window().is_some());
+        let (_, info) = view_lines(&sh);
+        let next = info.next.expect("a next page");
+        sh.request(Req::Show(next));
+        sh.request(Req::Seen(next));
+    }
+    go(&mut sh, &mut desk, &mut vol, &|s| s.book.window().is_some() && s.book.page_no.is_some());
+    let at = sh.book.top;
+    assert_eq!(sh.book.page_no, Some(3));
+    assert!(most.get() <= 12, "a step wrote {} sectors while music played", most.get());
+    for d in files::DIRS {
+        assert!(block_on(vol.open_dir(d)).is_ok(), "{d} made before the music played again");
+    }
+    // The card goes to USB and comes back: the position written, the
+    // volume clean, the book open again where it was.
+    block_on(desk.suspend(&mut sh, &mut vol, 64));
+    assert_eq!(vol.dirty_sectors(), 0);
+    assert_eq!(sh.book.phase, Phase::Opening);
+    go(&mut sh, &mut desk, &mut vol, &|s| s.book.phase == Phase::Ready && s.book.window().is_some());
+    assert_eq!(sh.book.top, at, "reopened at the saved position");
+    sh.request(Req::Close);
+    for _ in 0..1000 {
+        if !split_step(&mut sh, &mut desk, &mut vol).0 {
+            break;
+        }
+    }
+    block_on(vol.flush()).unwrap();
+    let (dev, _) = block_on(vol.unmount());
+    fsck(&dev.disk, exfat);
+}
+
+#[test]
+fn split_on_fat32() {
+    split(false);
+}
+
+#[test]
+fn split_on_exfat() {
+    split(true);
 }

@@ -609,6 +609,30 @@ impl Media {
         self.positions.insert(f, offset);
     }
 
+    /// Write the on-device suite's books (`card::SUITE_BOOKS`, as
+    /// `cargo xtask dev suite --setup` puts them on the player) to the card
+    /// (once): `set:bookstest=on`.
+    pub fn add_suite_books(&mut self) {
+        let vol = self.volume();
+        if block_on(vol.exists(crate::card::SUITE_BOOKS)).unwrap_or(false) {
+            return;
+        }
+        for d in ["/.orpheus", "/.orpheus/test", "/.orpheus/test/suite", crate::card::SUITE_BOOKS] {
+            let _ = block_on(vol.create_dir(d));
+        }
+        let epub = crate::card::epub();
+        for (path, data) in [
+            (crate::card::SUITE_TXT, crate::card::SUITE_BOOK.as_bytes()),
+            (crate::card::SUITE_EPUB, &epub[..]),
+        ] {
+            if let Ok(mut f) = block_on(vol.open(path, OpenMode::CreateNew)) {
+                let _ = block_on(vol.write(&mut f, data));
+                let _ = block_on(vol.close(f));
+            }
+        }
+        let _ = block_on(vol.flush());
+    }
+
     // ------------------------------------------------------------ player
 
     /// Write the MIDI demo songs to `/Music/MIDI` (once) and return the

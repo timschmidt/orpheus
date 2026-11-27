@@ -12,6 +12,7 @@ yoton-bsp = { path = "../yoton-bsp" }
 orpheus-proto.workspace = true
 orpheus-ui = { path = "../../crates/orpheus-ui" }
 orpheus-apps = { path = "../../crates/orpheus-apps", features = ["games", "salvo", "bricks", "midi"] }
+orpheus-books = { path = "../../crates/orpheus-books" }
 orpheus-input = { path = "../../crates/orpheus-input" }
 orpheus-power = { path = "../../crates/orpheus-power" }
 orpheus-settings = { path = "../../crates/orpheus-settings" }
@@ -44,6 +45,13 @@ embassy-usb = { version = "0.6", default-features = false }
 embassy-usb-driver = "0.2"
 static_cell = "2"
 critical-section = "1.2"
+
+[features]
+# Books on the player (M15, 05 §7.15; the BOOK-1/2 wiring): the Books app,
+# its card work in the card task (`src/books.rs`). Off: with it the paged
+# code needs 139 of the code window's 128 pages and `.bss` grows 13,240 B
+# (docs/STATUS.md); `cargo xtask build --features books` builds it.
+books = ["orpheus-apps/books"]
 
 [lints]
 workspace = true

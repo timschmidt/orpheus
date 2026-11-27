@@ -1714,6 +1714,33 @@ impl Fw {
     }
 }
 
+/// Books (05 §7.15; firmware feature `books`): the model is
+/// `crate::books`'s static, the UI's from its first use in a UI loop to the
+/// loop's end (`books::ui_release`).
+#[cfg(feature = "books")]
+impl orpheus_apps::books::BooksService for Fw {
+    fn books(&self) -> &orpheus_books::shelf::Shelf {
+        crate::books::ui_shelf()
+    }
+
+    fn books_request(&mut self, r: orpheus_books::shelf::Req) {
+        crate::books::request(r);
+    }
+}
+
+impl Fw {
+    /// Card work changed the Books model: the screens look again (every
+    /// UI loop).
+    pub fn books_poll(&mut self) {
+        if crate::books::take_changed() {
+            self.pending.push(Event::Service(ServiceEvent::Other {
+                kind: orpheus_apps::services::other::BOOKS,
+                value: 0,
+            }));
+        }
+    }
+}
+
 impl orpheus_apps::games::GamesService for Fw {
     fn games(&self) -> &orpheus_apps::games::engine::Hub {
         &self.games.hub
@@ -1864,7 +1891,13 @@ impl SystemService for Fw {
         // Steps and Stopwatch: SENS-1, UI-5c, UI-5d (Steps says so when the
         // sensor does not answer). Recorder (AU-13) and USB Drive (USB-6)
         // are built and verified on the player (2026-11-24).
-        // The list itself: `App::on_player` (host-tested).
+        // The list itself: `App::on_player` (host-tested); Books also in an
+        // image built with the feature `books` (off in the shipping one: no
+        // room in the code window yet).
+        #[cfg(feature = "books")]
+        if app == App::Books {
+            return true;
+        }
         app.on_player()
     }
     fn dual_boot(&self) -> bool {

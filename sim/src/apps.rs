@@ -123,7 +123,9 @@ pub struct HostServices {
     pub games_on_home: bool,
     /// The Books app (M15, BOOK-1): the model and its card work.
     pub books: SimBooks,
-    /// Books on Home: off (not on the player yet); `set:books=on`.
+    /// Books on Home: off by default (the goldens' Home predates it), on
+    /// the player since the BOOK-1/2 wiring: `set:books=on` (the on-device
+    /// suite's appearance has it).
     pub books_on_home: bool,
     /// The Sequencer (M17, SEQ-1): the studio, the synth, its files.
     pub seq: SimSeq,
@@ -247,10 +249,11 @@ impl orpheus_apps::games::GamesService for HostServices {
 
 impl orpheus_apps::books::BooksService for HostServices {
     fn books(&self) -> &orpheus_books::shelf::Shelf {
-        &self.books.shelf
+        &self.books.shelf.shelf
     }
 
     fn books_request(&mut self, r: orpheus_books::shelf::Req) {
+        let r = self.books.test_scope(r);
         self.books.shelf.request(r);
     }
 }
@@ -685,8 +688,10 @@ impl SystemService for HostServices {
     }
 
     fn app_available(&self, app: App) -> bool {
-        // As the player (M14); `set:games=off` takes it away. Books is not
-        // on the player yet: `set:books=on` puts it on Home.
+        // As the player (M14); `set:games=off` takes it away. Books is on
+        // the player since the BOOK-1/2 wiring, here with `set:books=on`
+        // (the goldens' Home has twelve apps; the on-device suite's
+        // appearance turns it on).
         match app {
             App::Games => self.games_on_home,
             App::Books => self.books_on_home,
@@ -1118,6 +1123,14 @@ impl Host for HostServices {
             }
             "booksteps" => self.books.per_step = v.parse()?,
             "bookscratch" => self.books.lend = on,
+            // The on-device suite's books (as the player's `books test
+            // on`): its fixture folder is the library.
+            "bookstest" => {
+                if on {
+                    self.media.add_suite_books();
+                }
+                self.books.test = on;
+            }
             _ if {
                 let (t, b, so) = (
                     orpheus_apps::games::tiles_config(self),

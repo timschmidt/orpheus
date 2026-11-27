@@ -302,6 +302,13 @@ pub struct BookState {
 pub const STATE_BYTES: usize = 16 + MAX_BOOKMARKS * (6 + SNIPPET);
 
 impl BookState {
+    /// As `BookState::default()`, in place (no 444-byte temporary).
+    pub fn clear(&mut self) {
+        self.pos = Mark::default();
+        self.marks.fill(Bookmark::default());
+        self.n = 0;
+    }
+
     #[must_use]
     pub fn bookmarks(&self) -> &[Bookmark] {
         self.marks.get(..usize::from(self.n)).unwrap_or(&[])
@@ -390,11 +397,13 @@ pub const LIB_PROGRESS_AT: usize = 380;
 /// Where a record's title and author are (rewritten when an EPUB's
 /// package names them).
 pub const LIB_NAMES_AT: usize = 256;
+/// Bytes of a record's title and author ([`encode_names`]).
+pub const LIB_NAMES: usize = 114;
 
 /// A record's title and author as stored at [`LIB_NAMES_AT`].
 #[must_use]
-pub fn encode_names(title: &MetaText<64>, author: &MetaText<48>) -> [u8; 114] {
-    let mut b = [0u8; 114];
+pub fn encode_names(title: &MetaText<64>, author: &MetaText<48>) -> [u8; LIB_NAMES] {
+    let mut b = [0u8; LIB_NAMES];
     b[0] = title.len;
     b[1..65].copy_from_slice(&title.buf);
     b[65] = author.len;
@@ -472,6 +481,18 @@ impl Default for LibRecord {
 }
 
 impl LibRecord {
+    /// As `LibRecord::default()`, in place (no 384-byte temporary).
+    pub fn clear(&mut self) {
+        self.path.fill(0);
+        self.path_len = 0;
+        self.title = MetaText::default();
+        self.author = MetaText::default();
+        self.format = Format::Txt;
+        self.size = 0;
+        self.stamp = 0;
+        self.progress = PROGRESS_NEW;
+    }
+
     #[must_use]
     pub fn path(&self) -> &str {
         core::str::from_utf8(self.path.get(..usize::from(self.path_len)).unwrap_or(&[])).unwrap_or("")

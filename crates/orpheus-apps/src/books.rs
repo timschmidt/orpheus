@@ -164,6 +164,16 @@ impl Face {
     }
 }
 
+impl Face {
+    /// The face a layout measures with ([`Params::font`]: the Font size
+    /// setting's value), for the card side that lays the book out (the
+    /// firmware's card task has the layout's parameters, not the settings).
+    #[must_use]
+    pub fn of_params(p: &Params) -> &'static Face {
+        &FACES[usize::from(p.font).min(FACES.len() - 1)]
+    }
+}
+
 impl Metrics for Face {
     fn advance(&self, c: char, style: u8) -> u16 {
         Face::advance(self, c, style)
@@ -214,8 +224,9 @@ pub fn colours<S: SettingsService + ?Sized>(s: &S, g: &Gfx<'_>) -> (Color, Color
 }
 
 /// The Books app's service (part of `Services` with the feature): the
-/// model in `orpheus-books` and where its requests go. The firmware runs
-/// [`Shelf::step`] in its card task; the simulator between frames.
+/// model in `orpheus-books` and where its requests go. Its card work
+/// (`orpheus_books::shelf::Desk::step_with`) runs in the firmware's card
+/// task, in the simulator between frames.
 pub trait BooksService {
     fn books(&self) -> &Shelf;
     fn books_request(&mut self, r: Req);

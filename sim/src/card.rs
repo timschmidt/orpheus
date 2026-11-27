@@ -184,6 +184,23 @@ fn cp1251(s: &str) -> Vec<u8> {
         .collect()
 }
 
+/// The on-device suite's book (`cargo xtask dev suite --setup` uploads it
+/// to [`SUITE_BOOKS`] on the player; `set:bookstest=on` writes it to the
+/// simulated card): our own text, plain UTF-8 with a Gutenberg-style
+/// title, four pages at the Small size, so the `books` journey turns a page
+/// and comes back to the first from wherever a run left it.
+pub const SUITE_BOOK: &str = "Title: The Test Card\nAuthor: Orpheus Project\n\nChapter 1\n\nEvery morning the player woke before the house did. It counted its \
+own pages, listened to the card, and checked that the clock still agreed with the sun.\n\nThe first page was always the same: a title, \
+a name, and a short promise that the rest would follow. Nobody read it twice, but the player liked to know it was there.\n\nOn the \
+second page the story began to move. A lighthouse keeper wrote down the weather, the ships and the colour of the sea, one line for \
+each hour of the night.\n\nChapter 2\n\nBy noon the notebook was full. The keeper turned it over and started again from the \
+back, so that the last page met the first somewhere in the middle, where the storms were.\n";
+/// The suite's book folder (CLAUDE.md rule 5: under `/.orpheus/`) and the
+/// files `--setup` puts there: the text above and the EPUB sample.
+pub const SUITE_BOOKS: &str = "/.orpheus/test/suite/books";
+pub const SUITE_TXT: &str = "/.orpheus/test/suite/books/test-card.txt";
+pub const SUITE_EPUB: &str = "/.orpheus/test/suite/books/lighthouse.epub";
+
 /// The EPUB 3 sample for Books (BOOK-2): our own short text, in a zip with
 /// `mimetype` stored first and the rest deflated (miniz_oxide), a
 /// navigation document with nested entries, three chapters (headings,

@@ -126,6 +126,11 @@ pub struct IndirectCfg {
     /// that relies on no implementation being linked).
     #[serde(default)]
     pub absent: Vec<String>,
+    /// The callers may all be absent (a feature build: Books): then the
+    /// entry is skipped, not a problem. Once one caller is linked, every
+    /// target pattern must match as for any entry.
+    #[serde(default)]
+    pub optional: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -451,6 +456,9 @@ impl Analysis {
         let mut res: BTreeMap<usize, Vec<Resolve>> = BTreeMap::new();
         let mut roots = Vec::new();
         for e in entries {
+            if e.optional && e.callers.iter().all(|c| self.find(c).is_empty()) {
+                continue;
+            }
             let mut targets = Vec::new();
             for t in &e.targets {
                 let v = self.find(t);
@@ -1029,6 +1037,37 @@ mod tests {
         assert_eq!(total, 10_000 + (300 + 108) + (6_000 + 108) + (200 + 108) + (500 + 108) + 108);
         let names: Vec<&str> = parts.iter().map(|p| p.1.as_str()).collect();
         assert_eq!(names, ["thread", "usb", "rt", "timer", "pager"]);
+    }
+
+    /// An `optional` entry whose callers are not linked is skipped; linked,
+    /// its targets must match (BOOK-1/2 wiring: Books' `dyn` calls exist
+    /// only with the firmware feature `books`).
+    #[test]
+    fn optional_indirect_entries_may_be_absent() {
+        let an = Analysis {
+            cg: graph(&[8, 16], &[], &[0]),
+            labels: vec![vec!["f0".into()], vec!["f1".into()]],
+            insn: BTreeMap::new(),
+            stack: (0, 0),
+            secs: Vec::new(),
+            kinds: Vec::new(),
+        };
+        let entry = |callers: &str, optional: bool| IndirectCfg {
+            callers: vec![callers.into()],
+            targets: vec!["f9".into()],
+            bound: None,
+            why: String::new(),
+            absent: Vec::new(),
+            optional,
+        };
+        let mut missing = Vec::new();
+        let (res, _) = an.resolver(&[&entry("g*", true)], &mut missing);
+        assert!(missing.is_empty() && res.is_empty(), "{missing:?}");
+        an.resolver(&[&entry("g*", false)], &mut missing);
+        assert_eq!(missing.len(), 2, "{missing:?}");
+        missing.clear();
+        an.resolver(&[&entry("f0", true)], &mut missing);
+        assert_eq!(missing, ["target `f9` matches nothing"]);
     }
 
     #[test]

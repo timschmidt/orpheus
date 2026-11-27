@@ -1,9 +1,10 @@
 //! The Books app's model and its card work (05 §7.15): the library, the
-//! open book and the reader's view, changed by [`Req`]uests from the
-//! screens and brought up to date by [`Shelf::step`], one bounded piece of
-//! card work at a time (at most a few sector reads and writes: the
-//! firmware runs it as a paced chore of its card task, the simulator
-//! between frames).
+//! open book and the reader's view ([`Shelf`], the screens' model: the UI
+//! side), changed by [`Req`]uests from the screens and brought up to date
+//! by [`Desk::step_with`] (the card side), one bounded piece of card work
+//! at a time (at most 16 sectors read and 12 written: the firmware runs it
+//! as paced chores of its card task, lending it the model for each step;
+//! the simulator and the tests keep both in a [`Books`], between frames).
 //!
 //! What a step does, most urgent first: write the reading state; load or
 //! search the library; open a book (state, cache check, conversion);
@@ -12,11 +13,14 @@
 //! fetch contents rows; lay the book out (the background pass that writes
 //! the page index).
 //!
-//! RAM: [`Shelf`] is a few kilobytes, all fixed (sizes in the tests and
-//! docs/STATUS.md): the 2 KiB text window, the library's row window and
-//! sort order, the contents window, the page-index cache, the book's
-//! state with its bookmarks, and the card work of the moment (the scan's
-//! directory entry, the converter, or the paginator, never two at once).
+//! RAM, all fixed (sizes in `tests/ram.rs` and docs/STATUS.md): the
+//! [`Shelf`] (5.5 KB: the 2 KiB text window, the library's row window and
+//! sort order, the contents window, the page-index cache, the book's state
+//! with its bookmarks) and the [`Desk`] (7.7 KB: the card work of the
+//! moment — the search, the conversion or the layout, never two at once —
+//! the open book's files, a 1 KiB I/O buffer and a directory entry, which
+//! keep the step's future small: on the player it is part of the card
+//! task's).
 
 use orpheus_fs::{BlockDevice, DirCursor, DirEntry, File, OpenMode, Volume};
 
@@ -45,6 +49,10 @@ pub const SCAN_DEPTH: usize = 8;
 const SCAN_ENTRIES: u8 = 16;
 /// The books folder (05 §7.15; "Find books in" › Books folder).
 pub const BOOKS_FOLDER: &str = "/Books";
+/// The on-device suite's books (`cargo xtask dev suite --setup` puts them
+/// there; CLAUDE.md rule 5: under `/.orpheus/`), the library of
+/// [`Scope::Test`].
+pub const TEST_FOLDER: &str = "/.orpheus/test/suite/books";
 /// Reading-position changes before the state is written anyway (a power
 /// cut loses at most this many page turns).
 const SAVE_EVERY: u8 = 16;
@@ -58,6 +66,9 @@ pub enum Scope {
     BooksFolder = 0,
     /// The whole card (except `/.orpheus` and hidden folders).
     WholeCard = 1,
+    /// [`TEST_FOLDER`] only: the on-device suite's books (a test hook of
+    /// the firmware and the simulator, never a setting).
+    Test = 2,
 }
 
 impl Scope {
@@ -66,6 +77,7 @@ impl Scope {
         match self {
             Scope::BooksFolder => BOOKS_FOLDER,
             Scope::WholeCard => "/",
+            Scope::Test => TEST_FOLDER,
         }
     }
 }
@@ -231,7 +243,7 @@ pub struct Book {
     src_stamp: u32,
     /// Conversion progress, per mille of the file.
     pub permille: u16,
-    /// An EPUB's conversion waits for the scratch ([`Shelf::step_with`]).
+    /// An EPUB's conversion waits for the scratch ([`Desk::step_with`]).
     pub waiting: bool,
     /// The book's language tag (EPUB), its first bytes.
     pub lang: [u8; 4],
@@ -314,6 +326,86 @@ impl Default for Book {
 }
 
 impl Book {
+    /// A fresh book in `phase` for library row `row`, in place (built and
+    /// moved, a `Book` was 3.8 KB of the UI task's frame twice over on the
+    /// player). The windows' bytes are left: their lengths say none is
+    /// held.
+    pub fn reset(&mut self, phase: Phase, row: u16) {
+        let Book {
+            phase: ph,
+            row: r,
+            rec,
+            id,
+            title,
+            format,
+            src,
+            src_size,
+            src_stamp,
+            permille,
+            waiting,
+            lang,
+            text_len,
+            toc_count,
+            state,
+            top,
+            skip,
+            pages,
+            laid,
+            complete,
+            frontier,
+            page_no,
+            win: _,
+            win_base,
+            win_len,
+            win_ok,
+            toc: _,
+            toc_first,
+            toc_n,
+            toc_want,
+            pending,
+            search,
+            dirty,
+            moves,
+            idx_cache: _,
+            idx_first,
+            idx_n,
+        } = self;
+        *ph = phase;
+        *r = row;
+        *rec = 0;
+        *id = 0;
+        *title = MetaText::default();
+        *format = Format::Txt;
+        src.clear();
+        *src_size = 0;
+        *src_stamp = 0;
+        *permille = 0;
+        *waiting = false;
+        *lang = [0; 4];
+        *text_len = 0;
+        *toc_count = 0;
+        state.clear();
+        *top = Mark::START;
+        *skip = Skip::None;
+        *pages = 0;
+        *laid = 0;
+        *complete = false;
+        *frontier = 0;
+        *page_no = None;
+        *win_base = 0;
+        *win_len = 0;
+        *win_ok = false;
+        *toc_first = 0;
+        *toc_n = 0;
+        *toc_want = None;
+        *pending = None;
+        *search = None;
+        *dirty = false;
+        *moves = 0;
+        *idx_first = 0;
+        *idx_n = 0;
+    }
+
     /// The text window if it holds the view's top: its first offset, its
     /// bytes, and whether it reaches the end of the book.
     #[must_use]
@@ -430,6 +522,8 @@ impl SaveRec {
 /// How a candidate's title and author are read.
 #[allow(clippy::large_enum_variant)]
 enum Head {
+    /// No candidate.
+    None,
     /// From its first bytes.
     Plain(MetaReader),
     /// From its package document (BOOK-2; needs the scratch for a
@@ -442,13 +536,15 @@ enum Head {
 struct ScanJob {
     stack: [Option<(DirCursor, u16)>; SCAN_DEPTH],
     depth: u8,
-    entry: DirEntry,
     path: PathBuf,
     lib: Option<File>,
     count: u16,
     keys: [u32; MAX_BOOKS],
-    /// A candidate's head being read.
-    meta: Option<(Head, File, LibRecord)>,
+    /// A candidate's head being read: how, its file (`Some` while there is
+    /// one) and its record (each set in place: [`begin_meta`]).
+    head: Head,
+    cand: Option<File>,
+    rec: LibRecord,
     started: bool,
 }
 
@@ -584,35 +680,30 @@ fn layout_of(w: &Work) -> Option<&LayoutJob> {
     }
 }
 
-/// The Books app's model and card work.
+/// The Books app's model: what the screens read and their requests change
+/// (the UI side). Card work is the [`Desk`]'s ([`Desk::step_with`]), which
+/// is lent the model for one step at a time: the firmware's UI task and
+/// card task never hold it at once (`fw/firmware/src/books.rs`), the
+/// simulator and the tests keep both in a [`Books`].
+///
+/// A request only changes the model; what it asks of the card (open a
+/// book, write the reading state, drop the open book's files or its
+/// layout) waits in it for the next step.
 pub struct Shelf {
     pub lib: Library,
     pub book: Book,
     /// The layout the reader asked for (and the font id it measures with).
     pub params: Option<Params>,
-    work: Work,
-    /// Reading files of the open book (read only after conversion).
-    norm: Option<File>,
-    idx: Option<File>,
-    tocf: Option<File>,
-    path: PathBuf,
     /// Open asked for this library row.
     open: Option<u16>,
     /// A reading state to write (the open book's, or the one before).
     save: Option<SaveRec>,
-    /// Folders of [`files::DIRS`] made so far (one per step: making a
-    /// folder zeroes a cluster).
-    dirs: u8,
-    /// Dirty sectors to write back, one per step.
-    flush: bool,
     close: bool,
-    /// An EPUB's package named its title and author: its library record
-    /// to rewrite (a step of its own).
-    retitle: Option<(u16, MetaText<64>, MetaText<48>)>,
-    /// Files a job wrote and left (given up, or the EPUB job's tables):
-    /// their entries are written, one per step, before other work (so no
-    /// cluster is lost and a file is not opened again before).
-    orphans: [Option<File>; 5],
+    /// The open book's files and its conversion or layout are given up
+    /// (another book opens).
+    drop_book: bool,
+    /// The layout job is given up (a new layout key).
+    drop_layout: bool,
     /// Step count (tests).
     pub steps: u32,
 }
@@ -623,6 +714,130 @@ impl Default for Shelf {
     }
 }
 
+/// What the next step of the card work does, for the firmware's chore
+/// costs (each kind has its own measured need): writes (the sector cache
+/// written back, a job's files' entries, the reading state, a library
+/// title; a folder looked up or made), the library search, reads (the
+/// library's rows, a book opened, the text window, a jump through the
+/// page index, contents rows), a conversion piece, a layout piece.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Kind {
+    Write = 0,
+    Scan = 1,
+    Read = 2,
+    Convert = 3,
+    Layout = 4,
+}
+
+/// Kinds of [`Kind`] and their names (the firmware's `chore:` lines).
+pub const KINDS: usize = 5;
+pub const KIND_NAMES: [&str; KINDS] = ["bwrite", "bscan", "bread", "bconv", "blay"];
+
+/// Bytes of the card side's I/O buffer ([`Desk`]): the largest read or
+/// write one step makes into or from RAM of its own (the layout's last
+/// index write, 128 entries; the library header and order; a record; the
+/// reading state). In the desk, not in the step's future: on the player
+/// that future is part of the card task's (static) future and its poll
+/// frames.
+const IO: usize = 1024;
+const _: () = assert!(
+    TAIL * INDEX_ENTRY <= IO
+        && LIB_HEADER + LIB_ORDER <= IO
+        && LIB_RECORD <= IO
+        && STATE_BYTES <= IO
+        && files::LIB_NAMES <= IO
+        && IDX_CACHE * INDEX_ENTRY <= IO
+);
+
+/// The card side of the Books app: the card work of the moment, the open
+/// book's files and what the steps need between them (the firmware's card
+/// task owns it; [`Desk::step_with`] borrows the [`Shelf`] for a step).
+pub struct Desk {
+    work: Work,
+    /// Reading files of the open book (read only after conversion).
+    norm: Option<File>,
+    idx: Option<File>,
+    tocf: Option<File>,
+    path: PathBuf,
+    /// Folders of [`files::DIRS`] made so far (one per step: making a
+    /// folder zeroes a cluster).
+    dirs: u8,
+    /// Dirty sectors to write back, one per step.
+    flush: bool,
+    /// An EPUB's package named its title and author: its library record
+    /// to rewrite (a step of its own).
+    retitle: Option<(u16, MetaText<64>, MetaText<48>)>,
+    /// Files a job wrote and left (given up, or the EPUB job's tables):
+    /// their entries are written, one per step, before other work (so no
+    /// cluster is lost and a file is not opened again before).
+    orphans: [Option<File>; 5],
+    /// A folder may be made (a cluster zeroed: 256 sectors written on a
+    /// card with 128 KiB clusters). The firmware clears it while music
+    /// plays; a missing folder then waits ([`Desk::wants_mkdir`]).
+    pub mkdir: bool,
+    /// A folder is missing and `mkdir` was off.
+    mkdir_wait: bool,
+    /// The steps' reads and writes of their own ([`IO`]).
+    io: [u8; IO],
+    /// A directory entry (a book's size and time when it opens).
+    entry: DirEntry,
+}
+
+impl Default for Desk {
+    fn default() -> Self {
+        Desk::new()
+    }
+}
+
+/// The model and its card work in one (the simulator, the tests): the
+/// [`Shelf`]'s fields and requests through `Deref`, the [`Desk`]'s steps.
+#[derive(Default)]
+pub struct Books {
+    pub shelf: Shelf,
+    pub desk: Desk,
+}
+
+impl core::ops::Deref for Books {
+    type Target = Shelf;
+    fn deref(&self) -> &Shelf {
+        &self.shelf
+    }
+}
+
+impl core::ops::DerefMut for Books {
+    fn deref_mut(&mut self) -> &mut Shelf {
+        &mut self.shelf
+    }
+}
+
+impl Books {
+    #[must_use]
+    pub fn new() -> Books {
+        Books { shelf: Shelf::new(), desk: Desk::new() }
+    }
+
+    /// [`Desk::step_with`] without the scratch.
+    pub async fn step<D: BlockDevice>(&mut self, vol: &mut Volume<'_, D>, m: &dyn Metrics) -> bool {
+        self.desk.step_with(&mut self.shelf, vol, m, None).await
+    }
+
+    /// [`Desk::step_with`].
+    pub async fn step_with<D: BlockDevice>(
+        &mut self,
+        vol: &mut Volume<'_, D>,
+        m: &dyn Metrics,
+        scratch: Option<&mut [u8]>,
+    ) -> bool {
+        self.desk.step_with(&mut self.shelf, vol, m, scratch).await
+    }
+
+    /// [`Desk::needs_scratch`].
+    #[must_use]
+    pub fn needs_scratch(&self) -> bool {
+        self.desk.needs_scratch(&self.shelf)
+    }
+}
+
 impl Shelf {
     #[must_use]
     pub fn new() -> Shelf {
@@ -630,23 +845,17 @@ impl Shelf {
             lib: Library::default(),
             book: Book::default(),
             params: None,
-            work: Work::Idle,
-            norm: None,
-            idx: None,
-            tocf: None,
-            path: PathBuf::new(),
             open: None,
             save: None,
-            dirs: 0,
-            flush: false,
             close: false,
-            retitle: None,
-            orphans: [None, None, None, None, None],
+            drop_book: false,
+            drop_layout: false,
             steps: 0,
         }
     }
 
-    /// A screen's request. Cheap: the card work happens in [`Shelf::step`].
+    /// A screen's request. Cheap, and only the model: the card work
+    /// happens in [`Desk::step_with`].
     pub fn request(&mut self, r: Req) {
         let b = &mut self.book;
         match r {
@@ -659,7 +868,8 @@ impl Shelf {
                 }
             }
             Req::Rescan(scope) => {
-                if !matches!(self.work, Work::Scan(_)) {
+                // Searching: the search is the card work of the moment.
+                if self.lib.phase != LibPhase::Searching {
                     self.lib.rescan = Some(scope);
                 }
             }
@@ -668,9 +878,11 @@ impl Shelf {
                 if b.dirty && b.phase == Phase::Ready {
                     self.save = Some(SaveRec::of(b));
                 }
-                self.close_now();
+                // The open book's files go (its conversion or layout is
+                // given up) before anything else in the next step.
+                self.drop_book = true;
                 self.open = Some(row);
-                self.book = Book { phase: Phase::Opening, row, ..Book::default() };
+                self.book.reset(Phase::Opening, row);
             }
             Req::Close => {
                 if b.dirty && b.phase == Phase::Ready {
@@ -685,9 +897,7 @@ impl Shelf {
                     let relayout = self.params.map(|o| o.key()) != Some(p.key());
                     self.params = Some(p);
                     if relayout && b.phase == Phase::Ready {
-                        if matches!(self.work, Work::Layout(_)) {
-                            drop_work(&mut self.work, &mut self.orphans);
-                        }
+                        self.drop_layout = true;
                         b.complete = false;
                         b.pages = 0;
                         b.laid = 0;
@@ -763,6 +973,66 @@ impl Shelf {
         }
     }
 
+    /// The card went away and came back (the firmware's USB hand-over):
+    /// the card side starts afresh ([`Desk::new`]), so the open book is
+    /// opened again (at its saved position: write it first,
+    /// [`Desk::suspend`]) and the library is read again.
+    pub fn card_back(&mut self) {
+        self.save = None;
+        self.close = false;
+        self.drop_book = false;
+        self.drop_layout = false;
+        if self.lib.phase != LibPhase::Unknown {
+            self.lib.phase = LibPhase::Loading;
+            self.lib.rescan = None;
+        }
+        match self.book.phase {
+            Phase::Closed => {}
+            _ => {
+                let row = self.book.row;
+                self.open = Some(row);
+                self.book.reset(Phase::Opening, row);
+            }
+        }
+    }
+}
+
+impl Desk {
+    #[must_use]
+    pub fn new() -> Desk {
+        Desk {
+            work: Work::Idle,
+            norm: None,
+            idx: None,
+            tocf: None,
+            path: PathBuf::new(),
+            dirs: 0,
+            flush: false,
+            retitle: None,
+            orphans: [None, None, None, None, None],
+            mkdir: true,
+            mkdir_wait: false,
+            io: [0; IO],
+            entry: DirEntry::new(),
+        }
+    }
+
+    /// As new, in place (`suspend`; a `Desk` built and moved was 7.7 KB of
+    /// the card task's frame). The buffers' bytes are left.
+    fn reset(&mut self) {
+        self.work = Work::Idle;
+        self.norm = None;
+        self.idx = None;
+        self.tocf = None;
+        self.path.clear();
+        self.dirs = 0;
+        self.flush = false;
+        self.retitle = None;
+        self.orphans = [None, None, None, None, None];
+        self.mkdir = true;
+        self.mkdir_wait = false;
+    }
+
     /// Drop the open book's files (its state is written by the close
     /// step first when it has changed).
     fn close_now(&mut self) {
@@ -774,36 +1044,126 @@ impl Shelf {
         }
     }
 
-    /// One piece of card work. True if the model changed (the screens
-    /// look again). Without the scratch: an EPUB waits for it
-    /// ([`Shelf::step_with`]).
-    pub async fn step<D: BlockDevice>(&mut self, vol: &mut Volume<'_, D>, m: &dyn Metrics) -> bool {
-        self.step_with(vol, m, None).await
-    }
-
     /// Card work wants the scratch ([`crate::inflate::SCRATCH`] bytes):
     /// an EPUB being converted or its title read. Lend it, unchanged,
     /// to every step while this says so (the decoder arena when no track
     /// is loaded, 05 §7.15); a conversion that loses it in the middle of
     /// an entry starts again, a title read falls back to the file name.
     #[must_use]
-    pub fn needs_scratch(&self) -> bool {
+    pub fn needs_scratch(&self, sh: &Shelf) -> bool {
         match &self.work {
-            Work::Convert(_) => self.book.format == Format::Epub,
-            Work::Scan(j) => matches!(j.meta, Some((Head::Epub(_), ..))),
+            Work::Convert(_) => sh.book.format == Format::Epub,
+            Work::Scan(j) => j.cand.is_some() && matches!(j.head, Head::Epub(_)),
             _ => false,
         }
     }
 
-    /// [`Shelf::step`] with the scratch lent (EPUB: the inflate window and
-    /// tables).
+    /// A folder the work needs is missing and [`Desk::mkdir`] is off: the
+    /// work waits for a step with it on.
+    #[must_use]
+    pub fn wants_mkdir(&self) -> bool {
+        self.mkdir_wait
+    }
+
+    /// What the next step does ([`Kind`]; `None`: nothing to do as far as
+    /// the model tells, the step would return `false`). Follows
+    /// [`Desk::step_with`]'s order.
+    #[must_use]
+    pub fn next_kind(&self, sh: &Shelf) -> Option<Kind> {
+        let b = &sh.book;
+        if self.flush
+            || self.orphans.iter().any(Option::is_some)
+            || (usize::from(self.dirs) < files::DIRS.len() && self.needs_dirs(sh))
+            || sh.save.is_some()
+            || (b.dirty && b.moves >= SAVE_EVERY && b.phase == Phase::Ready)
+            || self.retitle.is_some()
+        {
+            return Some(Kind::Write);
+        }
+        if sh.close || sh.drop_book || sh.drop_layout {
+            return Some(Kind::Read);
+        }
+        if sh.lib.rescan.is_some() || matches!(self.work, Work::Scan(_)) {
+            return Some(Kind::Scan);
+        }
+        if sh.lib.phase == LibPhase::Loading
+            || (sh.lib.want.is_some() && sh.lib.phase == LibPhase::Ready)
+            || sh.open.is_some()
+        {
+            return Some(Kind::Read);
+        }
+        if matches!(self.work, Work::Convert(_)) {
+            return Some(Kind::Convert);
+        }
+        if b.phase != Phase::Ready {
+            return None;
+        }
+        if !b.win_ok || b.pending.is_some() || b.page_no.is_none() || b.toc_want.is_some() {
+            return Some(Kind::Read);
+        }
+        (!b.complete && sh.params.is_some()).then_some(Kind::Layout)
+    }
+
+    /// The card is about to go away (the firmware's USB hand-over): the
+    /// reading state written, the files the jobs left closed, the sector
+    /// cache written back (at most `max` steps); then the desk starts
+    /// afresh and [`Shelf::card_back`] reopens what was open.
+    pub async fn suspend<D: BlockDevice>(&mut self, sh: &mut Shelf, vol: &mut Volume<'_, D>, max: u32) {
+        let b = &mut sh.book;
+        if b.dirty && b.phase == Phase::Ready {
+            sh.save = Some(SaveRec::of(b));
+            b.dirty = false;
+            b.moves = 0;
+        }
+        // The open book's work is given up (its files become orphans).
+        self.close_now();
+        drop_work(&mut self.work, &mut self.orphans);
+        self.retitle = None;
+        let mkdir = self.mkdir;
+        for _ in 0..max {
+            if !self.flush && self.orphans.iter().all(Option::is_none) && sh.save.is_none() {
+                break;
+            }
+            if sh.save.is_some() {
+                self.save_state(sh, vol).await;
+                continue;
+            }
+            if self.flush {
+                self.flush = !matches!(vol.flush_step().await, Ok(true) | Err(_));
+                continue;
+            }
+            if let Some(k) = self.orphans.iter().position(Option::is_some)
+                && let Some(mut f) = self.orphans[k].take()
+            {
+                let _ = vol.write_entry(&mut f).await;
+                self.flush = true;
+            }
+        }
+        self.reset();
+        self.mkdir = mkdir;
+        sh.card_back();
+    }
+
+    /// One piece of card work on the model `sh`. True if the model changed
+    /// (the screens look again). `scratch` lends the EPUB job its inflate
+    /// window and tables ([`Desk::needs_scratch`]): without it an EPUB
+    /// waits for it.
     pub async fn step_with<D: BlockDevice>(
         &mut self,
+        sh: &mut Shelf,
         vol: &mut Volume<'_, D>,
         m: &dyn Metrics,
         scratch: Option<&mut [u8]>,
     ) -> bool {
-        self.steps = self.steps.wrapping_add(1);
+        sh.steps = sh.steps.wrapping_add(1);
+        // What the requests gave up: the open book's files and work, a
+        // layout of other parameters (before anything reads them).
+        if core::mem::take(&mut sh.drop_book) {
+            self.close_now();
+        }
+        if core::mem::take(&mut sh.drop_layout) && matches!(self.work, Work::Layout(_)) {
+            drop_work(&mut self.work, &mut self.orphans);
+        }
         // 0. Write-back of what the last job left in the sector cache.
         if self.flush {
             self.flush = !matches!(vol.flush_step().await, Ok(true) | Err(_));
@@ -817,121 +1177,134 @@ impl Shelf {
             self.flush = true;
             return true;
         }
-        // Folders a job needs, one per step.
-        if usize::from(self.dirs) < files::DIRS.len() && self.needs_dirs() {
-            let _ = vol.create_dir(files::DIRS[usize::from(self.dirs)]).await;
+        // Folders a job needs, one per step: looked up, and made only when
+        // `mkdir` allows (making one zeroes a cluster).
+        if usize::from(self.dirs) < files::DIRS.len() && self.needs_dirs(sh) {
+            let d = files::DIRS[usize::from(self.dirs)];
+            if vol.open_dir(d).await.is_err() {
+                if !self.mkdir {
+                    self.mkdir_wait = true;
+                    return false;
+                }
+                let _ = vol.create_dir(d).await;
+            }
+            self.mkdir_wait = false;
             self.dirs += 1;
             return true;
         }
         // 1. The reading state: when the reader closes, another book
         // opens, or often enough while reading.
-        if self.book.dirty && self.book.moves >= SAVE_EVERY && self.book.phase == Phase::Ready {
-            self.save = Some(SaveRec::of(&self.book));
-            self.book.dirty = false;
-            self.book.moves = 0;
+        if sh.book.dirty && sh.book.moves >= SAVE_EVERY && sh.book.phase == Phase::Ready {
+            sh.save = Some(SaveRec::of(&sh.book));
+            sh.book.dirty = false;
+            sh.book.moves = 0;
         }
-        if let Some(rec) = self.save.take() {
-            self.save_state(vol, &rec).await;
+        if sh.save.is_some() {
+            self.save_state(sh, vol).await;
             return true;
         }
-        if let Some((rec, title, author)) = self.retitle.take() {
+        if let Some(rec) = stage_names(&mut self.retitle, &mut self.io) {
             if let Ok(mut lf) = vol.open(LIBRARY_PATH, OpenMode::ReadWrite).await {
                 lf.set_position(files::lib_record_at(rec) + files::LIB_NAMES_AT as u64);
-                if vol.write(&mut lf, &files::encode_names(&title, &author)).await.is_ok() {
+                if vol.write(&mut lf, &self.io[..files::LIB_NAMES]).await.is_ok() {
                     let _ = vol.close(lf).await;
                 }
             }
             self.flush = true;
             return true;
         }
-        if self.close {
-            self.close = false;
+        if sh.close {
+            sh.close = false;
             self.close_now();
-            self.book.phase = Phase::Closed;
+            sh.book.phase = Phase::Closed;
             return true;
         }
         // 2. The library.
-        if let Some(scope) = self.lib.rescan.take() {
-            self.lib.scope = scope;
-            self.lib.phase = LibPhase::Searching;
-            self.lib.found = 0;
-            self.lib.count = 0;
-            self.lib.loaded = 0;
-            self.work = Work::Scan(ScanJob::new());
+        if let Some(scope) = sh.lib.rescan.take() {
+            sh.lib.scope = scope;
+            sh.lib.phase = LibPhase::Searching;
+            sh.lib.found = 0;
+            sh.lib.count = 0;
+            sh.lib.loaded = 0;
+            begin_scan(&mut self.work);
             return true;
         }
         if let Work::Scan(_) = self.work {
-            return self.scan_step(vol, scratch).await;
+            return self.scan_step(sh, vol, scratch).await;
         }
-        if self.lib.phase == LibPhase::Loading {
-            self.load_library(vol).await;
+        if sh.lib.phase == LibPhase::Loading {
+            self.load_library(sh, vol).await;
             return true;
         }
-        if let Some(first) = self.lib.want
-            && self.lib.phase == LibPhase::Ready
+        if let Some(first) = sh.lib.want
+            && sh.lib.phase == LibPhase::Ready
         {
-            return self.rows_step(vol, first).await;
+            return self.rows_step(sh, vol, first).await;
         }
         // 3. Opening a book.
-        if let Some(row) = self.open.take() {
-            self.open_book(vol, row).await;
+        if let Some(row) = sh.open.take() {
+            self.open_book(sh, vol, row).await;
             return true;
         }
         if let Work::Convert(_) = self.work {
-            return self.convert_step(vol, scratch).await;
+            return self.convert_step(sh, vol, scratch).await;
         }
-        if self.book.phase != Phase::Ready {
+        if sh.book.phase != Phase::Ready {
             return false;
         }
         // 4. The reader: its window, jumps, contents, then the layout.
-        if !self.book.win_ok {
-            self.load_window(vol).await;
+        if !sh.book.win_ok {
+            self.load_window(sh, vol).await;
             return true;
         }
-        if self.book.pending.is_some() && self.resolve(vol).await {
+        if sh.book.pending.is_some() && self.resolve(sh, vol).await {
             return true;
         }
-        if self.book.page_no.is_none() && self.find_page_no(vol).await {
+        if sh.book.page_no.is_none() && self.find_page_no(sh, vol).await {
             return true;
         }
-        if let Some(first) = self.book.toc_want.take() {
-            self.load_toc(vol, first).await;
+        if let Some(first) = sh.book.toc_want.take() {
+            self.load_toc(sh, vol, first).await;
             return true;
         }
-        if !self.book.complete
-            && let Some(p) = self.params
+        if !sh.book.complete
+            && let Some(p) = sh.params
         {
-            return self.layout_step(vol, p, m).await;
+            return self.layout_step(sh, vol, p, m).await;
         }
         false
     }
-
     // ----- library ------------------------------------------------------
 
-    async fn load_library<D: BlockDevice>(&mut self, vol: &mut Volume<'_, D>) {
-        let mut buf = [0u8; LIB_HEADER + LIB_ORDER];
+    async fn load_library<D: BlockDevice>(&mut self, sh: &mut Shelf, vol: &mut Volume<'_, D>) {
+        let buf = &mut self.io[..LIB_HEADER + LIB_ORDER];
         let ok = match vol.open(LIBRARY_PATH, OpenMode::Read).await {
-            Ok(mut f) => vol.read_exact_or_eof(&mut f, &mut buf).await.is_ok_and(|n| n == buf.len()),
+            Ok(mut f) => vol.read_exact_or_eof(&mut f, buf).await.is_ok_and(|n| n == LIB_HEADER + LIB_ORDER),
             Err(_) => false,
         };
-        match LibHeader::decode(&buf).filter(|h| ok && h.complete) {
-            Some(h) if h.scope == self.lib.scope as u8 => {
-                self.lib.count = h.count;
+        match LibHeader::decode(buf).filter(|h| ok && h.complete) {
+            Some(h) if h.scope == sh.lib.scope as u8 => {
+                sh.lib.count = h.count;
                 let n = usize::from(h.count).min(MAX_BOOKS);
-                self.lib.order[..n].copy_from_slice(&buf[LIB_HEADER..LIB_HEADER + n]);
-                self.lib.phase = LibPhase::Ready;
-                self.lib.loaded = 0;
-                self.lib.want.get_or_insert(0);
+                sh.lib.order[..n].copy_from_slice(&buf[LIB_HEADER..LIB_HEADER + n]);
+                sh.lib.phase = LibPhase::Ready;
+                sh.lib.loaded = 0;
+                sh.lib.want.get_or_insert(0);
             }
             _ => {
                 // None yet, damaged, or of the other scope: search.
-                self.lib.rescan = Some(self.lib.scope);
+                sh.lib.rescan = Some(sh.lib.scope);
             }
         }
     }
 
-    async fn rows_step<D: BlockDevice>(&mut self, vol: &mut Volume<'_, D>, first: u16) -> bool {
-        let lib = &mut self.lib;
+    async fn rows_step<D: BlockDevice>(
+        &mut self,
+        sh: &mut Shelf,
+        vol: &mut Volume<'_, D>,
+        first: u16,
+    ) -> bool {
+        let lib = &mut sh.lib;
         let first = first.min(lib.count.saturating_sub(1));
         if lib.first != first {
             lib.first = first;
@@ -949,12 +1322,12 @@ impl Shelf {
             lib.phase = LibPhase::Unknown;
             return true;
         };
-        let mut rec = [0u8; LIB_RECORD];
+        let rec = &mut self.io[..LIB_RECORD];
         for row in have..end.min(have + 2) {
             let Some(r) = lib.record_of(row as u16) else { break };
             f.set_position(files::lib_record_at(r));
-            let ok = vol.read_exact_or_eof(&mut f, &mut rec).await.is_ok_and(|n| n == LIB_RECORD);
-            let d = if ok { LibRecord::decode(&rec) } else { LibRecord::default() };
+            let ok = vol.read_exact_or_eof(&mut f, rec).await.is_ok_and(|n| n == LIB_RECORD);
+            let d = if ok { LibRecord::decode(rec) } else { LibRecord::default() };
             if let Some(slot) = lib.rows.get_mut(usize::from(lib.loaded)) {
                 *slot = BookRow { title: d.title, author: d.author, format: d.format, progress: d.progress };
             }
@@ -964,25 +1337,26 @@ impl Shelf {
     }
 
     /// Card work that writes is waiting (its folders are made first).
-    fn needs_dirs(&self) -> bool {
-        self.save.is_some()
+    fn needs_dirs(&self, sh: &Shelf) -> bool {
+        sh.save.is_some()
             || matches!(&self.work, Work::Scan(j) if !j.started)
             || matches!(&self.work, Work::Convert(j) if matches!(j.c, Parse::None))
-            || (self.book.phase == Phase::Ready && !self.book.complete && self.layout().is_none())
+            || (sh.book.phase == Phase::Ready && !sh.book.complete && self.layout().is_none())
     }
 
     async fn scan_step<D: BlockDevice>(
         &mut self,
+        sh: &mut Shelf,
         vol: &mut Volume<'_, D>,
         scratch: Option<&mut [u8]>,
     ) -> bool {
-        let scope = self.lib.scope;
+        let scope = sh.lib.scope;
         let Work::Scan(job) = &mut self.work else { return false };
         if !job.started {
             job.started = true;
             let Ok(mut f) = vol.open(LIBRARY_PATH, OpenMode::Truncate).await else {
                 drop_work(&mut self.work, &mut self.orphans);
-                self.lib.phase = LibPhase::Ready;
+                sh.lib.phase = LibPhase::Ready;
                 return true;
             };
             let _ = vol.write(&mut f, &[0u8; LIB_HEADER + LIB_ORDER]).await;
@@ -992,8 +1366,8 @@ impl Shelf {
                     job.stack[0] = Some((c, 0));
                     job.depth = 1;
                     job.path.clear();
-                    if scope == Scope::BooksFolder {
-                        job.path.push(BOOKS_FOLDER);
+                    if scope.root() != "/" {
+                        job.path.push(scope.root());
                     }
                 }
                 // No books folder: an empty library.
@@ -1001,11 +1375,11 @@ impl Shelf {
             }
             return true;
         }
-        if job.meta.is_some() {
-            return Self::meta_step(job, vol, &mut self.lib, scratch).await;
+        if job.cand.is_some() {
+            return Self::meta_step(job, vol, &mut sh.lib, &mut self.io, scratch).await;
         }
         if job.depth == 0 || usize::from(job.count) >= MAX_BOOKS {
-            Self::finish_scan(job, vol, &mut self.lib, scope).await;
+            Self::finish_scan(job, vol, &mut sh.lib, &mut self.io, scope).await;
             drop_work(&mut self.work, &mut self.orphans);
             self.flush = true;
             return true;
@@ -1016,7 +1390,7 @@ impl Shelf {
                 job.depth = 0;
                 return true;
             };
-            let more = vol.read_dir(&mut cur, &mut job.entry).await.unwrap_or(false);
+            let more = vol.read_dir(&mut cur, &mut self.entry).await.unwrap_or(false);
             job.stack[d] = Some((cur, plen));
             if !more {
                 // Back in the parent folder.
@@ -1027,18 +1401,18 @@ impl Shelf {
                 }
                 continue;
             }
-            let name = job.entry.name();
-            let attr = job.entry.attributes();
+            let name = self.entry.name();
+            let attr = self.entry.attributes();
             if name.starts_with('.')
                 || attr & 0x06 != 0
                 || name.eq_ignore_ascii_case("System Volume Information")
             {
                 continue;
             }
-            if job.entry.is_dir() {
+            if self.entry.is_dir() {
                 if usize::from(job.depth) < SCAN_DEPTH {
                     let here = job.path.len();
-                    if let Ok(c) = vol.dir_cursor(&job.entry)
+                    if let Ok(c) = vol.dir_cursor(&self.entry)
                         && job.path.push("/")
                         && job.path.push(name)
                     {
@@ -1051,26 +1425,9 @@ impl Shelf {
                 continue;
             }
             let Some(format) = Format::from_name(name) else { continue };
-            let mut rec = LibRecord::default();
-            let here = job.path.len();
-            let fits = job.path.push("/") && job.path.push(name) && rec.set_path(job.path.as_str());
-            job.path.truncate(here);
-            if !fits {
-                continue;
-            }
-            rec.format = format;
-            rec.size = u32::try_from(job.entry.size()).unwrap_or(u32::MAX);
-            rec.stamp = files::stamp(job.entry.modified());
-            // The title if the head does not give one: the name.
-            let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
-            rec.title.push_str(stem);
-            if let Ok(f) = vol.open_entry(&job.entry) {
-                let head = if format == Format::Epub {
-                    Head::Epub(Epub::library(rec.size))
-                } else {
-                    Head::Plain(MetaReader::new(format, &[], false))
-                };
-                job.meta = Some((head, f, rec));
+            if let Ok(f) = vol.open_entry(&self.entry)
+                && begin_meta(job, &self.entry, format, f)
+            {
                 return true;
             }
         }
@@ -1078,36 +1435,35 @@ impl Shelf {
     }
 
     /// One read of a candidate's head (an EPUB: one step of its package
-    /// reader); at the end its record is written.
+    /// reader); at the end its record is written. In place (the reader,
+    /// the EPUB job and the record stay in the job: not in the step's
+    /// future); `io`: the desk's buffer.
     async fn meta_step<D: BlockDevice>(
         job: &mut ScanJob,
         vol: &mut Volume<'_, D>,
         lib: &mut Library,
+        io: &mut [u8; IO],
         scratch: Option<&mut [u8]>,
     ) -> bool {
-        let Some((head, mut f, mut rec)) = job.meta.take() else { return false };
+        let (Some(f), head, rec) = (job.cand.as_mut(), &mut job.head, &mut job.rec) else { return false };
         let (title, author) = match head {
-            Head::Plain(mut reader) => {
-                let mut buf = [0u8; 512];
-                let n = vol.read(&mut f, &mut buf).await.unwrap_or(0);
+            Head::None => (MetaText::default(), MetaText::default()),
+            Head::Plain(reader) => {
+                let buf = &mut io[..512];
+                let n = vol.read(f, buf).await.unwrap_or(0);
                 if reader.fed == 0 {
-                    reader = MetaReader::new(rec.format, &buf[..n], n < buf.len());
+                    new_reader(reader, rec.format, &buf[..n], n < 512);
                 }
                 reader.feed(&buf[..n]);
-                if n == buf.len() && reader.wants_more() {
-                    job.meta = Some((Head::Plain(reader), f, rec));
+                if n == 512 && reader.wants_more() {
                     return true;
                 }
-                let meta = reader.finish();
-                (meta.title, meta.author)
+                finish_reader(reader, rec.format)
             }
-            Head::Epub(mut e) => {
-                let mut st = VolStore { vol, src: &mut f, tables: None, toc: None };
+            Head::Epub(e) => {
+                let mut st = VolStore { vol: &mut *vol, src: f, tables: None, toc: None };
                 match e.step(&mut st, scratch, &mut Discard).await {
-                    Step::Busy => {
-                        job.meta = Some((Head::Epub(e), f, rec));
-                        return true;
-                    }
+                    Step::Busy => return true,
                     Step::Done => (e.metadata().title, e.metadata().author),
                     // Refused, or no scratch now: the file name.
                     _ => (MetaText::default(), MetaText::default()),
@@ -1118,10 +1474,14 @@ impl Shelf {
             rec.title = title;
         }
         rec.author = author;
+        io[..LIB_RECORD].copy_from_slice(&rec.encode());
+        let key = rec.sort_key();
+        job.cand = None;
+        job.head = Head::None;
         if let Some(lf) = job.lib.as_mut() {
             lf.set_position(files::lib_record_at(job.count));
-            if vol.write(lf, &rec.encode()).await.is_ok() {
-                job.keys[usize::from(job.count)] = rec.sort_key();
+            if vol.write(lf, &io[..LIB_RECORD]).await.is_ok() {
+                job.keys[usize::from(job.count)] = key;
                 job.count += 1;
                 lib.found = job.count;
             }
@@ -1133,12 +1493,15 @@ impl Shelf {
         job: &mut ScanJob,
         vol: &mut Volume<'_, D>,
         lib: &mut Library,
+        io: &mut [u8; IO],
         scope: Scope,
     ) {
         let n = usize::from(job.count);
         // Sorted by title key (insertion sort: at most 200), ties in the
-        // order found.
-        let mut order = [0u8; MAX_BOOKS];
+        // order found; in the model's order table (no rows are shown
+        // while searching).
+        let order = &mut lib.order;
+        *order = [0; MAX_BOOKS];
         for (i, o) in order.iter_mut().enumerate().take(n) {
             *o = i as u8;
         }
@@ -1149,16 +1512,16 @@ impl Shelf {
                 j -= 1;
             }
         }
-        let mut head = [0u8; LIB_HEADER + LIB_ORDER];
+        let head = &mut io[..LIB_HEADER + LIB_ORDER];
+        head.fill(0);
         head[..LIB_HEADER]
             .copy_from_slice(&LibHeader { count: job.count, scope: scope as u8, complete: true }.encode());
         head[LIB_HEADER..LIB_HEADER + n].copy_from_slice(&order[..n]);
         if let Some(mut f) = job.lib.take() {
             f.set_position(0);
-            let _ = vol.write(&mut f, &head).await;
+            let _ = vol.write(&mut f, head).await;
             let _ = vol.close(f).await;
         }
-        lib.order = order;
         lib.count = job.count;
         lib.found = job.count;
         lib.phase = LibPhase::Ready;
@@ -1169,39 +1532,32 @@ impl Shelf {
 
     // ----- opening ------------------------------------------------------
 
-    async fn open_book<D: BlockDevice>(&mut self, vol: &mut Volume<'_, D>, row: u16) {
-        let b = &mut self.book;
+    async fn open_book<D: BlockDevice>(&mut self, sh: &mut Shelf, vol: &mut Volume<'_, D>, row: u16) {
+        let b = &mut sh.book;
         let fail = |b: &mut Book| b.phase = Phase::Failed;
-        let Some(rec_i) = self.lib.record_of(row) else { return fail(b) };
+        let Some(rec_i) = sh.lib.record_of(row) else { return fail(b) };
         // The record: path, title, format.
         let Ok(mut lf) = vol.open(LIBRARY_PATH, OpenMode::Read).await else { return fail(b) };
-        let mut rec = [0u8; LIB_RECORD];
+        let rec = &mut self.io[..LIB_RECORD];
         lf.set_position(files::lib_record_at(rec_i));
-        if !vol.read_exact_or_eof(&mut lf, &mut rec).await.is_ok_and(|n| n == LIB_RECORD) {
+        if !vol.read_exact_or_eof(&mut lf, rec).await.is_ok_and(|n| n == LIB_RECORD) {
             return fail(b);
         }
-        let r = LibRecord::decode(&rec);
-        b.rec = rec_i;
-        b.src.clear();
-        b.src.push(r.path());
-        b.id = files::book_id(r.path());
-        b.title = r.title;
-        b.format = r.format;
+        // Decoded in a function of its own: the record is neither in the
+        // step's future nor in its poll frame.
+        take_record(b, rec, rec_i);
         // The book as it is now.
-        let mut e = DirEntry::new();
-        if vol.stat(r.path(), &mut e).await.is_err() {
+        if vol.stat(b.src.as_str(), &mut self.entry).await.is_err() {
             return fail(b);
         }
-        b.src_size = u32::try_from(e.size()).unwrap_or(u32::MAX);
-        b.src_stamp = files::stamp(e.modified());
+        b.src_size = u32::try_from(self.entry.size()).unwrap_or(u32::MAX);
+        b.src_stamp = files::stamp(self.entry.modified());
         // Position and bookmarks.
-        let mut st = [0u8; STATE_BYTES];
+        let st = &mut self.io[..STATE_BYTES];
         if let Ok(mut f) = vol.open(self.path.file(BOOKS_DIR, b.id, "pos"), OpenMode::Read).await
-            && vol.read_exact_or_eof(&mut f, &mut st).await.is_ok_and(|n| n == STATE_BYTES)
-            && let Some(s) = BookState::decode(&st)
-        {
-            b.state = s;
-        }
+            && vol.read_exact_or_eof(&mut f, st).await.is_ok_and(|n| n == STATE_BYTES)
+            && take_state(b, st)
+        {}
         // The cache, if it is of this book as it is.
         let mut h = [0u8; NORM_HEADER];
         let cached = match vol.open(self.path.file(CACHE_DIR, b.id, "txt"), OpenMode::Read).await {
@@ -1221,23 +1577,10 @@ impl Shelf {
                 Self::ready(b, h.text_len, h.toc_count);
             }
             None => {
-                let Ok(src) = vol.open(r.path(), OpenMode::Read).await else { return fail(b) };
+                let Ok(src) = vol.open(b.src.as_str(), OpenMode::Read).await else { return fail(b) };
                 b.phase = Phase::Converting;
                 b.permille = 0;
-                self.work = Work::Convert(ConvJob {
-                    c: Parse::None,
-                    src,
-                    read: 0,
-                    inbuf: [0; 512],
-                    in_n: 0,
-                    in_at: 0,
-                    out: OutBuf { b: [0; OUT], n: 0 },
-                    norm: None,
-                    toc: None,
-                    tables: [None, None, None],
-                    toc_n: 0,
-                    eof: false,
-                });
+                begin_convert(&mut self.work, src);
             }
         }
     }
@@ -1257,17 +1600,18 @@ impl Shelf {
 
     async fn convert_step<D: BlockDevice>(
         &mut self,
+        sh: &mut Shelf,
         vol: &mut Volume<'_, D>,
         scratch: Option<&mut [u8]>,
     ) -> bool {
         let Work::Convert(job) = &mut self.work else { return false };
-        let b = &mut self.book;
+        let b = &mut sh.book;
         if matches!(job.c, Parse::Epub(_)) {
-            return self.epub_step(vol, scratch).await;
+            return self.epub_step(sh, vol, scratch).await;
         }
         if matches!(job.c, Parse::None) {
             if b.format == Format::Epub {
-                job.c = Parse::Epub(Epub::new(b.src_size));
+                begin_epub(&mut job.c, b.src_size);
                 job.tables = [None, None, None];
                 job.out.n = 0;
             } else {
@@ -1277,7 +1621,7 @@ impl Shelf {
                 job.in_at = 0;
                 job.read = n as u32;
                 job.eof = n < job.inbuf.len();
-                job.c = Parse::Plain(Converter::new(b.format, &job.inbuf[..n], job.eof));
+                begin_plain(&mut job.c, b.format, &job.inbuf[..n], job.eof);
             }
             job.norm = vol.open(self.path.file(CACHE_DIR, b.id, "txt"), OpenMode::Truncate).await.ok();
             job.toc = vol.open(self.path.file(CACHE_DIR, b.id, "toc"), OpenMode::Truncate).await.ok();
@@ -1370,11 +1714,12 @@ impl Shelf {
     /// else one step of the job.
     async fn epub_step<D: BlockDevice>(
         &mut self,
+        sh: &mut Shelf,
         vol: &mut Volume<'_, D>,
         scratch: Option<&mut [u8]>,
     ) -> bool {
         let Work::Convert(job) = &mut self.work else { return false };
-        let b = &mut self.book;
+        let b = &mut sh.book;
         let Parse::Epub(e) = &mut job.c else { return false };
         if let Some(k) = job.tables.iter().position(Option::is_none) {
             job.tables[k] = vol.open(files::EPUB_TABLES[k], OpenMode::Truncate).await.ok();
@@ -1448,9 +1793,9 @@ impl Shelf {
                 if !meta.title.is_empty() {
                     self.retitle = Some((b.rec, meta.title, meta.author));
                     b.title = meta.title;
-                    if let Some(k) = b.row.checked_sub(self.lib.first)
-                        && k < u16::from(self.lib.loaded)
-                        && let Some(row) = self.lib.rows.get_mut(usize::from(k))
+                    if let Some(k) = b.row.checked_sub(sh.lib.first)
+                        && k < u16::from(sh.lib.loaded)
+                        && let Some(row) = sh.lib.rows.get_mut(usize::from(k))
                     {
                         row.title = meta.title;
                         row.author = meta.author;
@@ -1469,8 +1814,8 @@ impl Shelf {
 
     // ----- reading ------------------------------------------------------
 
-    async fn load_window<D: BlockDevice>(&mut self, vol: &mut Volume<'_, D>) {
-        let b = &mut self.book;
+    async fn load_window<D: BlockDevice>(&mut self, sh: &mut Shelf, vol: &mut Volume<'_, D>) {
+        let b = &mut sh.book;
         let Some(f) = self.norm.as_mut() else {
             b.phase = Phase::Failed;
             return;
@@ -1484,41 +1829,44 @@ impl Shelf {
         b.win_ok = true;
     }
 
-    async fn save_state<D: BlockDevice>(&mut self, vol: &mut Volume<'_, D>, r: &SaveRec) {
-        let data = r.state.encode();
-        let path = self.path.file(BOOKS_DIR, r.id, "pos");
+    /// The reading state waiting in the model (`sh.save`) written: its
+    /// bytes into the desk's buffer first (the 460-byte record is not kept
+    /// in the step's future), the position file, the library's progress.
+    async fn save_state<D: BlockDevice>(&mut self, sh: &mut Shelf, vol: &mut Volume<'_, D>) {
+        let Some((id, rec, row, progress)) = stage_save(sh, &mut self.io) else { return };
+        let data = &self.io[..STATE_BYTES];
+        let path = self.path.file(BOOKS_DIR, id, "pos");
         // In place when it exists (one sector, nothing allocated).
         let mut done = false;
         if let Ok(mut f) = vol.open(path, OpenMode::ReadWrite).await
-            && vol.rewrite(&mut f, &data).await.unwrap_or(false)
+            && vol.rewrite(&mut f, data).await.unwrap_or(false)
         {
             done = vol.write_entry(&mut f).await.is_ok();
         }
         if !done
             && let Ok(mut f) = vol.open(path, OpenMode::Truncate).await
-            && vol.write(&mut f, &data).await.is_ok()
+            && vol.write(&mut f, data).await.is_ok()
         {
             let _ = vol.close(f).await;
         }
         // The library's progress for this book.
-        let progress = permille(r.state.pos.offset, r.text_len);
         if let Ok(mut lf) = vol.open(LIBRARY_PATH, OpenMode::ReadWrite).await {
-            lf.set_position(files::lib_record_at(r.rec) + LIB_PROGRESS_AT as u64);
+            lf.set_position(files::lib_record_at(rec) + LIB_PROGRESS_AT as u64);
             if vol.write(&mut lf, &progress.to_le_bytes()).await.is_ok() {
                 let _ = vol.close(lf).await;
             }
         }
         self.flush = true;
-        if let Some(k) = r.row.checked_sub(self.lib.first)
-            && k < u16::from(self.lib.loaded)
-            && let Some(row) = self.lib.rows.get_mut(usize::from(k))
+        if let Some(k) = row.checked_sub(sh.lib.first)
+            && k < u16::from(sh.lib.loaded)
+            && let Some(row) = sh.lib.rows.get_mut(usize::from(k))
         {
             row.progress = progress;
         }
     }
 
-    async fn load_toc<D: BlockDevice>(&mut self, vol: &mut Volume<'_, D>, first: u32) {
-        let b = &mut self.book;
+    async fn load_toc<D: BlockDevice>(&mut self, sh: &mut Shelf, vol: &mut Volume<'_, D>, first: u32) {
+        let b = &mut sh.book;
         b.toc_first = first;
         b.toc_n = 0;
         let Some(f) = self.tocf.as_mut() else { return };
@@ -1536,8 +1884,13 @@ impl Shelf {
     }
 
     /// One contents entry from the file.
-    async fn toc_entry<D: BlockDevice>(&mut self, vol: &mut Volume<'_, D>, i: u32) -> Option<TocEntry> {
-        if let Some(e) = self.book.toc_row(i) {
+    async fn toc_entry<D: BlockDevice>(
+        &mut self,
+        sh: &mut Shelf,
+        vol: &mut Volume<'_, D>,
+        i: u32,
+    ) -> Option<TocEntry> {
+        if let Some(e) = sh.book.toc_row(i) {
             return Some(*e);
         }
         let f = self.tocf.as_mut()?;
@@ -1552,8 +1905,13 @@ impl Shelf {
     /// The page holding `offset`: from the cache, the layout's held
     /// entries, or one step of a search of the index file (`None`: not
     /// known yet; call again).
-    async fn page_of<D: BlockDevice>(&mut self, vol: &mut Volume<'_, D>, offset: u32) -> Option<(u32, Mark)> {
-        let b = &mut self.book;
+    async fn page_of<D: BlockDevice>(
+        &mut self,
+        sh: &mut Shelf,
+        vol: &mut Volume<'_, D>,
+        offset: u32,
+    ) -> Option<(u32, Mark)> {
+        let b = &mut sh.book;
         if !b.known(offset) {
             return None;
         }
@@ -1590,7 +1948,7 @@ impl Shelf {
         };
         let first = probe * IDX_CACHE as u32;
         let n = (written - first).min(IDX_CACHE as u32) as usize;
-        let mut raw = [0u8; IDX_CACHE * INDEX_ENTRY];
+        let raw = &mut self.io[..IDX_CACHE * INDEX_ENTRY];
         f.set_position(INDEX_HEADER as u64 + u64::from(first) * INDEX_ENTRY as u64);
         let got = vol.read_exact_or_eof(f, &mut raw[..n * INDEX_ENTRY]).await.unwrap_or(0) / INDEX_ENTRY;
         for (k, c) in raw.chunks_exact(INDEX_ENTRY).take(got).enumerate() {
@@ -1616,65 +1974,65 @@ impl Shelf {
         Some((first + k as u32, b.idx_cache[k]))
     }
 
-    async fn find_page_no<D: BlockDevice>(&mut self, vol: &mut Volume<'_, D>) -> bool {
-        let top = self.book.top.offset;
-        if !self.book.known(top) {
+    async fn find_page_no<D: BlockDevice>(&mut self, sh: &mut Shelf, vol: &mut Volume<'_, D>) -> bool {
+        let top = sh.book.top.offset;
+        if !sh.book.known(top) {
             return false;
         }
-        let was = self.book.search;
-        match self.page_of(vol, top).await {
+        let was = sh.book.search;
+        match self.page_of(sh, vol, top).await {
             Some((k, _)) => {
-                self.book.page_no = Some(k);
+                sh.book.page_no = Some(k);
                 true
             }
-            None => self.book.search != was || self.book.search.is_some(),
+            None => sh.book.search != was || sh.book.search.is_some(),
         }
     }
 
     /// Work on the pending jump. True if it did card work or finished.
-    async fn resolve<D: BlockDevice>(&mut self, vol: &mut Volume<'_, D>) -> bool {
-        let Some(p) = self.book.pending else { return false };
-        let top = self.book.top;
+    async fn resolve<D: BlockDevice>(&mut self, sh: &mut Shelf, vol: &mut Volume<'_, D>) -> bool {
+        let Some(p) = sh.book.pending else { return false };
+        let top = sh.book.top;
         match p {
             Pending::Prev | Pending::Up => {
-                let was = self.book.search;
-                match self.page_of(vol, top.offset.saturating_sub(1)).await {
+                let was = sh.book.search;
+                match self.page_of(sh, vol, top.offset.saturating_sub(1)).await {
                     Some((k, m)) => {
-                        self.book.pending = None;
+                        sh.book.pending = None;
                         let skip = if p == Pending::Up { Skip::Before(top.offset) } else { Skip::None };
-                        self.book.view(m, skip);
-                        self.book.page_no = Some(k);
+                        sh.book.view(m, skip);
+                        sh.book.page_no = Some(k);
                         true
                     }
-                    None => self.book.search != was || self.book.search.is_some(),
+                    None => sh.book.search != was || sh.book.search.is_some(),
                 }
             }
             Pending::At(at) => {
-                let was = self.book.search;
-                match self.page_of(vol, at).await {
+                let was = sh.book.search;
+                match self.page_of(sh, vol, at).await {
                     Some((k, m)) => {
-                        self.book.pending = None;
-                        self.book.view(m, Skip::None);
-                        self.book.page_no = Some(k);
+                        sh.book.pending = None;
+                        sh.book.view(m, Skip::None);
+                        sh.book.page_no = Some(k);
                         true
                     }
-                    None => self.book.search != was || self.book.search.is_some(),
+                    None => sh.book.search != was || sh.book.search.is_some(),
                 }
             }
             Pending::Toc(i) => {
-                self.book.pending = None;
-                if let Some(e) = self.toc_entry(vol, i).await {
-                    self.book.view(e.mark(), Skip::None);
+                sh.book.pending = None;
+                if let Some(e) = self.toc_entry(sh, vol, i).await {
+                    sh.book.view(e.mark(), Skip::None);
                 }
                 true
             }
             Pending::Chapter(next) => {
                 // Binary search of the contents by offset (each probe one
                 // read; the contents are in reading order).
-                let (mut lo, mut hi) = (0u32, self.book.toc_count);
+                let (mut lo, mut hi) = (0u32, sh.book.toc_count);
                 while lo < hi {
                     let mid = (lo + hi) / 2;
-                    let Some(e) = self.toc_entry(vol, mid).await else { break };
+                    let Some(e) = self.toc_entry(sh, vol, mid).await else { break };
                     if e.offset <= top.offset {
                         lo = mid + 1;
                     } else {
@@ -1689,16 +2047,16 @@ impl Shelf {
                     // before if we are at its start.
                     let mut k = lo.checked_sub(1);
                     if let Some(i) = k
-                        && let Some(e) = self.toc_entry(vol, i).await
+                        && let Some(e) = self.toc_entry(sh, vol, i).await
                         && e.offset == top.offset
                     {
                         k = i.checked_sub(1);
                     }
                     k.unwrap_or(u32::MAX)
                 };
-                self.book.pending = None;
-                if let Some(e) = self.toc_entry(vol, target).await {
-                    self.book.view(e.mark(), Skip::None);
+                sh.book.pending = None;
+                if let Some(e) = self.toc_entry(sh, vol, target).await {
+                    sh.book.view(e.mark(), Skip::None);
                 }
                 true
             }
@@ -1709,11 +2067,12 @@ impl Shelf {
 
     async fn layout_step<D: BlockDevice>(
         &mut self,
+        sh: &mut Shelf,
         vol: &mut Volume<'_, D>,
         p: Params,
         m: &dyn Metrics,
     ) -> bool {
-        let b = &mut self.book;
+        let b = &mut sh.book;
         let key = p.key();
         if layout_of(&self.work).is_some_and(|j| j.key != key) {
             drop_work(&mut self.work, &mut self.orphans);
@@ -1744,17 +2103,7 @@ impl Shelf {
                 return true;
             };
             let Some(norm) = self.norm.clone() else { return false };
-            self.work = Work::Layout(LayoutJob {
-                pg: Paginator::new(p),
-                key,
-                idx,
-                norm,
-                written: 0,
-                tail: [Mark::START; TAIL],
-                tail_n: 1,
-                buf: [0; 512],
-                started: false,
-            });
+            begin_layout(&mut self.work, p, key, idx, norm);
             b.pages = 1;
             b.laid = 0;
             b.frontier = 0;
@@ -1770,12 +2119,12 @@ impl Shelf {
         }
         // Held entries out first (64 at a time).
         if job.tail_n >= 64 {
-            let mut raw = [0u8; 64 * INDEX_ENTRY];
+            let raw = &mut self.io[..64 * INDEX_ENTRY];
             for (k, mk) in job.tail[..64].iter().enumerate() {
                 raw[k * INDEX_ENTRY..(k + 1) * INDEX_ENTRY].copy_from_slice(&files::encode_mark(*mk));
             }
             job.idx.set_position(INDEX_HEADER as u64 + u64::from(job.written) * INDEX_ENTRY as u64);
-            let _ = vol.write(&mut job.idx, &raw).await;
+            let _ = vol.write(&mut job.idx, raw).await;
             job.tail.copy_within(64..job.tail_n, 0);
             job.tail_n -= 64;
             job.written += 64;
@@ -1822,7 +2171,7 @@ impl Shelf {
                 *tail_n += 1;
             }
         });
-        let mut raw = [0u8; TAIL * INDEX_ENTRY];
+        let raw = &mut self.io[..TAIL * INDEX_ENTRY];
         for (k, mk) in job.tail[..job.tail_n].iter().enumerate() {
             raw[k * INDEX_ENTRY..(k + 1) * INDEX_ENTRY].copy_from_slice(&files::encode_mark(*mk));
         }
@@ -1850,18 +2199,210 @@ impl Shelf {
     }
 }
 
+// ----- building in place ------------------------------------------------
+//
+// Each job and parser is built in a function of its own (not inlined):
+// built inside `Desk::step_with`, the values (the search 4 KB, the
+// conversion 4.7 KB, the EPUB job 2.9 KB …) were all temporaries of its
+// poll function's frame at once, 10,040 B of the card task's stack on the
+// player (`cargo xtask stack`, 2026-11-26). Here each is a leaf's frame
+// for the moment it is built.
+
+#[inline(never)]
+fn begin_scan(w: &mut Work) {
+    *w = Work::Scan(ScanJob::new());
+}
+
+#[inline(never)]
+fn begin_convert(w: &mut Work, src: File) {
+    *w = Work::Convert(ConvJob {
+        c: Parse::None,
+        src,
+        read: 0,
+        inbuf: [0; 512],
+        in_n: 0,
+        in_at: 0,
+        out: OutBuf { b: [0; OUT], n: 0 },
+        norm: None,
+        toc: None,
+        tables: [None, None, None],
+        toc_n: 0,
+        eof: false,
+    });
+}
+
+#[inline(never)]
+fn begin_layout(w: &mut Work, p: Params, key: u32, idx: File, norm: File) {
+    *w = Work::Layout(LayoutJob {
+        pg: Paginator::new(p),
+        key,
+        idx,
+        norm,
+        written: 0,
+        tail: [Mark::START; TAIL],
+        tail_n: 1,
+        buf: [0; 512],
+        started: false,
+    });
+}
+
+#[inline(never)]
+fn begin_epub(c: &mut Parse, size: u32) {
+    *c = Parse::Epub(Epub::new(size));
+}
+
+#[inline(never)]
+fn begin_plain(c: &mut Parse, format: Format, head: &[u8], eof: bool) {
+    *c = Parse::Plain(Converter::new(format, head, eof));
+}
+
+/// A search candidate's record (path, format, size, time; the file name
+/// as its title until the head names one) and its head's reader, in the
+/// job. False if its path does not fit a record.
+#[inline(never)]
+fn begin_meta(job: &mut ScanJob, entry: &DirEntry, format: Format, f: File) -> bool {
+    let name = entry.name();
+    let rec = &mut job.rec;
+    rec.clear();
+    let here = job.path.len();
+    let fits = job.path.push("/") && job.path.push(name) && rec.set_path(job.path.as_str());
+    job.path.truncate(here);
+    if !fits {
+        return false;
+    }
+    rec.format = format;
+    rec.size = u32::try_from(entry.size()).unwrap_or(u32::MAX);
+    rec.stamp = files::stamp(entry.modified());
+    // The title if the head does not give one: the name.
+    let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
+    rec.title.push_str(stem);
+    let size = rec.size;
+    if format == Format::Epub {
+        epub_head(&mut job.head, size);
+    } else {
+        plain_head(&mut job.head, format);
+    }
+    job.cand = Some(f);
+    true
+}
+
+#[inline(never)]
+fn epub_head(h: &mut Head, size: u32) {
+    *h = Head::Epub(Epub::library(size));
+}
+
+#[inline(never)]
+fn plain_head(h: &mut Head, format: Format) {
+    *h = Head::Plain(MetaReader::new(format, &[], false));
+}
+
+#[inline(never)]
+fn new_reader(reader: &mut MetaReader, format: Format, head: &[u8], eof: bool) {
+    *reader = MetaReader::new(format, head, eof);
+}
+
+/// The title and author the head reader found (the reader is spent).
+#[inline(never)]
+fn finish_reader(reader: &mut MetaReader, format: Format) -> (MetaText<64>, MetaText<48>) {
+    let done = core::mem::replace(reader, MetaReader::new(format, &[], false));
+    let meta = done.finish();
+    (meta.title, meta.author)
+}
+
+/// The book's library record `raw` (number `rec_i`) into the open book.
+#[inline(never)]
+fn take_record(b: &mut Book, raw: &[u8], rec_i: u16) {
+    let r = LibRecord::decode(raw);
+    b.rec = rec_i;
+    b.src.clear();
+    b.src.push(r.path());
+    b.id = files::book_id(r.path());
+    b.title = r.title;
+    b.format = r.format;
+}
+
+/// The position and bookmarks from their file's bytes, if they decode.
+#[inline(never)]
+fn take_state(b: &mut Book, raw: &[u8]) -> bool {
+    match BookState::decode(raw) {
+        Some(s) => {
+            b.state = s;
+            true
+        }
+        None => false,
+    }
+}
+
+/// The reading state waiting in the model, its bytes in `io`: the book's
+/// id, record, row and progress.
+#[inline(never)]
+fn stage_save(sh: &mut Shelf, io: &mut [u8; IO]) -> Option<(u32, u16, u16, u16)> {
+    let r = sh.save.as_ref()?;
+    io[..STATE_BYTES].copy_from_slice(&r.state.encode());
+    let out = (r.id, r.rec, r.row, permille(r.state.pos.offset, r.text_len));
+    sh.save = None;
+    Some(out)
+}
+
+/// A library title to rewrite: its bytes in `io`, the record.
+#[inline(never)]
+fn stage_names(retitle: &mut Option<(u16, MetaText<64>, MetaText<48>)>, io: &mut [u8; IO]) -> Option<u16> {
+    let (rec, title, author) = retitle.take()?;
+    io[..files::LIB_NAMES].copy_from_slice(&files::encode_names(&title, &author));
+    Some(rec)
+}
+
 impl ScanJob {
     fn new() -> ScanJob {
         ScanJob {
             stack: [None; SCAN_DEPTH],
             depth: 0,
-            entry: DirEntry::new(),
             path: PathBuf::new(),
             lib: None,
             count: 0,
             keys: [0; MAX_BOOKS],
-            meta: None,
+            head: Head::None,
+            cand: None,
+            rec: LibRecord::default(),
             started: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use std::format;
+
+    use super::*;
+
+    /// `Book::reset` (in place, for the player's stack: 2026-11-26) leaves
+    /// the book as `Book { phase, row, ..Book::default() }` did, but for
+    /// the windows' bytes, which their lengths say are not held.
+    #[test]
+    fn book_reset_is_a_fresh_book() {
+        let mut b = Book { phase: Phase::Ready, text_len: 9000, ..Book::default() };
+        b.title.push_str("Old");
+        b.src.push("/Books/old.txt");
+        b.top = Mark { offset: 77, ..Mark::START };
+        b.win[0] = 1;
+        b.win_len = 1;
+        b.win_ok = true;
+        b.toc_n = 2;
+        b.idx_n = 3;
+        b.pending = Some(Pending::Prev);
+        b.state.add(Bookmark::default());
+        b.dirty = true;
+        b.reset(Phase::Opening, 5);
+        let fresh = Book { phase: Phase::Opening, row: 5, ..Book::default() };
+        // The windows' and the path's bytes past their lengths are not
+        // part of the comparison.
+        assert_eq!(b.src.as_str(), "");
+        b.src = fresh.src;
+        b.win = fresh.win;
+        b.toc = fresh.toc;
+        b.idx_cache = fresh.idx_cache;
+        assert_eq!(format!("{b:?}"), format!("{fresh:?}"));
+        assert!(b.window().is_none() && b.toc_row(0).is_none());
     }
 }

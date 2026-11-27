@@ -22,6 +22,7 @@
 #![allow(clippy::deref_addrof)]
 
 mod audio;
+mod books;
 mod bt;
 mod drain;
 mod drive;
@@ -383,6 +384,8 @@ extern "C" fn main() -> ! {
     // Also the battery logger's shared state (`drain::init`): main is
     // resident, its callees here are not.
     audio::init_chain();
+    // The Books model and card side (statics both tasks use).
+    books::init();
     let rt = executor::start_rt();
     rt.spawn(audio::audio().unwrap());
     rt.spawn(rt_beat().unwrap());
