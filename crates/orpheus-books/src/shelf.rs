@@ -2482,6 +2482,23 @@ mod tests {
 
     use super::*;
 
+    /// Regression (BOOK-1/2b, 2026-11-27): leaving the reader (Close) and
+    /// opening another book before the card task's next step left the
+    /// close pending: its step marked the book being opened Closed, which
+    /// the reader shows as "The book could not be read." (`books status`
+    /// `book=closed` on the player). The open makes the close moot.
+    #[test]
+    fn regress_close_then_open_marked_the_book_closed() {
+        let mut sh = Shelf::new();
+        sh.book.phase = Phase::Ready;
+        sh.request(Req::Close);
+        assert!(sh.close);
+        sh.request(Req::Open(1));
+        assert!(!sh.close, "the open's own drop of the files does the close");
+        assert!(sh.drop_book && sh.open == Some(1));
+        assert_eq!(sh.book.phase, Phase::Opening);
+    }
+
     /// `Book::reset` (in place, for the player's stack: 2026-11-26) leaves
     /// the book as `Book { phase, row, ..Book::default() }` did, but for
     /// the windows' bytes, which their lengths say are not held.
