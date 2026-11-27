@@ -859,6 +859,11 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     } else {
         usb = UsbPlayer::open()?;
         if do_setup {
+            // Nothing playing first: a reboot reopens the last track paused,
+            // and the card task takes a file upload only between tracks
+            // (2026-11-27: `fcreate` waited, the upload timed out).
+            player::command(&mut usb, "stop", None, 0)?;
+            usb.sleep(300);
             setup(&mut usb)?;
         }
         &mut usb

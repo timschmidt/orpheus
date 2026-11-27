@@ -329,7 +329,9 @@ rects = [
 # (rule 5). `books status` is read-only (the model as the card task left
 # it). The library is shot with the text focused (the EPUB's title, a
 # marquee when focused, would move). The text opens where a run left it;
-# three Prevs bring it to its first page whatever that was. Home's Books
+# seven Prevs bring it to its first page whatever that was (it has seven
+# pages on the player; three were not enough after a hand-run left it on
+# page 4, 2026-11-27). Home's Books
 # cell is the one before Settings.
 [[journey]]
 name = "books"
@@ -345,7 +347,7 @@ cmd: books status ~ lib=ready n=2\\b
 down wait:300 shot:library
 ok wait:500 expect-screen:Reader
 dev: wait:2000
-prev prev prev wait:500
+prev*7 wait:500
 cmd: books status ~ book=ready .* page=0\\b
 shot:page1
 next wait:500 shot:page2

@@ -117,3 +117,9 @@ Playing redraw), RTC stopped after some resets, AU-0b ticking, the first
 FLAC gapless join (3–4 underruns), album-art dropouts, "Start original
 firmware" offered in the full layout (`dual_boot()`), no language packs on
 the player.
+BOOK-1/2 on the player (2026-11-27): opening a book while MP3 plays costs ≈ 2
+underruns (`job:bread` pieces of 49–256 ms); once "The book could not be
+opened" (and the message cut off) for the text after the EPUB, under
+music; an abandoned upload (`fcreate` without `fclose`) holds the card
+task; a stored Home-apps mask hides apps added after it was saved (Books
+on the owner's Home); idle Home 193 line loads/s (138 before Books).
