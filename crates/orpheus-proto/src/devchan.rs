@@ -44,6 +44,21 @@ pub fn stops_track_first(cmd: &[u8]) -> bool {
     cmd.starts_with(b"playdir ")
 }
 
+/// The firmware's test reply buffer (`audio::REPLY`).
+pub const REPLY_LEN: usize = 1024;
+/// Room `ls` keeps in [`REPLY_LEN`] for its `(N entries)` footer.
+pub const LS_FOOTER: usize = 24;
+
+/// Whether `ls` lists an entry of `len` bytes (its name, `/` for a folder,
+/// the newline) after `used` bytes: whole names only, and the footer always
+/// fits, so a long folder's reply still ends in `entries)` (the soak waited
+/// for that and timed out on every big music folder, 2026-11-27).
+#[inline(always)]
+#[must_use]
+pub fn ls_fits(used: usize, len: usize) -> bool {
+    used + len <= REPLY_LEN - LS_FOOTER
+}
+
 /// Whether the card task serves test command `cmd` while a track is
 /// paused, without ending it: `ls` (read only, needs no scratch). Others
 /// wait for the idle loop. Since a reboot reopens the last track paused,
@@ -265,6 +280,30 @@ pub mod usb {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: `ls` of a big folder lost its `(N entries)` footer
+    /// (2026-11-27, `dev soak music` on the player: the names filled the
+    /// whole 1 KiB reply, so the soak's discovery waited for `entries)` and
+    /// reported "no answer after 18 s" for every music folder).
+    #[test]
+    fn regress_ls_of_a_big_folder_lost_its_footer() {
+        let mut used = 0;
+        let mut listed = 0;
+        for i in 0..200 {
+            // "Track 007 - a long title [abcdefghijk].mp3\n", longer every 10th.
+            let len = 44 + i % 10;
+            if ls_fits(used, len) {
+                used += len;
+                listed += 1;
+            }
+        }
+        assert!(listed > 0 && listed < 200);
+        let footer = "(4294967295 entries)".len();
+        assert!(used + footer <= REPLY_LEN, "{used} + {footer}");
+        // An entry that exactly fills the listing's room still fits.
+        assert!(ls_fits(0, REPLY_LEN - LS_FOOTER));
+        assert!(!ls_fits(1, REPLY_LEN - LS_FOOTER));
+    }
 
     /// Regression: `ls` sent while a track was paused got no answer
     /// (2026-11-27, found by `dev soak music` on the player: a reboot

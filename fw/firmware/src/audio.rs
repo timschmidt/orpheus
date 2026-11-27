@@ -2726,16 +2726,19 @@ async fn ls(vol: &mut Volume<'static, Card>, path: &str) {
         return;
     };
     let mut e = DirEntry::new();
-    let mut out = [0u8; 1024];
+    use orpheus_proto::devchan::{LS_FOOTER, REPLY_LEN, ls_fits};
+    let mut out = [0u8; REPLY_LEN - LS_FOOTER];
     let mut n = 0;
     let mut count = 0;
     while let Ok(true) = vol.read_dir(&mut cur, &mut e).await {
         count += 1;
-        for &b in e.name().as_bytes().iter().chain(if e.is_dir() { &b"/\n"[..] } else { &b"\n"[..] }) {
-            if n < out.len() {
-                out[n] = b;
-                n += 1;
-            }
+        let name = e.name().as_bytes();
+        let tail: &[u8] = if e.is_dir() { b"/\n" } else { b"\n" };
+        // Whole names only; the footer always fits (2026-11-27).
+        if ls_fits(n, name.len() + tail.len()) {
+            out[n..n + name.len()].copy_from_slice(name);
+            out[n + name.len()..n + name.len() + tail.len()].copy_from_slice(tail);
+            n += name.len() + tail.len();
         }
     }
     reply(|w| {
