@@ -1873,7 +1873,7 @@ checked in a linked image (see STATUS), not run on the player.
   lent steps, retaken scratches, a folder waiting, `busy`: chores that
   found the model held by the UI), `books test on|off`
   (`Scope::Test`: `/.orpheus/test/suite/books`, the suite's books, with a
-  library file of their own, `/.orpheus/cache/books/test.lib`, and their
+  library file of their own, `/.orpheus/test/suite/books/.library`, and their
   reading state in RAM only: a test leaves no position or progress behind
   and never rewrites the owner's library; BOOK-1/2b), the
   simulator's `set:bookstest=on`; the suite's `books` journey (skipped on

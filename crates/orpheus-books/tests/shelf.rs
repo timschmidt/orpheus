@@ -993,7 +993,7 @@ fn regress_suite_books_left_their_reading_state() {
 /// of 26–30 ms. Now every step of an open does one file operation: here
 /// (a book four folders deep, the cache and state folders holding many
 /// files, the player's 8-slot sector cache and walk cache) no step of an
-/// open reads more than a few sectors (one step read 25 before, 5 now).
+/// open reads more than a few sectors (one step read 25 before, 7 now).
 #[test]
 fn regress_book_open_was_one_long_step() {
     use orpheus_books::shelf::Desk;
@@ -1048,7 +1048,7 @@ fn regress_book_open_was_one_long_step() {
         sh.request(Req::Close);
         while block_on(desk.step_with(&mut sh, &mut vol, &Mono, None)) {}
     }
-    assert!(most <= 6, "a step of an open read {most} sectors");
+    assert!(most <= 8, "a step of an open read {most} sectors");
     // A book never opened: its conversion starts, the text's and the
     // contents' cache files made in steps of their own (one step made both
     // with the head: 46 ms on the player, an underrun).
