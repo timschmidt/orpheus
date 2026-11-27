@@ -45,6 +45,7 @@ script = """
 expect-screen:Home shot:home
 next*4 shot:home_recorder
 next*6 shot:home_games
+next shot:home_books
 next shot:home_settings
 menu shot:home_menu back
 hold:menu expect-screen:QuickPanel shot:quick back
@@ -309,7 +310,7 @@ next*9 ok expect-screen:UsbDrive shot:home back
 name = "games"
 about = "Games app: the list of games (values masked)"
 script = """
-prev*2 ok wait:300 expect-screen:Games shot:list back
+prev*3 ok wait:300 expect-screen:Games shot:list back
 """
 
 [journey.shot.list]
@@ -318,9 +319,9 @@ rects = [
     { x = 122, y = 12, w = 6, h = 104, why = "scrollbar: the simulator and the firmware list five games (Salvo, Bricks); kept masked while the counts may differ" },
 ]
 
-# Books (M15, 05 §7.15; the BOOK-1/2 wiring): runs only on an image built
-# with the firmware feature `books` (`requires`; skipped on the shipping
-# image, which has no room for Books yet). The library is the suite's two
+# Books (M15, 05 §7.15; the BOOK-1/2 wiring): runs on an image built with
+# the firmware feature `books` (on by default since 2026-11-27; `requires`
+# skips it on an image without). The library is the suite's two
 # books (`--setup` puts them in /.orpheus/test/suite/books: a text of four
 # pages and the EPUB sample; `books test on` makes that folder the library,
 # a RAM flag): nothing outside /.orpheus is read for it, and Books writes
@@ -328,10 +329,10 @@ rects = [
 # (rule 5). `books status` is read-only (the model as the card task left
 # it). The library is shot with the text focused (the EPUB's title, a
 # marquee when focused, would move). The text opens where a run left it;
-# three Prevs bring it to its first page whatever that was. Home's Books
-# cell: the player's Home has it only with the feature (then the
-# appearance gets `set:books=on` and this journey's `sim:` lines for it
-# go).
+# seven Prevs bring it to its first page whatever that was (it has seven
+# pages on the player; three were not enough after a hand-run left it on
+# page 4, 2026-11-27). Home's Books
+# cell is the one before Settings.
 [[journey]]
 name = "books"
 about = "Books (with the firmware feature `books`): the suite's library of two books, the text's first page, a page turned (books status page=1), back to the first page, back to the library and Home"
@@ -339,14 +340,14 @@ setup = true
 requires = "books status ~ ^books: lib="
 script = """
 cmd: books test on ~ ^books test on
-sim: set:books=on set:bookstest=on
+sim: set:bookstest=on
 prev*2 ok wait:500 expect-screen:Books
 dev: wait:3000
 cmd: books status ~ lib=ready n=2\\b
 down wait:300 shot:library
 ok wait:500 expect-screen:Reader
 dev: wait:2000
-prev prev prev wait:500
+prev*7 wait:500
 cmd: books status ~ book=ready .* page=0\\b
 shot:page1
 next wait:500 shot:page2
@@ -355,7 +356,7 @@ prev wait:500
 back wait:300 expect-screen:Books
 back wait:300 expect-screen:Home
 cmd: books test off ~ ^books test off
-sim: set:bookstest=off set:books=off
+sim: set:bookstest=off
 """
 
 [journey.shot.library]

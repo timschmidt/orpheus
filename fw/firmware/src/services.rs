@@ -1891,13 +1891,9 @@ impl SystemService for Fw {
         // Steps and Stopwatch: SENS-1, UI-5c, UI-5d (Steps says so when the
         // sensor does not answer). Recorder (AU-13) and USB Drive (USB-6)
         // are built and verified on the player (2026-11-24).
-        // The list itself: `App::on_player` (host-tested); Books also in an
-        // image built with the feature `books` (off in the shipping one: no
-        // room in the code window yet).
-        #[cfg(feature = "books")]
-        if app == App::Books {
-            return true;
-        }
+        // The list itself: `App::on_player` (host-tested). Books is in it
+        // when the image has it (the feature `books`, on by default since
+        // BOOK-1/2, 2026-11-27; without it `App::Books` does not exist).
         app.on_player()
     }
     fn dual_boot(&self) -> bool {

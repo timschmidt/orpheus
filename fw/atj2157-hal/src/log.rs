@@ -2,6 +2,8 @@
 //! format of `orpheus_proto::logring` (NUL-separated lines). The firmware will
 //! put defmt frames into the same ring; the host prints printable bytes.
 
+use core::num::NonZeroU32;
+
 use orpheus_proto::logring;
 
 /// Where this image's ring lives (`ALT_BASE` in SRAM0 for RAM images).
@@ -67,6 +69,28 @@ impl Default for LineBuf {
     }
 }
 
+/// `v` in decimal, most significant digit first, to `out`. Nothing here
+/// can panic (only divisions by a `NonZeroU32`): the panic handler formats
+/// with it. No table of powers on the stack (BOOK-1/2, 2026-11-27: that
+/// frame, 72 B, was the bottom of the deepest stack paths).
+#[inline]
+pub fn decimal(v: u32, mut out: impl FnMut(u8)) {
+    let ten = NonZeroU32::new(10).unwrap_or(NonZeroU32::MIN);
+    let mut p = NonZeroU32::new(1_000_000_000).unwrap_or(NonZeroU32::MIN);
+    let mut started = false;
+    loop {
+        let d = (v / p) % ten;
+        if d != 0 || started || p.get() == 1 {
+            started = true;
+            out(b'0' + d as u8);
+        }
+        match NonZeroU32::new(p.get() / ten) {
+            Some(q) => p = q,
+            None => break,
+        }
+    }
+}
+
 impl LineBuf {
     #[must_use]
     pub const fn new() -> Self {
@@ -91,16 +115,7 @@ impl LineBuf {
     }
 
     pub fn push_u32(&mut self, v: u32) -> &mut Self {
-        // Most significant digit first; `checked_*` keep the division-by-
-        // zero panic out.
-        let mut started = false;
-        for p in [1_000_000_000, 100_000_000, 10_000_000, 1_000_000, 100_000, 10_000, 1_000, 100, 10, 1u32] {
-            let d = v.checked_div(p).unwrap_or(0).checked_rem(10).unwrap_or(0);
-            if d != 0 || started || p == 1 {
-                started = true;
-                self.push_byte(b'0' + d as u8);
-            }
-        }
+        decimal(v, |b| self.push_byte(b));
         self
     }
 

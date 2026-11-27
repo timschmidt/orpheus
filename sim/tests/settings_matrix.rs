@@ -83,7 +83,7 @@ fn context_scripts() -> Vec<(&'static str, String)> {
         ("Settings", "prev ok expect-screen:Settings".into()),
         ("About", "prev ok down*11 ok ok expect-screen:Info".into()),
         ("HomeApps", "prev ok down*2 ok down*11 ok expect-screen:HomeApps".into()),
-        ("Games", "set:gameseed=7 prev*2 ok wait:300 expect-screen:Games".into()),
+        ("Games", "set:gameseed=7 prev*3 ok wait:300 expect-screen:Games".into()),
         ("Blocks", "set:gameseed=7 goto:Blocks wait:100 ok wait:1500".into()),
         ("Game4096", "set:gameseed=7 goto:Game4096 wait:100 right down".into()),
         ("Solitaire", "set:gameseed=7 goto:Solitaire wait:100 up ok next ok".into()),

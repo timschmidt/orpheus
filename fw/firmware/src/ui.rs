@@ -1114,29 +1114,66 @@ fn new_ui(
     bl: Backlight,
     t: Instant,
 ) -> &'static mut Ui {
-    // Not entered here: this frame holds the whole `Ui` as a temporary
-    // (4.8 KB), and the root screen's `enter` (any screen's, as far as
-    // the call graph knows) would run below it. `enter_root` does that
-    // once the shell is in its static (VER-10).
-    let shell = Shell::<AppScreen, Fw>::unentered(fw, screens::HOME, Arg(0), t);
-    let ui = Ui {
-        fw,
-        shell,
-        mapper: KeyMapper::new(),
-        disp,
-        bl,
-        screen_on: true,
-        store,
-        sound: None,
-        timer: ScreenTimer::new(t.0),
-        drift: services::ClockDrift::new(),
-        drift_at: t.0,
-        rotated: false,
+    // Not entered here: the root screen's `enter` (any screen's, as far
+    // as the call graph knows) would run below this frame. `enter_root`
+    // does that once the shell is in its static (VER-10).
+    //
+    // Built field by field in its static (BOOK-1/2, 2026-11-27): built as
+    // a value and moved in, the whole `Ui` was a temporary in this frame
+    // (2,948 B, one of the UI task's deepest paths with the screens'
+    // creation below it). The shell, the largest field, is made by a
+    // function of its own that writes it into its place: this frame holds
+    // no copy of it.
+    let ui = (&raw mut UI_CELL).cast::<Ui>();
+    // SAFETY: called once; the UI task is the only user. Every field is
+    // written before the reference is made.
+    unsafe {
+        new_shell(&raw mut (*ui).shell, fw, t);
+        ui_fields(ui, fw, store, disp, bl, t);
+        &mut *ui
+    }
+}
+
+/// The fields of [`new_ui`] but the shell, in a frame of their own (their
+/// temporaries, 624 B, were under the shell's creation).
+///
+/// # Safety
+/// `ui` is the UI's static, written once.
+#[inline(never)]
+unsafe fn ui_fields(
+    ui: *mut Ui,
+    fw: &'static mut Fw,
+    store: &'static mut Option<Store<NorRegion, 4>>,
+    disp: Display,
+    bl: Backlight,
+    t: Instant,
+) {
+    // SAFETY: the caller's.
+    unsafe {
+        (&raw mut (*ui).fw).write(fw);
+        (&raw mut (*ui).mapper).write(KeyMapper::new());
+        (&raw mut (*ui).disp).write(disp);
+        (&raw mut (*ui).bl).write(bl);
+        (&raw mut (*ui).screen_on).write(true);
+        (&raw mut (*ui).store).write(store);
+        (&raw mut (*ui).sound).write(None);
+        (&raw mut (*ui).timer).write(ScreenTimer::new(t.0));
+        (&raw mut (*ui).drift).write(services::ClockDrift::new());
+        (&raw mut (*ui).drift_at).write(t.0);
+        (&raw mut (*ui).rotated).write(false);
         #[cfg(feature = "speech")]
-        a11y: reader::A11y::new(),
-    };
-    // SAFETY: called once; the UI task is the only user.
-    unsafe { (*(&raw mut UI_CELL)).write(ui) }
+        (&raw mut (*ui).a11y).write(reader::A11y::new());
+    }
+}
+
+/// The shell of [`new_ui`], unentered, written to `dst`.
+///
+/// # Safety
+/// `dst` is valid for writes (the UI's static, once).
+#[inline(never)]
+unsafe fn new_shell(dst: *mut Shell<AppScreen, Fw>, fw: &mut Fw, t: Instant) {
+    // SAFETY: the caller's.
+    unsafe { dst.write(Shell::<AppScreen, Fw>::unentered(fw, screens::HOME, Arg(0), t)) }
 }
 
 /// Enter the root screen of the shell [`new_ui`] built, in place.

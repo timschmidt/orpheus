@@ -65,7 +65,7 @@ fn file(s: &mut AppSim, name: &str) -> Option<Vec<u8>> {
     read(&mut s.sys.media, &format!("{}/{name}", app::DIR))
 }
 
-const LIST: &str = "set:games=on set:gameseed=7 prev*2 ok wait:100 expect-screen:Games";
+const LIST: &str = "set:games=on set:gameseed=7 prev*3 ok wait:100 expect-screen:Games";
 const BLOCKS: &str = "set:gameseed=7 goto:Blocks wait:100 expect-screen:Blocks";
 const TILES: &str = "set:gameseed=7 goto:Game4096 wait:100 expect-screen:Game4096";
 const SOL: &str = "set:gameseed=7 goto:Solitaire wait:100 expect-screen:Solitaire";
@@ -257,7 +257,7 @@ fn deferred_card_queue() {
     let moves = sol(&s).moves();
     let media = std::mem::replace(&mut s.sys.media, orpheus_sim::media::Media::new());
     let mut r = Sim::with_sys(HostServices::with_media(media), Box::new(HexFont::subset()));
-    run(&mut r, "set:gamesio=on set:gameseed=7 prev*2 ok wait:100 expect-screen:Games");
+    run(&mut r, "set:gamesio=on set:gameseed=7 prev*3 ok wait:100 expect-screen:Games");
     assert!(r.sys.games().loaded, "the list's Load was answered");
     assert!(r.sys.games().can_continue(id::SOLITAIRE));
     // Open: the screen waits for the save file.

@@ -20,7 +20,7 @@ of every session. Newest entries first in §3.
 |---|---|---|
 | T-1, T-2, T-4a, HAL-0, HAL-1, T-5 | done | see earlier log entries |
 | T-3, PG-1 | done | pagelink, PagerCore, check-resident; demand paging on the player (8 KiB pages, 1 KiB lines) |
-| PG-2 | **built (worker, no hardware); speech on in the default image, Books fits but stays off** (static stack margin 3,708 of 4,096 B with both) | Cold code runs from the rodata window, which spans all of SRAM3's aliases (48 → 64 pages; MPU region 7 grants SRAM3's RAM half, the stack guard becomes a canary + DWT watchpoint); a trampoline runs an instruction whose constant shares its physical line (`orpheus_pager::bounce`); `resident.toml` `[bin.firmware.cold]`. Player checks in the session entry; U-MEM-2 (SRAM3 execution) is the first |
+| PG-2 | **done; on the player** (U-MEM-2, U-DWT-2 answered); speech and, since BOOK-1/2 (2026-11-27), Books in the default image | Cold code runs from the rodata window, which spans all of SRAM3's aliases (48 → 64 pages; MPU region 7 grants SRAM3's RAM half, the stack guard becomes a canary + DWT watchpoint); a trampoline runs an instruction whose constant shares its physical line (`orpheus_pager::bounce`); `resident.toml` `[bin.firmware.cold]`. Player checks in the session entry; U-MEM-2 (SRAM3 execution) is the first |
 | PG-2b | **built (host + firmware); causes measured on the player (`bdebff77`); the fixed image is not on the player** (a PG-2 image cannot install another by USB or card: `dev stage` + `dev reset`, owner's OK) | Update data path never cold (SHA-256 round loop straddled its constants' line: 2.5 KB/s, watchdog in the read-back); cold placement pads to a clear line, conflicts back first; synth per-piece constants resident (`hot.toml resident_constants`); cluster `settings-get`; status `clk=`/`cpu=`, `dev stats` names Max; `dev update --stop-after`, `prof --during update` (session entry 2026-11-27 "PG-2b") |
 | T-6 | started | Rust NOR payload `fw/payloads/norprog` (erase/program, full-layout guard); ymon and nordump still the reference repo's C payloads. **Stage 2 slot fallback built and host-tested, not yet installed** (`orpheus_proto::boot::decide`; 964 B; lead's `install-stage2` + crash test: session entry 2026-11-24 "T-6 (stage2)") |
 | T-8 | **built (host + firmware), not yet run on the player** | PC sampler (T2, level 0) and pager fault log into the 2 KiB profiler block at `0x307000` (SRAM3), `prof pc\|faults on\|burst`, `prof off\|status`; `cargo xtask dev prof --pc\|--faults S [--during "soak --replay F"] [--only TEXT] [--update-hot NAME]`, `cargo xtask prof DIR`; reports in `target/orpheus/prof/<stamp>/`. Resident +656 B. User/lead check: U-TMR-1 and the Pictures-while-playing profile (session entry 2026-11-25 "T-8") |
@@ -73,7 +73,7 @@ of every session. Newest entries first in §3.
 | VER-13 | **tool and matrix done (host + simulator); one device journey (not yet run on the player)** | `cargo xtask settings-matrix [--check] [--strict]` (alias `settings coverage`; in `test all`, `--strict` in `gate --m11`); manifest for all 162 settings of the tree; simulator matrix over 59 screen + 10 service contexts (`sim/tests/settings_matrix.rs`), host tests for sound, governor, steps, recorder split, persistence/defaults/clamping/migration per kind; journey `settings_shuffle` (RAM-only session). 9,365 / 9,412 matrix cells covered; 22 settings have no effect to show (not wired) and 47 contexts are reviewed exclusions (session entry 2026-11-26 "VER-13") |
 | VER-13 (Display, Power, Date & time, USB) | **built (host + simulator + firmware), not yet run on the player** | Backlight timeout, Lock delay, Screen saver, Animations, Rotate (software 180°), Power mode, Keys when locked (transport to playback), Time zone, Correction, Set from RDS (group 4A), Read-only card, Developer channel (held on under any host test; the session refuses it) have their effects; journeys `settings_screen_timers`, `settings_screen_saver`; Brightness (missing stock duty values, U-PWM-3) and Wallpaper (Set as wallpaper not built) left; stack margin 4,568 B, .bss 125,352 B. User check 30 (session entry 2026-11-26 "VER-13: Display, Power, Date & time and USB") |
 | GAME-6 Bricks (M14) | **built (host + simulator + firmware), not yet run on the player** | Brick breaker of our own: integer physics with one-pixel sub-steps (no tunnelling at any speed, no floating point), paddle angles, 1–3-hit and unbreakable bricks, 8 hand-made + generated levels, five power-ups, lives, scores, saves; 7 settings packed into 1 word; 47 goldens; fuzz `bricks_keys`. In the firmware (`orpheus-apps/bricks`): stack margin 4,116 B unchanged. Lead: session entry 2026-11-25 "GAME-6" |
-| BOOK-1/2 wiring | **built behind the firmware feature `books`, off**: fits since PG-2 (with speech 125/128 code + 63/64 rodata pages), but with speech the static stack margin is 3,708 of 4,096 B and the suite's Home journeys need their Books update (session entries) | `Shelf` (screens' model) / `Desk` (card side) split, step future 5,464 → 2,600 B; chores `job:bwrite…blay` while playing (no folder made, no scratch), steps while paused, idle with the arena's first 35,072 B lent; "Stop the music to prepare this book."; `books status`, `books test on\|off`; suite journey `books` (`requires`: skipped without the feature) (session entry 2026-11-26 "BOOK-1/2 wiring") |
+| BOOK-1/2 wiring | **on by default since 2026-11-27, on the player** (`fa301aaf`: 127/128 code + 61/64 rodata pages, stack margin 4,276 B; suite 26/26 with `books`). **Open: opening a book while MP3 plays gives ≈ 2 underruns (`job:bread` pieces of 49–256 ms), one "The book could not be opened" (intermittent); idle Home 193 loads/s (was 138)** (session entry 2026-11-27 "BOOK-1/2: Books on by default") | `Shelf` (screens' model) / `Desk` (card side) split, step future 5,464 → 2,600 B; chores `job:bwrite…blay` while playing (no folder made, no scratch), steps while paused, idle with the arena's first 35,072 B lent; "Stop the music to prepare this book."; `books status`, `books test on\|off`; suite journey `books` (`requires`: skipped without the feature) (session entry 2026-11-26 "BOOK-1/2 wiring") |
 | BOOK-2 | **done (host + simulator)**; not in the firmware (as BOOK-1; the scratch is the decoder arena, see session entry) | EPUB 2/3 in `orpheus-books`: zip (end record, streamed central directory, CRC, zip64/encrypted/method refusals), `no_std` inflate (48 B state; 32 KiB window + 2,304 B tables lent: 35,072 B), container/OPF/nav/NCX, XHTML reduction over the XML tokenizer split out of FB2, contents positions from anchors, all in bounded steps into BOOK-1's stream; library titles from the package; 12 new goldens; fuzz targets `books_zip`, `books_epub` (session entry 2026-11-25 "BOOK-2") |
 | MIDI-1 | **done (host + simulator)**; on the player since SYN-3; **user check: listen to the three MIDI renders** | `orpheus-midi`: Standard MIDI File parser (formats 0/1/2, running status, meta and SysEx, SMPTE, RMID) streamed through 64 track cursors of 64-byte windows that ask for bytes (`Need`/`supply`), nothing trusted; exact tick→frame clock through tempo changes; sequencer (CC 1/6/7/10/11/38/64/91/93/96–101/120–127, RPN bend range, pressure, programs, kits on channel 10, mute/solo); own GM set of 32 sounds for the 128 programs (`data/gm-sounds.osb`); `MidiPlayer`: open/scan, render, bounded-step seek (bit-exact where nothing sounds across the target), duration/position, `.kar`/lyric events; Files plays `.mid`/`.kar` in the simulator with Now Playing lyrics; player 70,224 B; estimate ≈ 117 MHz at 48 kHz for a 10–11-voice song: High clock (session entry 2026-11-25 "MIDI-1") |
 | SYN-3 | **done (firmware build)**; bench run on the player 2026-11-26 (costs measured); load governor run on the player (`78b316b5`: no reset, but every song stopped at `ratio=400`); measurement fix and clock-up (D-4) on the player (`8240f128`: ratio right, 288 MHz, but paging 200–250 %); paging fix on the player (`4e1e9a49`: every song to its end, `pg=` 3–15 %); shed-state, rest and key-tick fixes on the player (`7f26ae50`: all to the end, 20 underruns in 107 s at `load=` 25–40 %); rests that end when thread mode sleeps on the player (`b694ac61`: underruns 18/3/9 per song at `load=` 24–46 %); **budget that follows the PCM ring, main loop off the synth's lines, USB supervisor without its 20 ms timer built, not yet run on the player: lead's checks in the session entry 2026-11-26 "SYN-3: thread mode's line loads"**; owner decision: half rate for heavy MIDI files (04 §9) | The synthesiser on the player: a synth source beside the codecs (`orpheus_audio::synth`), the engine and the MIDI player built in place in the pool (stream ring + decoder arena, 80,816 B; MIDI state ≈ 71,960 B), the MIDI file through a 13-block card cache (`orpheus_midi::cache`), 44.1 kHz into the DAC ring through the DSP chain, clock floor High raised to Turbo/Max by the load governor before anything is shed (`orpheus_synth::load`: 55 % of real time, down to 30 % while the PCM ring runs short; then chorus, delay, reverb, voices shed at Max; compute measured apart from paging, warm-up 250 ms, rise ≤ 3 % a block), 4 ms pieces and pace-rule rests (thread mode always runs; a rest ends once thread mode sleeps); underruns never end a song (only "nothing can play"); `.mid`/`.kar` play from Files and Music with seek and pause; `synth bench` (36 loads, cycles, host hashes); 125/128 code pages, stack margin 5,212 B (session entries 2026-11-26 "SYN-3", "SYN-3: load governor" and "SYN-3: governor ratio measured right") |
@@ -198,6 +198,184 @@ in 05 §7.16 ("As built (SEQ-2, 2026-11-27): MIDI clock out …").
   --check`, `check-resident` pass; device steps not run (host-only
   package).
 * No user checks.
+
+### 2026-11-27 — BOOK-1/2: Books on by default (worker, player)
+
+Brief: turn the firmware feature `books` on by default (with `speech`),
+which PG-2 left off because the static stack margin was 3,460 B against
+4,096 B, and make the Home suite journeys work with Books. Player: `fa301aaf`
+installed with `dev update` into slot A (41.6 s, "running … from slot A";
+`dev backup-verify` ok first). No flash layout change (the coordinator's
+2026-11-27 permission was not needed: the image is 1,605,632 B of the
+2,093,056 B slot).
+
+* **Found first: with PG-2b the Books image no longer linked.** `cargo
+  xtask build --features books` on `222b93b9`: "paged rodata and cold code
+  need 33 groups of 16 KiB (20 + 13), the window holds 32". The cold
+  groups were full (`used` 16,140–16,384 B each), but 32 KB of it was
+  PG-2b's padding before a section moved clear of its constants' lines,
+  never used again; and the code window's reserve page stayed empty.
+  **pagelink**: (1) the padding is a hole later sections fill first
+  (each group's sections still go to the script in address order); (2)
+  when the rodata window cannot hold the rest with the reserve kept, the
+  reserve gives way (`place_cold` → `place_cold_reserving`). Default image
+  now: **code 127/128 (8,194 B free), rodata 61/64** (21 cold pages,
+  164,214 B; 0 of 5,512 cold loads unbounceable). Two cold sections
+  share a physical line with a constant they read and bounce
+  (`Epub::step`, 8,124 B; the library build's `Run::sort`, 7,554 B: too
+  large for the free code room); `Desk::step_with` (18 KB) stays in the
+  code window (larger than a rodata group). Tests
+  `pagelink::tests::regress_cold_padding_was_never_filled`,
+  `regress_reserve_page_kept_while_the_rodata_window_overflowed`.
+* **Stack, measured** (`xtask stack --check`, speech + Books): before
+  **14,900 B nested worst case of 17,664 B usable, margin 2,764 B** (PG-2's
+  3,460 B was before PG-2b's growth); after **13,644 of 17,920 B, margin
+  4,276 B** (budget 4,096 B, unchanged). Thread context 5,272 → 4,504 B,
+  RT (card task) 8,448 → 8,200 B, L1 deadline 312 → 72 B. The cuts, in
+  the order measured:
+  1. **Timer rearm** (`atj2157_hal::time`): `rearm` borrowed the queue
+     with `borrow_mut`, so `panic_already_borrowed` and the panic handler
+     sat under every timer wait (the bottom of the card task's deepest
+     paths) and under the T1 alarm: now it takes the queue the caller
+     holds (`try_borrow_mut`). L1 312 → 72, RT −40: **−280 B**.
+  2. **Books' file closes** (`Desk::save_state`, the library header and
+     title writes): `vol.close(f)` built an 840 B future on the stack and
+     copied it (twice in `save_state`, frame 1,824 B); now
+     `flush_file(&mut f)` (what `close` does). `Desk::step_with`'s worst
+     path 6,368 → 3,456 B with (1) and (3); the card task's worst became
+     the Vorbis set-up path (`seek_to` → `setup`): RT −48 B.
+  3. **Panic handler** writes its text straight into the fault record
+     (`persist::PanicText`) instead of a 96 B line buffer, and
+     `LineBuf::push_u32` has no table of powers on the stack
+     (`log::decimal`): the panic tail 184 → 24 B, under most deep paths:
+     RT **−160 B**.
+  4. **USB descriptor buffers** `CONFIG_DESC`, `BOS_DESC` 256 → 128 B
+     (the largest configuration is ≤ 41 B, the BOS 64 B by `lsusb -v`;
+     MS OS 2.0 keeps 256): `.bss` 147,608 → 147,352 B (budget 147,456:
+     it was over) and the stack's start one 256 B step lower: usable
+     **+256 B**. All four personalities' builders are unchanged.
+  5. **Authenticator code** (UI task): HMAC by hand over one hasher
+     (`orpheus_otp::otp::mac`, checked against RFC 4226/6238 and against
+     the `hmac` crate for keys shorter, equal and longer than each
+     block: `mac_matches_the_hmac_crate`): frame 1,232 → 648 B; the code
+     computed from a cut-down entry (`Fw::auth_code_now` reads the entry
+     and keeps only kind, algorithm, digits and the secret, wiped after):
+     `auth_code_now`'s path 2,808 → 1,992 B.
+  6. **PIN change** (`Fw::derive`): the sealing futures take the
+     finished key (`vault::Rekeyed`, `RekeyJob::finish`) instead of the
+     240 B job, and `Authenticator::finish_change`/`finish_create` run
+     the derivation when called and return the small future: `derive`'s
+     path 4,556 → 3,444 B.
+  7. **The UI built in place** (`ui::new_ui`): the whole `Ui` (3.5 KB)
+     was a temporary in its frame (2,948 B) with the screens' creation
+     below; now its fields are written into the static, the shell by
+     `new_shell`, which writes it in place, the rest by `ui_fields` in a
+     frame of its own: path 4,456 → 3,880 B.
+  Thread context after 5–7: 5,272 → 4,504 B (−768 B). The next deepest
+  paths (for whoever needs more): the card task's Vorbis set-up while
+  seeking (`seek_to` 1,488 + `load_setup` 1,320 + `setup` 2,576 B frames),
+  `run_player`/`play_file` (552/504 B frames, under every playback path),
+  the browse path's `spin_in` (1,504 B), the UI's shell creation
+  (`new_shell` 2,368 B: `Shell::unentered` builds the shell as a value).
+* **Books on by default**: `fw/firmware` `default = ["speech", "books"]`;
+  `App::Books.on_player()` true; the simulator shows Books on Home by
+  default (`set:books=off` takes it away): 52 goldens re-blessed (Home
+  grids, Settings › Display › Home apps, a11y Home, radio/seq/tools Home
+  shots: Settings moved to the fourth row, Books before it; looked at),
+  8 spoken-journey texts ("… of 13"). Suite: `home` shoots `home_books`,
+  `games` opens with `prev*3`, `books` lost its `sim: set:books=…`
+  lines and turns to the first page with `prev*7` (three Prevs were not
+  enough once a hand run left the text on page 4); expected frames
+  regenerated (12 changed, `home_books` new; looked at). `xtask`:
+  Settings is Home cell 12 for the soak (`browse_targets_on_home`), the
+  player's Home-apps mask 0x1FFF. `suite --setup` sends `stop` first: a
+  reboot reopens the last track paused, and an upload waited until it
+  ended.
+* **On the player** (`fa301aaf`, test look, cable):
+  * `dev suite --setup`: **26 journeys passed, 0 failed, `books` ran**
+    (library, page 1, page 2; `books status` lib=ready n=2, page=0 then
+    1; EPUB left closed). Shots looked at (Home with Books, the library,
+    the text's pages). Stack free 5,256 of 18,400 B (painted; `[hil]`
+    minimum 2,048).
+  * **MIDI folder** (`playdir /.orpheus/test/suite/midi`, `status` every
+    9 s for 125 s): underruns **0/0/0** (Etude, Hill Song, Sound tour, as
+    `f7b1f4c8`); line loads **≈ 1,410/s** over the folder (Etude ≈ 1,560,
+    Hill Song ≈ 1,550, Sound tour ≈ 1,300) against **≈ 1,273/s** on
+    `f7b1f4c8`: **+11 %**; `cpu=48`, clock Base once it ended.
+  * **Idle Home** (test look, `dev stats` 10 s apart): **≈ 193 loads/s**
+    (196, 193; the suite's note 180) against **138/s** on `f7b1f4c8`:
+    **regression +40 %**. `dev prof --faults 15`: spread over the USB
+    task and `embassy_usb`'s poll, the UI task, `Timer::poll`, the
+    settings path (`target/orpheus/prof/20261127-135135`): a layout
+    effect of the larger image (71 code lines faulted in 15 s); not
+    fixed here.
+  * **BOOK-1/2 check 2** (the text while MP3 plays, `/Knower`, `books
+    test on`): opens and turns pages (page=1…4, `chore: job:bread`
+    lines), but **opening it costs ≈ 2 underruns** each time (three
+    opens: 2, 2, 2; turning pages 0): the log shows **`job:bread`
+    pieces of 49, 70, 77 and once 256 ms** in one unsplittable stretch
+    (`ub=job:bread:256ms`, DAC head −10,245 frames) against 26–30 ms
+    budgets. Not found: which await takes that long (one PC profile of
+    an open caught a book already open). **Once the text failed to open
+    after the EPUB had been read during music ("The book could not b…",
+    the message itself cut off; `book=closed`, `steps` frozen until
+    `books test off`/`on`)**; the same sequence idle and once more with
+    music opened it. Open findings for the lead.
+  * **Check 3** (the EPUB while music plays): **not shown**: the EPUB was
+    first converted idle by my step-by-step run (conv 999, lent 54,
+    retaken 1, 18 pages), and re-uploading it with `suite --setup`
+    kept its stamp, so it stayed cached; with music it then opened from
+    the cache (2 underruns at the open, pages turned with 0). The "Stop
+    the music to prepare this book." path needs a fresh EPUB (no delete
+    command; another name changes the suite's library count).
+  * **`dev soak music --minutes 15`: PASS, 18.3 min**, 13 actions, 113
+    samples (`target/orpheus/soak/music-20261127-141003-seed1`): stack
+    free min **5,256 B** (f7b1f4c8: 18,568; the Books `.bss` and the
+    painted stack's size, `[hil]` ≥ 2,048), line loads/s mean **1,836**
+    / max 3,949 (1,742 / 4,196), evictions/s max 2,768 (4,216),
+    underruns 0, DAC headroom min −3,059 frames (inside a disruption
+    window; 770 on f7b1f4c8), card errors 0, uptime vs host −22 ppm,
+    **CPU idle 54 %** (62 %): mean loads +5 %, idle −8 points.
+  * **Owner's settings: not written.** `settings changed` reads
+    `changed: 30b=4095 701=1 d50=10470 e80=20992`: the stored values are
+    as before; **`30b` is listed because its default changed**: Home
+    apps (0x030B) defaults to every app (`HOME_ALL`, now 0x1FFF with
+    Books, bit 12), and the owner's stored mask is 0x0FFF, saved when
+    Home had twelve apps. **So the owner's own Home does not show Books**
+    (screenshot with the test look off: twelve cells, Settings last); the
+    suite shows it through the test look. Decision for the lead/owner:
+    switch Books on in Settings › Display › Home screen by hand, or make
+    a stored mask cover only the apps that existed when it was saved
+    (new apps shown) — not done here (the owner's setting).
+  * Ended in a reboot: the player runs `fa301aaf` from slot A (slot B
+    keeps `f7b1f4c8`), Home, keys free, screen on.
+* **Found, not fixed**: an abandoned upload holds the card task: `fcreate`
+  queued while a reopened track was paused was served after a later
+  `stop`, entered the upload loop, and that loop takes every later
+  command (`stop`, `fcreate`) without answering until `fclose`
+  (`audio::upload`). `dev cmd fclose` ended it (the suite's tone file was
+  truncated and uploaded again). The suite now stops playback before
+  uploading.
+* **Gate**: host `cargo fmt --all --check`; `cargo clippy --workspace
+  --all-targets -- -D warnings` (also `--no-default-features`); `cargo
+  test --workspace` **2,154 passed, 0 failed, 13 ignored** (203
+  binaries); `cargo xtask settings-matrix --check` (184
+  settings, 0 errors). fw: `cargo fmt --all --check`; `cargo clippy
+  --workspace --release -- -D warnings`, also `--no-default-features`
+  and `-p firmware --no-default-features --features speech`; `cargo
+  xtask build` (resident 60,548 B: text 30,516, rodata 13,328, data
+  16,700; `.bss` 147,352 B; code 127/128, rodata 61/64; slot 1,605,632
+  B); `check-resident` ok (64 sections from 21 roots, none paged); `size
+  --check` within budgets; `stack --check` margin 4,276 B; `cargo xtask
+  test pagelink` passed. Budgets unchanged (a measured note under
+  `stack_static_margin_bytes`). **Not run**: `brand`, `site --check`,
+  `xtask test all`'s fuzz runs.
+* **For the lead**: (0) Books is hidden on the owner's Home (stored
+  Home-apps mask, above); (1) the open-book underruns and the intermittent
+  "could not be opened" under music, and the cut-off message, before
+  Books is announced; (2) the idle-Home rate; (3) check 3 with a fresh
+  EPUB; (4) the abandoned-upload hang. Both windows are nearly full
+  again (1 code page, 3 rodata pages free).
 
 ### 2026-11-27 — PG-2 / PG-2b on the player; ls fixes (lead)
 

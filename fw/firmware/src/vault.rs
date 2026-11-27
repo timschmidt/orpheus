@@ -197,6 +197,16 @@ fn wipe(b: &mut [u8]) {
     }
 }
 
+/// What a code is computed from ([`Fw::auth_code_now`]); the caller wipes
+/// the secret.
+struct CodeInput {
+    kind: orpheus_otp::Kind,
+    alg: orpheus_otp::Algorithm,
+    digits: u8,
+    secret: [u8; orpheus_otp::entry::MAX_SECRET],
+    len: u8,
+}
+
 impl Fw {
     fn auth_event(&mut self, value: u32) {
         self.pending.push(Event::Service(ServiceEvent::Other { kind: other::AUTH, value }));
@@ -478,15 +488,36 @@ impl Fw {
     /// and hashed in this one. Through `Authenticator::code`, the read's
     /// future (a 640 B `block_on` frame) stayed under the HMAC-SHA-512,
     /// the UI task's deepest path with Salvo built in (STACK, 2026-11-25).
+    ///
+    /// Only what the code needs leaves the read (BOOK-1/2, 2026-11-27):
+    /// the whole entry (its issuer and account too, 400 B) stayed in this
+    /// frame above the HMAC-SHA-512, the UI task's deepest path.
     #[inline(never)]
     pub(crate) fn auth_code_now(&mut self, i: usize, t: Option<u64>) -> Option<orpheus_otp::Code> {
-        let e = self.auth_read_entry(i)?;
-        self.auth.code_of(i, &e, t)
+        let mut c = self.auth_code_input(i)?;
+        let code = match c.kind {
+            orpheus_otp::Kind::Totp { period } => t.map(|t| {
+                let n = usize::from(c.len).min(c.secret.len());
+                let v = orpheus_otp::otp::totp(c.alg, &c.secret[..n], t, period, c.digits);
+                orpheus_otp::Code::new(v, c.digits)
+            }),
+            // HOTP: the code last generated (as `Authenticator::code_of`).
+            orpheus_otp::Kind::Hotp { .. } => self.auth.hotp_shown(i),
+        };
+        wipe(&mut c.secret);
+        code
     }
 
+    /// The entry read in this frame (its future and the entry itself) and
+    /// cut down to [`CodeInput`].
     #[inline(never)]
-    fn auth_read_entry(&mut self, i: usize) -> Option<Entry> {
-        block_on(self.auth.entry(i)).ok()
+    fn auth_code_input(&mut self, i: usize) -> Option<CodeInput> {
+        let e = block_on(self.auth.entry(i)).ok()?;
+        let s = e.secret();
+        let mut secret = [0u8; orpheus_otp::entry::MAX_SECRET];
+        let n = s.len().min(secret.len());
+        secret[..n].copy_from_slice(&s[..n]);
+        Some(CodeInput { kind: e.kind, alg: e.alg, digits: e.digits, secret, len: n as u8 })
     }
 
     /// Type the current code of entry `i` on the USB keyboard.

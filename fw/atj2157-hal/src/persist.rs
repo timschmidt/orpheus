@@ -207,6 +207,53 @@ pub fn record_fault(frame: usize, exc_return: u32, ipsr: u32) {
     wr(b + fault::OFF_MAGIC as u32, fault::MAGIC);
 }
 
+/// A panic's text written straight into the fault record (truncated at
+/// [`fault::TEXT_LEN`]). BOOK-1/2 (2026-11-27): the panic handler's 96 B
+/// line buffer was the bottom of the deepest stack paths (every panic
+/// site under the card task's file opens and the codecs' set-up); this
+/// writes in place.
+pub struct PanicText {
+    n: usize,
+}
+
+impl PanicText {
+    /// The text cleared (zeros, as [`record_panic`] pads).
+    #[must_use]
+    pub fn start() -> Self {
+        for i in (0..fault::TEXT_LEN).step_by(4) {
+            wr(fault::BASE + (fault::OFF_TEXT + i) as u32, 0);
+        }
+        Self { n: 0 }
+    }
+
+    fn push_byte(&mut self, b: u8) {
+        if self.n < fault::TEXT_LEN {
+            let at = fault::BASE + (fault::OFF_TEXT + self.n) as u32;
+            // SAFETY: inside the persistent area's text field (as `wr`).
+            unsafe { core::ptr::write_volatile(at as *mut u8, b) };
+            self.n += 1;
+        }
+    }
+
+    pub fn push_str(&mut self, s: &str) {
+        for &b in s.as_bytes() {
+            self.push_byte(b);
+        }
+    }
+
+    pub fn push_u32(&mut self, v: u32) {
+        crate::log::decimal(v, |b| self.push_byte(b));
+    }
+
+    /// Kind `Panic`, `pc`, and the record made valid.
+    pub fn finish(self, pc: u32) {
+        let b = fault::BASE;
+        wr(b + fault::OFF_KIND as u32, fault::Kind::Panic as u32);
+        wr(b + fault::OFF_PC as u32, pc);
+        wr(b + fault::OFF_MAGIC as u32, fault::MAGIC);
+    }
+}
+
 /// Record a panic as a fault of kind `Panic` (message truncated).
 pub fn record_panic(msg: &[u8], pc: u32) {
     let b = fault::BASE;

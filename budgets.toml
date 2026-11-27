@@ -82,6 +82,13 @@ stack_bytes = 12288             # 12 KiB
 # finishes, a code's entry read and the games' decoding cut the UI task's
 # deepest path 6,796 -> 5,840 B: measured 4,560 B (15,152 B nested worst
 # case). Budget unchanged.
+# 2026-11-27 (BOOK-1/2, Books on by default with speech): measured 4,276 B
+# (13,644 B nested worst case of 17,920 B usable; was 2,764 B: 14,900 of
+# 17,664). Cuts: the timer's rearm and the panic handler off the bottom
+# of the deepest paths, USB descriptor buffers (.bss -256 B: one step),
+# Books' file closes, the authenticator's HMAC, PIN change and code, the
+# UI built in place (STATUS 2026-11-27 "BOOK-1/2: Books on by default").
+# Budget unchanged.
 stack_static_margin_bytes = 4096
 # Firmware partition in the dual-boot layout (slot A): the whole "YFW1"
 # image (header sector, resident image, page store).

@@ -844,12 +844,12 @@ mod tests {
         for (sid, v) in [(id::THEME, 0), (id::ACCENT, 0), (id::CLOCK_IN_BAR, 1), (id::LIST_ROLL, 1)] {
             assert_eq!(def(sid).unwrap().default, v, "{:#06x}", sid.0);
         }
-        // Every app on Home; of the player's apps (the workspace's
-        // `orpheus-apps` has Books too, through the simulator: its bit is
-        // also set, and the player has no such app).
+        // Every app on Home; of the player's apps (thirteen with Books since
+        // BOOK-1/2; the workspace's `orpheus-apps` has the Sequencer too,
+        // through the simulator, which the player does not).
         let player: i16 =
             orpheus_apps::App::ALL.iter().filter(|a| a.on_player()).fold(0, |m, &a| m | 1 << a as u8);
-        assert_eq!(def(id::HOME_APPS).unwrap().default & player, 0x0FFF);
+        assert_eq!(def(id::HOME_APPS).unwrap().default & player, 0x1FFF);
         let mut p = SimPlayer::default();
         test_look(&mut p, true).unwrap();
         test_look(&mut p, false).unwrap();

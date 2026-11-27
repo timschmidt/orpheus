@@ -188,11 +188,10 @@ impl App {
             // On the player with GAME-2's integration (2026-11-25).
             #[cfg(feature = "games")]
             App::Games => true,
-            // Wired into the firmware (BOOK-1/2 wiring, 2026-11-26) behind
-            // its feature `books`, off: the code window has no room for it
-            // yet (docs/STATUS.md).
+            // On the player since BOOK-1/2 (2026-11-27: the firmware feature
+            // `books` on by default).
             #[cfg(feature = "books")]
-            App::Books => false,
+            App::Books => true,
             // Not in the firmware yet (SEQ-1: no synth on the player).
             #[cfg(feature = "seq")]
             App::Sequencer => false,
@@ -218,14 +217,9 @@ mod tests {
     /// when it was last edited. It now asks [`App::on_player`].
     #[test]
     fn regress_every_app_is_on_the_players_home() {
-        // Games too since GAME-2's integration (2026-11-25); Books not
-        // yet (wired behind the firmware feature `books`, off: no room in
-        // the code window).
+        // Games too since GAME-2's integration (2026-11-25), Books since
+        // BOOK-1/2 (2026-11-27).
         for a in App::ALL {
-            #[cfg(feature = "books")]
-            if a == App::Books {
-                continue;
-            }
             #[cfg(feature = "seq")]
             if a == App::Sequencer {
                 continue;

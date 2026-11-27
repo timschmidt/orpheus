@@ -91,6 +91,7 @@ then passed with it).
 | VER-3 F-GAME-1: a Bricks save with a right CRC and a large broken-brick counter or paddle/ball position overflowed in `Bricks::check` (run by `decode`): a panic in the simulator and browser build, a wrapped sum in the firmware that could load an unreachable state | 11-27 | VER-3 | `orpheus-games/tests/adversarial.rs::regress_bricks_save_check_overflow`; inputs `tests/regress/games_save/bricks-{broken,paddle}-overflow` (replayed by `regress_inputs_replay`) | new, R |
 | VER-3 F-SET-3: `Setting::step` overflowed `i16` at the ends of a range reaching the `i16` limits (the packed accessibility and screen-reader words): a panic in host builds, a wrap to the other end in the firmware | 11-27 | VER-3 | `orpheus-apps/tests/adversarial.rs::regress_setting_step_overflow`; input `tests/regress/apps_settings/step-at-i16-limits` | new, R |
 | VER-3 F-SET-4: `format_value` of a Speech rate (`Unit::Quarters`, screen reader builds) multiplied `|v| * 25` in `u16`: a value beyond ±2,621 panicked (host builds) or showed a wrapped speed | 11-27 | VER-3 | `orpheus-apps/tests/adversarial.rs::regress_speech_rate_format_overflow`; input `tests/regress/apps_settings/format-quarters-out-of-range` | new, R |
+| BOOK-1/2: the default image with speech and Books did not link after PG-2b ("paged rodata and cold code need 33 groups of 16 KiB, the window holds 32"): the padding before a cold section moved clear of its constants was never reused (32 KB), and the code window's reserve page stayed empty while the rodata window overflowed | 11-27 | BOOK-1/2 | `xtask` `pagelink::tests::regress_cold_padding_was_never_filled`, `regress_reserve_page_kept_while_the_rodata_window_overflowed`; `cargo xtask build` | new |
 
 ## Test-infrastructure fixes (no `regress_` test needed)
 
@@ -119,3 +120,9 @@ Playing redraw), RTC stopped after some resets, AU-0b ticking, the first
 FLAC gapless join (3–4 underruns), album-art dropouts, "Start original
 firmware" offered in the full layout (`dual_boot()`), no language packs on
 the player.
+BOOK-1/2 on the player (2026-11-27): opening a book while MP3 plays costs ≈ 2
+underruns (`job:bread` pieces of 49–256 ms); once "The book could not be
+opened" (and the message cut off) for the text after the EPUB, under
+music; an abandoned upload (`fcreate` without `fclose`) holds the card
+task; a stored Home-apps mask hides apps added after it was saved (Books
+on the owner's Home); idle Home 193 line loads/s (138 before Books).

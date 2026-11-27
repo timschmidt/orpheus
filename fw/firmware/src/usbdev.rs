@@ -557,8 +557,13 @@ pub async fn supervisor() {
     }
 }
 
-static mut CONFIG_DESC: [u8; 256] = [0; 256];
-static mut BOS_DESC: [u8; 256] = [0; 256];
+/// 128 B each (BOOK-1/2, 2026-11-27: 256 → 128, `.bss` −256 B for the
+/// stack): the largest configuration descriptor of the four personalities
+/// is one interface with two bulk endpoints (≤ 41 B; the developer
+/// channel's is 26 B, `lsusb -v`), the BOS 64 B (WebUSB and MS OS 2.0
+/// capabilities). The MS OS 2.0 set (≈ 190 B) keeps 256.
+static mut CONFIG_DESC: [u8; 128] = [0; 128];
+static mut BOS_DESC: [u8; 128] = [0; 128];
 static mut MSOS_DESC: [u8; 256] = [0; 256];
 /// 1 KiB: the host moves at most 1 KiB per control transfer (stack room, 2026-11-24).
 static mut CONTROL_BUF: [u8; 1024] = [0; 1024];

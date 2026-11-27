@@ -1,6 +1,8 @@
 //! HOTP (RFC 4226) and TOTP (RFC 6238).
 
-use hmac::{Hmac, KeyInit, Mac};
+use sha2::digest::block_api::BlockSizeUser;
+use sha2::digest::{Digest, FixedOutputReset, Output, OutputSizeUser};
+use zeroize::Zeroize;
 
 /// HMAC hash of an entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,16 +54,45 @@ const POW10: [u32; 9] = [1, 10, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_0
 /// Not inlined: inlined, the three HMAC states of [`hotp`] took room at
 /// once (a 1.6 KB frame on the firmware's UI task, above the SHA-512
 /// compression; VER-10). One at a time, the deepest is the SHA-512 one.
+///
+/// HMAC (RFC 2104) over one hasher, reset between the inner and the outer
+/// hash, with the padded key in one block-sized buffer XORed in place.
+/// BOOK-1/2 (2026-11-27): `hmac::Hmac<Sha512>` kept the inner and outer
+/// states, its key block and the finalisation's copies: a 1,232 B frame
+/// above SHA-512's compression, the UI task's deepest path (opening the
+/// Authenticator). Checked against RFC 4226 / 6238 and against `hmac`.
 #[inline(never)]
-fn mac<M: Mac + KeyInit>(secret: &[u8], msg: &[u8], out: &mut [u8; 64]) -> usize {
-    // `new_from_slice` accepts keys of any length for HMAC.
-    let Ok(mut m) = <M as KeyInit>::new_from_slice(secret) else { return 0 };
-    m.update(msg);
-    let tag = m.finalize().into_bytes();
-    let n = tag.len().min(64);
-    out[..n].copy_from_slice(&tag[..n]);
+fn mac<D: Digest + FixedOutputReset + BlockSizeUser>(secret: &[u8], msg: &[u8], out: &mut [u8; 64]) -> usize {
+    const IPAD: u8 = 0x36;
+    const OPAD: u8 = 0x5C;
+    let bs = <D as BlockSizeUser>::block_size();
+    let mut k = [0u8; MAX_BLOCK];
+    let Some(key) = k.get_mut(..bs) else { return 0 };
+    let mut h = D::new();
+    if secret.len() > bs {
+        Digest::update(&mut h, secret);
+        let d = h.finalize_reset();
+        let n = d.len().min(bs);
+        key[..n].copy_from_slice(&d[..n]);
+    } else {
+        key[..secret.len()].copy_from_slice(secret);
+    }
+    key.iter_mut().for_each(|b| *b ^= IPAD);
+    Digest::update(&mut h, &*key);
+    Digest::update(&mut h, msg);
+    let n = <D as OutputSizeUser>::output_size();
+    let Some(tag) = out.get_mut(..n).and_then(|o| <&mut Output<D>>::try_from(o).ok()) else { return 0 };
+    Digest::finalize_into_reset(&mut h, tag);
+    key.iter_mut().for_each(|b| *b ^= IPAD ^ OPAD);
+    Digest::update(&mut h, &*key);
+    Digest::update(&mut h, &*tag);
+    Digest::finalize_into_reset(&mut h, tag);
+    k.zeroize();
     n
 }
+
+/// The largest block of the three hashes (SHA-512's).
+const MAX_BLOCK: usize = 128;
 
 /// RFC 4226 §5.3 dynamic truncation, then modulo 10^digits.
 fn truncate(h: &[u8], digits: u8) -> u32 {
@@ -76,9 +107,9 @@ pub fn hotp(alg: Algorithm, secret: &[u8], counter: u64, digits: u8) -> u32 {
     let msg = counter.to_be_bytes();
     let mut h = [0u8; 64];
     let n = match alg {
-        Algorithm::Sha1 => mac::<Hmac<sha1::Sha1>>(secret, &msg, &mut h),
-        Algorithm::Sha256 => mac::<Hmac<sha2::Sha256>>(secret, &msg, &mut h),
-        Algorithm::Sha512 => mac::<Hmac<sha2::Sha512>>(secret, &msg, &mut h),
+        Algorithm::Sha1 => mac::<sha1::Sha1>(secret, &msg, &mut h),
+        Algorithm::Sha256 => mac::<sha2::Sha256>(secret, &msg, &mut h),
+        Algorithm::Sha512 => mac::<sha2::Sha512>(secret, &msg, &mut h),
     };
     truncate(&h[..n], digits)
 }
@@ -138,6 +169,38 @@ impl Code {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The hand-written HMAC equals the `hmac` crate's for keys shorter
+    /// than, equal to and longer than each hash's block (RFC 4226/6238
+    /// cover only short keys) and for messages of several lengths.
+    #[test]
+    fn mac_matches_the_hmac_crate() {
+        use hmac::{Hmac, KeyInit, Mac};
+        fn want<M: Mac + KeyInit>(k: &[u8], m: &[u8]) -> ([u8; 64], usize) {
+            let mut h = <M as KeyInit>::new_from_slice(k).unwrap();
+            h.update(m);
+            let t = h.finalize().into_bytes();
+            let mut o = [0u8; 64];
+            o[..t.len()].copy_from_slice(&t);
+            (o, t.len())
+        }
+        let data: [u8; 300] = core::array::from_fn(|i| ((i as u32).wrapping_mul(151) >> 3) as u8);
+        for klen in [0, 1, 20, 63, 64, 65, 127, 128, 129, 300] {
+            for mlen in [0, 8, 64, 129] {
+                let (k, m) = (&data[..klen], &data[300 - mlen..]);
+                let mut out = [0u8; 64];
+                let n = mac::<sha1::Sha1>(k, m, &mut out);
+                let (w, wn) = want::<Hmac<sha1::Sha1>>(k, m);
+                assert_eq!(&out[..n], &w[..wn], "sha1 {klen}/{mlen}");
+                let n = mac::<sha2::Sha256>(k, m, &mut out);
+                let (w, wn) = want::<Hmac<sha2::Sha256>>(k, m);
+                assert_eq!(&out[..n], &w[..wn], "sha256 {klen}/{mlen}");
+                let n = mac::<sha2::Sha512>(k, m, &mut out);
+                let (w, wn) = want::<Hmac<sha2::Sha512>>(k, m);
+                assert_eq!(&out[..n], &w[..wn], "sha512 {klen}/{mlen}");
+            }
+        }
+    }
 
     const S20: &[u8] = b"12345678901234567890";
     const S32: &[u8] = b"12345678901234567890123456789012";

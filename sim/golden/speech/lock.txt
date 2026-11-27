@@ -2,7 +2,7 @@
 # set:0x1004=1 set:playing=1 wait:2500 power wait:1500 down wait:2500 wait:2000 power wait:3000
      33 earcon reader-on
      33 say Screen reader on
-     33 say Home. Music, button, 1 of 12
+     33 say Home. Music, button, 1 of 13
    2500 stop
    2560 earcon off
    2560 say Keys locked
@@ -11,5 +11,5 @@
    8760 stop
    8760 earcon on
    8760 say Unlocked
-   8760 say Home. Music, button, 1 of 12
-audio 16000 Hz mono, 193552 samples, fnv64 4cd7e0237e86896f
+   8760 say Home. Music, button, 1 of 13
+audio 16000 Hz mono, 193712 samples, fnv64 9fa398fc4dfeac83
