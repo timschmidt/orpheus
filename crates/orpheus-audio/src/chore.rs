@@ -29,7 +29,13 @@
 //! 3. A chore whose need no headroom covered for [`STARVE_US`] (it is
 //!    longer than the ring can hold, or nearly: it must be split) runs at
 //!    the next roomy moment anyway ([`Verdict::Starved`], logged): the UI
-//!    is never left without an answer.
+//!    is never left without an answer. A stream whose blocks never leave
+//!    the DAC roomy at the moment of the decision (MP3 at 48 kHz on the
+//!    player: 1,152-frame blocks against 1,536-frame halves, the headroom
+//!    2,283 frames after every block, 21 short of roomy) would hold such a
+//!    chore for ever (BOOK-1/2b, 2026-11-27: Books' open never ran while
+//!    music played, its need 34 ms); after twice [`STARVE_US`] it runs
+//!    at [`NEARLY_ROOMY`] eighths of roomy.
 //!
 //! **Pieces** ([`Piece`]): a splittable chore asks [`Piece::left`] before
 //! each card operation and stops (to resume in its next chore) when the
@@ -64,6 +70,9 @@ pub const WAIT_US: u32 = 300_000;
 /// A chore whose need no headroom covered for this long (µs) runs at the
 /// next roomy moment anyway (it cannot fit: it must be split).
 pub const STARVE_US: u32 = 2_000_000;
+/// Eighths of [`Ask::roomy`] a chore starved for twice [`STARVE_US`] runs
+/// at (the stream may never be roomy when it is decided).
+pub const NEARLY_ROOMY: i32 = 7;
 
 /// The margin kept for the decoder call after a chore: [`MARGIN_US`], or
 /// the longest recent call (`dec_us`) and a quarter more if that is longer
@@ -151,9 +160,10 @@ impl Verdict {
 pub fn decide(a: &Ask) -> Verdict {
     let budget = budget_us(a.head, a.rate, a.dec_us);
     let roomy = a.head >= a.roomy;
+    let nearly = a.head >= a.roomy / 8 * NEARLY_ROOMY;
     if budget > 0 && budget >= a.need_us && (roomy || a.waited_us >= WAIT_US) {
         Verdict::Run { budget_us: budget }
-    } else if roomy && a.waited_us >= STARVE_US {
+    } else if (roomy && a.waited_us >= STARVE_US) || (nearly && a.waited_us >= 2 * STARVE_US) {
         Verdict::Starved { budget_us: budget }
     } else {
         Verdict::Wait
@@ -937,6 +947,26 @@ mod tests {
         // underruns, once per piece; nothing else does.
         assert_eq!(f.chore_underruns, f.starved, "{f:?}");
         assert_eq!(f.loop_underruns, 0, "{f:?}");
+    }
+
+    /// Regression (BOOK-1/2b, 2026-11-27): with MP3 at 48 kHz playing, the
+    /// player's headroom after every 1,152-frame block was 2,283 frames
+    /// (`status` `due=15/34/2283/5956/0`), never the 2,304 of roomy, so a
+    /// chore whose need (34 ms: Books' first, cold steps) no budget at that
+    /// headroom covered (25.6 ms) never starved into running: Books froze
+    /// while music played ("The book could not be read." over an open that
+    /// never ran). After twice the starvation time it runs nearly roomy.
+    #[test]
+    fn regress_a_chore_starved_for_ever_below_a_roomy_dac() {
+        let stuck = |waited_us| ask(2_283, 34_000, waited_us);
+        assert_eq!(decide(&stuck(STARVE_US)), Verdict::Wait);
+        assert_eq!(decide(&stuck(2 * STARVE_US - 1)), Verdict::Wait);
+        let v = decide(&stuck(2 * STARVE_US));
+        assert!(matches!(v, Verdict::Starved { budget_us } if budget_us > 20_000), "{v:?}");
+        // Not at a low headroom, however long it waited.
+        assert_eq!(decide(&ask(HALF, 34_000, 10 * STARVE_US)), Verdict::Wait);
+        // A roomy moment still serves it after the first wait.
+        assert!(matches!(decide(&ask(ROOMY, 34_000, STARVE_US)), Verdict::Starved { .. }));
     }
 
     /// Regression (AU-PERF, 2026-11-25): a request kind with a variant that
