@@ -1,6 +1,7 @@
-//! `card bench [MiB] [hs]` (PERF-SD): the card's throughput through the
-//! file system, measured in the card task. A test file of `MiB` MiB
-//! (default 8, at most 256) under `/.orpheus/test/` is written and read
+//! `card bench [MiB] [hs [XX]]` (PERF-SD): the card's throughput through
+//! the file system, measured in the card task. A test file of `MiB` MiB
+//! (default 8, at most 256), `/.orpheus/test/bench.bin` (the folder the
+//! suite's fixtures use), is written and read
 //! back in 32 KiB pieces (the file system turns whole sectors of a cluster
 //! run into one multi-block transfer straight into the piece), the data
 //! checked, the file removed. The rates count the pieces' own time: the
@@ -21,7 +22,6 @@ use yoton_bsp::card::Card;
 use crate::audio::reply;
 
 const PIECE: usize = 32 * 1024;
-const DIR: &str = "/.orpheus/test";
 const PATH: &str = "/.orpheus/test/bench.bin";
 
 /// Word `i` of piece `k`: never the same twice in a file of ≤ 256 MiB.
@@ -55,50 +55,44 @@ pub async fn card_bench(vol: &mut Volume<'static, Card>, arena: &mut [u8], args:
     if let Some(d) = delays {
         Card::set_timing(d);
     }
-    let _ = vol.create_dir(DIR).await;
     let pieces = mib * (1024 * 1024 / PIECE as u32);
     let bytes = u64::from(pieces) * PIECE as u64;
     let mut failed: Option<&[u8]> = None;
-    let (mut tw, mut tr) = (0u64, 0u64);
+    // Microseconds of the writes, then of the reads; words that differ.
+    let mut us = [0u64; 2];
+    let mut bad = 0u32;
+    // One open file: written, rewound, read (each `Volume` call is a
+    // future of its own in this state machine: the code window is full).
     match vol.open(PATH, OpenMode::Truncate).await {
         Ok(mut f) => {
-            for k in 0..pieces {
-                fill(buf, k);
-                let t = time::now_us();
-                let r = vol.write(&mut f, buf).await;
-                tw += time::now_us() - t;
-                if r.is_err() {
-                    failed = Some(b"write");
-                    break;
+            'run: for (phase, t) in us.iter_mut().enumerate() {
+                f.set_position(0);
+                for k in 0..pieces {
+                    if phase == 0 {
+                        fill(buf, k);
+                    }
+                    let t0 = time::now_us();
+                    let ok = if phase == 0 {
+                        vol.write(&mut f, buf).await.is_ok()
+                    } else {
+                        vol.read(&mut f, buf).await.ok() == Some(PIECE)
+                    };
+                    *t += time::now_us() - t0;
+                    if !ok {
+                        failed = Some(if phase == 0 { b"write" } else { b"read" });
+                        break 'run;
+                    }
+                    if phase == 1 {
+                        bad += check(buf, k);
+                    }
+                    embassy_time::Timer::after_millis(2).await;
                 }
-                embassy_time::Timer::after_millis(2).await;
             }
-            if vol.close(f).await.is_err() || vol.flush().await.is_err() {
-                failed = failed.or(Some(b"close"));
-            }
+            let _ = vol.close(f).await;
         }
         Err(_) => failed = Some(b"create"),
     }
-    let mut bad = 0u32;
-    if failed.is_none() {
-        match vol.open(PATH, OpenMode::Read).await {
-            Ok(mut f) => {
-                for k in 0..pieces {
-                    let t = time::now_us();
-                    let r = vol.read(&mut f, buf).await;
-                    tr += time::now_us() - t;
-                    if r.ok() != Some(PIECE) {
-                        failed = Some(b"read");
-                        break;
-                    }
-                    bad += check(buf, k);
-                    embassy_time::Timer::after_millis(2).await;
-                }
-                let _ = vol.close(f).await;
-            }
-            Err(_) => failed = Some(b"open"),
-        }
-    }
+    let (tw, tr) = (us[0], us[1]);
     let st = vol.device().stats();
     let _ = vol.remove(PATH).await;
     let _ = vol.flush().await;
