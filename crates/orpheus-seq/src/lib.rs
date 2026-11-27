@@ -31,6 +31,8 @@
 //!   migration of SEQ-1's version 1).
 //! * [`export`]: the song as a WAV file (offline render) and a Standard
 //!   MIDI File.
+//! * [`clock`]: MIDI clock out (Start, 24 Clocks a quarter, Stop on their
+//!   frames; USB MIDI packets) — the model; the USB transport is M16's.
 //! * [`Studio`]: what the app's service holds: the open project, the
 //!   player, the list of saved projects.
 //! * [`demo`]: songs of our own (the example WAVs, the simulator's card).
@@ -44,6 +46,7 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod clock;
 pub mod demo;
 pub mod export;
 pub mod file;

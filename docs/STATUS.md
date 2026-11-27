@@ -77,12 +77,60 @@ of every session. Newest entries first in §3.
 | BOOK-2 | **done (host + simulator)**; not in the firmware (as BOOK-1; the scratch is the decoder arena, see session entry) | EPUB 2/3 in `orpheus-books`: zip (end record, streamed central directory, CRC, zip64/encrypted/method refusals), `no_std` inflate (48 B state; 32 KiB window + 2,304 B tables lent: 35,072 B), container/OPF/nav/NCX, XHTML reduction over the XML tokenizer split out of FB2, contents positions from anchors, all in bounded steps into BOOK-1's stream; library titles from the package; 12 new goldens; fuzz targets `books_zip`, `books_epub` (session entry 2026-11-25 "BOOK-2") |
 | MIDI-1 | **done (host + simulator)**; on the player since SYN-3; **user check: listen to the three MIDI renders** | `orpheus-midi`: Standard MIDI File parser (formats 0/1/2, running status, meta and SysEx, SMPTE, RMID) streamed through 64 track cursors of 64-byte windows that ask for bytes (`Need`/`supply`), nothing trusted; exact tick→frame clock through tempo changes; sequencer (CC 1/6/7/10/11/38/64/91/93/96–101/120–127, RPN bend range, pressure, programs, kits on channel 10, mute/solo); own GM set of 32 sounds for the 128 programs (`data/gm-sounds.osb`); `MidiPlayer`: open/scan, render, bounded-step seek (bit-exact where nothing sounds across the target), duration/position, `.kar`/lyric events; Files plays `.mid`/`.kar` in the simulator with Now Playing lyrics; player 70,224 B; estimate ≈ 117 MHz at 48 kHz for a 10–11-voice song: High clock (session entry 2026-11-25 "MIDI-1") |
 | SYN-3 | **done (firmware build)**; bench run on the player 2026-11-26 (costs measured); load governor run on the player (`78b316b5`: no reset, but every song stopped at `ratio=400`); measurement fix and clock-up (D-4) on the player (`8240f128`: ratio right, 288 MHz, but paging 200–250 %); paging fix on the player (`4e1e9a49`: every song to its end, `pg=` 3–15 %); shed-state, rest and key-tick fixes on the player (`7f26ae50`: all to the end, 20 underruns in 107 s at `load=` 25–40 %); rests that end when thread mode sleeps on the player (`b694ac61`: underruns 18/3/9 per song at `load=` 24–46 %); **budget that follows the PCM ring, main loop off the synth's lines, USB supervisor without its 20 ms timer built, not yet run on the player: lead's checks in the session entry 2026-11-26 "SYN-3: thread mode's line loads"**; owner decision: half rate for heavy MIDI files (04 §9) | The synthesiser on the player: a synth source beside the codecs (`orpheus_audio::synth`), the engine and the MIDI player built in place in the pool (stream ring + decoder arena, 80,816 B; MIDI state ≈ 71,960 B), the MIDI file through a 13-block card cache (`orpheus_midi::cache`), 44.1 kHz into the DAC ring through the DSP chain, clock floor High raised to Turbo/Max by the load governor before anything is shed (`orpheus_synth::load`: 55 % of real time, down to 30 % while the PCM ring runs short; then chorus, delay, reverb, voices shed at Max; compute measured apart from paging, warm-up 250 ms, rise ≤ 3 % a block), 4 ms pieces and pace-rule rests (thread mode always runs; a rest ends once thread mode sleeps); underruns never end a song (only "nothing can play"); `.mid`/`.kar` play from Files and Music with seek and pause; `synth bench` (36 loads, cycles, host hashes); 125/128 code pages, stack margin 5,212 B (session entries 2026-11-26 "SYN-3", "SYN-3: load governor" and "SYN-3: governor ratio measured right") |
+| SEQ-1 | **done (host + simulator)**; not in the firmware (SYN-3); **user check: listen to the demo beat** | `orpheus-seq`: project model (16 patterns × 1–64 steps × 8 drum tracks; velocity, chance, ratchet, delay, accent per step; mute/solo/level; songs; 40–240 BPM, swing 50–75 %), exact integer step timing (any tempo and swing, an hour without drift), edits heard at the next step, render without UI (`Studio::render_i16`), `OSQ1` files with CRC under `/.orpheus/seq/`; Sequencer app (feature `orpheus-apps/seq`): list, grid, transport, step, track, mixer; 38 goldens, 8 journeys, fuzz `seq_load`; project 25,092 B (session entry 2026-11-26 "SEQ-1") |
+| SEQ-2 | **done (host + simulator)**; not in the firmware (SYN-3); MIDI clock out built as a host model (2026-11-27), its USB transport and setting deferred to M16; **user check: listen to "Tram Lights"** | `orpheus-seq`: 2 synth tracks (note, gate, chord in the scale; transpose; scale lock), per-step parameter locks (24 a pattern, refused when full), kit B, fill while held, metronome, count-in, step length, live record quantised; `OSQ1` v2 with SEQ-1 migration; WAV export (offline) and MIDI export (exact ticks); Sound, Keys, Live and Song screens, Sequencer settings (7, word `0x1180`); project 35,808 B; MIDI clock model (Start/24 PPQN/Stop on exact frames, phase kept across tempo and step-length changes, USB MIDI packets; player 4,056 B) (session entries 2026-11-26 "SEQ-2", 2026-11-27 "SEQ-2: MIDI clock") |
 | A11Y-2 | **built (host + simulator + firmware), not yet run on the player**; journey `settings_accessibility` and user check 31 | Settings › Accessibility (Text size Normal/Large/Extra large, Hold delay 0.5–2 s, Key repeat Normal/Slow/Slower; packed in `0x0D60`), Themes White on black / Black on white (≥ 7:1), reduced motion = Animations off (spinner still, blinks lit), Key click Presses and holds (hold confirmation); 63 `a11y_*` goldens (session entry 2026-11-26 "A11Y-2") |
 | A11Y-1 | **done (host + simulator)**; in the firmware with TTS-3 (feature `speech`, **on by default since PG-2**, not yet run on the player); **user check: listen to the spoken journeys** | Screen reader: `orpheus_ui::a11y` (descriptions, `Reader`, `SpeechService`, `UtteranceQueue`, earcons, chords) behind `screen-reader`; every one of the apps' 72 screens describes itself (lint: 629 foci, every screen reached); Settings › Accessibility: Screen reader, Speech rate 0.25×–10× in 0.25× steps, Voice, Pitch, Verbosity, Sound cues, Where am I, Keys with screen off, Speech volume and Music while speaking (TTS-3); toggle = hold Back + Menu 2 s (Vol+ + Vol− share a ladder); 8 spoken-journey goldens with audio hashes; matrix contexts `speech`, `speech-music` (session entries 2026-11-26 "A11Y-1", 2026-11-27 "TTS-3") |
 | VER-13 Brightness (U-PWM-3) | **built (host + simulator + firmware), not yet run on the player**; journey `settings_brightness` and user check 32 | Settings › Display › Brightness = the stock levels 1–11 (default 6) on the stock PWM4 duties, live; key `0x030D` (old `0x0301` retired); alert flash 15 / 3 (never 16); `ui top` `bl=` |
 | VER-4 (settings store keys) | **done (host + firmware built), not yet run on the player** | Store index 128 → 192 keys at 4 B a slot (was 8), same NOR format both ways (fixture from the old code, byte-equal images); cache write marks unlimited; 131 keys in use with every app (61 free), firmware 129; sector ceiling ≈ 209 settings keys (256 cannot fit one sector); .bss −1,248 B, stack margin 5,664 B; compaction no longer re-blesses a rotted value (session entry 2026-11-26 "VER-4: settings store index") |
 
 ## 3. Session log
+
+### 2026-11-27 — SEQ-2: MIDI clock out as a host model; the rest of SEQ-2 was already merged (worker, no hardware)
+
+Host only (no `xtask dev`: the brief). The brief asked for all of SEQ-2;
+everything but the USB MIDI clock was built and merged on 2026-11-26
+(`538b9128`, `c3041aeb`; entry "SEQ-2" below: synth tracks, note entry,
+scale lock, locks, Sound/Keys/Live/Song screens, live record, WAV and
+MIDI export, 7 settings, 40 goldens), and its gate passes again here. What
+was left is the clock, built now as the host-side model; full "as built"
+in 05 §7.16 ("As built (SEQ-2, 2026-11-27): MIDI clock out …").
+
+* **Model** (`orpheus_seq::clock`, `Sequencer::set_midi_clock` /
+  `take_clock` / `clock_dropped`): Start on the first step's first frame
+  (after the count-in, which sends nothing), 24 Clocks a quarter from the
+  same frame, Stop on the frame after a stop, a restart or turning it off;
+  clocks in the player's own units through its units → frames map, so
+  clock *k* is on ⌊*k* · rate · 250 / tempo⌋ at any step length and swing;
+  tempo and step-length changes keep the phase. 32-message queue (8 B
+  each), drops counted, phase kept. USB MIDI 1.0 event packets
+  (`Realtime::usb_packet`). No SPP or Continue (Orpheus always starts at
+  position 0).
+* **Deferred to M16**: the USB MIDI interface that carries it, timing the
+  sends to the DAC, and the setting "MIDI clock out" (no setting added:
+  there is nothing for it to switch yet, so no `effects.toml` entry).
+* **Numbers**: player (`Sequencer`) 3,784 → 4,056 B (`ram_table`'s 4 KiB
+  limit holds); studio 40,424 B; WAV export 4,080 B. Firmware unchanged
+  (`orpheus-seq` is not in it): resident 60,332 B, 127 code + 46 rodata
+  pages, bss 134,368 B, stack margin 16,412 B.
+* **Tests**: `crates/orpheus-seq/tests/clock.rs`, 9: exact clocks at 8/
+  44.1/48 kHz × 40–240 BPM × swing 50/57/75 × three step lengths with an
+  odd pattern length; steps on clocks (every 6/12/3, with swing every
+  pair); tempo change and step-length change keep the phase (the change's
+  step on a clock); count-in silent; stop/restart/off/on-while-playing;
+  any block size the same (the demo song in song mode); full queue; USB
+  packets.
+* **Gate**: `cargo fmt --all --check`; `cargo clippy --workspace
+  --all-targets -D warnings`; `cargo test --workspace` 2,160 passed, 0
+  failed, 13 ignored (goldens included, none changed: no new screen);
+  `settings-matrix --check` 184 settings, 13,248 / 13,295 cells, 0
+  errors; `xtask build`, `check-resident` (none paged), `size --check`,
+  `stack --check`: pass. **Not run**: `brand`/`site --check`, fuzz,
+  every `xtask dev` step (the brief).
+* **User check** (unchanged from SEQ-2): listen to "Tram Lights"; with
+  M16, a DAW following the Sequencer's clock.
+* **Cleanup**: the SEQ-1 and SEQ-2 package rows had landed in the session
+  log by merges; moved into §2's table.
 
 ### 2026-11-27 — PG-2 / PG-2b on the player; ls fixes (lead)
 
@@ -2233,7 +2281,6 @@ short:
   stop/start sequence), the alert flash, and that the owner's player now
   starts at level 6 (darker than the old fixed 12). Open: U-PWM-1 (is the
   stop/start needed), the vendor's 20 ms before the pad mux.
-| SEQ-2 | **done (host + simulator)**; not in the firmware (SYN-3); **user check: listen to "Tram Lights"** | `orpheus-seq`: 2 synth tracks (note, gate, chord in the scale; transpose; scale lock), per-step parameter locks (24 a pattern, refused when full), kit B, fill while held, metronome, count-in, step length, live record quantised; `OSQ1` v2 with SEQ-1 migration; WAV export (offline) and MIDI export (exact ticks); Sound, Keys, Live and Song screens, Sequencer settings (7, word `0x1180`); project 35,808 B (session entry 2026-11-26 "SEQ-2") |
 
 ## 3. Session log
 
@@ -2484,9 +2531,6 @@ Host and simulator only; the `seq` feature stays off in the firmware
   motion's "long names are spoken instead" is A11Y-1's; dialogs whose text
   needs more than four 16 px lines lose the rest to an ellipsis at large
   sizes; the Dark/Light contrast finding above.
-| SEQ-1 | **done (host + simulator)**; not in the firmware (SYN-3); **user check: listen to the demo beat** | `orpheus-seq`: project model (16 patterns × 1–64 steps × 8 drum tracks; velocity, chance, ratchet, delay, accent per step; mute/solo/level; songs; 40–240 BPM, swing 50–75 %), exact integer step timing (any tempo and swing, an hour without drift), edits heard at the next step, render without UI (`Studio::render_i16`), `OSQ1` files with CRC under `/.orpheus/seq/`; Sequencer app (feature `orpheus-apps/seq`): list, grid, transport, step, track, mixer; 38 goldens, 8 journeys, fuzz `seq_load`; project 25,092 B (session entry 2026-11-26 "SEQ-1") |
-
-## 3. Session log
 
 ### 2026-11-26 — SEQ-1: the Sequencer on the host and in the simulator (worker, no hardware)
 
