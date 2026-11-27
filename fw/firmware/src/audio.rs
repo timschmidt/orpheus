@@ -131,6 +131,19 @@ pub struct Cmd {
 }
 
 pub static CMDS: Channel<CriticalSectionRawMutex, Cmd, 2> = Channel::new();
+/// Test commands served while a track is paused (`ls`,
+/// `orpheus_proto::devchan::served_while_paused`): a reboot reopens the
+/// last track paused, and `CMDS` is read only between tracks.
+pub static PAUSED_CMDS: Channel<CriticalSectionRawMutex, Cmd, 1> = Channel::new();
+
+/// A command left in [`PAUSED_CMDS`] when the track ended goes to the idle
+/// loop's queue.
+#[inline(always)]
+fn hand_paused_cmd_on() {
+    if let Ok(c) = PAUSED_CMDS.try_receive() {
+        let _ = CMDS.try_send(c);
+    }
+}
 
 /// Text reply of the last command (read through the developer channel).
 pub static REPLY: critical_section::Mutex<core::cell::RefCell<([u8; 1024], usize)>> =
@@ -2107,9 +2120,16 @@ async fn pause(
 }
 
 /// The paused loops' wait (codecs, synth): 200 ms, or speech to take (the
-/// screen reader alone while paused, TTS-3).
-pub(super) async fn paused_wait() {
-    let _ = select(Timer::after_millis(200), speech::wait()).await;
+/// screen reader alone while paused, TTS-3), or an `ls` to answer
+/// ([`PAUSED_CMDS`]).
+pub(super) async fn paused_wait(vol: &mut Volume<'static, Card>) {
+    if let Either3::Third(c) = select3(Timer::after_millis(200), speech::wait(), PAUSED_CMDS.receive()).await
+    {
+        let text = core::str::from_utf8(&c.text[..c.len]).unwrap_or("");
+        if let Some(p) = text.strip_prefix("ls ") {
+            Apart(ls(vol, p.trim())).await;
+        }
+    }
 }
 
 /// One chore (the first due, in this order). `Some`: the file's playback
@@ -2536,7 +2556,7 @@ async fn play_file(
     let end = 'play: loop {
         // While paused, wait for a request (one per pass).
         let polled = if b.paused && !b.fading {
-            let got = match select3(media::PLAY.receive(), media::REQS.receive(), paused_wait()).await {
+            let got = match select3(media::PLAY.receive(), media::REQS.receive(), paused_wait(vol)).await {
                 Either3::First(r) => Some(Ok(r)),
                 Either3::Second(r) => Some(Err(r)),
                 Either3::Third(()) => None,
@@ -2642,6 +2662,7 @@ async fn play_file(
     } else {
         PLAYING.store(false, Ordering::Relaxed);
         PAUSED.store(false, Ordering::Relaxed);
+        hand_paused_cmd_on();
         CODEC_FLOOR.store(0, Ordering::Relaxed);
         dsp_clock_floor(false);
     }
@@ -2823,6 +2844,7 @@ async fn run_player(
     ring.shown = None;
     PLAYING.store(false, Ordering::Relaxed);
     PAUSED.store(false, Ordering::Relaxed);
+    hand_paused_cmd_on();
     CODEC_FLOOR.store(0, Ordering::Relaxed);
     dsp_clock_floor(false);
     STOP.store(false, Ordering::Relaxed);

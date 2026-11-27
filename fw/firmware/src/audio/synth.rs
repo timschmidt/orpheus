@@ -888,7 +888,7 @@ pub(super) async fn play_midi(
     let end = 'play: loop {
         // A request: waited for while paused, else one per block.
         let got = if b.paused && !b.fading {
-            match select3(media::PLAY.receive(), media::REQS.receive(), super::paused_wait()).await {
+            match select3(media::PLAY.receive(), media::REQS.receive(), super::paused_wait(vol)).await {
                 Either3::First(r) => Some(Ok(r)),
                 Either3::Second(r) => Some(Err(r)),
                 Either3::Third(()) => None,

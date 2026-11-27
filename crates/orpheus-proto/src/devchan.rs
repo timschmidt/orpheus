@@ -44,6 +44,17 @@ pub fn stops_track_first(cmd: &[u8]) -> bool {
     cmd.starts_with(b"playdir ")
 }
 
+/// Whether the card task serves test command `cmd` while a track is
+/// paused, without ending it: `ls` (read only, needs no scratch). Others
+/// wait for the idle loop. Since a reboot reopens the last track paused,
+/// `ls` after a reboot otherwise waited until the track was stopped
+/// (the soak's prologue and its state check, 2026-11-27).
+#[inline(always)]
+#[must_use]
+pub fn served_while_paused(cmd: &[u8]) -> bool {
+    cmd.starts_with(b"ls ")
+}
+
 /// WebUSB `bVendorCode`: the browser asks for the landing page with
 /// `GET_URL` (`bRequest` = this, `wIndex` = 2). Outside the request numbers
 /// above.
@@ -254,6 +265,24 @@ pub mod usb {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: `ls` sent while a track was paused got no answer
+    /// (2026-11-27, found by `dev soak music` on the player: a reboot
+    /// reopens the last track paused, the card task read commands only
+    /// between tracks, so the prologue's `ls` of each music folder timed
+    /// out after 18 s and the state check after the reboot saw no files).
+    #[test]
+    fn regress_ls_waited_while_a_track_was_paused() {
+        assert!(served_while_paused(b"ls /.orpheus"));
+        assert!(served_while_paused(b"ls /"));
+        // Nothing that needs the decoder's scratch or changes the track.
+        for other in [&b"playdir /x"[..], b"play /a.mp3", b"put /.orpheus/x", b"synth bench 2", b"lsx", b"ls"]
+        {
+            assert!(!served_while_paused(other), "{:?}", core::str::from_utf8(other));
+        }
+        // And `ls` never stops the paused track.
+        assert!(!stops_track_first(b"ls /.orpheus"));
+    }
 
     /// Regression: `dev playdir` while a track played was ignored (AU-5,
     /// 2026-11-24, found on the player: the card task reads commands only

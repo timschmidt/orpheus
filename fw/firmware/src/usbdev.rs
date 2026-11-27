@@ -374,6 +374,11 @@ impl Target for Fw {
             text: [0; crate::audio::CMD_LEN],
         };
         c.text[..c.len].copy_from_slice(&data[..c.len]);
+        // `ls` while a track is paused: the paused loop answers it (a
+        // reboot reopens the last track paused; 2026-11-27).
+        if orpheus_proto::devchan::served_while_paused(data) && crate::audio::PAUSED.load(Ordering::Relaxed) {
+            return crate::audio::PAUSED_CMDS.try_send(c).is_ok();
+        }
         crate::audio::CMDS.try_send(c).is_ok()
     }
     fn provision(&mut self, uri: &[u8]) -> bool {
