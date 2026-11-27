@@ -84,6 +84,50 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-27 — PG-2 / PG-2b on the player; ls fixes (lead)
+
+* **PG-2 (`bdebff77`) on the player:** SRAM3 executes cold code (U-MEM-2);
+  start-up log `fw: stack guard: DWT watchpoint and canary` (U-DWT-2).
+  Suite 24/26: `settings_brightness` was the journey's fault (`ui top` now
+  ends in ` speech=0`; `bl=N\\b`, `febacb30`), `midi` underran once. The
+  `screen_reader` journey ran for real on the player (`said=Home. Music,
+  button, 1 of 12`, `duck=16462` with music). Found: updates from a PG-2
+  image too slow and reset by the watchdog, Etude underruns, `clk=288/288`
+  at idle, idle paging up (fixed in PG-2b below).
+* **PG-2b (`ba0abfda`, merged) on the player**, installed with `dev stage`
+  + `dev reset` (owner's OK 2026-11-27; a PG-2 image could not install it):
+  `dev update` of the same build **38.6 s** ("running … from slot B"; was
+  9 min and a watchdog reset); MIDI folder with the test look **0/0/0
+  underruns** (Etude, Hill, Sound tour; before 2/1/0, baseline ≈ 1),
+  **1,273 line loads/s** (2,297 on PG-2, 1,570 before PG-2), `cpu=48` once
+  the folder ended; idle Home with the test look **138 loads/s** (≈ 200 on
+  PG-2, baseline ≈ 120); `dev suite` **25 pass, books skipped, 0 failed**.
+* **Soak findings, fixed (AU-5):** a reboot reopens the last track paused,
+  and the card task read test commands only between tracks, so `ls` after
+  a reboot waited until a stop: the soak's state check after its reboot
+  saw no files (FAIL queue). Now `ls` while paused goes to `PAUSED_CMDS`
+  and the paused loops answer it (`452d0a9d`,
+  `regress_ls_waited_while_a_track_was_paused`; checked on the player with
+  a reopened paused track). And `ls` of a big folder lost its `(N
+  entries)` footer (names filled the whole 1 KiB reply), so the soak's
+  discovery reported "no answer after 18 s" for every music folder; ls
+  now keeps the footer's room (`f7b1f4c8`,
+  `regress_ls_of_a_big_folder_lost_its_footer`; `ls /Knower` → `(59
+  entries)` on the player).
+* **Soaks** (`dev soak music --minutes 15`): on `ba0abfda` FAIL queue only
+  (above); on `452d0a9d` pass: stack free min 18,568 B, line loads/s mean
+  1,728 / max 4,103, evictions/s max 4,124, underruns 0, card errors 0,
+  uptime vs host −21 ppm, CPU idle 63 %. DAC headroom low-water −4,491
+  frames fell inside seek/playdir windows (not a finding). On `f7b1f4c8`
+  **PASS, 18.2 min**: discovery listed the owner's folders (16 folders,
+  none "no answer"); stack free min 18,568 B, loads/s mean 1,742 / max
+  4,196, evictions/s max 4,216, underruns 0, DAC headroom min 770 frames,
+  card errors 0, CPU idle 62 %. Owner's settings unchanged (`settings
+  changed`: `701=1 d50=10470 e80=20992`, as before the session's tests).
+  The player runs `f7b1f4c8` from slot B.
+* Books stays off: with it the static stack margin is 3,460 B (budget
+  4,096 B); needs ≈ 0.6 KB cut or the owner's OK.
+
 ### 2026-11-27 — PG-2b: PG-2's update, MIDI, clock and idle regressions (worker, player)
 
 Brief: the lead's four findings on PG-2 (`bdebff77`): updates broken, MIDI
