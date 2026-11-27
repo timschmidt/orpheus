@@ -404,14 +404,14 @@ impl ListScreen {
             }
             ListKind::Info(info) => self.info_rows(svc, info, &mut rows),
             ListKind::HomeApps => {
-                let mask = svc.setting(id::HOME_APPS);
+                let hidden = svc.setting(id::HOME_HIDDEN);
                 for (i, app) in App::ALL.iter().enumerate() {
                     if !svc.app_available(*app) {
                         continue;
                     }
                     let Some(r) = rows.push(l.get(app.label()), u16::try_from(i).unwrap_or(0)) else { break };
                     let fixed = *app == App::Settings;
-                    r.acc = Accessory::Check(fixed || mask & (1 << i) != 0);
+                    r.acc = Accessory::Check(fixed || hidden & (1 << i) == 0);
                     r.dim = fixed;
                 }
             }
@@ -732,8 +732,8 @@ impl ListScreen {
             }
             ListKind::HomeApps => {
                 if App::from_index(u8::try_from(tag).unwrap_or(0)) != Some(App::Settings) {
-                    let mask = cx.svc.setting(id::HOME_APPS) ^ (1 << tag);
-                    self.set(cx, id::HOME_APPS, mask);
+                    let hidden = cx.svc.setting(id::HOME_HIDDEN) ^ (1 << tag);
+                    self.set(cx, id::HOME_HIDDEN, hidden);
                 }
                 Nav::Stay
             }

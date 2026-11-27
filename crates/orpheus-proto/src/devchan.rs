@@ -105,6 +105,30 @@ pub fn served_while_paused(cmd: &[u8]) -> bool {
     cmd.starts_with(b"ls ")
 }
 
+/// What the card task's upload loop (`fcreate`, then `REQ_PUT` chunks)
+/// does with a test command that arrives while the file is open: `fclose`
+/// closes it; any other command ends the upload too (the file closed with
+/// what it has, the reply `upload aborted N`) and is then served as if no
+/// upload had been open. An upload nobody finishes can no longer hold the
+/// card task: before (2026-11-27) the loop took every later command
+/// without an answer until an `fclose` came.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UploadCmd {
+    Close,
+    Abort,
+}
+
+#[inline(always)]
+#[must_use]
+pub fn upload_cmd(cmd: &[u8]) -> UploadCmd {
+    if cmd == b"fclose" { UploadCmd::Close } else { UploadCmd::Abort }
+}
+
+/// An open upload with neither a chunk nor a command for this long is
+/// closed (reply `upload timed out N`). The host's uploader sends each
+/// chunk as soon as the last one is answered (and gives up after 10 s).
+pub const UPLOAD_IDLE_MS: u64 = 10_000;
+
 /// WebUSB `bVendorCode`: the browser asks for the landing page with
 /// `GET_URL` (`bRequest` = this, `wIndex` = 2). Outside the request numbers
 /// above.
@@ -401,6 +425,21 @@ mod tests {
         }
         // And `ls` never stops the paused track.
         assert!(!stops_track_first(b"ls /.orpheus"));
+    }
+
+    /// Regression (BOOK-1/2b, 2026-11-27): an upload never closed (its
+    /// `fcreate` served late, after the host had given up) held the card
+    /// task: every later test command (`stop`, another `fcreate`, `ls`)
+    /// was taken by the upload loop without an answer until `fclose`. Now
+    /// only `fclose` closes it as asked; any other command aborts it and is
+    /// served after; an idle upload times out.
+    #[test]
+    fn regress_abandoned_upload_took_every_command() {
+        assert_eq!(upload_cmd(b"fclose"), UploadCmd::Close);
+        for other in [&b"stop"[..], b"fcreate /.orpheus/test/x", b"ls /.orpheus", b"fclose ", b"fclos", b""] {
+            assert_eq!(upload_cmd(other), UploadCmd::Abort, "{:?}", core::str::from_utf8(other));
+        }
+        const { assert!(UPLOAD_IDLE_MS >= 2_000 && UPLOAD_IDLE_MS <= 30_000) };
     }
 
     /// Regression: `dev playdir` while a track played was ignored (AU-5,

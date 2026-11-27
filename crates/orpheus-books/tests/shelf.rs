@@ -410,7 +410,9 @@ fn book(exfat: bool) {
     again.request(Req::Open(war_row));
     let steps_before = again.steps;
     run(&mut again, &mut vol, |s| s.book.phase == Phase::Ready && s.book.window().is_some());
-    assert!(again.steps - steps_before < 10, "cached: no conversion");
+    // (The open itself is five steps of one file operation each since
+    // BOOK-1/2b.)
+    assert!(again.steps - steps_before < 14, "cached: no conversion ({} steps)", again.steps - steps_before);
     assert_eq!(again.book.top, at, "position restored");
     let bm = again.book.state.bookmarks();
     assert_eq!(bm.len(), 1);
@@ -875,4 +877,237 @@ fn split_on_fat32() {
 #[test]
 fn split_on_exfat() {
     split(true);
+}
+
+/// Regression (BOOK-1/2b, 2026-11-27): the on-device suite's `books`
+/// journey failed on the player because the test books carried reading
+/// progress ("The Lighthou… 17 %", "The Test Card 24 %" instead of "New")
+/// left by earlier runs, and the suite's library replaced the owner's
+/// (`/.orpheus/books/library.bin`), so the owner's next visit searched
+/// the card again and every book's progress showed "New". Now the suite's
+/// library ([`Scope::Test`]) has a file of its own and its books' state
+/// is kept in RAM only: nothing of it reaches the card, and every run
+/// starts at the first page.
+#[test]
+fn regress_suite_books_left_their_reading_state() {
+    let Some(disk) = image(false) else { return };
+    let mut cache = vec![CacheSlot::EMPTY; 8];
+    let dev = Counting { disk, reads: 0, writes: 0 };
+    let mut vol: Vol<'_> = block_on(Volume::mount(dev, &mut cache, MountOptions::default())).unwrap();
+    block_on(vol.create_dir("/Books")).unwrap();
+    put(&mut vol, "/Books/owner.txt", &tale());
+    for d in ["/.orpheus", "/.orpheus/test", "/.orpheus/test/suite", "/.orpheus/test/suite/books"] {
+        block_on(vol.create_dir(d)).unwrap();
+    }
+    put(&mut vol, "/.orpheus/test/suite/books/card.txt", &tale());
+    vol.set_write_prefix(Some("/.orpheus"));
+
+    // The owner reads a third of their book.
+    let mut owner = Books::new();
+    owner.request(Req::Library(Scope::BooksFolder));
+    owner.request(Req::Params(P));
+    idle(&mut owner, &mut vol);
+    owner.request(Req::Open(0));
+    run(&mut owner, &mut vol, |s| s.book.phase == Phase::Ready && s.book.complete);
+    owner.request(Req::Permille(330));
+    idle(&mut owner, &mut vol);
+    let at = view_lines(&owner).1.first.unwrap();
+    owner.request(Req::Seen(at));
+    owner.request(Req::Close);
+    idle(&mut owner, &mut vol);
+    let progress = owner.lib.row(0).unwrap().progress;
+    assert!((250..=400).contains(&progress), "{progress}");
+    let owner_lib = read_file(&mut vol, files::LIBRARY_PATH);
+
+    // Two suite runs: each opens the suite's book, reads on, bookmarks,
+    // closes.
+    for run_no in 0..2 {
+        let mut t = Books::new();
+        t.request(Req::Library(Scope::Test));
+        t.request(Req::Params(P));
+        idle(&mut t, &mut vol);
+        assert_eq!(t.lib.count, 1);
+        titles(&mut t, &mut vol);
+        assert_eq!(t.lib.row(0).unwrap().progress, PROGRESS_NEW, "run {run_no}: the book is new");
+        t.request(Req::Open(0));
+        run(&mut t, &mut vol, |s| s.book.phase == Phase::Ready && s.book.complete);
+        idle(&mut t, &mut vol);
+        assert_eq!(t.book.top.offset, 0, "run {run_no}: the first page");
+        assert_eq!(t.book.state.n, 0, "run {run_no}: no bookmarks");
+        assert!(t.book.ram_only);
+        let first = view_lines(&t).1.first.unwrap();
+        t.request(Req::AddBookmark(first));
+        t.request(Req::Permille(600));
+        idle(&mut t, &mut vol);
+        let at = view_lines(&t).1.first.unwrap();
+        for _ in 0..20 {
+            // More position changes than make a save while reading.
+            t.request(Req::Seen(at));
+            idle(&mut t, &mut vol);
+            t.request(Req::Seen(first));
+            idle(&mut t, &mut vol);
+        }
+        t.request(Req::Seen(at));
+        t.request(Req::Close);
+        idle(&mut t, &mut vol);
+        // Opened again in the same session: still from the start (its
+        // state was never written).
+        t.request(Req::Open(0));
+        run(&mut t, &mut vol, |s| s.book.phase == Phase::Ready && s.book.window().is_some());
+        assert_eq!(t.book.top.offset, 0);
+        t.request(Req::Close);
+        idle(&mut t, &mut vol);
+    }
+    // No state file for the suite's book; the owner's library untouched.
+    let id = files::book_id("/.orpheus/test/suite/books/card.txt");
+    let mut p = files::PathBuf::new();
+    assert!(
+        !block_on(vol.exists(p.file(files::BOOKS_DIR, id, "pos"))).unwrap(),
+        "no .pos for the suite's book"
+    );
+    assert_eq!(read_file(&mut vol, files::LIBRARY_PATH), owner_lib, "the owner's library file");
+    assert!(block_on(vol.exists(files::TEST_LIBRARY_PATH)).unwrap());
+
+    // The owner comes back: their library as it was (no search), the
+    // progress and the position kept.
+    let mut back = Books::new();
+    back.request(Req::Library(Scope::BooksFolder));
+    back.request(Req::Params(P));
+    let n = run(&mut back, &mut vol, |s| s.lib.phase == LibPhase::Ready).2;
+    assert!(n <= 2, "read, not searched ({n} steps)");
+    titles(&mut back, &mut vol);
+    assert_eq!(back.lib.row(0).unwrap().progress, progress);
+    back.request(Req::Open(0));
+    run(&mut back, &mut vol, |s| s.book.phase == Phase::Ready && s.book.window().is_some());
+    assert_eq!(back.book.top, at);
+    block_on(vol.flush()).unwrap();
+    let (dev, _) = block_on(vol.unmount());
+    fsck(&dev.disk, false);
+}
+
+/// Regression (BOOK-1/2b, 2026-11-27): opening a book while music played
+/// cost about two underruns every time on the player: the open was one
+/// step (the library record, the book's directory entry, its saved
+/// state, the cache's header and the contents file: five path walks),
+/// 49–77 ms and once 256 ms on the owner's card, against chore budgets
+/// of 26–30 ms. Now every step of an open does one file operation: here
+/// (a book four folders deep, the cache and state folders holding many
+/// files, the player's 8-slot sector cache and walk cache) no step of an
+/// open reads more than a few sectors (one step read 25 before, 7 now).
+#[test]
+fn regress_book_open_was_one_long_step() {
+    use orpheus_books::shelf::Desk;
+    let Some(disk) = image(false) else { return };
+    let mut cache = vec![CacheSlot::EMPTY; 8];
+    let dev = Counting { disk, reads: 0, writes: 0 };
+    let mut vol: Vol<'_> = block_on(Volume::mount(dev, &mut cache, MountOptions::default())).unwrap();
+    let mut walks = orpheus_fs::WalkCache::EMPTY;
+    vol.set_walk_cache(&mut walks);
+    for d in ["/Music", "/.orpheus", "/.orpheus/test", "/.orpheus/test/suite", "/.orpheus/test/suite/books"] {
+        block_on(vol.create_dir(d)).unwrap();
+    }
+    for i in 0..40 {
+        put(&mut vol, &format!("/Music/a long name for track number {i:03}.mp3"), b"x");
+    }
+    put(&mut vol, "/.orpheus/test/suite/books/The Test Card.txt", &tale());
+    put(&mut vol, "/.orpheus/test/suite/books/Another book.txt", &notes());
+    put(&mut vol, "/.orpheus/test/suite/books/Zebra, never opened.txt", &war());
+    let (mut sh, mut desk) = (Shelf::new(), Desk::new());
+    sh.request(Req::Library(Scope::Test));
+    sh.request(Req::Params(P));
+    while block_on(desk.step_with(&mut sh, &mut vol, &Mono, None)) {}
+    // Both opened once (cached, laid out), and many other files beside
+    // their caches.
+    for row in 0..2 {
+        sh.request(Req::Open(row));
+        while block_on(desk.step_with(&mut sh, &mut vol, &Mono, None)) {}
+        assert_eq!(sh.book.phase, Phase::Ready);
+        sh.request(Req::Close);
+        while block_on(desk.step_with(&mut sh, &mut vol, &Mono, None)) {}
+    }
+    for i in 0..60 {
+        put(&mut vol, &format!("/.orpheus/cache/books/other cached file {i:03}.txt"), b"x");
+        put(&mut vol, &format!("/.orpheus/books/other state file {i:03}.pos"), b"x");
+    }
+    block_on(vol.flush()).unwrap();
+    // Each opened again, as while music plays (no folder made): the most
+    // sectors a step read.
+    desk.mkdir = false;
+    let mut most = 0;
+    for row in [1, 0, 1] {
+        sh.request(Req::Open(row));
+        for _ in 0..1000 {
+            if sh.book.phase == Phase::Ready && sh.book.window().is_some() && sh.book.page_no.is_some() {
+                break;
+            }
+            let r0 = vol.device().reads;
+            block_on(desk.step_with(&mut sh, &mut vol, &Mono, None));
+            most = most.max(vol.device().reads - r0);
+        }
+        assert_eq!(sh.book.phase, Phase::Ready);
+        sh.request(Req::Close);
+        while block_on(desk.step_with(&mut sh, &mut vol, &Mono, None)) {}
+    }
+    assert!(most <= 8, "a step of an open read {most} sectors");
+    // A book never opened: its conversion starts, the text's and the
+    // contents' cache files made in steps of their own (one step made both
+    // with the head: 46 ms on the player, an underrun).
+    let mut most_io = 0;
+    sh.request(Req::Open(2));
+    for _ in 0..12 {
+        let (r0, w0) = (vol.device().reads, vol.device().writes);
+        block_on(desk.step_with(&mut sh, &mut vol, &Mono, None));
+        most_io = most_io.max(vol.device().reads - r0 + vol.device().writes - w0);
+    }
+    assert_eq!(sh.book.phase, Phase::Converting);
+    // Each a search of the cache folder (here 120 files beside the books':
+    // 24–33 sectors each); in one step they were 59.
+    assert!(most_io <= 40, "a step of a conversion's start did {most_io} sector reads and writes");
+}
+
+/// Regression (BOOK-1/2b, 2026-11-27): on the player a book sometimes
+/// never opened ("The book could not be read.", `books status`
+/// `book=closed` or `opening` with its step count frozen until the
+/// library was entered again), typically after another book was read and
+/// the library shown again. The library screen asks for its rows when it
+/// shows; with every row already loaded that step did nothing and said so
+/// ("nothing to do"), and the firmware ends its card work at such a step
+/// (it waits for the next request): the open asked for in the same
+/// breath was never run. A step now goes on to the next work when the
+/// rows are loaded already; here, as the firmware runs it, until the
+/// first step that does nothing.
+#[test]
+fn regress_open_after_loaded_rows_never_ran() {
+    use orpheus_books::shelf::Desk;
+    let Some(disk) = image(false) else { return };
+    let mut cache = vec![CacheSlot::EMPTY; 8];
+    let dev = Counting { disk, reads: 0, writes: 0 };
+    let mut vol: Vol<'_> = block_on(Volume::mount(dev, &mut cache, MountOptions::default())).unwrap();
+    block_on(vol.create_dir("/Books")).unwrap();
+    put(&mut vol, "/Books/a.txt", &tale());
+    put(&mut vol, "/Books/b.md", &notes());
+    let (mut sh, mut desk) = (Shelf::new(), Desk::new());
+    // As the firmware's card task: steps until one does nothing.
+    let work = |sh: &mut Shelf, desk: &mut Desk, vol: &mut Vol<'_>| {
+        let mut n = 0;
+        while block_on(desk.step_with(sh, vol, &Mono, None)) {
+            n += 1;
+            assert!(n < 100_000);
+        }
+    };
+    sh.request(Req::Library(Scope::BooksFolder));
+    sh.request(Req::Params(P));
+    sh.request(Req::Rows(0));
+    work(&mut sh, &mut desk, &mut vol);
+    assert_eq!(sh.lib.count, 2);
+    for round in 0..2 {
+        // Back in the library (its rows asked for again), then a book.
+        sh.request(Req::Rows(0));
+        sh.request(Req::Open(round));
+        work(&mut sh, &mut desk, &mut vol);
+        assert_eq!(sh.book.phase, Phase::Ready, "round {round}");
+        assert!(sh.book.window().is_some() && sh.book.page_no.is_some(), "round {round}");
+        sh.request(Req::Close);
+        work(&mut sh, &mut desk, &mut vol);
+    }
 }

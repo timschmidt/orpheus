@@ -30,7 +30,7 @@ use crate::fb2::MetaText;
 use crate::files::{
     self, BOOKS_DIR, BookState, Bookmark, CACHE_DIR, INDEX_ENTRY, INDEX_HEADER, IndexHeader, LIB_HEADER,
     LIB_ORDER, LIB_PROGRESS_AT, LIB_RECORD, LIBRARY_PATH, LibHeader, LibRecord, MAX_BOOKS, NORM_HEADER,
-    NormHeader, PathBuf, SNIPPET, STATE_BYTES, TOC_ENTRY,
+    NormHeader, PathBuf, SNIPPET, STATE_BYTES, TEST_LIBRARY_PATH, TOC_ENTRY,
 };
 use crate::layout::{MAX_PAGE_BYTES, Mark, Metrics, Paginator, Params, Skip};
 use crate::norm::{Item, Sink, TocEntry, item_at};
@@ -79,6 +79,13 @@ impl Scope {
             Scope::WholeCard => "/",
             Scope::Test => TEST_FOLDER,
         }
+    }
+
+    /// The library file of this scope: the suite's books have their own
+    /// ([`TEST_LIBRARY_PATH`]), so a test never replaces the owner's.
+    #[must_use]
+    pub fn library(self) -> &'static str {
+        if self == Scope::Test { TEST_LIBRARY_PATH } else { LIBRARY_PATH }
     }
 }
 
@@ -220,6 +227,19 @@ enum Pending {
     Toc(u32),
 }
 
+/// The steps of an open after the library record, one file operation
+/// each ([`Desk::open_more`]): the book's directory entry, its saved
+/// state (not for [`Book::ram_only`] books), the cache's header, then
+/// the contents file (cached) or the book itself (to convert).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Opening {
+    Stat,
+    State,
+    Cache,
+    Toc,
+    Source,
+}
+
 /// A binary search over the page index file, one chunk read per step.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Search {
@@ -276,6 +296,11 @@ pub struct Book {
     /// The state changed since it was written; position changes since.
     dirty: bool,
     moves: u8,
+    /// A book of the on-device suite's library ([`Scope::Test`]): its
+    /// position and bookmarks are kept in RAM only, never read from or
+    /// written to the card, so a test leaves nothing behind and starts the
+    /// same whatever earlier runs did (BOOK-1/2b).
+    pub ram_only: bool,
     idx_cache: [Mark; IDX_CACHE],
     idx_first: u32,
     idx_n: u8,
@@ -318,6 +343,7 @@ impl Default for Book {
             search: None,
             dirty: false,
             moves: 0,
+            ram_only: false,
             idx_cache: [Mark::START; IDX_CACHE],
             idx_first: 0,
             idx_n: 0,
@@ -366,6 +392,7 @@ impl Book {
             search,
             dirty,
             moves,
+            ram_only,
             idx_cache: _,
             idx_first,
             idx_n,
@@ -402,6 +429,7 @@ impl Book {
         *search = None;
         *dirty = false;
         *moves = 0;
+        *ram_only = false;
         *idx_first = 0;
         *idx_n = 0;
     }
@@ -511,11 +539,20 @@ struct SaveRec {
     row: u16,
     text_len: u32,
     state: BookState,
+    /// Not written ([`Book::ram_only`]).
+    ram_only: bool,
 }
 
 impl SaveRec {
     fn of(b: &Book) -> SaveRec {
-        SaveRec { id: b.id, rec: b.rec, row: b.row, text_len: b.text_len, state: b.state }
+        SaveRec {
+            id: b.id,
+            rec: b.rec,
+            row: b.row,
+            text_len: b.text_len,
+            state: b.state,
+            ram_only: b.ram_only,
+        }
     }
 }
 
@@ -777,6 +814,8 @@ pub struct Desk {
     pub mkdir: bool,
     /// A folder is missing and `mkdir` was off.
     mkdir_wait: bool,
+    /// The open in progress: its next step ([`Desk::open_more`]).
+    opening: Option<Opening>,
     /// The steps' reads and writes of their own ([`IO`]).
     io: [u8; IO],
     /// A directory entry (a book's size and time when it opens).
@@ -879,8 +918,12 @@ impl Shelf {
                     self.save = Some(SaveRec::of(b));
                 }
                 // The open book's files go (its conversion or layout is
-                // given up) before anything else in the next step.
+                // given up) before anything else in the next step. A close
+                // asked before (the reader left, its state staged above)
+                // is done by that: still pending, its step would mark the
+                // book being opened Closed (BOOK-1/2b).
                 self.drop_book = true;
+                self.close = false;
                 self.open = Some(row);
                 self.book.reset(Phase::Opening, row);
             }
@@ -1012,6 +1055,7 @@ impl Desk {
             orphans: [None, None, None, None, None],
             mkdir: true,
             mkdir_wait: false,
+            opening: None,
             io: [0; IO],
             entry: DirEntry::new(),
         }
@@ -1031,11 +1075,13 @@ impl Desk {
         self.orphans = [None, None, None, None, None];
         self.mkdir = true;
         self.mkdir_wait = false;
+        self.opening = None;
     }
 
     /// Drop the open book's files (its state is written by the close
     /// step first when it has changed).
     fn close_now(&mut self) {
+        self.opening = None;
         self.norm = None;
         self.idx = None;
         self.tocf = None;
@@ -1089,6 +1135,7 @@ impl Desk {
         if sh.lib.phase == LibPhase::Loading
             || (sh.lib.want.is_some() && sh.lib.phase == LibPhase::Ready)
             || sh.open.is_some()
+            || self.opening.is_some()
         {
             return Some(Kind::Read);
         }
@@ -1204,7 +1251,7 @@ impl Desk {
             return true;
         }
         if let Some(rec) = stage_names(&mut self.retitle, &mut self.io) {
-            if let Ok(mut lf) = vol.open(LIBRARY_PATH, OpenMode::ReadWrite).await {
+            if let Ok(mut lf) = vol.open(sh.lib.scope.library(), OpenMode::ReadWrite).await {
                 lf.set_position(files::lib_record_at(rec) + files::LIB_NAMES_AT as u64);
                 if vol.write(&mut lf, &self.io[..files::LIB_NAMES]).await.is_ok() {
                     let _ = vol.flush_file(&mut lf).await;
@@ -1236,14 +1283,23 @@ impl Desk {
             self.load_library(sh, vol).await;
             return true;
         }
+        // Rows already loaded: nothing done, and the work below goes on in
+        // this step. (Returning "nothing to do" here ended the firmware's
+        // card work with an open still pending: the book never opened,
+        // BOOK-1/2b.)
         if let Some(first) = sh.lib.want
             && sh.lib.phase == LibPhase::Ready
+            && self.rows_step(sh, vol, first).await
         {
-            return self.rows_step(sh, vol, first).await;
+            return true;
         }
         // 3. Opening a book.
         if let Some(row) = sh.open.take() {
             self.open_book(sh, vol, row).await;
+            return true;
+        }
+        if let Some(at) = self.opening {
+            self.open_more(sh, vol, at).await;
             return true;
         }
         if let Work::Convert(_) = self.work {
@@ -1278,7 +1334,7 @@ impl Desk {
 
     async fn load_library<D: BlockDevice>(&mut self, sh: &mut Shelf, vol: &mut Volume<'_, D>) {
         let buf = &mut self.io[..LIB_HEADER + LIB_ORDER];
-        let ok = match vol.open(LIBRARY_PATH, OpenMode::Read).await {
+        let ok = match vol.open(sh.lib.scope.library(), OpenMode::Read).await {
             Ok(mut f) => vol.read_exact_or_eof(&mut f, buf).await.is_ok_and(|n| n == LIB_HEADER + LIB_ORDER),
             Err(_) => false,
         };
@@ -1317,7 +1373,7 @@ impl Desk {
             return false;
         }
         // Two records per step.
-        let Ok(mut f) = vol.open(LIBRARY_PATH, OpenMode::Read).await else {
+        let Ok(mut f) = vol.open(lib.scope.library(), OpenMode::Read).await else {
             lib.want = None;
             lib.phase = LibPhase::Unknown;
             return true;
@@ -1354,7 +1410,7 @@ impl Desk {
         let Work::Scan(job) = &mut self.work else { return false };
         if !job.started {
             job.started = true;
-            let Ok(mut f) = vol.open(LIBRARY_PATH, OpenMode::Truncate).await else {
+            let Ok(mut f) = vol.open(scope.library(), OpenMode::Truncate).await else {
                 drop_work(&mut self.work, &mut self.orphans);
                 sh.lib.phase = LibPhase::Ready;
                 return true;
@@ -1532,12 +1588,14 @@ impl Desk {
 
     // ----- opening ------------------------------------------------------
 
+    /// The first step of an open: the book's library record (path, title,
+    /// format). The rest follows in steps of one file operation each
+    /// ([`Desk::open_more`]).
     async fn open_book<D: BlockDevice>(&mut self, sh: &mut Shelf, vol: &mut Volume<'_, D>, row: u16) {
         let b = &mut sh.book;
         let fail = |b: &mut Book| b.phase = Phase::Failed;
         let Some(rec_i) = sh.lib.record_of(row) else { return fail(b) };
-        // The record: path, title, format.
-        let Ok(mut lf) = vol.open(LIBRARY_PATH, OpenMode::Read).await else { return fail(b) };
+        let Ok(mut lf) = vol.open(sh.lib.scope.library(), OpenMode::Read).await else { return fail(b) };
         let rec = &mut self.io[..LIB_RECORD];
         lf.set_position(files::lib_record_at(rec_i));
         if !vol.read_exact_or_eof(&mut lf, rec).await.is_ok_and(|n| n == LIB_RECORD) {
@@ -1546,38 +1604,73 @@ impl Desk {
         // Decoded in a function of its own: the record is neither in the
         // step's future nor in its poll frame.
         take_record(b, rec, rec_i);
-        // The book as it is now.
-        if vol.stat(b.src.as_str(), &mut self.entry).await.is_err() {
-            return fail(b);
-        }
-        b.src_size = u32::try_from(self.entry.size()).unwrap_or(u32::MAX);
-        b.src_stamp = files::stamp(self.entry.modified());
-        // Position and bookmarks.
-        let st = &mut self.io[..STATE_BYTES];
-        if let Ok(mut f) = vol.open(self.path.file(BOOKS_DIR, b.id, "pos"), OpenMode::Read).await
-            && vol.read_exact_or_eof(&mut f, st).await.is_ok_and(|n| n == STATE_BYTES)
-            && take_state(b, st)
-        {}
-        // The cache, if it is of this book as it is.
-        let mut h = [0u8; NORM_HEADER];
-        let cached = match vol.open(self.path.file(CACHE_DIR, b.id, "txt"), OpenMode::Read).await {
-            Ok(mut f) => {
-                let ok = vol.read_exact_or_eof(&mut f, &mut h).await.is_ok_and(|n| n == NORM_HEADER);
-                NormHeader::decode(&h)
-                    .filter(|h| ok && h.complete && h.src_size == b.src_size && h.src_stamp == b.src_stamp)
-                    .map(|h| (h, f))
+        b.ram_only = sh.lib.scope == Scope::Test;
+        self.opening = Some(Opening::Stat);
+    }
+
+    /// One more step of an open (BOOK-1/2b: the whole open was one step of
+    /// five path walks, 49–77 ms and once 256 ms on the owner's card while
+    /// music played, against chore budgets of 26–30 ms: two underruns at
+    /// every open).
+    async fn open_more<D: BlockDevice>(&mut self, sh: &mut Shelf, vol: &mut Volume<'_, D>, at: Opening) {
+        let b = &mut sh.book;
+        self.opening = None;
+        match at {
+            // The book as it is now.
+            Opening::Stat => {
+                if vol.stat(b.src.as_str(), &mut self.entry).await.is_err() {
+                    b.phase = Phase::Failed;
+                    return;
+                }
+                b.src_size = u32::try_from(self.entry.size()).unwrap_or(u32::MAX);
+                b.src_stamp = files::stamp(self.entry.modified());
+                // The suite's books start where a fresh book does.
+                self.opening = Some(if b.ram_only { Opening::Cache } else { Opening::State });
             }
-            Err(_) => None,
-        };
-        match cached {
-            Some((h, f)) => {
-                b.lang = h.lang;
-                self.norm = Some(f);
+            // Position and bookmarks.
+            Opening::State => {
+                let st = &mut self.io[..STATE_BYTES];
+                if let Ok(mut f) = vol.open(self.path.file(BOOKS_DIR, b.id, "pos"), OpenMode::Read).await
+                    && vol.read_exact_or_eof(&mut f, st).await.is_ok_and(|n| n == STATE_BYTES)
+                    && take_state(b, st)
+                {}
+                self.opening = Some(Opening::Cache);
+            }
+            // The cache, if it is of this book as it is.
+            Opening::Cache => {
+                let mut h = [0u8; NORM_HEADER];
+                let cached = match vol.open(self.path.file(CACHE_DIR, b.id, "txt"), OpenMode::Read).await {
+                    Ok(mut f) => {
+                        let ok = vol.read_exact_or_eof(&mut f, &mut h).await.is_ok_and(|n| n == NORM_HEADER);
+                        NormHeader::decode(&h)
+                            .filter(|h| {
+                                ok && h.complete && h.src_size == b.src_size && h.src_stamp == b.src_stamp
+                            })
+                            .map(|h| (h, f))
+                    }
+                    Err(_) => None,
+                };
+                match cached {
+                    Some((h, f)) => {
+                        b.lang = h.lang;
+                        b.text_len = h.text_len;
+                        b.toc_count = h.toc_count;
+                        self.norm = Some(f);
+                        self.opening = Some(Opening::Toc);
+                    }
+                    None => self.opening = Some(Opening::Source),
+                }
+            }
+            Opening::Toc => {
                 self.tocf = vol.open(self.path.file(CACHE_DIR, b.id, "toc"), OpenMode::Read).await.ok();
-                Self::ready(b, h.text_len, h.toc_count);
+                Self::ready(b, b.text_len, b.toc_count);
             }
-            None => {
-                let Ok(src) = vol.open(b.src.as_str(), OpenMode::Read).await else { return fail(b) };
+            // Not cached: converted.
+            Opening::Source => {
+                let Ok(src) = vol.open(b.src.as_str(), OpenMode::Read).await else {
+                    b.phase = Phase::Failed;
+                    return;
+                };
                 b.phase = Phase::Converting;
                 b.permille = 0;
                 begin_convert(&mut self.work, src);
@@ -1606,6 +1699,17 @@ impl Desk {
     ) -> bool {
         let Work::Convert(job) = &mut self.work else { return false };
         let b = &mut sh.book;
+        // The contents file in a step of its own, after the text's (both
+        // in one step, with the head, were a 46-ms piece while music
+        // played: an underrun, BOOK-1/2b).
+        if !matches!(job.c, Parse::None) && job.norm.is_some() && job.toc.is_none() {
+            job.toc = vol.open(self.path.file(CACHE_DIR, b.id, "toc"), OpenMode::Truncate).await.ok();
+            if job.toc.is_none() {
+                b.phase = Phase::Failed;
+                drop_work(&mut self.work, &mut self.orphans);
+            }
+            return true;
+        }
         if matches!(job.c, Parse::Epub(_)) {
             return self.epub_step(sh, vol, scratch).await;
         }
@@ -1624,8 +1728,7 @@ impl Desk {
                 begin_plain(&mut job.c, b.format, &job.inbuf[..n], job.eof);
             }
             job.norm = vol.open(self.path.file(CACHE_DIR, b.id, "txt"), OpenMode::Truncate).await.ok();
-            job.toc = vol.open(self.path.file(CACHE_DIR, b.id, "toc"), OpenMode::Truncate).await.ok();
-            let (Some(norm), Some(_)) = (job.norm.as_mut(), job.toc.as_ref()) else {
+            let Some(norm) = job.norm.as_mut() else {
                 b.phase = Phase::Failed;
                 drop_work(&mut self.work, &mut self.orphans);
                 return true;
@@ -1850,6 +1953,7 @@ impl Desk {
             let _ = vol.flush_file(&mut f).await;
         }
         // The library's progress for this book.
+        // (Only the owner's books get here: the suite's are `ram_only`.)
         if let Ok(mut lf) = vol.open(LIBRARY_PATH, OpenMode::ReadWrite).await {
             lf.set_position(files::lib_record_at(rec) + LIB_PROGRESS_AT as u64);
             if vol.write(&mut lf, &progress.to_le_bytes()).await.is_ok() {
@@ -2352,6 +2456,11 @@ fn take_state(b: &mut Book, raw: &[u8]) -> bool {
 #[inline(never)]
 fn stage_save(sh: &mut Shelf, io: &mut [u8; IO]) -> Option<(u32, u16, u16, u16)> {
     let r = sh.save.as_ref()?;
+    if r.ram_only {
+        // The suite's book: its state stays in RAM (`Book::ram_only`).
+        sh.save = None;
+        return None;
+    }
     io[..STATE_BYTES].copy_from_slice(&r.state.encode());
     let out = (r.id, r.rec, r.row, permille(r.state.pos.offset, r.text_len));
     sh.save = None;
@@ -2372,6 +2481,23 @@ mod tests {
     use std::format;
 
     use super::*;
+
+    /// Regression (BOOK-1/2b, 2026-11-27): leaving the reader (Close) and
+    /// opening another book before the card task's next step left the
+    /// close pending: its step marked the book being opened Closed, which
+    /// the reader shows as "The book could not be read." (`books status`
+    /// `book=closed` on the player). The open makes the close moot.
+    #[test]
+    fn regress_close_then_open_marked_the_book_closed() {
+        let mut sh = Shelf::new();
+        sh.book.phase = Phase::Ready;
+        sh.request(Req::Close);
+        assert!(sh.close);
+        sh.request(Req::Open(1));
+        assert!(!sh.close, "the open's own drop of the files does the close");
+        assert!(sh.drop_book && sh.open == Some(1));
+        assert_eq!(sh.book.phase, Phase::Opening);
+    }
 
     /// `Book::reset` (in place, for the player's stack: 2026-11-26) leaves
     /// the book as `Book { phase, row, ..Book::default() }` did, but for

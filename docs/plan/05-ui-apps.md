@@ -300,7 +300,9 @@ for 1 s after each move).
 | Authenticator | USB Drive | Settings | |
 
 Up/Down/Prev/Next move in the grid (wrapping), OK opens. Order and visibility
-are editable in Settings → Display → Home screen. Apps whose hardware is absent
+are editable in Settings → Display → Home screen (stored as the apps *hidden*,
+key 0x030E since 2026-11-27, so an app added by a later firmware shows until
+the owner hides it; the old key 0x030B, the apps shown, is retired). Apps whose hardware is absent
 or unsupported in the running build (see 06-connectivity §"Bluetooth") are
 hidden, not greyed.
 
@@ -1868,10 +1870,24 @@ checked in a linked image (see STATUS), not run on the player.
   closes (its position written, ≤ 1 s) before the card task shuts down.
 * **Test hooks**: `books status` (the model as the card task left it:
   library and book phase, conversion, waiting, top, page, pages, steps,
-  lent steps, retaken scratches, a folder waiting), `books test on|off`
-  (`Scope::Test`: `/.orpheus/test/suite/books`, the suite's books), the
+  lent steps, retaken scratches, a folder waiting, `busy`: chores that
+  found the model held by the UI), `books test on|off`
+  (`Scope::Test`: `/.orpheus/test/suite/books`, the suite's books, with a
+  library file of their own, `/.orpheus/test/suite/books/.library`, and their
+  reading state in RAM only: a test leaves no position or progress behind
+  and never rewrites the owner's library; BOOK-1/2b), the
   simulator's `set:bookstest=on`; the suite's `books` journey (skipped on
   an image without the feature: `requires`).
+* **Card work while music plays** (BOOK-1/2b, 2026-11-27): an open is a
+  step per file operation (the record, the book's entry, its state, the
+  cache's header, then the contents file or the book for conversion; a
+  conversion makes its text and contents files in steps of their own);
+  the clock floor is High while Books has card work and a track plays
+  (`audio::books_boost`); a chore piece runs only steps of the kind it was
+  admitted for, without card rests (`Urgent`). Measured on the player
+  with a 48 kHz, 256 kbit/s MP3: open steps 4–37 ms, 0 underruns over
+  four opens, an open in 6–9 s (each step waits for headroom: the chore
+  rule's starvation path, `orpheus_audio::chore`).
 
 ### 7.16 Sequencer (drum machine and synth; M17; owner's requirement 2026-11-25)
 

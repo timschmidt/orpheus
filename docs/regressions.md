@@ -96,6 +96,14 @@ then passed with it).
 | DOC-2: Settings › Bluetooth › Output was offered (Settings, quick panel) but nothing read it | 11-27 | VER-13 | `sim/tests/settings_matrix.rs::effects::regress_output_setting_offered_without_effect` | new, R |
 | DOC-2: System › Diagnostics opened "Not available yet" | 11-27 | VER-13 | `sim/tests/storage.rs::regress_diagnostics_was_not_available` | new |
 | BOOK-1/2: the default image with speech and Books did not link after PG-2b ("paged rodata and cold code need 33 groups of 16 KiB, the window holds 32"): the padding before a cold section moved clear of its constants was never reused (32 KB), and the code window's reserve page stayed empty while the rodata window overflowed | 11-27 | BOOK-1/2 | `xtask` `pagelink::tests::regress_cold_padding_was_never_filled`, `regress_reserve_page_kept_while_the_rodata_window_overflowed`; `cargo xtask build` | new |
+| BOOK-1/2b: the suite's `books` journey failed: its books carried reading progress from earlier runs ("17 %", "24 %" for "New"), and the suite's library (`Scope::Test`) replaced the owner's `library.bin` (the owner's next visit searched again and lost every book's progress) | 11-27 | BOOK-1/2b | `orpheus-books/tests/shelf.rs::regress_suite_books_left_their_reading_state` (the suite's books in RAM only, their own library file `/.orpheus/test/suite/books/.library`); the suite's `books` journey | new, R |
+| BOOK-1/2b: Books hidden on the owner's Home: the Home-apps mask (0x030B, apps *shown*) was saved as 0x0FFF when Home had twelve apps; Books (bit 12) came later | 11-27 | BOOK-1/2b | `sim/tests/apps.rs::regress_home_hid_apps_added_after_the_mask_was_saved` (now 0x030E, the apps *hidden*; 0x030B retired); `settings_matrix::s030e` | new, R |
+| BOOK-1/2b: opening a book while MP3 played cost ≈ 2 underruns: the open was one step of five path walks (49–77 ms, once 256 ms); a conversion's start made both cache files in one step (46 ms) | 11-27 | BOOK-1/2b | `orpheus-books/tests/shelf.rs::regress_book_open_was_one_long_step` (25 → 7 sectors in a step; a conversion's start 59 → ≤ 40); on the player: four opens with a 48 kHz MP3, 0 underruns | new, R |
+| BOOK-1/2b: a book never opened while music played ("The book could not be read.", `book=closed`/`opening`, `steps` frozen): (1) the library's row request, its rows already loaded, ended the card work with the open still pending; (2) a close still pending marked the book being opened Closed; (3) a chore whose need (34 ms) exceeded the budget at the best headroom never starved into running: 48 kHz MP3 at Base leaves 2,283 frames after every block, 21 short of roomy | 11-27 | BOOK-1/2b | `orpheus-books/tests/shelf.rs::regress_open_after_loaded_rows_never_ran`; `orpheus_books::shelf::tests::regress_close_then_open_marked_the_book_closed`; `orpheus_audio::chore::tests::regress_a_chore_starved_for_ever_below_a_roomy_dac`; on the player (`status` `due=`, `books status`) | new, R |
+| BOOK-1/2b: the reader's failure message was cut off ("The book could not b…") | 11-27 | BOOK-1/2b | goldens `books_failed_{dark,light}` (`set:bookfail=on`) | new |
+| BOOK-1/2b: an upload never closed (`fcreate` served after the host gave up) took every later test command without an answer until `fclose` | 11-27 | BOOK-1/2b | `orpheus_proto::devchan::tests::regress_abandoned_upload_took_every_command`; on the player: `fcreate` then `ls` (`upload aborted 0`, the listing), `fcreate` alone (`upload timed out 0` after 10 s), a `dev put` cut by a USB reset (the next `ls` answered) | new |
+| BOOK-1/2b: idle Home ≈ 193 line loads/s (138 before Books): the UI and USB tasks' loop code evicted each other by layout | 11-27 | BOOK-1/2b | `hot.toml` cluster `idle-home` (`pagelink`'s cluster checks); the suite's idle-Home note and `dev stats` 10 s apart (≈ 135/s on the player; 127/s on the merged image, its cluster made again) | device |
+| BOOK-1/2b: a Books chore admitted for a read ran a write (or any other kind) after it in the same piece | 11-27 | BOOK-1/2b | firmware glue (`books::chore` stops at a kind change); `chore:` lines on the player name the kind | device |
 
 ## Test-infrastructure fixes (no `regress_` test needed)
 
@@ -124,9 +132,7 @@ Playing redraw), RTC stopped after some resets, AU-0b ticking, the first
 FLAC gapless join (3–4 underruns), album-art dropouts, "Start original
 firmware" offered in the full layout (`dual_boot()`), no language packs on
 the player.
-BOOK-1/2 on the player (2026-11-27): opening a book while MP3 plays costs ≈ 2
-underruns (`job:bread` pieces of 49–256 ms); once "The book could not be
-opened" (and the message cut off) for the text after the EPUB, under
-music; an abandoned upload (`fcreate` without `fclose`) holds the card
-task; a stored Home-apps mask hides apps added after it was saved (Books
-on the owner's Home); idle Home 193 line loads/s (138 before Books).
+BOOK-1/2b (2026-11-27): a book opens slowly while music plays (6–9 s on
+the player with a 48 kHz MP3: its steps, 4–37 ms each, wait for headroom
+through the chore rule's starvation path), and a gapless MP3 join's
+preparation underran once (`ub=prep:23ms`).

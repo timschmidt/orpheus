@@ -281,7 +281,7 @@ fn books_cases(add: &mut dyn FnMut(String, String)) {
         ("library_searching", "set:books=on set:booksteps=12 goto:Books wait:10".into()),
         ("library_menu", format!("{lib} menu")),
         ("library_progress", format!("{} next next back wait:50 down*2", open(0))),
-        ("preparing", format!("{lib} down*4 set:booksteps=1 ok")),
+        ("preparing", format!("{lib} down*4 set:booksteps=3 ok")),
         ("alice", open(0)),
         ("alice_page2", format!("{} next wait:50", open(0))),
         ("alice_line_down", format!("{} next wait:50 down down wait:50", open(0))),
@@ -306,6 +306,9 @@ fn books_cases(add: &mut dyn FnMut(String, String)) {
         // On the player while a track is loaded (the decoder arena is not
         // lent): the EPUB waits, with the hint.
         ("epub_waiting", format!("{lib} set:bookscratch=off down*3 ok wait:200 expect-screen:Reader")),
+        // The book could not be read: the message on two lines (it was
+        // cut off on one, BOOK-1/2b).
+        ("failed", format!("{} set:bookfail=on wait:50", open(0))),
         ("chapter_next", format!("{} hold:next wait:50", open(0))),
         ("end", format!("{} set:0x0f80=16 next*30 wait:50", open(6))),
         ("medium", format!("set:0x0f01=1 {}", open(0))),

@@ -154,6 +154,32 @@ fn quick_panel_changes_values_in_row() {
     assert_eq!(s.sys.settings.get(id::BLUETOOTH), 1);
 }
 
+/// Regression (BOOK-1/2b, 2026-11-27): Books did not show on the owner's
+/// Home. Settings › Display › Home screen was stored as the apps *shown*
+/// (key 0x030B); the owner's store held 0x0FFF, saved when Home had twelve
+/// apps, so Books (bit 12, added later) was hidden without anyone hiding
+/// it. The setting is now the apps hidden (0x030E, default none); the old
+/// key is retired and skipped, so the owner's choice (every app) reads as
+/// the new default and Books appears.
+#[test]
+fn regress_home_hid_apps_added_after_the_mask_was_saved() {
+    let mut s = AppSim::new();
+    // The owner's store as the firmware before 2026-11-27 left it.
+    s.sys.settings.load(0x030B, &settings::encode(0x0FFF));
+    assert!(!s.sys.settings.is_dirty(), "nothing to write");
+    // Home looks at its apps again (as after any Home-screen change).
+    run(&mut s, "set:seq=on set:seq=off");
+    run(&mut s, "prev*2 ok expect-screen:Books hold:back expect-screen:Home");
+    // Hiding it still hides it, and only it (the Sequencer's bit: `set:seq=off`
+    // above).
+    let books = App::Books as usize;
+    run(&mut s, &format!("prev ok down*2 ok down*11 ok expect-screen:HomeApps down*{books} ok"));
+    let seq = 1 << App::Sequencer as usize;
+    assert_eq!(s.sys.settings.get(id::HOME_HIDDEN), 1 << books | seq);
+    run(&mut s, "hold:back expect-screen:Home prev*2 ok");
+    assert_ne!(s.screen(), "Books");
+}
+
 #[test]
 fn home_grid_and_hidden_apps() {
     let mut s = sim("set:card=absent ok expect-screen:Notice back");
@@ -166,7 +192,7 @@ fn home_grid_and_hidden_apps() {
     );
     // Hide Radio (bit 2) in Settings > Display > Home screen.
     run(&mut s, "prev ok down*2 ok down*11 ok expect-screen:HomeApps down*2 ok");
-    assert_eq!(s.sys.settings.get(id::HOME_APPS) & (1 << 2), 0);
+    assert_ne!(s.sys.settings.get(id::HOME_HIDDEN) & (1 << 2), 0);
     // Settings cannot be hidden.
     run(&mut s, "down*8 ok");
     run(&mut s, "hold:back expect-screen:Home");

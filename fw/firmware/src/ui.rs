@@ -874,7 +874,7 @@ pub(crate) fn session_on() -> bool {
 /// reader's (A11Y-1, TTS-3). Never Bluetooth, power, clock, USB, storage,
 /// alarms or the radio's station (CLAUDE.md rules 4 and 6).
 fn session_settable(id: u16) -> bool {
-    (matches!(id >> 8, 0x01 | 0x02 | 0x03 | 0x0A) && id != 0x030B)
+    (matches!(id >> 8, 0x01 | 0x02 | 0x03 | 0x0A) && id != 0x030E)
         || matches!(id, 0x0D01..=0x0D03 | 0x1001..=0x100D)
 }
 
@@ -1328,9 +1328,9 @@ pub async fn ui() {
         // VER-7: the test look switched: every screen reloads and redraws.
         if test_look_on() != seen_look {
             seen_look = !seen_look;
-            ui.fw
-                .pending
-                .push(Event::Service(ServiceEvent::SettingChanged(orpheus_apps::settings::id::HOME_APPS.0)));
+            ui.fw.pending.push(Event::Service(ServiceEvent::SettingChanged(
+                orpheus_apps::settings::id::HOME_HIDDEN.0,
+            )));
             ui.shell.invalidate();
         }
         // VER-12: `settings test-set`, `ui screen-off`.

@@ -325,14 +325,19 @@ rects = [
 # books (`--setup` puts them in /.orpheus/test/suite/books: a text of four
 # pages and the EPUB sample; `books test on` makes that folder the library,
 # a RAM flag): nothing outside /.orpheus is read for it, and Books writes
-# only its folders, library, cache and reading positions under /.orpheus
-# (rule 5). `books status` is read-only (the model as the card task left
-# it). The library is shot with the text focused (the EPUB's title, a
-# marquee when focused, would move). The text opens where a run left it;
-# seven Prevs bring it to its first page whatever that was (it has seven
-# pages on the player; three were not enough after a hand-run left it on
-# page 4, 2026-11-27). Home's Books
-# cell is the one before Settings.
+# only its folders, the suite's own library file and the cache under
+# /.orpheus (rule 5); the suite's books' reading positions and bookmarks
+# stay in RAM (BOOK-1/2b: positions left by earlier runs showed as
+# progress in the library shot, and the text opened where a run had left
+# it), so every run starts with both books new and the text on its first
+# page. `books status` is read-only (the model as the card task left it).
+# The library is shot with the text focused (the EPUB's title, a marquee
+# when focused, would move). Home's Books cell is the one before Settings.
+# 8 s for the library: when its file is missing (a new card, Clear caches
+# before BOOK-1/2b moved it) the folder is searched and the EPUB's title
+# read, `lib=searching` still after 3 s on the player; 5 s for the text,
+# converted and laid out again after `storage_clear` (the suite's last
+# journey) emptied the cache (`page=-` after 2 s).
 [[journey]]
 name = "books"
 about = "Books (with the firmware feature `books`): the suite's library of two books, the text's first page, a page turned (books status page=1), back to the first page, back to the library and Home"
@@ -342,12 +347,11 @@ script = """
 cmd: books test on ~ ^books test on
 sim: set:bookstest=on
 prev*2 ok wait:500 expect-screen:Books
-dev: wait:3000
+dev: wait:8000
 cmd: books status ~ lib=ready n=2\\b
 down wait:300 shot:library
 ok wait:500 expect-screen:Reader
-dev: wait:2000
-prev*7 wait:500
+dev: wait:5000
 cmd: books status ~ book=ready .* page=0\\b
 shot:page1
 next wait:500 shot:page2
@@ -361,7 +365,7 @@ sim: set:bookstest=off
 
 [journey.shot.library]
 rects = [
-    { x = 88, y = 14, w = 40, h = 40, why = "each book's progress: New before the text was first opened, 0 % after (its position is kept on the card)" },
+    { x = 88, y = 14, w = 40, h = 40, why = "each book's progress (New: the suite's books keep no state on the card since BOOK-1/2b; masked as before)" },
 ]
 
 # VER-13 (07 §5.12): Settings › Playback › Shuffle on the player. The

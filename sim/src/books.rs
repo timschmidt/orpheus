@@ -16,7 +16,8 @@
 //! steps per simulator step (0, the default: until the work is done), so
 //! the reader's "Preparing" and the layout in progress can be looked at;
 //! `bookscratch=off` lends no scratch (as on the player while music
-//! plays): an EPUB waits in "Preparing".
+//! plays): an EPUB waits in "Preparing"; `bookfail=on` marks the open
+//! book unreadable (the reader's message).
 
 use orpheus_apps::books::Face;
 use orpheus_books::inflate::SCRATCH;

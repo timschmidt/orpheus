@@ -298,6 +298,8 @@ static CODEC_FLOOR: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8:
 static DSP_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// A picture decodes (the card task, [`boost`]).
 static BOOST: AtomicBool = AtomicBool::new(false);
+/// Books card work waits while a track plays ([`books_boost`]).
+static BOOKS_BOOST: AtomicBool = AtomicBool::new(false);
 /// The loaded track is paused (`pause` until `resumed`): its floor is
 /// released and the governor treats it as nothing playing
 /// (`orpheus_power::governor::{audio_floor, floor_level}`; 2026-11-26).
@@ -316,7 +318,7 @@ fn dsp_clock_floor(dsp_active: bool) {
         CODEC_FLOOR.load(Ordering::Relaxed),
         dsp_active,
         PAUSED.load(Ordering::Relaxed),
-        BOOST.load(Ordering::Relaxed),
+        BOOST.load(Ordering::Relaxed) || BOOKS_BOOST.load(Ordering::Relaxed),
     );
     crate::CLOCK_FLOOR.store(floor, Ordering::Relaxed);
     crate::raise_to_floor(floor);
@@ -335,6 +337,17 @@ fn set_paused(on: bool) {
 pub(crate) fn boost(on: bool) {
     BOOST.store(on, Ordering::Relaxed);
     dsp_clock_floor(DSP_ACTIVE.load(Ordering::Relaxed));
+}
+
+/// Clock floor High while Books has card work and a track plays (the
+/// card task: `chore_due` while playing, `books` when the work is done).
+/// At Base an MP3 at 48 kHz left the DAC 2,283 frames ahead after every
+/// block, never roomy, and Books' steps (cold code paged in each time)
+/// took 15–39 ms: an open took 20 s and underran (BOOK-1/2b, 2026-11-27).
+pub(crate) fn books_boost(on: bool) {
+    if BOOKS_BOOST.swap(on, Ordering::Relaxed) != on {
+        dsp_clock_floor(DSP_ACTIVE.load(Ordering::Relaxed));
+    }
 }
 
 fn sound_active() -> bool {
@@ -1911,6 +1924,7 @@ fn chore_due(b: &mut Blk, ring: &Ring, srv: &Server, out: &mut PcmOut) -> Option
         // A listing being made in pieces (Files while playing).
         (Chore::Job, K_JOB + srv.job_kind())
     } else if crate::books::wants() && !tail {
+        books_boost(true);
         (Chore::Books, K_JOB + media::JOB_BOOKS + crate::books::kind())
     } else if b.meta != 0 && b.join == 0 && u64::from(b.frames) * 1000 >= META_AFTER_MS * b.rate {
         // The gapless track's library place and art once its first seconds
@@ -1933,10 +1947,29 @@ fn chore_due(b: &mut Blk, ring: &Ring, srv: &Server, out: &mut PcmOut) -> Option
         dec_us: b.dec.0,
     };
     let v = chore::decide(&a);
+    // `status`'s `due=`: the chore waiting, its need (ms), the headroom
+    // (frames), how long it has waited (ms), and the verdict.
+    let verdict = match v {
+        Verdict::Wait => 0,
+        Verdict::Run { .. } => 1,
+        Verdict::Starved { .. } => 2,
+    };
+    DUE.store(
+        (kind as u32) << 24
+            | (a.need_us / 1000).min(255) << 16
+            | (a.head.clamp(0, 0x3FFF) as u32) << 2
+            | verdict,
+        Ordering::Relaxed,
+    );
+    DUE_WAIT_MS.store(a.waited_us / 1000, Ordering::Relaxed);
     let budget = v.budget()?;
     b.chore_since = 0;
     Some(Due { what, kind, budget, starved: matches!(v, Verdict::Starved { .. }) })
 }
+
+/// The last chore decision (`chore_due`), for `status`'s `due=`.
+static DUE: AtomicU32 = AtomicU32::new(0);
+static DUE_WAIT_MS: AtomicU32 = AtomicU32::new(0);
 
 /// The battery or step log (kind `kind`) may write now: never forced (no
 /// wait), only roomy, only when its need fits, only when no chore waits.
@@ -3482,7 +3515,10 @@ pub fn put_chunk(data: &[u8]) -> bool {
 }
 
 /// Upload loop (`fcreate PATH`): appends chunks until `fclose` arrives as
-/// a command; writes only where the volume allows (`/.orpheus/`).
+/// a command; writes only where the volume allows (`/.orpheus/`). Any
+/// other command, or no chunk for `UPLOAD_IDLE_MS`, ends it as well (the
+/// file closed with what it has; the command served next:
+/// `orpheus_proto::devchan::upload_cmd`).
 async fn upload(vol: &mut Volume<'static, Card>, arena: &mut [u8], path: &str) {
     let mut f = match vol.open(path, OpenMode::Truncate).await {
         Ok(f) => f,
@@ -3500,8 +3536,9 @@ async fn upload(vol: &mut Volume<'static, Card>, arena: &mut [u8], path: &str) {
         w.s(b"put 0");
     });
     loop {
-        match select(PUT_SIGNAL.wait(), CMDS.receive()).await {
-            Either::First(()) => {
+        let idle = Timer::after_millis(orpheus_proto::devchan::UPLOAD_IDLE_MS);
+        let cmd = match select3(PUT_SIGNAL.wait(), CMDS.receive(), idle).await {
+            Either3::First(()) => {
                 let n = PUT_LEN.load(Ordering::Acquire) as usize;
                 if n > 0 {
                     let r = vol.write(&mut f, &arena[..n]).await;
@@ -3518,18 +3555,29 @@ async fn upload(vol: &mut Volume<'static, Card>, arena: &mut [u8], path: &str) {
                         w.s(b"put ").u(total);
                     });
                 }
+                continue;
             }
-            Either::Second(c) => {
-                if &c.text[..c.len] == b"fclose" {
-                    UPLOADING.store(false, Ordering::Release);
-                    let ok = vol.close(f).await.is_ok() && vol.flush().await.is_ok();
-                    reply(|w| {
-                        w.s(if ok { b"closed " } else { b"close failed " }).u(total);
-                    });
-                    return;
-                }
-            }
+            Either3::Second(c) => Some(c),
+            Either3::Third(()) => None,
+        };
+        UPLOADING.store(false, Ordering::Release);
+        let ok = vol.close(f).await.is_ok() && vol.flush().await.is_ok();
+        let close = cmd.as_ref().map(|c| orpheus_proto::devchan::upload_cmd(&c.text[..c.len]));
+        let said: &[u8] = match close {
+            Some(orpheus_proto::devchan::UploadCmd::Close) if ok => b"closed ",
+            Some(orpheus_proto::devchan::UploadCmd::Close) => b"close failed ",
+            Some(_) => b"upload aborted ",
+            None => b"upload timed out ",
+        };
+        reply(|w| {
+            w.s(said).u(total);
+        });
+        // The command that ended it is served next (the queue had room:
+        // this one was just taken from it).
+        if let Some(c) = cmd.filter(|_| close != Some(orpheus_proto::devchan::UploadCmd::Close)) {
+            let _ = CMDS.try_send(c);
         }
+        return;
     }
 }
 
@@ -3561,6 +3609,12 @@ pub fn status_reply() {
         // PG-2: loads that ran an instruction of cold code from a
         // trampoline (02 §3.6).
         w.s(t!(b" bounces=")).u(u64::from(atj2157_hal::pager::stats().bounces));
+        // The last chore decision: kind/need ms/headroom frames/waited
+        // ms/verdict (0 wait, 1 run, 2 starved).
+        let d = DUE.load(Ordering::Relaxed);
+        w.s(t!(b" due=")).u(u64::from(d >> 24)).s(b"/").u(u64::from(d >> 16 & 0xFF)).s(b"/");
+        w.u(u64::from(d >> 2 & 0x3FFF)).s(b"/").u(u64::from(DUE_WAIT_MS.load(Ordering::Relaxed)));
+        w.s(b"/").u(u64::from(d & 3));
         // The queue and the track (HIL tests need no key navigation).
         let (pos, len, shuffled, title, at_ms) = critical_section::with(|cs| {
             let p = media::PLAYER.borrow(cs).borrow();
