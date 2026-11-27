@@ -17,7 +17,16 @@ the chip's rated maximum; the player never goes beyond them. In
 Automatic the player goes there only when the work needs it and comes back
 down a few seconds after.
 
-How much each mode changes the battery life is **being measured**.
+Automatic is what the player has run day to day since 2026-11-26: idle
+on the cable it stays at 48 MHz, an MP3 plays at 48 MHz (96 MHz while a
+sound effect is on), and a heavy MIDI file takes it to 288 MHz. Battery
+saver and High performance have not yet been tried on the player by a
+person, and how much each mode changes the
+battery life is **being measured** (with the cable unplugged: on the
+cable the player runs from USB and the battery does not discharge).
+
+There used to be a separate *Performance* setting under System; it is
+gone. Power mode alone decides the speed now.
 
 Battery saver also stops scrolling text (as Animations off).
 

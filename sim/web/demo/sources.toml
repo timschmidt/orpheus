@@ -1,0 +1,430 @@
+# The demo card's third-party content (WEB-2, owner's request 2026-11-27):
+# real, freely licensed works, pinned by reference. Nothing here is
+# synthesised or machine-generated.
+#
+# `cargo xtask wasm --demo` downloads each `url` into
+# `target/orpheus/demo-cache/` (generic User-Agent, one file at a time),
+# checks its SHA-256 and derives every output marked `web = true` into
+# `sim/web/demo/card/` (committed: the site build does not depend on the
+# sources being up), plus `card/CREDITS.txt` and `CREDITS.md` from this
+# file. `cargo xtask demo-card` builds the player's card tree in
+# `target/orpheus/demo-card/`: the same files plus every `web = false`
+# output (complete recordings, full-size pictures; no size budget there).
+#
+# Per work: what it is, who made it, the rights in the composition or text
+# *and* in the recording, scan or file, the page the licence was checked on
+# (2026-11-27), the exact file and its SHA-256. Per output: where it goes
+# on the card, how it is made (`copy`, `ffmpeg` output options, or `lrc`
+# from a subtitle file) and the changes in words (CC BY / BY-SA require a
+# note of changes).
+#
+# `ffmpeg` runs as `ffmpeg -i SOURCE -map_metadata -1 [tags] OPTIONS OUT`
+# (audio sources are mapped with `-map 0:a`, so embedded cover art is not
+# carried over). Tags come from the work's `tags`, then the output's.
+
+# ------------------------------------------------------------------ music
+
+[[work]]
+id = "bach-aria"
+title = "Goldberg Variations, BWV 988: Aria"
+creator = "Johann Sebastian Bach (1685–1750)"
+performer = "Kimiko Ishizaka, piano (The Open Goldberg Variations, 2012)"
+licence = "CC0-1.0"
+licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
+rights = "Composition public domain (published 1741). Recording dedicated to the public domain with CC0 1.0 by the Open Goldberg Variations project."
+source_page = "https://commons.wikimedia.org/wiki/File:Kimiko_Ishizaka_-_J.S._Bach-_-Open-_Goldberg_Variations,_BWV_988_(Piano)_-_01_Aria.mp3"
+url = "https://upload.wikimedia.org/wikipedia/commons/5/59/Kimiko_Ishizaka_-_J.S._Bach-_-Open-_Goldberg_Variations%2C_BWV_988_%28Piano%29_-_01_Aria.mp3"
+sha256 = "1b6c7d606d420f1b5b062b4fff8b1eb4f9c7efe11abd35bc33b2db8be7f35b73"
+credit = "Kimiko Ishizaka, The Open Goldberg Variations (2012), CC0"
+tags = { title = "Aria", artist = "Kimiko Ishizaka", album = "Goldberg Variations", composer = "Johann Sebastian Bach", track = "1", date = "2012" }
+
+[[work.out]]
+card = "Music/Bach/Goldberg Variations/01 Aria.mp3"
+web = true
+ffmpeg = ["-t", "30", "-af", "afade=t=out:st=27:d=3", "-c:a", "libmp3lame", "-b:a", "112k", "-id3v2_version", "3", "-write_xing", "1"]
+changes = "Excerpt 0:00–0:30, faded out over the last 3 s; MP3 at 112 kbit/s (the source is a 320 kbit/s MP3)."
+
+[[work.out]]
+card = "Music/Bach/Goldberg Variations/01 Aria (complete).mp3"
+copy = true
+changes = "None (the original file)."
+
+[[work]]
+id = "bach-var4"
+title = "Goldberg Variations, BWV 988: Variatio 4 a 1 Clav."
+creator = "Johann Sebastian Bach (1685–1750)"
+performer = "Kimiko Ishizaka, piano (The Open Goldberg Variations, 2012)"
+licence = "CC0-1.0"
+licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
+rights = "Composition public domain (published 1741). Recording dedicated to the public domain with CC0 1.0 by the Open Goldberg Variations project."
+source_page = "https://archive.org/details/OpenGoldbergVariations"
+url = "https://archive.org/download/OpenGoldbergVariations/Kimiko%20Ishizaka%20-%20J.S.%20Bach-%20-Open-%20Goldberg%20Variations%2C%20BWV%20988%20%28Piano%29%20-%2005%20Variatio%204%20a%201%20Clav..flac"
+sha256 = "d544334f6f23133caa930e3654d1ebc46f0c1d3e31e6fb382d915f2bd3d1397d"
+credit = "Kimiko Ishizaka, The Open Goldberg Variations (2012), CC0"
+tags = { title = "Variatio 4 a 1 Clav.", artist = "Kimiko Ishizaka", album = "Goldberg Variations", composer = "Johann Sebastian Bach", track = "5", date = "2012" }
+
+[[work.out]]
+card = "Music/Bach/Goldberg Variations/05 Variatio 4.flac"
+web = true
+ffmpeg = ["-t", "10", "-af", "aresample=44100:resampler=soxr:dither_method=triangular,afade=t=out:st=8.5:d=1.5", "-sample_fmt", "s16", "-c:a", "flac", "-compression_level", "8"]
+changes = "Excerpt 0:00–0:10, faded out over the last 1.5 s; resampled from 96 kHz/24 bit to 44.1 kHz/16 bit (dithered), FLAC."
+
+[[work.out]]
+card = "Music/Bach/Goldberg Variations/05 Variatio 4 (complete, 96 kHz 24 bit).flac"
+copy = true
+changes = "None (the original 96 kHz/24-bit FLAC)."
+
+[[work]]
+id = "beethoven-5"
+title = "Symphony No. 5 in C minor, Op. 67: I. Allegro con brio"
+creator = "Ludwig van Beethoven (1770–1827)"
+performer = "Skidmore College Orchestra (Musopen)"
+licence = "PD"
+licence_url = "https://creativecommons.org/publicdomain/mark/1.0/"
+rights = "Composition public domain (1808). Recording released into the public domain by its author, the Skidmore College Orchestra, through Musopen (Commons: PD-author, attribution requested)."
+source_page = "https://commons.wikimedia.org/wiki/File:Ludwig_van_Beethoven_-_symphony_no._5_in_c_minor,_op._67_-_i._allegro_con_brio.ogg"
+url = "https://upload.wikimedia.org/wikipedia/commons/e/e6/Ludwig_van_Beethoven_-_symphony_no._5_in_c_minor%2C_op._67_-_i._allegro_con_brio.ogg"
+sha256 = "663cfa62707be850a51ec8cd7b51b95595a9ee010f3eefea16e1dd46d54a9d95"
+credit = "Skidmore College Orchestra, via Musopen; public domain"
+tags = { title = "I. Allegro con brio", artist = "Skidmore College Orchestra", album = "Symphony No. 5", composer = "Ludwig van Beethoven", track = "1" }
+
+[[work.out]]
+card = "Music/Beethoven/Symphony No. 5/1 Allegro con brio.ogg"
+web = true
+ffmpeg = ["-t", "26", "-af", "afade=t=out:st=24.5:d=1.5", "-c:a", "libvorbis", "-q:a", "2"]
+changes = "Excerpt 0:00–0:26 (the opening), faded out over the last 1.5 s; Ogg Vorbis quality 2 (the source is Ogg Vorbis at about 140 kbit/s)."
+
+[[work.out]]
+card = "Music/Beethoven/Symphony No. 5/1 Allegro con brio (complete).ogg"
+copy = true
+changes = "None (the original file)."
+
+[[work]]
+id = "caruso"
+title = "Pagliacci: “Vesti la giubba”"
+creator = "Ruggero Leoncavallo (1857–1919), music and words"
+performer = "Enrico Caruso, tenor, with orchestra (Victor, recorded 17 March 1907)"
+licence = "PD"
+licence_url = "https://creativecommons.org/publicdomain/mark/1.0/"
+rights = "Opera public domain (1892). Recording published 1907: public domain in the United States (sound recordings published before 1923) and expired in the EU (70 years from publication); Commons: PD-old. Transferred from a 78 rpm disc by the Internet Archive's 78 rpm collection."
+source_page = "https://commons.wikimedia.org/wiki/File:Vesti_La_Giubba.ogg"
+url = "https://upload.wikimedia.org/wikipedia/commons/f/fb/Vesti_La_Giubba.ogg"
+sha256 = "8a937eb7d365410be0b030601c7121edfbf04d42f38b368917cf5aca0aa741c3"
+credit = "Enrico Caruso (1907); public domain"
+tags = { title = "Vesti la giubba", artist = "Enrico Caruso", album = "Pagliacci", composer = "Ruggero Leoncavallo", date = "1907" }
+
+[[work.out]]
+card = "Music/Caruso/Vesti la giubba (1907).opus"
+web = true
+ffmpeg = ["-t", "64", "-ac", "1", "-af", "afade=t=out:st=61:d=3", "-c:a", "libopus", "-b:a", "32k"]
+changes = "Excerpt 0:00–1:04, faded out over the last 3 s; mixed to mono (the 1907 recording is mono); Opus at 32 kbit/s."
+
+[[work.out]]
+card = "Music/Caruso/Vesti la giubba (1907, complete).opus"
+ffmpeg = ["-ac", "1", "-c:a", "libopus", "-b:a", "48k"]
+changes = "Complete; mixed to mono; Opus at 48 kbit/s (the source is Ogg Vorbis)."
+
+[[work]]
+id = "caruso-lyrics"
+title = "“Vesti la giubba”: Italian subtitles"
+creator = "Ruggero Leoncavallo (words, 1892); timing by Wikimedia Commons user Pagliaccious (2018)"
+performer = ""
+licence = "CC-BY-SA-3.0"
+licence_url = "https://creativecommons.org/licenses/by-sa/3.0/"
+rights = "Libretto public domain. The timed subtitle page is text on Wikimedia Commons, CC BY-SA 3.0 (revision 288189320, the page's only revision)."
+source_page = "https://commons.wikimedia.org/wiki/TimedText:Vesti_La_Giubba.ogg.it.srt"
+url = "https://commons.wikimedia.org/w/index.php?title=TimedText:Vesti_La_Giubba.ogg.it.srt&oldid=288189320&action=raw"
+sha256 = "b9e457f8ee15d376f39f6b1d8e4f576d691ac4dc82e2cadd4165a875bf7f28fd"
+credit = "Subtitles by Pagliaccious, Wikimedia Commons, CC BY-SA 3.0"
+
+[[work.out]]
+card = "Music/Caruso/Vesti la giubba (1907).lrc"
+web = true
+lrc = { until = 63.0, title = "Vesti la giubba", artist = "Enrico Caruso" }
+changes = "Converted from SubRip to LRC (line start times only), the lines of the first 1:04; licensed CC BY-SA 3.0 like the source."
+
+[[work.out]]
+card = "Music/Caruso/Vesti la giubba (1907, complete).lrc"
+lrc = { title = "Vesti la giubba", artist = "Enrico Caruso" }
+changes = "Converted from SubRip to LRC (line start times only); licensed CC BY-SA 3.0 like the source."
+
+[[work]]
+id = "chopin-nocturne"
+title = "Nocturne in E-flat major, Op. 9 No. 2"
+creator = "Frédéric Chopin (1810–1849)"
+performer = "Peter Johnston, piano (Musopen)"
+licence = "CC0-1.0"
+licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
+rights = "Composition public domain (1832). Recording dedicated to the public domain with CC0 1.0 by the performer."
+source_page = "https://commons.wikimedia.org/wiki/File:Chopin_Nocturne_No._2_in_E_Flat_Major,_Op._9.ogg"
+url = "https://upload.wikimedia.org/wikipedia/commons/0/04/Chopin_Nocturne_No._2_in_E_Flat_Major%2C_Op._9.ogg"
+sha256 = "93e15e61baacdf129f21eacf8404ae5c2bd0f41e0256319597de54c40aa1cb22"
+credit = "Peter Johnston, via Musopen, CC0"
+tags = { title = "Nocturne Op. 9 No. 2", artist = "Peter Johnston", album = "Nocturnes", composer = "Frédéric Chopin" }
+
+[[work.out]]
+card = "Music/Chopin/Nocturne Op. 9 No. 2.aiff"
+web = true
+ffmpeg = ["-ss", "2.5", "-t", "8", "-af", "aresample=22050:resampler=soxr,afade=t=out:st=6.5:d=1.5", "-c:a", "pcm_s16be", "-write_id3v2", "1", "-f", "aiff"]
+changes = "Excerpt 0:02.5–0:10.5, faded out over the last 1.5 s; 22.05 kHz 16-bit mono AIFF (the source is mono Ogg Vorbis)."
+
+[[work.out]]
+card = "Music/Chopin/Nocturne Op. 9 No. 2 (complete).aiff"
+ffmpeg = ["-c:a", "pcm_s16be", "-write_id3v2", "1", "-f", "aiff"]
+changes = "Complete; 44.1 kHz 16-bit mono AIFF (the source is mono Ogg Vorbis)."
+
+[[work]]
+id = "satie-gymnopedie"
+title = "Gymnopédie No. 1"
+creator = "Erik Satie (1866–1925)"
+performer = "Daria Baiocchi, piano (2021)"
+licence = "CC-BY-SA-4.0"
+licence_url = "https://creativecommons.org/licenses/by-sa/4.0/"
+rights = "Composition public domain (published 1888; Satie died in 1925). Recording by Daria Baiocchi, CC BY-SA 4.0 (uploaded by the performer)."
+source_page = "https://commons.wikimedia.org/wiki/File:Satie_Gymnop%C3%A8die_n.1_DariaBaiocchi.wav"
+url = "https://upload.wikimedia.org/wikipedia/commons/a/aa/Satie_Gymnop%C3%A8die_n.1_DariaBaiocchi.wav"
+sha256 = "db68714ba6b3564434e720e9c86b11cbeac5a977a1115f532014d0d129e6db9d"
+credit = "Daria Baiocchi (2021), CC BY-SA 4.0"
+tags = { title = "Gymnopédie No. 1", artist = "Daria Baiocchi", album = "Gymnopédies", composer = "Erik Satie", date = "2021" }
+
+[[work.out]]
+card = "Music/Satie/Gymnopédie No. 1.wav"
+web = true
+ffmpeg = ["-t", "10", "-ac", "1", "-af", "aresample=22050:resampler=soxr:dither_method=triangular,afade=t=out:st=8:d=2", "-c:a", "pcm_s16le"]
+changes = "Excerpt 0:00–0:10, faded out over the last 2 s; mixed to mono, 22.05 kHz 16 bit (the source is a 44.1 kHz/24-bit stereo WAV). Licensed CC BY-SA 4.0 like the source."
+
+[[work.out]]
+card = "Music/Satie/Gymnopédie No. 1 (complete, 24 bit).wav"
+copy = true
+changes = "None (the original 44.1 kHz/24-bit stereo WAV)."
+
+[[work]]
+id = "sousa-1909"
+title = "The Stars and Stripes Forever"
+creator = "John Philip Sousa (1854–1932)"
+performer = "Sousa's Band (Edison Amberol cylinder 4M-285, November 1909)"
+licence = "PD"
+licence_url = "https://creativecommons.org/publicdomain/mark/1.0/"
+rights = "Composition public domain (published 1897). Recording published 1909: public domain in the United States (PD-US-record-expired) and expired in the EU; Commons: PD-Edison Records. Click-removed transfer by Commons users Adam Cuerden and Themfromspace, released as public domain."
+source_page = "https://commons.wikimedia.org/wiki/File:Sousa%27s_Band_-_Stars_and_Stripes_Forever.ogg"
+url = "https://upload.wikimedia.org/wikipedia/commons/9/90/Sousa%27s_Band_-_Stars_and_Stripes_Forever.ogg"
+sha256 = "215905c0aeb18af8a00df230d4a3d3dbf691f75abcf08fae82ef27b1f36603a3"
+credit = "Sousa's Band (1909, Edison); public domain"
+tags = { title = "The Stars and Stripes Forever", artist = "Sousa's Band", album = "Edison Amberol 4M-285", composer = "John Philip Sousa", date = "1909" }
+
+[[work.out]]
+card = "Music/Sousa/The Stars and Stripes Forever (1909).au"
+web = true
+ffmpeg = ["-ss", "1", "-t", "20", "-af", "aresample=8000:resampler=soxr,afade=t=out:st=18:d=2", "-ac", "1", "-c:a", "pcm_mulaw", "-f", "au"]
+changes = "Excerpt 0:01–0:21, faded out over the last 2 s; 8 kHz µ-law Sun AU (the source is a mono Ogg Vorbis transfer of the cylinder)."
+
+[[work.out]]
+card = "Music/Sousa/The Stars and Stripes Forever (1909, complete).au"
+ffmpeg = ["-af", "aresample=8000:resampler=soxr", "-ac", "1", "-c:a", "pcm_mulaw", "-f", "au"]
+changes = "Complete; 8 kHz µ-law Sun AU."
+
+[[work]]
+id = "librivox-orpheus"
+title = "The Age of Fable, Chapter 24: Orpheus and Eurydice"
+creator = "Thomas Bulfinch (1796–1867)"
+performer = "Read by roolynninms for LibriVox (2008)"
+licence = "PD"
+licence_url = "https://creativecommons.org/publicdomain/mark/1.0/"
+rights = "Text public domain (1855). LibriVox recordings are released into the public domain."
+source_page = "https://archive.org/details/bulfinch_myth_age_fable_0810_librivox3"
+url = "https://archive.org/download/bulfinch_myth_age_fable_0810_librivox3/ageoffable_24_bulfinch.mp3"
+sha256 = "045058fb10129a07c03fdb73ce72a795f13829a4fdff2959ef573ff43e0cdce6"
+credit = "LibriVox recording read by roolynninms; public domain"
+tags = { title = "Chapter 24: Orpheus and Eurydice", artist = "Thomas Bulfinch (read by roolynninms)", album = "The Age of Fable (LibriVox)", track = "24", date = "2008" }
+
+[[work.out]]
+card = "Music/Bulfinch/The Age of Fable/24 Orpheus and Eurydice.spx"
+web = true
+ffmpeg = ["-t", "50", "-af", "aresample=16000:resampler=soxr,afade=t=out:st=49:d=1", "-ac", "1", "-c:a", "libspeex", "-cbr_quality", "8", "-f", "ogg"]
+changes = "Excerpt 0:00–0:50 (the LibriVox introduction and the chapter's opening), faded out over the last second; 16 kHz wideband Speex in Ogg."
+
+[[work.out]]
+card = "Music/Bulfinch/The Age of Fable/24 Orpheus and Eurydice (complete).spx"
+ffmpeg = ["-af", "aresample=16000:resampler=soxr", "-ac", "1", "-c:a", "libspeex", "-cbr_quality", "8", "-f", "ogg"]
+changes = "The complete chapter (16 min); 16 kHz wideband Speex in Ogg (the source is a 128 kbit/s MP3)."
+
+[[work]]
+id = "mutopia-bwv846"
+title = "The Well-Tempered Clavier I: Prelude No. 1 in C major, BWV 846"
+creator = "Johann Sebastian Bach (1685–1750)"
+performer = "MIDI file typeset by Tobias Erbsland for the Mutopia Project (2011, LilyPond 2.14.2)"
+licence = "PD"
+licence_url = "https://creativecommons.org/publicdomain/mark/1.0/"
+rights = "Composition public domain. The Mutopia Project publishes this edition (Mutopia-2011/09/12-5) as public domain."
+source_page = "https://www.mutopiaproject.org/cgibin/piece-info.cgi?id=5"
+url = "https://www.mutopiaproject.org/ftp/BachJS/BWV846/wtk1-prelude1/wtk1-prelude1.mid"
+sha256 = "874e07d0479542971bfceaf420d6117da8d602d89d26eea4610e7dd1ef58bf26"
+credit = "Mutopia Project, Tobias Erbsland; public domain"
+
+[[work.out]]
+card = "MIDI/Bach - Prelude in C major, BWV 846.mid"
+web = true
+copy = true
+changes = "None (the original file)."
+
+# --------------------------------------------------------------- pictures
+
+[[work]]
+id = "corot-orpheus"
+title = "Orpheus Leading Eurydice from the Underworld"
+creator = "Jean-Baptiste-Camille Corot (1796–1875), oil on canvas, 1861 (Museum of Fine Arts, Houston)"
+performer = "Photograph: Google Art Project"
+licence = "PD"
+licence_url = "https://creativecommons.org/publicdomain/mark/1.0/"
+rights = "Painting public domain (the artist died in 1875); a faithful photograph of a two-dimensional public-domain work is not itself protected (Commons: PD-Art)."
+source_page = "https://commons.wikimedia.org/wiki/File:Jean-Baptiste-Camille_Corot_-_Orpheus_Leading_Eurydice_from_the_Underworld_-_Google_Art_Project.jpg"
+url = "https://upload.wikimedia.org/wikipedia/commons/b/b8/Jean-Baptiste-Camille_Corot_-_Orpheus_Leading_Eurydice_from_the_Underworld_-_Google_Art_Project.jpg"
+sha256 = "7822e189146c999287662abffbe685a17ec56336054a709486cfc54c8b285daf"
+credit = "Corot (1861), Museum of Fine Arts, Houston, via Google Art Project; public domain"
+
+[[work.out]]
+card = "Pictures/Corot - Orpheus Leading Eurydice.jpg"
+web = true
+ffmpeg = ["-vf", "scale=480:-2:flags=lanczos", "-q:v", "4", "-pix_fmt", "yuvj420p"]
+changes = "Scaled to 480 pixels wide; baseline JPEG."
+
+[[work.out]]
+card = "Pictures/Full size/Corot - Orpheus Leading Eurydice (7195 x 5897).jpg"
+copy = true
+changes = "None (the original 7195 × 5897 file, 8.8 MB)."
+
+[[work]]
+id = "ring-nebula"
+title = "The Ring Nebula (M57, NGC 6720) in the constellation Lyra"
+creator = "Judy Schmidt, from Hubble Space Telescope WFPC2 data (NASA/ESA)"
+performer = ""
+licence = "CC-BY-2.0"
+licence_url = "https://creativecommons.org/licenses/by/2.0/"
+rights = "Image processed by Judy Schmidt from public Hubble data, published on Flickr under CC BY 2.0 (reviewed on Commons)."
+source_page = "https://commons.wikimedia.org/wiki/File:NGC_6720_%22Ring%22.png"
+url = "https://upload.wikimedia.org/wikipedia/commons/0/0b/NGC_6720_%22Ring%22.png"
+sha256 = "ee02e1968ee32187a455284ebc382b77e1d4aade80a8cdea4f0f04d7f71ae0af"
+credit = "“NGC 6720 ‘Ring’” by Judy Schmidt, CC BY 2.0"
+
+[[work.out]]
+card = "Pictures/Ring Nebula in Lyra.png"
+web = true
+ffmpeg = ["-vf", "scale=320:-2:flags=lanczos", "-pix_fmt", "rgb24", "-compression_level", "9"]
+changes = "Scaled to 320 pixels wide; 24-bit PNG."
+
+[[work.out]]
+card = "Pictures/Full size/Ring Nebula in Lyra (1548 x 1491).png"
+copy = true
+changes = "None (the original file)."
+
+[[work]]
+id = "hokusai-wave"
+title = "The Great Wave off Kanagawa (from Thirty-six Views of Mount Fuji)"
+creator = "Katsushika Hokusai (1760–1849), woodblock print, about 1830–32"
+performer = "Photograph: Metropolitan Museum of Art (JP1847)"
+licence = "PD"
+licence_url = "https://creativecommons.org/publicdomain/mark/1.0/"
+rights = "Print public domain (the artist died in 1849); faithful reproduction (Commons: PD-Art); the Met releases its public-domain images under its Open Access policy."
+source_page = "https://commons.wikimedia.org/wiki/File:Tsunami_by_hokusai_19th_century.jpg"
+url = "https://upload.wikimedia.org/wikipedia/commons/a/a5/Tsunami_by_hokusai_19th_century.jpg"
+sha256 = "30c170260de393f51bd592adacc6f0714b60f157c09744e9c5b6d46e6a613718"
+credit = "Hokusai, The Metropolitan Museum of Art; public domain"
+
+[[work.out]]
+card = "Pictures/Hokusai - The Great Wave.bmp"
+web = true
+ffmpeg = ["-vf", "scale=360:-2:flags=lanczos,split[a][b];[a]palettegen=max_colors=256:stats_mode=full[p];[b][p]paletteuse=dither=sierra2_4a", "-pix_fmt", "pal8", "-c:v", "bmp"]
+changes = "Scaled to 360 pixels wide; 256-colour (8-bit palette) BMP."
+
+[[work.out]]
+card = "Pictures/Full size/Hokusai - The Great Wave (1024).bmp"
+ffmpeg = ["-vf", "scale=1024:-2:flags=lanczos", "-pix_fmt", "bgr24", "-c:v", "bmp"]
+changes = "Scaled to 1024 pixels wide; 24-bit BMP."
+
+[[work]]
+id = "earthrise"
+title = "Earthrise (AS08-14-2383)"
+creator = "William Anders, NASA, Apollo 8, 24 December 1968"
+performer = ""
+licence = "PD"
+licence_url = "https://creativecommons.org/publicdomain/mark/1.0/"
+rights = "Work of NASA, a US government agency: public domain in the United States (Commons: PD-USGov-NASA)."
+source_page = "https://commons.wikimedia.org/wiki/File:NASA-Apollo8-Dec24-Earthrise.jpg"
+url = "https://upload.wikimedia.org/wikipedia/commons/a/a8/NASA-Apollo8-Dec24-Earthrise.jpg"
+sha256 = "24fd2a4f833534ca6741ed96d03b028ac1d8fda2cd129ded4d208535f541d4da"
+credit = "NASA / Bill Anders (1968); public domain"
+
+[[work.out]]
+card = "Pictures/Earthrise.qoi"
+web = true
+ffmpeg = ["-vf", "scale=320:320:flags=lanczos", "-pix_fmt", "rgb24", "-c:v", "qoi"]
+changes = "Scaled to 320 × 320; QOI."
+
+[[work.out]]
+card = "Pictures/Full size/Earthrise (1200).qoi"
+ffmpeg = ["-vf", "scale=1200:1200:flags=lanczos", "-pix_fmt", "rgb24", "-c:v", "qoi"]
+changes = "Scaled to 1200 × 1200; QOI."
+
+[[work]]
+id = "muybridge-horse"
+title = "The Horse in Motion (“Sallie Gardner at a Gallop”), animated"
+creator = "Eadweard Muybridge (1830–1904), photographs 1878; animation by Commons user Waugsberg (2006)"
+performer = ""
+licence = "PD"
+licence_url = "https://creativecommons.org/publicdomain/mark/1.0/"
+rights = "Photographs public domain (published 1878); the animation was released into the public domain by its maker."
+source_page = "https://commons.wikimedia.org/wiki/File:Muybridge_race_horse_animated_184px.gif"
+url = "https://upload.wikimedia.org/wikipedia/commons/0/05/Muybridge_race_horse_animated_184px.gif"
+sha256 = "b6b2d01837fe70230094010a2bd106d1f6b8e23f1370575e470402987d5a0244"
+credit = "Eadweard Muybridge (1878), animation by Waugsberg; public domain"
+
+[[work.out]]
+card = "Pictures/Muybridge - The Horse in Motion.gif"
+web = true
+copy = true
+changes = "None (the original animated GIF; the player shows its first frame)."
+
+# ------------------------------------------------------------------ books
+
+[[work]]
+id = "bulfinch-fable"
+title = "Bulfinch's Mythology: The Age of Fable"
+creator = "Thomas Bulfinch (1796–1867)"
+performer = "Project Gutenberg eBook #3327"
+licence = "PD"
+licence_url = "https://www.gutenberg.org/policy/license.html"
+rights = "Text public domain (1855); “Public domain in the USA” in the Project Gutenberg catalogue. Redistributed unmodified, with the Project Gutenberg License it contains, at no charge, as the licence allows."
+source_page = "https://www.gutenberg.org/ebooks/3327"
+url = "https://gutenberg.pglaf.org/cache/epub/3327/pg3327-images-3.epub"
+sha256 = "00d9c6d1e938e209511e1ea8788f765492cfe3eb2be0bfb6d075a27686d8983e"
+credit = "Project Gutenberg eBook #3327"
+
+[[work.out]]
+card = "Books/Bulfinch - The Age of Fable.epub"
+web = true
+copy = true
+changes = "None (the EPUB 3 file as Project Gutenberg distributes it, licence included)."
+
+[[work]]
+id = "pied-piper"
+title = "The Pied Piper of Hamelin"
+creator = "Robert Browning (1812–1889)"
+performer = "Project Gutenberg eBook #18343"
+licence = "PD"
+licence_url = "https://www.gutenberg.org/policy/license.html"
+rights = "Text public domain (1842); “Public domain in the USA” in the Project Gutenberg catalogue. Redistributed unmodified, with the Project Gutenberg License it contains, at no charge, as the licence allows."
+source_page = "https://www.gutenberg.org/ebooks/18343"
+url = "https://gutenberg.pglaf.org/cache/epub/18343/pg18343.txt"
+sha256 = "6bd99a173cc7d1398d09c634f0dedc877c3f6e6218875df1b74af1998df56b19"
+credit = "Project Gutenberg eBook #18343"
+
+[[work.out]]
+card = "Books/Browning - The Pied Piper of Hamelin.txt"
+web = true
+copy = true
+changes = "None (the plain-text file as Project Gutenberg distributes it, licence included)."
+
+# The project's own files on the card (written for it, under the project's
+# licence): not derived, kept as committed.
+[own]
+files = ["About this card.txt", "Music/Demo tour.m3u8"]

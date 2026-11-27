@@ -8,8 +8,8 @@ use anyhow::{Result, bail};
 use orpheus_apps::screens::{self, AppScreen};
 use orpheus_apps::services::{
     self, BatteryInfo, BluetoothService, CardInfo, CardState, ClockService, DateTime, DrainLog, FsKind,
-    PlaybackService, Playing, PowerRequest, PowerService, SettingsService, StorageRequest, StorageService,
-    SystemService, UsbMode, UsbService, UsbState,
+    PlaybackService, Playing, PowerRequest, PowerService, SettingsService, StorageOutcome, StorageRequest,
+    StorageService, SystemService, UsbMode, UsbService, UsbState,
 };
 use orpheus_apps::services::{AuthEntry, AuthOutcome, AuthRequest, AuthService, Code, VaultState};
 use orpheus_apps::services::{
@@ -85,6 +85,8 @@ pub struct HostServices {
     pub root: (ScreenId, Arg),
     pub log: Vec<Logged>,
     pub media: Media,
+    /// Settings › Storage's last card work (VER-13).
+    pub storage_out: StorageOutcome,
     events: Vec<Event>,
     picture: Cell<PicState>,
     /// The developer rows are shown (About × 5, or `set:developer=1`).
@@ -199,6 +201,7 @@ impl HostServices {
             root: (screens::HOME, Arg(0)),
             log: Vec::new(),
             media,
+            storage_out: StorageOutcome::default(),
             events: Vec::new(),
             picture: Cell::new(PicState::Nothing),
             developer: false,
@@ -402,6 +405,38 @@ impl StorageService for HostServices {
 
     fn storage(&mut self, req: StorageRequest) {
         self.log.push(Logged::Storage(req));
+        // The card work runs to its end here (the firmware's card task
+        // runs it after stopping playback, `fw/firmware/src/care.rs`).
+        let mut o = StorageOutcome { req: Some(req), ok: true, ..StorageOutcome::default() };
+        match req {
+            StorageRequest::RebuildLibrary => return,
+            StorageRequest::ClearCaches => o.ok = self.media.clear_caches(),
+            StorageRequest::CheckCard => match self.media.check_card() {
+                Some(r) => {
+                    (o.dirs, o.files, o.problems, o.stopped) = (r.dirs, r.files, r.problems, r.stopped);
+                }
+                None => o.ok = false,
+            },
+            StorageRequest::Format => {
+                o.ok = self.media.format_card();
+                self.card = if o.ok { CardState::Ready } else { CardState::Unreadable };
+                if o.ok {
+                    let v = self.media.volume();
+                    let mib = |b: u64| u32::try_from(b >> 20).unwrap_or(u32::MAX);
+                    self.card_info.capacity_mib =
+                        mib(u64::from(v.cluster_count()) * u64::from(v.cluster_size()));
+                    self.card_info.free_mib = mib(orpheus_fs::host::block_on(v.free_bytes()).unwrap_or(0));
+                    self.card_info.fs =
+                        if v.kind() == orpheus_fs::FsKind::ExFat { FsKind::ExFat } else { FsKind::Fat32 };
+                }
+            }
+        }
+        self.storage_out = o;
+        self.events.push(Event::Service(ServiceEvent::Other { kind: services::other::STORAGE, value: 0 }));
+    }
+
+    fn storage_outcome(&self) -> StorageOutcome {
+        self.storage_out
     }
 }
 
@@ -602,10 +637,6 @@ impl RecorderService for HostServices {
     fn rec_dir(&mut self) -> Option<DirId> {
         SimRecorder::dir(&mut self.media)
     }
-
-    fn rec_has_line_in(&self) -> bool {
-        self.rec.line_in
-    }
 }
 
 impl BluetoothService for HostServices {
@@ -719,6 +750,18 @@ impl SystemService for HostServices {
 
     fn boot_slot(&self) -> Option<BootSlot> {
         self.boot_slot
+    }
+
+    /// Fixed values but the time running (the simulator has no pager,
+    /// clock governor or stack to report).
+    fn diagnostics(&self) -> services::Diagnostics {
+        services::Diagnostics {
+            uptime_s: u32::try_from(self.now_ms / 1000).unwrap_or(u32::MAX),
+            cpu_mhz: 96,
+            loads: 0,
+            underruns: 0,
+            stack_free: 4096,
+        }
     }
 }
 
@@ -941,7 +984,7 @@ impl Host for HostServices {
             }
             "tuner" => self.radio.chip.absent = v == "absent",
             // Recorder (UI-5b): the fake input, a card stall (ms from
-            // now), a line input.
+            // now).
             "recsignal" => {
                 self.rec.signal = match v {
                     "tone" => orpheus_rec::fake::Signal::Tone { hz: 440, amp: 16_000 },
@@ -953,7 +996,9 @@ impl Host for HostServices {
                 };
             }
             "recstall" => self.rec.stall_until = self.now_ms + v.parse::<u64>()?,
-            "recline" => self.rec.line_in = on,
+            // Settings › Storage › Check card (VER-13): a file whose chain
+            // is broken (`/Damaged.bin`, its first cluster's link freed).
+            "cardbad" => self.media.damage_a_file(),
             // Firmware update (UPD-1): which files the card holds.
             "upd" => {
                 self.update.mode = match v {

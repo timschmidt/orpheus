@@ -163,9 +163,18 @@ image_bytes = 1024
 
 [web]
 # The browser build (WEB-2, 09 §4; `cargo xtask wasm` enforces the first).
-# Module with its embedded data (demo card), wasm-bindgen glue and the
-# page's own scripts and styles, gzip as GitHub Pages serves them.
+# Module, wasm-bindgen glue and the page's own scripts and styles, gzip as
+# GitHub Pages serves them. Since 2026-11-27 the demo card is no longer
+# embedded (it was 1.2 MB of synthesised tracks): measured 2026-11-27
+# before the change 2394 KB with the embedded set, about 1.25 MB without.
 total_gzip_bytes = 4000000      # 4 MB
+# The demo card (try/pkg/demo.bin, WEB-2, owner's request 2026-11-27: real,
+# freely licensed works in every format the player opens), fetched by the
+# page next to the module, as served (media are already compressed; text
+# is deflated inside the bundle). Its own budget so that the module's first
+# frame does not wait for it and code changes do not re-download it.
+# Measured 2026-11-27: see `cargo xtask wasm` (STATUS has the numbers).
+demo_bytes = 3500000            # 3.5 MB
 # The browser installer (WEB-3; `cargo xtask wasm` enforces it): the
 # orpheus-install-web module, its glue and site/install/*, gzip.
 install_gzip_bytes = 300000     # 300 KB

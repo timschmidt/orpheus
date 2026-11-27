@@ -184,6 +184,14 @@ impl Rds {
         0
     }
 
+    /// Whether this station sent a plausible clock-time group (4A) since it
+    /// was tuned, confirmed or not (`fm status` diagnostics, 2026-11-27;
+    /// the decoder has no room for a counter).
+    #[must_use]
+    pub const fn clock_heard(&self) -> bool {
+        self.ct != 0 || self.ct_cand != 0xFFFF
+    }
+
     /// The last confirmed clock time, seconds since 1970 UTC (to the
     /// minute: the group is sent at the start of the minute it gives).
     #[must_use]
@@ -481,6 +489,22 @@ mod tests {
         let n = to_utf8(&[b'a', b'b', b'c', 0x82], &mut small);
         assert_eq!(&small[..n], b"abc");
         assert_eq!(char_of(0xFF), ' ');
+    }
+
+    /// Diagnostics (2026-11-27): `fm status` shows whether this station
+    /// sends clock time at all: one plausible group is heard before it is
+    /// confirmed, and a new station starts unheard.
+    #[test]
+    fn clock_heard_per_station() {
+        let t = 1_795_595_400u64;
+        let mut r = Rds::new();
+        assert!(!r.clock_heard());
+        r.feed(group_4a(0xD123, t, 2), 0, 0);
+        assert!(r.clock_heard() && r.clock().is_none());
+        r.feed(group_4a(0xD123, t + 60, 2), 0, 0);
+        assert!(r.clock_heard() && r.clock().is_some());
+        r.reset();
+        assert!(!r.clock_heard(), "a new station starts unheard");
     }
 
     /// Group 4A (VER-13, Settings › Date & time › Set from RDS): the clock

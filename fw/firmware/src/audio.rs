@@ -57,6 +57,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::waitqueue::AtomicWaker;
 use embassy_time::Timer;
+use orpheus_apps::services::StorageRequest;
 use orpheus_audio::chore::{self, Ask, Costs, DecPeak, Piece, Spent, Verdict};
 use orpheus_audio::pcm::{self, Book, Fed, Feeder, Look, Reading, Sink};
 use orpheus_audio::ring::{Space, Target as Part};
@@ -484,9 +485,10 @@ const SEED_US: [u32; KINDS] = [
     20_000, 20_000, 15_000, 15_000, 15_000,
     // requests: browse, want, text, queue-win, release, image, picture,
     // lib-list, rebuild, drain, sensor, alert, otp, delete, update, games
-    // (its first piece, as `job:games`), books (a wake-up while playing)
+    // (its first piece, as `job:games`), books (a wake-up while playing),
+    // care (only noted for the idle loop while playing)
     10_000, 15_000, 15_000, 2_000, 1_000, 1_000, 30_000, 20_000, 1_000, 15_000, 15_000, 1_000, 25_000, 30_000,
-    30_000, 15_000, 1_000,
+    30_000, 15_000, 1_000, 1_000,
 ];
 
 /// The chore kinds' measured needs (zeros: the seeds stand until measured;
@@ -1238,7 +1240,7 @@ static mut WALKS: orpheus_fs::WalkCache = orpheus_fs::WalkCache::EMPTY;
 pub static CARD_OUT: Channel<CriticalSectionRawMutex, Card, 1> = Channel::new();
 pub static CARD_BACK: Channel<CriticalSectionRawMutex, Card, 1> = Channel::new();
 
-async fn mount(card: Card) -> Option<Volume<'static, Card>> {
+pub(crate) async fn mount(card: Card) -> Option<Volume<'static, Card>> {
     let opts = MountOptions { read_only: false, write_prefix: Some("/.orpheus"), partition: None };
     // SAFETY: exactly one Volume exists at a time; the previous one was
     // unmounted (consumed) before this borrow is created.
@@ -2776,9 +2778,37 @@ async fn ls(vol: &mut Volume<'static, Card>, path: &str) {
     });
 }
 
+/// `fsize PATH`: `size N PATH`, or `fsize: no such file PATH`.
+async fn fsize(vol: &mut Volume<'static, Card>, path: &str) {
+    match vol.open(path, OpenMode::Read).await {
+        Ok(f) => {
+            let n = f.size();
+            let _ = vol.close(f).await;
+            reply(|w| {
+                w.s(b"size ").u(n).s(b" ").s(path.as_bytes());
+            });
+        }
+        Err(_) => reply(|w| {
+            w.s(b"fsize: no such file ").s(path.as_bytes());
+        }),
+    }
+}
+
 /// Hand the card (the volume in `slot`) to the USB task and wait for it to
 /// come back, remounted into `slot` (`None` there if the remount failed).
-async fn release(slot: &mut Option<Volume<'static, Card>>) {
+async fn release(slot: &mut Option<Volume<'static, Card>>, care: Option<StorageRequest>, arena: &mut [u8]) {
+    // Settings › Storage's card work: the card stays here (a format takes
+    // the volume out of the slot and mounts it again). Each path polled in
+    // a frame of its own: the worst stack chain is the larger, not both.
+    match care {
+        Some(StorageRequest::Format) => Apart(crate::care::format(slot, arena)).await,
+        Some(op) => Apart(crate::care::run(slot, op)).await,
+        None => Apart(to_usb(slot)).await,
+    }
+}
+
+/// The card to the USB task and back (`release`).
+async fn to_usb(slot: &mut Option<Volume<'static, Card>>) {
     let Some(vol) = slot.take() else { return };
     crate::state::CARD_READY.store(false, Ordering::Relaxed);
     media::player_update(|p| p.source = Source::Idle);
@@ -3689,7 +3719,10 @@ enum Idle {
     Play(PlayReq),
     /// The card goes to USB (handed over already): `release`, then
     /// `card_back`, with the drive's folders looked up again when set.
-    Release { find_dirs: bool },
+    /// With `care`, Settings › Storage's card work instead of USB
+    /// (`care::run` in `release`; one arm, so the task's poll function,
+    /// in the `play-pcm` cluster, does not grow).
+    Release { find_dirs: bool, care: Option<StorageRequest> },
 }
 
 /// The card task (AU-PERF): start-up, then the idle loop and the player in
@@ -3721,10 +3754,10 @@ pub async fn audio() {
         let Some(v) = vol.as_mut() else { return };
         match Apart(idle(v, &mut ring, arena, srv)).await {
             Idle::Play(p) => Apart(player_request(v, &mut ring, arena, srv, p)).await,
-            Idle::Release { find_dirs } => {
+            Idle::Release { find_dirs, care } => {
                 // The volume leaves its slot for `release` and comes back
                 // to it (`None` there: the remount failed).
-                Apart(release(&mut vol)).await;
+                Apart(release(&mut vol, care, arena)).await;
                 let Some(v) = vol.as_mut() else { return };
                 Apart(card_back(v, srv, find_dirs)).await;
             }
@@ -3921,7 +3954,11 @@ async fn idle(vol: &mut Volume<'static, Card>, ring: &mut Ring, arena: &mut [u8]
                 match srv.pending.take() {
                     Some(Req::Release) => {
                         Apart(hand_over(vol, srv, arena)).await;
-                        return Idle::Release { find_dirs: true };
+                        return Idle::Release { find_dirs: true, care: None };
+                    }
+                    Some(Req::Care(op)) => {
+                        Apart(hand_over(vol, srv, arena)).await;
+                        return Idle::Release { find_dirs: true, care: Some(op) };
                     }
                     Some(Req::Image) => {
                         // USB Drive: the file's runs into the arena's
@@ -3933,7 +3970,7 @@ async fn idle(vol: &mut Volume<'static, Card>, ring: &mut Ring, arena: &mut [u8]
                         let ok = m.is_ok();
                         crate::drive::MAPPED.signal(m);
                         if ok {
-                            return Idle::Release { find_dirs: true };
+                            return Idle::Release { find_dirs: true, care: None };
                         }
                     }
                     _ => {}
@@ -3955,7 +3992,7 @@ async fn idle(vol: &mut Volume<'static, Card>, ring: &mut Ring, arena: &mut [u8]
         let text = core::str::from_utf8(&cmd.text[..cmd.len]).unwrap_or("");
         if text == "release" {
             Apart(hand_over(vol, srv, arena)).await;
-            return Idle::Release { find_dirs: false };
+            return Idle::Release { find_dirs: false, care: None };
         } else if let Some(arg) = text.strip_prefix("playdir ") {
             // The player's queue on a folder, as Files → OK (in folder
             // order: shuffle off, for repeatable tests).
@@ -4042,16 +4079,42 @@ async fn idle(vol: &mut Volume<'static, Card>, ring: &mut Ring, arena: &mut [u8]
                     .s(b" us=")
                     .u(us);
             });
-        } else if let Some(p) = text.strip_prefix("fcreate ") {
+        } else if let Some((p, demo)) = text
+            .strip_prefix("fcreate ")
+            .map(|p| (p, false))
+            .or_else(|| text.strip_prefix("fcreate-demo ").map(|p| (p, true)))
+        {
             let mut pb = [0u8; CMD_LEN];
             let p = p.trim();
             pb[..p.len()].copy_from_slice(p.as_bytes());
             let path = core::str::from_utf8(&pb[..p.len()]).unwrap_or("");
-            // Parents one by one (only `/.orpheus/…` is writable).
-            for (i, _) in path.match_indices('/').skip(1) {
-                let _ = Apart(vol.create_dir(&path[..i])).await;
+            // `fcreate`: under `/.orpheus/` (the volume's write guard).
+            // `fcreate-demo`: the demo card tree outside it (`xtask dev
+            // demo-card --outside-orpheus`; the owner allowed it on the
+            // test card, 2026-11-27): only a file of
+            // `devchan::DEMO_ROOTS`, the guard narrowed to its folder for
+            // this one upload and put back after it. One branch for both
+            // keeps the card task's future (static RAM) as it was.
+            let root = if demo { orpheus_proto::devchan::demo_write_root(path) } else { Some("/.orpheus") };
+            if let Some(root) = root {
+                vol.set_write_prefix(Some(root));
+                // Parents one by one (only inside the guard).
+                for (i, _) in path.match_indices('/').skip(1) {
+                    let _ = Apart(vol.create_dir(&path[..i])).await;
+                }
+                Apart(upload(vol, arena, path)).await;
+                vol.set_write_prefix(Some("/.orpheus"));
+            } else {
+                reply(|w| {
+                    w.s(b"fcreate failed: not in the demo tree");
+                });
             }
-            Apart(upload(vol, arena, path)).await;
+        } else if let Some(p) = text.strip_prefix("fsize ") {
+            // Size of a file, `size N PATH` (or `fsize: no such file
+            // PATH`): the path makes a stale reply of the previous query
+            // unmistakable. For uploads that skip what is there.
+            // Its own future, as `ls`: the idle loop's poll frame stays small.
+            Apart(fsize(vol, p.trim())).await;
         } else if text == "fp" {
             // Test: f32 work through paged helpers inside the RT executor.
             let t0 = time::now_us();

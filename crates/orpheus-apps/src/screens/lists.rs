@@ -21,6 +21,7 @@ use super::{
 use crate::App;
 use crate::services::{
     BootSlot, FsKind, LibList, LibraryState, PlayerCmd, PowerRequest, Services, StorageRequest, UsbMode,
+    other,
 };
 use crate::settings::{self, Action, GROUPS, Info, Kind, SettingId, format_value, id};
 use crate::strings::{Lang, Str};
@@ -288,6 +289,7 @@ impl ListScreen {
             ListKind::Choice(sid) => settings::def(sid).map_or("", |d| l.get(d.label)),
             ListKind::Info(Info::Battery) => l.get(Str::Battery),
             ListKind::Info(Info::CardInfo) => l.get(Str::CardInfo),
+            ListKind::Info(Info::Diagnostics) => l.get(Str::Diagnostics),
             ListKind::Info(_) => l.get(Str::About),
             ListKind::HomeApps => l.get(Str::HomeScreen),
             ListKind::PowerMenu => l.get(Str::GPower),
@@ -449,6 +451,9 @@ impl ListScreen {
                     id::EQUALISER,
                 ] {
                     let Some(d) = settings::def(sid) else { continue };
+                    if settings::hidden(sid) {
+                        continue;
+                    }
                     let v = svc.setting(sid);
                     let label = if sid == id::EQUALISER { l.get(Str::Equaliser) } else { l.get(d.label) };
                     let Some(r) = rows.push(label, sid.0) else { break };
@@ -557,6 +562,33 @@ impl ListScreen {
                 }
                 None => add(Str::NoCard, &|_| {}),
             },
+            // Read-only (05 §7.11 as built): what the player reports about
+            // itself, read when the screen opens or an event refreshes it.
+            Info::Diagnostics => {
+                let d = svc.diagnostics();
+                add(Str::Uptime, &|v| {
+                    let m = d.uptime_s / 60;
+                    v.push_u32(m / 60);
+                    v.push(':');
+                    v.push_u32_padded(m % 60, 2);
+                    v.push(':');
+                    v.push_u32_padded(d.uptime_s % 60, 2);
+                });
+                add(Str::Processor, &|v| {
+                    v.push_u32(u32::from(d.cpu_mhz));
+                    v.push_str(" MHz");
+                });
+                add(Str::CodeLoads, &|v| {
+                    v.push_u32(d.loads);
+                });
+                add(Str::AudioUnderruns, &|v| {
+                    v.push_u32(d.underruns);
+                });
+                add(Str::StackFree, &|v| {
+                    v.push_u32(d.stack_free);
+                    v.push_str(" B");
+                });
+            }
             _ => {
                 add(Str::Version, &|v| {
                     v.push_str_or_ellipsis(svc.version());
@@ -663,14 +695,12 @@ impl ListScreen {
                     Kind::Range { .. } => Nav::Push(SLIDER, Arg(u32::from(tag))),
                     Kind::HomeApps => Nav::Push(HOME_APPS, Arg(0)),
                     Kind::Info(Info::DeviceName | Info::RecFolder) => Nav::Stay,
-                    Kind::Info(Info::Diagnostics) => Nav::Push(NOTICE, Arg(Notice::NotYetSettings.arg())),
                     Kind::Info(i) => Nav::Push(INFO, Arg(info_arg(i))),
                     Kind::Action(Action::SetTime) => Nav::Push(PICKER, Arg(0)),
                     Kind::Action(Action::SetDate) => Nav::Push(PICKER, Arg(1)),
                     Kind::Action(Action::Developer) => Nav::Push(DEVELOPER, Arg(0)),
                     Kind::Action(Action::CheckCard) => {
-                        cx.svc.storage(StorageRequest::CheckCard);
-                        cx.ui.toast(lang.get(Str::Started));
+                        Self::storage(cx, lang, StorageRequest::CheckCard);
                         Nav::Stay
                     }
                     Kind::Action(Action::UpdateFirmware) => Nav::Push(super::UPDATE, Arg(0)),
@@ -836,6 +866,66 @@ impl ListScreen {
         self.refresh(cx.svc);
     }
 
+    /// Card work for Settings › Storage (not while other card work runs).
+    fn storage<S: Services + ?Sized>(cx: &mut Cx<'_, S>, lang: Lang, r: StorageRequest) {
+        if cx.svc.storage_outcome().busy {
+            cx.ui.toast(lang.get(Str::StorageBusy));
+            return;
+        }
+        cx.svc.storage(r);
+        cx.ui.toast(lang.get(Str::Started));
+    }
+
+    /// Settings › Storage's card work ended: what it found or did.
+    fn storage_done<S: Services + ?Sized>(&mut self, cx: &mut Cx<'_, S>) {
+        let l = self.lang;
+        let o = cx.svc.storage_outcome();
+        if o.busy {
+            return;
+        }
+        match o.req {
+            Some(StorageRequest::CheckCard) => {
+                let title = match (o.ok, o.stopped, o.problems) {
+                    (false, ..) => Str::CheckFailed,
+                    (true, true, _) => Str::CheckStopped,
+                    (true, false, 0) => Str::CheckOk,
+                    _ => Str::CheckBad,
+                };
+                // One count a line (the dialog shows three): the problems
+                // and what to do, else the folders and files read.
+                let mut t = StrBuf::<96>::new();
+                let mut line = |s: Str, n: u32| {
+                    if !t.is_empty() {
+                        t.push('\n');
+                    }
+                    t.push_str(l.get(s));
+                    t.push(' ');
+                    t.push_u32(n);
+                };
+                if o.problems > 0 {
+                    line(Str::Problems, o.problems);
+                    t.push('\n');
+                    t.push_str(l.get(Str::CheckBadText));
+                } else {
+                    line(Str::Folders, o.dirs);
+                    line(Str::AppFiles, o.files);
+                }
+                cx.ui.dialog(DialogSpec::info(DLG + 0x40, l.get(title), t.as_str(), l.get(Str::Ok)));
+            }
+            Some(StorageRequest::Format) if o.ok => cx.ui.toast(l.get(Str::CardFormatted)),
+            Some(StorageRequest::Format) => cx.ui.dialog(DialogSpec::info(
+                DLG + 0x40,
+                l.get(Str::FormatFailed),
+                l.get(Str::FormatFailedText),
+                l.get(Str::Ok),
+            )),
+            Some(StorageRequest::ClearCaches) => {
+                cx.ui.toast(l.get(if o.ok { Str::Done } else { Str::CheckFailed }));
+            }
+            _ => {}
+        }
+    }
+
     fn dialog_done<S: Services + ?Sized>(&mut self, cx: &mut Cx<'_, S>, dlg: u16, button: u8) {
         if button != 1 {
             return;
@@ -846,14 +936,8 @@ impl ListScreen {
                 cx.svc.storage(StorageRequest::RebuildLibrary);
                 cx.ui.toast(lang.get(Str::Started));
             }
-            3 => {
-                cx.svc.storage(StorageRequest::ClearCaches);
-                cx.ui.toast(lang.get(Str::Done));
-            }
-            5 => {
-                cx.svc.storage(StorageRequest::Format);
-                cx.ui.toast(lang.get(Str::Started));
-            }
+            3 => Self::storage(cx, lang, StorageRequest::ClearCaches),
+            5 => Self::storage(cx, lang, StorageRequest::Format),
             7 => cx.svc.power(PowerRequest::StartOriginal),
             8 => {
                 cx.svc.factory_reset();
@@ -904,7 +988,12 @@ impl<S: Services + ?Sized> Screen<S> for ListScreen {
                 self.dialog_done(cx, id, button);
                 return Nav::Stay;
             }
-            Event::Service(_) => {
+            Event::Service(ref s) => {
+                if let orpheus_ui::event::ServiceEvent::Other { kind: other::STORAGE, .. } = *s
+                    && matches!(self.kind, ListKind::Group(_))
+                {
+                    self.storage_done(cx);
+                }
                 let focus = self.list.focus;
                 self.refresh(cx.svc);
                 let mut l = self.list;

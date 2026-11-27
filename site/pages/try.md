@@ -45,12 +45,22 @@ Click the keys or use your keyboard; hold a key for a long press.
 
 ## What is on the card
 
-A FAT32 card image built in your browser's memory, with music and pictures
-the project made for the demo: *Lyre Study* (MP3, with lyrics), *Tide*
-(Ogg Vorbis), *Bells at Dusk* (Opus), *Pulse* (FLAC), test tones (WAV), a
-night sky with the constellation Lyra (JPEG), more pictures (BMP, QOI) and
-two short texts. All of it was synthesised or written for Orpheus and is
-under the project's licence; there is no third-party content to attribute.
+A FAT32 card image built in your browser's memory, with real works in the
+public domain or under free licences, one for every kind of file the
+player opens: Bach's Goldberg Variations played by Kimiko Ishizaka (MP3,
+FLAC), the opening of Beethoven's Fifth (Ogg Vorbis), Caruso's 1907
+*Vesti la giubba* with its words (Opus, LRC), a Chopin nocturne (AIFF),
+Satie's first Gymnopédie (WAV), Sousa's Band on a 1909 cylinder (Sun AU),
+a LibriVox reading of Orpheus and Eurydice (Speex), a Bach prelude for the
+synthesiser (MIDI), Corot, Hokusai, Muybridge, a Hubble picture of the
+Ring Nebula in Lyra and NASA's Earthrise (JPEG, PNG, BMP, GIF, QOI), and
+two Project Gutenberg books (EPUB, plain text). The recordings are short
+excerpts. Every file's author, licence, source and changes are in
+`CREDITS.txt` on the card and in the
+[demo card credits](https://github.com/timschmidt/orpheus/blob/main/sim/web/demo/CREDITS.md);
+nothing on it was generated. The card's files are downloaded once
+(about 3.4 MB) next to the page's code.
+
 The code of this page includes the Opus and Speex decoder ports and the
 glyph data listed in [third-party material](https://github.com/timschmidt/orpheus/blob/main/THIRD-PARTY.md), under their
 own permissive licences. The page loads nothing from other sites and has no
@@ -58,14 +68,20 @@ trackers.
 
 ## What is real and what is simulated
 
-Real: the apps and screens, the key handling, the FAT file system, the music
+Real: the apps and screens (also the games and Books; the Sequencer, which
+is not on the player yet, is hidden from Home: type
+`orpheus.web.run_script('set:seq=on')` in the browser console), the key handling, the FAT file system, the music
 library and its index, the tag and lyrics readers, the picture decoders, the
 audio decoders and the DSP chain (equaliser, bass, balance, crossfeed,
 channels). The volume curve is the player's.
 
-Simulated: battery, charger, clock, Bluetooth, the FM tuner and the step
-counter. The player's drivers, its paged memory and its boot stages do not
-run here; the hardware tests cover those.
+Silent here: sound comes from the audio decoders only, so MIDI files, the
+Sequencer and the screen reader's speech make no sound on this page (on the
+player MIDI files and speech play).
+
+Simulated: battery, charger, clock, Bluetooth, the FM tuner, the recorder's
+input and the step counter. The player's drivers, its paged memory and its
+boot stages do not run here; the hardware tests cover those.
 
 ## The desktop simulator
 

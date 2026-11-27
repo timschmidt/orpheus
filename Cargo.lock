@@ -1341,12 +1341,14 @@ dependencies = [
 name = "orpheus-web"
 version = "0.1.0"
 dependencies = [
+ "miniz_oxide 0.9.1",
  "orpheus-apps",
  "orpheus-audio",
  "orpheus-codecs",
  "orpheus-dsp",
  "orpheus-fs",
  "orpheus-library",
+ "orpheus-midi",
  "orpheus-sim",
  "orpheus-ui",
  "png",
@@ -2088,6 +2090,7 @@ dependencies = [
  "orpheus-tts",
  "orpheus-ui",
  "orpheus-update",
+ "orpheus-web",
  "png",
  "pulldown-cmark",
  "regex",

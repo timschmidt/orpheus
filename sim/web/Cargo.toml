@@ -19,6 +19,10 @@ orpheus-codecs = { path = "../../crates/codecs" }
 orpheus-dsp = { path = "../../crates/orpheus-dsp" }
 orpheus-fs = { path = "../../crates/orpheus-fs", features = ["std"] }
 orpheus-library = { path = "../../crates/orpheus-library" }
+# MIDI files play through the firmware's MIDI player and synthesiser.
+orpheus-midi = { path = "../../crates/orpheus-midi" }
+# The demo bundle's deflated entries (WEB-2, `bundle.rs`); the simulator links it already.
+miniz_oxide = "0.9"
 # The version the lockfile has (nusb's WebUSB back end uses it too); the
 # `wasm-bindgen` CLI must be the same version (`xtask/src/wasm.rs`).
 wasm-bindgen = "=0.2.130"

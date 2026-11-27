@@ -5,7 +5,10 @@
 // player's keys, plays the decoded PCM through an AudioWorklet, keeps the
 // visitor's files and the player's state in IndexedDB (never uploaded), and
 // offers a developer panel (frame time, memory, key recorder/replayer in
-// the `ui_keys` fuzz corpus format, screenshot).
+// the `ui_keys` fuzz corpus format, screenshot). The demo card's files
+// (real, freely licensed works; credits in CREDITS.txt on the card and
+// sim/web/demo/CREDITS.md) come as one download, pkg/demo.bin, fetched
+// while the module compiles.
 //
 // `try.html?selftest` runs a self-test instead (tests/web/try.mjs drives it
 // in a headless browser): no stored state, compare two screens with their
@@ -500,9 +503,9 @@ async function selftest() {
     r.goldens.app_settings_dark_latin = await golden('app_settings_dark_latin');
     await hold('Backspace', 900);
     r.screens.push(web.screen());
-    // Files › Music › Orpheus demo › 01 Lyre Study.mp3, by keys.
-    for (const k of ['ArrowRight', 'Enter', 'ArrowDown', 'Enter', 'Enter']) { await tap(k); await sleep(250); }
-    for (const k of ['ArrowDown', 'Enter']) { await tap(k); await sleep(250); }
+    // Files › Music › Bach › Goldberg Variations › 01 Aria.mp3, by keys.
+    for (const k of ['ArrowRight', 'Enter', 'ArrowDown', 'ArrowDown']) { await tap(k); await sleep(250); }
+    for (const k of ['Enter', 'Enter', 'Enter', 'Enter']) { await tap(k); await sleep(250); }
     r.screens.push(web.screen());
     frameTimes.length = 0;
     const u0 = underruns;
@@ -524,7 +527,7 @@ async function selftest() {
   r.pass = r.errors.length === 0
     && Object.values(r.goldens).every((d) => d === 0)
     && r.firstScreenMs !== null && r.firstScreenMs < 2000
-    && r.track === '/Music/Orpheus demo/01 Lyre Study.mp3'
+    && r.track === '/Music/Bach/Goldberg Variations/01 Aria.mp3'
     && !r.audioError
     && r.playedSeconds > 2.5
     && r.underruns === 0
@@ -536,11 +539,23 @@ async function selftest() {
 
 // ------------------------------------------------------------- start
 
+async function demoBundle() {
+  // Relative to this script (the page is one folder up).
+  const r = await fetch(new URL('./pkg/demo.bin', import.meta.url));
+  if (!r.ok) throw new Error(`demo card: HTTP ${r.status}`);
+  return new Uint8Array(await r.arrayBuffer());
+}
+
 async function main() {
   try {
+    // The demo card downloads while the module compiles.
+    const demo = demoBundle();
     const mod = await import('./pkg/orpheus_web.js');
     wasm = await mod.default();
     web = new mod.Web();
+    status('Loading the demo card…');
+    const derr = web.add_demo(await demo);
+    if (derr) throw new Error(`demo card: ${derr}`);
     status('Building the card…');
     if (!SELFTEST) await loadFiles();
     const state = SELFTEST ? '' : await kvGet('state');

@@ -9,10 +9,10 @@ of every session. Newest entries first in §3.
 |---|---|
 | Plan | `docs/PLAN.md`, `docs/plan/`. **D-2 decided 2026-11-24 by the user: full-flash layout** ("wipe the original firmware and take over the full player hardware") |
 | Code | Host workspace (`crates/*`, `sim`, `xtask`) and device workspace (`fw/`: `atj2157-hal`, `yoton-bsp`, `firmware`, `boot/stage2`, `payloads/norprog`, `bringup/*`) |
-| Player | **Runs Orpheus from NOR, full layout.** Stock firmware and the Rockbox port are erased. Card: the owner's music (exFAT/FAT, 238.3 GB), read only except `/.orpheus/` |
-| NOR | Sector 0: Rockbox-port stage 1 (unchanged). `0x001000`: full slot A (Orpheus, 544,768 B). `0x7DA000` settings, `0x7DE000` vault, `0x7DF400` Rust stage 2 (876 B, tries full A, full B, dual slot; no stock-firmware path; **the T-6 fallback stage 2, 964 B, is built but not installed: `install-stage2` step for the lead**). `0x7E0000–0x7FFFFF` vendor data, untouched. Backups: `yoton/dumps/nor_backup_8m.bin` (stock, verified), `local/nor-before-full.bin` (the chip just before the switch), `local/rockbox-nor-0x762000.bin`, `local/stage2-previous.bin`. Way back: `xtask dev restore vendor --i-have-a-backup` (`--verify` compares) |
-| Host | Fedora 43, Rust 1.98.1 pinned. Root disk nearly full (≈ 14 GB free after deleting worker build output) |
-| Current milestone | M1–M3 device parts done; M4 (Files/Music) and M5 (playback) running on the player; host side of M6–M8 packages largely done |
+| Player | **Runs Orpheus from NOR, full layout.** Stock firmware and the Rockbox port are erased. Card: **since 2026-11-27 a test card the owner says is safe to format** (permission to format given; CLAUDE.md rule 5); before that the owner's music card (exFAT/FAT, 238.3 GB), read only except `/.orpheus/` |
+| NOR | Sector 0: Rockbox-port stage 1 (unchanged). `0x001000`: full slot A (Orpheus, 544,768 B). `0x7DA000` settings, `0x7DE000` vault, `0x7DF400` Rust stage 2 (876 B, tries full A, full B, dual slot; no stock-firmware path; the T-6 fallback stage 2 (964 B) **installed and crash-tested 2026-11-24**; since UPD-1 two full slots A (`0x001000`) and B, 2,093,056 B each (image 1,605,632 B on 2026-11-27)). `0x7E0000–0x7FFFFF` vendor data, untouched. Backups: `yoton/dumps/nor_backup_8m.bin` (stock, verified), `local/nor-before-full.bin` (the chip just before the switch), `local/rockbox-nor-0x762000.bin`, `local/stage2-previous.bin`. Way back: `xtask dev restore vendor --i-have-a-backup` (`--verify` compares) |
+| Host | Fedora 43, Rust 1.98.1 pinned. Disk ≈ 60 GB free (2026-11-27; worker `target/` dirs deleted after each merge) |
+| Current milestone | (2026-11-27) On the player: Music, Files, Now Playing, Pictures, Bluetooth, Settings, Radio, Recorder, Steps, Tools, Authenticator, Games, MIDI, Books, speech and the screen reader (on-device suite 25/26 passing; `books` waits for BOOK-1/2b). Open: M13 measurements (owner's cables), M16 USB audio, M18 jack tools, BOOK-3, UI-6b, the VER packages, REL |
 
 ## 2. Work packages
 
@@ -22,7 +22,7 @@ of every session. Newest entries first in §3.
 | T-3, PG-1 | done | pagelink, PagerCore, check-resident; demand paging on the player (8 KiB pages, 1 KiB lines) |
 | PG-2 | **done; on the player** (U-MEM-2, U-DWT-2 answered); speech and, since BOOK-1/2 (2026-11-27), Books in the default image | Cold code runs from the rodata window, which spans all of SRAM3's aliases (48 → 64 pages; MPU region 7 grants SRAM3's RAM half, the stack guard becomes a canary + DWT watchpoint); a trampoline runs an instruction whose constant shares its physical line (`orpheus_pager::bounce`); `resident.toml` `[bin.firmware.cold]`. Player checks in the session entry; U-MEM-2 (SRAM3 execution) is the first |
 | PG-2b | **built (host + firmware); causes measured on the player (`bdebff77`); the fixed image is not on the player** (a PG-2 image cannot install another by USB or card: `dev stage` + `dev reset`, owner's OK) | Update data path never cold (SHA-256 round loop straddled its constants' line: 2.5 KB/s, watchdog in the read-back); cold placement pads to a clear line, conflicts back first; synth per-piece constants resident (`hot.toml resident_constants`); cluster `settings-get`; status `clk=`/`cpu=`, `dev stats` names Max; `dev update --stop-after`, `prof --during update` (session entry 2026-11-27 "PG-2b") |
-| T-6 | started | Rust NOR payload `fw/payloads/norprog` (erase/program, full-layout guard); ymon and nordump still the reference repo's C payloads. **Stage 2 slot fallback built and host-tested, not yet installed** (`orpheus_proto::boot::decide`; 964 B; lead's `install-stage2` + crash test: session entry 2026-11-24 "T-6 (stage2)") |
+| T-6 | started | Rust NOR payload `fw/payloads/norprog` (erase/program, full-layout guard); ymon and nordump still the reference repo's C payloads. **Stage 2 slot fallback installed and crash-tested on the player (2026-11-24)** (`orpheus_proto::boot::decide`; 964 B; lead's `install-stage2` + crash test: session entry 2026-11-24 "T-6 (stage2)") |
 | T-8 | **built (host + firmware), not yet run on the player** | PC sampler (T2, level 0) and pager fault log into the 2 KiB profiler block at `0x307000` (SRAM3), `prof pc\|faults on\|burst`, `prof off\|status`; `cargo xtask dev prof --pc\|--faults S [--during "soak --replay F"] [--only TEXT] [--update-hot NAME]`, `cargo xtask prof DIR`; reports in `target/orpheus/prof/<stamp>/`. Resident +656 B. User/lead check: U-TMR-1 and the Pictures-while-playing profile (session entry 2026-11-25 "T-8") |
 | AU-PERF | **built (host + firmware), not yet run on the player** | Playback per block out of the large async functions (`play_block` + small named functions, `Apart` poll boundaries, `orpheus_audio::pcm::Feeder`), codecs' `decode` not inlined, DSP stage mask kept, clusters `mp3-frame` 11 + `play-block` 15 + `play-fill` 6 = 32 lines (no shared physical line; `fits_with` check), 53 % of the measured fault loads in that set or gone; stack on the playback wake-up 6.6 → 1.5 KB; soft I2C timed on T0 (true 100 kHz, was ≈ 30 kHz: sample ≈ 2.7 → 1.0 ms), `acc bus`. Lead: profiles and checks in the session entry 2026-11-25 "AU-PERF"; U-I2C-1. **Up next titles: `seek_dir` per cluster (3,507 → 7 steps per title on 128 KiB exFAT), window keeps its titles (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: Up next titles cheap". **Chore budgets: every chore runs only when the headroom less a decoder margin covers its measured need, splittable ones stop at the budget (`orpheus_audio::chore`, host model; built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: chore budgets". **Listing pieces reopen the index file from its entry (no path walk after `job:index`), the need counts a piece's fixed cost (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: listing pieces reopen the index file" **The 55 ms `serve` block: precise `ub=` labels (`ub=serve:picture`, `job:rows`, `req:skip`, …), DAC start forgets the candidate, large overruns always logged, RAM-only pieces do not lower a need, soak reads at every action's end (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: the 55 ms `serve` block". **`job:index` in stretches of 16 entry sets (`Volume::walk_step`, `CardIo::find_index`); removing a file no longer empties the walk cache (index builds did, and the next lookup searched the root: 52–60 ms) (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: `job:index` in stretches" **Games saves rewritten in place, a new file's allocation searched in steps of 8 sectors (the 41 ms first piece of every save: 452 bitmap reads from the start; built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: games saves in place" **Games pieces' code in one cluster (`games-io`, 14 lines beside `play-fill` and `dir-walk`; `cargo xtask hot`, a line budget in `stack --check`; built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: the games pieces' code in one cluster" |
 | LAY-1 | done (device) | Full layout installed (`xtask dev install-full --i-have-a-backup`), layout-aware `stage`, `restore vendor [--verify]`. Unifont pack in NOR not done (the UI's fonts are built in) |
@@ -45,21 +45,21 @@ of every session. Newest entries first in §3.
 | USB-6 | **built (host + firmware), not yet run on the player** | MMC/CD-ROM and the extent mapper (host, earlier); export rules and `map_file` (`orpheus_usb::msc::image`); firmware `crate::drive` + image personality (`usb image <path> [cd\|disk\|fixed] [ro\|rw]`, `usb image status`); card hand-over as the card reader; read-only always for CD, writable only for `/.orpheus/` images in test mode; `xtask dev usbimage-test` (put → present → read the block device → SHA-256 → detach; `--rw`, `--qemu`). User check 26 |
 | UI-6 (USB Drive) | **built (host + firmware), not yet run on the player** | USB Drive app (Images / Test images / Choose file…, options, status with counters, Back disconnects, refusal reasons), Files and the USB dialog open it; simulator back end with a fake computer; 94 goldens; no app is "not available yet" any more |
 | USB-5 | **built, not yet run on the player** | Keyboard personality (developer channel + HID boot keyboard, 1 interrupt IN, 8-byte reports, bInterval 4), `orpheus-hid` (descriptor, reports, US/UK/DE/FR layouts, paced typist, fake host; for BT-4 too), `kbd on/off/type/status/layout/keypad/delay`, Settings › USB › Keyboard layout / Digits from keypad / Enter after code, udev rule (owner: reinstall). U-USB-11 open |
-| OTP-2 | **built (host + firmware), not yet run on the player** | Authenticator app (PIN pad, list with codes and countdown, big code, type over USB, import from `/.orpheus/otp-import.txt`, PROVISION 0x0B + `xtask dev otp-add`, delete/move/next code/change PIN/wipe), key-only vault access in `orpheus-otp`, 190 goldens. Not built: manual entry/`TextEntry`, rename, passphrase. User check 23 |
+| OTP-2 | **on the player** (suite `authenticator`, PIN pad, passes 2026-11-27); unlock, codes and typing not yet checked by the owner | Authenticator app (PIN pad, list with codes and countdown, big code, type over USB, import from `/.orpheus/otp-import.txt`, PROVISION 0x0B + `xtask dev otp-add`, delete/move/next code/change PIN/wipe), key-only vault access in `orpheus-otp`, 190 goldens. Not built: manual entry/`TextEntry`, rename, passphrase. User check 24 |
 | BT-2 (device) | **built, not yet run on the player** | UART1 driver (`atj2157_hal::uart`, `yoton_bsp::bt`), `orpheus_bt::driver`, firmware `bt` task, `BluetoothService`, shutdown 0x24 on power-off. Module off at boot; `bt probe/on/off/status/scan/connect/listen/shutdown/rx/tx` test commands. Not done: volume policy, metadata at track change, pairing UI, U-BT-2 |
-| SENS-1 | **built, not yet run on the player** | `orpheus-steps` (detector, history, trace format; synthetic-trace tests), `yoton_bsp::accel` (no FIFO: part unidentified, U-ACC-1), `firmware::sensor` task (25 Hz, SRAM3 state), `/.orpheus/steps.bin`, `acc read/regs/trace`, `steps status`. User check 20 |
-| UI-5c | **built (host + firmware), not yet run on the player** | Steps app (Today/Week, goal, distance/kcal, settings, reset), 73 goldens (UI-5d: 98) |
-| UI-5d | **built (host + firmware), not yet run on the player** | Stopwatch/Timer/Alarm in the background, alert screen, beep, backlight flash, status-bar bell/dot, RTC alarm armed; wake from off waits for PWR-3c (`ALARM_WAKE_FROM_OFF = false`). User check 21 |
+| SENS-1 | **on the player** (suite `steps` passes 2026-11-27); step counting not yet checked by walking | `orpheus-steps` (detector, history, trace format; synthetic-trace tests), `yoton_bsp::accel` (no FIFO: part unidentified, U-ACC-1), `firmware::sensor` task (25 Hz, SRAM3 state), `/.orpheus/steps.bin`, `acc read/regs/trace`, `steps status`. User check 21 |
+| UI-5c | **on the player** (suite `steps` passes 2026-11-27) | Steps app (Today/Week, goal, distance/kcal, settings, reset), 73 goldens (UI-5d: 98) |
+| UI-5d | **on the player** (suite `tools`: stopwatch, timer, alarm screens pass 2026-11-27) | Stopwatch/Timer/Alarm in the background, alert screen, beep, backlight flash, status-bar bell/dot, RTC alarm armed; wake from off waits for PWR-3c (`ALARM_WAKE_FROM_OFF = false`). User check 22 |
 | UI-6a | **on the player 2026-11-24** (connect, reconnect, audio, volume — policy changed, see session entry) | Bluetooth app (status, Pair new device, Paired devices, connect progress/failure, forget, reconnect switch), `BluetoothService` lists/requests, volume policy of 06 §4.2 (0x26 on connect and change, DAC reference −3 dB while the sink takes absolute volume), address text in written order. User check 17 |
 | BRAND-1 | done (host) | `docs/brand/palette.toml` (dark/light = firmware Dark/Light with Blue; `link`, `accent` web-only; WCAG AA checked for the web and after RGB565), `cargo xtask brand [--check]` → `docs/brand/generated/` (mono/small lyre, wordmark in the firmware's bold font, favicons + ICO, apple-touch, manifest icons, 1200×630 social card, `palette.css`). Firmware theme tables unchanged; generating them, the boot logo and firmware icons are follow-ups. User: approve palette and logo variants |
 | DOC-2 | done (host) | README rewrite, `docs/user/` (manual index, install/update/restore, keys, Music, Now Playing, Files, Pictures, Bluetooth, Settings, Performance, troubleshooting, FAQ; each ≤ 600 words, checked by `site --check`), screenshots `docs/shots/` from goldens (`xtask site shots`). User: read the manual once |
 | DOC-3 | done (host), except the clean-container CI run | `docs/dev/getting-started.md`, `architecture.md` (SVG diagrams in `docs/dev/img/`), `how-to/` (8 guides). `#![warn(missing_docs)]` on `orpheus-codecs`, the wav/mp3/flac/vorbis/speex codecs, `orpheus-fs`, `orpheus-settings` |
 | DOC-4 | done (host); workflows not run (no CI here) | CONTRIBUTING, CODE_OF_CONDUCT (Contributor Covenant 2.1), SECURITY, CHANGELOG, issue/PR templates, workflows `gate.yml`, `docs.yml`, `pages.yml` (actions pinned by SHA) |
-| WEB-2 | done (host); not yet on the live site (the lead pushes) | `cargo xtask wasm [--test] [--record] [--demo]` → `target/orpheus/site/try/pkg/`: `sim/web` (`orpheus-web`) = the `orpheus-apps` screens over the simulator's services, a FAT32 card built in the browser (synthesised demo set, the visitor's files, the saved library), the firmware's codecs + DSP chain into an AudioWorklet, key recorder/replayer in the `ui_keys` corpus format. Try-it page (`site/pages/try.md`, `site/try/`): SVG player with clickable keys, integer-scaled pixelated canvas, IndexedDB state and files, Factory reset, developer panel. Self-test `tests/web/try.mjs` passes in Chromium 155 and Firefox 157 (headless); in `pages.yml`. Safari not tested: user check 23 |
+| WEB-2 | done (host); not yet on the live site (the lead pushes) | `cargo xtask wasm [--test] [--record] [--demo]` → `target/orpheus/site/try/pkg/`: `sim/web` (`orpheus-web`) = the `orpheus-apps` screens over the simulator's services, a FAT32 card built in the browser (demo card of real, freely licensed works fetched as `pkg/demo.bin`, the visitor's files, the saved library), the firmware's codecs + DSP chain and the MIDI synthesiser into an AudioWorklet, key recorder/replayer in the `ui_keys` corpus format. Try-it page (`site/pages/try.md`, `site/try/`): SVG player with clickable keys, integer-scaled pixelated canvas, IndexedDB state and files, Factory reset, developer panel. Self-test `tests/web/try.mjs` passes in Chromium 155 and Firefox 157 (headless); in `pages.yml`. Safari not tested: user check 23. **Demo card (2026-11-27)**: `sim/web/demo/sources.toml` (17 works, SHA-256 pinned), `cargo xtask demo-card` + `dev demo-card --outside-orpheus` for the player (not run: user check 37) |
 | UPD-1 | **built (host + firmware), not yet run on the player** | `orpheus-update` (`.ofw` format, slot choice, power-loss-safe installer, recovery switch; power cut before every NOR operation tested), Settings › System › Update firmware (33 goldens), card and developer-channel (`UPDATE` 0x0D) paths, `xtask dev update/slots/switch-slot`, `.ofw` from `xtask build`. No RAM installer (full layout writes the inactive slot). Stage 2 fallback to the other slot (also a superseded one) after three failed starts: built in T-6, not yet installed. User check 27 |
 | WEB-3 | **built (host); not yet run against the player** | `orpheus-host` over one async `Transport` (nusb / WebUSB / mock player), flows (backup ×2, first install, restore, recovery) with sector-0 permit and resumable writes, `orpheus-install-web` (wasm), Install page with demo mode, WebUSB + MS OS 2.0 descriptors on the developer interface; `tests/web/install.mjs` Node suite + `--page` pass, `--device` HIL not run. No release published (manifest, payload licences: lead) |
 | WEB-1 | done (host); not published | `cargo xtask site [--check]` → `target/orpheus/site/`; Home, Manual, Developers, Hardware, Changelog, FAQ, Try it and Install (placeholders for WEB-2/WEB-3). Deploy only with repository variable `PAGES_ENABLED=true`. User: review the site |
-| AU-13 | **built; first player run 2026-11-24: capture runs, microphone silent → front-end fix + `rec raw`/`rec width`/`rec mic` (not yet re-run)** | `orpheus-rec` (WAV PCM, IMA ADPCM, FLAC 0–2 encoders; low-cut, AGC, meter, voice activation; names; write-behind ring; the recording session), `atj2157_hal::adc` (vendor capture sequence VERBATIM, DMA ch 6), `firmware::rec` (recording mode of the card task, SRAM3 state after the radio's), developer `rec start/stop/status`. Not built: voice (Opus/Speex) encoders, mic monitoring, pre-record. User check 23 |
+| AU-13 | **built; first player run 2026-11-24: capture runs, microphone silent → front-end fix + `rec raw`/`rec width`/`rec mic` (not yet re-run); suite `recorder` screens pass on the player 2026-11-27** | `orpheus-rec` (WAV PCM, IMA ADPCM, FLAC 0–2 encoders; low-cut, AGC, meter, voice activation; names; write-behind ring; the recording session), `atj2157_hal::adc` (vendor capture sequence VERBATIM, DMA ch 6), `firmware::rec` (recording mode of the card task, SRAM3 state after the radio's), developer `rec start/stop/status`. Not built: voice (Opus/Speex) encoders, mic monitoring, pre-record. User check 25 |
 | UI-5b | **built (host + firmware), not yet run on the player** | Recorder app (meters, timer, pause/mark/stop question, gain, menu with source/format/quality/AGC/VOX/split/monitor/low-cut), Recordings… (newest first, play, delete with question); simulator back end over the same session and a fake ADC; 122 goldens, 10 behaviour tests |
 | UI-8 | **done (host); not yet on the player** | List roll-around in every list (`ListView` + `ListView::step_plain`), Settings › Display › List roll-around (`0x030C`, on by default), held keys stop at the end; Up next/Details keep their view change. User check 26; the on-device journey belongs to VER-7 |
 | USB-W1 (bug) | **fixed and self-recovering (host-tested, built); not yet run on the player** | Root cause: the SETUP read was not cancel-safe (embassy-usb drops it on bus events; the interrupt stayed masked for good) and late stages landed on the next transfer. Drop-safe driver, liveness recovery, watchdog only when recovery cannot help, counters in `STATS` 24–30, soak logs self-recoveries, `xtask dev usb-cancel`. 06 §2.6; user check 28 |
@@ -68,10 +68,10 @@ of every session. Newest entries first in §3.
 | SYN-2 | **done (host)**; on the player since SYN-3 (samples and the delay compiled out there); **user check: listen to the kits and effects** | `orpheus-synth`: 11 drum models (new rim, cowbell, cymbal, clave, shaker), kits as data (9-byte entries, choke groups, 5 factory kits incl. a 32-note GM kit), sample playback (block `SampleSource`, bounded page cache with pinned heads and streaming, WAV 8/16/24/32/float, Hermite interpolation, loops), delay to 1.02 s (exact at tempo, low cut), 8-line FDN reverb at half rate in 8 KiB, `OSB1` sound banks; engine 62,320 B (was 69,040); player estimate: drum voices ≈ 75–315 cycles/sample, reverb ≈ 290 (session entry 2026-11-25 "SYN-2") |
 | TTS-1 | **done (host)**; not in the firmware, simulator or apps (TTS-2, A11Y-1, BOOK-3) | `orpheus-tts`: incremental converter (1,408 B, any feed sizes), English normaliser, NRL letter-to-sound rules + stress heuristic + stems, CMUdict exception lexicon (4,487 entries in 32,766 B; `cargo xtask tts-lexicon`), duration model for 0.25×–10×; rules alone 79.8 % of tokens, with the lexicon 98.1 % (session entry 2026-11-25 "TTS-1") |
 | TTS-2 | **done (host)**; not in the firmware, simulator or apps (A11Y-1, BOOK-3, firmware integration) | `orpheus-tts`: cascade/parallel formant synthesiser after Klatt 1980 (KLGLOTT88-like source with polyBLEP, F1–F6 cascade, nasal pole/zero, parallel frication/bursts), phoneme targets and loci from the phonetics literature, intonation (declination, accents, 5 contours, asides), voices Neutral/Low/Bright, exact TTS-1 durations at 0.25×–10×, resampler to 8–48 kHz, `Synth` (1,936 B) and `Speaker` (3,352 B with the converter), events and stop; WER (whisper base.en) 13.9 / 30.5 / 93 % at 1/2/4× (espeak-ng 5.9 / 63 / 89 %); player estimate ≈ 22 % of Base at 48 kHz (over the 20 % budget), code ≈ 70 KB without the lexicon (over 64 KiB) (session entry 2026-11-25 "TTS-2") |
-| TTS-3 | **built (host + simulator + firmware feature `speech`); in the default image since PG-2 (2026-11-27), not yet run on the player** (was: 133 of 128 code pages; user check 36 settled by PG-2) | Speech voice: `orpheus_tts::mix` (resampler, speech volume, ducking, stop fade; host-tested), the speech task (thread mode, `Speaker` at 16 kHz into a 128 ms ring), the card task mixing after the DSP chain or running the DAC at 16 kHz alone (`Book::rewind` on a stop), clock floor Mid while speaking (`governor::with_speech`), Music while speaking › Paused (`services::SpeechPause`), lexicon in three ≤ 16 KiB pieces, `ui speech`, journey `screen_reader` (skipped without the feature: journey field `needs`) (session entry 2026-11-27 "TTS-3") |
-| VER-13 | **tool and matrix done (host + simulator); second round: six settings wired (host + simulator + firmware built), journeys `settings_sound`/`settings_playback` not yet run on the player** | `cargo xtask settings-matrix [--check] [--strict]` (alias `settings coverage`; in `test all`, `--strict` in `gate --m11`); manifest for all 162 settings of the tree; simulator matrix over 59 screen + 11 service contexts (`sim/tests/settings_matrix.rs`), host tests for sound, governor, steps, recorder split, persistence/defaults/clamping/migration per kind; journeys `settings_shuffle` (passes on the player), `settings_sound`, `settings_playback` (RAM-only session). Key click, Fade on pause, Gapless, Resume at start-up, Seek step, Auto-bookmark have their effect; 9,927 / 9,974 cells; 16 settings without an effect (Speed: time stretch not built, spec change proposed), 63 reviewed exclusions (session entries 2026-11-26 "VER-13") |
-| VER-13 | **tool and matrix done (host + simulator); one device journey (not yet run on the player)** | `cargo xtask settings-matrix [--check] [--strict]` (alias `settings coverage`; in `test all`, `--strict` in `gate --m11`); manifest for all 162 settings of the tree; simulator matrix over 59 screen + 10 service contexts (`sim/tests/settings_matrix.rs`), host tests for sound, governor, steps, recorder split, persistence/defaults/clamping/migration per kind; journey `settings_shuffle` (RAM-only session). 9,365 / 9,412 matrix cells covered; 22 settings have no effect to show (not wired) and 47 contexts are reviewed exclusions (session entry 2026-11-26 "VER-13") |
-| VER-13 (Display, Power, Date & time, USB) | **built (host + simulator + firmware), not yet run on the player** | Backlight timeout, Lock delay, Screen saver, Animations, Rotate (software 180°), Power mode, Keys when locked (transport to playback), Time zone, Correction, Set from RDS (group 4A), Read-only card, Developer channel (held on under any host test; the session refuses it) have their effects; journeys `settings_screen_timers`, `settings_screen_saver`; Brightness (missing stock duty values, U-PWM-3) and Wallpaper (Set as wallpaper not built) left; stack margin 4,568 B, .bss 125,352 B. User check 30 (session entry 2026-11-26 "VER-13: Display, Power, Date & time and USB") |
+| TTS-3 | **built (host + simulator + firmware feature `speech`); in the default image since PG-2 (2026-11-27); on the player: suite `screen_reader` passes (`said=Home. Music, button, 1 of 12`, ducking with music); owner's listening check open** (was: 133 of 128 code pages; user check 36 settled by PG-2) | Speech voice: `orpheus_tts::mix` (resampler, speech volume, ducking, stop fade; host-tested), the speech task (thread mode, `Speaker` at 16 kHz into a 128 ms ring), the card task mixing after the DSP chain or running the DAC at 16 kHz alone (`Book::rewind` on a stop), clock floor Mid while speaking (`governor::with_speech`), Music while speaking › Paused (`services::SpeechPause`), lexicon in three ≤ 16 KiB pieces, `ui speech`, journey `screen_reader` (skipped without the feature: journey field `needs`) (session entry 2026-11-27 "TTS-3") |
+| VER-13 | **tool and matrix done (host + simulator); second round: six settings wired (host + simulator + firmware built), journeys `settings_sound`/`settings_playback` pass on the player (2026-11-27)** | `cargo xtask settings-matrix [--check] [--strict]` (alias `settings coverage`; in `test all`, `--strict` in `gate --m11`); manifest for all 162 settings of the tree; simulator matrix over 59 screen + 11 service contexts (`sim/tests/settings_matrix.rs`), host tests for sound, governor, steps, recorder split, persistence/defaults/clamping/migration per kind; journeys `settings_shuffle` (passes on the player), `settings_sound`, `settings_playback` (RAM-only session). Key click, Fade on pause, Gapless, Resume at start-up, Seek step, Auto-bookmark have their effect; 9,927 / 9,974 cells; 16 settings without an effect (Speed: time stretch not built, spec change proposed), 63 reviewed exclusions (session entries 2026-11-26 "VER-13") |
+| VER-13 | **tool and matrix done (host + simulator); device journeys pass on the player (2026-11-27)** | `cargo xtask settings-matrix [--check] [--strict]` (alias `settings coverage`; in `test all`, `--strict` in `gate --m11`); manifest for all 162 settings of the tree; simulator matrix over 59 screen + 10 service contexts (`sim/tests/settings_matrix.rs`), host tests for sound, governor, steps, recorder split, persistence/defaults/clamping/migration per kind; journey `settings_shuffle` (RAM-only session). 9,365 / 9,412 matrix cells covered; 22 settings have no effect to show (not wired) and 47 contexts are reviewed exclusions (session entry 2026-11-26 "VER-13") |
+| VER-13 (Display, Power, Date & time, USB) | **on the player** (suites `settings_screen_timers`, `settings_screen_saver` pass 2026-11-27) | Backlight timeout, Lock delay, Screen saver, Animations, Rotate (software 180°), Power mode, Keys when locked (transport to playback), Time zone, Correction, Set from RDS (group 4A), Read-only card, Developer channel (held on under any host test; the session refuses it) have their effects; journeys `settings_screen_timers`, `settings_screen_saver`; Brightness (missing stock duty values, U-PWM-3) and Wallpaper (Set as wallpaper not built) left; stack margin 4,568 B, .bss 125,352 B. User check 30 (session entry 2026-11-26 "VER-13: Display, Power, Date & time and USB") |
 | GAME-6 Bricks (M14) | **built (host + simulator + firmware), not yet run on the player** | Brick breaker of our own: integer physics with one-pixel sub-steps (no tunnelling at any speed, no floating point), paddle angles, 1–3-hit and unbreakable bricks, 8 hand-made + generated levels, five power-ups, lives, scores, saves; 7 settings packed into 1 word; 47 goldens; fuzz `bricks_keys`. In the firmware (`orpheus-apps/bricks`): stack margin 4,116 B unchanged. Lead: session entry 2026-11-25 "GAME-6" |
 | BOOK-1/2 wiring | **on by default since 2026-11-27, on the player** (`fa301aaf`: 127/128 code + 61/64 rodata pages, stack margin 4,276 B; suite 26/26 with `books`). **Open: opening a book while MP3 plays gives ≈ 2 underruns (`job:bread` pieces of 49–256 ms), one "The book could not be opened" (intermittent); idle Home 193 loads/s (was 138)** (session entry 2026-11-27 "BOOK-1/2: Books on by default") | `Shelf` (screens' model) / `Desk` (card side) split, step future 5,464 → 2,600 B; chores `job:bwrite…blay` while playing (no folder made, no scratch), steps while paused, idle with the arena's first 35,072 B lent; "Stop the music to prepare this book."; `books status`, `books test on\|off`; suite journey `books` (`requires`: skipped without the feature) (session entry 2026-11-26 "BOOK-1/2 wiring") |
 | BOOK-2 | **done (host + simulator)**; not in the firmware (as BOOK-1; the scratch is the decoder arena, see session entry) | EPUB 2/3 in `orpheus-books`: zip (end record, streamed central directory, CRC, zip64/encrypted/method refusals), `no_std` inflate (48 B state; 32 KiB window + 2,304 B tables lent: 35,072 B), container/OPF/nav/NCX, XHTML reduction over the XML tokenizer split out of FB2, contents positions from anchors, all in bounded steps into BOOK-1's stream; library titles from the package; 12 new goldens; fuzz targets `books_zip`, `books_epub` (session entry 2026-11-25 "BOOK-2") |
@@ -79,13 +79,286 @@ of every session. Newest entries first in §3.
 | SYN-3 | **done (firmware build)**; bench run on the player 2026-11-26 (costs measured); load governor run on the player (`78b316b5`: no reset, but every song stopped at `ratio=400`); measurement fix and clock-up (D-4) on the player (`8240f128`: ratio right, 288 MHz, but paging 200–250 %); paging fix on the player (`4e1e9a49`: every song to its end, `pg=` 3–15 %); shed-state, rest and key-tick fixes on the player (`7f26ae50`: all to the end, 20 underruns in 107 s at `load=` 25–40 %); rests that end when thread mode sleeps on the player (`b694ac61`: underruns 18/3/9 per song at `load=` 24–46 %); **budget that follows the PCM ring, main loop off the synth's lines, USB supervisor without its 20 ms timer built, not yet run on the player: lead's checks in the session entry 2026-11-26 "SYN-3: thread mode's line loads"**; owner decision: half rate for heavy MIDI files (04 §9) | The synthesiser on the player: a synth source beside the codecs (`orpheus_audio::synth`), the engine and the MIDI player built in place in the pool (stream ring + decoder arena, 80,816 B; MIDI state ≈ 71,960 B), the MIDI file through a 13-block card cache (`orpheus_midi::cache`), 44.1 kHz into the DAC ring through the DSP chain, clock floor High raised to Turbo/Max by the load governor before anything is shed (`orpheus_synth::load`: 55 % of real time, down to 30 % while the PCM ring runs short; then chorus, delay, reverb, voices shed at Max; compute measured apart from paging, warm-up 250 ms, rise ≤ 3 % a block), 4 ms pieces and pace-rule rests (thread mode always runs; a rest ends once thread mode sleeps); underruns never end a song (only "nothing can play"); `.mid`/`.kar` play from Files and Music with seek and pause; `synth bench` (36 loads, cycles, host hashes); 125/128 code pages, stack margin 5,212 B (session entries 2026-11-26 "SYN-3", "SYN-3: load governor" and "SYN-3: governor ratio measured right") |
 | SEQ-1 | **done (host + simulator)**; not in the firmware (SYN-3); **user check: listen to the demo beat** | `orpheus-seq`: project model (16 patterns × 1–64 steps × 8 drum tracks; velocity, chance, ratchet, delay, accent per step; mute/solo/level; songs; 40–240 BPM, swing 50–75 %), exact integer step timing (any tempo and swing, an hour without drift), edits heard at the next step, render without UI (`Studio::render_i16`), `OSQ1` files with CRC under `/.orpheus/seq/`; Sequencer app (feature `orpheus-apps/seq`): list, grid, transport, step, track, mixer; 38 goldens, 8 journeys, fuzz `seq_load`; project 25,092 B (session entry 2026-11-26 "SEQ-1") |
 | SEQ-2 | **done (host + simulator)**; not in the firmware (SYN-3); MIDI clock out built as a host model (2026-11-27), its USB transport and setting deferred to M16; **user check: listen to "Tram Lights"** | `orpheus-seq`: 2 synth tracks (note, gate, chord in the scale; transpose; scale lock), per-step parameter locks (24 a pattern, refused when full), kit B, fill while held, metronome, count-in, step length, live record quantised; `OSQ1` v2 with SEQ-1 migration; WAV export (offline) and MIDI export (exact ticks); Sound, Keys, Live and Song screens, Sequencer settings (7, word `0x1180`); project 35,808 B; MIDI clock model (Start/24 PPQN/Stop on exact frames, phase kept across tempo and step-length changes, USB MIDI packets; player 4,056 B) (session entries 2026-11-26 "SEQ-2", 2026-11-27 "SEQ-2: MIDI clock") |
-| A11Y-2 | **built (host + simulator + firmware), not yet run on the player**; journey `settings_accessibility` and user check 31 | Settings › Accessibility (Text size Normal/Large/Extra large, Hold delay 0.5–2 s, Key repeat Normal/Slow/Slower; packed in `0x0D60`), Themes White on black / Black on white (≥ 7:1), reduced motion = Animations off (spinner still, blinks lit), Key click Presses and holds (hold confirmation); 63 `a11y_*` goldens (session entry 2026-11-26 "A11Y-2") |
-| A11Y-1 | **done (host + simulator)**; in the firmware with TTS-3 (feature `speech`, **on by default since PG-2**, not yet run on the player); **user check: listen to the spoken journeys** | Screen reader: `orpheus_ui::a11y` (descriptions, `Reader`, `SpeechService`, `UtteranceQueue`, earcons, chords) behind `screen-reader`; every one of the apps' 72 screens describes itself (lint: 629 foci, every screen reached); Settings › Accessibility: Screen reader, Speech rate 0.25×–10× in 0.25× steps, Voice, Pitch, Verbosity, Sound cues, Where am I, Keys with screen off, Speech volume and Music while speaking (TTS-3); toggle = hold Back + Menu 2 s (Vol+ + Vol− share a ladder); 8 spoken-journey goldens with audio hashes; matrix contexts `speech`, `speech-music` (session entries 2026-11-26 "A11Y-1", 2026-11-27 "TTS-3") |
-| VER-13 Brightness (U-PWM-3) | **built (host + simulator + firmware), not yet run on the player**; journey `settings_brightness` and user check 32 | Settings › Display › Brightness = the stock levels 1–11 (default 6) on the stock PWM4 duties, live; key `0x030D` (old `0x0301` retired); alert flash 15 / 3 (never 16); `ui top` `bl=` |
+| A11Y-2 | **on the player** (suite `settings_accessibility` passes 2026-11-27); journey `settings_accessibility` and user check 31 | Settings › Accessibility (Text size Normal/Large/Extra large, Hold delay 0.5–2 s, Key repeat Normal/Slow/Slower; packed in `0x0D60`), Themes White on black / Black on white (≥ 7:1), reduced motion = Animations off (spinner still, blinks lit), Key click Presses and holds (hold confirmation); 63 `a11y_*` goldens (session entry 2026-11-26 "A11Y-2") |
+| A11Y-1 | **done (host + simulator)**; in the firmware with TTS-3 (feature `speech`, **on by default since PG-2**, suite `screen_reader` passes on the player; chords approved by the owner); **user check: listen to the spoken journeys** | Screen reader: `orpheus_ui::a11y` (descriptions, `Reader`, `SpeechService`, `UtteranceQueue`, earcons, chords) behind `screen-reader`; every one of the apps' 72 screens describes itself (lint: 629 foci, every screen reached); Settings › Accessibility: Screen reader, Speech rate 0.25×–10× in 0.25× steps, Voice, Pitch, Verbosity, Sound cues, Where am I, Keys with screen off, Speech volume and Music while speaking (TTS-3); toggle = hold Back + Menu 2 s (Vol+ + Vol− share a ladder); 8 spoken-journey goldens with audio hashes; matrix contexts `speech`, `speech-music` (session entries 2026-11-26 "A11Y-1", 2026-11-27 "TTS-3") |
+| VER-13 Brightness (U-PWM-3) | **on the player** (suite `settings_brightness` passes 2026-11-27); journey `settings_brightness` and user check 32 | Settings › Display › Brightness = the stock levels 1–11 (default 6) on the stock PWM4 duties, live; key `0x030D` (old `0x0301` retired); alert flash 15 / 3 (never 16); `ui top` `bl=` |
+| VER-13 (DOC-2 findings) | **done (host + simulator + firmware built); on the player: not yet** (2026-11-27) | Time check shows UTC (`regress_auth_time_check_shows_utc`); Recording › Source Line-in retired; Output hidden (no route, U-BT-2); Settings › Storage: Clear caches, Check card (read-only), Format card (owner allowed, 2026-11-27, via the lead) work through `orpheus-fs` (`format`, `Volume::check`, `remove_tree`); System › Diagnostics read-only; journeys `storage`, `storage_clear` (not run); rodata window 64/64; stack margin 4,276 B (session entry 2026-11-27 "VER-13: the DOC-2 findings fixed") |
 | VER-3 | **done (host)** | Adversarial-input suites in 27 crates (`tests/adversarial.rs`, shared helper `tests/adversarial.rs`; 99 tests, 24 `proptest` properties with fixed seeds, failures recorded in `tests/regress/proptest/`); 3 bugs fixed (F-GAME-1, F-SET-3, F-SET-4); inventory and what is not covered: `docs/verification/baseline-2026-11.md` §9 (session entry 2026-11-27 "VER-3") |
-| VER-4 (settings store keys) | **done (host + firmware built), not yet run on the player** | Store index 128 → 192 keys at 4 B a slot (was 8), same NOR format both ways (fixture from the old code, byte-equal images); cache write marks unlimited; 131 keys in use with every app (61 free), firmware 129; sector ceiling ≈ 209 settings keys (256 cannot fit one sector); .bss −1,248 B, stack margin 5,664 B; compaction no longer re-blesses a rotted value (session entry 2026-11-26 "VER-4: settings store index") |
+| VER-4 (settings store keys) | **done, on the player** (store mounts on every boot since the 2026-11-26 read-race fix; owner's settings intact) | Store index 128 → 192 keys at 4 B a slot (was 8), same NOR format both ways (fixture from the old code, byte-equal images); cache write marks unlimited; 131 keys in use with every app (61 free), firmware 129; sector ceiling ≈ 209 settings keys (256 cannot fit one sector); .bss −1,248 B, stack margin 5,664 B; compaction no longer re-blesses a rotted value (session entry 2026-11-26 "VER-4: settings store index") |
 
 ## 3. Session log
+
+### 2026-11-27 — VER-13: the DOC-2 findings fixed; Storage and Diagnostics on the player (worker, no hardware)
+
+Host, simulator and firmware build only (no `xtask dev`: another worker
+had the player). The six findings of the DOC-2 entry below, plus the
+lead's update during the session: the owner replaced the player's card
+with one that is safe to format and allowed Format card (2026-11-27,
+relayed by the lead; not heard from the owner by this worker), so it is
+built rather than hidden and there is no §5 question about it.
+
+* **Authenticator › Time check** showed the clock's local time labelled
+  "UTC" (`screens/auth.rs` drew `now()`). It shows the UTC the codes are
+  computed from (`unix_time()`, the clock less Time zone).
+  `regress_auth_time_check_shows_utc` (sim/tests/auth.rs; fails without
+  the fix: 12:41 "UTC" at +01:00); golden `auth_time_check_tz_dark_latin`
+  (status bar 12:41, dialog 11:41:00 UTC).
+* **Recording › Source** offered Line-in; the YM03 has no line input (01
+  §9 row "Audio inputs on the board", inferred). Value 2 retired: two
+  choices, a stored 2 reads as Microphone (`validate`), `rec_source(2)` is
+  Microphone; `RecorderService::rec_has_line_in` and the simulator's
+  `set:recline` removed; `rec start line` (developer) stays.
+  `regress_rec_source_line_in_retired`; effects.toml 0x0801 values
+  Microphone, FM radio.
+* **Output (0x0604)** was never read: there is no route to choose (the
+  module takes its audio after the amplifier, U-BT-2: jack and sink carry
+  the same sound, neither can be muted alone). Hidden (`settings::hidden`,
+  as Speed): not in Settings › Bluetooth nor the quick panel; the dead
+  Now Playing handler removed; key kept. effects.toml: `contexts = []`
+  and a `gap`. `regress_output_setting_offered_without_effect`
+  (sim/tests/settings_matrix.rs: neither list offers it, no frame
+  changes). Quick-panel goldens (6) and `app_group05` re-blessed.
+* **Storage and Diagnostics**, built (05 §7.11 "As built (VER-13 …)"):
+  * `orpheus-fs`: `format` module (FAT32 to 32 GiB, exFAT above and below
+    33 MiB; on the volume's own region: the MBR's first FAT/exFAT
+    partition or the whole superfloppy; the partition table never
+    written; GPT and unknown layouts refused, nothing written; boot
+    sectors zeroed first and written last, so a cut format does not
+    mount and formats again; label ORPHEUS; the exFAT up-case table is
+    mkfs.exfat's byte for byte, from four identity runs and `upcase16`,
+    so a formatted card keeps the fast up-case path); `Volume::check`
+    (reads every folder to a cursor-stack depth, follows every file's
+    chain to its size, writes nothing, stops when asked);
+    `Volume::remove_tree` (inside the write prefix); `region_of` shared
+    by mount and format.
+  * `orpheus-apps`: `StorageOutcome`, `CACHE_DIRS` (`/.orpheus/cache`,
+    `/.orpheus/index`), `CHECK_DEPTH` 8, `other::STORAGE`, `Diagnostics`;
+    Settings › Storage: one card job at a time ("The card is busy"),
+    "Started", then a toast (Done / Card formatted) or a dialog (No
+    problems found · Problems found + "Check the card on a computer." ·
+    Check stopped · The card could not be read · Format failed). Format's
+    confirmation (destructive, Cancel focused): "All music and files on
+    the card are erased." Diagnostics: a read-only page (Uptime,
+    Processor MHz, Code loads, Audio underruns, Free stack).
+  * Firmware: `care.rs`; `media::Req::Care` → the idle loop hands the
+    card over as for USB (`hand_over`: playback stopped, state saved),
+    `audio::release` runs `care::run` (Clear, Check) or `care::format`
+    instead of the USB hand-over, then `card_back`. Format: the volume
+    flushed, the card formatted through it, the old volume dropped
+    without a flush, mounted again. Check stops when any request for the
+    card task arrives. `care:` log line. `Fw::care_poll` raises
+    `other::STORAGE`; Diagnostics from `uptime`, `delay::core_hz`, pager
+    loads, `audio::UNDERRUNS`, `rt::stack_unused`.
+  * Simulator: the same `orpheus-fs` calls on its card (`Media::
+    format_card`, `clear_caches`, `check_card`), `set:cardbad=1` (a file
+    with a broken chain).
+  * Tests: `crates/orpheus-fs/tests/format.rs` (7: FAT32 and exFAT on an
+    MBR partition, `fsck.fat`/`fsck.exfat -n` clean before and after use,
+    the MBR and gap untouched, exFAT by size on a 33 GiB sparse image,
+    label, superfloppy, refusals, a format cut at five points);
+    `tests/care.rs` (4: counts, read-only, depth, stop, a broken chain,
+    remove_tree only the tree and only under the prefix, `fsck` clean);
+    unit `upcase_table_is_the_standard_one`, `layouts`;
+    `sim/tests/storage.rs` (6, with `regress_diagnostics_was_not_available`:
+    it opened "Not available yet"). Goldens `app_check_card`,
+    `app_check_card_problems`, `app_formatted`, `app_diagnostics` (6
+    each), `app_format_dialog` (new text) — looked at. Suite: journeys
+    `storage`, `storage_clear` with expected frames (looked at; counts and
+    values masked); `home/quick` and `settings/bluetooth` re-blessed (no
+    Output row). The simulated player's `ls` (xtask `SimPlayer`) answered
+    a fixed root listing for any path; it reads the simulated card now
+    (`Media::ls`), so `storage_clear`'s `ls` checks run in the dry run.
+* **Stale text**: `orpheus-apps/Cargo.toml` (games, Salvo, Bricks, Books,
+  MIDI, screen reader are in the firmware; the Sequencer is not, and why),
+  `strings.rs`, `orpheus-ui/src/a11y.rs`; 05 §7.13 (games feature),
+  §7.14, §7.15, §7.16 (Sequencer not wired, not "until SYN-3").
+* **Radio spec** (05 §7.3) now says what the code does: Down next preset,
+  Up previous (as every list; the user page already said so), steps and
+  seeks wrap at the region's limits, Wide 65–108 MHz, RDS clock built
+  (Set from RDS). No code change.
+* **Game sound effects**: 05 §7.13 marks them not built.
+* **Docs**: `docs/user/settings.md` (Storage section, Diagnostics, no
+  Output), `authenticator.md` (Time check is UTC), `keys.md` (quick
+  panel); `recorder.md` already said Microphone and FM only.
+* **Firmware numbers** (`xtask build`, speech + Books): resident 60,556 →
+  60,612 B; `.bss` 147,352 → 147,360 B; code 127/128 (8,194 B free,
+  unchanged); **rodata window 61 → 64 of 64** (cold code 21 → 22 pages,
+  164,536 → 176,410 B; the formatter is 5.3 KB, Check and Clear about
+  1.2 KB each): the code window's reserve page (8 KiB) is now the only
+  room left for code; slot 1,605,632 → 1,630,208 B. `stack --check`:
+  13,644 B of 17,920 B, **margin 4,276 B (unchanged)**, the worst chain
+  the Vorbis set-up as before. What it took: each card job polled in its
+  own frame (`Own`/`Apart`), `release` a two-arm dispatcher (`to_usb` the
+  old body), Care folded into `Idle::Release` (an arm of its own grew
+  the task's poll in the `play-pcm` cluster by 196 B and made `play-fill`
+  share lines with `mp3-frame`/`flac-frame`), the formatter's two
+  512-byte locals moved into the caller's buffer, `check`'s stop callback
+  generic (an unresolved indirect call), and Format holding no `Card` in
+  its future (the card task's future was +312 B in `.bss`: over budget
+  and one 256 B stack step lower). `check-resident` ok.
+* **Gate**: `cargo fmt --all --check` (root, `fw/`); `cargo clippy
+  --workspace --all-targets -D warnings`; `fw/` clippy as the gate runs
+  it; `cargo test --workspace --no-fail-fast` 2,284 passed, 0 failed, 14
+  ignored; `settings-matrix --check` 184 settings, 13,171 / 13,217 cells
+  (99.7 %), 4 without an effect, 50 exclusions, 0 errors; goldens (in the
+  workspace tests); `xtask build`, `check-resident`, `size --check`,
+  `stack --check`, `xtask test pagelink` (self-test passed); `brand
+  --check`; `site --check` (134 files; `site shots` rewrote
+  `app_quick_dark_latin`; settings.md cut back under 600 words). **Not
+  run**: every `xtask dev` step (the brief).
+* **On the player, for the lead** (not run here):
+  1. `cargo xtask dev suite storage` (new journey): Check card on the
+     owner's card, the result dialog, Diagnostics. The 60 s wait is a
+     guess: read `care: check ok dirs=… files=… problems=…` in the log for
+     the time it took and the counts; adjust the wait. Then
+     `--update-expected` for its shots after looking.
+  2. `cargo xtask dev suite storage_clear` (new, last in the run order):
+     Clear caches; `ls` shows both folders gone; browse a large folder
+     after (index rebuilt).
+  3. Format card (**lead/owner check, no journey**; user check 38 in
+     USER-CHECKS.md covers 1–3 by hand): on the card the owner
+     said is safe to format only. Settings › Storage › Format card…,
+     Format; "Card formatted"; Card info shows FAT32 (≤ 32 GB) or exFAT;
+     Files empty; the card then reads on a computer (label ORPHEUS,
+     `fsck` clean) and takes files; settings and the vault unchanged.
+  4. Authenticator › Time check with Time zone ≠ 0: the time shown is UTC.
+  5. Settings › Recording › Source: two choices; Settings › Bluetooth and
+     the quick panel: no Output row.
+* **Open**: Check card's duration on a large card and whether to run it
+  while music plays (now it stops playback, as Clear and Format); the
+  spec's full Diagnostics (key, display, audio, sensor tests, card speed,
+  event list) is not built; the rodata window is full.
+
+### 2026-11-27 — DOC-2 refresh: docs and site brought up to date (worker, no hardware)
+
+Owner's request: "ensure the web page and documentation is up to date and
+reflects current status". Each claim checked against §2, the session
+entries, USER-CHECKS.md and the code; three states used throughout:
+works (used on the player), on the player but being checked (suite
+passes there, a person's check open), simulator only / planned.
+
+* **Changed**: README (status 2026-11-27, MIDI, new shots), CHANGELOG
+  [Unreleased] (Added/Changed/Fixed/Known issues to 2026-11-27),
+  SECURITY.md (Authenticator built; fixed device label, no passphrase),
+  `docs/dev/architecture.md` (cold code in the rodata window, clock
+  governor and Power modes, card task and speech), `docs/user/` README,
+  settings, power, install (update paths and their state; browser
+  installer untried on a real player), keys (chords; power menu without
+  Start original firmware), music (MIDI), now-playing, files, faq,
+  troubleshooting, usb-drive; site `index.html`, `install.md`, `try.md`,
+  `hardware.md`.
+* **New manual pages** (each ≤ 600 words): radio, recorder, steps,
+  stopwatch, authenticator, games, salvo, bricks, books, books-reading,
+  accessibility, screen-reader, sequencer; 39 new shots in `docs/shots/`.
+* **Gate**: `cargo xtask site --check` (134 files, Home 78 KB) and `site
+  shots --check` pass; `cargo test -p xtask` passes; no code changed, so
+  the workspace tests were not rerun.
+* **Found (not fixed; for the lead)**: §2 rows stale against later
+  entries — T-6 and §1's NOR row ("fallback not installed"; installed and
+  crash-tested 2026-11-24), AU-13/UI-5b, OTP-2, SENS-1, UI-5c/5d, A11Y-1/2,
+  TTS-3 ("not yet run on the player"; the suite runs them since PG-2), and
+  user-check numbers in rows 48/50/52/62 differ from USER-CHECKS.md.
+  Firmware: Storage › Clear caches / Check card / Format card and System ›
+  Diagnostics do nothing on the player (only RebuildLibrary is wired,
+  `fw/firmware/src/ui.rs`); Settings › Recording › Source offers Line-in
+  though the board has none; Authenticator › Time check labels local
+  time "UTC" (`screens/auth.rs`); the Sequencer is hidden from Home in
+  the simulator and the Try it page (`set:seq=on`); game sound effects
+  (05 §7.13) are not built; stale "not in the firmware" comments in
+  `orpheus-apps/Cargo.toml`, `strings.rs` and `orpheus-ui/src/a11y.rs`.
+
+### 2026-11-27 — WEB-2 (demo card): real, freely licensed works in every format (worker, no hardware)
+
+Owner's requests (2026-11-27): high-quality, liberally licensed examples of
+every supported format on the demo card, pinned by reference, credited,
+no generated media; Project Gutenberg books; the full set on the player's
+test card. No `xtask dev` command was run (the brief).
+
+* **Formats (from the code)**: audio that really decodes — MP3 (Layer III
+  only; MP2/MP1 are listed by the browser but refused by the decoder),
+  FLAC, WAV/AIFF/AIFF-C/AU (one decoder), Ogg Vorbis, Ogg Opus, Ogg Speex;
+  MIDI `.mid`/`.kar`/`.rmi` through the synthesiser. Listed but not
+  decoded: M4A/MP4/AAC/ALAC, WavPack, APE, WMA, Ogg FLAC. Pictures: JPEG,
+  PNG, BMP, GIF (first frame), QOI. Books: EPUB, FB2, Markdown, text.
+  Text viewer: txt, lrc, cue, md, log, nfo. Playlists m3u/m3u8/pls are
+  recognised, not yet played ("not yet" notice). The browser build now
+  plays MIDI too (`audio::decode_midi`: `orpheus-midi` + `orpheus-synth`
+  at 48 kHz through the DSP chain; before, a `.mid` was silent there).
+* **Works** (`sim/web/demo/sources.toml`, each with source page, file URL,
+  SHA-256, licence, rights in composition/text *and* recording/scan,
+  credit, changes; licences checked on the source pages 2026-11-27): Bach
+  Aria + Variatio 4 (Kimiko Ishizaka, CC0; MP3, FLAC), Beethoven 5/i
+  (Skidmore College Orchestra via Musopen, PD; Ogg Vorbis), Caruso “Vesti
+  la giubba” 1907 (PD; Opus) with LRC from the Commons subtitle page
+  (CC BY-SA 3.0), Chopin Op. 9/2 (Peter Johnston, CC0; AIFF), Satie
+  Gymnopédie 1 (Daria Baiocchi, CC BY-SA 4.0; WAV), Sousa's Band 1909
+  Edison cylinder (PD; 8 kHz µ-law AU), LibriVox *Age of Fable* ch. 24
+  (PD; Speex), Mutopia BWV 846 (PD; MIDI), Corot (JPEG), Ring Nebula by
+  Judy Schmidt (CC BY 2.0; PNG), Hokusai (8-bit BMP), NASA Earthrise
+  (QOI), Muybridge (GIF, unmodified), Project Gutenberg #3327 EPUB and
+  #18343 text (unmodified, with the PG licence; fetched from PG's own
+  mirror `gutenberg.pglaf.org`, gutenberg.org was down for maintenance).
+  Rejected: a Commons Satie WAV whose recording had no stated rights;
+  Mutopia vocal MIDIs (lyric events without word breaks: a `.kar` would
+  have needed editing); PD-CH 78s (Swiss public domain only).
+* **Not represented**: `.kar` (no reputable PD/CC karaoke file found),
+  FB2 and Markdown books (no reputable source publishes them; converting
+  a Gutenberg file means stripping the PG marks), AIFF-C, MP2.
+* **Pipeline**: `cargo xtask wasm --demo` → `xtask/src/demo.rs`: curl with
+  a generic User-Agent into `target/orpheus/demo-cache/`, SHA-256 check,
+  ffmpeg excerpts into `sim/web/demo/card/` (committed), `CREDITS.txt` on
+  the card and `sim/web/demo/CREDITS.md` generated from the manifest
+  (a test fails when they are stale or a card file is not in the
+  manifest; manifest rules refuse NC/ND, unpinned and outside-tree
+  entries). The synthesiser of the old set (`sim/web/src/synth.rs`) and
+  its five files are gone; so are the drawn test pictures and tones.
+* **Fetched, not embedded**: every `xtask wasm` packs the committed card
+  into `try/pkg/demo.bin` (`sim/web/src/bundle.rs`: stored media,
+  deflated text, checked lengths); `app.js` fetches it while the module
+  compiles and hands it over with `Web::add_demo` (part of the library
+  fingerprint; `CARD_VERSION` 2). **Numbers**: module 1,215 KB gzip with
+  the page's files (was 2,394 KB with the old embedded set; budget 4 MB
+  unchanged); demo bundle 3,444 KB as served (new budget `demo_bytes`
+  3.5 MB); first screen 186 ms in the self-test.
+* **Player's card**: `cargo xtask demo-card` → `target/orpheus/demo-card/`
+  (33 files, 134 MB): the browser's excerpts plus the complete recordings
+  (Aria 320 kbit/s MP3, Variatio 4 96 kHz/24-bit FLAC, Beethoven Ogg,
+  Caruso Opus + full LRC, Chopin AIFF, Satie 24-bit WAV, Sousa AU, the
+  whole LibriVox chapter in Speex) and full-size pictures (the 7195 ×
+  5897 Corot JPEG, the 1548 × 1491 PNG, 1024-px BMP, 1200-px QOI), all
+  licences allowing it. `cargo xtask dev demo-card --outside-orpheus`
+  uploads it (skips files of the same size): new firmware test commands
+  `fcreate-demo PATH` (the write guard narrowed to the file's demo folder
+  for that upload, then back to `/.orpheus`) and `fsize PATH`; the paths
+  allowed are `orpheus_proto::devchan::DEMO_ROOTS` (`/Music`, `/MIDI`,
+  `/Pictures`, `/Books`, `/CREDITS.txt`, `/About this card.txt`);
+  `dev put` keeps `/.orpheus/` only unless `--outside-orpheus`. File
+  transfer copy documented in `docs/dev/getting-started.md` §4.
+  **CLAUDE.md rule 5 is unchanged** (the lead may want to note the
+  owner's test-card exception there).
+* **Firmware**: unchanged sizes against HEAD (resident 60,552 B, bss
+  147,352 B, stack worst 13,644 B, margin 4,276 B): `fcreate`/`fcreate-demo`
+  share one branch and `fsize` is its own future (a first cut grew the
+  idle loop's poll frame by 1,488 B and failed `stack --check`).
+* **Tests**: `regress_demo_upload_outside_the_demo_tree_is_refused`
+  (orpheus-proto), `regress_uploads_outside_orpheus_and_the_demo_tree_are_refused`
+  and `fsize_replies_are_matched_to_their_path` (xtask); every demo track
+  decodes to its excerpt length and the MIDI file renders and seeks
+  (orpheus-web); every picture decodes; the set has every format and
+  every file is in CREDITS; bundle round trip and hostile bundles;
+  manifest/committed-card/credits consistency; SRT → LRC.
+* **User check 37** (new): the demo card on the test card, every file.
+  On the host every file of `target/orpheus/demo-card/` decodes (the
+  complete tracks to their full lengths; the 7195 × 5897 JPEG in the
+  simulator's 64 KiB arena).
+* **Gate**: `cargo fmt --all --check` (and `fw/`); `cargo clippy
+  --workspace --all-targets -D warnings` (and `fw/`); `cargo test
+  --workspace` 2,267 passed, 0 failed, 14 ignored; `xtask wasm --test`
+  (budgets, installer suite, self-test in Chromium 155; Firefox self-test
+  passed too); `xtask site --check`; `xtask build`, `size --check`,
+  `check-resident`, `stack --check`. **Not run**: every `xtask dev` step
+  (the brief: `dev demo-card` was not run against the player), fuzz,
+  goldens unchanged (no screen changed).
 
 ### 2026-11-27 — SEQ-2: MIDI clock out as a host model; the rest of SEQ-2 was already merged (worker, no hardware)
 

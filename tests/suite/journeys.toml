@@ -620,3 +620,41 @@ wait:1500
 cmd: ui speech ~ said=Screen reader off
 expect-screen:Home
 """
+
+# VER-13 (DOC-2 findings, 2026-11-27): Settings › Storage's card work and
+# System › Diagnostics. Check card only reads (rule 5). Its time on the
+# owner's card is not measured yet: the wait below is a first guess (the
+# check ends early, "Check stopped", if a request for the card comes, so
+# nothing may be sent meanwhile). Format card has no journey: it erases
+# the card (a lead/owner check, never automatic).
+[[journey]]
+name = "storage"
+about = "Settings › Storage › Check card (read-only; the result dialog, counts masked) and System › Diagnostics (values masked)"
+card = true
+script = """
+prev ok down*10 ok expect-screen:SettingsGroup shot:storage_group
+down*3 ok
+dev: wait:60000
+wait:3000 shot:check_result
+ok expect-screen:SettingsGroup back expect-screen:Settings
+down ok expect-screen:SettingsGroup down*2 ok expect-screen:Info shot:diagnostics
+back expect-screen:SettingsGroup back expect-screen:Settings
+"""
+
+[journey.shot.check_result]
+rects = [{ x = 0, y = 54, w = 128, h = 34, why = "the folders and files read (the owner's card)" }]
+
+# Last: it empties /.orpheus/cache and /.orpheus/index (thumbnails, album
+# art, folder indexes, the books' prepared copies), which the player makes
+# again when it needs them; the next browse of a large folder is slower.
+[[journey]]
+name = "storage_clear"
+about = "Settings › Storage › Clear caches removes /.orpheus/cache and /.orpheus/index (rule 5: only under /.orpheus); the Storage group after it"
+script = """
+prev ok down*10 ok expect-screen:SettingsGroup down*2 ok ok
+dev: wait:20000
+wait:3000 shot:cleared
+cmd: ls /.orpheus/cache ~ ^no such directory
+cmd: ls /.orpheus/index ~ ^no such directory
+back expect-screen:Settings
+"""

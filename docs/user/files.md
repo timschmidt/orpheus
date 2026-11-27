@@ -12,7 +12,11 @@ files, in natural order ("Track 2" before "Track 10"), ignoring case.
 | A folder | Opens it |
 | A music file | Plays it; the rest of the folder becomes the queue |
 | A picture (JPEG, PNG, BMP, QOI, GIF) | Opens it in the [picture viewer](pictures.md) |
-| A text file (`.txt`, `.lrc`, `.cue`, `.md`, `.log`) | Opens it in the text viewer |
+| A MIDI file (`.mid`, `.kar`, …) | Plays it ([MIDI files](music.md#midi-files)) |
+| A text file (`.txt`, `.lrc`, `.cue`, `.md`, `.log`, `.nfo`) | Opens it in the text viewer |
+| A disk image (`.iso`, `.img`, …) | Opens it in [USB Drive](usb-drive.md) |
+| An update file (`.ofw`) | Opens Update firmware ([install](install.md#update)) |
+| `otp-import.txt` | Opens the [Authenticator](authenticator.md) to import accounts |
 
 The **text viewer** wraps words to the screen; Prev and Next turn pages,
 and it remembers where you were.
@@ -45,7 +49,8 @@ and it remembers where you were.
 
 **In progress**: Rename, Delete, New folder and Add to playlist. Until
 they exist Orpheus does not change your files: it writes only inside
-`/.orpheus/` on the card.
+`/.orpheus/` on the card, and the [Recorder](recorder.md) in
+`/Recordings`.
 
 ## Cards
 

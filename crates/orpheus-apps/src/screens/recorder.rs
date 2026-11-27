@@ -57,8 +57,9 @@ const DLG_STOP: u16 = 0x500;
 /// Meter scale floor (dBFS).
 const FLOOR: i32 = -60;
 
-const SOURCES: [(RecSource, Str); 3] =
-    [(RecSource::Mic, Str::Microphone), (RecSource::Fm, Str::FmRadio), (RecSource::Line, Str::LineIn)];
+/// The sources Settings › Recording › Source offers (no line input on the
+/// YM03: Line-in retired 2026-11-27).
+const SOURCES: [(RecSource, Str); 2] = [(RecSource::Mic, Str::Microphone), (RecSource::Fm, Str::FmRadio)];
 const FORMATS: [&str; 3] = ["WAV", "WAV ADPCM", "FLAC"];
 const QUALITIES: [Str; 3] = [Str::QVoice, Str::QStandard, Str::QHigh];
 const VOX: [&str; 4] = ["", "−50 dB", "−40 dB", "−30 dB"];
@@ -490,11 +491,7 @@ impl<S: Services + ?Sized> Screen<S> for RecorderScreen {
             }
             Some(M_SOURCE) => {
                 out.title(l.get(Str::RecSource));
-                let line = svc.rec_has_line_in();
                 for (i, (_, s)) in SOURCES.iter().enumerate() {
-                    if i == 2 && !line {
-                        continue;
-                    }
                     out.radio(
                         M_SOURCE_0 + u16::try_from(i).unwrap_or(0),
                         l.get(*s),

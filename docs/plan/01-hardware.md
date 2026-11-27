@@ -519,6 +519,7 @@ Raw numbers are in `docs/STATUS.md` §4; each item names the bring-up image
 | U-WDT-1 (part) | Reboot = period code 0 + enable; the stage-2 mailbox `"ADFU"` then lands in USB recovery with SRAM0 intact | hello |
 | U-LCM-1/2 | DMA blit with `IN_BUS = 1`, `EMDE`, `RS`, `RGB565_FORMAT = 1`, `DISP_SIZE = (h−1)<<16 \| (w−1)`, `STARTT`, DMA mode `0x9600` to `LCD_DATA`: the little-endian frame buffer goes out unchanged; no HOSC detour needed (LCD clock CK24M, `LCDC_CLK = 0`). Panel id `7C 89 F0` (ST7735S); RAMRD read-back works in PIO mode | lcd |
 | Keys | Idle ladder 1 = 743, ladder 2 = 837 (±3) | keys |
+| Audio inputs on the board | The ADC's line front end (§2) is not brought out on the YM03: its one jack is the headphone output, and the inputs in use are the microphone and the FM tuner (U-AUD-4, U-AUD-13) [inferred: no line input has been found in the vendor configuration, the stock firmware or on the board]. Settings › Recording › Source offers Microphone and FM radio only (VER-13, 2026-11-27); `rec start line` stays for probing | recorder |
 | Charger | `CHG_CTL` reset state `0x8C40073A`: CHGEN 0, `CHG_VLOT` 14 (4.1875 V), `STOPV` 1 (4.18 V), `ENCHGATDT` 1. Vendor sequence with code 4 gives `0x8C450738` and `CHG_DET = 0xB8` (CC phase, current > 87.5 %) | charge |
 | U-SD (no card) | With no card, CMD8 returns STATE `0xCB8`: bit 4 set without bit 0 means "no response" | sd |
 | SD speed | 24 MHz data clock (CK24M), 4-bit, multi-block DMA: 9.3 MB/s with 64 KiB requests | sd |

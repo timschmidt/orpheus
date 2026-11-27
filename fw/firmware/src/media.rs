@@ -204,10 +204,13 @@ pub enum Req {
     /// Never sent without the firmware feature `books`.
     #[cfg_attr(not(feature = "books"), allow(dead_code))]
     Books,
+    /// Settings › Storage's card work (`crate::care`): for the idle loop,
+    /// which hands the card over as for USB, runs it, and takes it back.
+    Care(orpheus_apps::services::StorageRequest),
 }
 
 /// Request kinds ([`Req::kind`]) and their names for the log.
-pub const REQ_KINDS: usize = 17;
+pub const REQ_KINDS: usize = 18;
 pub const REQ_NAMES: [&str; REQ_KINDS] = [
     "browse",
     "want",
@@ -226,6 +229,7 @@ pub const REQ_NAMES: [&str; REQ_KINDS] = [
     "update",
     "games",
     "books",
+    "care",
 ];
 
 impl Req {
@@ -251,6 +255,7 @@ impl Req {
             Req::Update(_) => 14,
             Req::Games(_) => 15,
             Req::Books => 16,
+            Req::Care(_) => 17,
         }
     }
 
@@ -1148,7 +1153,7 @@ impl Server {
                 self.qjob = Some((self.qgen, first, mask));
                 true
             }
-            Req::Release | Req::Image => {
+            Req::Release | Req::Image | Req::Care(_) => {
                 self.pending = Some(r);
                 false
             }

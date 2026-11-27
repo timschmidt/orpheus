@@ -225,6 +225,47 @@ fn looks_like_exfat(s: &Sector) -> bool {
     &s[3..11] == b"EXFAT   "
 }
 
+/// Where the volume lies on a device whose sector 0 is `s0`: the whole
+/// device when sector 0 is a boot sector ("superfloppy") and no partition
+/// is asked for, else the MBR partition `partition` or the first FAT/exFAT
+/// one; `(start, sectors)`. Mount and [`crate::format`] share it, so a
+/// format writes exactly where a mount reads.
+pub(crate) fn region_of<E>(s0: &Sector, dev_sectors: u32, partition: Option<u8>) -> Result<(u32, u32), E> {
+    if partition.is_none() && (looks_like_exfat(s0) || looks_like_fat(s0)) {
+        return Ok((0, dev_sectors));
+    }
+    if s0[510] != 0x55 || s0[511] != 0xAA {
+        return Err(Error::NoFilesystem);
+    }
+    let mut found = None;
+    for p in 0..4usize {
+        let e = &s0[446 + 16 * p..446 + 16 * p + 16];
+        if let Some(want) = partition
+            && usize::from(want) != p
+        {
+            continue;
+        }
+        let ty = e[4];
+        let start = le32(e, 8);
+        let count = le32(e, 12);
+        if ty == 0xEE {
+            return Err(Error::Unsupported); // GPT
+        }
+        let known = matches!(ty, 0x01 | 0x04 | 0x06 | 0x07 | 0x0B | 0x0C | 0x0E);
+        if (known || partition.is_some()) && ty != 0 && start != 0 && count != 0 {
+            found = Some((start, count));
+            break;
+        }
+    }
+    let Some((start, count)) = found else {
+        return Err(Error::NoFilesystem);
+    };
+    if start >= dev_sectors {
+        return Err(Error::Corrupt);
+    }
+    Ok((start, count.min(dev_sectors - start)))
+}
+
 /// Zero sector used for zero-filling.
 pub(crate) static ZERO: Sector = [0; SECTOR_SIZE];
 
@@ -247,40 +288,7 @@ impl<'c, D: BlockDevice> Volume<'c, D> {
         // Find the volume start.
         let i = cache.load(&mut dev, 0, Kind::Meta, false).await?;
         let s0 = *cache.data(i);
-        let (base, len) = if opts.partition.is_none() && (looks_like_exfat(&s0) || looks_like_fat(&s0)) {
-            (0u32, dev_sectors)
-        } else {
-            if s0[510] != 0x55 || s0[511] != 0xAA {
-                return Err(Error::NoFilesystem);
-            }
-            let mut found = None;
-            for p in 0..4usize {
-                let e = &s0[446 + 16 * p..446 + 16 * p + 16];
-                if let Some(want) = opts.partition
-                    && usize::from(want) != p
-                {
-                    continue;
-                }
-                let ty = e[4];
-                let start = le32(e, 8);
-                let count = le32(e, 12);
-                if ty == 0xEE {
-                    return Err(Error::Unsupported); // GPT
-                }
-                let known = matches!(ty, 0x01 | 0x04 | 0x06 | 0x07 | 0x0B | 0x0C | 0x0E);
-                if (known || opts.partition.is_some()) && ty != 0 && start != 0 && count != 0 {
-                    found = Some((start, count));
-                    break;
-                }
-            }
-            let Some((start, count)) = found else {
-                return Err(Error::NoFilesystem);
-            };
-            if start >= dev_sectors {
-                return Err(Error::Corrupt);
-            }
-            (start, count.min(dev_sectors - start))
-        };
+        let (base, len) = region_of(&s0, dev_sectors, opts.partition)?;
         let i = cache.load(&mut dev, base, Kind::Meta, false).await?;
         let bs = *cache.data(i);
         let mut vol = Volume {

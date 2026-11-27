@@ -2,29 +2,39 @@
 
 ## Update
 
-**On the player.** Copy `orpheus-<version>.ofw` to the top folder of the
-card (or `/.orpheus/update/`), then *Settings › System › Update firmware*:
-choose the file, read its changes, *Install*. The player checks the whole
-file, writes it next to the running firmware, reads it back, switches and
-restarts. Keep 30 % battery or the cable in; music, settings and the card
-stay.
+No release has been published yet: the update file
+(`orpheus-<version>.ofw`) comes from building the firmware
+(`cargo xtask build`). There are three ways to install it; a power cut
+during any of them is harmless, because the player starts either the
+previous version or the new, complete one.
 
-**From a computer.** Open the site's [Install page](https://timschmidt.github.io/orpheus/install.html) in
-Chrome, Edge, Opera or Brave, *Choose the player*, *Update Orpheus*. No
-driver is needed. Or, from the project's tools:
+**From the project's tools** (works; on the reference player an update
+takes about 40 s):
 
 ```sh
 cargo xtask build                                   # also writes orpheus-<version>.ofw
 cargo xtask dev update target/orpheus/orpheus-*.ofw
 ```
 
-A power cut during an update is harmless: the player starts either the
-previous version or the new, complete one.
+**On the player** (**in progress**: built, not yet tried on the player).
+Copy the `.ofw` file to the top folder of the card (or
+`/.orpheus/update/`), then *Settings › System › Update firmware*: choose
+the file, read its changes, *Install*. The player checks the whole file,
+writes it next to the running firmware, reads it back, switches and
+restarts. Keep 30 % battery or the cable in; music, settings and the card
+stay.
+
+**From the browser** (**in progress**: tried against a simulated player,
+not yet against a real one). Open the site's
+[Install page](https://timschmidt.github.io/orpheus/install.html) in
+Chrome, Edge, Opera or Brave, *Choose the player*, choose the `.ofw`
+file, *Update Orpheus*. No driver is needed.
 
 ## If the new version does not start
 
 After three failed starts the player starts the previous version by
-itself (Settings › System › About then shows *Failed to start*). If that
+itself (Settings › System › About then shows *Failed to start*; this was
+tested on the reference player with a firmware made to crash). If that
 fails too, it goes to **recovery mode** (its chip's USB recovery, which
 nothing can overwrite). On the Install page, *Choose the player* again,
 then *Recovery › Start the other firmware*. With the tools: `cargo xtask
@@ -32,8 +42,8 @@ dev switch-slot`, then `cargo xtask dev reset`.
 
 ## First install
 
-On a player with the original firmware the Install page does it in
-recovery mode:
+On a player with the original firmware the Install page is meant to do
+it in recovery mode (**in progress**: not yet tried on a real player):
 
 1. *Back up the whole flash*: read twice and compared, kept in the browser
    and downloaded as a file. Keep that file.
@@ -45,7 +55,7 @@ The original firmware has no button for recovery mode: the first time,
 needs the WinUSB driver once (for example with Zadig, device
 `10D6:10D6`).
 
-The command-line way, on the reference player, was:
+The command-line way, which is how the reference player was set up:
 `cargo xtask dev nordump 0 0x800000 local/nor-before-full.bin`,
 `cargo xtask dev backup-verify`, `cargo xtask dev install-stage2`,
 `cargo xtask dev install-full --i-have-a-backup`. The tools still need the

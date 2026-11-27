@@ -44,6 +44,41 @@ pub fn stops_track_first(cmd: &[u8]) -> bool {
     cmd.starts_with(b"playdir ")
 }
 
+/// Where the demo card tree (`cargo xtask demo-card`) lives on the card:
+/// its top-level folders and its files in the root. The owner allowed
+/// uploading it outside `/.orpheus/` on the test card (2026-11-27);
+/// everything else stays under `/.orpheus/` (CLAUDE.md rule 5).
+pub const DEMO_ROOTS: [&str; 6] =
+    ["/Music", "/MIDI", "/Pictures", "/Books", "/CREDITS.txt", "/About this card.txt"];
+
+/// The write prefix under which the test command `fcreate-demo PATH` may
+/// create `path`: the [`DEMO_ROOTS`] entry it belongs to, or `None` when
+/// it is not a file of the demo tree. A file must be below one of the
+/// folders (not the folder itself) or be one of the root files; every
+/// component must be a plain name (no empty, `.`, `..` or hidden
+/// component, no backslash or control character). Case is ignored as FAT
+/// ignores it.
+#[must_use]
+pub fn demo_write_root(path: &str) -> Option<&'static str> {
+    let rest = path.strip_prefix('/')?;
+    let plain = |c: &str| {
+        !c.is_empty()
+            && !c.starts_with('.')
+            && !c.chars().any(|ch| ch.is_control() || "\\:*?\"<>|".contains(ch))
+    };
+    let mut parts = rest.split('/');
+    let first = parts.next()?;
+    if !plain(first) || !rest.split('/').all(plain) {
+        return None;
+    }
+    let more = rest.contains('/');
+    DEMO_ROOTS.iter().copied().find(|r| {
+        let name = &r[1..];
+        let folder = !name.contains('.');
+        first.eq_ignore_ascii_case(name) && folder == more
+    })
+}
+
 /// The firmware's test reply buffer (`audio::REPLY`).
 pub const REPLY_LEN: usize = 1024;
 /// Room `ls` keeps in [`REPLY_LEN`] for its `(N entries)` footer.
@@ -304,6 +339,51 @@ pub mod usb {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The demo-tree upload guard (owner's permission of 2026-11-27, the
+    /// test card only): `fcreate-demo` must still refuse every path outside
+    /// the demo tree's top-level folders and root files — the firmware's own
+    /// folder, other folders, the root, traversal and hidden or odd names —
+    /// so no developer-channel upload can write anywhere else on a card.
+    #[test]
+    fn regress_demo_upload_outside_the_demo_tree_is_refused() {
+        for ok in [
+            ("/Music/Bach/Goldberg Variations/01 Aria.mp3", "/Music"),
+            ("/music/x.flac", "/Music"),
+            ("/MIDI/Bach - Prelude in C major, BWV 846.mid", "/MIDI"),
+            ("/Pictures/Full size/Earthrise (1200).qoi", "/Pictures"),
+            ("/Books/Bulfinch - The Age of Fable.epub", "/Books"),
+            ("/Music/Satie/Gymnopédie No. 1.wav", "/Music"),
+            ("/CREDITS.txt", "/CREDITS.txt"),
+            ("/About this card.txt", "/About this card.txt"),
+        ] {
+            assert_eq!(demo_write_root(ok.0), Some(ok.1), "{}", ok.0);
+        }
+        for bad in [
+            "",
+            "/",
+            "/Music",
+            "/Music/",
+            "Music/x.mp3",
+            "/.orpheus/x.bin",
+            "/.orpheus/library.ydb",
+            "/Recordings/a.wav",
+            "/Musicals/a.mp3",
+            "/update.yfw",
+            "/otpauth.txt",
+            "/CREDITS.txt/x",
+            "/Music/../update.yfw",
+            "/Music/./x.mp3",
+            "/Music//x.mp3",
+            "/Music/.orpheus/x",
+            "/Music/a\\..\\b",
+            "/Music/a:b",
+            "/Music/a\nb",
+            "/Books/../.orpheus/books/x",
+        ] {
+            assert_eq!(demo_write_root(bad), None, "{bad:?} must be refused");
+        }
+    }
 
     /// Regression: `ls` of a big folder lost its `(N entries)` footer
     /// (2026-11-27, `dev soak music` on the player: the names filled the

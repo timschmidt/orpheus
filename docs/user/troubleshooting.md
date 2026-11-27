@@ -5,7 +5,7 @@ read-only memory, and Orpheus is built so that it can always get there.
 
 ## The player restarts by itself
 
-Orpheus watches itself. If it hangs for about 3 seconds, the watchdog
+Orpheus watches itself. If it hangs for a few seconds, the watchdog
 restarts it. If it crashes, it shows a **crash screen** (what
 went wrong and where, in hexadecimal) and restarts after 3 seconds or a
 key press. The crash details stay in memory for the developers: if you can,
@@ -57,14 +57,30 @@ works either way.
 
 ## A file does not play
 
-Orpheus plays MP3, FLAC, WAV, Ogg Vorbis, Opus and Speex. Other formats
-(AAC/M4A, ALAC, WavPack, APE, WMA) are **in progress** and do not play
-yet.
+Orpheus plays MP3, FLAC, WAV, Ogg Vorbis, Opus, Speex and MIDI. Other
+formats (AAC/M4A, ALAC, WavPack, APE, WMA) are **in progress** and do not
+play yet. In [Battery saver](power.md) some files are too much for the
+slow processor and stutter or stop: switch Power mode to Automatic.
+
+A heavy MIDI file can sound thinner: at 288 MHz the player leaves out
+effects and some notes rather than stop ([MIDI files](music.md#midi-files)).
 
 ## Pictures say "Stop playback to view pictures"
 
 Pictures and music share memory: stop the music (hold OK on Now Playing)
 and the picture appears.
+
+## Books is not on Home
+
+A player set up before Books existed keeps its old Home choice: switch
+Books on in Settings › Display › Home screen.
+
+## A book does not open while music plays
+
+An EPUB is converted the first time it opens, which needs the memory
+music uses ("Stop the music to prepare this book."): stop the music once.
+Opening a book during music can cause a short dropout, and once showed
+"The book could not be read.": open it again (known issues).
 
 ## The clock shows 00:00
 

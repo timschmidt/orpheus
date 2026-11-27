@@ -200,3 +200,23 @@ fn change_pin_and_wipe() {
     run(&mut s, "menu down*6 ok next ok wait:100");
     assert_eq!(s.sys.vault(), VaultState::Absent);
 }
+
+/// Regression (DOC-2 finding, 2026-11-27): Menu › Time check showed the
+/// clock's local time with the label "UTC", so at Time zone +01:00 it said
+/// "12:41:00 UTC" when UTC was 11:41:00 (the codes were right; the check
+/// misled anyone comparing it with UTC). It shows the UTC the codes use.
+#[test]
+fn regress_auth_time_check_shows_utc() {
+    let summary = |tz: i16| {
+        // The sim clock: 2026-11-24 12:41:00 local.
+        let mut s = sim(&format!("set:0x0505={tz} set:vault=unlocked {APP} menu down*3 ok"));
+        let mut d = orpheus_ui::a11y::Desc::new();
+        s.shell.describe(&mut s.sys, &mut d);
+        assert_eq!(d.layer, orpheus_ui::a11y::Layer::Dialog);
+        d.summary.as_str().to_string()
+    };
+    assert!(summary(0).contains("2026-11-24 12:41:00 UTC"), "{}", summary(0));
+    assert!(summary(60).contains("2026-11-24 11:41:00 UTC"), "{}", summary(60));
+    // Across midnight: UTC is the day before at +14:00.
+    assert!(summary(840).contains("2026-11-23 22:41:00 UTC"), "{}", summary(840));
+}

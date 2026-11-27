@@ -332,9 +332,14 @@ and frees the keys.
 ### 6.4 Quick panel (hold Menu)
 
 A sheet with: Now Playing (if any) · Lock · Bluetooth on/off and current device
-· Output (Headphones / Bluetooth) · Sleep timer (Off, 15, 30, 45, 60, 90 min,
+· Sleep timer (Off, 15, 30, 45, 60, 90 min,
 end of track) · Brightness slider · Shuffle · Repeat · EQ preset. Values change
-with Prev/Next directly in the row, without leaving the panel.
+with Prev/Next directly in the row, without leaving the panel. (An Output
+row, Headphones / Bluetooth, was specified and is hidden since 2026-11-27:
+the YM03 has no route to choose. The Bluetooth module takes its audio
+after the headphone amplifier, U-BT-2, so the jack and a connected sink
+always carry the same sound; the setting 0x0604 is kept in the store,
+`settings::hidden`.)
 
 ### 6.5 USB connected dialog
 
@@ -413,8 +418,8 @@ Recently added · Bookmarks.
   and clear the resume point.
 * Menu: Shuffle (off/on) · Repeat (off/one/all) · Add to Favourites · Add to
   playlist… · Bookmark here · A–B repeat (set A, set B, clear) · Speed (0.5× …
-  2.0×, pitch kept) · Equaliser… · Sleep timer… · Output (Headphones/Bluetooth)
-  · Rate? (not in v1) · Go to album / artist / folder · Delete file… · Details.
+  2.0×, pitch kept) · Equaliser… · Sleep timer… · ~~Output
+  (Headphones/Bluetooth)~~ (hidden: no route to choose, §6.4) · Rate? (not in v1) · Go to album / artist / folder · Delete file… · Details.
 * Behaviour: gapless between consecutive tracks of the same format family;
   ReplayGain per settings; automatic bookmarks for files longer than 20 min
   (position saved every 30 s and on pause/skip; resuming such a file asks
@@ -509,14 +514,17 @@ and the queue; long names, Unicode names, 8.3-only names; exFAT and FAT32 cards.
 │ ◂ tune ▸   OK mute         │
 ```
 
-* Prev/Next tap: step one channel (region step 50/100/200 kHz); hold: seek to
-  the next station (hardware seek when the tuner provides it). Up/Down: next/
-  previous preset. OK: mute. OK hold: stop the radio (powers the tuner down).
+* Prev/Next tap: step one channel (region step 50/100/200 kHz), wrapping at
+  the region's limits; hold: seek to the next station (hardware seek, past
+  the band edge round to the other end). Down/Up: next/previous preset (in
+  list order, wrapping, as every list moves). OK: mute. OK hold: stop the
+  radio (powers the tuner down).
 * Menu: Save preset / Remove preset · Presets… (list, rename, reorder, delete)
   · Auto-scan (fills up to 30 presets, strongest first, asks before replacing)
   · Record (opens the recorder with FM as the source) · Force mono · Region
-  (Europe/US/World 87.5–108, Japan 76–95, wide 64–108; de-emphasis follows) ·
-  Output (Headphones; Bluetooth if FM audio can be digitised — see 04-audio).
+  (Europe/US/World 87.5–108, Japan 76–95, wide 65–108; de-emphasis follows) ·
+  ~~Output~~ (none: the radio's analogue bypass reaches the headphones and a
+  connected Bluetooth sink alike, U-BT-2; §6.4).
 * The earphone lead is the antenna. If earphone detection exists and reports
   none, show "Plug in earphones — the cable is the antenna" but still allow
   tuning.
@@ -539,9 +547,12 @@ no earphones, the antenna note. While seeking or scanning a Prev/Next tap
 (and Back while scanning) stops it. Presets: 30, named from RDS, listed in
 order (Move up/down, Remove). Auto-scan asks only when presets exist; its
 stations replace them strongest first and a toast gives the count. Region
-Wide is 65–108 MHz (tuner limit). Not built: preset rename (no text entry
-yet), Record (recorder, M7 later), Output (FM is analogue only), RDS
-clock.
+Wide is 65–108 MHz (tuner limit). RDS clock time (group 4A) sets the clock
+when Settings › Date & time › Set from RDS is on (VER-13, 2026-11-26).
+Not built: preset rename (no text entry yet), the menu's Record item (the
+Recorder records FM with Source = FM radio), Output (none to choose,
+§6.4). (Checked against the code 2026-11-27, VER-13: Down is the next
+preset, Up the previous; steps and seeks wrap at the region's limits.)
 
 ### 7.4 Bluetooth
 
@@ -580,7 +591,7 @@ per role, defined in 06.
   asks "Stop and save?" (Back again discards nothing — recordings are always
   saved).
 * Up/Down: input gain (manual), shown in dB with the meter responding live.
-* Menu: Source (Microphone / FM radio / Line-in if the hardware has it) ·
+* Menu: Source (Microphone / FM radio; the YM03 has no line input) ·
   Format (WAV PCM · WAV ADPCM · FLAC · MP3 · Opus voice — those built, see 04)
   · Quality (sample rate, channels, bitrate) · Gain mode (manual / automatic) ·
   Voice activation (threshold, hang time) · Auto split (off, 15/30/60 min,
@@ -600,13 +611,16 @@ mark, OK held or Back asks "Stop recording?" (Stop focused: nothing is lost);
 Up/Down the manual input gain (−12…+12 dB from the source's default; a toast
 with the value; with automatic gain on they say so). Menu while ready:
 Source, Format (WAV, WAV ADPCM, FLAC), Quality (16 / 44.1 / 48 kHz; mono from
-the microphone, stereo from FM and line-in), Automatic gain, Voice
+the microphone, stereo from FM), Automatic gain, Voice
 activation, Auto split, Monitor, Low-cut, Recordings…; while recording: Stop,
 Automatic gain, Voice activation, Low-cut. Recordings… is the Files browser
 on `/Recordings`, newest first (by date), audio only: OK plays, Menu → Play
 folder, Properties, Delete… (with its question; the only delete the firmware
-allows outside `/.orpheus`). Choosing FM starts the radio. Line-in is listed
-only where the board has one (not the YM03). Not built: split on mark,
+allows outside `/.orpheus`). Choosing FM starts the radio. Line-in was
+offered where a board had one and is retired (2026-11-27, VER-13): the
+YM03 has none (01 §2, U-AUD-4), so Source is Microphone or FM radio and a
+stored Line-in reads as Microphone; the developer command keeps `rec start
+line` for probing. Not built: split on mark,
 rename, pre-record, the 2 GiB split, monitoring on the device.
 
 **Acceptance**: state machine incl. pause, mark, split, card-full (stops and
@@ -737,7 +751,11 @@ threat model in 06-connectivity §"Authenticator".
   with the Base32 keyboard, digits 6/8, period 30/60, SHA-1/256/512) · Rename
   · Delete… · Move · Next code (HOTP) · Time check (shows RTC time, UTC offset,
   last synchronisation and estimated drift; warns if the clock was never set)
-  · Change PIN · Wipe vault….
+  · Change PIN · Wipe vault…. *As built:* Time check shows the date and
+  time in UTC the codes are computed from (the clock keeps local time; less
+  the Time zone setting), labelled "UTC" (it showed the local time with
+  that label until 2026-11-27, `regress_auth_time_check_shows_utc`);
+  offset, synchronisation and drift are not shown.
 * Codes depend on correct UTC. The clock can be set from the host tool, from
   RDS clock time, or by hand; the app shows a warning strip if the RTC lost
   power since the last set.
@@ -795,6 +813,42 @@ the level at once as the slider (or the quick panel's row) moves
 starts at 6). Timer and alarm alerts flash the backlight at 15 / 3, the
 stock maximum, whatever the level. There is no dim state before the
 screen goes off (not asked for here; the stock firmware's is duty 2).
+
+*As built (VER-13, DOC-2 findings, 2026-11-27):* **Storage** › Clear
+caches, Check card and Format card do their work in the card task, which
+stops playback and saves its state first as for a USB hand-over, then
+picks the card up again; one at a time ("The card is busy"); a toast
+"Started", then the result:
+* **Clear caches** (confirm: Clear focused) removes `/.orpheus/cache`
+  (thumbnails, album art, the books' indexes and conversions) and
+  `/.orpheus/index` (folder indexes): what the player makes again from the
+  card's files. Never the library, the queue, saves, bookmarks or anything
+  outside `/.orpheus` (the volume's write prefix; CLAUDE.md rule 5).
+  "Done", or "The card could not be read".
+* **Check card** (no question: it writes nothing) reads every folder (8
+  levels below the root; deeper ones are counted, not read) and follows
+  every file's cluster chain to its size (`orpheus_fs::Volume::check`).
+  Spec silent on the details; chosen: the simplest read-only check, no
+  repair. A dialog: "No problems found" with the folders and files read;
+  "Problems found" with the count and "Check the card on a computer."; a
+  request for the card task (Files, a track, a developer command, and
+  also the step counter's or the battery logger's card writes) stops it
+  ("Check stopped").
+* **Format card…** (destructive dialog, Cancel focused: "Format the card?
+  All music and files on the card are erased.") makes a new file system on
+  the card's own partition (`orpheus_fs::format`; the partition table is
+  never written; a card with no FAT/exFAT partition is refused): FAT32 up
+  to 32 GiB, exFAT above and below 33 MiB, label ORPHEUS, the exFAT
+  up-case table mkfs.exfat writes. Quick: structures only. Only the card:
+  settings and the Authenticator's vault are in NOR and stay. "Card
+  formatted" or "Format failed". The owner allowed it on 2026-11-27 (a
+  card that is safe to format; relayed by the lead); no automatic test
+  formats the player's card.
+
+**System › Diagnostics** is a read-only page (the spec's full list below
+is not built): Uptime, Processor (the core clock now, MHz), Code loads
+(pager line loads since start-up), Audio underruns, Free stack (bytes
+never used). Read when the page opens and on each service event.
 
 Diagnostics (also the bring-up aid for workers): key test (shows raw ladder
 values and decoded keys), display test (colour bars, gradients, pixel grid),
@@ -885,7 +939,8 @@ texts, no names, art, levels or look taken from any existing product.
   (`/.orpheus/games/scores.bin`); a name entered once per player.
 * Sound effects from a tiny synthesiser (square/noise/sweep voices) mixed
   over the music, which keeps playing (setting: effects on/off, volume,
-  music ducking during play).
+  music ducking during play). **Not built yet** (2026-11-27): the games
+  are silent; the music keeps playing.
 * Every game takes a seed: new games are random, replays and tests are
   deterministic. Golden images per screen; key-sequence fuzzing per game
   with invariants (below); `regress_` tests for every bug (CLAUDE.md).
@@ -966,9 +1021,8 @@ Home since the GAME-2 integration below).**
   won; the least played record makes room), `Session` (the one game in
   RAM) and `Hub` (session, scores, which games have a save file, the
   pause menu's resume flag).
-* App: `orpheus-apps` feature **`games`** (off in the firmware until a
-  stack-headroom package; on in the simulator, the browser build and the
-  UI fuzzer). Screens `Games` (list: a game's value is "Continue" or its
+* App: `orpheus-apps` feature **`games`** (on in the firmware since
+  STACK, 2026-11-25, the simulator, the browser build and the UI fuzzer). Screens `Games` (list: a game's value is "Continue" or its
   best under the current settings), `Blocks`, `Game4096`, `GamePause`
   (Resume, New game — asks while a game is in progress —, Settings, How to
   play, Best, Quit), `GameSettings`, `GameHelp`; Games is the Home cell
@@ -1411,10 +1465,10 @@ click.
   `settings_accessibility` (the test look reads the three settings as
   their defaults until a session sets them).
 
-**As built (A11Y-1, 2026-11-26; host and simulator; not in the firmware:
-features `orpheus-ui/screen-reader` and `orpheus-apps/screen-reader`, on
-in the simulator, the browser build and xtask, off in the firmware until
-its speech output exists).** Module docs (`orpheus_ui::a11y`) are the
+**As built (A11Y-1, 2026-11-26; host and simulator; in the firmware by
+default since PG-2, 2026-11-27, with the speech voice (TTS-3): features
+`orpheus-ui/screen-reader` and `orpheus-apps/screen-reader`, the
+firmware's default feature `speech`).** Module docs (`orpheus_ui::a11y`) are the
 reference; in short:
 * **Descriptions** (`a11y::Desc`, 536 B on the host): a title, the focused element
   (`Role`: item, submenu, switch, option, check box, button, adjustable,
@@ -1581,8 +1635,9 @@ feature `speech`, off by default: the code window, 04 §8 "As built
   default from the screen reader's) and voice settings, and resume where speech
   stopped.
 
-**As built (BOOK-1, 2026-11-25; host and simulator; not in the firmware
-yet: feature `orpheus-apps/books`, see docs/STATUS.md).**
+**As built (BOOK-1, 2026-11-25; host and simulator; in the firmware by
+default since BOOK-1/2, 2026-11-27: feature `orpheus-apps/books`, the
+firmware's default feature `books`).**
 * Core crate `orpheus-books` (`no_std`, no alloc, no `core::fmt`,
   host-tested). A book is converted once, in pieces, to a **normalised
   stream** (UTF-8 text; `0x10 + kind` starts a paragraph of kind body, H1–H3,
@@ -1679,8 +1734,8 @@ yet: feature `orpheus-apps/books`, see docs/STATUS.md).**
   golden (the simulator's card always has /Books), translations of the
   Books strings.
 
-**As built (BOOK-2, 2026-11-25; host and simulator; not in the firmware,
-as BOOK-1).** EPUB 2 and 3 convert into the same normalised stream and
+**As built (BOOK-2, 2026-11-25; host and simulator; in the firmware with
+BOOK-1 since 2026-11-27).** EPUB 2 and 3 convert into the same normalised stream and
 `.toc` file, so layout, positions, bookmarks and every screen are BOOK-1's.
 * **Zip** (`zip`): the end record searched from the file's end back over a
   comment (512-byte reads overlapping by 21 bytes, at most 64 KiB + 22);
@@ -1874,7 +1929,8 @@ patterns, chained into songs.
 **As built (SEQ-1, 2026-11-26): drum tracks, host and simulator.** New
 crate `crates/orpheus-seq` (`no_std`, no `alloc`, no `unsafe`, no
 floating point outside the synth); feature `seq` of `orpheus-apps` (on in
-the simulator and the browser build, off in the firmware until SYN-3).
+the simulator and the browser build; not in the firmware yet: no package
+has wired it there, though SYN-3 put the synthesiser on the player).
 Module docs are the reference; in short:
 
 * **Model** (`model`): a `Project` of 16 patterns × 1–64 steps × **8 drum
@@ -1947,7 +2003,7 @@ Module docs are the reference; in short:
   list above; no new setting was added.
 
 **As built (SEQ-2, 2026-11-26): synth tracks, locks, song, export;
-host and simulator.** Still off in the firmware (SYN-3). Module docs of
+host and simulator.** Not in the firmware yet (as SEQ-1). Module docs of
 `orpheus-seq` are the reference; in short:
 
 * **Synth tracks**: tracks 8 and 9 (bass, lead) after the 8 drum tracks.

@@ -547,7 +547,14 @@ impl Player for SimPlayer {
                 let i = self.sim.sys.radio.radio.info();
                 format!("fm status: phase={:?} khz={} rssi={}", i.phase, i.khz, i.rssi)
             }
-            t if t.starts_with("ls ") => "Music/\n.orpheus/\n(2 entries)".into(),
+            // As the firmware (`audio::ls`): the simulated card's folder
+            // (VER-13: the `storage_clear` journey looks for the caches).
+            t if t.starts_with("ls ") => match self.sim.sys.media.ls(t["ls ".len()..].trim()) {
+                Some(v) => {
+                    v.iter().map(|n| format!("{n}\n")).collect::<String>() + &format!("({} entries)", v.len())
+                }
+                None => "no such directory".into(),
+            },
             // SYN-3: the bench's load on the host (the same samples as the
             // player's: its hash is the reference).
             t if t.starts_with("synth bench ") => sim_bench(t),

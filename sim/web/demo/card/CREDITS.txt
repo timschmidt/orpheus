@@ -1,0 +1,203 @@
+Credits for the Orpheus demo card
+=================================
+
+Every picture, recording and book on this card is a real work by the
+people named below, in the public domain or under a free licence.
+None of it was generated. Where a file was trimmed, resized or
+converted, that is said under "Changes".
+
+Licences: PD = public domain; CC0 = https://creativecommons.org/publicdomain/zero/1.0/;
+CC BY / BY-SA: the licence link is given with the work. Files made
+from a CC BY-SA work are under the same licence.
+
+This is the browser's card: short excerpts. The demo card for the
+player (`cargo xtask demo-card`) adds the complete recordings and
+full-size pictures.
+
+Goldberg Variations, BWV 988: Aria
+----------------------------------
+By:       Johann Sebastian Bach (1685–1750)
+Made by:  Kimiko Ishizaka, piano (The Open Goldberg Variations, 2012)
+Licence:  CC0-1.0 <https://creativecommons.org/publicdomain/zero/1.0/>
+Rights:   Composition public domain (published 1741). Recording dedicated to the public domain with CC0 1.0 by the Open Goldberg Variations project.
+Credit:   Kimiko Ishizaka, The Open Goldberg Variations (2012), CC0
+Source:   https://commons.wikimedia.org/wiki/File:Kimiko_Ishizaka_-_J.S._Bach-_-Open-_Goldberg_Variations,_BWV_988_(Piano)_-_01_Aria.mp3
+File:     Music/Bach/Goldberg Variations/01 Aria.mp3
+  Changes: Excerpt 0:00–0:30, faded out over the last 3 s; MP3 at 112 kbit/s (the source is a 320 kbit/s MP3).
+
+Goldberg Variations, BWV 988: Variatio 4 a 1 Clav.
+--------------------------------------------------
+By:       Johann Sebastian Bach (1685–1750)
+Made by:  Kimiko Ishizaka, piano (The Open Goldberg Variations, 2012)
+Licence:  CC0-1.0 <https://creativecommons.org/publicdomain/zero/1.0/>
+Rights:   Composition public domain (published 1741). Recording dedicated to the public domain with CC0 1.0 by the Open Goldberg Variations project.
+Credit:   Kimiko Ishizaka, The Open Goldberg Variations (2012), CC0
+Source:   https://archive.org/details/OpenGoldbergVariations
+File:     Music/Bach/Goldberg Variations/05 Variatio 4.flac
+  Changes: Excerpt 0:00–0:10, faded out over the last 1.5 s; resampled from 96 kHz/24 bit to 44.1 kHz/16 bit (dithered), FLAC.
+
+Symphony No. 5 in C minor, Op. 67: I. Allegro con brio
+------------------------------------------------------
+By:       Ludwig van Beethoven (1770–1827)
+Made by:  Skidmore College Orchestra (Musopen)
+Licence:  PD <https://creativecommons.org/publicdomain/mark/1.0/>
+Rights:   Composition public domain (1808). Recording released into the public domain by its author, the Skidmore College Orchestra, through Musopen (Commons: PD-author, attribution requested).
+Credit:   Skidmore College Orchestra, via Musopen; public domain
+Source:   https://commons.wikimedia.org/wiki/File:Ludwig_van_Beethoven_-_symphony_no._5_in_c_minor,_op._67_-_i._allegro_con_brio.ogg
+File:     Music/Beethoven/Symphony No. 5/1 Allegro con brio.ogg
+  Changes: Excerpt 0:00–0:26 (the opening), faded out over the last 1.5 s; Ogg Vorbis quality 2 (the source is Ogg Vorbis at about 140 kbit/s).
+
+Pagliacci: “Vesti la giubba”
+----------------------------
+By:       Ruggero Leoncavallo (1857–1919), music and words
+Made by:  Enrico Caruso, tenor, with orchestra (Victor, recorded 17 March 1907)
+Licence:  PD <https://creativecommons.org/publicdomain/mark/1.0/>
+Rights:   Opera public domain (1892). Recording published 1907: public domain in the United States (sound recordings published before 1923) and expired in the EU (70 years from publication); Commons: PD-old. Transferred from a 78 rpm disc by the Internet Archive's 78 rpm collection.
+Credit:   Enrico Caruso (1907); public domain
+Source:   https://commons.wikimedia.org/wiki/File:Vesti_La_Giubba.ogg
+File:     Music/Caruso/Vesti la giubba (1907).opus
+  Changes: Excerpt 0:00–1:04, faded out over the last 3 s; mixed to mono (the 1907 recording is mono); Opus at 32 kbit/s.
+
+“Vesti la giubba”: Italian subtitles
+------------------------------------
+By:       Ruggero Leoncavallo (words, 1892); timing by Wikimedia Commons user Pagliaccious (2018)
+Licence:  CC-BY-SA-3.0 <https://creativecommons.org/licenses/by-sa/3.0/>
+Rights:   Libretto public domain. The timed subtitle page is text on Wikimedia Commons, CC BY-SA 3.0 (revision 288189320, the page's only revision).
+Credit:   Subtitles by Pagliaccious, Wikimedia Commons, CC BY-SA 3.0
+Source:   https://commons.wikimedia.org/wiki/TimedText:Vesti_La_Giubba.ogg.it.srt
+File:     Music/Caruso/Vesti la giubba (1907).lrc
+  Changes: Converted from SubRip to LRC (line start times only), the lines of the first 1:04; licensed CC BY-SA 3.0 like the source.
+
+Nocturne in E-flat major, Op. 9 No. 2
+-------------------------------------
+By:       Frédéric Chopin (1810–1849)
+Made by:  Peter Johnston, piano (Musopen)
+Licence:  CC0-1.0 <https://creativecommons.org/publicdomain/zero/1.0/>
+Rights:   Composition public domain (1832). Recording dedicated to the public domain with CC0 1.0 by the performer.
+Credit:   Peter Johnston, via Musopen, CC0
+Source:   https://commons.wikimedia.org/wiki/File:Chopin_Nocturne_No._2_in_E_Flat_Major,_Op._9.ogg
+File:     Music/Chopin/Nocturne Op. 9 No. 2.aiff
+  Changes: Excerpt 0:02.5–0:10.5, faded out over the last 1.5 s; 22.05 kHz 16-bit mono AIFF (the source is mono Ogg Vorbis).
+
+Gymnopédie No. 1
+----------------
+By:       Erik Satie (1866–1925)
+Made by:  Daria Baiocchi, piano (2021)
+Licence:  CC-BY-SA-4.0 <https://creativecommons.org/licenses/by-sa/4.0/>
+Rights:   Composition public domain (published 1888; Satie died in 1925). Recording by Daria Baiocchi, CC BY-SA 4.0 (uploaded by the performer).
+Credit:   Daria Baiocchi (2021), CC BY-SA 4.0
+Source:   https://commons.wikimedia.org/wiki/File:Satie_Gymnop%C3%A8die_n.1_DariaBaiocchi.wav
+File:     Music/Satie/Gymnopédie No. 1.wav
+  Changes: Excerpt 0:00–0:10, faded out over the last 2 s; mixed to mono, 22.05 kHz 16 bit (the source is a 44.1 kHz/24-bit stereo WAV). Licensed CC BY-SA 4.0 like the source.
+
+The Stars and Stripes Forever
+-----------------------------
+By:       John Philip Sousa (1854–1932)
+Made by:  Sousa's Band (Edison Amberol cylinder 4M-285, November 1909)
+Licence:  PD <https://creativecommons.org/publicdomain/mark/1.0/>
+Rights:   Composition public domain (published 1897). Recording published 1909: public domain in the United States (PD-US-record-expired) and expired in the EU; Commons: PD-Edison Records. Click-removed transfer by Commons users Adam Cuerden and Themfromspace, released as public domain.
+Credit:   Sousa's Band (1909, Edison); public domain
+Source:   https://commons.wikimedia.org/wiki/File:Sousa%27s_Band_-_Stars_and_Stripes_Forever.ogg
+File:     Music/Sousa/The Stars and Stripes Forever (1909).au
+  Changes: Excerpt 0:01–0:21, faded out over the last 2 s; 8 kHz µ-law Sun AU (the source is a mono Ogg Vorbis transfer of the cylinder).
+
+The Age of Fable, Chapter 24: Orpheus and Eurydice
+--------------------------------------------------
+By:       Thomas Bulfinch (1796–1867)
+Made by:  Read by roolynninms for LibriVox (2008)
+Licence:  PD <https://creativecommons.org/publicdomain/mark/1.0/>
+Rights:   Text public domain (1855). LibriVox recordings are released into the public domain.
+Credit:   LibriVox recording read by roolynninms; public domain
+Source:   https://archive.org/details/bulfinch_myth_age_fable_0810_librivox3
+File:     Music/Bulfinch/The Age of Fable/24 Orpheus and Eurydice.spx
+  Changes: Excerpt 0:00–0:50 (the LibriVox introduction and the chapter's opening), faded out over the last second; 16 kHz wideband Speex in Ogg.
+
+The Well-Tempered Clavier I: Prelude No. 1 in C major, BWV 846
+--------------------------------------------------------------
+By:       Johann Sebastian Bach (1685–1750)
+Made by:  MIDI file typeset by Tobias Erbsland for the Mutopia Project (2011, LilyPond 2.14.2)
+Licence:  PD <https://creativecommons.org/publicdomain/mark/1.0/>
+Rights:   Composition public domain. The Mutopia Project publishes this edition (Mutopia-2011/09/12-5) as public domain.
+Credit:   Mutopia Project, Tobias Erbsland; public domain
+Source:   https://www.mutopiaproject.org/cgibin/piece-info.cgi?id=5
+File:     MIDI/Bach - Prelude in C major, BWV 846.mid
+  Changes: None (the original file).
+
+Orpheus Leading Eurydice from the Underworld
+--------------------------------------------
+By:       Jean-Baptiste-Camille Corot (1796–1875), oil on canvas, 1861 (Museum of Fine Arts, Houston)
+Made by:  Photograph: Google Art Project
+Licence:  PD <https://creativecommons.org/publicdomain/mark/1.0/>
+Rights:   Painting public domain (the artist died in 1875); a faithful photograph of a two-dimensional public-domain work is not itself protected (Commons: PD-Art).
+Credit:   Corot (1861), Museum of Fine Arts, Houston, via Google Art Project; public domain
+Source:   https://commons.wikimedia.org/wiki/File:Jean-Baptiste-Camille_Corot_-_Orpheus_Leading_Eurydice_from_the_Underworld_-_Google_Art_Project.jpg
+File:     Pictures/Corot - Orpheus Leading Eurydice.jpg
+  Changes: Scaled to 480 pixels wide; baseline JPEG.
+
+The Ring Nebula (M57, NGC 6720) in the constellation Lyra
+---------------------------------------------------------
+By:       Judy Schmidt, from Hubble Space Telescope WFPC2 data (NASA/ESA)
+Licence:  CC-BY-2.0 <https://creativecommons.org/licenses/by/2.0/>
+Rights:   Image processed by Judy Schmidt from public Hubble data, published on Flickr under CC BY 2.0 (reviewed on Commons).
+Credit:   “NGC 6720 ‘Ring’” by Judy Schmidt, CC BY 2.0
+Source:   https://commons.wikimedia.org/wiki/File:NGC_6720_%22Ring%22.png
+File:     Pictures/Ring Nebula in Lyra.png
+  Changes: Scaled to 320 pixels wide; 24-bit PNG.
+
+The Great Wave off Kanagawa (from Thirty-six Views of Mount Fuji)
+-----------------------------------------------------------------
+By:       Katsushika Hokusai (1760–1849), woodblock print, about 1830–32
+Made by:  Photograph: Metropolitan Museum of Art (JP1847)
+Licence:  PD <https://creativecommons.org/publicdomain/mark/1.0/>
+Rights:   Print public domain (the artist died in 1849); faithful reproduction (Commons: PD-Art); the Met releases its public-domain images under its Open Access policy.
+Credit:   Hokusai, The Metropolitan Museum of Art; public domain
+Source:   https://commons.wikimedia.org/wiki/File:Tsunami_by_hokusai_19th_century.jpg
+File:     Pictures/Hokusai - The Great Wave.bmp
+  Changes: Scaled to 360 pixels wide; 256-colour (8-bit palette) BMP.
+
+Earthrise (AS08-14-2383)
+------------------------
+By:       William Anders, NASA, Apollo 8, 24 December 1968
+Licence:  PD <https://creativecommons.org/publicdomain/mark/1.0/>
+Rights:   Work of NASA, a US government agency: public domain in the United States (Commons: PD-USGov-NASA).
+Credit:   NASA / Bill Anders (1968); public domain
+Source:   https://commons.wikimedia.org/wiki/File:NASA-Apollo8-Dec24-Earthrise.jpg
+File:     Pictures/Earthrise.qoi
+  Changes: Scaled to 320 × 320; QOI.
+
+The Horse in Motion (“Sallie Gardner at a Gallop”), animated
+------------------------------------------------------------
+By:       Eadweard Muybridge (1830–1904), photographs 1878; animation by Commons user Waugsberg (2006)
+Licence:  PD <https://creativecommons.org/publicdomain/mark/1.0/>
+Rights:   Photographs public domain (published 1878); the animation was released into the public domain by its maker.
+Credit:   Eadweard Muybridge (1878), animation by Waugsberg; public domain
+Source:   https://commons.wikimedia.org/wiki/File:Muybridge_race_horse_animated_184px.gif
+File:     Pictures/Muybridge - The Horse in Motion.gif
+  Changes: None (the original animated GIF; the player shows its first frame).
+
+Bulfinch's Mythology: The Age of Fable
+--------------------------------------
+By:       Thomas Bulfinch (1796–1867)
+Made by:  Project Gutenberg eBook #3327
+Licence:  PD <https://www.gutenberg.org/policy/license.html>
+Rights:   Text public domain (1855); “Public domain in the USA” in the Project Gutenberg catalogue. Redistributed unmodified, with the Project Gutenberg License it contains, at no charge, as the licence allows.
+Credit:   Project Gutenberg eBook #3327
+Source:   https://www.gutenberg.org/ebooks/3327
+File:     Books/Bulfinch - The Age of Fable.epub
+  Changes: None (the EPUB 3 file as Project Gutenberg distributes it, licence included).
+
+The Pied Piper of Hamelin
+-------------------------
+By:       Robert Browning (1812–1889)
+Made by:  Project Gutenberg eBook #18343
+Licence:  PD <https://www.gutenberg.org/policy/license.html>
+Rights:   Text public domain (1842); “Public domain in the USA” in the Project Gutenberg catalogue. Redistributed unmodified, with the Project Gutenberg License it contains, at no charge, as the licence allows.
+Credit:   Project Gutenberg eBook #18343
+Source:   https://www.gutenberg.org/ebooks/18343
+File:     Books/Browning - The Pied Piper of Hamelin.txt
+  Changes: None (the plain-text file as Project Gutenberg distributes it, licence included).
+
+Written for the demo by the Orpheus project (MIT OR Apache-2.0)
+--------------------------------------------------------------
+File:     About this card.txt
+File:     Music/Demo tour.m3u8

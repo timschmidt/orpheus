@@ -1,0 +1,31 @@
+Orpheus demo card
+
+This card holds real works, one for every kind of file the player opens,
+all of them in the public domain or under a free licence. CREDITS.txt
+names every one: who made it, its licence, where it comes from and what
+was changed (most are short excerpts).
+
+Music
+  Bach, Goldberg Variations (Kimiko Ishizaka): MP3 and FLAC
+  Beethoven, Symphony No. 5 (Skidmore College Orchestra): Ogg Vorbis
+  Caruso, "Vesti la giubba" (1907) with its words: Opus and LRC lyrics
+  Chopin, Nocturne Op. 9 No. 2 (Peter Johnston): AIFF
+  Satie, Gymnopedie No. 1 (Daria Baiocchi): WAV
+  Sousa's Band, The Stars and Stripes Forever (1909 cylinder): Sun AU
+  Bulfinch, The Age of Fable: Orpheus and Eurydice (LibriVox): Speex
+  Demo tour.m3u8: a playlist of the music
+
+MIDI
+  Bach, Prelude in C major (Mutopia Project): played by the synthesiser
+
+Pictures
+  Corot, Orpheus Leading Eurydice (JPEG); the Ring Nebula in Lyra (PNG);
+  Hokusai, The Great Wave (BMP); Earthrise (QOI); Muybridge, The Horse
+  in Motion (GIF)
+
+Books
+  Bulfinch, The Age of Fable (EPUB) and Browning, The Pied Piper of
+  Hamelin (plain text), both from Project Gutenberg
+
+In the browser, files you drop onto the player go into "Your files". They
+stay in your browser (IndexedDB) and are never uploaded.

@@ -39,7 +39,14 @@ in `docs/PLAN.md`; start every session there and in `docs/STATUS.md`.
    M13 discharge runs may run down to the firmware's own low-battery
    switch-off.
 5. On the card, write only inside `/.orpheus/`. Never format, repartition or
-   raw-write outside files the test created.
+   raw-write outside files the test created. Exception (owner, 2026-11-27):
+   the card in the player since 2026-11-27 replaced the owner's music card
+   and is safe to format; formatting it (Settings › Storage › Format card, or
+   a deliberate, reported step) is allowed, and so is copying the demo card
+   set (`/Music`, `/MIDI`, `/Pictures`, `/Books`, `/CREDITS.txt`) onto it at
+   the owner's request. Other automated tests still write
+   only inside `/.orpheus/`. If the owner's music card comes back, the rule
+   applies in full again.
 6. Do not send Bluetooth module commands 0x20–0x24, 0x28, 0x2C or 0x7F outside
    the package that owns them; never the upgrade commands without the user.
 7. One process talks to the player at a time. If it stops responding, wait for

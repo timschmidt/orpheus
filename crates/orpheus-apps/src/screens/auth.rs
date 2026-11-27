@@ -479,8 +479,11 @@ impl AuthScreen {
             )),
             M_TIME => {
                 let mut t = StrBuf::<96>::new();
-                let now = cx.svc.now();
-                if cx.svc.unix_time().is_some() {
+                // The UTC the codes are computed from (the clock keeps local
+                // time; `unix_time` takes the Time zone off): the label says
+                // UTC, so the time shown is UTC (VER-13, DOC-2 finding).
+                if let Some(utc) = cx.svc.unix_time() {
+                    let now = crate::services::date_of(utc);
                     t.push_u32(u32::from(now.year));
                     t.push('-');
                     t.push_u32_padded(u32::from(now.month), 2);

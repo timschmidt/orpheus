@@ -414,7 +414,7 @@ fn printable(w: &mut Writer<'_>, s: &[u8]) {
 }
 
 /// `fm HEAD: phase=… khz=… rssi=… st=… mute=… vol=… pa=… chip=… ps="…"
-/// rt="…" groups=… bad=… err=… regs 02h–07h, 0Ah–0Fh, antipop, pa_ctl`.
+/// rt="…" groups=… bad=… ct_heard=… ct=… err=… regs 02h–07h, 0Ah–0Fh, antipop, pa_ctl`.
 fn status_reply(head: &[u8]) {
     with(|r| {
         let i = r.info();
@@ -439,6 +439,10 @@ fn status_reply(head: &[u8]) {
             hex(w, u32::from(rds.pi()), 4);
             w.s(t!(b" groups=")).u(u64::from(rds.groups));
             w.s(t!(b" bad=")).u(u64::from(rds.bad));
+            // Clock time (group 4A): heard from this station, and the
+            // confirmed time (Set from RDS needs it; 2026-11-27).
+            w.s(t!(b" ct_heard=")).u(u64::from(rds.clock_heard()));
+            w.s(t!(b" ct=")).u(rds.clock().unwrap_or(0));
             w.s(t!(b" err=")).u(u64::from(i.errors));
             w.s(t!(b"\nregs 02-07:"));
             for v in regs {

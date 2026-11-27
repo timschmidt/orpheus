@@ -528,7 +528,9 @@ const RADIO: &[Setting] = &[
 ];
 
 const RECORDING: &[Setting] = &[
-    c(0x0801, Str::RecSource, ch![S(Str::Microphone), S(Str::FmRadio), S(Str::LineIn)], 0),
+    // Line-in (value 2) retired 2026-11-27: the YM03 has no line input
+    // (01 §2, U-AUD-4); a stored 2 reads as the default, Microphone.
+    c(0x0801, Str::RecSource, ch![S(Str::Microphone), S(Str::FmRadio)], 0),
     // The formats built (AU-13); MP3 and Opus are not.
     c(0x0802, Str::RecFormat, ch![Lit("WAV"), Lit("WAV ADPCM"), Lit("FLAC")], 0),
     c(0x0803, Str::Quality, ch![S(Str::QVoice), S(Str::QStandard), S(Str::QHigh)], 1),
@@ -836,10 +838,14 @@ fn list_of(id: SettingId) -> Option<usize> {
 
 /// Settings kept (stored, with their key and value) but offered in no
 /// menu: Speed (0x0206) until the time stretch it needs exists (04 §5.1;
-/// owner 2026-11-26: "take speed off the menu for now").
+/// owner 2026-11-26: "take speed off the menu for now"); Output (0x0604)
+/// because the YM03 has no route to choose: the Bluetooth module takes
+/// its audio after the headphone amplifier (U-BT-2), so the jack and a
+/// connected sink always carry the same sound and neither can be muted
+/// alone (VER-13, 2026-11-27).
 #[must_use]
 pub const fn hidden(id: SettingId) -> bool {
-    id.0 == 0x0206
+    id.0 == 0x0206 || id.0 == 0x0604
 }
 
 /// Look an item up by key.
@@ -1539,6 +1545,24 @@ mod tests {
         assert_eq!(d.get(id::UTC_OFFSET), 0, "not on the 15-minute grid");
         d.reset();
         assert_eq!(d.take_dirty().count(), STORED);
+    }
+
+    /// Regression (DOC-2 finding, 2026-11-27): Settings › Recording ›
+    /// Source offered "Line-in", but the YM03 has no line input (01 §2,
+    /// U-AUD-4), so choosing it recorded nothing useful. The value is
+    /// retired: two choices, and a store that holds 2 reads as Microphone.
+    #[test]
+    fn regress_rec_source_line_in_retired() {
+        let d = def(id::REC_SOURCE).unwrap();
+        let Kind::Choice(cs) = d.kind else { panic!("Source is a choice") };
+        assert_eq!(cs.len(), 2, "Microphone and FM radio only");
+        let mut c = SettingsCache::new();
+        c.load(id::REC_SOURCE.0, &encode(2));
+        assert_eq!(c.get(id::REC_SOURCE), 0, "a stored Line-in reads as Microphone");
+        assert!(!c.set(id::REC_SOURCE, 2), "Line-in cannot be chosen");
+        assert_eq!(crate::services::rec_source(2), crate::services::RecSource::Mic);
+        c.load(id::REC_SOURCE.0, &encode(1));
+        assert_eq!(c.get(id::REC_SOURCE), 1, "FM radio stays");
     }
 
     /// Display › Brightness offers the stock levels 1–11, default 6

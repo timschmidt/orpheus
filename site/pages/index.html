@@ -1,10 +1,10 @@
 <!-- title: Orpheus: new firmware for the Yoton YM03 -->
-<!-- description: Orpheus is a pure-Rust firmware for the Yoton YM03 MP3 player: gapless MP3, FLAC, Vorbis and Opus, a music library, pictures and Bluetooth audio on a 128 × 128 screen. -->
+<!-- description: Orpheus is a pure-Rust firmware for the Yoton YM03 MP3 player: gapless MP3, FLAC, Vorbis and Opus, MIDI through its own synthesiser, a music library, radio, books, games, a screen reader and Bluetooth audio on a 128 × 128 screen. -->
 <section class="hero">
   <img class="hero-logo" src="brand/orpheus-lyre.svg" alt="" width="112" height="112">
   <div>
     <h1>Orpheus</h1>
-    <p class="pitch">A new firmware for the Yoton YM03 MP3 player, written from scratch in Rust. Gapless music, a library, pictures and Bluetooth audio on a 128 × 128 screen with 320 KiB of RAM.</p>
+    <p class="pitch">A new firmware for the Yoton YM03 MP3 player, written from scratch in Rust. Gapless music and MIDI, a library, radio, books, games, a screen reader and Bluetooth audio on a 128 × 128 screen with 320 KiB of RAM.</p>
     <p class="actions">
       <a class="button" href="try.html">Try it in your browser</a>
       <a class="button secondary" href="install.html">Install on your YM03</a>
@@ -16,11 +16,13 @@
   <h2 id="screens-h" class="visually-hidden">Screens</h2>
   <div class="strip" role="region" aria-label="Screens from the player, scrollable" tabindex="0">
     <ul class="strip-track">
+      <li><img class="shot" src="shots/app_home_dark_latin.png" alt="Home: the grid of apps" width="256" height="256"></li>
       <li><img class="shot" src="shots/media_np_dark_latin.png" alt="Now Playing" width="256" height="256"></li>
       <li><img class="shot" src="shots/media_music_dark_latin.png" alt="Music: Shuffle all, library" width="256" height="256"></li>
-      <li><img class="shot" src="shots/media_files_root_dark_latin.png" alt="Files: folders on the card" width="256" height="256"></li>
-      <li><img class="shot" src="shots/media_np_bigart_dark_latin.png" alt="Now Playing with a large cover" width="256" height="256"></li>
-      <li><img class="shot" src="shots/bt_connected_dark_latin.png" alt="Bluetooth: connected to headphones" width="256" height="256"></li>
+      <li><img class="shot" src="shots/radio_playing_dark_latin.png" alt="Radio: a station with its RDS name" width="256" height="256"></li>
+      <li><img class="shot" src="shots/books_alice_dark.png" alt="Books: the first page of a novel" width="256" height="256"></li>
+      <li><img class="shot" src="shots/games_sol_mid_dark.png" alt="Solitaire in play" width="256" height="256"></li>
+      <li><img class="shot" src="shots/recorder_recording_dark_latin.png" alt="Recorder: recording from the microphone" width="256" height="256"></li>
       <li><img class="shot" src="shots/media_eq_dark_latin.png" alt="Equaliser" width="256" height="256"></li>
       <li><img class="shot" src="shots/pictures_png_dark_latin.png" alt="A picture on the screen" width="256" height="256"></li>
       <li><img class="shot" src="shots/app_settings_light_latin.png" alt="Settings in the light theme" width="256" height="256"></li>
@@ -31,24 +33,33 @@
 
 <section aria-labelledby="features-h">
   <h2 id="features-h">What it does</h2>
+  <p><span class="badge works">works</span> has been used on the player. <span class="badge progress">being checked</span> runs on the player and passes its automated tests there, but a person has not yet checked all of it.</p>
   <ul class="grid">
-    <li><h3>Playback <span class="badge works">works</span></h3><p>MP3, FLAC, WAV, Ogg Vorbis, Opus and Speex; gapless joins; resume after power-off; queue, shuffle, A–B repeat, bookmarks.</p></li>
+    <li><h3>Playback <span class="badge works">works</span></h3><p>MP3, FLAC, WAV, Ogg Vorbis, Opus and Speex; gapless joins; resume after power-off or a restart; queue, shuffle, A–B repeat, bookmarks.</p></li>
+    <li><h3>MIDI <span class="badge works">works</span></h3><p>MIDI and karaoke files played by Orpheus's own synthesiser and General MIDI sound set; the clock rises to 288 MHz when a song needs it.</p></li>
     <li><h3>Library <span class="badge works">works</span></h3><p>Artists, albums, genres and recently added, built in the background; folders sorted instantly from an on-card index.</p></li>
-    <li><h3>Sound <span class="badge works">works</span></h3><p>Equaliser with presets and custom curves, bass, crossfeed, balance, ReplayGain.</p></li>
-    <li><h3>Pictures <span class="badge works">works</span></h3><p>JPEG, PNG, BMP, GIF and QOI, fit or fill, rotation, slideshow; album covers on Now Playing.</p></li>
+    <li><h3>Sound <span class="badge works">works</span></h3><p>Equaliser with presets and custom curves, bass, crossfeed, balance, ReplayGain, fade on pause.</p></li>
+    <li><h3>FM radio <span class="badge works">works</span></h3><p>Tuner with presets, scanning and regions, using the hardware's analogue path; stereo and RDS are being checked.</p></li>
     <li><h3>Bluetooth audio <span class="badge works">works</span></h3><p>Pair and connect headphones or speakers; reconnects by itself.</p></li>
+    <li><h3>Pictures <span class="badge works">works</span></h3><p>JPEG, PNG, BMP, GIF and QOI, fit or fill, rotation, slideshow; album covers on Now Playing.</p></li>
+    <li><h3>Games <span class="badge works">works</span></h3><p>Blocks, 4096, Solitaire, the artillery duel Salvo and the brick breaker Bricks, with settings, scores and saved games.</p></li>
+    <li><h3>Books <span class="badge works">works</span></h3><p>TXT, Markdown, FB2 and EPUB with contents, bookmarks and reading settings. Reading aloud is planned.</p></li>
+    <li><h3>Firmware updates <span class="badge works">works</span></h3><p>Written next to the running firmware and used only once complete; three failed starts fall back to the previous version.</p></li>
     <li><h3>USB card reader <span class="badge works">works</span></h3><p>The player's card appears on the computer; a developer channel in every USB mode.</p></li>
-    <li><h3>USB disk and CD <span class="badge progress">in progress</span></h3><p>Boot a computer from an ISO or disk image on the card.</p></li>
+    <li><h3>USB disk and CD <span class="badge works">works</span></h3><p>An ISO or disk image on the card shown to a computer; starting a real PC from it is being checked.</p></li>
+    <li><h3>Screen reader <span class="badge progress">being checked</span></h3><p>Every screen read aloud by Orpheus's own English speech voice; larger text, high-contrast themes, slower keys.</p></li>
+    <li><h3>Recorder <span class="badge progress">being checked</span></h3><p>Microphone and radio recording to WAV, ADPCM or FLAC, with automatic gain and voice activation.</p></li>
+    <li><h3>Steps, stopwatch, timer, alarm <span class="badge progress">being checked</span></h3><p>Step counter from the accelerometer with a goal and a week's history; stopwatch with laps, timer, alarms.</p></li>
+    <li><h3>Authenticator <span class="badge progress">being checked</span></h3><p>One-time codes behind a PIN, typed into the computer as a USB keyboard, with <a href="https://github.com/timschmidt/orpheus/blob/main/SECURITY.md">honest limits</a>.</p></li>
+    <li><h3>Sequencer <span class="badge progress">simulator only</span></h3><p>A drum machine with synth tracks, songs and export to WAV and MIDI; built and tested in the simulator, hidden from Home there; not on the player yet.</p></li>
     <li><h3>Presenter remote <span class="badge progress">investigating</span></h3><p>Click through slides over Bluetooth, if the module can carry the key reports.</p></li>
-    <li><h3>FM radio <span class="badge planned">planned</span></h3><p>Tuner with presets, using the hardware's analogue path.</p></li>
-    <li><h3>Recorder <span class="badge planned">planned</span></h3><p>Microphone and radio recording.</p></li>
-    <li><h3>Authenticator <span class="badge planned">planned</span></h3><p>One-time codes typed over USB, with <a href="https://github.com/timschmidt/orpheus/blob/main/SECURITY.md">honest limits</a>.</p></li>
-    <li><h3>Steps and stopwatch <span class="badge planned">planned</span></h3><p>Pedometer from the accelerometer; stopwatch and timer.</p></li>
+    <li><h3>USB sound card <span class="badge planned">planned</span></h3><p>The player as a computer's audio interface: music to the headphones and Bluetooth, the microphone to the computer.</p></li>
+    <li><h3>Jack tools <span class="badge planned">planned</span></h3><p>Signal generator, infrared remote and peripheral control through adapters in the headphone jack.</p></li>
   </ul>
 </section>
 
 <section aria-labelledby="status-h">
-  <h2 id="status-h">Status by milestone</h2>
+  <h2 id="status-h">Status by milestone (2026-11-27)</h2>
   <div class="table">
     <table>
       <thead><tr><th scope="col">Milestone</th><th scope="col">State</th></tr></thead>
@@ -57,12 +68,18 @@
         <tr><td>M4: UI foundation</td><td><span class="badge works">done</span></td></tr>
         <tr><td>M5: daily driver (playback, Files, Now Playing, card reader)</td><td><span class="badge works">on the player</span></td></tr>
         <tr><td>M6: library and sound</td><td><span class="badge progress">mostly done</span> playlists, AAC and other codecs open</td></tr>
-        <tr><td>M7: radio, recorder, sensors, pictures</td><td><span class="badge progress">pictures done</span></td></tr>
+        <tr><td>M7: radio, recorder, sensors, pictures</td><td><span class="badge progress">on the player</span> checks by a person open</td></tr>
         <tr><td>M8: Bluetooth</td><td><span class="badge progress">audio works</span> remote under investigation</td></tr>
-        <tr><td>M9: USB extras and authenticator</td><td><span class="badge progress">host side built</span></td></tr>
+        <tr><td>M9: USB extras, authenticator, updates</td><td><span class="badge progress">on the player</span> browser installer not yet tried on a real player</td></tr>
         <tr><td>M10: polish and release</td><td><span class="badge planned">planned</span></td></tr>
-        <tr><td>M11: verification (100 % coverage, fuzzing, sanitizers)</td><td><span class="badge progress">in progress</span></td></tr>
+        <tr><td>M11: verification (100 % coverage, fuzzing, sanitizers, soaks)</td><td><span class="badge progress">in progress</span></td></tr>
         <tr><td>M12: documentation, website, branding</td><td><span class="badge progress">in progress</span></td></tr>
+        <tr><td>M13: battery, power and audio measured unplugged</td><td><span class="badge planned">planned</span></td></tr>
+        <tr><td>M14: games</td><td><span class="badge works">on the player</span></td></tr>
+        <tr><td>M15: speech, accessibility, books</td><td><span class="badge progress">on the player</span> reading aloud planned</td></tr>
+        <tr><td>M16: USB sound card</td><td><span class="badge planned">planned</span></td></tr>
+        <tr><td>M17: synthesiser, MIDI, Sequencer</td><td><span class="badge progress">MIDI on the player</span> Sequencer in the simulator</td></tr>
+        <tr><td>M18: jack tools</td><td><span class="badge planned">planned</span></td></tr>
       </tbody>
     </table>
   </div>
