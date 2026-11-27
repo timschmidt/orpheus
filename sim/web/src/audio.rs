@@ -314,6 +314,9 @@ async fn decode(
     start_ms: u32,
     sh: &Rc<RefCell<Shared>>,
 ) -> Result<(), &'static str> {
+    if let Some(kar) = orpheus_midi::extension(path) {
+        return decode_midi(data, kar, start_ms, sh).await;
+    }
     let ext = path.rsplit_once('.').map(|(_, e)| e.as_bytes());
     let mut src = SliceSource::new(data);
     let mut format = None;
@@ -421,6 +424,77 @@ async fn decode(
     }
 }
 
+/// The synthesiser's output rate for MIDI (the player's DAC rate).
+const MIDI_RATE: u32 = 48_000;
+
+/// MIDI files (`.mid`, `.kar`; MIDI-1): rendered by the firmware's player
+/// and synthesiser (`orpheus-midi`, `orpheus-synth`) at 48 kHz, then the
+/// same DSP chain as decoded tracks.
+async fn decode_midi(
+    data: &[u8],
+    kar: bool,
+    start_ms: u32,
+    sh: &Rc<RefCell<Shared>>,
+) -> Result<(), &'static str> {
+    use orpheus_midi::{MidiPlayer, Options, SliceSource};
+    let mut src = SliceSource::new(data);
+    let mut player = Box::new(MidiPlayer::new(Options { kar, ..Options::new(MIDI_RATE) }));
+    player.open_from(&mut src, kar).map_err(|_| "not a MIDI file")?;
+    let mut chain = Box::new(Chain::new(OutWidth::Bits16, false));
+    let rate = chain
+        .set_format(orpheus_dsp::Format {
+            rate: MIDI_RATE,
+            channels: 2,
+            kind: orpheus_audio::SampleKind::I16,
+            bits: 16,
+        })
+        .map_err(|_| "sample rate not supported")?;
+    let mut sgen = {
+        let mut s = sh.borrow_mut();
+        s.rate = rate;
+        s.desc = format!("MIDI {MIDI_RATE} Hz 2 ch");
+        s.arena = core::mem::size_of::<MidiPlayer>();
+        s.sound.apply(&mut chain);
+        s.sound_gen
+    };
+    if start_ms > 0 {
+        let at = player
+            .seek_from(&mut src, u64::from(start_ms) * u64::from(MIDI_RATE) / 1000)
+            .map_err(|_| "seek failed")?;
+        sh.borrow_mut().start_ms = u32::try_from(at * 1000 / u64::from(MIDI_RATE)).unwrap_or(start_ms);
+    }
+    let mut buf = vec![0i16; 2 * 1152];
+    let mut fading = false;
+    loop {
+        while {
+            let s = sh.borrow();
+            s.pcm.len() >= s.want
+        } {
+            Yield::default().await;
+        }
+        {
+            let s = sh.borrow();
+            if s.sound_gen != sgen {
+                sgen = s.sound_gen;
+                s.sound.apply(&mut chain);
+            }
+            if s.pausing && !fading {
+                fading = chain.begin_pause(true);
+            }
+        }
+        if fading && chain.fade_done() {
+            return Ok(());
+        }
+        let frames = player.render_from(&mut src, &mut buf).map_err(|_| "MIDI error")?;
+        if frames == 0 {
+            return Ok(());
+        }
+        let mut b = PcmBlock::I16(&mut buf[..frames * 2]);
+        let n = chain.process(&mut b);
+        push(&mut sh.borrow_mut().pcm, &b, n, 2);
+    }
+}
+
 /// Append the first `n` samples of a processed block as stereo `f32`.
 fn push(out: &mut Vec<f32>, b: &PcmBlock<'_>, n: usize, ch: usize) {
     let mut put = |it: &mut dyn Iterator<Item = f32>| {
@@ -478,7 +552,12 @@ fn measure(data: &[u8], path: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{demo, synth};
+    use crate::demo;
+
+    /// A demo file's bytes.
+    fn file(path: &str) -> Vec<u8> {
+        demo::committed().into_iter().find(|f| f.path == path).unwrap_or_else(|| panic!("{path}")).data
+    }
 
     #[test]
     fn volume_curve() {
@@ -487,13 +566,44 @@ mod tests {
         assert!((20.0 * (volume_gain(29) / volume_gain(30)).log10() + 1.5).abs() < 0.01);
     }
 
+    /// Every audio file of the demo set decodes through the firmware's
+    /// codecs to the length its excerpt was cut to (`sources.toml`), and
+    /// the MIDI file plays through the synthesiser.
     #[test]
     fn every_demo_track_decodes_to_its_length() {
-        for (t, data) in synth::TRACKS.iter().zip(demo::ENCODED) {
-            let d = duration_ms(data, t.path).unwrap_or_else(|| panic!("{} does not decode", t.path));
-            let want = (t.secs * 1000.0) as u32;
-            assert!(d.abs_diff(want) < 150, "{}: {d} ms, want {want}", t.path);
+        let want = [
+            (demo::ARIA, 30_000),
+            (demo::VARIATION, 10_000),
+            ("/Music/Beethoven/Symphony No. 5/1 Allegro con brio.ogg", 26_000),
+            ("/Music/Caruso/Vesti la giubba (1907).opus", 64_000),
+            ("/Music/Chopin/Nocturne Op. 9 No. 2.aiff", 8_000),
+            ("/Music/Satie/Gymnopédie No. 1.wav", 10_000),
+            ("/Music/Sousa/The Stars and Stripes Forever (1909).au", 20_000),
+            ("/Music/Bulfinch/The Age of Fable/24 Orpheus and Eurydice.spx", 50_000),
+        ];
+        let audio: Vec<_> = demo::committed()
+            .into_iter()
+            .filter(|f| {
+                orpheus_apps::browse::is_audio_name(&f.path) && orpheus_midi::extension(&f.path).is_none()
+            })
+            .collect();
+        assert_eq!(audio.len(), want.len(), "{:?}", audio.iter().map(|f| &f.path).collect::<Vec<_>>());
+        for (path, ms) in want {
+            let d = duration_ms(&file(path), path).unwrap_or_else(|| panic!("{path} does not decode"));
+            assert!(d.abs_diff(ms) < 150, "{path}: {d} ms, want {ms}");
         }
+        let midi = file(demo::PRELUDE_MIDI);
+        let mut e = Engine::new();
+        e.sync(now(demo::PRELUDE_MIDI, 0, true), |_| midi.clone());
+        let a = e.pull(48_000);
+        assert_eq!(e.rate(), 48_000);
+        assert_eq!(a.len(), 96_000, "{:?}", e.last_error);
+        assert!(a.iter().any(|x| x.abs() > 0.01), "the prelude is not silent");
+        // A seek restarts the synthesiser there.
+        e.sync(now(demo::PRELUDE_MIDI, 30_000, true), |_| midi.clone());
+        assert!(e.take_flush());
+        let _ = e.pull(100);
+        assert!((29_000..31_000).contains(&e.describe().2), "{}", e.describe().2);
     }
 
     fn now(path: &str, pos: u32, playing: bool) -> Option<NowAudio> {
@@ -502,26 +612,26 @@ mod tests {
 
     #[test]
     fn follows_the_player() {
-        let t = &synth::TRACKS[0];
-        let data = demo::ENCODED[0];
+        let path = demo::ARIA;
+        let data = file(path);
         let mut e = Engine::new();
-        e.sync(now(t.path, 0, true), |_| data.to_vec());
+        e.sync(now(path, 5000, true), |_| data.clone());
         let a = e.pull(44_100);
         assert_eq!(e.rate(), 44_100);
         assert_eq!(a.len(), 88_200);
         assert!(a.iter().any(|x| x.abs() > 0.01));
         assert!(!e.take_flush());
         // Small drift: nothing happens.
-        e.sync(now(t.path, 1150, true), |_| unreachable!());
+        e.sync(now(path, 6150, true), |_| unreachable!());
         // Seek ahead: restart, flush.
-        e.sync(now(t.path, 20_000, true), |_| data.to_vec());
+        e.sync(now(path, 20_000, true), |_| data.clone());
         assert!(e.take_flush());
         let _ = e.pull(100);
         let (_, _, ms) = e.describe();
         assert!((19_500..20_500).contains(&ms), "{ms}");
         // Pause (Fade on pause off; `fade_on_pause` has it on): silence.
         e.set_fade_on_pause(false);
-        e.sync(now(t.path, 20_000, false), |_| unreachable!());
+        e.sync(now(path, 20_000, false), |_| unreachable!());
         assert!(e.take_flush());
         assert!(e.pull(100).is_empty());
         assert_eq!(e.started, 2);
@@ -711,14 +821,15 @@ mod tests {
     /// off, nothing more.
     #[test]
     fn fade_on_pause() {
-        let t = &synth::TRACKS[0];
-        let data = demo::ENCODED[0];
+        let path = demo::VARIATION;
+        let data = file(path);
         let tail = |fade: bool| {
             let mut e = Engine::new();
             e.set_fade_on_pause(fade);
-            e.sync(now(t.path, 0, true), |_| data.to_vec());
+            // From 0:05 (44.1 kHz, the variation at full tilt).
+            e.sync(now(path, 5000, true), |_| data.clone());
             let _ = e.pull(22_050);
-            e.sync(now(t.path, 500, false), |_| unreachable!());
+            e.sync(now(path, 5500, false), |_| unreachable!());
             assert!(e.take_flush());
             let mut out = Vec::new();
             for _ in 0..100 {
@@ -742,18 +853,25 @@ mod tests {
 
     #[test]
     fn eq_changes_the_output() {
-        let data = demo::ENCODED[3];
-        let path = synth::TRACKS[3].path;
+        let path = demo::VARIATION;
+        let data = file(path);
         let run = |s: Sound| {
             let mut e = Engine::new();
             e.set_sound(s);
-            e.sync(now(path, 0, true), |_| data.to_vec());
+            e.sync(now(path, 0, true), |_| data.clone());
             e.pull(22_050)
         };
         let flat = run(Sound::default());
         let bass = run(Sound { bass: 6, ..Sound::default() });
         assert_ne!(flat, bass);
         let mono = run(Sound { channels: 1, ..Sound::default() });
-        assert!(mono.chunks(2).all(|p| p[0] == p[1]));
+        // Mono: both channels the same, up to the output's TPDF dither
+        // (independent per channel, ±1 LSB), once the channel matrix has
+        // ramped from stereo (`orpheus_dsp::matrix::MATRIX_RAMP_MS`, 30 ms).
+        let settled = 2 * 44_100 * 40 / 1000;
+        let worst = mono[settled..].chunks(2).map(|p| (p[0] - p[1]).abs()).fold(0f32, f32::max);
+        assert!(worst <= 2.0 / 32768.0, "{worst}");
+        let stereo_apart = flat.chunks(2).filter(|p| (p[0] - p[1]).abs() > 0.01).count();
+        assert!(stereo_apart > 100, "the stereo source differs between channels ({stereo_apart})");
     }
 }

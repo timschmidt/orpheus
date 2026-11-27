@@ -45,12 +45,22 @@ Click the keys or use your keyboard; hold a key for a long press.
 
 ## What is on the card
 
-A FAT32 card image built in your browser's memory, with music and pictures
-the project made for the demo: *Lyre Study* (MP3, with lyrics), *Tide*
-(Ogg Vorbis), *Bells at Dusk* (Opus), *Pulse* (FLAC), test tones (WAV), a
-night sky with the constellation Lyra (JPEG), more pictures (BMP, QOI) and
-two short texts. All of it was synthesised or written for Orpheus and is
-under the project's licence; there is no third-party content to attribute.
+A FAT32 card image built in your browser's memory, with real works in the
+public domain or under free licences, one for every kind of file the
+player opens: Bach's Goldberg Variations played by Kimiko Ishizaka (MP3,
+FLAC), the opening of Beethoven's Fifth (Ogg Vorbis), Caruso's 1907
+*Vesti la giubba* with its words (Opus, LRC), a Chopin nocturne (AIFF),
+Satie's first Gymnopédie (WAV), Sousa's Band on a 1909 cylinder (Sun AU),
+a LibriVox reading of Orpheus and Eurydice (Speex), a Bach prelude for the
+synthesiser (MIDI), Corot, Hokusai, Muybridge, a Hubble picture of the
+Ring Nebula in Lyra and NASA's Earthrise (JPEG, PNG, BMP, GIF, QOI), and
+two Project Gutenberg books (EPUB, plain text). The recordings are short
+excerpts. Every file's author, licence, source and changes are in
+`CREDITS.txt` on the card and in the
+[demo card credits](https://github.com/timschmidt/orpheus/blob/main/sim/web/demo/CREDITS.md);
+nothing on it was generated. The card's files are downloaded once
+(about 3.4 MB) next to the page's code.
+
 The code of this page includes the Opus and Speex decoder ports and the
 glyph data listed in [third-party material](https://github.com/timschmidt/orpheus/blob/main/THIRD-PARTY.md), under their
 own permissive licences. The page loads nothing from other sites and has no

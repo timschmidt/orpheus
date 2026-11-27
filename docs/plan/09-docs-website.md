@@ -107,7 +107,9 @@ it would mostly test a peripheral model the project would also have to write.
   key-sequence recorder/replayer (the same format as the on-device fuzz
   corpus, 07 §5.7, so a sequence found in the browser can be replayed on the
   player), screenshot button.
-* **Budgets**: WASM + data ≤ 4 MB compressed, first screen within 2 s on a
+* **Budgets**: WASM + data ≤ 4 MB compressed (the demo card's real
+  recordings, pictures and books are fetched next to the module as one
+  file with their own budget, 3.5 MB, since 2026-11-27), first screen within 2 s on a
   mid-range laptop, steady 60 fps canvas updates, audio without dropouts in
   Chromium, Firefox and Safari current versions.
 * **Build**: `cargo xtask wasm` (wasm-bindgen + wasm-opt; the target and tool
@@ -179,7 +181,9 @@ One brand source, `docs/brand/`, used by everything:
   `github.com/timschmidt/orpheus`; Pages at `timschmidt.github.io/orpheus`
   unless a custom domain is chosen.
 * Demo content licences for the in-browser card (only CC0/CC-BY material
-  with attribution).
+  with attribution). Owner, 2026-11-27: real, liberally licensed works,
+  credited; the card uses public-domain, CC0, CC BY and (two items) CC BY-SA
+  works, no NC or ND (`sim/web/demo/sources.toml`).
 
 ## 8. Acceptance
 

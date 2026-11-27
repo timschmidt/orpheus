@@ -27,6 +27,8 @@ pulldown-cmark = { version = "0.13", default-features = false, features = ["html
 png = "0.18"
 # WEB-2: gzip sizes of the browser build.
 flate2 = "1"
+# WEB-2: the demo card's bundle format and tree reader.
+orpheus-web = { path = "../sim/web" }
 # VER-7/8: the on-device suite and fuzzer run journeys in the simulator
 # (expected frames), key indices of the developer channel, reply checks.
 orpheus-sim = { path = "../sim" }
