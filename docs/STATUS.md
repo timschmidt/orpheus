@@ -2282,8 +2282,6 @@ short:
   starts at level 6 (darker than the old fixed 12). Open: U-PWM-1 (is the
   stop/start needed), the vendor's 20 ms before the pad mux.
 
-## 3. Session log
-
 ### 2026-11-26 — SEQ-2: synth tracks, locks, song, export on the host and in the simulator (worker, no hardware)
 
 Host and simulator only; the `seq` feature stays off in the firmware
@@ -3720,8 +3718,6 @@ Bricks)".
   other games).
 | BOOK-1 | **done (host + simulator)**; not in the firmware (feature `orpheus-apps/books` off there: stack/RAM, see session entry) | `orpheus-books` (encodings TXT/Markdown/FB2 → normalised stream cached in `/.orpheus/cache/books/`, layout and page index, positions, bookmarks, contents, library search; all card work in bounded steps), Books app (library, reader, reader menu, contents, bookmarks, Go to; 7 reading settings packed in 0x0F80), reading faces 16/20 px (`orpheus-ui/book-fonts`), Home scrolls to a fourth row; 92 goldens; fuzz targets `books_convert`, `books_layout` (session entry 2026-11-25 "BOOK-1") |
 
-## 3. Session log
-
 ### 2026-11-25 — BOOK-1: Books app and reader core (worker, no hardware)
 
 Host and simulator; **not in the firmware** (feature `orpheus-apps/books`
@@ -4291,8 +4287,6 @@ simulator or `orpheus-apps`.
 | GAME-4/5 Salvo (M14) | **built (host + simulator + firmware), not yet run on the player** (feature `salvo` on in the firmware since STACK 2026-11-25: stack margin 4,560 B, budget 4,096) | Artillery duel: terrain styles, destructible ground, SI physics with drag and wind, seven weapons, shop, 2–4 players, computers of four difficulties; 21 settings packed into 4 words; 53 goldens; fuzz `salvo_keys`. Games card operations now in pieces while music plays (lead's 100 ms `serve:games`). Lead: session entries 2026-11-25 "GAME-4/5" and "games card operations in pieces" |
 | GAME-2 + Games on the player (M14) | **built (host + simulator + firmware), not yet run on the player** | Solitaire (Klondike: draw 1/3, passes, standard/casino/none, auto-move, auto-complete, exact undo, best-effort winnable deals; fuzz target `solitaire_keys`, 33 goldens, 7 settings `0x0E41–0x0E47` with differential tests); firmware `GamesService` (hub 872 B + 512 B buffer, card task `Req::Games` as a chore while playing, saves on pause, quit, power-off and USB hand-over), Games on Home (default mask 0x0FFF; the owner's stored mask needs the Games bit). Stack margin 4,268 B (budget 4,096). Lead: session entry 2026-11-25 "GAME-2" |
 
-## 3. Session log
-
 ### 2026-11-25 — GAME-2: Games on the player; Solitaire (host, simulator, firmware) (worker, no hardware)
 
 Two parts: the Games app (GAME-0/1/3) integrated into the firmware, and
@@ -4651,8 +4645,6 @@ the Authenticator (unlock, codes, change PIN: unchanged code, the thread
 side is the deepest context left).
 | VER-10 (static stack) | **tool done (host-tested), gate step; firmware cut from ≥ 30,232 to 22,900 B nested worst case (built, not yet run on the player)** | `cargo xtask stack [--check] [--root P]`, `stack.toml`, `budgets.toml stack_static_margin_bytes` (−1,536 B: a ratchet, the static worst case still exceeds the 22,016 B stack by 884 B; the rest is the audio task's own frames, AU-PERF). Lead: `fuzz-ui --replay` of the VER-8 stack sequence, suite stack line (session entry 2026-11-25 "VER-10") |
 | GAME-0, GAME-1, GAME-3 (M14) | **built (host + simulator); not in the firmware** | `orpheus-games` (fixed-step framework, SplitMix64, `OGS1` save envelope with CRC-32, score table, Blocks, 4096), `orpheus-apps` feature `games` (Games list, Blocks, 4096, pause menu, settings, How to play; `GamesService`), simulator back end with files under `/.orpheus/games/` (`set:games=on` puts Games on Home), 68 goldens, fuzz targets `blocks_keys`/`tiles_keys`, `tests/settings/effects.toml` (created with the 15 game settings). Firmware integration waits for stack headroom: session entry 2026-11-25 "GAME-0/1/3" |
-
-## 3. Session log
 
 ### 2026-11-25 — GAME-0/1/3: Games framework, Blocks and 4096 (host and simulator) (worker, no hardware)
 
@@ -6374,8 +6366,6 @@ firmware ones need the new build):
 | VER-8 | **groundwork built, not yet run on the player** | `cargo xtask dev fuzz-ui --seed N --minutes M`: `ui_keys` grammar without Power, a `ui top` guard before every key (dialogs, Bluetooth, USB, Recorder, vault, settings), oracles every K keys (fault record, uptime, stack ≥ `[hil] stack_free_min_bytes`, underruns), card root listing before/after, replay + ddmin into `tests/regress/ui-device/`, `--replay`. Not done: model-guided sequences, injected events, simulator divergence |
 | VER-12 | **tooling built (host + 4 firmware test hooks), not yet run on the player** | `cargo xtask dev soak <music\|radio\|browse-while-playing\|settings-churn\|mixed\|stress>`: seeded weighted actions (playback, Now Playing seeks/pause/skips, browsing through the fuzzer's guard, radio, recordings in `/.orpheus/test/rec/soak/`, session-only settings, card hand-over read-only, keyboard personality), oracles every 10 s (fault, uptime, stack, underruns by cause outside seek windows, pager loads/evictions per second, DAC headroom, card/pager errors, DAC and uptime against the host clock), after the run card root, settings store CRC across the reboot, state files; CSV + HTML per run, `metrics/soak/`, findings minimised into `tests/regress/soak/`, `--replay`, `--sim`. Firmware: `settings test-session on`/`test-set`, `ui screen-off`, `status pos=`, STATS words 21–23. 07 §5.10 "As built" |
 
-## 3. Session log
-
 ### 2026-11-24 — VER-7: session-only test look after the first device run (worker, no hardware)
 
 From the lead's first `cargo xtask dev suite --setup`: all 15 journeys
@@ -7144,8 +7134,6 @@ playing `fm on` ended `phase=off` and the music went on.
   hardware in this package), CI workflows.
 | FM-1 | **first device run 2026-11-24: radio RAM overwritten by the step counter's (fixed, not yet re-run)** | `orpheus-fm` (host-tested: RDA5807 register model, the vendor's init tables VERBATIM, tune, hardware seek with region limits / wrap / Wide's two bands / the 96 MHz harmonic, auto-scan, RDS PS/RT, volume pairs, presets) and the firmware `fm` task over the software I2C (writes only to `0x10`), FM bypass into the amplifier (`dac::fm_*`, VERBATIM, without the vendor's amplifier power cycle), tuner in standby whenever the radio is off. `fm on/off/tune/seek/scan/status/route` developer commands. User check 20 |
 | UI-5a | **built (host); on the player with FM-1** | Radio app (frequency, band, signal bars, ST, preset, RDS name and text, Prev/Next step and hold-seek, Up/Down presets, OK mute / hold stop, Menu: Save/Remove preset, Presets…, Auto-scan with its question, Force mono, Region, Stop), Presets list (move, delete), antenna note, FM source in the status bar and mini-player; on Home. Not done: preset rename, Record, Output (05 §7.3) |
-
-## 3. Session log
 
 ### 2026-11-24 — FM-1 + UI-5a: tuner driver, FM bypass, radio service, Radio app (worker, no hardware)
 
@@ -8071,8 +8059,6 @@ exceed the whole PCM ring (≈ 70 ms). The first FLAC join started with only
   power-off/on: Music → Resume continues in the edited queue.
 | VER-1 (host), VER-5 (host) | **tooling done; baseline measured** | `xtask cover` (line/region/branch, per crate, `--fuzz`, `--html`, `--add`, `--report-only`), `coverage-exclusions.toml` (empty; D-9), `xtask gate --coverage` (report only) / `--m11` (100 % + ASan + Miri), `xtask metrics` → `metrics/*.csv`, `xtask test asan [--lean]`, `xtask test miri`. Baseline: `docs/verification/baseline-2026-11.md` (regions 72.16 %). Not done: corpora (VER-4), conformance corpus inside `cover`, device coverage (VER-6) |
 | VER-4 | **part 1 done** | 30 cargo-fuzz targets (16 new, incl. the simulator UI key-sequence target `ui_keys`), committed corpora (`tests/fuzz-corpus/`, 15 MB) replayed on every `cargo test`, 10 fixes + 3 open findings (baseline §8.4), `xtask test fuzz-seeds`, `xtask cover --fuzz-only`. Host + fuzz coverage 83.27 % regions. Not done: plateau runs (part 2) |
-
-## 3. Session log
 
 ### 2026-11-24 — VER-1 + VER-5 (host side): coverage, sanitizers, metrics, baseline (worker, no hardware)
 
