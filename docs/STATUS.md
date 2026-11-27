@@ -80,6 +80,13 @@ of every session. Newest entries first in §3.
 
 ## 3. Session log
 
+### 2026-11-27 — owner: chords approved, WAVs sound great (lead)
+
+* Owner 2026-11-27: "Those key combos work for me. Example wavs sounded
+  great." The screen reader's toggle (Back + Menu held 2 s) and
+  where-am-I (Back + OK) replace the spec's Vol+/Vol− chord (05 §7.14);
+  the listening checks for TTS-2, SYN-2, MIDI-1, SEQ-1/2 and A11Y-1 pass.
+
 ### 2026-11-27 — PG-1 on the player; games checked by the owner (lead)
 
 * PG-1 (`5cba1d97`: resident 81,876 → 56,036 B) on the player: suite all

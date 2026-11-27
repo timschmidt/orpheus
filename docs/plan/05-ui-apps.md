@@ -1327,8 +1327,8 @@ build, not yet run on the player).**
   speech volume relative to music, music ducking or pausing while speaking,
   key echo, earcons for list ends and roll-around, "where am I" and "time
   and battery" on a hold combination, and a toggle reachable from any
-  screen and from the first boot (hold Vol+ and Vol− together for 2 s; as built
-  Back and Menu, A11Y-1: Vol+ and Vol− share ladder 1, §1).
+  screen and from the first boot (hold Back and Menu together for 2 s — approved by the owner
+  2026-11-27; the original Vol+ and Vol− chord cannot work: they share ladder 1, §1).
   Fully usable with the screen off.
 * **Toolkit support**: every widget carries an accessible label and role;
   a host lint test fails for any focusable item without one; each journey

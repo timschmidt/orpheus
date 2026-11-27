@@ -234,3 +234,5 @@ too much or too little said? Which speech rate would you use? Please also
 say whether Back + Menu (2 s) is a good toggle and Back + OK a good "where
 am I" (Vol+ with Vol− cannot work: the player sees only one of those two
 keys at a time).
+
+**Result (owner 2026-11-27):** "Those key combos work for me. Example wavs sounded great." — the toggle chord (Back + Menu held 2 s) and where-am-I (Back + OK) are approved; the example WAVs (speech, drum kits, MIDI, sequencer, screen reader) passed the listening check.
