@@ -198,6 +198,11 @@ fn parse_fsize(reply: &str, remote: &str) -> Option<Option<u64>> {
     (reply.strip_prefix("fsize: no such file ")? == remote).then_some(None)
 }
 
+/// Sent before the demo card's first file command: a reboot reopens the
+/// last track paused, and the card task serves file commands only between
+/// tracks.
+const DEMO_CARD_PROLOGUE: &[&[u8]] = &[b"stop"];
+
 /// `dev demo-card --outside-orpheus [--dir DIR]`: copy the demo card tree
 /// (`cargo xtask demo-card`) onto the card, skipping files that are there
 /// with the same size.
@@ -219,6 +224,13 @@ fn demo_card(args: &mut Args) -> Result<String> {
         create_command(&f.path, Scope::DemoTree)?;
     }
     let d = orpheus_host::devchan::DevChannel::open(Duration::from_secs(3))?;
+    // A reboot reopens the last track paused, and the card task serves
+    // file commands only between tracks: stop it first, as `suite --setup`
+    // does (the first upload waited for `fsize` and failed, 2026-11-27).
+    for c in DEMO_CARD_PROLOGUE {
+        d.control_out(orpheus_proto::devchan::REQ_TEST, 0, 0, c)?;
+    }
+    std::thread::sleep(Duration::from_millis(500));
     let (mut sent, mut skipped, mut bytes) = (0, 0, 0u64);
     let t0 = std::time::Instant::now();
     for f in &files {
@@ -776,6 +788,19 @@ mod stats_tests {
 #[cfg(test)]
 mod upload_guard_tests {
     use super::*;
+
+    /// 2026-11-27, on the player: `dev demo-card` failed at once with
+    /// "fsize /About this card.txt: no answer": a reboot had reopened the
+    /// last track paused, and the card task serves file commands only
+    /// between tracks. The upload stops the track first, as `suite
+    /// --setup` does.
+    #[test]
+    fn regress_demo_card_waited_on_a_paused_track() {
+        assert_eq!(DEMO_CARD_PROLOGUE.first(), Some(&&b"stop"[..]));
+        // `stop` is not a file command the paused loop would answer.
+        assert!(!orpheus_proto::devchan::served_while_paused(b"stop"));
+        assert!(!orpheus_proto::devchan::served_while_paused(b"fsize /CREDITS.txt"));
+    }
 
     /// The developer-channel upload guard after the demo tree was allowed
     /// (owner, 2026-11-27): the default scope still refuses everything
