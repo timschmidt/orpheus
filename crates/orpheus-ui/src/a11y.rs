@@ -217,6 +217,12 @@ pub struct Config {
     /// Keys work while the screen is off (no wake press; the screen stays
     /// dark).
     pub dark_keys: bool,
+    /// Speech volume (TTS-3): 0 Normal, 1 −6 dB, 2 −12 dB, 3 −18 dB
+    /// (`orpheus_tts::mix::SPEECH_DB`).
+    pub volume: u8,
+    /// Music while speaking (TTS-3): 0 lowered, 1 paused, 2 unchanged
+    /// (`orpheus_tts::mix::MusicMode`).
+    pub music: u8,
 }
 
 impl Config {
@@ -230,6 +236,8 @@ impl Config {
         earcons: true,
         where_keys: WhereKeys::BackOk,
         dark_keys: true,
+        volume: 0,
+        music: 0,
     };
 }
 
@@ -351,8 +359,8 @@ pub trait SpeechService {
     fn say(&mut self, text: &str);
     /// Queue an earcon.
     fn earcon(&mut self, e: Earcon);
-    /// Take the rate, voice and pitch (called before each utterance the
-    /// reader makes).
+    /// Take the rate, voice, pitch, speech volume and music mode (called
+    /// before each utterance the reader makes).
     fn configure(&mut self, _cfg: &Config) {}
 }
 

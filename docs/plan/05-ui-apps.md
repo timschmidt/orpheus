@@ -1519,11 +1519,42 @@ reference; in short:
   the mapper, `KeyGate::reader_keys` and `Config::timeouts` as the
   simulator does; RAM 536 B `Desc` + 296 B `Reader` + 24 B `Chords` +
   the queue (512 B–1 KiB) + `Speaker` 3.4 KB (host sizes); code: the feature's toolkit and app code
-  (not measured on the player: with the feature off the firmware is
-  unchanged). Not done: speech volume relative to music, ducking or
-  pausing the music, key echo, track changes said on request away from
+  (measured by TTS-3: below). Not done: speech volume relative to music,
+  ducking or pausing the music (TTS-3 built them), key echo, track changes said on request away from
   Now Playing, reduced motion's "long names are spoken" (the focus label
   is always spoken whole), the games' boards.
+
+**As built (TTS-3, 2026-11-27; host, simulator, firmware behind its
+feature `speech`, off by default: the code window, 04 §8 "As built
+(TTS-3)").**
+* **Settings › Accessibility** gains **Speech volume** (`0x100C`: Normal,
+  −6, −12, −18 dB) and **Music while speaking** (`0x100D`: Lowered,
+  Paused, Unchanged), bits 12–13 and 14–15 of the word `0x0D61` (default
+  unchanged, 2896); `a11y::Config::{volume, music}`, `services::
+  reader_config`. Paused is `services::SpeechPause` (host-tested): the
+  player paused while the reader speaks, resumed 400 ms after; music the
+  listener starts or resumes during speech plays on under it.
+* **The firmware's UI task** (`ui.rs` module `reader`, as `Sim::observe`
+  does): the chords on the raw key edges before the key mapper (the
+  developer channel's `keys` too), `KeyMapper::cancel`/`KeyGate::forget`
+  for a chord's first key, `KeyGate::reader_keys` at every key edge,
+  `Config::timeouts` on the screen timers, `Shell::describe` and
+  `Reader::observe` after each key phase while the reader is on and once a
+  loop (the loop's deadline: the chords', and 100 ms while it speaks), the
+  toggle as the setting, where am I, time and battery, Keys locked /
+  Unlocked, the pause policy. The test look reads Screen reader as off
+  until a session sets it; a session may set `0x1001–0x100D`.
+* **Simulator**: the speech volume scales its speech (exact at Normal: the
+  goldens' hashes stand), it counts the speech over lowered music
+  (`SimSpeech::ducked`, `duck_min`) and runs the pause policy
+  (`Host::music_playing`, `Host::speech_step`). A service context
+  `speech-music` (an album playing, the reader on, two moves on Home) in
+  the settings matrix; dedicated tests `speech_volume_scales_the_speech`,
+  `music_while_speaking_lowers_or_pauses`; Settings › Accessibility shows
+  13 rows (two goldens' scroll thumbs, the `speech_rate` spoken golden).
+* **Not done**: as A11Y-1's list less the speech volume and ducking or
+  pausing; the reader in a default firmware build (the owner decides what
+  makes room, 04 §8).
 
 ### 7.15 Books (reader; M15; owner's requirement 2026-11-25)
 

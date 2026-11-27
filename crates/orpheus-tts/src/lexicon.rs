@@ -26,6 +26,12 @@
 //!
 //! A lookup is a binary search over the blocks' first words and a scan of
 //! at most one block.
+//!
+//! On the player read-only data is paged in groups of 16 KiB, and a
+//! static larger than that cannot be paged (`xtask pagelink` refuses it):
+//! the built-in lexicon (32,766 B) is linked as three statics of at most
+//! [`PIECE_MAX`] bytes cut at block starts ([`split_points`]); a block
+//! never straddles two pieces ([`Lexicon::builtin`], TTS-3).
 
 use crate::phoneme::{Ph, Phone, Stress};
 
@@ -38,8 +44,113 @@ pub const MAX_WORD: usize = 32;
 /// Longest pronunciation the lexicon stores.
 pub const MAX_PHONES: usize = 40;
 
-/// The committed lexicon.
-pub static DATA: &[u8] = include_bytes!("lexicon.bin");
+/// The committed lexicon as one slice (the tests and the tool; the
+/// firmware links only the pieces of [`Lexicon::builtin`]).
+pub static DATA: &[u8] = RAW;
+
+const RAW: &[u8] = include_bytes!("lexicon.bin");
+
+/// Largest piece of the built-in lexicon (a rodata group on the player).
+pub const PIECE_MAX: usize = 16 * 1024;
+
+const fn rd16(d: &[u8], at: usize) -> usize {
+    d[at] as usize | (d[at + 1] as usize) << 8
+}
+
+/// Where the data of a lexicon file starts (after the header, the two
+/// codes and the block index).
+const fn data_offset(d: &[u8]) -> usize {
+    let nl = d[10] as usize;
+    let np = d[11 + 2 * nl] as usize;
+    12 + 2 * nl + 2 * np + 2 * rd16(d, 6)
+}
+
+/// Where a lexicon file is cut into its three pieces (offsets in the
+/// file): each cut at the start of a block, each piece at most
+/// [`PIECE_MAX`]. Fails the build when that cannot be done.
+#[must_use]
+pub const fn split_points(d: &[u8]) -> [usize; 2] {
+    if d.len() <= PIECE_MAX {
+        return [d.len(), d.len()];
+    }
+    let blocks = rd16(d, 6);
+    let shift = d[9];
+    let nl = d[10] as usize;
+    let np = d[11 + 2 * nl] as usize;
+    let index = 12 + 2 * nl + 2 * np;
+    let data = data_offset(d);
+    let mut cuts = [0usize; 2];
+    let mut from = 0;
+    let mut c = 0;
+    while c < 2 {
+        let mut best = from;
+        let mut b = 0;
+        while b < blocks {
+            let at = data + (rd16(d, index + 2 * b) << shift);
+            if at > best && at <= from + PIECE_MAX {
+                best = at;
+            }
+            b += 1;
+        }
+        if d.len() <= from + PIECE_MAX {
+            best = d.len();
+        }
+        assert!(best > from, "a lexicon block is larger than a piece");
+        cuts[c] = best;
+        from = best;
+        c += 1;
+    }
+    assert!(d.len() - from <= PIECE_MAX, "the lexicon needs more than three pieces");
+    cuts
+}
+
+/// Bytes `from..from + N` of `d` as an array (a piece of the lexicon).
+#[must_use]
+pub const fn piece<const N: usize>(d: &[u8], from: usize) -> [u8; N] {
+    let mut out = [0u8; N];
+    let mut i = 0;
+    while i < N {
+        out[i] = d[from + i];
+        i += 1;
+    }
+    out
+}
+
+const CUTS: [usize; 2] = split_points(RAW);
+static PART0: [u8; CUTS[0]] = piece(RAW, 0);
+static PART1: [u8; CUTS[1] - CUTS[0]] = piece(RAW, CUTS[0]);
+static PART2: [u8; RAW.len() - CUTS[1]] = piece(RAW, CUTS[1]);
+
+/// The entries' bytes, in up to three pieces.
+#[derive(Clone, Copy)]
+struct Data<'a> {
+    parts: [&'a [u8]; 3],
+    /// Offset of the second and third piece in the data.
+    at: [usize; 2],
+}
+
+impl<'a> Data<'a> {
+    const EMPTY: Data<'static> = Data { parts: [&[], &[], &[]], at: [0, 0] };
+
+    fn one(d: &'a [u8]) -> Data<'a> {
+        Data { parts: [d, &[], &[]], at: [d.len(), d.len()] }
+    }
+
+    fn len(&self) -> usize {
+        self.at[1] + self.parts[2].len()
+    }
+
+    #[inline]
+    fn get(&self, i: usize) -> Option<u8> {
+        if i < self.at[0] {
+            self.parts[0].get(i).copied()
+        } else if i < self.at[1] {
+            self.parts[1].get(i - self.at[0]).copied()
+        } else {
+            self.parts[2].get(i - self.at[1]).copied()
+        }
+    }
+}
 
 /// What a lookup found.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,13 +162,13 @@ pub enum Entry {
 }
 
 struct Bits<'a> {
-    d: &'a [u8],
+    d: Data<'a>,
     pos: usize, // bit position
 }
 
 impl Bits<'_> {
     fn bit(&mut self) -> u32 {
-        let b = self.d.get(self.pos / 8).copied().unwrap_or(0);
+        let b = self.d.get(self.pos / 8).unwrap_or(0);
         let r = (b >> (7 - (self.pos % 8))) & 1;
         self.pos += 1;
         u32::from(r)
@@ -130,7 +241,7 @@ pub struct Lexicon<'a> {
     letters: Code<'a>,
     phones: Code<'a>,
     index: &'a [u8],
-    data: &'a [u8],
+    data: Data<'a>,
 }
 
 impl core::fmt::Debug for Lexicon<'_> {
@@ -142,6 +253,16 @@ impl core::fmt::Debug for Lexicon<'_> {
 impl<'a> Lexicon<'a> {
     /// Parses the header; `None` if it is malformed.
     pub fn new(d: &'a [u8]) -> Option<Lexicon<'a>> {
+        Self::parse(d, [&[], &[]])
+    }
+
+    /// Parses a lexicon cut into pieces at block starts: `head` holds the
+    /// header, the index and the first blocks, `rest` the others in order.
+    pub fn new_split(head: &'a [u8], rest: [&'a [u8]; 2]) -> Option<Lexicon<'a>> {
+        Self::parse(head, rest)
+    }
+
+    fn parse(d: &'a [u8], rest: [&'a [u8]; 2]) -> Option<Lexicon<'a>> {
         if d.get(..4)? != b"OTL1" {
             return None;
         }
@@ -163,7 +284,11 @@ impl<'a> Lexicon<'a> {
         let phones = Code::new(d.get(p + 1..p + 1 + 2 * np)?)?;
         p += 1 + 2 * np;
         let index = d.get(p..p + 2 * usize::from(blocks))?;
-        let data = d.get(p + 2 * usize::from(blocks)..)?;
+        let first = d.get(p + 2 * usize::from(blocks)..)?;
+        let mut data = Data::one(first);
+        data.parts[1] = rest[0];
+        data.parts[2] = rest[1];
+        data.at[1] = first.len() + rest[0].len();
         let lex = Lexicon { entries, blocks, per_block, shift, letters, phones, index, data };
         if (0..usize::from(blocks)).any(|b| lex.block_start(b) > data.len()) {
             return None;
@@ -181,14 +306,14 @@ impl<'a> Lexicon<'a> {
             letters: Code::EMPTY,
             phones: Code::EMPTY,
             index: &[],
-            data: &[],
+            data: Data::EMPTY,
         }
     }
 
     /// The committed lexicon (checked by the tests; empty if it were ever
     /// malformed).
     pub fn builtin() -> Lexicon<'static> {
-        Lexicon::new(DATA).unwrap_or(Lexicon::empty())
+        Lexicon::new_split(&PART0, [&PART1, &PART2]).unwrap_or(Lexicon::empty())
     }
 
     /// Number of words.
@@ -519,12 +644,41 @@ pub mod build {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
     use super::*;
 
     #[test]
     fn builtin_parses() {
         assert!(Lexicon::new(DATA).is_some());
         assert!(!Lexicon::builtin().is_empty());
+    }
+
+    /// TTS-3: the built-in lexicon in three pieces of at most 16 KiB (a
+    /// rodata group: a larger static could not be paged on the player)
+    /// cut at block starts, and every entry reads as from the whole file.
+    #[test]
+    fn regress_lexicon_larger_than_a_rodata_group() {
+        let cuts = split_points(DATA);
+        assert!(DATA.len() > PIECE_MAX, "the case this is for");
+        let sizes = [cuts[0], cuts[1] - cuts[0], DATA.len() - cuts[1]];
+        assert!(sizes.iter().all(|&n| n > 0 && n <= PIECE_MAX), "{sizes:?}");
+        assert_eq!(PART0.len() + PART1.len() + PART2.len(), DATA.len());
+        let whole = Lexicon::new(DATA).unwrap();
+        let split = Lexicon::builtin();
+        assert_eq!(split.len(), whole.len());
+        let mut a = std::vec::Vec::new();
+        whole.for_each(|w, e, p| a.push((w.to_vec(), e, p.to_vec())));
+        let mut b = std::vec::Vec::new();
+        split.for_each(|w, e, p| b.push((w.to_vec(), e, p.to_vec())));
+        assert_eq!(a, b);
+        let mut out = [Phone::new(Ph::AH, Stress::None); MAX_PHONES];
+        let mut o2 = out;
+        for (w, ..) in a.iter().step_by(37) {
+            assert_eq!(split.lookup(w, &mut out), whole.lookup(w, &mut o2));
+            assert_eq!(out, o2);
+        }
+        // A small file is one piece.
+        assert_eq!(split_points(&DATA[..100]), [100, 100]);
     }
 
     #[test]

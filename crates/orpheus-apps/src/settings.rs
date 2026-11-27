@@ -363,6 +363,12 @@ pub mod id {
     pub const WHERE_KEYS: SettingId = SettingId(0x100A);
     #[cfg(feature = "screen-reader")]
     pub const DARK_KEYS: SettingId = SettingId(0x100B);
+    /// TTS-3: Speech volume (Normal, −6, −12, −18 dB) and Music while
+    /// speaking (Lowered, Paused, Unchanged), in [`READER_WORD`] too.
+    #[cfg(feature = "screen-reader")]
+    pub const SPEECH_VOLUME: SettingId = SettingId(0x100C);
+    #[cfg(feature = "screen-reader")]
+    pub const MUSIC_WHILE_SPEAKING: SettingId = SettingId(0x100D);
     #[cfg(feature = "screen-reader")]
     pub const READER_WORD: SettingId = SettingId(0x0D61);
 }
@@ -374,7 +380,8 @@ pub const READER_PITCH_SEMITONES: [i8; 5] = [-4, -2, 0, 2, 4];
 
 /// The default of the screen reader's word 0x0D61: every field's default
 /// (off, Neutral, pitch Normal, verbosity Normal, earcons on, Back + OK,
-/// keys with the screen off on).
+/// keys with the screen off on, speech at Normal volume, the music
+/// lowered while speaking).
 #[cfg(feature = "screen-reader")]
 const READER_WORD_DEFAULT: i16 = (2 << 3) | (1 << 6) | (1 << 8) | (1 << 9) | (1 << 11);
 
@@ -590,6 +597,20 @@ const ACCESSIBILITY: &[Setting] = &[
         .packed(0x0D61, 9, 2),
     #[cfg(feature = "screen-reader")]
     t(0x100B, Str::DarkKeys, 1).packed(0x0D61, 11, 1),
+    // TTS-3 (05 §7.14 "speech volume relative to music, music ducking or
+    // pausing while speaking"): the speech's gain (orpheus-tts
+    // `mix::SPEECH_DB`) and what the music does while speech sounds.
+    #[cfg(feature = "screen-reader")]
+    c(0x100C, Str::SpeechVolume, ch![S(Str::TextNormal), Lit("−6 dB"), Lit("−12 dB"), Lit("−18 dB")], 0)
+        .packed(0x0D61, 12, 2),
+    #[cfg(feature = "screen-reader")]
+    c(
+        0x100D,
+        Str::MusicWhileSpeaking,
+        ch![S(Str::MusicLowered), S(Str::MusicPaused), S(Str::MusicUnchanged)],
+        0,
+    )
+    .packed(0x0D61, 14, 2),
 ];
 
 const SYSTEM: &[Setting] = &[
@@ -1171,12 +1192,15 @@ mod tests {
         let ids: Vec<u16> = grp.items.iter().map(|s| s.id.0).collect();
         assert_eq!(
             ids,
-            [0x1001, 0x1002, 0x1003, 0x1004, 0x1005, 0x1006, 0x1007, 0x1008, 0x1009, 0x100A, 0x100B]
+            [
+                0x1001, 0x1002, 0x1003, 0x1004, 0x1005, 0x1006, 0x1007, 0x1008, 0x1009, 0x100A, 0x100B,
+                0x100C, 0x100D
+            ]
         );
         let mut c = SettingsCache::new();
         let packed: Vec<&Setting> =
             grp.items.iter().filter(|s| s.pack.is_some_and(|p| p.0 == id::READER_WORD)).collect();
-        assert_eq!(packed.len(), 7);
+        assert_eq!(packed.len(), 9);
         for s in &packed {
             assert_eq!(c.get(s.id), s.default, "{:#06x}", s.id.0);
         }
@@ -1217,7 +1241,7 @@ mod tests {
         let items: Vec<&Setting> = grp.items.iter().filter(|s| s.id.0 <= 0x1003).collect();
         let ids: Vec<u16> = items.iter().map(|s| s.id.0).collect();
         assert_eq!(ids, [0x1001, 0x1002, 0x1003]);
-        assert_eq!(grp.items.len(), if cfg!(feature = "screen-reader") { 11 } else { 3 });
+        assert_eq!(grp.items.len(), if cfg!(feature = "screen-reader") { 13 } else { 3 });
         for s in items {
             assert_eq!(s.pack.map(|p| p.0), Some(id::A11Y_WORD), "{:#06x}", s.id.0);
             assert_eq!(s.default, 0);

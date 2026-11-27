@@ -49,6 +49,7 @@ the result and date. "Blocking" entries hold up the package named.
 
 | 28 | USB-W1 | no | USB comes back by itself, after the next install. With music playing and the player on the computer (any personality is fine; the lead's tools need not run): (a) pull the cable out and put it back in, five times, sometimes quickly (under a second), sometimes after 10 s; (b) put the computer to sleep for a minute and wake it; (c) plug the player into a phone charger for a minute, then back into the computer; (d) leave it plugged in, untouched, for an hour | Each time the computer sees the player again within about 5 s (the developer channel answers, or the card shows up again in File transfer); the music never stops and the player never restarts (on (d) as well: an idle computer is not a reason to restart). Report any time the computer did not see it again, any restart (the start-up screen, or the music starting from the beginning), and how long it took | |
 | 35 | GAME-1…6 | Play Blocks, 4096, Solitaire, Salvo and Bricks by hand (Home › Games): moves, saves and Continue, settings | All play correctly | **Owner 2026-11-27: "I tested games, which all worked well."** |
+| 36 | TTS-3 | **yes, for the screen reader on the player** | A decision, then a listen: see §36 below | | |
 
 ## Template for workers
 
@@ -236,3 +237,28 @@ am I" (Vol+ with Vol− cannot work: the player sees only one of those two
 keys at a time).
 
 **Result (owner 2026-11-27):** "Those key combos work for me. Example wavs sounded great." — the toggle chord (Back + Menu held 2 s) and where-am-I (Back + OK) are approved; the example WAVs (speech, drum kits, MIDI, sequencer, screen reader) passed the listening check.
+## 36. Speech on the player: what makes room, then a listen (TTS-3, 2026-11-27)
+
+The screen reader and its speech voice are built for the player but do not
+fit its code space next to everything already there: they need about
+**41 KB** more paged code than the player can address (133 of 128 pages;
+`docs/STATUS.md` 2026-11-27 "TTS-3"). Please decide what makes room:
+
+* compile out one feature for now (approximate code each frees: Opus
+  ≈ 61 KB, the MIDI player and synthesiser ≈ 65 KB, the games ≈ 55 KB,
+  Pictures ≈ 45 KB), or
+* let the lead plan a pager change so rarely used code can also run from
+  the read-only data window (about 147 KB of room; a larger, riskier
+  package), or
+* leave speech out of the player until then.
+
+Once a build with speech fits (`cargo xtask build --features speech`), with
+headphones: hold **Back + Menu** 2 s on Home (a rising tone, "Screen reader
+on", "Home. Music, button, 1 of 12"); move through Home, Settings ›
+Accessibility and a list in Music; hold **Back + OK** (where am I) and
+longer (time and battery); press keys quickly while it speaks (each cuts
+it); try Speech rate 2× and 0.5×, Voice, Speech volume −12 dB, and Music
+while speaking (Lowered, Paused) with a song playing; Back + Menu again
+(off). Report: understandable at 1×? the tones helpful? speech too loud or
+quiet against the music, the lowered music level, the pause's resume
+delay; any crackle, gap or delay before the first word.

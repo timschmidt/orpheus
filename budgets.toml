@@ -287,3 +287,46 @@ ram_bytes = 8192
 wer_max_pct_1x = 18
 wer_max_pct_2x = 36
 wer_max_pct_4x = 97
+# The speech voice on the player (TTS-3, 2026-11-27; firmware feature
+# `speech`, off by default: see `code_bytes`). The speech is rendered in
+# thread mode at 16 kHz and mixed in the card task (04 §8 "As built
+# (TTS-3)").
+#
+# Paged code with the screen reader and the speech voice (thumbv7em, opt
+# "s", fat LTO, `cargo xtask build --features speech`): 1,013,760 →
+# 1,089,102 B (+75,342 B: the speech engine ≈ 45 KB of it, `Speaker::pump`
+# with the front end inlined 15.4 KB, `Synth::frame` 4.9 KB; the reader's
+# describe/observe ≈ 13 KB; the firmware's speech task, mixer and UI
+# glue ≈ 14 KB with the engine's paths inlined into it): 133 of the code
+# window's 128 pages, 40,526 B over. Measured and not kept: opt-level "z"
+# for orpheus-tts and orpheus-apps 132 pages (28.6 KB over); with PG-1's 13
+# cold crates too 131 (19.1 KB); with 6 more 130 (13.8 KB); with
+# orpheus-ui too 130 (8.6 KB over). Rodata: the lexicon 32,766 B in three
+# pieces of ≤ 16 KiB (`lexicon::split_points`).
+code_bytes = 81920                  # 80 KiB (04 §8)
+# RAM of the speech build over the default one: .bss +9,736 B (the
+# speaker 3,448 B, the sample ring 4,096 B, the utterance queue 1,040 B,
+# the UI's reader state ≈ 900 B, signals and counters), .data +276 B (the
+# card task's mixer, 268 B): ≈ 134,030 B as `xtask size` counts .bss (124,296 B without the
+# feature) of `bss_bytes` 135,168 B: 1.1 KB left.
+service_ram_bytes = 10240
+# CPU (cycles per second of speech at 1×, estimated as TTS-2 did:
+# thumbv7em instructions + 1 per load/store + 2 per taken branch, ±30 %;
+# host `cargo bench -p orpheus-tts`: the synthesiser 31.3 ns per 16 kHz
+# sample as in TTS-2, the mixer 13.2 ns per 48 kHz frame, 15.9 at 44.1 kHz,
+# 2.1 ns alone). Thread mode: the synthesiser at 16 kHz ≈ 5.5 M, the front
+# end ≈ 0.2 M (1.6 M at 10×). Card task: over music the resampler, duck
+# and add ≈ 130 cycles a frame at 48 kHz (6.2 M), ≈ 195 at 44.1 kHz
+# (8.6 M); alone ≈ 20 a frame (0.3 M). Totals: alone ≈ 6.0 M (6 % of Mid,
+# 12.5 % of Base, 25 % of Low); over 48 kHz ≈ 11.9 M (12 % of Mid; TTS-2:
+# 10.8 M), over 44.1 kHz ≈ 14.3 M (15 % of Mid; TTS-2: ≈ 13 M). Paging
+# not counted: the speech's per-sample code (≈ 12 KB, 12 lines) evicts
+# that many of the music's 32 lines per speech chunk (≈ 8 a second).
+est_cycles_per_s_alone = 6000000
+est_cycles_per_s_48k = 11900000
+est_cycles_per_s_44k = 14300000
+# Clock floor while speech sounds: Mid (orpheus-power `SPEECH_FLOOR`).
+clock_floor_level = 1
+# First sound after a request (alone: the DAC starts after 32 ms of speech
+# is queued, `audio/speech.rs` START): not measured on the player.
+first_sound_ms = 150

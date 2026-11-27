@@ -11,6 +11,7 @@
 //! (silence included) is kept for hashing ([`SimSpeech::audio_hash`]) and
 //! WAV export ([`SimSpeech::wav`]).
 
+use orpheus_tts::mix::{self, MusicMode};
 use orpheus_tts::{Config as TtsConfig, Options, Speaker, Speed, Stop, Voice};
 use orpheus_ui::a11y::{Config, Earcon, SpeechService, Tone, Utterance, UtteranceQueue};
 use orpheus_ui::text::StrBuf;
@@ -65,6 +66,18 @@ pub struct SimSpeech {
     pub keep_audio: bool,
     hash: u64,
     rendered: u64,
+    /// The speech volume of the utterance sounding (Q15, TTS-3:
+    /// `orpheus_tts::mix::speech_q15`).
+    gain: u32,
+    /// Music while speaking of the utterance sounding.
+    mode: MusicMode,
+    /// Music plays (set by the simulator each step): speech is mixed over
+    /// it (the firmware's `Mixer`).
+    pub music: bool,
+    /// Output samples rendered over music with the music lowered, and the
+    /// lowest music gain (Q16) they had (Music while speaking › Lowered).
+    pub ducked: u64,
+    pub duck_min: u32,
 }
 
 impl Default for SimSpeech {
@@ -102,6 +115,11 @@ impl SimSpeech {
             keep_audio: true,
             hash: 0xcbf2_9ce4_8422_2325,
             rendered: 0,
+            gain: mix::Q15_ONE,
+            mode: MusicMode::Lower,
+            music: false,
+            ducked: 0,
+            duck_min: mix::Q16_ONE,
         }
     }
 
@@ -142,6 +160,15 @@ impl SimSpeech {
     }
 
     fn put(&mut self, s: i16) {
+        // Speech volume (exact at Normal: the goldens' hashes stand).
+        let s = mix::scale(s, self.gain);
+        if self.music && s != 0 {
+            let g = self.mode.duck_q16();
+            if g < mix::Q16_ONE {
+                self.ducked += 1;
+                self.duck_min = self.duck_min.min(g);
+            }
+        }
         for b in s.to_le_bytes() {
             self.hash = (self.hash ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
         }
@@ -152,6 +179,8 @@ impl SimSpeech {
     }
 
     fn apply(&mut self) {
+        self.gain = mix::speech_q15(self.cfg.volume);
+        self.mode = MusicMode::from_index(self.cfg.music);
         let want = (self.cfg.rate, self.cfg.voice, self.cfg.pitch);
         if self.applied != Some(want) {
             self.speaker.set_speed(Speed::from_quarters(self.cfg.rate.clamp(1, 40)));
@@ -177,7 +206,11 @@ impl SimSpeech {
                 self.speaker.finish();
                 self.playing = Playing::Speech;
             }
-            Some(Utterance::Earcon(e)) => self.playing = Playing::Tone { tone: e.tone(), at: 0 },
+            Some(Utterance::Earcon(e)) => {
+                self.gain = mix::speech_q15(self.cfg.volume);
+                self.mode = MusicMode::from_index(self.cfg.music);
+                self.playing = Playing::Tone { tone: e.tone(), at: 0 };
+            }
             None => self.playing = Playing::Idle,
         }
     }

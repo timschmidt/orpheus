@@ -89,6 +89,36 @@ macro_rules! t {
     }};
 }
 
+/// Speech over music and alone (TTS-3): feature `speech`.
+#[cfg(feature = "speech")]
+mod speech;
+#[cfg(not(feature = "speech"))]
+mod speech {
+    //! Without feature `speech`: no speech to mix or to sound alone.
+
+    #[inline(always)]
+    pub(super) fn wanted() -> bool {
+        false
+    }
+    pub(super) fn mix_i16(_s: &mut [i16], _n: usize, _ch: usize) {}
+    pub(super) fn mix_i32(_s: &mut [i32], _n: usize, _ch: usize) {}
+    #[inline(always)]
+    pub(super) fn alone() -> bool {
+        false
+    }
+    #[inline(always)]
+    pub(super) fn alone_running() -> bool {
+        false
+    }
+    #[inline(always)]
+    pub(super) fn end_alone() {}
+    pub(super) async fn wait() {
+        core::future::pending::<()>().await;
+    }
+    pub(super) async fn serve() -> core::convert::Infallible {
+        core::future::pending().await
+    }
+}
 /// Synth sources: the engine in the pool, MIDI files, the bench (SYN-3).
 mod synth;
 
@@ -1685,6 +1715,10 @@ impl Sink<i16> for Out<'_> {
         if CLICK_AT.load(Ordering::Relaxed) != u32::MAX {
             click_mix(s, n, 1 + usize::from(self.stereo), orpheus_dsp::click::mix_i16);
         }
+        // TTS-3: the speech after the chain (which it bypasses).
+        if speech::wanted() {
+            speech::mix_i16(s, n, 1 + usize::from(self.stereo));
+        }
         self.out.look();
         n
     }
@@ -1705,6 +1739,9 @@ impl Sink<i32> for Out<'_> {
         mark(0);
         if CLICK_AT.load(Ordering::Relaxed) != u32::MAX {
             click_mix(s, n, 1 + usize::from(self.stereo), orpheus_dsp::click::mix_i32);
+        }
+        if speech::wanted() {
+            speech::mix_i32(s, n, 1 + usize::from(self.stereo));
         }
         self.out.look();
         n
@@ -1759,6 +1796,10 @@ fn full_level(chain: &mut orpheus_dsp::Chain) {
 /// sound settings.
 #[inline(never)]
 fn begin_block(b: &mut Blk, chain: &mut orpheus_dsp::Chain) {
+    // TTS-3: speech alone had the DAC (paused): the music's again.
+    if speech::alone_running() {
+        speech::end_alone();
+    }
     if b.join == 1 {
         // The hand-over is over when the new decoder has a block: noted
         // before its first pushes see the result.
@@ -2022,8 +2063,16 @@ async fn pause(
         media::player_update(|p| p.source = Source::Paused);
         save_store(vol, srv, spare).await;
     }
+    // TTS-3: the screen reader alone while paused (Music while speaking
+    // › Paused, or a pause by hand).
+    speech::alone();
     if CLICK_AT.load(Ordering::Relaxed) != u32::MAX {
-        click_alone(out).await;
+        if speech::alone_running() {
+            // A key while it speaks: the reader answers it.
+            CLICK_AT.store(u32::MAX, Ordering::Relaxed);
+        } else {
+            click_alone(out).await;
+        }
     }
     if crate::drain::due() {
         drain_flush_rows(vol, spare).await;
@@ -2032,11 +2081,18 @@ async fn pause(
         sensor_flush_rows(vol, spare).await;
     }
     if ALERT.load(Ordering::Relaxed) {
+        speech::end_alone();
         alert_tone(out).await;
     }
     while srv.has_job() && media::REQS.is_empty() && media::PLAY.is_empty() {
         srv.step(vol).await;
     }
+}
+
+/// The paused loops' wait (codecs, synth): 200 ms, or speech to take (the
+/// screen reader alone while paused, TTS-3).
+pub(super) async fn paused_wait() {
+    let _ = select(Timer::after_millis(200), speech::wait()).await;
 }
 
 /// One chore (the first due, in this order). `Some`: the file's playback
@@ -2459,12 +2515,11 @@ async fn play_file(
     let end = 'play: loop {
         // While paused, wait for a request (one per pass).
         let polled = if b.paused && !b.fading {
-            let got =
-                match select3(media::PLAY.receive(), media::REQS.receive(), Timer::after_millis(200)).await {
-                    Either3::First(r) => Some(Ok(r)),
-                    Either3::Second(r) => Some(Err(r)),
-                    Either3::Third(()) => None,
-                };
+            let got = match select3(media::PLAY.receive(), media::REQS.receive(), paused_wait()).await {
+                Either3::First(r) => Some(Ok(r)),
+                Either3::Second(r) => Some(Err(r)),
+                Either3::Third(()) => None,
+            };
             if let Some(e) = Apart(head(&mut b, got, dec, ring, vol, srv, out, spare)).await {
                 break 'play e;
             }
@@ -2654,8 +2709,12 @@ async fn release(slot: &mut Option<Volume<'static, Card>>) {
     media::player_update(|p| p.source = Source::Idle);
     let (card, _) = vol.unmount().await;
     CARD_OUT.send(card).await;
-    // The USB task re-initialised the card before handing it back.
-    let card = CARD_BACK.receive().await;
+    // The USB task re-initialised the card before handing it back; the
+    // screen reader speaks meanwhile (TTS-3).
+    let card = match select(CARD_BACK.receive(), speech::serve()).await {
+        Either::First(c) => c,
+        Either::Second(never) => match never {},
+    };
     *slot = Apart(mount(card)).await;
     if slot.is_some() {
         crate::state::CARD_READY.store(true, Ordering::Relaxed);
@@ -3689,28 +3748,33 @@ async fn idle(vol: &mut Volume<'static, Card>, ring: &mut Ring, arena: &mut [u8]
                 Apart(sensor_flush(vol, arena, false)).await;
             }
             if ALERT.load(Ordering::Relaxed) && !work_waiting() {
+                speech::end_alone();
                 let mut out = PcmOut::new();
                 Apart(alert_tone(&mut out)).await;
             }
+            // TTS-3: the screen reader alone (the DAC at 16 kHz).
+            let speaking = speech::alone();
             // A key click with nothing playing (never ahead of card work:
-            // dropped then).
+            // dropped then; nor over the reader's answer to the key).
             if CLICK_AT.load(Ordering::Relaxed) != u32::MAX {
-                if work_waiting() {
+                if work_waiting() || speech::alone_running() {
                     CLICK_AT.store(u32::MAX, Ordering::Relaxed);
                 } else {
                     let mut out = PcmOut::new();
                     Apart(click_alone(&mut out)).await;
                 }
             }
-            if srv.wants_build() && !work_waiting() {
+            // Background work waits while the reader speaks alone (a long
+            // step would leave a gap in the speech).
+            if srv.wants_build() && !work_waiting() && !speaking {
                 Apart(build_slot(vol, srv, arena)).await;
             }
             // Card info's free space (counted once, then the volume's own).
-            if !work_waiting() {
+            if !work_waiting() && !speaking {
                 Apart(count_free(vol)).await;
             }
             // The music library builds when it is due and nothing else waits.
-            if crate::library::wait_ms(srv) == Some(0) && !srv.wants_build() && !work_waiting() {
+            if crate::library::wait_ms(srv) == Some(0) && !srv.wants_build() && !work_waiting() && !speaking {
                 Apart(crate::library::slot(vol, srv, arena)).await;
             }
             // Player requests and the recorder's (AU-13) share the third
@@ -3720,12 +3784,18 @@ async fn idle(vol: &mut Volume<'static, Card>, ring: &mut Ring, arena: &mut [u8]
                 media::REQS.receive(),
                 select(media::PLAY.receive(), crate::rec::REQ.receive()),
             );
-            match crate::library::wait_ms(srv) {
+            // Speech to take (TTS-3) wakes the loop too.
+            let next = select(next, speech::wait());
+            let r = match crate::library::wait_ms(srv).filter(|_| !speaking) {
                 Some(ms) => match select(next, Timer::after_millis(ms.max(1))).await {
                     Either::First(r) => r,
                     Either::Second(()) => continue,
                 },
                 None => next.await,
+            };
+            match r {
+                Either::First(r) => r,
+                Either::Second(()) => continue,
             }
         };
         let cmd = match r {
@@ -3761,7 +3831,11 @@ async fn idle(vol: &mut Volume<'static, Card>, ring: &mut Ring, arena: &mut [u8]
                 }
                 continue;
             }
-            Either3::Third(Either::First(p)) => return Idle::Play(p),
+            Either3::Third(Either::First(p)) => {
+                // The music takes the DAC; the speech goes on over it.
+                speech::end_alone();
+                return Idle::Play(p);
+            }
             Either3::Third(Either::Second(c)) => {
                 // Recording (AU-13): the arena is the recorder's until it
                 // is done.

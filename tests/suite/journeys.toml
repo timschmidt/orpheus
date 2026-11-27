@@ -539,3 +539,39 @@ cmd: settings test-set 0x0108 0 ~ ^test-set 264=0 ok
 sim: set:0x0108=0
 expect-screen:Home shot:home_after
 """
+
+[[journey]]
+name = "screen_reader"
+about = "The screen reader and its speech voice (A11Y-1, TTS-3) through the RAM-only test session: on, it says Home and its focus; a move is said (ui speech said=); Speech volume −12 dB is what the voice takes (vol=2); over music (the fixtures) the music is lowered under the speech (duck=16462, −12 dB); off, it says so; all set back. Needs a build with feature speech (skipped otherwise)"
+setup = true
+needs = "ui speech ~ ^speech sounding="
+script = """
+expect-screen:Home shot:home
+cmd: settings test-session ~ ^test-session on
+cmd: settings test-set 0x1004 1 ~ ^test-set 4100=1 ok
+sim: set:0x1004=1
+wait:2500
+cmd: ui speech ~ said=Home\\. Music, button, 1 of
+next wait:1500
+cmd: ui speech ~ said=Files, button, 2 of
+cmd: settings test-set 0x100C 2 ~ ^test-set 4108=2 ok
+sim: set:0x100c=2
+prev wait:1500
+cmd: ui speech ~ vol=2 .*said=Music, button, 1 of
+cmd: settings test-set 0x100C 0 ~ ^test-set 4108=0 ok
+sim: set:0x100c=0
+cmd: playdir /.orpheus/test/suite/music ~ ^playdir ok
+sim: set:queue=takk
+dev: wait:1500
+next
+cmd: ui speech ~ sounding=1 .*duck=16462
+cmd: stop
+sim: set:playing=0
+dev: wait:500
+prev wait:1500
+cmd: settings test-set 0x1004 0 ~ ^test-set 4100=0 ok
+sim: set:0x1004=0
+wait:1500
+cmd: ui speech ~ said=Screen reader off
+expect-screen:Home
+"""

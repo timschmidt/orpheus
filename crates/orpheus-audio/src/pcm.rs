@@ -137,6 +137,32 @@ impl Book {
         Look { head, stale: n as u32 }
     }
 
+    /// Take back what the writer wrote more than `margin` frames ahead of
+    /// the DMA at `r` (TTS-3: speech alone was stopped, the frames queued
+    /// for the DAC are not to be heard). Returns the frames taken back (0:
+    /// the writer was not that far ahead). The writer goes on from `margin`
+    /// frames ahead of the DMA; the caller silences the frames taken back
+    /// in the ring (they follow the writer's new place, ring frame
+    /// `(written % 2) · half + fill` on).
+    pub fn rewind(&mut self, r: Reading, margin: u32) -> u32 {
+        let head = self.headroom(r);
+        let Ok(margin) = i32::try_from(margin) else { return 0 };
+        if head <= margin {
+            return 0;
+        }
+        let back = (head - margin) as u32;
+        let mut left = back;
+        if left <= self.fill {
+            self.fill -= left;
+        } else {
+            left -= self.fill;
+            let halves = left.div_ceil(self.half);
+            self.written = self.written.wrapping_sub(halves);
+            self.fill = halves * self.half - left;
+        }
+        back
+    }
+
     /// At a half boundary, after the wait for room: [`Self::look`], then,
     /// when the DMA is past the half the writer starts next, the writer
     /// skips to the half after the DMA's (the next half then waits for a
@@ -410,5 +436,38 @@ mod tests {
         let ends: std::vec::Vec<bool> = (0..9).map(|_| b.wrote()).collect();
         assert_eq!(ends, [false, false, false, true, false, false, false, true, false]);
         assert_eq!((b.written, b.fill), (2, 1));
+    }
+
+    #[test]
+    fn rewind_takes_back_what_is_ahead_of_the_dma_and_margin() {
+        // Two halves and 100 frames written, the DMA at frame 200 of half 1:
+        // 1,436 frames ahead; with a 32-frame margin 1,404 are taken back.
+        let mut b = Book::new(HALF);
+        b.written = 2;
+        b.fill = 100;
+        let r = at(1, 200);
+        assert_eq!(b.headroom(r), 1436);
+        assert_eq!(b.rewind(r, 32), 1404);
+        assert_eq!(b.headroom(r), 32);
+        assert_eq!((b.written, b.fill), (1, 232));
+        // Within the margin: nothing.
+        assert_eq!(b.rewind(r, 32), 0);
+        assert_eq!(b.rewind(r, 100), 0);
+        // Inside the half being written.
+        let mut b = Book::new(HALF);
+        b.written = 1;
+        b.fill = 900;
+        assert_eq!(b.rewind(at(1, 100), 48), 752);
+        assert_eq!((b.written, b.fill), (1, 148));
+        // Across a whole half to its start.
+        let mut b = Book::new(HALF);
+        b.written = 3;
+        b.fill = 0;
+        assert_eq!(b.rewind(at(1, HALF - 10), 10), HALF);
+        assert_eq!((b.written, b.fill, b.headroom(at(1, HALF - 10))), (2, 0, 10));
+        // Behind the DMA (an underrun): nothing to take back.
+        let mut b = Book::new(HALF);
+        b.written = 1;
+        assert_eq!(b.rewind(at(2, 5), 0), 0);
     }
 }

@@ -145,6 +145,11 @@ pub struct HostServices {
     drift: services::ClockDrift,
     /// The RDS clock time the clock was last set from (Set from RDS).
     rds_set: Option<u64>,
+    /// Music while speaking › Paused (TTS-3): the player paused while the
+    /// screen reader speaks, as the firmware's UI task does.
+    pub speech_pause: services::SpeechPause,
+    /// The pauses and resumes it asked for.
+    pub speech_pauses: u32,
 }
 
 /// What the player offers a computer on USB (the `usb-host` context of
@@ -219,6 +224,8 @@ impl HostServices {
             timer_hold: Some(services::TimerHold::default()),
             drift: services::ClockDrift::new(),
             rds_set: None,
+            speech_pause: services::SpeechPause::new(),
+            speech_pauses: 0,
         }
     }
 }
@@ -1269,6 +1276,19 @@ impl Host for HostServices {
     fn set_reader(&mut self, on: bool) -> Vec<Event> {
         self.set_setting(id::READER, i16::from(on));
         Vec::new()
+    }
+
+    fn music_playing(&self) -> bool {
+        self.media.state().source == Source::Playing
+    }
+
+    fn speech_step(&mut self, speaking: bool, now_ms: u64) {
+        let c = services::reader_config(self);
+        let src = self.playing().map(|p| p.source);
+        if let Some(cmd) = self.speech_pause.step(c.on && c.music == 1, speaking, src, now_ms) {
+            self.speech_pauses += 1;
+            self.command(cmd);
+        }
     }
 
     fn backlight(&self, lit: bool, now_ms: u64) -> Option<u8> {

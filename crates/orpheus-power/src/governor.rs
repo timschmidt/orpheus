@@ -249,6 +249,20 @@ pub const fn audio_floor(track: u8, dsp_active: bool, paused: bool, boost: bool)
     if boost && t < 2 { 2 } else { t }
 }
 
+/// The clock floor while speech sounds (04 §8 budgets: speech ≈ 11 % of
+/// Mid at 48 kHz output, 22 % of Base): Mid (96 MHz).
+pub const SPEECH_FLOOR: u8 = 1;
+
+/// The audio floor `f` ([`audio_floor`]) with speech: at least
+/// [`SPEECH_FLOOR`] while it sounds (TTS-3), whatever plays. Like every
+/// floor it raises the level only in Automatic ([`raise_for_floor`],
+/// [`Governor::step`]): Battery saver stays pinned and speech degrades
+/// there (gaps, never a hang).
+#[must_use]
+pub const fn with_speech(f: u8, speaking: bool) -> u8 {
+    if speaking && f < SPEECH_FLOOR { SPEECH_FLOOR } else { f }
+}
+
 /// The floor one step takes (`Input::floor`) from the audio floor `f`
 /// ([`audio_floor`]): none (`Low`) when nothing plays — or the track is
 /// paused, which the governor treats as nothing playing (the audio
@@ -604,6 +618,21 @@ mod tests {
         assert_eq!(floor_level(2, false, false), High);
         assert_eq!(floor_level(0, true, false), Base);
         assert_eq!(floor_level(2, true, true), High);
+    }
+
+    #[test]
+    fn speech_floor_is_mid_and_only_in_automatic() {
+        assert_eq!(with_speech(0, true), 1);
+        assert_eq!(with_speech(0, false), 0);
+        assert_eq!(with_speech(3, true), 3);
+        // Nothing playing, speech alone: Mid, not Low.
+        assert_eq!(floor_level(with_speech(0, true), false, false), Mid);
+        assert_eq!(floor_level(with_speech(0, true), true, true), Mid);
+        assert_eq!(
+            raise_for_floor(PowerMode::Auto, Base, Level::from_floor(with_speech(0, true))),
+            Some(Mid)
+        );
+        assert_eq!(raise_for_floor(PowerMode::Saver, Low, Level::from_floor(with_speech(0, true))), None);
     }
 
     #[test]
