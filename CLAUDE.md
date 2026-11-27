@@ -16,6 +16,10 @@ in `docs/PLAN.md`; start every session there and in `docs/STATUS.md`.
   `/home/tim/Documents/GitHub/yoton/` as read-only.
 * One entry point for everything: `cargo xtask …` (`docs/plan/07-tooling-
   testing.md` §2).
+* **Owner's priorities (2026-11-27): high-performance SD card storage and
+  USB mass storage** (`docs/PLAN.md` §1; targets in 06 §2.4). Any package
+  touching card I/O or USB measures throughput on the player and must not
+  make it worse; say what it did to it in STATUS.
 
 ## Hard rules (the player is real hardware with a lithium cell and the owner's music)
 

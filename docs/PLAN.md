@@ -24,6 +24,17 @@ presented like a good open-source project: concise documentation, a website
 where Orpheus runs in the browser and installs from it, one Orpheus/lyre
 identity throughout.
 
+**Project priorities (owner, 2026-11-27): "High performance SD storage and
+USB mass storage should be project priorities."** Card I/O (SD timing and
+bus width, multi-block DMA transfers, the file system's caching and
+read-ahead, write batching) and the USB card reader / file transfer and
+disk-image personalities (06 §2.4 targets: ≥ 10 MB/s sequential read,
+≥ 5 MB/s write, 1 GiB integrity both ways) are first-class goals:
+measured on the player (`metrics/`, `budgets.toml`), kept from regressing by
+the gate, and weighed in every package that touches the card or USB. The
+developer channel's file upload (≈ 15 KB/s on 2026-11-27, control
+transfers) counts too.
+
 ## 2. Requirements and where they are planned
 
 | Requirement | Where | Notes |
