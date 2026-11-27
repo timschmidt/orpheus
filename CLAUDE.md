@@ -42,7 +42,9 @@ in `docs/PLAN.md`; start every session there and in `docs/STATUS.md`.
    raw-write outside files the test created. Exception (owner, 2026-11-27):
    the card in the player since 2026-11-27 replaced the owner's music card
    and is safe to format; formatting it (Settings › Storage › Format card, or
-   a deliberate, reported step) is allowed. Other automated tests still write
+   a deliberate, reported step) is allowed, and so is copying the demo card
+   set (`/Music`, `/MIDI`, `/Pictures`, `/Books`, `/CREDITS.txt`) onto it at
+   the owner's request. Other automated tests still write
    only inside `/.orpheus/`. If the owner's music card comes back, the rule
    applies in full again.
 6. Do not send Bluetooth module commands 0x20–0x24, 0x28, 0x2C or 0x7F outside
