@@ -1955,7 +1955,10 @@ fn chore_due(b: &mut Blk, ring: &Ring, srv: &Server, out: &mut PcmOut) -> Option
         Verdict::Starved { .. } => 2,
     };
     DUE.store(
-        (kind as u32) << 24 | (a.need_us / 1000).min(255) << 16 | (a.head.clamp(0, 0x3FFF) as u32) << 2 | verdict,
+        (kind as u32) << 24
+            | (a.need_us / 1000).min(255) << 16
+            | (a.head.clamp(0, 0x3FFF) as u32) << 2
+            | verdict,
         Ordering::Relaxed,
     );
     DUE_WAIT_MS.store(a.waited_us / 1000, Ordering::Relaxed);
