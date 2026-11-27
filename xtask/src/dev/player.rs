@@ -532,6 +532,9 @@ impl Player for SimPlayer {
                     _ => "usage: settings test-set ID VALUE".into(),
                 }
             }
+            // TTS-3: the speech voice as the firmware's `ui speech` says it
+            // (fw/firmware/src/speech.rs `status_reply`).
+            "ui speech" => sim_speech(&self.sim),
             "fm status" => {
                 let i = self.sim.sys.radio.radio.info();
                 format!("fm status: phase={:?} khz={} rssi={}", i.phase, i.khz, i.rssi)
@@ -592,6 +595,41 @@ impl Player for SimPlayer {
             self.hold = Default::default();
         }
     }
+}
+
+/// `ui speech` for a simulator: the fields of the firmware's reply that the
+/// simulator knows (its speech has no ring: `ring=0 dropped=0 late=0`; it
+/// is never alone while music plays).
+pub fn sim_speech(sim: &AppSim) -> String {
+    use orpheus_sim::speech::Said;
+    use orpheus_tts::mix::{MusicMode, Q16_ONE};
+    let Some(a) = sim.a11y.as_ref() else { return "speech: not in this build (feature speech)".into() };
+    let sp = &a.speech;
+    let c = orpheus_apps::services::reader_config(&sim.sys);
+    let busy = sp.busy();
+    let duck = if busy && sp.music { MusicMode::from_index(c.music).duck_q16() } else { Q16_ONE };
+    let count = |f: fn(&Said) -> bool| sp.log.iter().filter(|l| f(l)).count();
+    let mut said = sp.last().unwrap_or("").to_string();
+    if said.len() > 64 {
+        let mut n = 64;
+        while !said.is_char_boundary(n) {
+            n -= 1;
+        }
+        said.truncate(n);
+    }
+    format!(
+        "speech sounding={} alone={} queued={} ring=0 vol={} music={} duck={duck} texts={} earcons={} stops={} \
+         dropped=0 late=0 rendered={} said={said}",
+        u8::from(busy),
+        u8::from(busy && !sp.music),
+        u8::from(busy),
+        c.volume,
+        c.music,
+        count(|l| matches!(l, Said::Text(..))),
+        count(|l| matches!(l, Said::Earcon(..))),
+        count(|l| matches!(l, Said::Stop(..))),
+        sp.rendered(),
+    )
 }
 
 /// `synth bench I [N] [BLOCKS]` on the host: the reply's words the

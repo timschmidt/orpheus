@@ -55,6 +55,8 @@
 //!   [`klatt`]: the cascade/parallel formant synthesiser at 16 kHz;
 //!   [`targets`]: the phoneme targets and loci; [`voice`]: the voices;
 //!   [`resample`]: 16 kHz to the output rate.
+//! * [`mix`]: speech in the audio output (over music, ducking, alone,
+//!   stops; TTS-3).
 //! * `lexgen` (feature `build`): the tool that builds the lexicon
 //!   (`cargo xtask tts-lexicon`).
 
@@ -67,6 +69,7 @@ pub mod duration;
 pub mod fold;
 pub mod klatt;
 pub mod lexicon;
+pub mod mix;
 pub mod normalise;
 pub mod number;
 pub mod phoneme;

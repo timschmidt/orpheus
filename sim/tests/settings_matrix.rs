@@ -189,6 +189,24 @@ fn service_scripts() -> Vec<(&'static str, &'static str, Probe)> {
             let log: Vec<String> = a.speech.log.iter().map(orpheus_sim::speech::Said::line).collect();
             format!("{log:?} {:016x}", a.speech.audio_hash())
         }),
+        // TTS-3: the screen reader speaking over music on Home (the
+        // journey plays the album and turns the reader on): what was said,
+        // the audio's hash, the music lowered under it (samples, lowest
+        // gain) or paused for it (the player's pauses and resumes), and
+        // the player at the end.
+        ("speech-music", SPEECH_MUSIC, |s| {
+            let a = s.a11y.as_mut().expect("the apps have a reader");
+            a.speech.drain(20_000);
+            let log: Vec<String> = a.speech.log.iter().map(orpheus_sim::speech::Said::line).collect();
+            let (ducked, low) = (a.speech.ducked, a.speech.duck_min);
+            let hash = a.speech.audio_hash();
+            run(s, "wait:1000");
+            let st = s.sys.media.state();
+            format!(
+                "{log:?} {hash:016x} ducked={ducked} low={low} pauses={} {:?}",
+                s.sys.speech_pauses, st.source
+            )
+        }),
         // SEQ-2: the Sequencer — a new project (its kit, length, swing),
         // then the demo beat played 2.5 s from the grid (the notes only:
         // `seqdry`) and two keys pressed while it plays (with Key click
@@ -215,6 +233,10 @@ fn service_scripts() -> Vec<(&'static str, &'static str, Probe)> {
 
 /// The `speech` journey (see `service_scripts`).
 const SPEECH: &str = "set:0x1004=1 wait:1500 next wait:1500 down wait:1500 chord:back+ok:700 wait:3000";
+
+/// The `speech-music` journey (see `service_scripts`): an album playing,
+/// the reader on over it, two moves on Home.
+const SPEECH_MUSIC: &str = "set:queue=takk wait:300 set:0x1004=1 wait:1500 next wait:1500 down wait:1500";
 
 /// The `seq-play` journey (see `service_scripts`).
 const SEQ_PLAY: &str = "set:0x0108=1 set:seq=on set:seqdry=on set:seqdemo=1 goto:Sequencer wait:50 ok wait:50 \
@@ -1711,6 +1733,14 @@ mod matrix {
     #[test]
     fn s100b() {
         row(0x100B);
+    }
+    #[test]
+    fn s100c() {
+        row(0x100C);
+    }
+    #[test]
+    fn s100d() {
+        row(0x100D);
     }
     #[test]
     fn s1101() {

@@ -1174,6 +1174,17 @@ strings! {
     WhereAmIKeys = "Where am I",
     #[cfg(feature = "screen-reader")]
     DarkKeys = "Keys with screen off",
+    // TTS-3: the speech's level and the music while speaking.
+    #[cfg(feature = "screen-reader")]
+    SpeechVolume = "Speech volume",
+    #[cfg(feature = "screen-reader")]
+    MusicWhileSpeaking = "Music while speaking",
+    #[cfg(feature = "screen-reader")]
+    MusicLowered = "Lowered",
+    #[cfg(feature = "screen-reader")]
+    MusicPaused = "Paused",
+    #[cfg(feature = "screen-reader")]
+    MusicUnchanged = "Unchanged",
 }
 
 /// Number of strings.

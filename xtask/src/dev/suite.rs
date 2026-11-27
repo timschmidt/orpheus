@@ -63,6 +63,12 @@ pub struct Journey {
     /// Per-shot masks and tolerance, added to the screen's.
     #[serde(default)]
     pub shot: BTreeMap<String, ShotOpts>,
+    /// A firmware feature the journey needs, as a test command and the
+    /// reply's pattern (`CMD ~ REGEX`): a player whose reply does not match
+    /// skips the journey (reported `skip`, not a failure). TTS-3: the
+    /// speech journey needs a build with feature `speech`.
+    #[serde(default)]
+    pub needs: Option<String>,
 }
 
 /// A state of the player a journey accepts: simulator commands (`set:…`)
@@ -337,6 +343,8 @@ impl ShotResult {
 pub struct JourneyResult {
     pub name: String,
     pub error: Option<String>,
+    /// Skipped: the player lacks what the journey `needs` (why).
+    pub skipped: Option<String>,
     pub shots: Vec<ShotResult>,
     pub cmds: Vec<(String, Result<String, String>)>,
     pub seconds: f32,
@@ -440,6 +448,17 @@ pub fn run_journey(
     };
     r.estimate_s = (script::estimate_ms(&items) + 2500) as f32 / 1000.0;
     p.begin_journey();
+    if let Some(n) = &j.needs {
+        let (cmd, pat) = n.split_once(" ~ ").unwrap_or((n.as_str(), "."));
+        let ok = regex::Regex::new(pat)
+            .map_err(|e| anyhow!("{e}"))
+            .and_then(|re| player::command(p, cmd.trim(), Some(&re), 2000));
+        if let Err(e) = ok {
+            r.skipped = Some(format!("needs `{n}`: {e:#}"));
+            r.seconds = t0.elapsed().as_secs_f32();
+            return r;
+        }
+    }
     let dir = out.join(&j.name);
     let _ = std::fs::create_dir_all(&dir);
     let body = (|| -> Result<()> {
@@ -617,7 +636,13 @@ pub fn write_report(out: &Path, player: &str, results: &[JourneyResult], notes: 
             t,
             "{:<16} {:<5} {:>7.1} {:>7.1} ",
             r.name,
-            if r.pass() { "pass" } else { "FAIL" },
+            if r.skipped.is_some() {
+                "skip"
+            } else if r.pass() {
+                "pass"
+            } else {
+                "FAIL"
+            },
             r.seconds,
             r.estimate_s
         );
@@ -653,6 +678,9 @@ pub fn write_report(out: &Path, player: &str, results: &[JourneyResult], notes: 
         if let Some(e) = &r.error {
             let _ = writeln!(t, "    ERROR: {e}");
         }
+        if let Some(s) = &r.skipped {
+            let _ = writeln!(t, "    skipped: {s}");
+        }
     }
     std::fs::write(out.join("summary.txt"), &t)?;
     let json = serde_json::json!({
@@ -662,6 +690,7 @@ pub fn write_report(out: &Path, player: &str, results: &[JourneyResult], notes: 
         "journeys": results.iter().map(|r| serde_json::json!({
             "name": r.name,
             "pass": r.pass(),
+            "skipped": r.skipped,
             "seconds": r.seconds,
             "estimate_s": r.estimate_s,
             "error": r.error,

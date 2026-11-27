@@ -15,6 +15,7 @@
 //! | `bt` | main | Bluetooth transmitter module (off until asked) |
 //! | `fm` | main | FM tuner and its route to the amplifier (off until asked) |
 //! | `sensor` | main | accelerometer at 25 Hz while steps are counted (SENS-1) |
+//! | `speech` | main | the screen reader's speech voice: orpheus-tts at 16 kHz into the card task's mix (TTS-3) |
 
 #![no_std]
 #![no_main]
@@ -35,6 +36,24 @@ mod pictures;
 mod rec;
 mod sensor;
 mod services;
+/// The speech voice (TTS-3): feature `speech`.
+#[cfg(feature = "speech")]
+mod speech;
+#[cfg(not(feature = "speech"))]
+mod speech {
+    //! Without feature `speech`: nothing speaks.
+
+    pub fn speaking() -> bool {
+        false
+    }
+
+    /// Developer `ui speech` in a build without it.
+    pub fn status_reply() {
+        crate::audio::reply(|r| {
+            r.s(b"speech: not in this build (feature speech)");
+        });
+    }
+}
 mod state;
 mod ui;
 mod update;
@@ -247,7 +266,8 @@ impl Governor {
         let idle_pct = governor::idle_percent(u64::from(idle.wrapping_sub(self.last_idle)), t - self.last_t);
         self.last_idle = idle;
         self.last_t = t;
-        let f = CLOCK_FLOOR.load(Relaxed);
+        // TTS-3: at least Mid while speech sounds (04 §8 budgets).
+        let f = governor::with_speech(CLOCK_FLOOR.load(Relaxed), speech::speaking());
         let playing = audio::PLAYING.load(Relaxed);
         let mut active = periph::ALWAYS;
         if hal::usb::vbus_present() {
@@ -396,6 +416,8 @@ extern "C" fn main() -> ! {
         s.spawn(bt::bt().unwrap());
         s.spawn(fm::fm().unwrap());
         s.spawn(sensor::sensor().unwrap());
+        #[cfg(feature = "speech")]
+        s.spawn(speech::speech().unwrap());
     })
 }
 

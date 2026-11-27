@@ -768,6 +768,84 @@ reference; in short:
   resumes from a word's `pos`. Not done: emphasis marks, homographs,
   intonation of lists, a male/female choice beyond the three voices.
 
+**As built (TTS-3, 2026-11-27): the speech voice in the firmware, behind
+its feature (worker, no hardware).** Firmware feature `speech` (`cargo
+xtask build --features speech`): the screen reader (A11Y-1) with this
+voice. **Off by default: it does not fit the code window** (below).
+
+* **Path.** The UI task's reader speaks through `firmware::speech::FwSpeech`
+  (`SpeechService`): texts and earcons into the toolkit's
+  `UtteranceQueue<1024>`. The **speech task** (thread mode, main executor)
+  renders them with `Speaker` at 16 kHz mono (earcons with
+  `orpheus_tts::mix::glide`, the simulator's tone in f32) into a **sample
+  ring** (2,048 samples, 128 ms), in chunks of 256 samples with a yield
+  between them, and only once 1,024 are free (≈ 8 renders a second: its
+  code evicts the music's cache lines rarely). Rendered below the audio
+  task, a speech that cannot keep up leaves gaps, never a music underrun
+  or a hang. The **card task** takes the ring (`audio/speech.rs`):
+  * *over music*: `Out::piece`, after the DSP chain (bypassed), resampled
+    to the DAC's rate and added (`orpheus_tts::mix::Mixer`), the music
+    lowered under it; codecs and synth sources alike;
+  * *alone* (idle, paused, the card with USB): the DAC at **16 kHz** on its
+    own `PcmOut`, started once 32 ms are written (the first sound does not
+    wait for two halves), the ring cleared one half ahead of the writer (a
+    late speech plays silence, not the ring's last lap), stopped once
+    played out; never awaited: the idle and paused loops call it and also
+    wait on the speech's wake-up (10 ms while it plays). Background work
+    (index and library steps, the free-space count) waits while it speaks;
+    a key click is dropped under it, an alert ends it; a block of music
+    takes the DAC back (`begin_block` → `end_alone`), the speech not yet
+    heard going on over the music.
+* **Stops.** `stop` clears the queue and marks the ring's head (`FLUSH_TO`,
+  then `GEN`): the card task fades what it still has of the stopped speech
+  over 3 ms (`Mixer`, `Source::stopped`) and drops the rest; alone it also
+  takes back what it had queued for the DAC beyond 3 ms and fades that
+  (`orpheus_audio::pcm::Book::rewind`, host-tested); the speech task
+  renders the speaker's own fade away. Over music up to the PCM ring's
+  64 ms already mixed still plays.
+* **Levels** (`orpheus_tts::mix`, host-tested): Speech volume (Settings ›
+  Accessibility, `0x100C`: Normal, −6, −12, −18 dB; exact at Normal) on the
+  speech and earcons, alone too; Music while speaking (`0x100D`): Lowered
+  (−12 dB, down over 20 ms, held 300 ms after the speech, up over 300 ms),
+  Paused (the UI task pauses the player while the reader speaks and
+  resumes it 400 ms after; music the listener starts or resumes is not
+  paused for the speech that answers the key: `orpheus_apps::services::
+  SpeechPause`), Unchanged.
+* **Clock** (D-4): while speech sounds or waits the floor is Mid
+  (`orpheus_power::governor::with_speech`, `SPEECH_FLOOR`), raised at once
+  in Automatic when an utterance is queued; Battery saver stays pinned at
+  its minimum (speech may gap there, the music path is untouched).
+* **Lexicon paged.** The lexicon (32,766 B) was one rodata static larger
+  than a 16 KiB group, which `pagelink` refuses: it is linked as three
+  statics of ≤ 16 KiB cut at block starts (`lexicon::split_points`,
+  `Lexicon::new_split`; `regress_lexicon_larger_than_a_rodata_group`).
+* **Observable**: `ui speech` (`speech sounding= alone= queued= ring= vol=
+  music= duck= texts= earcons= stops= dropped= late= rendered= said=TEXT`,
+  the text cut at 64 bytes); `ui top` ends with `speech=0|1`. The
+  simulator player answers `ui speech` the same way. Journey
+  `screen_reader` (`needs = "ui speech ~ ^speech sounding="`: skipped on a
+  build without the feature).
+* **Size** (thumbv7em, opt "s", fat LTO): paged code 1,013,760 →
+  1,089,102 B with the feature (+75.3 KB: the engine ≈ 45 KB, the reader's
+  describe/observe ≈ 13 KB, the firmware's task, mixer and UI glue ≈ 14 KB
+  with engine paths inlined): **133 of 128 pages, 40.5 KB over** (opt "z"
+  on orpheus-tts and orpheus-apps: 28.6 KB over; with 20 cold crates and
+  orpheus-ui as well: 8.6 KB over — not kept). Within the 80 KiB budget of
+  the engine itself. RAM: .bss +9,736 B (speaker 3,448, ring 4,096, queue
+  1,040, the UI's reader ≈ 900) → ≈ 134,030 of 135,168 B (`xtask size`); .data +276 B.
+* **Cost** (estimate, `budgets.toml [tts]`; host bench: synthesiser
+  31.3 ns per 16 kHz sample, mixer 13.2 ns per 48 kHz frame, 15.9 at
+  44.1 kHz, 2.1 alone): alone ≈ 6.0 M cycles per second of speech (6 % of
+  Mid), over 48 kHz ≈ 11.9 M (12 % of Mid; card task 6.2 M of it), over
+  44.1 kHz ≈ 14.3 M (8.6 M in the card task); TTS-2: 6 / 10.8 / 13 M.
+* **Not done**: a speech cluster in `hot.toml` (the speech build has no
+  layout to measure against: the speech's ≈ 12 per-sample lines evict as
+  many of the music's 32 per chunk, ≈ 8 chunks a second, unmeasured); speech
+  while recording (the card task is in the recorder: the speech waits, the
+  floor stays Mid) and over the radio (its sound bypasses the DAC); the
+  golden hashes on the player; first-sound latency and cycles measured on
+  the player.
+
 ## 9. Synthesis and MIDI (M17; owner's requirement 2026-11-25)
 
 One synthesis crate, `orpheus-synth` (no_std, no alloc, host-tested, in

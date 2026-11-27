@@ -669,6 +669,7 @@ dependencies = [
  "orpheus-settings",
  "orpheus-steps",
  "orpheus-synth",
+ "orpheus-tts",
  "orpheus-ui",
  "orpheus-update",
  "orpheus-usb",
@@ -1068,6 +1069,13 @@ dependencies = [
  "bytemuck",
  "orpheus-dsp",
  "orpheus-power",
+]
+
+[[package]]
+name = "orpheus-tts"
+version = "0.1.0"
+dependencies = [
+ "orpheus-synth",
 ]
 
 [[package]]

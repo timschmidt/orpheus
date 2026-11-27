@@ -54,6 +54,214 @@ struct Ui {
     drift_at: u64,
     /// The panel is turned by 180° (Settings › Display › Rotate).
     rotated: bool,
+    /// The screen reader (A11Y-1, TTS-3).
+    #[cfg(feature = "speech")]
+    a11y: reader::A11y,
+}
+
+/// The screen reader (A11Y-1) with the speech voice (TTS-3): firmware
+/// feature `speech`.
+#[cfg(feature = "speech")]
+mod reader {
+    use super::*;
+    use orpheus_ui::a11y::{self, Cause, Chord, Chords, Desc, Edge, Reader};
+    use orpheus_ui::event::KeyPhase;
+    use orpheus_ui::input::Timeouts;
+
+    /// The screen reader in the UI task (A11Y-1, 05 §7.14 "For the firmware";
+    /// the simulator's `Sim::observe` is the reference): the chords on the raw
+    /// key edges, the reader over the shell's description, the speech voice
+    /// (`crate::speech`), Music while speaking › Paused.
+    pub(super) struct A11y {
+        pub(super) chords: Chords,
+        reader: Reader,
+        desc: Desc,
+        speech: crate::speech::FwSpeech,
+        pause: services::SpeechPause,
+        /// The reader was on, the keys locked, at the last look.
+        pub(super) on: bool,
+        locked: bool,
+    }
+
+    impl A11y {
+        pub(super) const fn new() -> A11y {
+            A11y {
+                chords: Chords::new(),
+                reader: Reader::new(),
+                desc: Desc::new(),
+                speech: crate::speech::FwSpeech,
+                pause: services::SpeechPause::new(),
+                on: false,
+                locked: false,
+            }
+        }
+    }
+
+    /// The screen reader's settings as the UI follows them.
+    pub(super) fn reader_cfg(fw: &Fw) -> a11y::Config {
+        services::reader_config(fw)
+    }
+
+    /// The screen reader looks at the screen after `cause` (A11Y-1): it says
+    /// what changed while it is on, and announces itself when it comes on or
+    /// goes off.
+    #[inline(never)]
+    fn observe(ui: &mut Ui, cause: Cause) {
+        let cfg = reader_cfg(ui.fw);
+        let a = &mut ui.a11y;
+        if cfg.on != a.on {
+            a.on = cfg.on;
+            a.reader.reset();
+            if cfg.on {
+                a.reader.announce("Screen reader on", a11y::Earcon::ReaderOn, &cfg, &mut a.speech);
+            } else {
+                a.reader.announce("Screen reader off", a11y::Earcon::ReaderOff, &cfg, &mut a.speech);
+                return;
+            }
+        }
+        if !cfg.on {
+            return;
+        }
+        // Power locked or unlocked the keys: said (unlocked: the screen again).
+        let locked = ui.shell.gate.locked;
+        if locked != a.locked {
+            a.locked = locked;
+            if locked {
+                a.reader.announce("Keys locked", a11y::Earcon::Off, &cfg, &mut a.speech);
+            } else {
+                a.reader.announce("Unlocked", a11y::Earcon::On, &cfg, &mut a.speech);
+                a.reader.reset();
+            }
+        }
+        ui.shell.describe(&mut *ui.fw, &mut a.desc);
+        if ui.shell.gate.locked && !ui.shell.gate.screen_on {
+            // Locked and dark: what changes under the lock is not said.
+            a.reader.note(&a.desc);
+            return;
+        }
+        a.reader.observe(&a.desc, cause, &cfg, &mut a.speech);
+    }
+
+    /// A chord the detector recognised: the toggle, where am I, the time and
+    /// battery.
+    #[inline(never)]
+    fn chord(ui: &mut Ui, c: Chord) {
+        let cfg = reader_cfg(ui.fw);
+        match c {
+            Chord::Toggle => {
+                orpheus_apps::services::SettingsService::set_setting(
+                    &mut *ui.fw,
+                    orpheus_apps::settings::id::READER,
+                    i16::from(!cfg.on),
+                );
+                ui.settle();
+                observe(ui, Cause::Other);
+            }
+            Chord::WhereAmI if cfg.on => {
+                let a = &mut ui.a11y;
+                ui.shell.describe(&mut *ui.fw, &mut a.desc);
+                a.reader.where_am_i(&a.desc, &cfg, &mut a.speech);
+            }
+            Chord::TimeBattery if cfg.on => {
+                let st = orpheus_ui::shell::System::status(&*ui.fw);
+                let a = &mut ui.a11y;
+                a.reader.time_battery(&st, &cfg, &mut a.speech);
+            }
+            _ => {}
+        }
+    }
+
+    /// A raw key edge through the chords first (A11Y-1: from any screen,
+    /// locked, dark, with the reader off), then the key mapper.
+    #[inline(never)]
+    pub(super) fn key_edge(ui: &mut Ui, k: Key, down: bool, t: Instant) {
+        let cfg = reader_cfg(ui.fw);
+        // Settings › Accessibility › Keys with screen off.
+        ui.shell.gate.reader_keys = cfg.on && cfg.dark_keys;
+        let wk = if cfg.on { cfg.where_keys } else { a11y::WhereKeys::Off };
+        let edge = if down { ui.a11y.chords.press(k, t, wk) } else { ui.a11y.chords.release(k) };
+        match edge {
+            Edge::Pass if down => ui.mapper.press(k, t),
+            Edge::Pass => ui.mapper.release(k, t),
+            Edge::Swallow => {}
+            Edge::Start(first) => {
+                // The chord's first key: forgotten without a release.
+                ui.mapper.cancel(first);
+                ui.shell.gate.forget(first);
+            }
+        }
+    }
+
+    /// The reader after a key phase the shell handled (only while it is on:
+    /// the description costs a screen's walk).
+    pub(super) fn observe_key(ui: &mut Ui, k: Key, p: KeyPhase) {
+        if ui.a11y.on {
+            observe(ui, Cause::Key(k, p));
+        }
+    }
+
+    /// Each loop: a chord due, Music while speaking › Paused (TTS-3), the
+    /// reader's look at whatever changed by itself.
+    #[inline(never)]
+    pub(super) fn reader_loop(ui: &mut Ui, t: Instant) {
+        if let Some(c) = ui.a11y.chords.poll(t, ui.mapper.timing.hold) {
+            chord(ui, c);
+        }
+        let cfg = reader_cfg(ui.fw);
+        let src = orpheus_apps::services::PlaybackService::playing(&*ui.fw).map(|p| p.source);
+        let speaking = cfg.on && crate::speech::speaking();
+        if let Some(cmd) = ui.a11y.pause.step(cfg.on && cfg.music == 1, speaking, src, t.0) {
+            orpheus_apps::services::PlayerService::command(&mut *ui.fw, cmd);
+            ui.settle();
+        }
+        if cfg.on || ui.a11y.on {
+            observe(ui, Cause::Other);
+        }
+    }
+
+    /// The loop's next deadline for the reader: a chord's, and while it
+    /// speaks the pause policy's quiet time.
+    pub(super) fn deadline(ui: &Ui, t: u64) -> Option<u64> {
+        let mut d = ui.a11y.chords.next_deadline(ui.mapper.timing.hold).map(|d| d.0.max(t + 1));
+        if ui.a11y.on && crate::speech::speaking() {
+            d = Some(d.map_or(t + 100, |d| d.min(t + 100)));
+        }
+        d
+    }
+
+    /// The screen timers with the reader's keys with the screen off: the
+    /// backlight timeout darkens without locking (Power still locks).
+    pub(super) fn timeouts(fw: &Fw, t: Timeouts) -> Timeouts {
+        reader_cfg(fw).timeouts(t)
+    }
+}
+
+/// Without feature `speech`: the keys go to the key mapper as they come.
+#[cfg(not(feature = "speech"))]
+mod reader {
+    use super::*;
+    use orpheus_ui::event::KeyPhase;
+    use orpheus_ui::input::Timeouts;
+
+    pub(super) fn key_edge(ui: &mut Ui, k: Key, down: bool, t: Instant) {
+        if down {
+            ui.mapper.press(k, t);
+        } else {
+            ui.mapper.release(k, t);
+        }
+    }
+
+    pub(super) fn observe_key(_ui: &mut Ui, _k: Key, _p: KeyPhase) {}
+
+    pub(super) fn reader_loop(_ui: &mut Ui, _t: Instant) {}
+
+    pub(super) fn deadline(_ui: &Ui, _t: u64) -> Option<u64> {
+        None
+    }
+
+    pub(super) fn timeouts(_fw: &Fw, t: Timeouts) -> Timeouts {
+        t
+    }
 }
 
 impl Ui {
@@ -459,6 +667,9 @@ fn apply_settings(ui: &mut Ui) {
     } else {
         services::screen_timeouts(&*ui.fw)
     };
+    // A11Y-1: with the reader on and Keys with screen off, the backlight
+    // timeout darkens without locking (Power still locks).
+    let tm = reader::timeouts(ui.fw, tm);
     if ui.timer.step(&mut ui.shell.gate, tm, t) {
         ui.shell.invalidate();
     }
@@ -497,8 +708,10 @@ fn publish_top(ui: &Ui) {
 }
 
 /// Developer `ui top` (VER-7): `top ID NAME depth=D dialog=0|1 overlay=0|1
-/// locked=0|1 screen=0|1 look=0|1 saver=0|1 bl=DUTY`, answered at once
-/// (`bl`: the backlight's PWM4 duty of 16, 0 dark; VER-13 Brightness).
+/// locked=0|1 screen=0|1 look=0|1 saver=0|1 bl=DUTY speech=0|1`, answered
+/// at once (`bl`: the backlight's PWM4 duty of 16, 0 dark; VER-13
+/// Brightness; `speech`: the screen reader's speech sounds or waits,
+/// TTS-3, `ui speech` for the rest).
 pub fn top_reply() {
     let w = TOP.load(core::sync::atomic::Ordering::Relaxed);
     let p = TOP_NAME.load(core::sync::atomic::Ordering::Relaxed);
@@ -530,7 +743,10 @@ pub fn top_reply() {
             .s(b" saver=")
             .u(bit(31))
             .s(b" bl=")
-            .u(u64::from(crate::drain::shared().backlight.load(core::sync::atomic::Ordering::Relaxed)));
+            .u(u64::from(crate::drain::shared().backlight.load(core::sync::atomic::Ordering::Relaxed)))
+            // TTS-3: speech sounds or waits (`ui speech` says more).
+            .s(b" speech=")
+            .u(u64::from(crate::speech::speaking()));
     });
 }
 
@@ -592,11 +808,14 @@ static TIMER_HOLD: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::
 static LOOK_ARMED: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
 /// `LOOK_ARMED`'s bit of `id`: Text size, Hold delay, Key repeat
-/// (0x1001–0x1003, bit `id & 3`), Brightness (bit 4).
+/// (0x1001–0x1003, bit `id & 3`), Brightness (bit 4), Screen reader (bit
+/// 5: the owner's reader is off under the test look, so a suite's keys
+/// and timers are as the simulator's, until a session turns it on).
 fn look_armed_bit(id: u16) -> Option<u8> {
     match id {
         0x1001..=0x1003 => Some(1 << (id & 3)),
         _ if id == orpheus_apps::settings::id::BRIGHTNESS.0 => Some(1 << 4),
+        0x1004 => Some(1 << 5),
         _ => None,
     }
 }
@@ -637,11 +856,12 @@ pub(crate) fn session_on() -> bool {
 
 /// Settings a session may set from the host: Sound, Playback, Display
 /// (not the Home apps), Language, Files sort and hidden
-/// files, Now Playing's view, Accessibility (A11Y-2). Never Bluetooth, power, clock, USB, storage,
+/// files, Now Playing's view, Accessibility (A11Y-2) with the screen
+/// reader's (A11Y-1, TTS-3). Never Bluetooth, power, clock, USB, storage,
 /// alarms or the radio's station (CLAUDE.md rules 4 and 6).
 fn session_settable(id: u16) -> bool {
     (matches!(id >> 8, 0x01 | 0x02 | 0x03 | 0x0A) && id != 0x030B)
-        || matches!(id, 0x0D01..=0x0D03 | 0x1001..=0x1003)
+        || matches!(id, 0x0D01..=0x0D03 | 0x1001..=0x100D)
 }
 
 fn session_reply() {
@@ -905,6 +1125,8 @@ fn new_ui(
         drift: services::ClockDrift::new(),
         drift_at: t.0,
         rotated: false,
+        #[cfg(feature = "speech")]
+        a11y: reader::A11y::new(),
     };
     // SAFETY: called once; the UI task is the only user.
     unsafe { (*(&raw mut UI_CELL)).write(ui) }
@@ -996,6 +1218,9 @@ pub async fn ui() {
         if let Some(d) = ui.mapper.next_deadline() {
             deadline = deadline.min(d.0);
         }
+        if let Some(d) = reader::deadline(ui, t.0) {
+            deadline = deadline.min(d);
+        }
         if ui.shell.wants_ticks(&*ui.fw) {
             deadline = deadline.min(t.0 + u64::from(TICK_MS));
         }
@@ -1032,11 +1257,7 @@ pub async fn ui() {
                 if down && !matches!(k, HwKey::VolUp | HwKey::VolDown) {
                     ui.fw.reclaim_picture();
                 }
-                if down {
-                    ui.mapper.press(map_key(k), t);
-                } else {
-                    ui.mapper.release(map_key(k), t);
-                }
+                reader::key_edge(ui, map_key(k), down, t);
             }
             Either4::Second(()) => {
                 let s = state::snapshot();
@@ -1090,12 +1311,15 @@ pub async fn ui() {
             let r = ui.shell.key(&mut *ui.fw, k, p, t);
             ui.handle(r);
             ui.settle();
+            reader::observe_key(ui, k, p);
         }
         if ui.shell.wants_ticks(&*ui.fw) {
             let r = ui.shell.tick(&mut *ui.fw, t);
             ui.handle(r);
         }
         ui.after(fb).await;
+        // A11Y-1: chords, the reader, Music while speaking (TTS-3).
+        reader::reader_loop(ui, now());
         // PWR-3a: auto-off and low battery (both through `power_off`, which
         // reboots instead under a host test).
         {

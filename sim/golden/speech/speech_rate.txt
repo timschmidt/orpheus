@@ -13,15 +13,15 @@
    5200 say Accessibility, submenu, 13 of 13
    7300 stop
    7360 earcon enter
-   7360 say Accessibility. Text size, Normal, submenu, 1 of 11
+   7360 say Accessibility. Text size, Normal, submenu, 1 of 13
    9900 stop
-   9900 say Hold delay, 0.5 s, submenu, 2 of 11
+   9900 say Hold delay, 0.5 s, submenu, 2 of 13
   10000 stop
-  10000 say Key repeat, Normal, submenu, 3 of 11
+  10000 say Key repeat, Normal, submenu, 3 of 13
   10100 stop
-  10100 say Screen reader, switch, on, 4 of 11
+  10100 say Screen reader, switch, on, 4 of 13
   10200 stop
-  10200 say Speech rate, 1.0 times, submenu, 5 of 11
+  10200 say Speech rate, 1.0 times, submenu, 5 of 13
   12800 stop
   12860 earcon enter
   12860 say Speech rate. 1.0 times, adjustable
@@ -34,5 +34,5 @@
   15700 stop
   15700 say 2.0 times
   17360 earcon back
-  17360 say Accessibility. Speech rate, 2.0 times, submenu, 5 of 11
-audio 16000 Hz mono, 325872 samples, fnv64 ddb0f7ebf931c97c
+  17360 say Accessibility. Speech rate, 2.0 times, submenu, 5 of 13
+audio 16000 Hz mono, 326032 samples, fnv64 c4cefc2a9699b840

@@ -12,6 +12,7 @@ yoton-bsp = { path = "../yoton-bsp" }
 orpheus-proto.workspace = true
 orpheus-ui = { path = "../../crates/orpheus-ui" }
 orpheus-apps = { path = "../../crates/orpheus-apps", features = ["games", "salvo", "bricks", "midi"] }
+orpheus-tts = { path = "../../crates/orpheus-tts", optional = true }
 orpheus-input = { path = "../../crates/orpheus-input" }
 orpheus-power = { path = "../../crates/orpheus-power" }
 orpheus-settings = { path = "../../crates/orpheus-settings" }
@@ -44,6 +45,14 @@ embassy-usb = { version = "0.6", default-features = false }
 embassy-usb-driver = "0.2"
 static_cell = "2"
 critical-section = "1.2"
+
+[features]
+# The screen reader (A11Y-1) with its speech voice (TTS-3): `cargo xtask
+# build --features speech`. Off by default: its code (≈ 76 KB paged, of
+# which the speech engine ≈ 45 KB) does not fit the code window with
+# everything else — 133 of 128 pages (STATUS 2026-11-27 "TTS-3"; an owner
+# decision on what makes room).
+speech = ["orpheus-ui/screen-reader", "orpheus-apps/screen-reader", "dep:orpheus-tts"]
 
 [lints]
 workspace = true

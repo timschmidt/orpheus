@@ -154,6 +154,14 @@ pub trait Host: System + Default + Sized {
     fn set_reader(&mut self, _on: bool) -> Vec<Event> {
         Vec::new()
     }
+    /// Music plays (the speech is mixed over it: Music while speaking,
+    /// TTS-3).
+    fn music_playing(&self) -> bool {
+        false
+    }
+    /// After each time step with the reader on: `speaking` (speech sounds
+    /// or waits) for Music while speaking › Paused (TTS-3).
+    fn speech_step(&mut self, _speaking: bool, _now_ms: u64) {}
 }
 
 /// The screen reader in the simulator (A11Y-1): the chords, the reader and
@@ -472,7 +480,10 @@ impl<H: Host> Sim<H> {
             self.now = Instant(next);
             self.sys.advance(dt);
             if let Some(a) = self.a11y.as_mut() {
+                a.speech.music = self.sys.music_playing();
                 a.speech.advance(dt);
+                let speaking = a.on && a.speech.busy();
+                self.sys.speech_step(speaking, self.now.0);
                 if let Some(c) = a.chords.poll(self.now, self.mapper.timing.hold) {
                     self.chord(c);
                 }

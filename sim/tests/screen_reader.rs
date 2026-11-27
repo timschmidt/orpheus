@@ -644,6 +644,62 @@ fn speech_rate_changes_how_fast() {
     }
 }
 
+/// Speech volume (0x100C, TTS-3): the same words, the speech (and its
+/// earcons) quieter by the step's dB (peak ratio), the frames the same;
+/// Normal leaves the samples as they were.
+#[test]
+fn speech_volume_scales_the_speech() {
+    let peak = |v: i16| {
+        let mut s = sim(&format!("set:0x100c={v} set:0x1004=1 {JOURNEY}"));
+        let sp = &mut s.a11y.as_mut().unwrap().speech;
+        sp.drain(20_000);
+        let p = sp.audio.iter().map(|x| x.unsigned_abs()).max().unwrap_or(0);
+        (texts(&s), f64::from(p), frame(&mut s))
+    };
+    let (t0, p0, f0) = peak(0);
+    assert!(p0 > 8_000.0, "{p0}");
+    for (v, db) in [(1i16, -6.0f64), (2, -12.0), (3, -18.0)] {
+        let (t, p, f) = peak(v);
+        assert_eq!((t.clone(), f), (t0.clone(), f0), "{v}: the same words and frame");
+        let got = 20.0 * (p / p0).log10();
+        assert!((got - db).abs() < 0.2, "{v}: {got:.2} dB, want {db}");
+    }
+}
+
+/// Music while speaking (0x100D, TTS-3), the reader speaking over an album
+/// on Home: Lowered, the speech goes out over music lowered by 12 dB and
+/// the player is not touched; Paused, the player is paused while it speaks
+/// and resumed after (two commands), the music played less far; Unchanged,
+/// neither. The same words and frames in all three at the end.
+#[test]
+fn music_while_speaking_lowers_or_pauses() {
+    let run_with = |v: i16| {
+        let mut s = sim(&format!(
+            "set:0x100d={v} set:queue=takk wait:300 set:0x1004=1 wait:1500 next wait:1500 down wait:1500"
+        ));
+        let sp = &mut s.a11y.as_mut().unwrap().speech;
+        sp.drain(20_000);
+        let (ducked, low) = (sp.ducked, sp.duck_min);
+        run(&mut s, "wait:1000");
+        let st = s.sys.media.state();
+        (texts(&s), ducked, low, s.sys.speech_pauses, st.source, st.position_ms, frame(&mut s))
+    };
+    let (t0, ducked, low, pauses, src, pos0, _) = run_with(0);
+    assert!(ducked > 16_000, "a second of speech over lowered music: {ducked}");
+    assert_eq!(low, orpheus_tts::mix::q16_of_db(-12));
+    assert_eq!((pauses, src), (0, orpheus_ui::event::Source::Playing));
+    let (t1, ducked, _, pauses, src, pos1, _) = run_with(1);
+    assert_eq!(t1, t0, "the same words");
+    assert_eq!(ducked, 0, "paused, nothing lowered");
+    assert!(pauses >= 2 && pauses % 2 == 0, "paused and resumed: {pauses}");
+    assert_eq!(src, orpheus_ui::event::Source::Playing, "playing again after the speech");
+    assert!(pos1 + 1000 < pos0, "the music waited for the speech: {pos1} vs {pos0}");
+    let (t2, ducked, low, pauses, _, pos2, _) = run_with(2);
+    assert_eq!(t2, t0);
+    assert_eq!((ducked, low, pauses), (0, orpheus_tts::mix::Q16_ONE, 0));
+    assert_eq!(pos2, pos0, "the player as with Lowered");
+}
+
 /// Voice (0x1006) and Pitch (0x1007): the same words, another sound; the
 /// frames the same.
 #[test]

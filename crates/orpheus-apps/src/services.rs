@@ -1399,6 +1399,133 @@ pub fn reader_config<S: SettingsService + ?Sized>(s: &S) -> orpheus_ui::a11y::Co
         earcons: s.setting(id::EARCONS) != 0,
         where_keys: WhereKeys::from_index(s.setting(id::WHERE_KEYS)),
         dark_keys: s.setting(id::DARK_KEYS) != 0,
+        volume: u8::try_from(s.setting(id::SPEECH_VOLUME)).unwrap_or(0),
+        music: u8::try_from(s.setting(id::MUSIC_WHILE_SPEAKING)).unwrap_or(0),
+    }
+}
+
+/// Settings › Accessibility › Music while speaking › Paused (TTS-3, 05
+/// §7.14 "music ducking or pausing while speaking"): the player paused
+/// while the screen reader speaks over it and resumed once it has been
+/// quiet for [`SpeechPause::QUIET_MS`]. The firmware's UI task and the
+/// simulator run it every loop with what the speech service says.
+///
+/// Only music the reader paused is resumed. Music the listener starts or
+/// resumes (a song chosen, OK on Now Playing) is never paused for the
+/// speech that answers that key: it plays under the speech until the
+/// speech is quiet, and the next utterance may pause it again.
+#[cfg(feature = "screen-reader")]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct SpeechPause {
+    state: PauseState,
+    /// The player's source at the last step.
+    last: Option<Source>,
+    /// When the speech was last heard (ms).
+    heard_ms: u64,
+    /// When the pause was asked for, and whether the player has shown it
+    /// (it pauses after its fade: until then it still says Playing).
+    asked_ms: u64,
+    seen_paused: bool,
+}
+
+#[cfg(feature = "screen-reader")]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum PauseState {
+    #[default]
+    Idle,
+    /// The reader paused the music.
+    Holding,
+    /// The listener started the music during speech: left playing until
+    /// the speech is quiet.
+    Overridden,
+}
+
+#[cfg(feature = "screen-reader")]
+impl SpeechPause {
+    /// Quiet this long before the music resumes (the reader's utterances
+    /// follow each other with short gaps).
+    pub const QUIET_MS: u64 = 400;
+    /// The player answers a pause within this (its fade is 60 ms).
+    pub const ASK_MS: u64 = 1500;
+
+    #[must_use]
+    pub const fn new() -> SpeechPause {
+        SpeechPause { state: PauseState::Idle, last: None, heard_ms: 0, asked_ms: 0, seen_paused: false }
+    }
+
+    /// The reader holds the music paused.
+    #[must_use]
+    pub fn holding(&self) -> bool {
+        self.state == PauseState::Holding
+    }
+
+    /// One step: `pause` (the reader on and Music while speaking Paused),
+    /// `speaking` (speech sounds or waits), `source` (the player's). The
+    /// command to send, if any (always [`PlayerCmd::PlayPause`]).
+    pub fn step(
+        &mut self,
+        pause: bool,
+        speaking: bool,
+        source: Option<Source>,
+        now_ms: u64,
+    ) -> Option<PlayerCmd> {
+        let src = source.unwrap_or(Source::Idle);
+        let last = self.last.replace(src);
+        if speaking {
+            self.heard_ms = now_ms;
+        }
+        let quiet = !speaking && now_ms.saturating_sub(self.heard_ms) >= Self::QUIET_MS;
+        // Music the listener started or resumed (not by this policy).
+        let started = src == Source::Playing && last != Some(Source::Playing) && last.is_some();
+        match self.state {
+            PauseState::Idle if !pause => None,
+            PauseState::Idle if started && speaking => {
+                self.state = PauseState::Overridden;
+                None
+            }
+            PauseState::Idle if speaking && src == Source::Playing => {
+                self.state = PauseState::Holding;
+                self.asked_ms = now_ms;
+                self.seen_paused = false;
+                Some(PlayerCmd::PlayPause)
+            }
+            PauseState::Idle => None,
+            PauseState::Holding => match src {
+                // Not paused yet (the fade, the card task's answer); after
+                // `ASK_MS` the pause is taken as lost.
+                Source::Playing if !self.seen_paused => {
+                    if now_ms.saturating_sub(self.asked_ms) >= Self::ASK_MS {
+                        self.state = PauseState::Overridden;
+                    }
+                    None
+                }
+                // Resumed by the listener: theirs from now on.
+                Source::Playing => {
+                    self.state = PauseState::Overridden;
+                    None
+                }
+                Source::Paused if !self.seen_paused && !(quiet || !pause) => {
+                    self.seen_paused = true;
+                    None
+                }
+                Source::Paused if quiet || !pause => {
+                    self.state = PauseState::Idle;
+                    Some(PlayerCmd::PlayPause)
+                }
+                Source::Paused => None,
+                // Stopped, another source: nothing to resume.
+                _ => {
+                    self.state = PauseState::Idle;
+                    None
+                }
+            },
+            PauseState::Overridden => {
+                if quiet || !pause {
+                    self.state = PauseState::Idle;
+                }
+                None
+            }
+        }
     }
 }
 
@@ -2349,6 +2476,76 @@ mod bt_tests {
         assert_eq!(t.as_str(), "AB:34:12:4C:E0:00");
         let bad = BtDevice::new(a, BtKind::Unknown, b"ok\xFFno", false);
         assert_eq!(bad.name(), "ok");
+    }
+}
+
+/// TTS-3: Music while speaking › Paused.
+#[cfg(all(test, feature = "screen-reader"))]
+mod speech_pause {
+    use super::*;
+    use orpheus_ui::event::Source::{Idle, Paused, Playing};
+
+    #[test]
+    fn pauses_while_speaking_and_resumes_when_quiet() {
+        let mut p = SpeechPause::new();
+        assert_eq!(p.step(true, false, Some(Playing), 0), None);
+        assert_eq!(p.step(true, true, Some(Playing), 10), Some(PlayerCmd::PlayPause));
+        assert!(p.holding());
+        assert_eq!(p.step(true, true, Some(Paused), 500), None);
+        // Quiet, but not for long enough yet.
+        assert_eq!(p.step(true, false, Some(Paused), 600), None);
+        assert_eq!(p.step(true, false, Some(Paused), 899), None);
+        assert_eq!(p.step(true, false, Some(Paused), 900), Some(PlayerCmd::PlayPause));
+        assert!(!p.holding());
+        assert_eq!(p.step(true, false, Some(Playing), 950), None);
+    }
+
+    #[test]
+    fn music_the_listener_starts_is_not_paused_for_its_answer() {
+        let mut p = SpeechPause::new();
+        assert_eq!(p.step(true, false, Some(Paused), 0), None);
+        // OK on Now Playing: playing again, the reader says so.
+        assert_eq!(p.step(true, true, Some(Playing), 100), None);
+        assert_eq!(p.step(true, true, Some(Playing), 600), None);
+        assert_eq!(p.step(true, false, Some(Playing), 700), None);
+        // Quiet: the next utterance pauses it.
+        assert_eq!(p.step(true, false, Some(Playing), 1200), None);
+        assert_eq!(p.step(true, true, Some(Playing), 1300), Some(PlayerCmd::PlayPause));
+        // Still playing while the player fades: held.
+        assert_eq!(p.step(true, true, Some(Playing), 1350), None);
+        assert!(p.holding());
+        assert_eq!(p.step(true, true, Some(Paused), 1400), None);
+        // Resumed by the listener while held: left playing.
+        assert_eq!(p.step(true, true, Some(Playing), 1450), None);
+        assert!(!p.holding());
+        assert_eq!(p.step(true, false, Some(Playing), 2000), None);
+    }
+
+    #[test]
+    fn other_modes_and_stops_leave_the_player() {
+        let mut p = SpeechPause::new();
+        assert_eq!(p.step(false, true, Some(Playing), 0), None);
+        assert_eq!(p.step(true, true, Some(Paused), 10), None);
+        assert_eq!(p.step(true, true, None, 20), None);
+        let mut p = SpeechPause::new();
+        assert_eq!(p.step(true, false, Some(Playing), 0), None);
+        assert_eq!(p.step(true, true, Some(Playing), 10), Some(PlayerCmd::PlayPause));
+        // Stopped while held: nothing to resume.
+        assert_eq!(p.step(true, false, Some(Idle), 2000), None);
+        assert!(!p.holding());
+        // A pause the player never carried out is given up.
+        let mut p = SpeechPause::new();
+        p.step(true, false, Some(Playing), 0);
+        p.step(true, true, Some(Playing), 10);
+        assert_eq!(p.step(true, true, Some(Playing), 1509), None);
+        assert!(p.holding());
+        assert_eq!(p.step(true, true, Some(Playing), 1510), None);
+        assert!(!p.holding());
+        // The setting changed while held: resumed at once.
+        let mut p = SpeechPause::new();
+        p.step(true, false, Some(Playing), 0);
+        p.step(true, true, Some(Playing), 10);
+        assert_eq!(p.step(false, true, Some(Paused), 20), Some(PlayerCmd::PlayPause));
     }
 }
 
