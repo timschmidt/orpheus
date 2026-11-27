@@ -26,8 +26,8 @@ Up and Down cycle through the views; the player remembers your choice.
 | Big art | The cover over the whole screen; the text appears for 3 s after a key |
 | Up next | The queue. OK jumps to a track; Menu removes or moves it |
 | Details | Codec, bit rate, sample rate, channels, file |
-| Lyrics | **In progress** (shows nothing yet) |
-| Levels | **In progress** (shows nothing yet) |
+| Lyrics | The words in time, from an `.lrc` file beside the song or a `.kar` file: in the simulator and the browser; **in progress** on the player (empty there) |
+| Levels | **In progress** (empty on the player) |
 
 ![Big art](../shots/media_np_bigart_dark_latin.png)
 ![Up next](../shots/media_np_upnext_dark_latin.png)
@@ -44,10 +44,12 @@ dropout at the start of a track (known issue).
 * **Shuffle**, **Repeat** (off, one, all)
 * **Bookmark here**: saves the position; Music › Bookmarks lists them
 * **A–B repeat**: set A, set B, clear
-* **Equaliser**, **Sleep timer**, **Output** (headphones or Bluetooth)
-* **Go to album / artist**
+* **Equaliser…**, **Sleep timer…**
+* **Go to album / artist** (songs from the library), **Go to folder**
+* On a track in Up next: **Remove from queue**, **Move up**, **Move down**
 
-Add to Favourites, Add to playlist and Delete file are **in progress**.
+Speed is hidden until it is built. **Add to Favourites** and **Delete
+file** are listed but **in progress**.
 
 ## Sound
 

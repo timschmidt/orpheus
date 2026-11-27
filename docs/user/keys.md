@@ -5,8 +5,9 @@ play key), **Menu**, **Back**, **Vol+**, **Vol−** and **Power**. Each key
 means the same thing on every screen. A screen may leave a key unused, but
 never gives it a different meaning.
 
-**Hold** means: keep the key down for half a second. Power has its own
-times (below).
+**Hold** means: keep the key down for half a second (longer if you choose
+a longer *Hold delay* in [Settings › Accessibility](accessibility.md)).
+Power has its own times (below).
 
 | Key | Press | Hold |
 |---|---|---|
@@ -34,6 +35,16 @@ times (below).
 * Destructive actions (factory reset) ask first, with the safe answer
   highlighted.
 
+## Two keys together
+
+These work on every screen, also locked or with the screen off (Back + OK
+only while the screen reader is on):
+
+| Keys | Does |
+|---|---|
+| **Back + Menu**, held 2 s | Screen reader on or off ([screen reader](screen-reader.md)) |
+| **Back + OK**, held | Where am I: the reader says the screen and the highlighted item; held 2 s, the time and the battery (another pair can be chosen in Settings › Accessibility) |
+
 ## Home
 
 Home is a grid of app icons. Up, Down, Prev and Next move the highlight;
@@ -51,12 +62,11 @@ screen (clock, date, track, battery) and **Power** to unlock.
 
 ## Power menu
 
-Hold **Power** for 1.5 s: Power off, Sleep timer, Lock keys, Restart, and
-under it two entries for the curious: Start original firmware and Recovery
-mode. **Start original firmware** does nothing useful on a player with the
-current layout (the original firmware is no longer there).
-**Recovery mode** restarts into the chip's USB recovery mode, used by the
-install tools ([troubleshooting](troubleshooting.md)).
+Hold **Power** for 1.5 s: Power off, Sleep timer, Lock keys, Restart and
+Recovery mode. **Restart** saves your place first: the track you were
+listening to comes back paused where you left it. **Recovery mode**
+restarts into the chip's USB recovery mode, used by the install tools
+([troubleshooting](troubleshooting.md)).
 
 Holding **Power** for 4 s switches the player off without the menu. To
 switch it on again, hold Power for about a second or plug in USB.

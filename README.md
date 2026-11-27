@@ -6,28 +6,36 @@
 
 A new firmware for the **Yoton YM03** MP3 player, written from scratch in
 Rust on [Embassy](https://embassy.dev). It plays MP3, FLAC, Ogg Vorbis,
-Opus, Speex and WAV with gapless joins and an equaliser, sorts folders of
-thousands of files, builds a music library, shows pictures and sends music to
-Bluetooth headphones, on a 128 × 128 screen with 320 KiB of RAM.
+Opus, Speex and WAV with gapless joins and an equaliser, and MIDI files
+through its own synthesiser; sorts folders of thousands of files, builds a
+music library, tunes FM radio, records, shows pictures, reads books, plays
+five games, counts steps and sends music to Bluetooth headphones, on a
+128 × 128 screen with 320 KiB of RAM. A screen reader with its own speech
+voice can read every screen aloud.
 
 <p align="center">
+  <img src="docs/shots/app_home_dark_latin.png" alt="Home: the grid of apps" width="256">
   <img src="docs/shots/media_np_dark_latin.png" alt="Now Playing: cover, title, artist, format and progress" width="256">
-  <img src="docs/shots/media_files_root_dark_latin.png" alt="Files: the card's folders" width="256">
-  <img src="docs/shots/bt_connected_dark_latin.png" alt="Bluetooth: devices found, connected to headphones" width="256">
+  <img src="docs/shots/radio_playing_dark_latin.png" alt="Radio: a station with its frequency and RDS name" width="256">
 </p>
 
-**Status (2026-11-24):** runs every day on the reference player: Music,
-Files, Now Playing, Pictures, Bluetooth audio and Settings work. Radio,
-recorder, the authenticator, USB disk images and the Bluetooth presenter
-remote are planned. Not released yet; see the [changelog](CHANGELOG.md)
-and the [detailed log](docs/STATUS.md).
+**Status (2026-11-27):** runs every day on the reference player. Music,
+Files, Now Playing, MIDI files, Pictures, Radio, Bluetooth audio, the five
+games, Books and Settings work there, and firmware updates install over
+USB in about 40 s. Recorder, Steps, Stopwatch, the Authenticator, USB
+Drive and the screen reader run on the player but still wait for a
+person's check of some of their functions. The Sequencer (a drum machine)
+is built but runs only in the simulator, hidden from Home for now; the Bluetooth presenter remote, a USB
+sound card and the jack tools are planned. Not released yet; see the
+[changelog](CHANGELOG.md), the [manual](docs/user/README.md) and the
+[detailed log](docs/STATUS.md).
 
 ## Try it
 
 **In your browser:** [timschmidt.github.io/orpheus/try.html](https://timschmidt.github.io/orpheus/try.html)
-runs the real screens, file system, library, decoders and sound settings
-compiled to WebAssembly, with a demo card and room for your own files
-(they stay in your browser). The desktop simulator runs the same screens
+runs the real screens of every app, the file system, library, decoders and
+sound settings compiled to WebAssembly, with a demo card and room for your
+own files (they stay in your browser). The desktop simulator runs the same screens
 (see Build below):
 
 ```sh
@@ -36,11 +44,13 @@ cargo run -p orpheus-sim --features window -- --window
 
 ## Install
 
-**From the browser: coming** (a backup-first installer for Chromium-based
-browsers). **From the command line** today, on Linux, with the steps,
-the backup and the way back to the original firmware in the manual:
+**From the command line** today, on Linux, with the steps, the backup and
+the way back to the original firmware in the manual:
 [install, update and restore](docs/user/install.md). Read it first: the
-tools are still set up for the project's reference player.
+tools are still set up for the project's reference player. **From the
+browser** (a backup-first installer for Chromium-based browsers): built and
+tried against a simulated player, not yet against a real one, and no
+release is published yet.
 
 ## Build
 

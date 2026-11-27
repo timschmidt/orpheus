@@ -9,17 +9,22 @@ Apache-2.0).
 
 ## Is it finished?
 
-No. Music, Files, Now Playing, Pictures, Bluetooth audio and Settings run
-on the player every day. Radio, Recorder, Steps, Stopwatch, the
-authenticator, USB disk images, playlists and the Bluetooth presenter
-remote are planned. [STATUS.md](../STATUS.md) is the detailed log, and the
-[changelog](../../CHANGELOG.md) summarises it.
+No. Music, Files, Now Playing, MIDI files, Pictures, Radio, Bluetooth
+audio, the games, Books and Settings run on the player every day; the
+Recorder, Steps, Stopwatch, the Authenticator, USB Drive and the screen
+reader run there but wait for a person's check of some functions. The
+[manual's app table](README.md#apps) says which is which. Playlists, the
+Bluetooth presenter remote, a USB sound card and reading books aloud are
+planned. Nothing has been released yet. [STATUS.md](../STATUS.md) is the
+detailed log, and the [changelog](../../CHANGELOG.md) summarises it.
 
 ## Can I try it without a player?
 
-Soon: a version that runs in the web browser, with the same screens and
-the same music code, is **in progress**. Today the desktop simulator does
-it for developers ([getting started](../dev/getting-started.md)).
+Yes: the website's [Try it](https://timschmidt.github.io/orpheus/try.html)
+page runs the same screens, menus, file system, library, decoders and sound
+settings in the browser, with a demo card and room for your own files
+(they stay in your browser). Developers can also run the desktop simulator
+([getting started](../dev/getting-started.md)).
 
 ## Will it damage my player?
 
@@ -38,12 +43,15 @@ Yes, from the backup made before installing:
 
 Orpheus reads your card and writes only inside one folder, `/.orpheus/`
 (the library, sorted-folder caches, cover thumbnails, the queue and resume
-point). Delete that folder at any time; the player rebuilds it.
+point, saved games, prepared books), and the Recorder's recordings in
+`/Recordings`. Delete `/.orpheus/` at any time; the player rebuilds what
+it needs (saved games and bookmarks are lost).
 
 ## Which audio formats play?
 
-MP3, FLAC, WAV, Ogg Vorbis, Opus and Speex. AAC, ALAC, WavPack and APE are
-planned.
+MP3, FLAC, WAV, Ogg Vorbis, Opus and Speex, and MIDI files (`.mid`,
+`.midi`, `.kar`, `.rmi`), which the player's own synthesiser plays with its own set of
+instruments. AAC, ALAC, WavPack and APE are planned.
 
 ## Does the battery last as long as with the original firmware?
 
@@ -57,8 +65,15 @@ No. The Bluetooth module in the YM03 can only send audio.
 
 ## Why are some apps missing from Home?
 
-Home shows only the apps that work on the player today. The simulator and
-the screenshots in this manual show all planned apps.
+Settings › Display › Home screen chooses which apps Home shows. A player
+set up before Books existed keeps its old choice, so Books stays hidden
+until you switch it on there. The [Sequencer](sequencer.md) is not on the player
+yet.
+
+## Can the player read the screen aloud?
+
+Yes: hold **Back + Menu** for 2 seconds to switch the
+[screen reader](screen-reader.md) on or off. Its voice is English only.
 
 ## Which languages are there?
 
