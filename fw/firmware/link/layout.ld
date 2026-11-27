@@ -6,7 +6,7 @@
  *                           in one large fake region (not a runnable image;
  *                           pagelink measures and classifies it)
  *   pass 2  generated       memory.ld + the page output sections (code at
- *                           0x200000, rodata at 0x340000, which claim their
+ *                           0x200000, rodata and cold code at 0x300000, which claim their
  *                           input sections first) + this file
  *
  * Same shape as atj2157-hal/link/ram.ld:

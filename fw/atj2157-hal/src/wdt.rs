@@ -118,6 +118,11 @@ impl Health {
     }
 
     pub fn check(&mut self) -> bool {
+        // The stack canary of a paged image (PG-2: MPU region 7 is SRAM3's
+        // RAM half there, no longer the guard).
+        if !crate::rt::guard_intact() {
+            crate::rt::guard_broken();
+        }
         let rt = RT_BEAT.load(core::sync::atomic::Ordering::Relaxed);
         let ui = UI_BEAT.load(core::sync::atomic::Ordering::Relaxed);
         let usb_ok = !USB_WEDGED.load(core::sync::atomic::Ordering::Relaxed);

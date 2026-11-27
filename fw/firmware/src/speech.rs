@@ -313,13 +313,24 @@ fn voice(v: u8, pitch: i8) -> Voice {
     v.with_pitch(f32::from(pitch))
 }
 
-/// Once, from the speech task: the speaker (3.3 KB) built in its static.
+/// Once, from `main` before the executors run: the speaker (3.3 KB) built
+/// in its static. Its frame (7,640 B: the speaker built, then moved) is in
+/// the start-up context, whose worst case (the audio chain's set-up) is
+/// deeper; in the speech task it was the thread context's deepest path
+/// (PG-2, `xtask stack` with the feature on, 2026-11-27).
 #[inline(never)]
-fn new_speaker() -> &'static mut Speaker {
+pub fn init() {
     let cfg =
         TtsConfig { rate: mix::RATE, channels: 1, voice: voice(0, 0), speed: Speed::NORMAL, seed: 0x5EED };
-    // SAFETY: called once; the speech task is the only user.
-    unsafe { (*(&raw mut SPEAKER)).write(Speaker::new(cfg, Options::default())) }
+    // SAFETY: called once, before the speech task (the only user) runs.
+    unsafe { (*(&raw mut SPEAKER)).write(Speaker::new(cfg, Options::default())) };
+}
+
+/// The speaker [`init`] built.
+fn speaker() -> &'static mut Speaker {
+    // SAFETY: `init` ran in `main` before the task was spawned; the speech
+    // task is the only user and takes it once.
+    unsafe { (*(&raw mut SPEAKER)).assume_init_mut() }
 }
 
 /// The settings `configure` left, from the next utterance on.
@@ -446,7 +457,7 @@ fn step(sp: &mut Speaker, st: &mut State) -> Next {
 /// The speech task (thread mode).
 #[embassy_executor::task]
 pub async fn speech() {
-    let sp = new_speaker();
+    let sp = speaker();
     let mut st = State { playing: Playing::Idle, seen: GEN.load(Ordering::Relaxed), applied: None };
     loop {
         match step(sp, &mut st) {

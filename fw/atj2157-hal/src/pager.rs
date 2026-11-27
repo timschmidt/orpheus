@@ -8,8 +8,10 @@
 //! (it stalls everything for one line read, ~175 µs).
 
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+#[cfg(feature = "cold-code")]
+use orpheus_pager::bounce::{self, FETCH_HALFWORDS, SLOT_HALFWORDS};
 use orpheus_pager::{Action, PagerCore, RegionMap, mpu};
 
 struct Shared(UnsafeCell<PagerCore>);
@@ -24,6 +26,41 @@ pub static LOAD_ERRORS: AtomicU32 = AtomicU32::new(0);
 /// Cycles of T0 (µs) spent loading lines, and the worst single load.
 pub static LOAD_US: AtomicU32 = AtomicU32::new(0);
 pub static LOAD_MAX_US: AtomicU32 = AtomicU32::new(0);
+/// Set by [`arm_deny`]: region 7 is SRAM3's RAM half, not the stack guard
+/// (`rt::enable_stack_guard` then uses the DWT and the canary).
+static ARMED: AtomicBool = AtomicBool::new(false);
+
+/// Nesting depths a faulting context can have: thread mode and interrupt
+/// levels 3, 2, 1 (four levels, MemManage at 0 preempts no level-0
+/// handler), one spare. Deeper is impossible; it would share the last slot.
+#[cfg(feature = "cold-code")]
+const DEPTHS: usize = 5;
+/// Trampolines for bounced instructions (`orpheus_pager::bounce`), one per
+/// exception nesting depth: a trampoline in use belongs to a context that
+/// only something deeper can preempt. Plain SRAM0, executable by the
+/// default memory map.
+#[cfg(feature = "cold-code")]
+#[repr(C, align(4))]
+struct Trampolines(UnsafeCell<[[u16; SLOT_HALFWORDS]; DEPTHS]>);
+// SAFETY: written only by the MemManage handler (priority 0), each slot
+// only for the context at its depth, which is not running while written.
+#[cfg(feature = "cold-code")]
+unsafe impl Sync for Trampolines {}
+// Not zeroed (`.uninit`): a slot is written before it is entered, and an
+// image that never pages keeps it out of its loaded RAM (payloads).
+#[cfg(feature = "cold-code")]
+#[unsafe(link_section = ".uninit.pager_trampolines")]
+static TRAMPOLINES: Trampolines = Trampolines(UnsafeCell::new([[0; SLOT_HALFWORDS]; DEPTHS]));
+/// The bounced instruction's halfwords, read from the page store.
+#[cfg(feature = "cold-code")]
+#[repr(C, align(4))]
+struct Fetch(UnsafeCell<[u16; FETCH_HALFWORDS]>);
+// SAFETY: as `Trampolines` (MemManage only).
+#[cfg(feature = "cold-code")]
+unsafe impl Sync for Fetch {}
+#[cfg(feature = "cold-code")]
+#[unsafe(link_section = ".uninit.pager_fetch")]
+static FETCH: Fetch = Fetch(UnsafeCell::new([0; FETCH_HALFWORDS]));
 
 const MPU_CTRL: usize = 0xE000_ED94;
 const MPU_RNR: usize = 0xE000_ED98;
@@ -31,6 +68,16 @@ const MPU_RBAR: usize = 0xE000_ED9C;
 const MPU_RASR: usize = 0xE000_EDA0;
 const SCB_CFSR: usize = 0xE000_ED28;
 const SCB_MMFAR: usize = 0xE000_ED34;
+#[cfg(feature = "cold-code")]
+const SCB_SHCSR: usize = 0xE000_ED24;
+#[cfg(feature = "cold-code")]
+const NVIC_IABR0: usize = 0xE000_E300;
+#[cfg(feature = "cold-code")]
+const NVIC_IABR1: usize = 0xE000_E304;
+/// `SHCSR` active bits of the exceptions other than MemManage that it can
+/// preempt: BusFault, UsageFault, SVCall, DebugMonitor, PendSV, SysTick.
+#[cfg(feature = "cold-code")]
+const SHCSR_OTHER_ACTIVE: u32 = 0xD8A;
 
 #[inline(always)]
 fn w(a: usize, v: u32) {
@@ -66,20 +113,33 @@ fn map(m: RegionMap) {
 pub fn arm_deny() {
     w(MPU_CTRL, mpu::CTRL_OFF);
     barrier();
-    let (n, rbar, rasr) = mpu::INITIAL[0];
-    set_region(n, rbar, rasr);
+    // The windows denied, SRAM3's RAM half granted (PG-2: no longer a
+    // hole in the deny region).
+    for i in [usize::from(mpu::DENY_REGION), usize::from(mpu::RAM_REGION)] {
+        if let Some(&(n, rbar, rasr)) = mpu::INITIAL.get(i) {
+            set_region(n, rbar, rasr);
+        }
+    }
+    ARMED.store(true, Ordering::Relaxed);
     w(MPU_CTRL, mpu::CTRL_ON);
     barrier();
 }
 
+/// Whether [`arm_deny`] ran (a paged image: MPU region 7 is taken).
+#[must_use]
+pub fn armed() -> bool {
+    ARMED.load(Ordering::Relaxed)
+}
+
 /// Start paging: `store` is the NOR address of page 0, with `ncode` code
-/// and `nro` rodata pages. Call before anything paged runs (from `main`,
-/// which is resident). Keeps the stack-guard region 7.
-pub fn init(store: u32, ncode: u32, nro: u32) {
+/// and `nro` rodata pages, the last `ro_code` of which hold cold code. Call
+/// before anything paged runs (from `main`, which is resident).
+pub fn init(store: u32, ncode: u32, nro: u32, ro_code: u32) {
     STORE.store(store, Ordering::Relaxed);
+    ARMED.store(true, Ordering::Relaxed);
     // SAFETY: the MPU is about to be reprogrammed; no fault can use the
     // core concurrently (nothing paged has run yet).
-    unsafe { (*CORE.0.get()).init(ncode, nro) };
+    unsafe { (*CORE.0.get()).init_with(ncode, nro, ro_code) };
     w(MPU_CTRL, mpu::CTRL_OFF);
     barrier();
     for (n, rbar, rasr) in mpu::INITIAL {
@@ -96,12 +156,54 @@ pub fn stats() -> orpheus_pager::Stats {
     unsafe { (*CORE.0.get()).stats() }
 }
 
+/// Exceptions active below this MemManage: the nesting depth of the
+/// context that faulted (0 = thread mode).
+#[cfg(feature = "cold-code")]
+fn depth() -> usize {
+    ((r(SCB_SHCSR) & SHCSR_OTHER_ACTIVE).count_ones()
+        + r(NVIC_IABR0).count_ones()
+        + r(NVIC_IABR1).count_ones()) as usize
+}
+
+/// Without the feature: no trampoline (a bounce is fatal, as before PG-2).
+#[cfg(not(feature = "cold-code"))]
+fn prepare_bounce(_core: &PagerCore, _pc: u32, _xpsr: u32) -> Option<(u32, u32)> {
+    None
+}
+
+/// Build the trampoline for the instruction at `pc` (the stacked frame's)
+/// in this depth's slot. Returns its address and the xPSR to return with,
+/// or `None` when the instruction cannot be bounced or its bytes cannot be
+/// read.
+// Out of line: its locals are not in the frame of every fault (`xtask
+// stack`, the pager context).
+#[cfg(feature = "cold-code")]
+#[inline(never)]
+#[unsafe(link_section = ".text.resident.pager_bounce")]
+fn prepare_bounce(core: &PagerCore, pc: u32, xpsr: u32) -> Option<(u32, u32)> {
+    let off = core.store_offset(pc)?;
+    let fetch = FETCH.0.get();
+    let store = STORE.load(Ordering::Relaxed);
+    // SAFETY: `FETCH` is the handler's own buffer in SRAM0; DMA channel 0
+    // is the pager's.
+    unsafe { crate::nor::read_dma(store + off, fetch as u32, 2 * FETCH_HALFWORDS as u32, None) }.ok()?;
+    // SAFETY: the DMA transfer has completed; only this handler uses it.
+    let code = unsafe { &*fetch };
+    let slot = depth().min(DEPTHS - 1);
+    // SAFETY: the slot of this depth: its context is the one that faulted
+    // (not running), and no shallower context can be in it (02 §3.6).
+    let buf = unsafe { &mut (*TRAMPOLINES.0.get())[slot] };
+    let (_, _, xpsr) = bounce::build_into(buf, pc, xpsr, code).ok()?;
+    Some((buf.as_ptr() as u32, xpsr))
+}
+
 /// Called from the MemManage entry with the stacked frame. Returns normally
-/// when the fault was served (the instruction is retried); diverges into
-/// the crash path otherwise.
-#[unsafe(no_mangle)]
+/// when the fault was served (the instruction is retried, or for a bounce
+/// runs from its trampoline); diverges into the crash path otherwise.
+// Not `no_mangle`: the MemManage shim names it with `sym`, so an image
+// without the shim (a payload) drops it with its statics.
 #[unsafe(link_section = ".text.resident.pager")]
-extern "C" fn orpheus_pager_fault(frame: *const u32, exc_return: u32, ipsr: u32) {
+pub(crate) extern "C" fn orpheus_pager_fault(frame: *mut u32, exc_return: u32, ipsr: u32) {
     let cfsr = r(SCB_CFSR);
     let mmfar = r(SCB_MMFAR);
     // SAFETY: `frame` is the stacked exception frame handed over by the
@@ -129,7 +231,19 @@ extern "C" fn orpheus_pager_fault(frame: *const u32, exc_return: u32, ipsr: u32)
             w(MPU_CTRL, mpu::CTRL_ON);
             barrier();
         }
-        Action::Load { map: m, nor_offset, phys, unmap } => {
+        Action::Load { map: m, nor_offset, phys, unmap, bounce } => {
+            // The instruction gives up its own line: copy it out first
+            // (from the page store; its line is about to be overwritten).
+            let tramp = if bounce {
+                // SAFETY: word 7 of the stacked frame is the xPSR.
+                let xpsr = unsafe { core::ptr::read_volatile(frame.add(7)) };
+                match prepare_bounce(core, pc, xpsr) {
+                    Some(t) => Some(t),
+                    None => fatal(frame, exc_return, ipsr, addr),
+                }
+            } else {
+                None
+            };
             // No watchdog feed here: a line read takes ~175 us, and a
             // system that only faults pages in is not making progress.
             w(MPU_CTRL, mpu::CTRL_OFF);
@@ -147,6 +261,15 @@ extern "C" fn orpheus_pager_fault(frame: *const u32, exc_return: u32, ipsr: u32)
             LOAD_MAX_US.fetch_max(dt, Ordering::Relaxed);
             if ok {
                 map(m);
+                if let Some((at, xpsr)) = tramp {
+                    // Return into the trampoline (the barrier below makes
+                    // its instructions visible to the fetch).
+                    // SAFETY: words 6 and 7 of the stacked frame: PC, xPSR.
+                    unsafe {
+                        core::ptr::write_volatile(frame.add(6), at);
+                        core::ptr::write_volatile(frame.add(7), xpsr);
+                    }
+                }
                 w(MPU_CTRL, mpu::CTRL_ON);
                 barrier();
             } else {
@@ -164,7 +287,7 @@ extern "C" fn orpheus_pager_fault(frame: *const u32, exc_return: u32, ipsr: u32)
 }
 
 #[cold]
-fn fatal(frame: *const u32, exc_return: u32, ipsr: u32, addr: u32) -> ! {
+fn fatal(frame: *mut u32, exc_return: u32, ipsr: u32, addr: u32) -> ! {
     crate::persist::record_fault(frame as usize, exc_return, ipsr);
     crate::persist::note_pager(addr, stats().loads);
     crate::wdt::reboot_after_fault()

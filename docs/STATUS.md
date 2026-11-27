@@ -20,6 +20,7 @@ of every session. Newest entries first in §3.
 |---|---|---|
 | T-1, T-2, T-4a, HAL-0, HAL-1, T-5 | done | see earlier log entries |
 | T-3, PG-1 | done | pagelink, PagerCore, check-resident; demand paging on the player (8 KiB pages, 1 KiB lines) |
+| PG-2 | **built (worker, no hardware); speech on in the default image, Books fits but stays off** (static stack margin 3,708 of 4,096 B with both) | Cold code runs from the rodata window, which spans all of SRAM3's aliases (48 → 64 pages; MPU region 7 grants SRAM3's RAM half, the stack guard becomes a canary + DWT watchpoint); a trampoline runs an instruction whose constant shares its physical line (`orpheus_pager::bounce`); `resident.toml` `[bin.firmware.cold]`. Player checks in the session entry; U-MEM-2 (SRAM3 execution) is the first |
 | T-6 | started | Rust NOR payload `fw/payloads/norprog` (erase/program, full-layout guard); ymon and nordump still the reference repo's C payloads. **Stage 2 slot fallback built and host-tested, not yet installed** (`orpheus_proto::boot::decide`; 964 B; lead's `install-stage2` + crash test: session entry 2026-11-24 "T-6 (stage2)") |
 | T-8 | **built (host + firmware), not yet run on the player** | PC sampler (T2, level 0) and pager fault log into the 2 KiB profiler block at `0x307000` (SRAM3), `prof pc\|faults on\|burst`, `prof off\|status`; `cargo xtask dev prof --pc\|--faults S [--during "soak --replay F"] [--only TEXT] [--update-hot NAME]`, `cargo xtask prof DIR`; reports in `target/orpheus/prof/<stamp>/`. Resident +656 B. User/lead check: U-TMR-1 and the Pictures-while-playing profile (session entry 2026-11-25 "T-8") |
 | AU-PERF | **built (host + firmware), not yet run on the player** | Playback per block out of the large async functions (`play_block` + small named functions, `Apart` poll boundaries, `orpheus_audio::pcm::Feeder`), codecs' `decode` not inlined, DSP stage mask kept, clusters `mp3-frame` 11 + `play-block` 15 + `play-fill` 6 = 32 lines (no shared physical line; `fits_with` check), 53 % of the measured fault loads in that set or gone; stack on the playback wake-up 6.6 → 1.5 KB; soft I2C timed on T0 (true 100 kHz, was ≈ 30 kHz: sample ≈ 2.7 → 1.0 ms), `acc bus`. Lead: profiles and checks in the session entry 2026-11-25 "AU-PERF"; U-I2C-1. **Up next titles: `seek_dir` per cluster (3,507 → 7 steps per title on 128 KiB exFAT), window keeps its titles (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: Up next titles cheap". **Chore budgets: every chore runs only when the headroom less a decoder margin covers its measured need, splittable ones stop at the budget (`orpheus_audio::chore`, host model; built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: chore budgets". **Listing pieces reopen the index file from its entry (no path walk after `job:index`), the need counts a piece's fixed cost (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: listing pieces reopen the index file" **The 55 ms `serve` block: precise `ub=` labels (`ub=serve:picture`, `job:rows`, `req:skip`, …), DAC start forgets the candidate, large overruns always logged, RAM-only pieces do not lower a need, soak reads at every action's end (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: the 55 ms `serve` block". **`job:index` in stretches of 16 entry sets (`Volume::walk_step`, `CardIo::find_index`); removing a file no longer empties the walk cache (index builds did, and the next lookup searched the root: 52–60 ms) (built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: `job:index` in stretches" **Games saves rewritten in place, a new file's allocation searched in steps of 8 sectors (the 41 ms first piece of every save: 452 bitmap reads from the start; built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: games saves in place" **Games pieces' code in one cluster (`games-io`, 14 lines beside `play-fill` and `dir-walk`; `cargo xtask hot`, a line budget in `stack --check`; built, not yet run on the player)**: session entry 2026-11-25 "AU-PERF: the games pieces' code in one cluster" |
@@ -66,21 +67,163 @@ of every session. Newest entries first in §3.
 | SYN-2 | **done (host)**; on the player since SYN-3 (samples and the delay compiled out there); **user check: listen to the kits and effects** | `orpheus-synth`: 11 drum models (new rim, cowbell, cymbal, clave, shaker), kits as data (9-byte entries, choke groups, 5 factory kits incl. a 32-note GM kit), sample playback (block `SampleSource`, bounded page cache with pinned heads and streaming, WAV 8/16/24/32/float, Hermite interpolation, loops), delay to 1.02 s (exact at tempo, low cut), 8-line FDN reverb at half rate in 8 KiB, `OSB1` sound banks; engine 62,320 B (was 69,040); player estimate: drum voices ≈ 75–315 cycles/sample, reverb ≈ 290 (session entry 2026-11-25 "SYN-2") |
 | TTS-1 | **done (host)**; not in the firmware, simulator or apps (TTS-2, A11Y-1, BOOK-3) | `orpheus-tts`: incremental converter (1,408 B, any feed sizes), English normaliser, NRL letter-to-sound rules + stress heuristic + stems, CMUdict exception lexicon (4,487 entries in 32,766 B; `cargo xtask tts-lexicon`), duration model for 0.25×–10×; rules alone 79.8 % of tokens, with the lexicon 98.1 % (session entry 2026-11-25 "TTS-1") |
 | TTS-2 | **done (host)**; not in the firmware, simulator or apps (A11Y-1, BOOK-3, firmware integration) | `orpheus-tts`: cascade/parallel formant synthesiser after Klatt 1980 (KLGLOTT88-like source with polyBLEP, F1–F6 cascade, nasal pole/zero, parallel frication/bursts), phoneme targets and loci from the phonetics literature, intonation (declination, accents, 5 contours, asides), voices Neutral/Low/Bright, exact TTS-1 durations at 0.25×–10×, resampler to 8–48 kHz, `Synth` (1,936 B) and `Speaker` (3,352 B with the converter), events and stop; WER (whisper base.en) 13.9 / 30.5 / 93 % at 1/2/4× (espeak-ng 5.9 / 63 / 89 %); player estimate ≈ 22 % of Base at 48 kHz (over the 20 % budget), code ≈ 70 KB without the lexicon (over 64 KiB) (session entry 2026-11-25 "TTS-2") |
-| TTS-3 | **built (host + simulator + firmware feature `speech`), not on the player: does not fit the code window** (133 of 128 pages, +75 KB; user check 36) | Speech voice: `orpheus_tts::mix` (resampler, speech volume, ducking, stop fade; host-tested), the speech task (thread mode, `Speaker` at 16 kHz into a 128 ms ring), the card task mixing after the DSP chain or running the DAC at 16 kHz alone (`Book::rewind` on a stop), clock floor Mid while speaking (`governor::with_speech`), Music while speaking › Paused (`services::SpeechPause`), lexicon in three ≤ 16 KiB pieces, `ui speech`, journey `screen_reader` (skipped without the feature: journey field `needs`) (session entry 2026-11-27 "TTS-3") |
+| TTS-3 | **built (host + simulator + firmware feature `speech`); in the default image since PG-2 (2026-11-27), not yet run on the player** (was: 133 of 128 code pages; user check 36 settled by PG-2) | Speech voice: `orpheus_tts::mix` (resampler, speech volume, ducking, stop fade; host-tested), the speech task (thread mode, `Speaker` at 16 kHz into a 128 ms ring), the card task mixing after the DSP chain or running the DAC at 16 kHz alone (`Book::rewind` on a stop), clock floor Mid while speaking (`governor::with_speech`), Music while speaking › Paused (`services::SpeechPause`), lexicon in three ≤ 16 KiB pieces, `ui speech`, journey `screen_reader` (skipped without the feature: journey field `needs`) (session entry 2026-11-27 "TTS-3") |
 | VER-13 | **tool and matrix done (host + simulator); second round: six settings wired (host + simulator + firmware built), journeys `settings_sound`/`settings_playback` not yet run on the player** | `cargo xtask settings-matrix [--check] [--strict]` (alias `settings coverage`; in `test all`, `--strict` in `gate --m11`); manifest for all 162 settings of the tree; simulator matrix over 59 screen + 11 service contexts (`sim/tests/settings_matrix.rs`), host tests for sound, governor, steps, recorder split, persistence/defaults/clamping/migration per kind; journeys `settings_shuffle` (passes on the player), `settings_sound`, `settings_playback` (RAM-only session). Key click, Fade on pause, Gapless, Resume at start-up, Seek step, Auto-bookmark have their effect; 9,927 / 9,974 cells; 16 settings without an effect (Speed: time stretch not built, spec change proposed), 63 reviewed exclusions (session entries 2026-11-26 "VER-13") |
 | VER-13 | **tool and matrix done (host + simulator); one device journey (not yet run on the player)** | `cargo xtask settings-matrix [--check] [--strict]` (alias `settings coverage`; in `test all`, `--strict` in `gate --m11`); manifest for all 162 settings of the tree; simulator matrix over 59 screen + 10 service contexts (`sim/tests/settings_matrix.rs`), host tests for sound, governor, steps, recorder split, persistence/defaults/clamping/migration per kind; journey `settings_shuffle` (RAM-only session). 9,365 / 9,412 matrix cells covered; 22 settings have no effect to show (not wired) and 47 contexts are reviewed exclusions (session entry 2026-11-26 "VER-13") |
 | VER-13 (Display, Power, Date & time, USB) | **built (host + simulator + firmware), not yet run on the player** | Backlight timeout, Lock delay, Screen saver, Animations, Rotate (software 180°), Power mode, Keys when locked (transport to playback), Time zone, Correction, Set from RDS (group 4A), Read-only card, Developer channel (held on under any host test; the session refuses it) have their effects; journeys `settings_screen_timers`, `settings_screen_saver`; Brightness (missing stock duty values, U-PWM-3) and Wallpaper (Set as wallpaper not built) left; stack margin 4,568 B, .bss 125,352 B. User check 30 (session entry 2026-11-26 "VER-13: Display, Power, Date & time and USB") |
 | GAME-6 Bricks (M14) | **built (host + simulator + firmware), not yet run on the player** | Brick breaker of our own: integer physics with one-pixel sub-steps (no tunnelling at any speed, no floating point), paddle angles, 1–3-hit and unbreakable bricks, 8 hand-made + generated levels, five power-ups, lives, scores, saves; 7 settings packed into 1 word; 47 goldens; fuzz `bricks_keys`. In the firmware (`orpheus-apps/bricks`): stack margin 4,116 B unchanged. Lead: session entry 2026-11-25 "GAME-6" |
-| BOOK-1/2 wiring | **built behind the firmware feature `books`, off: no room in the code window** (139 of 128 pages with it; options in the session entry) | `Shelf` (screens' model) / `Desk` (card side) split, step future 5,464 → 2,600 B; chores `job:bwrite…blay` while playing (no folder made, no scratch), steps while paused, idle with the arena's first 35,072 B lent; "Stop the music to prepare this book."; `books status`, `books test on\|off`; suite journey `books` (`requires`: skipped without the feature) (session entry 2026-11-26 "BOOK-1/2 wiring") |
+| BOOK-1/2 wiring | **built behind the firmware feature `books`, off**: fits since PG-2 (with speech 125/128 code + 63/64 rodata pages), but with speech the static stack margin is 3,708 of 4,096 B and the suite's Home journeys need their Books update (session entries) | `Shelf` (screens' model) / `Desk` (card side) split, step future 5,464 → 2,600 B; chores `job:bwrite…blay` while playing (no folder made, no scratch), steps while paused, idle with the arena's first 35,072 B lent; "Stop the music to prepare this book."; `books status`, `books test on\|off`; suite journey `books` (`requires`: skipped without the feature) (session entry 2026-11-26 "BOOK-1/2 wiring") |
 | BOOK-2 | **done (host + simulator)**; not in the firmware (as BOOK-1; the scratch is the decoder arena, see session entry) | EPUB 2/3 in `orpheus-books`: zip (end record, streamed central directory, CRC, zip64/encrypted/method refusals), `no_std` inflate (48 B state; 32 KiB window + 2,304 B tables lent: 35,072 B), container/OPF/nav/NCX, XHTML reduction over the XML tokenizer split out of FB2, contents positions from anchors, all in bounded steps into BOOK-1's stream; library titles from the package; 12 new goldens; fuzz targets `books_zip`, `books_epub` (session entry 2026-11-25 "BOOK-2") |
 | MIDI-1 | **done (host + simulator)**; on the player since SYN-3; **user check: listen to the three MIDI renders** | `orpheus-midi`: Standard MIDI File parser (formats 0/1/2, running status, meta and SysEx, SMPTE, RMID) streamed through 64 track cursors of 64-byte windows that ask for bytes (`Need`/`supply`), nothing trusted; exact tick→frame clock through tempo changes; sequencer (CC 1/6/7/10/11/38/64/91/93/96–101/120–127, RPN bend range, pressure, programs, kits on channel 10, mute/solo); own GM set of 32 sounds for the 128 programs (`data/gm-sounds.osb`); `MidiPlayer`: open/scan, render, bounded-step seek (bit-exact where nothing sounds across the target), duration/position, `.kar`/lyric events; Files plays `.mid`/`.kar` in the simulator with Now Playing lyrics; player 70,224 B; estimate ≈ 117 MHz at 48 kHz for a 10–11-voice song: High clock (session entry 2026-11-25 "MIDI-1") |
 | SYN-3 | **done (firmware build)**; bench run on the player 2026-11-26 (costs measured); load governor run on the player (`78b316b5`: no reset, but every song stopped at `ratio=400`); measurement fix and clock-up (D-4) on the player (`8240f128`: ratio right, 288 MHz, but paging 200–250 %); paging fix on the player (`4e1e9a49`: every song to its end, `pg=` 3–15 %); shed-state, rest and key-tick fixes on the player (`7f26ae50`: all to the end, 20 underruns in 107 s at `load=` 25–40 %); rests that end when thread mode sleeps on the player (`b694ac61`: underruns 18/3/9 per song at `load=` 24–46 %); **budget that follows the PCM ring, main loop off the synth's lines, USB supervisor without its 20 ms timer built, not yet run on the player: lead's checks in the session entry 2026-11-26 "SYN-3: thread mode's line loads"**; owner decision: half rate for heavy MIDI files (04 §9) | The synthesiser on the player: a synth source beside the codecs (`orpheus_audio::synth`), the engine and the MIDI player built in place in the pool (stream ring + decoder arena, 80,816 B; MIDI state ≈ 71,960 B), the MIDI file through a 13-block card cache (`orpheus_midi::cache`), 44.1 kHz into the DAC ring through the DSP chain, clock floor High raised to Turbo/Max by the load governor before anything is shed (`orpheus_synth::load`: 55 % of real time, down to 30 % while the PCM ring runs short; then chorus, delay, reverb, voices shed at Max; compute measured apart from paging, warm-up 250 ms, rise ≤ 3 % a block), 4 ms pieces and pace-rule rests (thread mode always runs; a rest ends once thread mode sleeps); underruns never end a song (only "nothing can play"); `.mid`/`.kar` play from Files and Music with seek and pause; `synth bench` (36 loads, cycles, host hashes); 125/128 code pages, stack margin 5,212 B (session entries 2026-11-26 "SYN-3", "SYN-3: load governor" and "SYN-3: governor ratio measured right") |
 | A11Y-2 | **built (host + simulator + firmware), not yet run on the player**; journey `settings_accessibility` and user check 31 | Settings › Accessibility (Text size Normal/Large/Extra large, Hold delay 0.5–2 s, Key repeat Normal/Slow/Slower; packed in `0x0D60`), Themes White on black / Black on white (≥ 7:1), reduced motion = Animations off (spinner still, blinks lit), Key click Presses and holds (hold confirmation); 63 `a11y_*` goldens (session entry 2026-11-26 "A11Y-2") |
-| A11Y-1 | **done (host + simulator)**; in the firmware behind feature `speech` with TTS-3 (built, **off by default: 133 of 128 code pages**, owner decision: user check 36); **user check: listen to the spoken journeys** | Screen reader: `orpheus_ui::a11y` (descriptions, `Reader`, `SpeechService`, `UtteranceQueue`, earcons, chords) behind `screen-reader`; every one of the apps' 72 screens describes itself (lint: 629 foci, every screen reached); Settings › Accessibility: Screen reader, Speech rate 0.25×–10× in 0.25× steps, Voice, Pitch, Verbosity, Sound cues, Where am I, Keys with screen off, Speech volume and Music while speaking (TTS-3); toggle = hold Back + Menu 2 s (Vol+ + Vol− share a ladder); 8 spoken-journey goldens with audio hashes; matrix contexts `speech`, `speech-music` (session entries 2026-11-26 "A11Y-1", 2026-11-27 "TTS-3") |
+| A11Y-1 | **done (host + simulator)**; in the firmware with TTS-3 (feature `speech`, **on by default since PG-2**, not yet run on the player); **user check: listen to the spoken journeys** | Screen reader: `orpheus_ui::a11y` (descriptions, `Reader`, `SpeechService`, `UtteranceQueue`, earcons, chords) behind `screen-reader`; every one of the apps' 72 screens describes itself (lint: 629 foci, every screen reached); Settings › Accessibility: Screen reader, Speech rate 0.25×–10× in 0.25× steps, Voice, Pitch, Verbosity, Sound cues, Where am I, Keys with screen off, Speech volume and Music while speaking (TTS-3); toggle = hold Back + Menu 2 s (Vol+ + Vol− share a ladder); 8 spoken-journey goldens with audio hashes; matrix contexts `speech`, `speech-music` (session entries 2026-11-26 "A11Y-1", 2026-11-27 "TTS-3") |
 | VER-13 Brightness (U-PWM-3) | **built (host + simulator + firmware), not yet run on the player**; journey `settings_brightness` and user check 32 | Settings › Display › Brightness = the stock levels 1–11 (default 6) on the stock PWM4 duties, live; key `0x030D` (old `0x0301` retired); alert flash 15 / 3 (never 16); `ui top` `bl=` |
 | VER-4 (settings store keys) | **done (host + firmware built), not yet run on the player** | Store index 128 → 192 keys at 4 B a slot (was 8), same NOR format both ways (fixture from the old code, byte-equal images); cache write marks unlimited; 131 keys in use with every app (61 free), firmware 129; sector ceiling ≈ 209 settings keys (256 cannot fit one sector); .bss −1,248 B, stack margin 5,664 B; compaction no longer re-blesses a rotted value (session entry 2026-11-26 "VER-4: settings store index") |
 
 ## 3. Session log
+
+### 2026-11-27 — PG-2: cold code in the rodata window; speech in the image, Books fits (worker, no hardware)
+
+Brief: grow the room for paged code so `speech` and `books` both fit,
+hot paths intact; turn them on if every gate passes. Nothing run on the
+player (the brief). Design and as-built: 02 §3.6, §3.1, §1.2.
+
+* **Why not a bigger code window**: SRAM2/3 alias only inside their 1 MiB
+  (FINDINGS §7: `0x400000`, `0x800000`, `0x1000000` unmapped; 01 §9
+  U-MEM-4); the window registers' effect is unknown (`memwin.c` results
+  unrecorded). The VA budget was the limit: 128 code + 48 rodata pages =
+  1.41 MB against ≈ 1.53 MB of paged code and constants with both
+  features. Size cuts alone could not close 158 KB (opt-level `"z"` had
+  given 14.6 KB for 14 crates, PG-1).
+* **The rodata window grows to 64 pages.** MPU region 0 now denies all of
+  `0x200000–0x3FFFFF`; region 7 grants SRAM3's RAM half at `0x304000`
+  (16 KiB, read/write, execute-never) instead of the 256 KiB hole that cost
+  16 pages. `RO_WIN` = `0x300000`. Region 7 was the stack guard: a paged
+  image keeps a **canary** (the guard's 256 B of paint, checked by the
+  watchdog task before each feed; broken → a stack-guard fault record)
+  and a **DWT write watchpoint** on it when the core has a comparator
+  (U-DWT-2; DebugMonitor is recorded as a stack-guard fault); images
+  without the pager keep the MPU guard. The start-up log says which.
+* **Cold code** (`resident.toml` `[bin.firmware.cold]`, coldest first):
+  Books' conversion, updates, the authenticator and its hashes, the
+  library build, rare settings screens, the rest of Books, the developer
+  channel's commands and replies. Never a cluster's code; `xtask stack
+  --check` fails if a cluster's path reaches cold code
+  (`a_path_into_cold_code_fails_the_check`). **Only as much leaves the
+  code window as it needs**: pagelink places all of it, then brings the
+  warmest back while one code page stays free (`place_cold`); in the
+  rodata window it packs `.px_gN` groups after the constants, first fit,
+  avoiding the physical lines of constants a section refers to; header
+  `+0x50` `rodata_code_pages`; the pager maps those pages executable.
+* **Line conflicts**: a cold instruction whose constant maps onto its own
+  physical line gets `Action::Load { bounce: true }`: the handler reads
+  the instruction (and the rest of an IT block) from the page store,
+  builds a trampoline in a per-depth slot (5 × 32 B, `.uninit`), loads
+  the line and returns into the trampoline, which jumps back after it
+  (`orpheus_pager::bounce`, host-tested against `llvm-mc` encodings;
+  `xtask pagelink` audits every load of cold code with the same decoder:
+  **0 of 1,290** (default) / **0 of 5,313** (with Books) cannot be
+  bounced; the audit found `popcc {r7, pc}` ending an IT block in
+  `orpheus_library::format::rd16`, now allowed). `status` gains
+  `bounces=`. HAL feature `cold-code` (firmware only): the norprog payload
+  keeps the old fatal path (it had 12 B left; its `.bss` also moved to its
+  free scratch area).
+* **Speech on by default** (`fw/firmware` `default = ["speech"]`): every
+  gate passes. Books stays a feature: it fits and passes alone, but with
+  speech the static stack margin is **3,460 B < 4,096 B** (`.bss` +23 KB
+  moves the stack; the nested worst case is the UI's OTP path 5,280 B +
+  the card task's Books save 8,264 B); and the suite's Home journeys need
+  the Books update the BOOK-1/2 entry lists. Decision for the lead/owner:
+  a 0.6 KB stack cut (three 256 B steps of `.bss`+resident, or the Books
+  save/step futures, or the authenticator's HMAC frame) or a 3 KiB
+  ratchet. And the room is thin with both: 1 code page + 2 rodata pages
+  free (≈ 24 KB of window), against 58 KB + 152 KB with speech alone.
+* **Stack cuts found on the way** (measured with the features on, first
+  time a paged speech image existed): the speech speaker was built in its
+  task (`new_speaker` frame 7,640 B, thread context) — now in `main`
+  before the executors (`speech::init`, start-up context 12,368 B covers
+  it); Books' `epub_head` built the EPUB job twice (struct update, 5,784
+  B) and `begin_scan` through a temporary (4,544 B) — now in place (0 and
+  448 B). The pager context 236 → 248 B (the trampoline built straight
+  into its slot).
+* **Numbers** (`xtask build`/`size`/`stack`): default (speech): resident
+  59,824 B (text 30,656, rodata 12,480, data 16,688), `.bss` 134,216 B,
+  code **127/128** pages (8,202 B free: the reserve), rodata **45/64** (7
+  cold pages, 49,178 B, 11 sections share a line with a constant they
+  use), slot 1,474,560 B, stack 14,636 B of 32,000 usable (margin 17,364
+  B), check-resident ok (64 sections from 21 roots, none paged). With all
+  of `[cold]` out (before the adaptive placement) the same image took
+  121/128 + 51/64. Speech + Books: resident 60,172 B, `.bss` 147,456 B,
+  code **127/128**, rodata **62/64** (20 cold pages, 163,130 B), slot
+  1,613,824 B, stack 14,716 of 18,176 B (margin 3,460 B), check-resident
+  ok, size ok. Books alone (all cold out): code 116/128, rodata 57/64,
+  `.bss` 137,720 B, margin 14,816 B. Clusters
+  unchanged in the code window; `games-io` regenerated for Books
+  (`flush_step`, `rewrite`: 14 of 14 lines); `synth-render` 18 of 18,
+  32 of 32 with its `fits_with` (speech's mixer and `PcmOut::start`
+  stopped: they run only while speaking / once per DAC start). Budgets:
+  `resident_bytes` 72 → 60 KiB, `bss_bytes` 132 → 144 KiB (sum
+  unchanged), `rodata_pages` 48 → 64.
+* **Tooling**: `?pattern` in `hot.toml` `stop` and `stack.toml` targets
+  may match nothing (a feature's code); stack.toml gains the speech task
+  and the reader's `dyn ListSource` calls. **Cargo keeps the other link
+  when the feature set changes back** (it reported the speech+books build
+  fresh and pagelink re-linked the Books-only objects): `touch
+  fw/firmware/src/main.rs` before `xtask build --features …` after a
+  build with other features.
+* **Tests**: `orpheus-pager` `bounce` (7: encodings checked with
+  `llvm-mc`, IT blocks, returns, refusals), traces
+  `cold_pages_are_executable_and_constant_pages_are_not`,
+  `cold_code_reading_its_own_physical_line_bounces`,
+  `cold_program_traces_keep_the_invariants`; `xtask`
+  `pagelink::tests::cold_code_goes_to_its_own_groups_clear_of_its_constants`,
+  **`regress_speech_and_books_did_not_fit_the_code_window`** (the build's
+  paged sections in `tests/regress/pagelink/`), `hot::tests::a_path_into_cold_code_fails_the_check`,
+  `rules::tests::optional_patterns`; slot header round trip with the new
+  field.
+* **Gate**: host `cargo fmt --all --check`; `cargo clippy --workspace
+  --all-targets -- -D warnings`; `cargo test --workspace` **2,143 passed,
+  0 failed, 13 ignored** (203 binaries); `cargo xtask settings-matrix
+  --check` (184 settings, 13,248/13,295 cells, 0 errors). fw `cargo fmt
+  --all --check`; `cargo clippy --workspace --release -- -D warnings`,
+  also `-p firmware --features books` and `--no-default-features`;
+  `cargo xtask build` (default: 127 code + 45 rodata pages, resident
+  59,824 B, payloads ok), `check-resident` ok, `size --check` within
+  budgets, `stack --check` margin 17,364 B; `--features books`: build,
+  check-resident and size ok, **`stack --check` fails on the margin
+  (3,460 B)** — the reason Books stays off; `cargo xtask test pagelink`
+  (the paged toy end to end) passed. **Not run**: every `xtask dev` step
+  (the brief), `brand`/`site --check`.
+* **Lead's checks on the player** (`cargo xtask dev backup-verify`, then
+  `cargo xtask dev update` with the default build):
+  1. **U-MEM-2 first**: right after the update, open the Authenticator
+     from Home (its screen, `AuthScreen::reload`, and the OTP code are
+     cold in the default image) — that is cold code running from SRAM3
+     (the default image's cold set: the authenticator, updates, the
+     library build, the HID keyboard, their hashes; `layout.json`
+     `reason: cold:…` lists them). If the
+     player instead reboots with a fault record whose PC is in
+     `0x30xxxx–0x3Fxxxx`, SRAM3 cannot execute: stage 2 falls back to the
+     old slot after three starts; report the record. `cargo xtask dev cmd
+     status` shows `bounces=N` (before `pos=`).
+  2. `cargo xtask dev results` (the log ring): `fw: stack guard: DWT watchpoint and canary`
+     or `… canary` (U-DWT-2).
+  3. `cargo xtask dev suite` — all journeys; **`screen_reader` now runs**
+     (reader on through the session, `said=` after each move, `vol=2`,
+     `duck=16462`, "Screen reader off"); `books` is skipped (not in this
+     image). Then TTS-3's listening and speech checks 2–4 (its entry).
+  4. MIDI: `cargo xtask dev cmd 'playdir /.orpheus/test/suite/midi'`,
+     `cargo xtask dev cmd status` every ~9 s: compare with ≈ 1 underrun
+     event over the three songs; `bounces=` stays where it was (no cold
+     code runs during MIDI unless a library scan does).
+  5. MP3 soak (`cargo xtask dev soak mixed` or the usual): loads/s within
+     `[soak]`, 0 underruns outside the windows, `pager_load_errors` 0.
+  6. `cargo xtask dev stats` at idle Home: pager loads/s against ≈ 120/s
+     (PG-1); then open Settings › Accessibility and the authenticator
+     (cold code: a few loads, `bounces` may rise by a few).
+  7. Books (only after the stack decision): `touch fw/firmware/src/main.rs;
+     cargo xtask build --features books`, then BOOK-1/2's checks.
 
 ### 2026-11-27 — owner: chords approved, WAVs sound great (lead)
 

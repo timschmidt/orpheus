@@ -8,10 +8,15 @@
 //!   appears 32 times in its 1 MiB window. `xtask pagelink` gives every 8 KiB
 //!   page of paged code or rodata its own alias ([`code_page_va`],
 //!   [`ro_page_va`]); the alias decides the physical 8 KiB *slot*.
-//! * MPU region 0 denies both windows (except `0x300000–0x33FFFF`, where
-//!   SRAM3 is plain RAM). Pool regions 1–6 each map one page with only its
-//!   loaded lines enabled (sub-region disable bits). Region 7 is the stack
-//!   guard and not the pager's.
+//! * MPU region 0 denies both windows; region 7 grants SRAM3's RAM half
+//!   (`0x304000–0x307FFF`, [`mpu::RAM_REGION`]). Pool regions 1–6 each map
+//!   one page with only its loaded lines enabled (sub-region disable bits).
+//! * Cold code may live in the rodata window too ([`PagerCore::init_with`]:
+//!   the last rodata pages are executable). It shares the two SRAM3 slots
+//!   with the constants, so an instruction there can need a data line that
+//!   physically holds the instruction itself; the handler then runs that
+//!   instruction from a trampoline ([`bounce`], [`Action::Load`]'s
+//!   `bounce`) instead of giving up.
 //! * A physical line keeps the data of the last page loaded into it even
 //!   when that page's region is reused, so a page coming back gets its intact
 //!   lines without a NOR read.
@@ -38,13 +43,16 @@
 //! * rodata addresses in the upper 16 KiB of an alias block (physically the
 //!   SRAM3 RAM half) are fatal instead of being mapped onto the wrong slot;
 //! * a load that would take the physical line holding the faulting
-//!   instruction is fatal ([`Fatal::LineConflict`]) instead of livelocking;
+//!   instruction is fatal ([`Fatal::LineConflict`]) instead of livelocking,
+//!   unless the instruction is in the rodata window (cold code), where it is
+//!   bounced through a trampoline;
 //! * pool regions are read-only Normal memory (writes into a paged area
 //!   fault; unaligned reads are architecturally defined), see [`mpu`].
 
 #![no_std]
 #![forbid(unsafe_code)]
 
+pub mod bounce;
 pub mod bus;
 #[cfg(feature = "sim")]
 pub mod sim;
@@ -59,8 +67,11 @@ pub const LINES_PER_PAGE: u32 = 8;
 /// Code window (SRAM2 aliases). Code page `p` is at `CODE_WIN + p * 8 KiB`.
 pub const CODE_WIN: u32 = 0x0020_0000;
 pub const CODE_WIN_END: u32 = 0x0030_0000;
-/// Rodata window (SRAM3 aliases above the plain-RAM first 256 KiB).
-pub const RO_WIN: u32 = 0x0034_0000;
+/// Rodata window: the low half of every SRAM3 alias block (the high half
+/// is SRAM3's RAM half, granted as plain RAM at its first alias only).
+/// Until PG-2 (2026-11-27) the first 256 KiB were plain RAM and the window
+/// began at `0x340000` (48 pages).
+pub const RO_WIN: u32 = 0x0030_0000;
 pub const RO_WIN_END: u32 = 0x0040_0000;
 /// Physical slots: SRAM2 holds four code slots, SRAM3's low half two rodata
 /// slots.
@@ -71,7 +82,7 @@ pub const SRAM2_BASE: u32 = 0x0020_0000;
 pub const SRAM3_BASE: u32 = 0x0030_0000;
 /// Largest page counts the windows can address.
 pub const MAX_CODE_PAGES: u32 = 128;
-pub const MAX_RO_PAGES: u32 = 48;
+pub const MAX_RO_PAGES: u32 = 64;
 /// A rodata group: two VA-contiguous pages at the start of a 32 KiB alias
 /// block. Code pages are VA-contiguous over the whole code window.
 pub const RO_GROUP_SIZE: u32 = 0x4000;
@@ -188,12 +199,26 @@ pub mod mpu {
     /// where unaligned accesses are not architecturally defined.
     pub const POOL_ATTR: u32 = 1 << 17;
 
+    /// Access permission: read/write, privileged and unprivileged.
+    pub const AP_RW: u32 = 0b011;
+
     /// Region 0: deny the code and rodata windows (2 MiB at `0x200000`),
-    /// sub-region 4 (`0x300000–0x33FFFF`, SRAM3 as RAM) disabled so it falls
-    /// through to the default map.
+    /// all of it. Until PG-2 its sub-region 4 (`0x300000–0x33FFFF`) was
+    /// disabled so that SRAM3 was plain RAM there, which cost 16 rodata
+    /// pages of the window; SRAM3's RAM half is now granted by
+    /// [`RAM_REGION`] alone.
     pub const DENY_REGION: u8 = 0;
     pub const DENY_RBAR: u32 = super::CODE_WIN;
-    pub const DENY_RASR: u32 = rasr(21, AP_NONE, 0, true, 0x10);
+    pub const DENY_RASR: u32 = rasr(21, AP_NONE, 0, true, 0);
+
+    /// Region 7 (highest precedence): SRAM3's RAM half at its first alias,
+    /// `0x304000–0x307FFF` (PCM ring, profiler block, shared flags), plain
+    /// read/write memory, execute-never. No page alias lies in it (pages
+    /// use the low half of each alias block). It was the stack guard until
+    /// PG-2; the guard is a canary since (`atj2157_hal::rt`).
+    pub const RAM_REGION: u8 = 7;
+    pub const RAM_RBAR: u32 = super::SRAM3_BASE + super::RO_GROUP_SIZE;
+    pub const RAM_RASR: u32 = rasr(14, AP_RW, POOL_ATTR, true, 0);
 
     /// A `RASR` word: region of `2^size_log2` bytes.
     #[must_use]
@@ -209,10 +234,18 @@ pub mod mpu {
     }
 
     /// The region set-up before the first fault: `(region, RBAR, RASR)` for
-    /// regions 0–6 (pool regions disabled). Write with the MPU off, then
+    /// regions 0–7 (pool regions disabled). Write with the MPU off, then
     /// `CTRL_ON`, and enable MemManage (`SHCSR.MEMFAULTENA`).
-    pub const INITIAL: [(u8, u32, u32); 1 + super::POOL_REGIONS] =
-        [(0, DENY_RBAR, DENY_RASR), (1, 0, 0), (2, 0, 0), (3, 0, 0), (4, 0, 0), (5, 0, 0), (6, 0, 0)];
+    pub const INITIAL: [(u8, u32, u32); 2 + super::POOL_REGIONS] = [
+        (DENY_REGION, DENY_RBAR, DENY_RASR),
+        (1, 0, 0),
+        (2, 0, 0),
+        (3, 0, 0),
+        (4, 0, 0),
+        (5, 0, 0),
+        (6, 0, 0),
+        (RAM_REGION, RAM_RBAR, RAM_RASR),
+    ];
 
     /// The address a MemManage fault is about: `MMFAR` for data accesses,
     /// the stacked PC for instruction fetches.
@@ -231,7 +264,7 @@ pub struct RegionMap {
     pub base: u32,
     /// Sub-region disable mask: bit `k` set = line `k` not mapped.
     pub srd: u8,
-    /// Execute-never (rodata pages).
+    /// Execute-never (rodata pages that hold constants).
     pub xn: bool,
 }
 
@@ -261,7 +294,8 @@ pub enum Fatal {
     /// the fault is a permission fault (write, execute-never) or a bug.
     NotAPagingFault,
     /// The line to load physically holds the instruction that faulted; the
-    /// access could never complete.
+    /// access could never complete (code window), or the instruction could
+    /// not be run from a trampoline ([`bounce`]).
     LineConflict,
 }
 
@@ -277,11 +311,22 @@ pub enum Action {
     /// window, hence MPU off; DMA uses the SRAM2/3 DMA alias); write `map`;
     /// enable the MPU; return. If the read fails, call
     /// [`PagerCore::abort_load`] before taking the crash path.
+    ///
+    /// `bounce`: the line is taken from the faulting instruction itself
+    /// (cold code in the rodata window reading a constant on the same
+    /// physical line; `unmap` is the instruction's page). Before the read,
+    /// build a trampoline from the instruction ([`bounce::build`], its
+    /// bytes from the page store at [`PagerCore::store_offset`] of the
+    /// PC); after it, return into the trampoline. The trampoline runs the
+    /// access with the data line mapped and jumps back after the
+    /// instruction, whose line then faults back in. A refused trampoline is
+    /// [`Fatal::LineConflict`].
     Load {
         map: RegionMap,
         nor_offset: u32,
         phys: u32,
         unmap: Option<RegionMap>,
+        bounce: bool,
     },
     Fatal(Fatal),
 }
@@ -301,6 +346,9 @@ pub struct Stats {
     /// Pool regions taken from another page.
     pub evictions: u32,
     pub fatal: u32,
+    /// Loads that took the faulting instruction's own line ([`Action::Load`]
+    /// with `bounce`).
+    pub bounces: u32,
 }
 
 const NO_PAGE: u16 = 0xFFFF;
@@ -312,6 +360,8 @@ const RO_TAG: u16 = 0x100;
 pub struct PagerCore {
     ncode: u16,
     nro: u16,
+    /// First rodata page that holds code (`nro` when none does).
+    ro_exec: u16,
     /// Per pool region: page id (`NO_PAGE` = free), VA, LRU stamp, mapped
     /// lines, physical slot.
     reg_page: [u16; POOL_REGIONS],
@@ -337,7 +387,6 @@ struct Target {
     id: u16,
     va: u32,
     slot: u8,
-    xn: bool,
     store: u32,
     phys: u32,
     /// The next page is VA-contiguous and exists (straddle target).
@@ -351,6 +400,7 @@ impl PagerCore {
         Self {
             ncode: 0,
             nro: 0,
+            ro_exec: 0,
             reg_page: [NO_PAGE; POOL_REGIONS],
             reg_va: [0; POOL_REGIONS],
             reg_lru: [0; POOL_REGIONS],
@@ -366,6 +416,7 @@ impl PagerCore {
                 straddles: 0,
                 evictions: 0,
                 fatal: 0,
+                bounces: 0,
             },
         }
     }
@@ -374,9 +425,39 @@ impl PagerCore {
     /// `nro` rodata pages (counts beyond the window limits are clamped).
     /// The MPU must be in its [`mpu::INITIAL`] state.
     pub fn init(&mut self, ncode: u32, nro: u32) {
+        self.init_with(ncode, nro, 0);
+    }
+
+    /// As [`init`](Self::init), with the last `ro_code` of the `nro`
+    /// rodata pages holding code (cold code in the rodata window: mapped
+    /// without execute-never).
+    pub fn init_with(&mut self, ncode: u32, nro: u32, ro_code: u32) {
         *self = Self::new();
         self.ncode = ncode.min(MAX_CODE_PAGES) as u16;
         self.nro = nro.min(MAX_RO_PAGES) as u16;
+        self.ro_exec = self.nro - ro_code.min(u32::from(self.nro)) as u16;
+    }
+
+    /// Whether `page` is mapped execute-never: rodata pages that hold
+    /// constants.
+    #[must_use]
+    pub const fn xn(&self, page: Page) -> bool {
+        match page {
+            Page::Code(_) => false,
+            Page::Rodata(q) => q < self.ro_exec,
+        }
+    }
+
+    /// Offset in the page store of the byte at `addr`, if `addr` is in a
+    /// page of the store (the handler reads a bounced instruction there).
+    #[must_use]
+    pub fn store_offset(&self, addr: u32) -> Option<u32> {
+        let page = Page::of(addr)?;
+        let exists = match page {
+            Page::Code(p) => p < self.ncode,
+            Page::Rodata(q) => q < self.nro,
+        };
+        exists.then(|| page.store_index(u32::from(self.ncode)) * PAGE_SIZE + (addr - page.va()))
     }
 
     #[must_use]
@@ -424,7 +505,6 @@ impl PagerCore {
             id: page.id(),
             va: page.va(),
             slot: page.slot() as u8,
-            xn: matches!(page, Page::Rodata(_)),
             store: page.store_index(u32::from(self.ncode)),
             phys: page.phys(),
             has_next,
@@ -433,11 +513,12 @@ impl PagerCore {
 
     fn map(&self, r: usize) -> RegionMap {
         let r = r % POOL_REGIONS;
+        let id = self.reg_page[r];
         RegionMap {
             region: FIRST_POOL_REGION + r as u8,
             base: self.reg_va[r],
             srd: !self.reg_mask[r],
-            xn: self.reg_page[r] & RO_TAG != 0 && self.reg_page[r] != NO_PAGE,
+            xn: id != NO_PAGE && self.xn(Page::from_id(id)),
         }
     }
 
@@ -463,9 +544,10 @@ impl PagerCore {
         if let Some(r) = self.reg_page.iter().position(|&p| p == t.id) {
             return (r % POOL_REGIONS, false);
         }
+        // Code runs from both windows (cold code in the rodata window).
         let pc_page = match Page::of(pc) {
-            Some(p @ Page::Code(_)) => p.id(),
-            _ => NO_PAGE,
+            Some(p) => p.id(),
+            None => NO_PAGE,
         };
         let r = if let Some(free) = self.reg_page.iter().position(|&p| p == NO_PAGE) {
             free
@@ -512,7 +594,7 @@ impl PagerCore {
                 Err(f) => return self.fatal(f),
             };
             if !hopped {
-                if t.xn {
+                if t.id & RO_TAG != 0 {
                     self.stats.ro_faults += 1;
                 } else {
                     self.stats.code_faults += 1;
@@ -562,12 +644,21 @@ impl PagerCore {
         let sub = sub & 7;
         let line = (usize::from(t.slot) * 8 + sub as usize) % LINES;
         let prev = self.line_page[line];
+        let mut bounce = false;
         if prev != NO_PAGE
             && let Some(pc_page) = Page::of(pc)
             && pc_page.id() == prev
             && (pc_page.slot() * 8 + ((pc >> 10) & 7)) as usize == line
         {
-            return self.fatal(Fatal::LineConflict);
+            // Code and the constants it reads share the rodata slots only:
+            // there the instruction can run elsewhere (`bounce`). In the code
+            // window this cannot happen to a data access (no constants
+            // there); it would be a wild access.
+            if !matches!(pc_page, Page::Rodata(_)) || self.xn(pc_page) {
+                return self.fatal(Fatal::LineConflict);
+            }
+            bounce = true;
+            self.stats.bounces += 1;
         }
         // Take the line from the page that has it; unmap it there.
         let mut unmap = None;
@@ -588,6 +679,7 @@ impl PagerCore {
             nor_offset: t.store * PAGE_SIZE + sub * LINE_SIZE,
             phys: t.phys + sub * LINE_SIZE,
             unmap,
+            bounce,
         }
     }
 
@@ -634,14 +726,18 @@ mod tests {
         }
         assert_eq!(ro_page_va(MAX_RO_PAGES - 1) + PAGE_SIZE, RO_WIN_END - RO_GROUP_SIZE);
         assert_eq!(Page::of(RO_WIN + RO_GROUP_SIZE), None, "SRAM3 RAM half");
-        assert_eq!(Page::of(0x30_0000), None);
+        assert_eq!(Page::of(mpu::RAM_RBAR + 0x3FFF), None, "SRAM3 RAM half");
+        assert_eq!(Page::of(0x30_0000), Some(Page::Rodata(0)), "the window starts at SRAM3 (PG-2)");
+        assert_eq!(Page::of(0x30_8000), Some(Page::Rodata(2)));
         assert_eq!(Page::of(0x1F_FFFF), None);
     }
 
     #[test]
     fn rasr_words() {
-        // Deny region: 2 MiB, no access, XN, sub-region 4 disabled.
-        assert_eq!(mpu::DENY_RASR, 0x1000_1029);
+        // Deny region: 2 MiB, no access, XN, no sub-region disabled.
+        assert_eq!(mpu::DENY_RASR, 0x1000_0029);
+        // SRAM3's RAM half: 16 KiB at 0x304000, read/write, XN, Normal WT.
+        assert_eq!((mpu::RAM_RBAR, mpu::RAM_RASR), (0x30_4000, 0x1302_001B));
         let m = RegionMap { region: 1, base: 0x20_2000, srd: 0xFE, xn: false };
         assert_eq!(m.rasr(), 0x0602_FE19);
         assert_eq!(mpu::fault_address(0x82, 0x34_0010, 0x20_0000), 0x34_0010);

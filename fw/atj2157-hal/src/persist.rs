@@ -177,6 +177,8 @@ pub fn record_fault(frame: usize, exc_return: u32, ipsr: u32) {
     let guard_hit = (cfsr & 0x80 != 0 && in_guard(mmfar)) || in_guard(frame as u32) || cfsr & 0x10 != 0;
     let kind = match ipsr & 0x1FF {
         _ if guard_hit => fault::Kind::StackGuard,
+        // DebugMonitor: only the DWT stack watchpoint raises it (PG-2).
+        12 => fault::Kind::StackGuard,
         3 => fault::Kind::HardFault,
         4 => fault::Kind::MemManage,
         5 => fault::Kind::BusFault,

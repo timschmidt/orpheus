@@ -36,7 +36,8 @@ pub enum Kind {
 impl Kind {
     pub fn of_output(out: &str) -> Self {
         let is = |p: &str| out == p || out.starts_with(&format!("{p}."));
-        if is(".text") || out.starts_with(".pg_") {
+        // `.px_gN`: cold code in the rodata window (PG-2).
+        if is(".text") || out.starts_with(".pg_") || out.starts_with(".px_") {
             Self::Code
         } else if is(".rodata") || out.starts_with(".pr_") {
             Self::Rodata
@@ -390,6 +391,53 @@ impl Graph {
         self.nodes.iter().position(|s| s.symbols.iter().any(|y| y.name == name))
     }
 
+    /// The loads of code node `n` that the pager could not run from a
+    /// trampoline should their constant share their physical line (PG-2,
+    /// `orpheus_pager::bounce`), and how many loads it has: a linear sweep
+    /// (literal data skipped by the mapping symbols) that follows IT
+    /// blocks. Loads that never fault on a page are not counted
+    /// ([`never_bounced_load`]).
+    pub fn bounce_audit(&self, n: usize) -> (u32, Vec<(u32, orpheus_pager::bounce::Refusal)>) {
+        use orpheus_pager::bounce;
+        let s = &self.nodes[n];
+        let end = s.addr + s.size;
+        let (mut loads, mut refused) = (0, Vec::new());
+        let mut pc = s.addr;
+        let mut it: u8 = 0;
+        while pc + 2 <= end {
+            let i = self.mapping.partition_point(|&(a, _)| a <= pc);
+            if i > 0 && self.mapping[i - 1].1 {
+                match self.mapping.get(i) {
+                    Some(&(a, _)) if a < end => {
+                        pc = a;
+                        it = 0;
+                        continue;
+                    }
+                    _ => break,
+                }
+            }
+            let Some(hw1) = self.hw(pc) else { break };
+            let len = thumb::insn_len(hw1);
+            let hw2 = if len == 4 { self.hw(pc + 2).unwrap_or(0) } else { 0 };
+            let state = it;
+            // ITAdvance after this instruction.
+            it = if it & 7 == 0 { 0 } else { (it & 0xE0) | ((it << 1) & 0x1F) };
+            if hw1 & 0xFF00 == 0xBF00 && hw1 & 0xF != 0 {
+                it = (hw1 & 0xFF) as u8;
+            } else if reads_memory(hw1, hw2) && !never_bounced_load(hw1, hw2) {
+                loads += 1;
+                let code: Vec<u16> =
+                    (0..bounce::FETCH_HALFWORDS as u32).map(|k| self.hw(pc + 2 * k).unwrap_or(0)).collect();
+                let xpsr = (1 << 24) | (u32::from(state & 3) << 25) | (u32::from(state >> 2) << 10);
+                if let Err(e) = bounce::build(pc, xpsr, &code) {
+                    refused.push((pc, e));
+                }
+            }
+            pc += len;
+        }
+        (loads, refused)
+    }
+
     /// Indirect branches in code node `n` (skipping literal data by the
     /// mapping symbols): `(address, instruction)`.
     pub fn indirect_branches(&self, n: usize) -> Vec<(u32, String)> {
@@ -429,6 +477,45 @@ impl Graph {
         }
         count.into_iter().filter(|(_, (c, _))| *c == 1).map(|(k, (_, i))| (k, i)).collect()
     }
+}
+
+/// Whether a Thumb instruction reads memory (independently of
+/// `orpheus_pager::bounce`'s own rules, which the audit checks): loads of
+/// every width, LDM/POP, LDRD/LDREX/TBB/TBH, VLDR/VLDM, preloads.
+pub fn reads_memory(hw1: u16, hw2: u16) -> bool {
+    if thumb::insn_len(hw1) == 2 {
+        return match hw1 >> 11 {
+            0b01001 | 0b01101 | 0b01111 | 0b10001 | 0b10011 | 0b11001 => true,
+            0b01010 | 0b01011 => (hw1 >> 9) & 7 >= 3,
+            0b10111 => hw1 & 0xFE00 == 0xBC00,
+            _ => false,
+        };
+    }
+    hw1 & 0xFE10 == 0xF810
+        || hw1 & 0xFE50 == 0xE850
+        || hw1 & 0xFFD0 == 0xE890
+        || hw1 & 0xFFD0 == 0xE910
+        || (hw1 & 0xFE10 == 0xEC10 && hw2 & 0x0E00 == 0x0A00 && hw1 & 0xFFE0 != 0xEC40)
+}
+
+/// A load that can never need a bounce: PC-relative (the literal pool, in
+/// the instruction's own group), from the stack (SP-based: SRAM0), or
+/// exclusive (LDREX*: atomics, on RAM; paged memory is read-only).
+pub fn never_bounced_load(hw1: u16, hw2: u16) -> bool {
+    if thumb::insn_len(hw1) == 2 {
+        // LDR (literal), LDR (SP-relative), POP.
+        return hw1 >> 11 == 0b01001 || hw1 >> 11 == 0b10011 || hw1 & 0xFE00 == 0xBC00;
+    }
+    if hw1 & 0xFFF0 == 0xE850 || (hw1 & 0xFFF0 == 0xE8D0 && matches!(hw2 & 0xF0, 0x40 | 0x50 | 0x70)) {
+        return true;
+    }
+    let base = hw1 & 0xF;
+    (base == 15 || base == 13)
+        && (hw1 & 0xFE10 == 0xF810
+            || hw1 & 0xFE50 == 0xE850
+            || hw1 & 0xFFD0 == 0xE890
+            || hw1 & 0xFFD0 == 0xE910
+            || hw1 & 0xFE10 == 0xEC10)
 }
 
 /// Demangle a Rust symbol without its hash (names lld already demangled

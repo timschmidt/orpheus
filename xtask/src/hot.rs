@@ -49,6 +49,9 @@ pub struct Func {
     pub label: String,
     pub bytes: u32,
     pub paged: bool,
+    /// Paged into the rodata window (cold code, PG-2): a cluster's path must
+    /// not reach it.
+    pub cold: bool,
     /// The `hot.toml` cluster that owns it (first match in file order).
     pub owner: Option<String>,
 }
@@ -183,6 +186,8 @@ pub struct WorkingSet {
     /// The lines of the `fits_with` clusters, whole (each is placed as one
     /// block beside this one: in the cache with it by design).
     pub with_lines: u32,
+    /// Reachable cold code (in the rodata window): `(label, bytes)`.
+    pub cold: Vec<(String, u32)>,
 }
 
 /// Physical lines of the code cache (direct-mapped, 32 × 1 KiB, 02 §3.1).
@@ -202,6 +207,9 @@ pub fn working_set(funcs: &[Func], dist: &[Option<u32>], name: &str, fits_with: 
                 w.with += packed(f.bytes);
             } else {
                 w.outside.push((f.label.clone(), f.bytes, f.owner.clone()));
+            }
+            if f.cold {
+                w.cold.push((f.label.clone(), f.bytes));
             }
         }
     }
@@ -226,6 +234,15 @@ pub fn working_set(funcs: &[Func], dist: &[Option<u32>], name: &str, fits_with: 
 /// the cache has (SYN-3, 2026-11-26: the synth's render and its per-piece
 /// code were 34 lines, and every piece reloaded code).
 pub fn check(w: &WorkingSet, name: &str, budget: u32) -> Result<(), String> {
+    if !w.cold.is_empty() {
+        let first: Vec<String> = w.cold.iter().take(4).map(|o| format!("{} ({} B)", o.0, o.1)).collect();
+        return Err(format!(
+            "cluster {name}: its path reaches {} cold functions (the rodata window, resident.toml [cold]): {}{}; keep them out of the path, out of [cold], or in the cluster",
+            w.cold.len(),
+            first.join(", "),
+            if w.cold.len() > 4 { ", …" } else { "" }
+        ));
+    }
     if w.lines <= budget && w.lines + w.with_lines <= CACHE_LINES {
         return Ok(());
     }
@@ -274,10 +291,12 @@ fn funcs(an: &Analysis, hot: &[Cluster]) -> Vec<Func> {
         .map(|i| {
             let s = &an.secs[i];
             let code = an.kinds[i] == Kind::Code;
+            let page = orpheus_pager::Page::of(s.addr);
             Func {
                 label: an.cg.names[i].clone(),
                 bytes: s.size,
-                paged: code && matches!(orpheus_pager::Page::of(s.addr), Some(orpheus_pager::Page::Code(_))),
+                paged: code && page.is_some(),
+                cold: code && matches!(page, Some(orpheus_pager::Page::Rodata(_))),
                 owner: if code {
                     hot.iter().find(|c| c.rank(s).is_some()).map(|c| c.name.clone())
                 } else {
@@ -289,12 +308,14 @@ fn funcs(an: &Analysis, hot: &[Cluster]) -> Vec<Func> {
 }
 
 /// Nodes matching any of `pats`; a pattern that matches nothing is an
-/// error.
+/// error, unless it starts with `?` (code of a feature a build may leave
+/// out: `rules::optional_pattern`).
 fn nodes(an: &Analysis, pats: &[String], what: &str) -> Result<Vec<usize>> {
     let mut v = Vec::new();
     for p in pats {
-        let m = an.find(p);
-        if m.is_empty() {
+        let (may_be_absent, pat) = rules::optional_pattern(p);
+        let m = an.find(pat);
+        if m.is_empty() && !may_be_absent {
             bail!("{what} `{p}` matches nothing");
         }
         v.extend(m);
@@ -588,7 +609,7 @@ mod tests {
     use super::*;
 
     fn f(label: &str, bytes: u32, paged: bool, owner: Option<&str>) -> Func {
-        Func { label: label.into(), bytes, paged, owner: owner.map(str::to_string) }
+        Func { label: label.into(), bytes, paged, cold: false, owner: owner.map(str::to_string) }
     }
 
     fn graph(n: usize, e: &[(usize, usize)]) -> Vec<Vec<usize>> {
@@ -688,6 +709,23 @@ mod tests {
         let err = check(&w, "io", 4).unwrap_err();
         assert!(err.contains("5 lines, over its budget_lines 4"), "{err}");
         assert!(err.contains("other (1100 B)"), "{err}");
+    }
+
+    /// PG-2: a cluster's path may not run cold code (the rodata window):
+    /// the check names it even when the line budget holds.
+    #[test]
+    fn a_path_into_cold_code_fails_the_check() {
+        let mut funcs = vec![f("r", 900, true, Some("io")), f("books::step", 300, true, None)];
+        funcs[1].cold = true;
+        let e = graph(2, &[(0, 1)]);
+        let d = distances(&e, &[0], &[false; 2]);
+        let w = working_set(&funcs, &d, "io", &[]);
+        assert_eq!(w.cold, vec![("books::step".to_string(), 300)]);
+        let err = check(&w, "io", 10).unwrap_err();
+        assert!(err.contains("reaches 1 cold functions") && err.contains("books::step (300 B)"), "{err}");
+        // Stopped there: fine.
+        let d = distances(&e, &[0], &[false, true]);
+        assert!(check(&working_set(&funcs, &d, "io", &[]), "io", 10).is_ok());
     }
 
     #[test]

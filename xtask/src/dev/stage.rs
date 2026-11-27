@@ -31,6 +31,7 @@ pub fn slot_image(resident: &[u8], pages: &[u8], code_pages: u32, rodata_pages: 
         res_len: 0,
         verified: 0xFFFF_FFFF,
         build_id: [0; 16],
+        rodata_code_pages: 0,
     };
     let id = crc32(resident).to_le_bytes();
     h.build_id[..4].copy_from_slice(&id);

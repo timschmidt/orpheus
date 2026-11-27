@@ -3503,6 +3503,9 @@ pub fn status_reply() {
             .u(u64::from(media::Server::walk_progress().1 & 0xFF_FFFF))
             .s(b" d")
             .u(u64::from(media::Server::walk_progress().1 >> 24));
+        // PG-2: loads that ran an instruction of cold code from a
+        // trampoline (02 §3.6).
+        w.s(t!(b" bounces=")).u(u64::from(atj2157_hal::pager::stats().bounces));
         // The queue and the track (HIL tests need no key navigation).
         let (pos, len, shuffled, title, at_ms) = critical_section::with(|cs| {
             let p = media::PLAYER.borrow(cs).borrow();

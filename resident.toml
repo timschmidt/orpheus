@@ -146,6 +146,92 @@ symbols = [
     "orpheus_dsp::meter::*",
 ]
 
+[bin.firmware.cold]
+# Cold code (PG-2, 02 §3.6): paged code that may run from the rodata window
+# (SRAM3's two slots, shared with the constants) instead of the code window,
+# which was full (speech and Books needed 148 of its 128 pages). Only code
+# that no deadline waits for: rare screens and their services, card jobs
+# with budgets of their own, the developer channel's replies. Never the
+# audio path, the synth, interrupt handlers (resident anyway) or anything
+# a `hot.toml` cluster names (a cluster keeps its code in the code window;
+# `xtask stack --check` fails when a cluster's reach enters cold code).
+# A cold instruction reading a constant on its own physical line runs from
+# a trampoline (`orpheus_pager::bounce`); pagelink places cold code clear of
+# the lines of the constants it refers to where it can.
+#
+# Only as much as the code window needs leaves it: pagelink brings cold
+# code back, **from the end of this list**, while the code window keeps a
+# page free (`pagelink::place_cold`). So the list runs coldest first.
+symbols = [
+    # Books' conversion and its formats (once per book).
+    "orpheus_books::convert::*",
+    "*<orpheus_books::convert::*",
+    "orpheus_books::epub::*",
+    "*<orpheus_books::epub::*",
+    "orpheus_books::inflate::*",
+    "*<orpheus_books::inflate::*",
+    "orpheus_books::xml::*",
+    "*<orpheus_books::xml::*",
+    "orpheus_books::xhtml::*",
+    "*<orpheus_books::xhtml::*",
+    "orpheus_books::fb2::*",
+    "*<orpheus_books::fb2::*",
+    "orpheus_books::opf::*",
+    "*<orpheus_books::opf::*",
+    "orpheus_books::zip::*",
+    "orpheus_books::md::*",
+    "*<orpheus_books::md::*",
+    "orpheus_books::enc::*",
+    "*<orpheus_books::enc::*",
+    "orpheus_books::norm::*",
+    "*<orpheus_books::norm::*",
+    "orpheus_books::txt::*",
+    # Firmware updates, the authenticator (OTP) and their hashes.
+    "orpheus_update::*",
+    "firmware::update::*",
+    "orpheus_apps::screens::update::*",
+    "orpheus_otp::*",
+    "orpheus_apps::screens::auth::*",
+    "sha1::*",
+    "sha2::*",
+    "chacha20::*",
+    "chacha20poly1305::*",
+    "poly1305::*",
+    "orpheus_hid::*",
+    # The music library's build (a card job with its own budget).
+    "orpheus_library::*",
+    "firmware::library::*",
+    # Settings-like screens entered rarely.
+    "orpheus_apps::screens::bluetooth::*",
+    "orpheus_apps::screens::clocks::*",
+    "orpheus_apps::screens::drive::*",
+    "orpheus_apps::screens::steps::*",
+    "orpheus_apps::screens::system::*",
+    "orpheus_apps::screens::edit::*",
+    "orpheus_apps::screens::library::*",
+    # The rest of Books (05 §7.15): the shelf and the desk's jobs, the
+    # layout, its screens, the firmware glue, and generic code instantiated
+    # for Books' types only.
+    "orpheus_books::*",
+    "*<orpheus_books::*",
+    "firmware::books::*",
+    "*firmware::books::*",
+    "orpheus_apps::screens::books::*",
+    # The developer channel's commands and replies (the lead's tools; the
+    # warmest: polled during tests).
+    "*::test_command",
+    "*::test_command::*",
+    "*::status_reply",
+    "*::status_reply::*",
+    "firmware::usbdev::prof_command",
+    "firmware::usbdev::boot_status_reply",
+    "firmware::ui::top_reply",
+    "firmware::ui::session_reply",
+    "firmware::ui::settings_command",
+    "firmware::sensor::trace_reply",
+    "firmware::sensor::acc_command",
+]
+
 [bin.bringup-pagetoy]
 # Stand-in for the MemManage handler (fw/bringup/pagetoy).
 roots = ["toy_memmanage"]

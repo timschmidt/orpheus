@@ -2210,7 +2210,21 @@ impl Desk {
 
 #[inline(never)]
 fn begin_scan(w: &mut Work) {
-    *w = Work::Scan(ScanJob::new());
+    // The literal here, not `ScanJob::new()`: written straight into `w`
+    // (as `begin_convert`'s is); through the call it was built in a
+    // 4,544 B temporary and copied (PG-2, the card task's deepest path).
+    *w = Work::Scan(ScanJob {
+        stack: [None; SCAN_DEPTH],
+        depth: 0,
+        path: PathBuf::new(),
+        lib: None,
+        count: 0,
+        keys: [0; MAX_BOOKS],
+        head: Head::None,
+        cand: None,
+        rec: LibRecord::default(),
+        started: false,
+    });
 }
 
 #[inline(never)]
@@ -2350,23 +2364,6 @@ fn stage_names(retitle: &mut Option<(u16, MetaText<64>, MetaText<48>)>, io: &mut
     let (rec, title, author) = retitle.take()?;
     io[..files::LIB_NAMES].copy_from_slice(&files::encode_names(&title, &author));
     Some(rec)
-}
-
-impl ScanJob {
-    fn new() -> ScanJob {
-        ScanJob {
-            stack: [None; SCAN_DEPTH],
-            depth: 0,
-            path: PathBuf::new(),
-            lib: None,
-            count: 0,
-            keys: [0; MAX_BOOKS],
-            head: Head::None,
-            cand: None,
-            rec: LibRecord::default(),
-            started: false,
-        }
-    }
 }
 
 #[cfg(test)]
