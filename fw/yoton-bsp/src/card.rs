@@ -125,6 +125,11 @@ impl Card {
     pub fn set_timing(delays: u8) {
         Sd::set_timing(delays);
     }
+
+    /// `SD_EN.CLKS` for the high-speed trials (U-SD-1).
+    pub fn set_clks(on: bool) {
+        Sd::set_clks(on);
+    }
 }
 
 /// DEVPLL for the card's high-speed clock: 24 × 6 = 144 MHz, ÷3 = 48 MHz.

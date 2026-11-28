@@ -4161,6 +4161,9 @@ async fn idle(vol: &mut Volume<'static, Card>, ring: &mut Ring, arena: &mut [u8]
                     w.s(b"fcreate failed: not in the demo tree");
                 });
             }
+        } else if let Some(a) = text.strip_prefix("card hs scan") {
+            // U-SD-1: the high-speed timing trials (`crate::bench`).
+            Apart(crate::bench::hs_scan(vol, arena, a)).await;
         } else if let Some(a) = text.strip_prefix("card bench") {
             // PERF-SD: the card's throughput (`crate::bench`).
             Apart(crate::bench::card_bench(vol, arena, a)).await;

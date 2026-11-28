@@ -475,6 +475,16 @@ impl Sd {
         TIMING.store(u32::from(delays) << 16, core::sync::atomic::Ordering::Relaxed);
     }
 
+    /// `SD_EN.CLKS` (bit 8, "clock select" in the SDK header, meaning
+    /// unknown): for the high-speed trials (U-SD-1). `Sd::new` clears it.
+    pub fn set_clks(on: bool) {
+        if on {
+            sd::EN.set_bits(sd::en::CLKS);
+        } else {
+            sd::EN.clear_bits(sd::en::CLKS);
+        }
+    }
+
     /// Capacity in blocks (0 before init).
     #[must_use]
     pub fn blocks(&self) -> u64 {
