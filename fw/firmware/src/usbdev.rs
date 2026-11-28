@@ -162,6 +162,24 @@ impl Target for Fw {
             MODE.signal(Personality::FileTransfer);
             return true;
         }
+        if let Some(n) = data.strip_prefix(dc::upload::BULK_CMD.as_bytes()) {
+            let n = n
+                .iter()
+                .filter(|d| d.is_ascii_digit())
+                .fold(0u32, |a, d| a.saturating_mul(10).saturating_add(u32::from(d - b'0')));
+            let open = crate::audio::uploading();
+            if open {
+                BULK_UP.signal(n);
+            }
+            crate::audio::reply(|w| {
+                if open {
+                    w.s(b"fput ").u(u64::from(n));
+                } else {
+                    w.s(b"fput failed: no upload open");
+                }
+            });
+            return true;
+        }
         if let Some(rest) = data.strip_prefix(b"usb msc stats") {
             if rest == b" reset" {
                 msc_reset();
@@ -1011,15 +1029,37 @@ async fn run_dev() -> Personality {
     // the browser installer opens it without a driver. With the developer
     // channel off the device has no interface (charging only; the host
     // still enumerates it, so the USB liveness check sees it answered).
-    if dev_channel() {
-        orpheus_usb::webusb::dev_interface(&mut b, true);
-    }
+    let ep = if dev_channel() { orpheus_usb::webusb::dev_interface(&mut b, true) } else { None };
     let mut dev = b.build();
-    let r = embassy_futures::select::select3(dev.run(), supervisor(), next_mode(Personality::Dev)).await;
+    let r = embassy_futures::select::select4(
+        dev.run(),
+        supervisor(),
+        next_mode(Personality::Dev),
+        crate::frame::Own(upload_pump(ep)),
+    )
+    .await;
     usb::set_attached(false);
     match r {
-        embassy_futures::select::Either3::Third(p) => p,
+        embassy_futures::select::Either4::Third(p) => p,
         _ => Personality::Dev,
+    }
+}
+
+/// A bulk upload asked for (`fput N`, `orpheus_proto::devchan::upload::
+/// BULK_CMD`): its byte count.
+static BULK_UP: embassy_sync::signal::Signal<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, u32> =
+    embassy_sync::signal::Signal::new();
+
+/// The developer interface's bulk uploads (PERF-SD round 2): each `fput N`
+/// takes `N` bytes from the endpoint into the upload's staging halves
+/// (`crate::audio::bulk_feed`). Never ends.
+async fn upload_pump(ep: Option<usb::EndpointOut>) {
+    let Some(mut ep) = ep else { return core::future::pending().await };
+    loop {
+        let n = BULK_UP.wait().await;
+        if !crate::audio::bulk_feed(&mut ep, n).await {
+            atj2157_hal::log::line(b"usb: bulk upload cut short");
+        }
     }
 }
 
@@ -1296,7 +1336,8 @@ pub async fn usb() {
         mode = match mode {
             Personality::Dev => run_dev().await,
             Personality::FileTransfer => run_msc().await,
-            Personality::Keyboard => run_kbd().await,
+            // (Its own poll function, in the cold code: the keyboard is rare.)
+            Personality::Keyboard => crate::frame::Own(run_kbd()).await,
             Personality::Image => run_image().await,
         };
         usb::shutdown();

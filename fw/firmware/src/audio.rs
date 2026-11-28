@@ -3549,6 +3549,46 @@ pub fn put_chunk(seq: u16, data: &[u8]) -> bool {
     true
 }
 
+/// An upload is open (`fcreate`): chunks or a bulk upload are taken.
+pub fn uploading() -> bool {
+    UPLOADING.load(Ordering::Acquire)
+}
+
+/// A bulk upload (PERF-SD round 2, `fput N`): `total` bytes from the
+/// developer interface's endpoint into the staging halves, piece by piece
+/// (`orpheus_proto::devchan::upload::pieces`), each received by one DMA
+/// straight into its half while the card task writes the other, then
+/// handed over as a half of chunks is. `false`: the upload closed, or the
+/// endpoint failed (the host's transfer timed out).
+pub async fn bulk_feed(ep: &mut atj2157_hal::usb::EndpointOut, total: u32) -> bool {
+    use orpheus_proto::devchan::upload::{STAGE_HALF, pieces};
+    for (half, n) in pieces(u64::from(total)) {
+        if !uploading() {
+            return false;
+        }
+        let at = usize::from(half) * STAGE_HALF;
+        // SAFETY: while UPLOADING is set the card task reads a staging half
+        // only after it is handed over in PUT_LEN; this half was handed
+        // over two pieces ago and written before the last piece was handed
+        // over (the wait below), and no chunk fills a half meanwhile (the
+        // host sends either chunks or a bulk upload).
+        let buf = unsafe { &mut (&mut (*(&raw mut POOL)).arena)[at..at + n] };
+        if ep.read_exact(buf).await.is_err() {
+            return false;
+        }
+        // The other half's card write first.
+        while PUT_LEN.load(Ordering::Acquire) != 0 {
+            if !uploading() {
+                return false;
+            }
+            Timer::after_micros(500).await;
+        }
+        PUT_LEN.store((n as u32) << 1 | u32::from(half), Ordering::Release);
+        PUT_SIGNAL.signal(());
+    }
+    true
+}
+
 /// Upload loop (`fcreate PATH`): appends chunks until `fclose` arrives as
 /// a command; writes only where the volume allows (`/.orpheus/`). Any
 /// other command, or no chunk for `UPLOAD_IDLE_MS`, ends it as well (the

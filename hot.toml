@@ -335,6 +335,9 @@ symbols = [
     "atj2157_hal::sd::Sd>::command::*",
     "atj2157_hal::sd::Sd>::wait_ts::*",
     "atj2157_hal::sd::Sd>::check_state",
+    # The busy wait after a CMD12 (PERF-SD round 2: DAT0, U-SD-4); every
+    # multi-block read ends with one.
+    "atj2157_hal::sd::Sd>::wait_dat0::*",
 ]
 
 # A games card operation while music plays (`serve:games`, `job:games`:
@@ -403,6 +406,9 @@ symbols = [
     "firmware::media::ready", # 147 B, 1 calls from a root
     "<orpheus_fs::volume::Volume<yoton_bsp::card::Card>>::flush_step::{closure#0}", # 677 B, 1 calls from a root
     "<orpheus_fs::volume::Volume<yoton_bsp::card::Card>>::rewrite::{closure#0}", # 457 B, 1 calls from a root
+    # PERF-SD round 2: the card's naps when it spins (in a synchronous
+    # poller), on the write path's busy waits.
+    "atj2157_hal::delay::wait_us_gently", # 90 B
 ]
 
 # A directory walk while playing (`job:index` stretches, listings): one
@@ -772,9 +778,4 @@ symbols = [
     "<atj2157_hal::usb::InFlight as core::ops::drop::Drop>::drop",
     "atj2157_hal::usb::dma_wait::*",
     "<embassy_time::instant::Instant>::elapsed",
-    # The card's busy wait after a CMD12 (once per piece here; once per
-    # refill in playback, which keeps `play-fill` within its six lines).
-    "atj2157_hal::sd::Sd>::wait_dat0::*",
-    # The card's naps while it spins (`nap!` in `NO_SLEEP`).
-    "atj2157_hal::delay::wait_us_gently",
 ]

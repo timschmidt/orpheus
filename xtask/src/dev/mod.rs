@@ -682,6 +682,17 @@ fn upload_with(d: &orpheus_host::devchan::DevChannel, cmd: &str, data: &[u8]) ->
     };
     d.control_out(REQ_TEST, 0, 0, cmd.as_bytes())?;
     wait_for("put 0")?;
+    // PERF-SD round 2: the developer interface's bulk endpoint when the
+    // firmware has it (`orpheus_proto::devchan::upload::BULK_CMD`).
+    if d.has_bulk_upload() && !data.is_empty() {
+        let n = data.len();
+        d.control_out(REQ_TEST, 0, 0, format!("{}{n}", orpheus_proto::devchan::upload::BULK_CMD).as_bytes())?;
+        wait_for(&format!("fput {n}"))?;
+        d.bulk_upload(data, Duration::from_secs(10))?;
+        wait_for(&format!("put {n}"))?;
+        d.control_out(REQ_TEST, 0, 0, b"fclose")?;
+        return wait_for(&format!("closed {n}"));
+    }
     // Chunks numbered in `wValue`, sent back to back: the player stages
     // them (`orpheus_proto::devchan::upload`) and refuses one while both
     // halves wait for the card; a refused chunk is sent again (PERF-SD:

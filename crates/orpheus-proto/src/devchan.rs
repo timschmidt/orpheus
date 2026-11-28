@@ -141,6 +141,30 @@ pub mod upload {
     /// Bytes of one staging half.
     pub const STAGE_HALF: usize = 16 * 1024;
 
+    /// Bulk uploads (PERF-SD round 2): after `fcreate PATH` answered
+    /// `put 0`, the test command `fput N` (this prefix, then the byte
+    /// count) has the player take the next `N` bytes from the developer
+    /// interface's bulk OUT endpoint ([`BULK_EP`]) straight into the
+    /// staging halves by DMA ([`pieces`]); it answers `fput N`. The host
+    /// then waits for `put N` (all of it on the card) and sends `fclose`
+    /// as for chunks. Control-transfer chunks (`REQ_PUT`) moved ≈ 45 KB/s;
+    /// a firmware without the endpoint is uploaded to with them.
+    pub const BULK_CMD: &str = "fput ";
+    /// The developer interface's bulk OUT endpoint address.
+    pub const BULK_EP: u8 = 0x01;
+
+    /// The bulk upload's pieces: (staging half, bytes), the halves taken
+    /// in turn from half 0, each at most [`STAGE_HALF`]; the player reads
+    /// each piece as one DMA of exactly its length, so the host may cut
+    /// its transfers anywhere.
+    pub fn pieces(total: u64) -> impl Iterator<Item = (u8, usize)> {
+        let n = total.div_ceil(STAGE_HALF as u64);
+        (0..n).map(move |i| {
+            let left = total - i * STAGE_HALF as u64;
+            ((i & 1) as u8, left.min(STAGE_HALF as u64) as usize)
+        })
+    }
+
     /// What to do with one chunk.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum Put {
@@ -538,6 +562,20 @@ mod tests {
             assert_eq!(upload_cmd(other), UploadCmd::Abort, "{:?}", core::str::from_utf8(other));
         }
         const { assert!(UPLOAD_IDLE_MS >= 2_000 && UPLOAD_IDLE_MS <= 30_000) };
+    }
+
+    /// A bulk upload's pieces cover the file exactly, half 0 first, the
+    /// halves in turn, none longer than a half.
+    #[test]
+    fn bulk_upload_pieces() {
+        use upload::{STAGE_HALF, pieces};
+        assert_eq!(pieces(0).count(), 0);
+        assert_eq!(pieces(1).collect::<std::vec::Vec<_>>(), [(0, 1)]);
+        let h = STAGE_HALF;
+        assert_eq!(pieces(2 * h as u64 + 5).collect::<std::vec::Vec<_>>(), [(0, h), (1, h), (0, 5)]);
+        let total = 4 * 1024 * 1024 + 123;
+        assert_eq!(pieces(total).map(|(_, n)| n as u64).sum::<u64>(), total);
+        assert!(pieces(total).all(|(_, n)| n > 0 && n <= h));
     }
 
     /// Regression: `dev playdir` while a track played was ignored (AU-5,

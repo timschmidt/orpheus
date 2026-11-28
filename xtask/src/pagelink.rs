@@ -770,6 +770,7 @@ pub fn pack(g: &Graph, places: &[Place], hot: &[Cluster], crates: &[String]) -> 
 
 /// Order and pack the paged sections; the `cold` code sections go to the
 /// rodata window.
+#[cfg(test)]
 pub fn pack_cold(
     g: &Graph,
     places: &[Place],
