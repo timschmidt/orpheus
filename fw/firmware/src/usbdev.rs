@@ -894,13 +894,27 @@ impl orpheus_usb::msc::bot::BulkOut for BulkOut {
 static MSC_SERIAL: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// The card's high-speed clock for a USB session ([`CARD_HS`]); logged.
+/// With the card at 48 MHz the core stays at or below
+/// `governor::CARD_HS_CAP` (`crate::CLOCK_CAP`) until [`card_slow`].
 async fn card_fast(card: &mut yoton_bsp::card::Card) {
     if CARD_HS.load(Ordering::Relaxed) {
         let khz = card.high_speed(50_000).await.unwrap_or(0);
+        if khz > 25_000 {
+            let cap = orpheus_power::governor::CARD_HS_CAP;
+            crate::CLOCK_CAP.store(cap.as_floor(), Ordering::Relaxed);
+            if atj2157_hal::clock::current() > cap {
+                atj2157_hal::clock::set_level(cap);
+            }
+        }
         let mut l = log::LineBuf::new();
         l.push_str("usb: card clock ").push_u32(khz).push_str(" kHz");
         l.emit();
     }
+}
+
+/// The card is back at its default clock: no ceiling.
+fn card_slow() {
+    crate::CLOCK_CAP.store(4, Ordering::Relaxed);
 }
 
 /// The card reader's waits spin up to this long before they sleep (µs;
@@ -1103,6 +1117,7 @@ async fn run_msc() -> Personality {
     }
     yoton_bsp::card::set_spin(false);
     usb::set_spin(0);
+    card_slow();
     crate::audio::CARD_BACK.send(card).await;
     CARD_WITH_USB.store(false, Ordering::Relaxed);
     atj2157_hal::log::line(b"usb: card returned");
@@ -1227,6 +1242,7 @@ async fn run_image() -> Personality {
     }
     yoton_bsp::card::set_spin(false);
     usb::set_spin(0);
+    card_slow();
     crate::audio::CARD_BACK.send(card).await;
     CARD_WITH_USB.store(false, Ordering::Relaxed);
     crate::drive::update(|i| {

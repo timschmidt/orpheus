@@ -103,6 +103,19 @@ impl Level {
     pub const fn from_floor(f: u8) -> Level {
         Level::from_index(if f >= 4 { 5 } else { f + 1 })
     }
+
+    /// The floor code of this level ([`Self::from_floor`]'s inverse; Low
+    /// gives 0, as Base).
+    #[must_use]
+    pub const fn as_floor(self) -> u8 {
+        match self {
+            Level::Low | Level::Base => 0,
+            Level::Mid => 1,
+            Level::High => 2,
+            Level::Turbo => 3,
+            Level::Max => 4,
+        }
+    }
 }
 
 /// The supply code a write may use: `code` clamped to [`VDD_MAX`], `None`
