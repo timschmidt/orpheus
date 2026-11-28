@@ -48,7 +48,7 @@ rects = [{ x = 48, y = 33, w = 80, h = 77, why = "setting values and switches" }
 
 [screen.NowPlaying]
 rects = [
-    { x = 0, y = 14, w = 128, h = 90, why = "art, title, artist, album, format, queue position, progress" },
+    { x = 0, y = 14, w = 128, h = 90, why = "art, format and queue position beside it, the names line (a marquee, UI-NP), progress" },
     { x = 0, y = 104, w = 60, h = 24, why = "elapsed time" },
     { x = 70, y = 104, w = 58, h = 24, why = "remaining time" },
 ]

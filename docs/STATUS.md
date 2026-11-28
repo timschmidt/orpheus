@@ -86,8 +86,85 @@ of every session. Newest entries first in §3.
 | VER-13 (DOC-2 findings) | **done (host + simulator + firmware built); on the player: not yet** (2026-11-27) | Time check shows UTC (`regress_auth_time_check_shows_utc`); Recording › Source Line-in retired; Output hidden (no route, U-BT-2); Settings › Storage: Clear caches, Check card (read-only), Format card (owner allowed, 2026-11-27, via the lead) work through `orpheus-fs` (`format`, `Volume::check`, `remove_tree`); System › Diagnostics read-only; journeys `storage`, `storage_clear` (not run); rodata window 64/64; stack margin 4,276 B (session entry 2026-11-27 "VER-13: the DOC-2 findings fixed") |
 | VER-3 | **done (host)** | Adversarial-input suites in 27 crates (`tests/adversarial.rs`, shared helper `tests/adversarial.rs`; 99 tests, 24 `proptest` properties with fixed seeds, failures recorded in `tests/regress/proptest/`); 3 bugs fixed (F-GAME-1, F-SET-3, F-SET-4); inventory and what is not covered: `docs/verification/baseline-2026-11.md` §9 (session entry 2026-11-27 "VER-3") |
 | VER-4 (settings store keys) | **done, on the player** (store mounts on every boot since the 2026-11-26 read-race fix; owner's settings intact) | Store index 128 → 192 keys at 4 B a slot (was 8), same NOR format both ways (fixture from the old code, byte-equal images); cache write marks unlimited; 131 keys in use with every app (61 free), firmware 129; sector ceiling ≈ 209 settings keys (256 cannot fit one sector); .bss −1,248 B, stack margin 5,664 B; compaction no longer re-blesses a rotted value (session entry 2026-11-26 "VER-4: settings store index") |
+| UI-NP | **done (host + simulator + firmware built), not yet on the player** (2026-11-28) | Now Playing (owner 2026-11-28): the file's type and properties (codec + queue place, sample rate, bit depth, bit rate) right of the art; "Artist – Title" on one full-width line above the progress bar, a marquee when too wide (still, with "…", under reduced motion); album no longer on the normal-size Standard view. 12 new and 24 changed goldens; code window 10 B free |
 
 ## 3. Session log
+
+### 2026-11-28 — UI-NP: Now Playing's names over the whole width (worker, no hardware)
+
+Owner's request 2026-11-28 (verbatim in 05 §7.1 "As built (UI-NP)"): move
+the file type and properties next to the art and give the artist / track
+name a full-width line just above the progress bar, marqueed when needed;
+clarified: a swap of the two blocks, no album right of the art, the point
+is readability.
+
+* **Layout** (Standard view, normal text size; look at
+  `sim/golden/media_np_dark_latin.png`, `media_np_scrolled_dark_latin.png`,
+  `media_np_big_queue_dark_latin.png`): art 52 × 52 top left as before;
+  right of it four lines: the codec (bold) with the queue place
+  right-aligned beside it when both fit, the sample rate ("44.1 kHz"),
+  the bit depth ("16-bit"), the bit rate ("320 kbit/s", the pack's unit);
+  a queue place too wide for the codec's line ("1 / 5000") takes the bit
+  rate's line; an unknown property (0) leaves its line out. Below, one
+  line over the whole width at baseline 72: the artist (dim), " – ", the
+  title (bold; the title alone without an artist; the title is the file
+  name when untagged, as before). Then the progress bar and times,
+  unchanged.
+* **Marquee**: the list's `marquee_offset` (800 ms, 30 px/s, 1 s pauses),
+  restarted with each track; at rest and with reduced motion (Animations
+  off, or Power mode Battery saver: `services::animations`) the line ends
+  in "…". Only the names line is redrawn as it moves; the progress row
+  only when its second, bar or play state changes. Large / Extra large
+  text: unchanged (no art, names already over the width), no marquee.
+* **The album** is no longer on the normal-size Standard view (the
+  owner's clarification: only artist and title on the line). Still in
+  Large text, the screen reader's description, Go to album, the library.
+  If the owner wants it back it could follow the title on the marquee
+  line (" – Album"): not done, it would make most lines scroll.
+* **Unchanged**: Big art, Lyrics, Up next, Details, Levels, idle view,
+  the mini player (its goldens did not change), the screen reader's
+  description, the T-4a demo player (`player_*`, the toolkit demo in
+  `sim/src/demo.rs`, not the app's screen).
+* **Tests**: `settings_matrix::effects::now_playing_names_scroll_unless_reduced_motion`
+  (the line's pixels 1.5 s apart differ with Animations on / Auto; equal,
+  and equal to the at-rest frame, with Animations off and with Battery
+  saver); `effects.toml`: NowPlaying added to the contexts of 0x0308
+  Animations and 0x0401 Power mode, covered by that test, oracles say so;
+  NowPlaying added to 0x0A01 Language's contexts (the bit rate's unit,
+  "kbit/s" / "кбит/с" / "kbps", is translated: `matrix::s0a01` caught it).
+  Goldens: 24 changed (`media_np_*`, `media_np_paused_*`,
+  `media_np_menu_*`, `library_play_*`, `library_np_menu_*`,
+  `a11y_now_playing_contrast_*`), 12 new (`media_np_scrolled_*`,
+  `media_np_big_queue_*`); all looked at. No bug fixed, so no `regress_`
+  test.
+* **Suite**: `tests/suite/masks.toml`'s NowPlaying mask already covers
+  the content area (y 14–103), so the scrolling line is masked; only its
+  "why" text changed. The `nowplaying` journey's `np` shot (wait:300) is
+  at rest anyway; its `np_menu` shot masks y 14–39, above the line. The
+  expected frames `tests/suite/expected/nowplaying/np.png` and `np_menu.png`
+  are regenerated from the simulator (`ORPHEUS_BLESS=1` on the xtask test,
+  no device) and looked at.
+* **Docs**: 05 §7.1 drawing and "As built (UI-NP)"; `docs/user/now-playing.md`;
+  README alt text; `xtask site shots` rewrote `docs/shots/media_np_dark_latin.png`
+  and `media_np_menu_dark_latin.png`.
+* **Firmware** (default image): `xtask build` ok; paged code 1,047,578 →
+  1,047,564 B, code window 2 → **10 B free** (128/128 pages), rodata
+  64/64 (316,046 → 316,051 B paged), resident 60,704 B unchanged;
+  `check-resident`, `size --check`, `stack --check` (margin 4,788 B,
+  unchanged) and `xtask test pagelink` pass.
+* **Gate**: fmt (root, fw), clippy -D warnings (root, fw) pass; `cargo
+  test --workspace --no-fail-fast` 2,316 pass, 0 fail; `settings-matrix --check` 0 errors;
+  `site --check` ok. Not run: anything on the player, `xtask wasm --test`.
+* **For the lead, on the player**: `dev suite` (at least `nowplaying`,
+  `settings_accessibility`); a look at Now Playing with a long
+  "Artist – Title" (it should scroll after ≈ 1 s and stop with Animations
+  off); **`dev soak music` and the `/MIDI` folder for underruns and line
+  loads/s**: the names line now redraws up to 30 times a second while it
+  scrolls (the mini player does the same while browsing), which may page
+  Now Playing's and the font's code more than before (PERF-SD r2's
+  baseline: 1,952 loads/s, idle 60 %, 0 underruns).
+* **User check**: the owner looks at the new Now Playing (is the album's
+  absence right; is bold title + dim artist the look wanted).
 
 ### 2026-11-28 — PERF-SD: SD and USB mass storage throughput, round 2 (worker, player)
 

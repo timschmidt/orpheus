@@ -744,6 +744,33 @@ mod effects {
         }
     }
 
+    /// Now Playing's names line (UI-NP, owner 2026-11-28): "Artist –
+    /// Title" over the whole width above the progress bar scrolls when it
+    /// is wider than the screen (frames 1.5 s apart differ) with Animations
+    /// (0x0308) on and Power mode (0x0401) Auto; Animations off or Battery
+    /// saver keep it at rest, cut with an ellipsis, as it is before the
+    /// marquee starts.
+    #[test]
+    fn now_playing_names_scroll_unless_reduced_motion() {
+        // Panel rows 71–89: the names line (content y 57–75); the rest of
+        // the screen is not part of this.
+        let line = |s: &AppSim| fnv((71..90).flat_map(|r| (0..128).map(move |c| s.fb[r * 128 + c])));
+        let pair = |set: &str| {
+            let mut s = sim(&format!("{set} {PLAY} goto:NowPlaying wait:100 expect-screen:NowPlaying"));
+            s.draw();
+            let a = line(&s);
+            run(&mut s, "wait:1500");
+            s.draw();
+            (a, line(&s))
+        };
+        let (rest, moved) = pair("set:0x0308=1 set:0x0401=0");
+        assert_ne!(rest, moved, "Animations on: the long names line scrolls");
+        for set in ["set:0x0308=0 set:0x0401=0", "set:0x0308=1 set:0x0401=1"] {
+            let (a, b) = pair(set);
+            assert_eq!((a, b), (rest, rest), "{set}: the line stays at rest");
+        }
+    }
+
     /// Settings › Accessibility › Text size (0x1001): lists show fewer,
     /// taller rows and a key pages by what shows (Settings › Display,
     /// Next pages by 5 rows normally, 4 at Large, 3 at Extra large), and

@@ -15,7 +15,7 @@ voice can read every screen aloud.
 
 <p align="center">
   <img src="docs/shots/app_home_dark_latin.png" alt="Home: the grid of apps" width="256">
-  <img src="docs/shots/media_np_dark_latin.png" alt="Now Playing: cover, title, artist, format and progress" width="256">
+  <img src="docs/shots/media_np_dark_latin.png" alt="Now Playing: cover, format, artist and title, progress" width="256">
   <img src="docs/shots/radio_playing_dark_latin.png" alt="Radio: a station with its frequency and RDS name" width="256">
 </p>
 

@@ -13,14 +13,16 @@ use orpheus_ui::nav::{Arg, Cx, Dirty, Nav, Screen, StripUse, Wants};
 use orpheus_ui::text::StrBuf;
 use orpheus_ui::theme::Role;
 use orpheus_ui::widgets::dialog::DialogSpec;
-use orpheus_ui::widgets::list::{Item, ListAction, ListSource, ListView, Row};
+use orpheus_ui::widgets::list::{Item, ListAction, ListSource, ListView, Row, marquee_offset};
 use orpheus_ui::widgets::misc::draw_progress;
 
 use super::files::push_size;
 use super::rows::Rows;
 use super::{CHOICE, EQUALISER, FILES, LIBRARY, LibraryScreen};
 use crate::icons;
-use crate::services::{ArtSize, FileOp, LibList, PicReq, PicState, PlayerCmd, PlayerService, Services, data};
+use crate::services::{
+    ArtSize, FileOp, LibList, PicReq, PicState, PlayerCmd, PlayerService, Services, TrackInfo, data,
+};
 use crate::settings::{self, EQ_BANDS_HZ, NP_VIEWS, SettingId, id};
 use crate::strings::{Lang, Str};
 
@@ -36,6 +38,12 @@ const OVERLAY_MS: u64 = 3000;
 /// Levels redraw at most this often (≤ 15 fps).
 const LEVELS_MS: u64 = 66;
 const LIST_ROWS: u32 = 6;
+/// Standard view (UI-NP): the baseline of the first line right of the art
+/// and the pitch of the lines below it (four in the art's 52 px).
+const NP_COL_Y: i16 = 15;
+const NP_COL_PITCH: i16 = 13;
+/// Standard view: the baseline of the names line above the progress bar.
+const NP_NAMES_Y: i16 = 72;
 
 /// The seek ladder of Prev/Next held (05 §7.1: "accelerating from 2 s/step
 /// to 30 s/step"), in seconds; Settings › Playback › Seek step is its
@@ -102,6 +110,8 @@ struct Snap {
     qpos: u32,
     qlen: u32,
     art: u32,
+    /// The names line's marquee offset (Standard view).
+    scroll: i16,
 }
 
 #[derive(Default)]
@@ -117,6 +127,12 @@ pub struct NowPlayingScreen {
     /// Album art asked for and not there yet; arrived (mark it).
     art_pending: bool,
     art_arrived: bool,
+    /// The names line (Standard view): the track it was measured for, when
+    /// that track was first shown (the marquee's start) and by how many
+    /// pixels it is wider than the screen.
+    names_track: u32,
+    names_since: Instant,
+    names_over: i16,
 }
 
 // Menu ids.
@@ -184,6 +200,7 @@ impl NowPlayingScreen {
             qpos: p.queue_pos,
             qlen: p.queue_len,
             art: p.art,
+            scroll: 0,
         }
     }
 
@@ -402,7 +419,7 @@ impl NowPlayingScreen {
         self.draw_progress_rows(svc, g);
     }
 
-    fn draw_standard<S: Services + ?Sized>(&mut self, svc: &S, g: &mut Gfx<'_>) {
+    fn draw_standard<S: Services + ?Sized>(&mut self, svc: &S, g: &mut Gfx<'_>, off: i16) {
         if g.text != TextSize::Normal {
             self.draw_standard_large(svc, g);
             return;
@@ -415,49 +432,89 @@ impl NowPlayingScreen {
         let tw = w - tx - 4;
         let text = g.c(Role::Text);
         let dim = g.c(Role::TextDim);
-        // Bold unless a word would have to be broken; then regular.
-        let font = if t.title.split(' ').all(|w| crate::strings_fit(g, w, FontId::UiBold, tw)) {
-            FontId::UiBold
-        } else {
-            FontId::Ui
-        };
-        let pitch = g.line_pitch(t.title, font);
-        let mut lines = 0i16;
-        g.wrap(t.title, font, tw, |g, line| {
-            if lines < 2 {
-                g.text_in(tx, 16 + pitch * lines, tw, line, font, text, Align::Left);
-            }
-            lines += 1;
-        });
-        if lines > 2 {
-            // Third line would be cut: end the second with an ellipsis.
-            g.fill_role(Rect::new(tx + tw - 10, 16 + pitch - 12, 10, 14), Role::Bg);
-            g.text(tx + tw - 9, 16 + pitch, "…", FontId::Ui, text);
-        }
-        let mut y = 16 + pitch * lines.min(2);
-        for s in [t.artist, t.album] {
-            if !s.is_empty() && y <= 58 {
-                g.text_in(tx, y, tw, s, FontId::Ui, dim, Align::Left);
-                y += g.line_pitch(s, FontId::Ui);
-            }
-        }
-        let mut badge = StrBuf::<24>::new();
-        badge.push_str(t.codec);
-        badge.push(' ');
-        badge.push_u32(t.sample_rate / 1000);
-        if t.sample_rate % 1000 != 0 {
-            badge.push('.');
-            badge.push_u32((t.sample_rate % 1000) / 100);
-        }
-        badge.push('/');
-        badge.push_u32(u32::from(t.bits));
-        g.text(6, 72, badge.as_str(), FontId::Ui, dim);
         let mut qp = StrBuf::<16>::new();
         qp.push_u32(p.queue_pos + 1);
         qp.push_str(" / ");
         qp.push_u32(p.queue_len);
-        g.text_in(w - 60, 72, 54, qp.as_str(), FontId::Ui, dim, Align::Right);
+        // The queue place beside the codec when both fit, else on the last
+        // line instead of the bit rate.
+        let top = g.measure(t.codec, FontId::UiBold) + 6 + g.measure(qp.as_str(), FontId::Ui) <= tw;
+        g.text_in(tx, NP_COL_Y, tw, t.codec, FontId::UiBold, text, Align::Left);
+        let mut y = NP_COL_Y;
+        for i in 0..4u8 {
+            let mut v = StrBuf::<24>::new();
+            match i {
+                0 if top => {
+                    g.text_in(tx, y, tw, qp.as_str(), FontId::Ui, dim, Align::Right);
+                    continue;
+                }
+                1 if t.sample_rate > 0 => {
+                    v.push_u32(t.sample_rate / 1000);
+                    if t.sample_rate % 1000 != 0 {
+                        v.push('.');
+                        v.push_u32((t.sample_rate % 1000) / 100);
+                    }
+                    v.push_str(" kHz");
+                }
+                2 if t.bits > 0 => {
+                    v.push_u32(u32::from(t.bits));
+                    v.push_str("-bit");
+                }
+                3 if !top => {
+                    v.push_str(qp.as_str());
+                }
+                3 if t.bitrate_kbps > 0 => {
+                    v.push_u32(u32::from(t.bitrate_kbps));
+                    v.push(' ');
+                    v.push_str(self.lang.get(Str::Kbps));
+                }
+                _ => continue,
+            }
+            y += NP_COL_PITCH;
+            g.text_in(tx, y, tw, v.as_str(), FontId::Ui, dim, Align::Left);
+        }
+        self.names_over = (Self::names_width(&t, g) - (w - 12)).max(0);
+        Self::draw_names(svc, g, off.min(self.names_over));
         self.draw_progress_rows(svc, g);
+    }
+
+    /// The names line's pieces: the artist (dim) and a dash when there is
+    /// an artist, then the title (bold; the file name when the file has no
+    /// title tag), each with its font and colour.
+    fn names<'t>(t: &TrackInfo<'t>) -> [(&'t str, FontId, Role); 3] {
+        let (a, d) = if t.artist.is_empty() { ("", "") } else { (t.artist, " – ") };
+        [
+            (a, FontId::Ui, Role::TextDim),
+            (d, FontId::Ui, Role::TextDim),
+            (t.title, FontId::UiBold, Role::Text),
+        ]
+    }
+
+    fn names_width(t: &TrackInfo<'_>, g: &mut Gfx<'_>) -> i16 {
+        Self::names(t).iter().fold(0, |a, (s, f, _)| a.saturating_add(g.measure(s, *f)))
+    }
+
+    /// "Artist – Title" over the whole width just above the progress bar
+    /// (UI-NP), scrolled left by `off` pixels (the marquee of 05 §4); at
+    /// rest, and with Animations off, a line too wide for the screen ends
+    /// in an ellipsis.
+    fn draw_names<S: Services + ?Sized>(svc: &S, g: &mut Gfx<'_>, off: i16) {
+        let (w, _) = g.size();
+        let Some(t) = svc.track() else { return };
+        let r = Rect::new(6, NP_NAMES_Y - 15, w - 12, 19);
+        g.fill_role(Rect::new(0, r.y, w, r.h), Role::Bg);
+        g.with_clip(r, |g| {
+            let mut x = r.x - off;
+            for (s, f, role) in Self::names(&t) {
+                let c = g.c(role);
+                let room = r.x + r.w - x;
+                if off == 0 && g.measure(s, f) > room {
+                    g.text_in(x, NP_NAMES_Y, room, s, f, c, Align::Left);
+                    break;
+                }
+                x = g.text(x, NP_NAMES_Y, s, f, c);
+            }
+        });
     }
 
     fn draw_big_art<S: Services + ?Sized>(&mut self, svc: &S, g: &mut Gfx<'_>, overlay: bool) {
@@ -479,7 +536,7 @@ impl NowPlayingScreen {
             match self.view {
                 V_BIG_ART => self.draw_big_art(svc, g, snap.overlay),
                 V_LYRICS => self.draw_lyrics(svc, g),
-                _ => self.draw_standard(svc, g),
+                _ => self.draw_standard(svc, g, snap.scroll),
             }
         }
         self.drawn = Some(snap);
@@ -771,9 +828,19 @@ impl<S: Services + ?Sized> Screen<S> for NowPlayingScreen {
 
     fn draw(&mut self, cx: &Cx<'_, S>, g: &mut Gfx<'_>, dirty: Dirty) {
         let svc = &*cx.svc;
-        let snap = self.snap(svc);
+        let mut snap = self.snap(svc);
         let p = svc.player();
         let idle = p.queue_len == 0 || svc.track().is_none();
+        // The names line's marquee starts again with each new track; it
+        // stands still with Animations off (reduced motion).
+        if snap.track != self.names_track {
+            self.names_track = snap.track;
+            self.names_since = cx.now;
+            self.names_over = 0;
+        }
+        if g.motion && self.view == V_STANDARD && g.text == TextSize::Normal {
+            snap.scroll = marquee_offset(cx.now.since(self.names_since), self.names_over);
+        }
         if self.list_view() && !idle {
             // Lists track their own changes; redraw fully on track change.
             let d = if self.drawn.is_some_and(|s| s.track == snap.track && s.qpos == snap.qpos) {
@@ -806,8 +873,14 @@ impl<S: Services + ?Sized> Screen<S> for NowPlayingScreen {
         let minor = !idle
             && matches!(self.view, V_STANDARD | V_BIG_ART)
             && self.drawn.is_some_and(|d| {
-                Snap { second: snap.second, bar: snap.bar, source: snap.source, overlay: snap.overlay, ..d }
-                    == snap
+                Snap {
+                    second: snap.second,
+                    bar: snap.bar,
+                    source: snap.source,
+                    overlay: snap.overlay,
+                    scroll: snap.scroll,
+                    ..d
+                } == snap
             });
         let arrived = core::mem::take(&mut self.art_arrived);
         if dirty == Dirty::Changed && minor && arrived {
@@ -824,7 +897,12 @@ impl<S: Services + ?Sized> Screen<S> for NowPlayingScreen {
         if dirty == Dirty::Changed && minor {
             let was = self.drawn.unwrap_or(snap);
             if self.view == V_STANDARD {
-                self.draw_progress_rows(svc, g);
+                if snap.scroll != was.scroll {
+                    Self::draw_names(svc, g, snap.scroll);
+                }
+                if (snap.second, snap.bar, snap.source) != (was.second, was.bar, was.source) {
+                    self.draw_progress_rows(svc, g);
+                }
             } else if snap.overlay && !was.overlay {
                 Self::draw_overlay(svc, g);
             } else if snap.overlay {
