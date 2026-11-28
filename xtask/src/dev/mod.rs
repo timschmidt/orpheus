@@ -545,9 +545,20 @@ fn dispatch(sub: &str, args: &mut Args) -> Result<String> {
 /// Exclusive use of the player by this process (07 §7 rule 8).
 struct DeviceLock(#[allow(dead_code)] File);
 
+/// The lock file: one for the whole machine, not per checkout, so workers
+/// in separate git worktrees exclude each other too (2026-11-28: a worker's
+/// `xtask gate` ran `dev hil smoke` on the player during the lead's soak,
+/// each worktree holding its own `target/orpheus/device.lock`).
+/// `ORPHEUS_DEVICE_LOCK` overrides it.
+fn device_lock_path() -> std::path::PathBuf {
+    std::env::var_os("ORPHEUS_DEVICE_LOCK")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("orpheus-device.lock"))
+}
+
 impl DeviceLock {
     fn take() -> Result<Self> {
-        let p = out_dir().join("device.lock");
+        let p = device_lock_path();
         let f = File::create(&p)?;
         if f.try_lock().is_err() {
             bail!("another process is using the player ({} is locked)", p.display());
@@ -825,6 +836,22 @@ mod stats_tests {
         assert_eq!(super::clock_level_name(4), "Turbo 192");
         assert_eq!(super::clock_level_name(5), "Max 288");
         assert_eq!(super::clock_level_name(6), "?");
+    }
+}
+
+#[cfg(test)]
+mod device_lock_tests {
+    /// 2026-11-28: the device lock lived in each checkout's
+    /// `target/orpheus/`, so a worker's gate in another worktree used the
+    /// player during the lead's soak. The lock must be outside any checkout.
+    #[test]
+    fn regress_device_lock_was_per_worktree() {
+        if std::env::var_os("ORPHEUS_DEVICE_LOCK").is_some() {
+            return;
+        }
+        let p = super::device_lock_path();
+        assert!(!p.starts_with(crate::util::root()), "{} is inside the checkout", p.display());
+        assert!(!p.starts_with(crate::util::out_dir()), "{}", p.display());
     }
 }
 
