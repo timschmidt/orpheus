@@ -1113,18 +1113,24 @@ impl drv::EndpointOut for EndpointOut {
                 && crate::time::now_us_raw().wrapping_sub(t0) < spin
             {}
         }
-        poll_fn(|cx| {
-            FIFO_WAKERS[k].register(cx.waker());
-            if !CONFIGURED.load(Ordering::Acquire) {
-                return Poll::Ready(Err(EndpointError::Disabled));
-            }
-            if FIFO_OUT_READY.load(Ordering::Acquire) & (1 << k) != 0 {
-                Poll::Ready(Ok(()))
-            } else {
-                Poll::Pending
-            }
-        })
-        .await?;
+        if !CONFIGURED.load(Ordering::Acquire) {
+            return Err(EndpointError::Disabled);
+        }
+        // Data already here (the spin caught it): no waker to register.
+        if FIFO_OUT_READY.load(Ordering::Acquire) & (1 << k) == 0 {
+            poll_fn(|cx| {
+                FIFO_WAKERS[k].register(cx.waker());
+                if !CONFIGURED.load(Ordering::Acquire) {
+                    return Poll::Ready(Err(EndpointError::Disabled));
+                }
+                if FIFO_OUT_READY.load(Ordering::Acquire) & (1 << k) != 0 {
+                    Poll::Ready(Ok(()))
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await?;
+        }
         let n = (fibc(k).read() & 0x7FF) as usize;
         if n == 0 {
             fibc(k).set_bits(FIBC_FFRST);
