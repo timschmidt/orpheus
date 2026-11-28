@@ -881,7 +881,7 @@ impl orpheus_usb::msc::bot::BulkOut for BulkOut {
 const MSC_SPIN_US: u32 = 2_000;
 /// Longest stretch of card reader commands without a return to the
 /// executor (µs): its other tasks (the UI, the watchdog's feed) run then.
-const MSC_RUN_US: u32 = 8_000;
+const MSC_RUN_US: u32 = 30_000;
 
 /// After a command: when the transport has run [`MSC_RUN_US`] since the
 /// last return to the executor, return to it once (the waits spin, so

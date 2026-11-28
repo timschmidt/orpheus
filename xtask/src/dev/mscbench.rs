@@ -173,38 +173,56 @@ fn unmount(part: &str) {
 const O_DIRECT: i32 = libc::O_DIRECT;
 
 /// Read `path` with direct I/O in [`CHUNK`] pieces; `check(k, piece)` per
-/// MiB. Bytes and time.
-fn read_direct(path: &Path, mut check: impl FnMut(u64, &[u8])) -> Result<(u64, Duration)> {
+/// MiB on a thread of its own (the next read is not held up by the check:
+/// the player would wait for the host). Bytes and time.
+fn read_direct(path: &Path, mut check: impl FnMut(u64, &[u8]) + Send) -> Result<(u64, Duration)> {
     let mut f = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(O_DIRECT)
         .open(path)
         .with_context(|| format!("open {}", path.display()))?;
-    let mut a = Aligned::new(CHUNK);
-    let (mut total, mut k) = (0u64, 0u64);
-    let t0 = Instant::now();
-    loop {
-        let buf = a.buf();
-        let mut got = 0;
-        // Direct reads may return short at the file's end only.
-        while got < CHUNK {
-            let n = f.read(&mut buf[got..])?;
-            if n == 0 {
+    let (full_tx, full_rx) = std::sync::mpsc::sync_channel::<(u64, Aligned, usize)>(2);
+    let (free_tx, free_rx) = std::sync::mpsc::sync_channel::<Aligned>(3);
+    for _ in 0..3 {
+        let _ = free_tx.send(Aligned::new(CHUNK));
+    }
+    std::thread::scope(|sc| -> Result<(u64, Duration)> {
+        sc.spawn(move || {
+            while let Ok((k, mut a, n)) = full_rx.recv() {
+                check(k, &a.buf()[..n]);
+                if free_tx.send(a).is_err() {
+                    break;
+                }
+            }
+        });
+        let (mut total, mut k) = (0u64, 0u64);
+        let t0 = Instant::now();
+        loop {
+            let mut a = free_rx.recv()?;
+            let buf = a.buf();
+            let mut got = 0;
+            // Direct reads may return short at the file's end only.
+            while got < CHUNK {
+                let n = f.read(&mut buf[got..])?;
+                if n == 0 {
+                    break;
+                }
+                got += n;
+            }
+            if got == 0 {
                 break;
             }
-            got += n;
+            total += got as u64;
+            let _ = full_tx.send((k, a, got));
+            k += 1;
+            if got < CHUNK {
+                break;
+            }
         }
-        if got == 0 {
-            break;
-        }
-        check(k, &buf[..got]);
-        total += got as u64;
-        k += 1;
-        if got < CHUNK {
-            break;
-        }
-    }
-    Ok((total, t0.elapsed()))
+        let t = t0.elapsed();
+        drop(full_tx);
+        Ok((total, t))
+    })
 }
 
 /// Write `mib` MiB of the pattern with direct I/O, then `fsync`.
