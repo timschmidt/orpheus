@@ -734,6 +734,12 @@ sections = [
     ".rodata..Lswitch.table._RNCNvMNtCshs47vOLaAMr_8firmware2uiNtB4_2Ui4draw0B6_.3778", # 0 loads, 13 B
     ".rodata..Lanon.46ca270915945feb4f52eacf47001c7a.1098", # 0 loads, 219 B
     ".rodata..Lanon.46ca270915945feb4f52eacf47001c7a.238", # 0 loads, 8 B
+    # PERF-SD round 2 (2026-11-28): a settings constant the UI reads with
+    # `settings::LISTS` on its Now Playing path (`Setting::validate`,
+    # `settings::def`). By default it fell on LISTS's physical line and the
+    # two evicted each other (soak `music`: 2,035 → 3,303 line loads/s).
+    # Anonymous: renumbered when the firmware crate's code changes.
+    ".rodata..Lanon.5c804bd6dd0ff76af4c705338984ab36.1165", # 312 B
 ]
 symbols = [
     "firmware::usbdev::__usb_task::__usb_task_inner_function::{closure#0}", # 14 loads, 11709 B
