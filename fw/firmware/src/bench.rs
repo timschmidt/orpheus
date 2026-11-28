@@ -136,7 +136,7 @@ fn hash(buf: &[u8]) -> u32 {
         .fold(0x811C_9DC5u32, |h, w| (h ^ u32::from_le_bytes([w[0], w[1], w[2], w[3]])).wrapping_mul(0x0100_0193))
 }
 
-/// `card hs scan [kHz] [clks]` (U-SD-1, PERF-SD round 2): read-only
+/// `card timing [kHz] [clks]` (U-SD-1, PERF-SD round 2): read-only
 /// trials of the card's high-speed timing. The blocks at [`SCAN_LBAS`] are
 /// read at the default clock first; then for every delay chain setting
 /// (`SD_CTL` bits 23:16, RDELAY 0–15 × WDELAY 15, 8, 4, 0) the card is
