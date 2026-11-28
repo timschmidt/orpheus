@@ -128,6 +128,12 @@ fn media_cases(add: &mut dyn FnMut(String, String)) {
         ("bookmarks", "set:queue={album} set:pos=61000 set:bookmark=1 ok down*10 ok wait:100"),
         ("np", "set:queue={album} set:track=1 set:pos=47000 goto:NowPlaying wait:100"),
         ("np_paused", "set:queue={album} set:track=1 set:pos=47000 goto:NowPlaying ok wait:100"),
+        // UI-NP: the names line's marquee 2 s after the track appeared
+        // (1.2 s of it: 36 px to the left; the at-rest frame is `np`).
+        ("np_scrolled", "set:queue={album} set:track=1 set:pos=47000 goto:NowPlaying wait:2000"),
+        // UI-NP: a queue place too wide for the codec's line takes the bit
+        // rate's (the big folder: 5,000 files).
+        ("np_big_queue", "next ok down*2 ok ok wait:600 ok wait:100 goto:NowPlaying wait:100"),
         ("np_bigart", "set:0x0d03=1 set:queue={album} goto:NowPlaying wait:100"),
         ("np_bigart_clean", "set:0x0d03=1 set:queue={album} goto:NowPlaying wait:3200"),
         (

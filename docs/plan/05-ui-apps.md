@@ -395,15 +395,19 @@ Recently added · Bookmarks.
 ┌────────────────────────────┐
 │ 12:41        ⇄ ↻  ▮▮▮▮▯    │
 ├────────────────────────────┤
-│ ┌──────┐  Track title that │   title: UI font, 2 lines max, marquee
-│ │ art  │  scrolls          │   artist, album: dim
-│ │56×56 │  Artist           │
-│ └──────┘  Album            │
-│  FLAC 44.1/16      7 / 12  │   format badge · position in queue
+│ ┌──────┐  FLAC      7 / 12 │   codec (bold) · position in queue
+│ │ art  │  44.1 kHz         │   file properties: dim
+│ │52×52 │  16-bit           │
+│ └──────┘  912 kbit/s       │
+│ Artist – Track title that s│   names: full width, marquee
 │ ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▭▭▭▭▭▭▭▭▭▭▭ │   progress
-│ 1:47               -2:05 ▶ │
+│ 1:47        ▶        -2:05 │
 └────────────────────────────┘
 ```
+
+*Layout changed 2026-11-28 (owner, UI-NP): the names and the file's
+properties swapped places, so the names get the whole width; see "As built
+(UI-NP)" below.*
 
 * Views (Up/Down cycle; the choice is remembered): Standard (above) · Big art
   (full screen, text overlay for 3 s after a key) · Lyrics (synchronised `.lrc`
@@ -466,6 +470,47 @@ pause/skip, seek step, speed, EQ, balance, bass, crossfeed, channel mode
   `tests/settings/effects.toml`). Proposal (owner/lead): take Speed off
   Now Playing's menu until the time-stretch package lands, or mark it
   "not built" there.
+
+**As built (UI-NP, 2026-11-28).** Owner's request (verbatim): "On the now
+playing screen which displays album art in the upper left, album artist and
+track name in the upper right, and file information and track progress at
+the bottom, move the audio file type and properties next to the album art
+leaving a full screen width line just above track progress for the artist /
+track name. Marquee the name if needed." Clarified: "No need for album name
+to the right of the art, moving the album name to above the progress
+indicator to free up more horizontal space to make reading it easier is the
+point of the change. Swapping two UI elements."
+
+* **Right of the art** (x 62, 62 px wide, baselines 15 + 13 n, four lines
+  in the art's 52 px; `NP_COL_Y`, `NP_COL_PITCH`): the codec in the bold
+  face; the sample rate ("44.1 kHz"); the bit depth ("16-bit"); the bit rate
+  ("320 kbit/s", the language's unit; `average_kbps`). The queue place
+  ("2 / 3") stands right-aligned on the codec's line when both fit there
+  (6 px apart), else it takes the bit rate's line (a 5,000-file folder:
+  `media_np_big_queue_*`). A property that is unknown (0) leaves its line
+  out and the ones below move up (a MIDI file has no bit rate). Channels,
+  ReplayGain and the file are in Details.
+* **Names line** (full width, x 6–122, baseline 72, `NP_NAMES_Y`; just
+  above the progress bar): the artist (dim) and " – ", then the title in
+  the bold face (the file name when the file has no title tag, as
+  before); the title alone when there is no artist. Wider than 116 px it is
+  a marquee with the list's timing (`marquee_offset`: starts 800 ms after
+  the track appears, 30 px/s, 1 s pauses at each end), restarted with each
+  track; at rest it ends in "…" (whole glyphs, `text_in` on the piece that
+  does not fit). With Animations off or Battery saver (reduced motion,
+  §7.14) it stays at rest. Only the line (content y 57–75) is redrawn as
+  it moves; the progress row is redrawn only when its second, bar or state
+  changes. Goldens: `media_np_*` (at rest), `media_np_scrolled_*` (2 s
+  in); host test `settings_matrix::effects::
+  now_playing_names_scroll_unless_reduced_motion`.
+* **The album** is not on the Standard view at normal text size any more
+  (the owner's choice: the names line is artist and title). It stays in
+  Large text's Standard view, the screen reader's description, Go to
+  album and the library.
+* Unchanged: Large and Extra large text (no art, names over the width
+  already), Big art's overlay, Lyrics, Up next, Details, Levels, the idle
+  view, the mini player; the screen reader's description (title, artist,
+  state, queue place, album, times).
 
 **Acceptance**: every list reachable; 3000-entry lists scroll without stalls;
 track change by end-of-track and by Next keeps the display consistent; resume

@@ -1,7 +1,12 @@
 # Now Playing
 
-The screen of the playing track: cover, title, artist, album, format,
-position in the queue, and time.
+The screen of the playing track: the cover with the file's format beside
+it (type, sample rate, bit depth, bit rate) and its place in the queue;
+below them, on one line across the whole screen, the artist and the title,
+which scroll by when they are too long (they stay still, cut short with
+"…", when Settings › Display › Animations is off or in Battery saver);
+then the progress bar and the time. Large text shows the title, artist and
+album in big letters instead of the cover.
 
 ![Now Playing](../shots/media_np_dark_latin.png)
 
@@ -22,7 +27,7 @@ Up and Down cycle through the views; the player remembers your choice.
 
 | View | Shows |
 |---|---|
-| Standard | Cover, tags, format, progress |
+| Standard | Cover, format, artist and title, progress |
 | Big art | The cover over the whole screen; the text appears for 3 s after a key |
 | Up next | The queue. OK jumps to a track; Menu removes or moves it |
 | Details | Codec, bit rate, sample rate, channels, file |
