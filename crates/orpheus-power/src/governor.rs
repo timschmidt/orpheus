@@ -240,13 +240,30 @@ pub fn raise_for_floor(mode: PowerMode, current: Level, floor: Level) -> Option<
     (mode == PowerMode::Auto && current < floor).then_some(floor)
 }
 
-/// A codec track's own floor (`track` of [`audio_floor`]): High for the
-/// decoders that run from paged code (Vorbis, Opus: `paged_decoder`) and
-/// for sources above 48 kHz, which the DSP chain decimates; else none (the
-/// governor follows the load).
+/// How heavy a codec's decoding is, for its clock floor ([`track_floor`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Decoding {
+    /// MP3, WAV, AIFF, Speex and the like: Base carries them.
+    Light,
+    /// FLAC: one block (4,096 frames and more) is longer than the PCM
+    /// ring, and at Base its decode took 57 ms of a 93 ms block on the
+    /// player (AQ-0, 2026-11-28): ten underruns a second.
+    Blocky,
+    /// Vorbis, Opus: decoders that run from paged code.
+    Paged,
+}
+
+/// A codec track's own floor (`track` of [`audio_floor`]): High for paged
+/// decoders and for sources above 48 kHz, which the DSP chain decimates;
+/// Mid for FLAC; else none (the governor follows the load).
 #[must_use]
-pub const fn track_floor(paged_decoder: bool, rate: u32) -> u8 {
-    if paged_decoder || rate > 48_000 { 2 } else { 0 }
+pub const fn track_floor(d: Decoding, rate: u32) -> u8 {
+    match d {
+        Decoding::Paged => 2,
+        _ if rate > 48_000 => 2,
+        Decoding::Blocky => 1,
+        Decoding::Light => 0,
+    }
 }
 
 /// The audio task's clock floor (0 Base, 1 Mid, 2 High, 3 Turbo, 4 Max:
@@ -692,14 +709,27 @@ mod tests {
     /// DSP chain decimates (above 48 kHz) now asks High from its first block.
     #[test]
     fn regress_hires_flac_given_up_at_base() {
-        assert_eq!(track_floor(false, 96_000), 2);
-        assert_eq!(track_floor(false, 88_200), 2);
-        assert_eq!(track_floor(false, 192_000), 2);
-        assert_eq!(track_floor(false, 48_000), 0);
-        assert_eq!(track_floor(false, 44_100), 0);
-        assert_eq!(track_floor(true, 44_100), 2);
-        assert_eq!(audio_floor(track_floor(false, 96_000), false, false, false), 2);
-        assert_eq!(audio_floor(track_floor(false, 96_000), false, true, false), 0);
+        use Decoding::{Blocky, Light, Paged};
+        assert_eq!(track_floor(Blocky, 96_000), 2);
+        assert_eq!(track_floor(Light, 88_200), 2);
+        assert_eq!(track_floor(Blocky, 192_000), 2);
+        assert_eq!(track_floor(Light, 48_000), 0);
+        assert_eq!(track_floor(Light, 44_100), 0);
+        assert_eq!(track_floor(Paged, 44_100), 2);
+        assert_eq!(audio_floor(track_floor(Blocky, 96_000), false, false, false), 2);
+        assert_eq!(audio_floor(track_floor(Blocky, 96_000), false, true, false), 0);
+    }
+
+    /// AQ-0, 2026-11-28, on the player (the cable in, the governor fixed
+    /// as in `regress_rt_executor_counted_as_idle`): the demo card's
+    /// 44.1 kHz FLAC still underran 30 times in its first seconds at Base
+    /// (`ub: dec=`), until the governor's once-a-second steps had raised
+    /// the clock. FLAC asks Mid from its first block.
+    #[test]
+    fn regress_flac_underran_at_base_before_the_governor_rose() {
+        assert_eq!(track_floor(Decoding::Blocky, 44_100), 1);
+        assert_eq!(track_floor(Decoding::Blocky, 48_000), 1);
+        assert_eq!(floor_level(track_floor(Decoding::Blocky, 44_100), true, false), Level::Mid);
     }
 
     /// The floor's parts: the track's, Mid for the DSP chain, the picture
