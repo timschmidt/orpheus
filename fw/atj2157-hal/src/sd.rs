@@ -19,7 +19,7 @@ use embassy_time::{Duration, Instant, Timer};
 macro_rules! nap {
     ($self:ident, $us:expr) => {
         if $self.flags & NO_SLEEP != 0 {
-            crate::delay::wait_us($us);
+            crate::delay::wait_us_gently($us);
         } else {
             Timer::after_micros($us).await;
         }
@@ -148,17 +148,25 @@ impl Sd {
 
     async fn wait_ts(&self, timeout: Duration) -> bool {
         let end = Instant::now() + timeout;
-        // Commands finish in tens of µs: spin briefly, then yield.
-        for _ in 0..2000 {
+        // Commands finish in tens of µs: poll for ≈ 200 µs, then sleep
+        // between polls (or, spinning, keep polling). Every poll leaves
+        // the bus to the DMAs for ≈ 1 µs (`delay::pause`, PERF-SD round 2:
+        // a tight loop at 288 MHz starved the SD write DMA).
+        for _ in 0..200 {
             if sd::CTL.read() & sd::ctl::TS == 0 {
                 return true;
             }
+            crate::delay::pause();
         }
         while Instant::now() < end {
             if sd::CTL.read() & sd::ctl::TS == 0 {
                 return true;
             }
-            nap!(self, 50);
+            if self.flags & NO_SLEEP != 0 {
+                crate::delay::pause();
+            } else {
+                Timer::after_micros(50).await;
+            }
         }
         false
     }
@@ -236,6 +244,7 @@ impl Sd {
         let end = Instant::now() + Duration::from_secs(1);
         let mut spins = 0u32;
         while sd::STATE.read() & sd::state::DAT0S == 0 {
+            crate::delay::pause();
             spins += 1;
             if spins > 64 {
                 if Instant::now() > end {

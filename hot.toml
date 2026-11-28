@@ -775,4 +775,6 @@ symbols = [
     # The card's busy wait after a CMD12 (once per piece here; once per
     # refill in playback, which keeps `play-fill` within its six lines).
     "atj2157_hal::sd::Sd>::wait_dat0::*",
+    # The card's naps while it spins (`nap!` in `NO_SLEEP`).
+    "atj2157_hal::delay::wait_us_gently",
 ]

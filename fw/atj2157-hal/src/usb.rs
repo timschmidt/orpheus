@@ -322,6 +322,9 @@ async fn dma_wait(done: u32, err: u32, watch_setup: bool, limit_ms: u16) -> Resu
                 Timer::after_micros(20).await;
             }
         }
+        // ≈ 1 µs between polls: the bus stays with the DMAs (PERF-SD
+        // round 2, `delay::pause`).
+        crate::delay::pause();
     }
 }
 
@@ -1111,7 +1114,9 @@ impl drv::EndpointOut for EndpointOut {
             let t0 = crate::time::now_us_raw();
             while FIFO_OUT_READY.load(Ordering::Acquire) & (1 << k) == 0
                 && crate::time::now_us_raw().wrapping_sub(t0) < spin
-            {}
+            {
+                crate::delay::pause();
+            }
         }
         if !CONFIGURED.load(Ordering::Acquire) {
             return Err(EndpointError::Disabled);
