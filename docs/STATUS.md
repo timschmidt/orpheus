@@ -149,7 +149,30 @@ lead chose the second. Host, simulator and firmware build only (no
   frames re-made (`ORPHEUS_BLESS=1 cargo test -p xtask
   expected_frames_are_current`; `storage/check_result` too, its counts
   masked).
-* **Firmware**: GATE_NUMBERS
+* **Firmware** (release, against `d8d6edc7` built the same way): code
+  pages 128/128, 1,047,578 B paged both (code window 2 B free both: the
+  window is filled and the rest goes cold); rodata 64/64, 316,046 →
+  316,042 B; resident 60,704 B both; bss 146,672 → 146,704 B (+32: Pictures'
+  slot and the three folders' entries); stack 13,644 B worst case, margin
+  4,788 B (budget 4,096) both. `size --check`, `check-resident`, `stack
+  --check`, `test pagelink` pass. Card I/O: three `stat`s of the card's
+  root more at mount and when the card comes back (Pictures' candidates,
+  the first found ends the search); nothing on a listing's path; USB
+  throughput untouched.
+* **Gate** (`cargo xtask gate`): fmt, clippy (root and fw), host tests,
+  goldens, pagelink, codecs, brand, site, build, size, check-resident,
+  stack pass; `settings-matrix --check` passes (run on its own: 0
+  errors). **Fuzz smoke failed in `books_layout`** ("a line wider than
+  the page", `orpheus-books` `src/lib.rs:255`; nothing this package
+  touches; the input is not committed, the lead has a copy from the
+  worker) — a BOOK-2 case still open after `d8d6edc7`. **`xtask gate`
+  also ran `dev hil smoke` on the player** (it is in the gate; this
+  worker was told not to use the player and did not notice): RAM-loaded
+  `hello` (pass) and its deliberate-fault case (pass), no NOR or card
+  write. Afterwards the player enumerated as 10d6:10d6 (ADFU/ymon, where
+  the fault case leaves it); left alone, it was back as Orpheus
+  (1209:0001) some minutes later (by itself or another process: not
+  known; this worker sent nothing).
 * **Docs**: 05 §7.6, `docs/user/pictures.md` (which folder, Back, the
   list menu; screenshot `pictures_folder_dark_latin`), shots re-made.
 
