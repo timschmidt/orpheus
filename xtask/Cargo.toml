@@ -16,6 +16,8 @@ anyhow = "1"
 object = { version = "0.37", default-features = false, features = ["read_core", "elf", "std"] }
 toml = "0.8"
 sha2 = "0.10"
+# PERF-SD: O_DIRECT for `dev msc-bench`.
+libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rustc-demangle = "0.1"

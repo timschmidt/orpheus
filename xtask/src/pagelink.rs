@@ -723,10 +723,13 @@ fn place_cold_reserving(
 pub fn check_rodata(plan: &Plan) -> Result<()> {
     let ngroups = (plan.groups.len() + plan.cold.len()) as u32;
     if ngroups > MAX_RO_GROUPS {
+        let used = |g: &[(Vec<(usize, u32)>, u32)]| g.iter().map(|(_, u)| u.to_string()).collect::<Vec<_>>().join(" ");
         bail!(
-            "paged rodata and cold code need {ngroups} groups of 16 KiB ({} + {}), the window holds {MAX_RO_GROUPS}",
+            "paged rodata and cold code need {ngroups} groups of 16 KiB ({} + {}; used {} | {}), the window holds {MAX_RO_GROUPS}",
             plan.groups.len(),
-            plan.cold.len()
+            plan.cold.len(),
+            used(&plan.groups),
+            used(&plan.cold),
         );
     }
     Ok(())

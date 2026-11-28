@@ -9,6 +9,7 @@
 mod fuzz;
 mod hil;
 mod mask;
+mod mscbench;
 mod player;
 pub mod prof;
 mod ram;
@@ -48,6 +49,11 @@ cargo xtask dev <subcommand>
   usbtest [--cycles N]          USB-1 acceptance: enumerate, control sizes, re-enumeration
   usb-cancel [--rounds N]       USB-W1: provoke abandoned control transfers (firmware held
                                 2.5 s, host cuts after 1 ms); the player must answer again
+  msc-bench [--mib N] [--file PATH] [--check]
+                                PERF-SD: card reader throughput through files (direct I/O):
+                                read a card file, write N MiB (default 64) to
+                                /.orpheus/test/perf/, read it back and compare, delete;
+                                --check against budgets.toml [msc]
   usbimage-test [--img F] [--iso F] [--rw] [--qemu]
                                 USB-6: put images into /.orpheus/images/, present each,
                                 read the whole block device, compare hashes, detach
@@ -292,6 +298,7 @@ fn dispatch(sub: &str, args: &mut Args) -> Result<String> {
         }
         "usbtest" => usbtest::cmd(args),
         "usb-cancel" => usbtest::cancel_cmd(args),
+        "msc-bench" => mscbench::cmd(args),
         "keys" => {
             let script = key_script(args)?;
             keys(&script)
