@@ -168,6 +168,15 @@ pub const COST: [Cost; 6] = [
     Cost { on_uw: 1_690 + 4 * 288, per_mhz_uw: 169 },
 ];
 
+/// The idle part of one sleep of the main executor: `slept` µs from its
+/// WFE to its wake-up, less `rt` µs the RT executor ran meanwhile (the
+/// audio task decodes in an interrupt while thread mode sleeps; that is
+/// work, not idle).
+#[must_use]
+pub const fn sleep_idle_us(slept: u32, rt: u32) -> u32 {
+    slept.saturating_sub(rt)
+}
+
 /// The idle share in percent from the idle time and the wall time of a
 /// step (microseconds); a zero-length step counts as 1 µs.
 #[must_use]
@@ -652,6 +661,25 @@ mod tests {
             assert_eq!(audio_floor(t, true, false, false), t);
             assert_eq!(floor_level(audio_floor(t, false, false, false), true, false), Level::from_floor(t));
         }
+    }
+
+    /// AQ-0, 2026-11-28, on the player: the main executor counted the whole
+    /// of each WFE as idle, also the time the RT executor (the audio task,
+    /// in an interrupt) decoded meanwhile. A FLAC of the demo card played
+    /// at Base 48 MHz with ten underruns a second (audible as clicks) while
+    /// `dev stats` showed 74 % idle, and the governor never raised the
+    /// clock. A sleep's idle part is its time less the RT executor's.
+    #[test]
+    fn regress_rt_executor_counted_as_idle() {
+        assert_eq!(sleep_idle_us(10_000, 0), 10_000);
+        assert_eq!(sleep_idle_us(10_000, 7_400), 2_600);
+        assert_eq!(sleep_idle_us(1_000, 1_200), 0);
+        // A second of sleeps, 74 % of it the RT executor: 26 % idle, and
+        // the governor wants more than Base.
+        let idle = (0..100).map(|_| sleep_idle_us(10_000, 7_400)).sum::<u32>();
+        let pct = idle_percent(u64::from(idle), 1_000_000);
+        assert_eq!(pct, 26);
+        assert!(demand_mhz(pct, Level::Base) > 30);
     }
 
     /// TTS-3b, 2026-11-28, on the player with the cable in (Base 48 MHz):
