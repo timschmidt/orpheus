@@ -100,6 +100,8 @@ static TEXTS: AtomicU32 = AtomicU32::new(0);
 static EARCONS: AtomicU32 = AtomicU32::new(0);
 static STOPS: AtomicU32 = AtomicU32::new(0);
 static RENDERED: AtomicU32 = AtomicU32::new(0);
+/// Over music (TTS-3b) also each time the mixer found the ring empty in
+/// the middle of an utterance (a gap in the speech).
 pub(crate) static LATE: AtomicU32 = AtomicU32::new(0);
 /// Speech goes out alone (the DAC at 16 kHz; set by the card task).
 pub(crate) static ALONE: AtomicBool = AtomicBool::new(false);
@@ -126,11 +128,17 @@ pub(crate) struct RingSource {
     seen: u32,
     /// The head at the stop whose speech is still being faded.
     flush_to: Option<u32>,
+    /// The mixer takes the samples as the music plays (not alone, where
+    /// the card task drains the ring into the PCM ring at each wake-up):
+    /// an empty ring while speaking is a gap ([`LATE`]).
+    pub(crate) paced: bool,
+    /// The last sample taken was speech (not an empty ring).
+    fed: bool,
 }
 
 impl RingSource {
     pub(crate) const fn new() -> RingSource {
-        RingSource { tail: 0, seen: 0, flush_to: None }
+        RingSource { tail: 0, seen: 0, flush_to: None, paced: false, fed: false }
     }
 
     /// Samples ready.
@@ -152,8 +160,12 @@ impl mix::Source for RingSource {
     fn next(&mut self) -> Option<i16> {
         let end = self.flush_to.unwrap_or_else(|| HEAD.load(Ordering::Acquire));
         if self.tail == end {
+            if core::mem::take(&mut self.fed) && self.paced && SOUNDING.load(Ordering::Relaxed) {
+                LATE.fetch_add(1, Ordering::Relaxed);
+            }
             return None;
         }
+        self.fed = true;
         // SAFETY: the speech task writes only at and after `HEAD`, which it
         // publishes after the samples (Release); this reads below it.
         let v = unsafe {
@@ -255,7 +267,9 @@ fn queued() -> (bool, u32) {
 
 /// Developer `ui speech`: `speech sounding=0|1 alone=0|1 queued=0|1
 /// ring=N vol=V music=M duck=Q16 texts=N earcons=N stops=N dropped=N
-/// late=N rendered=N said=TEXT` (the text last, cut at 64 bytes).
+/// late=N rendered=N said=TEXT` (the text last, cut at 64 bytes); `late`
+/// counts the halves the DMA overtook the speech alone and the gaps over
+/// music.
 pub fn status_reply() {
     use Ordering::Relaxed;
     let (empty, dropped) = queued();

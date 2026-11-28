@@ -67,6 +67,7 @@ fn rate() -> u32 {
 pub(super) fn mix_i16(s: &mut [i16], n: usize, ch: usize) {
     let rt = rt();
     rt.mix.set_rate(rate());
+    rt.src.paced = true;
     let n = n.min(s.len());
     rt.mix.mix_i16(&mut s[..n], ch, crate::speech::gains(), &mut rt.src);
     DUCK.store(rt.mix.music_gain(), Ordering::Relaxed);
@@ -77,6 +78,7 @@ pub(super) fn mix_i16(s: &mut [i16], n: usize, ch: usize) {
 pub(super) fn mix_i32(s: &mut [i32], n: usize, ch: usize) {
     let rt = rt();
     rt.mix.set_rate(rate());
+    rt.src.paced = true;
     let n = n.min(s.len());
     rt.mix.mix_i32(&mut s[..n], ch, crate::speech::gains(), &mut rt.src);
     DUCK.store(rt.mix.music_gain(), Ordering::Relaxed);
@@ -153,6 +155,7 @@ fn hush(rt: &mut Rt) {
 #[inline(never)]
 pub(super) fn alone() -> bool {
     let rt = rt();
+    rt.src.paced = false;
     let live = mix::Source::sounding(&rt.src);
     if !rt.out.running && rt.out.book.written == 0 && rt.out.book.fill == 0 {
         // A stop with nothing written: drop the stopped speech.
