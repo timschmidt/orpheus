@@ -559,11 +559,15 @@ stop = [
 ]
 budget_lines = 18
 symbols = [
+    # First (TTS-3b, 2026-11-28): the speech voice's resonators call it
+    # every 1 ms tick; on the cluster's first physical line (23) it is
+    # clear of `speech-render` (31–12), which it was not in the middle of
+    # this cluster (line 4).
+    "orpheus_dsp::math::exp2",
     "<orpheus_synth::engine::Engine>::render_i16",
     "<orpheus_synth::filter::Svf>::process",
     "<orpheus_synth::env::Env>::advance",
     "<orpheus_synth::filter::Svf>::set",
-    "orpheus_dsp::math::exp2",
     "orpheus_dsp::math::log2",
     "orpheus_synth::voice::pan_gains",
     "<orpheus_synth::drum::DrumVoice>::kick",
@@ -799,4 +803,93 @@ symbols = [
     "<atj2157_hal::usb::InFlight as core::ops::drop::Drop>::drop",
     "atj2157_hal::usb::dma_wait::*",
     "<embassy_time::instant::Instant>::elapsed",
+]
+
+# The speech voice's render (TTS-3b, 2026-11-28): what the speech task
+# runs for every sample and every 1 ms tick (16 samples) of speech — the
+# step with the renderer's sample loop inlined, the formant synthesiser
+# (`Dsp::render`, `set_frame`, `Resonator::set`), the tick's parameters
+# (`Synth::frame`, `spec` and the loci) and the 16 kHz pass of the
+# resampler — after the task's poll (once a batch). On the player
+# (`a0ecaf5b`) the screen reader alone loaded ≈ 6,400 lines/s, more than
+# real time: the render was in no cluster, over code groups 12, 28, 29
+# and 30, and each 256-sample chunk (62 a second, each followed by a
+# wake-up of the card task) reloaded the lines that the card task's
+# paused loop, the input tick and the UI had evicted (`Synth::frame` on
+# 9–13, `Dsp::set_frame` 6–8, `Resampler::push`/`pull` 22–23 under the
+# card task's and the converter's lines). After the last cluster:
+# physical lines 31–12, clear of the input tick and the main loop
+# (17–18), the audio task's poll and `play-pcm` (18–22), `exp2` (23, the
+# start of `synth-render`) and `speech-out` (below); it shares lines with
+# the UI's (`settings-get` 4, `idle-home` 5–17), which run a few times a
+# second. Over music the playback clusters take all 32 lines: a batch
+# (`speech::BATCH`, 64 ms of speech) reloads them once. Its small
+# constants (`Ph::class`'s and `Synth::frame`'s switch tables, the loci)
+# are resident: paged, they shared rodata lines with the UI's settings
+# tables.
+[[cluster]]
+name = "speech-render"
+bins = ["firmware"]
+from = [
+    "?firmware::speech::step",
+]
+stop = [
+    # The converter (a word's normalisation, lexicon and rules: once a
+    # word), the next utterance, a stop, a voice or speed change.
+    "?*orpheus_tts::speak::Speaker>::pump",
+    "?*orpheus_tts::speak::Synth>::set_voice",
+    "?firmware::speech::next_utterance",
+    "?firmware::speech::silence",
+]
+budget_lines = 20
+resident_constants = 256
+symbols = [
+    "<embassy_executor::raw::TaskStorage<firmware::speech::__speech_task::*>::poll",
+    "firmware::speech::step",
+    "firmware::speech::render",
+    "<orpheus_tts::resample::Resampler>::push",
+    "<orpheus_tts::resample::Resampler>::pull",
+    "<orpheus_tts::klatt::Dsp>::render",
+    "<orpheus_tts::klatt::Dsp>::set_frame",
+    "<orpheus_tts::klatt::Resonator>::set",
+    "<orpheus_tts::speak::Synth>::frame",
+    "orpheus_tts::speak::spec",
+    "orpheus_tts::speak::tau",
+    "orpheus_tts::speak::boundary",
+    "orpheus_tts::speak::own_src",
+    "orpheus_tts::targets::onset",
+    "<orpheus_tts::phoneme::Ph>::class",
+]
+
+# The speech voice in the card task and the render's rare paths (TTS-3b).
+# First what the card task runs alone (idle, paused) on every wake-up (its
+# 10 ms timer while the DAC runs, a batch): the speech ring into the PCM
+# ring at 16 kHz, the clearing ahead, the DAC's start — on physical lines
+# 13–15, clear of `speech-render`, so a wake-up during a batch evicts
+# none of the render's lines. Then what runs once a phone, an utterance
+# or a stop, and the mixer over music (once a piece, with the playback
+# clusters' lines anyway), on 15–19.
+[[cluster]]
+name = "speech-out"
+bins = ["firmware"]
+symbols = [
+    "firmware::audio::speech::wait::*",
+    "firmware::audio::speech::alone",
+    "firmware::audio::speech::rt",
+    "firmware::audio::speech::clear_ahead",
+    "<firmware::speech::RingSource as orpheus_tts::mix::Source>::*",
+    "<orpheus_tts::mix::Mixer>::input",
+    "<orpheus_tts::mix::Mixer>::speech_frame",
+    "<firmware::audio::PcmOut>::start",
+    # Once a phone, an utterance, a stop.
+    "<orpheus_tts::speak::Synth>::finalize",
+    "firmware::speech::next_utterance",
+    "firmware::speech::queued",
+    "firmware::speech::silence",
+    "firmware::audio::speech::hush",
+    "firmware::audio::speech::end_alone",
+    # Over music.
+    "firmware::audio::speech::mix_i16",
+    "firmware::audio::speech::mix_i32",
+    "<orpheus_tts::mix::Mixer>::duck_step",
 ]

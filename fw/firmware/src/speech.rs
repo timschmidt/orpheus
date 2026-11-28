@@ -11,10 +11,12 @@
 //!
 //! * The speech is rendered in thread mode, below the audio task: a speech
 //!   that cannot keep up (Battery saver, a long draw) leaves gaps, never an
-//!   underrun of the music or a hang. It renders in chunks of [`CHUNK`]
-//!   samples with a yield between them, and only once [`REFILL`] samples of
-//!   the ring are free: about eight wake-ups a second while speaking, so
-//!   its code evicts the music's cache lines rarely.
+//!   underrun of the music or a hang. It renders a batch of [`BATCH`]
+//!   samples straight into the ring, then yields and wakes the card task
+//!   once, and renders again once [`REFILL`] samples of the ring are free:
+//!   about sixteen wake-ups a second while speaking. Its per-sample and
+//!   per-tick code is the `speech-render` cluster (`hot.toml`), so a batch
+//!   reloads at most those lines (TTS-3b).
 //! * A stop ([`SpeechService::stop`], any key) drops the queue and marks the
 //!   ring's head ([`FLUSH_TO`], then [`GEN`]): the card task fades what it
 //!   still has of the stopped speech over 3 ms and drops the rest (alone,
@@ -41,12 +43,20 @@ use orpheus_ui::text::StrBuf;
 
 /// The sample ring (16 kHz): 128 ms.
 pub const RING: usize = 2048;
-/// Samples rendered between two yields (16 ms of speech; ≈ 1 ms of the
-/// CPU at Mid).
+/// The unit a batch is counted in (16 ms of speech): a step renders only
+/// when this much of the ring is free.
 pub const CHUNK: usize = 256;
+/// Samples one step renders before it yields (64 ms of speech; ≈ 4 ms of
+/// the CPU at Mid, the code in the cache). TTS-3b, 2026-11-28: one chunk
+/// a step, with a wake-up of the card task after each, was 62 wake-ups a
+/// second; each reloaded the render's lines that the card task's, the UI's
+/// and the input tick's code had evicted in between (6,400 line loads/s
+/// while speaking alone, more than real time: the owner's "choppy").
+pub const BATCH: usize = 1024;
 /// The speech task renders again once this much of the ring is free
-/// (64 ms): a full ring is topped up in two to four chunks.
+/// (64 ms): one batch.
 pub const REFILL: usize = RING / 2;
+const _: () = assert!(BATCH % CHUNK == 0 && BATCH <= RING && REFILL >= CHUNK);
 
 /// The ring's samples: written by the speech task at `HEAD`, read by the
 /// card task at its tail (`RingSource`).
@@ -388,7 +398,9 @@ fn next_utterance(sp: &mut Speaker, st: &mut State) -> bool {
 }
 
 /// Up to `out.len()` samples of what plays; fewer at its end (`Idle`
-/// then).
+/// then). Out of line: the renderer's sample loop, in `speech-render`
+/// (`hot.toml`).
+#[inline(never)]
 fn render(sp: &mut Speaker, st: &mut State, out: &mut [i16]) -> usize {
     match st.playing {
         Playing::Idle => 0,
@@ -434,17 +446,23 @@ fn step(sp: &mut Speaker, st: &mut State) -> Next {
     let head = HEAD.load(Ordering::Relaxed);
     let used = head.wrapping_sub(TAIL.load(Ordering::Acquire)) as usize;
     let room = RING.saturating_sub(used);
-    if room < CHUNK.min(REFILL) {
+    if room < CHUNK {
         ROOM_ASKED.store(true, Ordering::Release);
         return Next::Room;
     }
-    let mut buf = [0i16; CHUNK];
-    let n = render(sp, st, &mut buf[..room.min(CHUNK)]);
-    for (k, &s) in buf[..n].iter().enumerate() {
-        let i = (head as usize + k) % RING;
-        // SAFETY: slot `i` is at or after `HEAD` and before the tail plus
-        // `RING`: the card task does not read it until `HEAD` moves.
-        unsafe { core::ptr::write_volatile((&raw mut SAMPLES).cast::<i16>().add(i), s) };
+    // One batch (TTS-3b): up to `BATCH` samples straight into the ring
+    // (at most two pieces, at its wrap), then one wake-up of the card task.
+    let want = batch_len(room);
+    let at = head as usize % RING;
+    let first = want.min(RING - at);
+    let base = (&raw mut SAMPLES).cast::<i16>();
+    // SAFETY: `at..at + first` and `0..want - first` lie inside the ring
+    // and are slots from `HEAD` on, `want` ≤ the free room: the speech
+    // task's alone. The card task reads only below `HEAD` and not these
+    // until `HEAD` moves past them (Release, below).
+    let mut n = render(sp, st, unsafe { core::slice::from_raw_parts_mut(base.add(at), first) });
+    if n == first && want > first {
+        n += render(sp, st, unsafe { core::slice::from_raw_parts_mut(base, want - first) });
     }
     HEAD.store(head.wrapping_add(n as u32), Ordering::Release);
     RENDERED.fetch_add(n as u32, Ordering::Relaxed);
@@ -452,6 +470,14 @@ fn step(sp: &mut Speaker, st: &mut State) -> Next {
         wake_rt();
     }
     Next::Yield
+}
+
+/// How much one step renders with `room` samples of the ring free: all of
+/// it up to [`BATCH`], whole chunks (TTS-3b).
+#[inline]
+const fn batch_len(room: usize) -> usize {
+    let n = if room < BATCH { room } else { BATCH };
+    n - n % CHUNK
 }
 
 /// The speech task (thread mode).
