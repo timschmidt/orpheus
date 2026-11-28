@@ -231,6 +231,15 @@ pub fn raise_for_floor(mode: PowerMode, current: Level, floor: Level) -> Option<
     (mode == PowerMode::Auto && current < floor).then_some(floor)
 }
 
+/// A codec track's own floor (`track` of [`audio_floor`]): High for the
+/// decoders that run from paged code (Vorbis, Opus: `paged_decoder`) and
+/// for sources above 48 kHz, which the DSP chain decimates; else none (the
+/// governor follows the load).
+#[must_use]
+pub const fn track_floor(paged_decoder: bool, rate: u32) -> u8 {
+    if paged_decoder || rate > 48_000 { 2 } else { 0 }
+}
+
 /// The audio task's clock floor (0 Base, 1 Mid, 2 High, 3 Turbo, 4 Max:
 /// [`Level::from_floor`]): the track's (`track`, the codec's or the
 /// synth's), at least Mid while the DSP chain works — **none while the
@@ -643,6 +652,26 @@ mod tests {
             assert_eq!(audio_floor(t, true, false, false), t);
             assert_eq!(floor_level(audio_floor(t, false, false, false), true, false), Level::from_floor(t));
         }
+    }
+
+    /// TTS-3b, 2026-11-28, on the player with the cable in (Base 48 MHz):
+    /// the demo card's "05 Variatio 4 (complete, 96 kHz 24 bit).flac"
+    /// started at floor 0 (only Vorbis and Opus had one), decoded at
+    /// 46 ms a 42.7 ms block, underran at once and was given up ("decoder
+    /// too slow for this player") before the governor's once-a-second
+    /// step could raise the clock; started from the UI it lived only
+    /// because its cover art's decode asked High meanwhile. A source the
+    /// DSP chain decimates (above 48 kHz) now asks High from its first block.
+    #[test]
+    fn regress_hires_flac_given_up_at_base() {
+        assert_eq!(track_floor(false, 96_000), 2);
+        assert_eq!(track_floor(false, 88_200), 2);
+        assert_eq!(track_floor(false, 192_000), 2);
+        assert_eq!(track_floor(false, 48_000), 0);
+        assert_eq!(track_floor(false, 44_100), 0);
+        assert_eq!(track_floor(true, 44_100), 2);
+        assert_eq!(audio_floor(track_floor(false, 96_000), false, false, false), 2);
+        assert_eq!(audio_floor(track_floor(false, 96_000), false, true, false), 0);
     }
 
     /// The floor's parts: the track's, Mid for the DSP chain, the picture

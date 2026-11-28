@@ -701,6 +701,9 @@ symbols = [
 [[cluster]]
 name = "settings-get"
 bins = ["firmware"]
+# TTS-3b: the tables a setting's lookup reads (in the fault profiles of
+# an idle Home and of speech, `def`'s rodata line ≈ 10 % of the loads).
+resident_constants = 256
 symbols = [
     "<firmware::services::Fw as orpheus_apps::services::SettingsService>::setting",
     "<orpheus_apps::settings::SettingsCache>::get",

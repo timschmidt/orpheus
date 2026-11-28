@@ -484,9 +484,9 @@ pub struct Plan {
     /// Bytes of unclustered code placed in the line before a cluster's
     /// start.
     pub filler: u32,
-    /// Bytes of constants at the start of the first cold group (a shared
-    /// constants' group, [`pack_cold_sharing`]); 0 for none.
-    pub shared: u32,
+    /// Bytes of constants at the start of each of the first cold groups
+    /// (shared constants' groups, [`pack_cold_sharing`]); empty for none.
+    pub shared: Vec<u32>,
 }
 
 impl Plan {
@@ -515,13 +515,24 @@ impl Plan {
     /// Whether group `gi` is a shared constants' group (constants, then
     /// cold code; [`pack_cold_sharing`]).
     pub fn is_shared(&self, gi: usize) -> bool {
-        self.shared > 0 && gi == self.groups.len()
+        self.shared_bytes(gi) > 0
+    }
+
+    /// Bytes of constants at the start of window group `gi` when it is a
+    /// shared group, else 0.
+    #[must_use]
+    pub fn shared_bytes(&self, gi: usize) -> u32 {
+        gi.checked_sub(self.groups.len()).and_then(|i| self.shared.get(i)).copied().unwrap_or(0)
     }
 
     pub fn group_name(&self, gi: usize) -> String {
         if gi < self.groups.len() { format!(".pr_g{gi}") } else { format!(".px_g{gi}") }
     }
 }
+
+/// A constants' group with at least this much room left is shared with cold
+/// code when the window is full ([`pack_cold_sharing`]).
+const SHARE_MIN_FREE: u32 = 1024;
 
 /// The physical line of the rodata cache an address of the rodata window
 /// maps to (0–15: its offset in a 16 KiB group).
@@ -926,14 +937,28 @@ pub fn pack_cold_sharing(
     // with room, the first where the section shares no physical line with
     // a constant it refers to (such a read would bounce, 02 §3.6).
     let mut holes: Vec<Vec<(u32, u32)>> = Vec::new();
-    if share
-        && !cold.is_empty()
-        && let Some((i, _)) = plan.groups.iter().enumerate().min_by_key(|(_, (_, used))| *used)
-    {
-        let last = plan.groups.len() - 1;
-        plan.groups.swap(i, last);
-        if let Some(gr) = plan.groups.pop() {
-            plan.shared = gr.1;
+    if share && !cold.is_empty() && !plan.groups.is_empty() {
+        // The emptiest group always, and every other with at least
+        // `SHARE_MIN_FREE` left (TTS-3b, 2026-11-28: one shared group was
+        // not enough; four more constants' groups had 1.9-3.9 KB free
+        // while 1,112 B of cold code needed a 33rd group). Most room
+        // first; the rest keep their order.
+        let mut take: Vec<usize> =
+            (0..plan.groups.len()).filter(|&i| RO_GROUP_SIZE - plan.groups[i].1 >= SHARE_MIN_FREE).collect();
+        if let Some((i, _)) = plan.groups.iter().enumerate().min_by_key(|(_, (_, used))| *used)
+            && !take.contains(&i)
+        {
+            take.push(i);
+        }
+        take.sort_by_key(|&i| (plan.groups[i].1, i));
+        let moved: Vec<(Vec<(usize, u32)>, u32)> = take.iter().map(|&i| plan.groups[i].clone()).collect();
+        let mut k = 0;
+        plan.groups.retain(|_| {
+            k += 1;
+            !take.contains(&(k - 1))
+        });
+        for gr in moved {
+            plan.shared.push(gr.1);
             plan.cold.push(gr);
             holes.push(Vec::new());
         }
@@ -1118,7 +1143,7 @@ pub fn script(g: &Graph, plan: &Plan, script_dir: &Path, bin: &str) -> String {
             let _ = writeln!(
                 s,
                 "ASSERT(SIZEOF(.pr_g{gi}) == {:#x}, \"pagelink: .pr_g{gi} differs from the plan\");",
-                plan.shared
+                plan.shared_bytes(gi)
             );
             used -= secs.iter().find(|&&(n, _)| g.kinds[n] == Kind::Code).map_or(0, |&(_, o)| o);
         }
@@ -1439,8 +1464,19 @@ pub fn run(o: &Options) -> Result<Layout> {
         });
     }
     let code_bytes = plan.code.iter().map(|&(n, _, _)| g1.nodes[n].size).sum();
-    let rodata_bytes = plan.groups.iter().flat_map(|(s, _)| s).map(|&(n, _)| g1.nodes[n].size).sum();
-    let cold_bytes = plan.cold.iter().flat_map(|(s, _)| s).map(|&(n, _)| g1.nodes[n].size).sum();
+    let rodata_bytes = plan
+        .all_groups()
+        .flat_map(|(s, _)| s)
+        .filter(|&&(n, _)| g1.kinds[n] != Kind::Code)
+        .map(|&(n, _)| g1.nodes[n].size)
+        .sum();
+    let cold_bytes = plan
+        .cold
+        .iter()
+        .flat_map(|(s, _)| s)
+        .filter(|&&(n, _)| g1.kinds[n] == Kind::Code)
+        .map(|&(n, _)| g1.nodes[n].size)
+        .sum();
     let layout = Layout {
         format: 1,
         bin: o.bin.clone(),
@@ -2033,6 +2069,46 @@ sections = [".rodata.cst4"]
         assert!(check_rodata(&plan).is_ok());
     }
 
+    /// TTS-3b (2026-11-28): with both windows full the build failed again
+    /// ("need 33 groups of 16 KiB (20 + 13)") for one 1,112 B cold
+    /// section, the shared constants' group full, while four other
+    /// constants' groups had 1.9–3.9 KB free. Every group with at least
+    /// `SHARE_MIN_FREE` left is shared now.
+    #[test]
+    fn regress_cold_code_needed_a_group_with_room_in_several() {
+        let mut nodes = vec![
+            node(".text", ".text.big", 1_040_000, 2, Some("app::big")),
+            node(".text", ".text.a", 6_000, 2, Some("books::a")),
+            node(".text", ".text.b", 6_000, 2, Some("books::b")),
+            node(".text", ".text.c", 6_000, 2, Some("books::c")),
+        ];
+        let names: Vec<String> = (0..MAX_RO_GROUPS).map(|i| format!(".rodata.t{i}")).collect();
+        for (i, n) in names.iter().enumerate() {
+            // Three groups with 6,384 B left, the rest full.
+            nodes.push(node(".rodata", n, if i < 3 { 10_000 } else { RO_GROUP_SIZE }, 4, None));
+        }
+        let g = Graph::from_parts(nodes, &[]);
+        let r = Rules::parse("roots = []\n[cold]\nsymbols = [\"books::*\"]\n", "t").unwrap();
+        let (p, _) = classify(&g, &r, &[]);
+        let (all, _) = cold_set(&g, &p, &r, &[]);
+        assert_eq!(all.len(), 3);
+        let (plan, cold) = place_cold(&g, &p, &[], &crates(&g), &r, &all).unwrap();
+        assert!(check_rodata(&plan).is_ok());
+        assert_eq!(cold.len(), 3);
+        assert_eq!(plan.shared, vec![10_000; 3]);
+        assert_eq!(plan.groups.len(), MAX_RO_GROUPS as usize - 3);
+        for k in 0..3 {
+            let gi = plan.groups.len() + k;
+            assert!(plan.is_shared(gi));
+            assert_eq!(plan.shared_bytes(gi), 10_000);
+            assert_eq!(plan.cold[k].0.len(), 2, "{:?}", plan.cold[k]);
+        }
+        assert!(!plan.is_shared(plan.groups.len() - 1));
+        let s = script(&g, &plan, Path::new("/l"), "t");
+        let gi = plan.groups.len() + 2;
+        assert!(s.contains(&format!("ASSERT(SIZEOF(.pr_g{gi}) == 0x2710")), "{s}");
+    }
+
     /// PERF-SD round 2 (2026-11-27): with both windows full the build
     /// failed ("need 33 groups of 16 KiB (21 + 12)") for 5.6 KB of cold
     /// code while the constants' groups had 20 KB free. Now the constants'
@@ -2064,7 +2140,7 @@ sections = [".rodata.cst4"]
         assert_eq!(cold.len(), 2);
         assert!(check_rodata(&plan).is_ok());
         assert_eq!(plan.groups.len(), MAX_RO_GROUPS as usize - 2);
-        assert_eq!(plan.shared, 4_000);
+        assert_eq!(plan.shared, vec![4_000]);
         let gi = plan.groups.len();
         assert!(plan.is_shared(gi));
         // `a` did not fit after the constants (a group of its own), `b` did.
