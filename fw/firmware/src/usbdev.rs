@@ -158,7 +158,33 @@ impl Target for Fw {
     fn test_command(&mut self, data: &[u8]) -> bool {
         if data == b"usb msc" || data == b"usb msc ro" {
             MSC_READ_ONLY.store(data.len() > 7, core::sync::atomic::Ordering::Relaxed);
+            msc_reset();
             MODE.signal(Personality::FileTransfer);
+            return true;
+        }
+        if let Some(n) = data.strip_prefix(dc::upload::BULK_CMD.as_bytes()) {
+            let n = n
+                .iter()
+                .filter(|d| d.is_ascii_digit())
+                .fold(0u32, |a, d| a.saturating_mul(10).saturating_add(u32::from(d - b'0')));
+            let open = crate::audio::uploading();
+            if open {
+                BULK_UP.signal(n);
+            }
+            crate::audio::reply(|w| {
+                if open {
+                    w.s(b"fput ").u(u64::from(n));
+                } else {
+                    w.s(b"fput failed: no upload open");
+                }
+            });
+            return true;
+        }
+        if let Some(rest) = data.strip_prefix(b"usb msc stats") {
+            if rest == b" reset" {
+                msc_reset();
+            }
+            msc_stats_reply();
             return true;
         }
         if data == b"usb dev" {
@@ -712,6 +738,71 @@ impl embassy_usb::Handler for MscClass {
     }
 }
 
+/// The card reader's pipeline timings (PERF-SD round 2, `usb msc stats`;
+/// reset by `usb msc stats reset` and at every `usb msc`): µs sums and
+/// counts of each stage, from the endpoint and card wrappers below.
+/// `MSC_T[i]`: [`T_CBW`] waiting for a CBW (the host's gap), [`T_IN`] data
+/// IN pieces, [`T_OUT`] data OUT pieces, [`T_CSW`] the CSW, [`T_CARD`]
+/// card reads and writes; [`N_*`] their counts; [`T_CARD_MAX`] the
+/// longest card operation; [`T_LOADS`] pager loads at the reset.
+static MSC_T: [core::sync::atomic::AtomicU32; 12] = [const { core::sync::atomic::AtomicU32::new(0) }; 12];
+const T_CBW: usize = 0;
+const T_IN: usize = 1;
+const T_OUT: usize = 2;
+const T_CSW: usize = 3;
+const T_CARD: usize = 4;
+const N_CBW: usize = 5;
+const N_IN: usize = 6;
+const N_OUT: usize = 7;
+const N_CARD: usize = 8;
+const T_CARD_MAX: usize = 9;
+const T_LOADS: usize = 10;
+const T_START: usize = 11;
+
+fn msc_reset() {
+    for t in &MSC_T {
+        t.store(0, Ordering::Relaxed);
+    }
+    MSC_T[T_LOADS].store(atj2157_hal::pager::stats().loads, Ordering::Relaxed);
+    MSC_T[T_START].store(time::now_us() as u32, Ordering::Relaxed);
+}
+
+/// Add the µs since `t0` to stage `t` and count it in `n`.
+fn msc_add(t: usize, n: usize, t0: u32) -> u32 {
+    let d = (time::now_us() as u32).wrapping_sub(t0);
+    MSC_T[t].fetch_add(d, Ordering::Relaxed);
+    MSC_T[n].fetch_add(1, Ordering::Relaxed);
+    d
+}
+
+/// `msc <wall ms> <cbw> <in> <out> <csw> <card> (µs sums) <cbws> <ins>
+/// <outs> <cards> (counts) <card max µs> <loads> <sd commands> <busy
+/// polls> <timeouts> <crc errors> <last error STATE> <its CMD>`: numbers only (the rodata window is full); `xtask dev
+/// msc-bench` labels them.
+fn msc_stats_reply() {
+    let now = time::now_us() as u32;
+    let sd = critical_section::with(|cs| MSC_SD.borrow(cs).get());
+    let mut v = [0u32; 18];
+    v[0] = now.wrapping_sub(MSC_T[T_START].load(Ordering::Relaxed)) / 1000;
+    for (o, i) in v[1..10].iter_mut().zip([T_CBW, T_IN, T_OUT, T_CSW, T_CARD, N_CBW, N_IN, N_OUT, N_CARD]) {
+        *o = MSC_T[i].load(Ordering::Relaxed);
+    }
+    v[10] = MSC_T[T_CARD_MAX].load(Ordering::Relaxed);
+    v[11] = atj2157_hal::pager::stats().loads.wrapping_sub(MSC_T[T_LOADS].load(Ordering::Relaxed));
+    v[12] = sd.commands;
+    v[13] = sd.busy_polls;
+    v[14] = sd.timeouts;
+    v[15] = sd.crc_errors;
+    v[16] = sd.last_err_state;
+    v[17] = sd.last_err_cmd;
+    crate::audio::reply(|w| {
+        w.s(b"msc");
+        for x in v {
+            w.s(b" ").u(u64::from(x));
+        }
+    });
+}
+
 /// The mass-storage bulk endpoints with whole data pieces per DMA start
 /// (PERF-SD): IN sends a piece as one transfer (≤ 64 KiB per start), OUT
 /// takes a data phase's known length with one DMA (`read_exact`).
@@ -732,7 +823,31 @@ impl embassy_usb_driver::EndpointIn for BulkIn {
 }
 impl orpheus_usb::msc::bot::BulkIn for BulkIn {
     async fn send(&mut self, buf: &[u8]) -> Result<(), embassy_usb_driver::EndpointError> {
-        embassy_usb_driver::EndpointIn::write(&mut self.0, buf).await
+        let t0 = time::now_us() as u32;
+        let r = embassy_usb_driver::EndpointIn::write(&mut self.0, buf).await;
+        msc_add(T_IN, N_IN, t0);
+        r
+    }
+    /// The DMA starts, `work` (the card, spinning) runs, then the DMA is
+    /// waited for: one poll per piece (PERF-SD round 2).
+    async fn send_while<W: core::future::Future>(
+        &mut self,
+        buf: &[u8],
+        work: W,
+    ) -> (Result<(), embassy_usb_driver::EndpointError>, W::Output) {
+        let t0 = time::now_us() as u32;
+        // SAFETY: the guard lives in this future, which holds the borrow
+        // of `buf` for its whole life, and is never forgotten.
+        // (Never: the transport's halves are word-aligned SRAM0 pieces of
+        // ≤ 64 KiB. One after the other then: a `join` here cost the code
+        // window ≈ 0.5 KB.)
+        let Some(dma) = (unsafe { self.0.start(buf) }) else {
+            return (self.send(buf).await, work.await);
+        };
+        let out = work.await;
+        let r = dma.wait().await;
+        msc_add(T_IN, N_IN, t0);
+        (r, out)
     }
 }
 impl embassy_usb_driver::Endpoint for BulkOut {
@@ -745,31 +860,129 @@ impl embassy_usb_driver::Endpoint for BulkOut {
 }
 impl embassy_usb_driver::EndpointOut for BulkOut {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, embassy_usb_driver::EndpointError> {
-        embassy_usb_driver::EndpointOut::read(&mut self.0, buf).await
+        // The CBW (the transport reads its data with `receive`).
+        let t0 = time::now_us() as u32;
+        let r = embassy_usb_driver::EndpointOut::read(&mut self.0, buf).await;
+        msc_add(T_CBW, N_CBW, t0);
+        r
     }
 }
 impl orpheus_usb::msc::bot::BulkOut for BulkOut {
     async fn receive(&mut self, buf: &mut [u8]) -> Result<usize, embassy_usb_driver::EndpointError> {
-        self.0.read_exact(buf).await
+        let t0 = time::now_us() as u32;
+        let r = self.0.read_exact(buf).await;
+        msc_add(T_OUT, N_OUT, t0);
+        r
+    }
+    /// As [`BulkIn::send_while`]: the host's next half arrives by DMA
+    /// while the card writes this one.
+    async fn receive_while<W: core::future::Future>(
+        &mut self,
+        buf: &mut [u8],
+        work: W,
+    ) -> (Result<usize, embassy_usb_driver::EndpointError>, W::Output) {
+        let t0 = time::now_us() as u32;
+        let n = buf.len();
+        // SAFETY: as in `send_while`; `buf` is not touched until the
+        // guard's wait returns.
+        let Some(dma) = (unsafe { self.0.start(buf) }) else {
+            // (Never, as in `send_while`.)
+            return (self.receive(buf).await, work.await);
+        };
+        let out = work.await;
+        let r = dma.wait().await.map(|()| n);
+        msc_add(T_OUT, N_OUT, t0);
+        (r, out)
     }
 }
 
-/// The card reader asks for the card's high-speed clock (CMD6, 48 MHz from
-/// DEVPLL; PERF-SD, U-SD-1). Test command `card hs on|off`.
-pub static CARD_HS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// The card's high-speed clock for a USB session ([`CARD_HS`]); logged.
+/// With the card at 48 MHz the core stays at or below
+/// `governor::CARD_HS_CAP` (`crate::CLOCK_CAP`) until [`card_slow`].
+async fn card_fast(card: &mut yoton_bsp::card::Card) {
+    if CARD_HS.load(Ordering::Relaxed) {
+        let khz = card.high_speed(50_000).await.unwrap_or(0);
+        if khz > 25_000 {
+            let cap = orpheus_power::governor::CARD_HS_CAP;
+            crate::CLOCK_CAP.store(cap.as_floor(), Ordering::Relaxed);
+            if atj2157_hal::clock::current() > cap {
+                atj2157_hal::clock::set_level(cap);
+            }
+        }
+        let mut l = log::LineBuf::new();
+        l.push_str("usb: card clock ").push_u32(khz).push_str(" kHz");
+        l.emit();
+    }
+}
+
+/// The card is back at its default clock: no ceiling.
+fn card_slow() {
+    crate::CLOCK_CAP.store(4, Ordering::Relaxed);
+}
+
+/// The card reader's waits spin up to this long before they sleep (µs;
+/// `usb::set_spin`): the next CBW, a DMA's end.
+const MSC_SPIN_US: u32 = 2_000;
+/// Longest stretch of card reader commands without a return to the
+/// executor (µs): its other tasks (the UI, the watchdog's feed) run then.
+const MSC_RUN_US: u32 = 100_000;
+
+/// After a command: when the transport has run [`MSC_RUN_US`] since the
+/// last return to the executor, return to it once (the waits spin, so
+/// otherwise a long transfer never does). The time of that return.
+async fn msc_yield(last: u32) -> u32 {
+    let now = time::now_us() as u32;
+    if now.wrapping_sub(last) < MSC_RUN_US {
+        return last;
+    }
+    embassy_futures::yield_now().await;
+    time::now_us() as u32
+}
+
+/// The card reader and USB Drive ask for the card's high-speed clock (CMD6,
+/// 48 MHz from DEVPLL, checked by a read-back; PERF-SD, U-SD-1): on by
+/// default since round 2 (the timing works, `yoton_bsp::card::HS_TIMING`).
+/// Test command `card hs on|off`.
+pub static CARD_HS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
 
 /// Card as the MSC block device (512-byte blocks).
 struct CardDev<'a>(&'a mut yoton_bsp::card::Card);
 impl orpheus_usb::msc::BlockDevice for CardDev<'_> {
     type Error = ();
     async fn read(&mut self, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
+        let t0 = time::now_us() as u32;
         let (s, _) = buf.as_chunks_mut::<512>();
-        yoton_bsp::card::BlockDevice::read(self.0, lba as u32, s).await.map_err(|_| ())
+        let r = yoton_bsp::card::BlockDevice::read(self.0, lba as u32, s).await.map_err(|_| ());
+        card_done(self.0, t0);
+        r
     }
     async fn write(&mut self, lba: u64, buf: &[u8]) -> Result<(), ()> {
+        let t0 = time::now_us() as u32;
         let (s, _) = buf.as_chunks::<512>();
-        yoton_bsp::card::BlockDevice::write(self.0, lba as u32, s).await.map_err(|_| ())
+        let r = yoton_bsp::card::BlockDevice::write(self.0, lba as u32, s).await.map_err(|_| ());
+        card_done(self.0, t0);
+        r
     }
+}
+
+/// The SD driver's counters after the card reader's last card operation.
+static MSC_SD: critical_section::Mutex<core::cell::Cell<atj2157_hal::sd::Stats>> =
+    critical_section::Mutex::new(core::cell::Cell::new(atj2157_hal::sd::Stats {
+        commands: 0,
+        timeouts: 0,
+        crc_errors: 0,
+        blocks_read: 0,
+        blocks_written: 0,
+        busy_polls: 0,
+        last_err_state: 0,
+        last_err_cmd: 0,
+    }));
+
+fn card_done(card: &yoton_bsp::card::Card, t0: u32) {
+    let d = msc_add(T_CARD, N_CARD, t0);
+    MSC_T[T_CARD_MAX].fetch_max(d, Ordering::Relaxed);
+    let st = card.stats();
+    critical_section::with(|cs| MSC_SD.borrow(cs).set(st));
 }
 
 fn builder(product: &'static str) -> Builder<'static, usb::Driver> {
@@ -816,15 +1029,39 @@ async fn run_dev() -> Personality {
     // the browser installer opens it without a driver. With the developer
     // channel off the device has no interface (charging only; the host
     // still enumerates it, so the USB liveness check sees it answered).
-    if dev_channel() {
-        orpheus_usb::webusb::dev_interface(&mut b, true);
-    }
+    let ep = if dev_channel() { orpheus_usb::webusb::dev_interface(&mut b, true) } else { None };
     let mut dev = b.build();
-    let r = embassy_futures::select::select3(dev.run(), supervisor(), next_mode(Personality::Dev)).await;
+    let r = embassy_futures::select::select4(
+        dev.run(),
+        supervisor(),
+        next_mode(Personality::Dev),
+        crate::frame::Own(upload_pump(ep)),
+    )
+    .await;
     usb::set_attached(false);
     match r {
-        embassy_futures::select::Either3::Third(p) => p,
+        embassy_futures::select::Either4::Third(p) => p,
         _ => Personality::Dev,
+    }
+}
+
+/// A bulk upload asked for (`fput N`, `orpheus_proto::devchan::upload::
+/// BULK_CMD`): its byte count.
+static BULK_UP: embassy_sync::signal::Signal<
+    embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
+    u32,
+> = embassy_sync::signal::Signal::new();
+
+/// The developer interface's bulk uploads (PERF-SD round 2): each `fput N`
+/// takes `N` bytes from the endpoint into the upload's staging halves
+/// (`crate::audio::bulk_feed`). Never ends.
+async fn upload_pump(ep: Option<usb::EndpointOut>) {
+    let Some(mut ep) = ep else { return core::future::pending().await };
+    loop {
+        let n = BULK_UP.wait().await;
+        if !crate::audio::bulk_feed(&mut ep, n).await {
+            atj2157_hal::log::line(b"usb: bulk upload cut short");
+        }
     }
 }
 
@@ -833,6 +1070,8 @@ async fn run_msc() -> Personality {
     crate::media::REQS.send(crate::media::Req::Release).await;
     CARD_WITH_USB.store(true, Ordering::Relaxed);
     let mut card = crate::audio::CARD_OUT.receive().await;
+    yoton_bsp::card::set_spin(true);
+    usb::set_spin(MSC_SPIN_US);
     atj2157_hal::log::line(b"usb: card reader on");
     let blocks = u64::from(yoton_bsp::card::BlockDevice::sector_count(&card));
     let next = 'msc: {
@@ -846,12 +1085,7 @@ async fn run_msc() -> Personality {
         let ep_out = BulkOut(alt.endpoint_bulk_out(None, 512));
         drop(func);
         let mut dev = b.build();
-        if CARD_HS.load(Ordering::Relaxed) {
-            let khz = card.high_speed(50_000).await.unwrap_or(0);
-            let mut l = log::LineBuf::new();
-            l.push_str("usb: card clock ").push_u32(khz).push_str(" kHz");
-            l.emit();
-        }
+        card_fast(&mut card).await;
         let unit = orpheus_usb::msc::scsi::Unit {
             kind: orpheus_usb::msc::scsi::DeviceKind::Disk,
             removable: true,
@@ -884,10 +1118,12 @@ async fn run_msc() -> Personality {
         let pump = async {
             loop {
                 embassy_usb_driver::Endpoint::wait_enabled(&mut bot.ep_in).await;
+                let mut last = time::now_us() as u32;
                 while bot.serve_one().await.is_ok() {
                     if bot.scsi.events.eject {
                         return Personality::Dev;
                     }
+                    last = msc_yield(last).await;
                 }
             }
         };
@@ -906,6 +1142,9 @@ async fn run_msc() -> Personality {
     if card.reinit().await.is_err() {
         atj2157_hal::log::line(b"usb: card re-init failed");
     }
+    yoton_bsp::card::set_spin(false);
+    usb::set_spin(0);
+    card_slow();
     crate::audio::CARD_BACK.send(card).await;
     CARD_WITH_USB.store(false, Ordering::Relaxed);
     atj2157_hal::log::line(b"usb: card returned");
@@ -949,6 +1188,8 @@ async fn run_image() -> Personality {
         }
     };
     let mut card = crate::audio::CARD_OUT.receive().await;
+    yoton_bsp::card::set_spin(true);
+    usb::set_spin(MSC_SPIN_US);
     let e = mapped.export;
     crate::drive::update(|i| {
         i.phase = DrivePhase::Attached;
@@ -969,6 +1210,7 @@ async fn run_image() -> Personality {
         let ep_out = BulkOut(alt.endpoint_bulk_out(None, 512));
         drop(func);
         let mut dev = b.build();
+        card_fast(&mut card).await;
         // SAFETY: the card is with this task until `CARD_BACK.send` below,
         // after this scope (and these borrows) end; the card task filled
         // the extents before handing the card over.
@@ -992,7 +1234,9 @@ async fn run_image() -> Personality {
                     loop {
                         embassy_usb_driver::Endpoint::wait_enabled(&mut bot.ep_in).await;
                         crate::drive::update(|i| i.host = true);
+                        let mut last = time::now_us() as u32;
                         while bot.serve_one().await.is_ok() {
+                            last = msc_yield(last).await;
                             let st = bot.stats;
                             crate::drive::update(|i| {
                                 i.bytes_read = st.bytes_read;
@@ -1023,6 +1267,9 @@ async fn run_image() -> Personality {
     if card.reinit().await.is_err() {
         atj2157_hal::log::line(b"usb: card re-init failed");
     }
+    yoton_bsp::card::set_spin(false);
+    usb::set_spin(0);
+    card_slow();
     crate::audio::CARD_BACK.send(card).await;
     CARD_WITH_USB.store(false, Ordering::Relaxed);
     crate::drive::update(|i| {
@@ -1091,7 +1338,8 @@ pub async fn usb() {
         mode = match mode {
             Personality::Dev => run_dev().await,
             Personality::FileTransfer => run_msc().await,
-            Personality::Keyboard => run_kbd().await,
+            // (Its own poll function, in the cold code: the keyboard is rare.)
+            Personality::Keyboard => crate::frame::Own(run_kbd()).await,
             Personality::Image => run_image().await,
         };
         usb::shutdown();

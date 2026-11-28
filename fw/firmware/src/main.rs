@@ -224,6 +224,16 @@ async fn watchdog() {
 /// 0 and nothing playing there is no floor (the governor may go to Low).
 pub static CLOCK_FLOOR: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
+/// Highest clock level allowed (0 Base … 4 Max, as [`CLOCK_FLOOR`]): the
+/// USB card reader lowers it while the card runs at 48 MHz
+/// (`governor::CARD_HS_CAP`, PERF-SD round 2).
+pub static CLOCK_CAP: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(4);
+
+/// The level [`CLOCK_CAP`] allows.
+pub fn clock_cap() -> Level {
+    Level::from_floor(CLOCK_CAP.load(core::sync::atomic::Ordering::Relaxed))
+}
+
 /// Governor on/off (test command `gov on|off`).
 pub static GOV_ON: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
 
@@ -287,6 +297,7 @@ impl Governor {
             current: clock::current(),
             floor: governor::floor_level(f, playing, audio::PAUSED.load(Relaxed)),
             active,
+            cap: clock_cap(),
         };
         if let Some(l) = self.g.step(input, power_mode()) {
             clock::set_level(l);

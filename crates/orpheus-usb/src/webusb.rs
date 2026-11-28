@@ -70,12 +70,14 @@ pub fn url_descriptor(buf: &mut [u8]) -> usize {
     n
 }
 
-/// Add the developer-channel interface (vendor class, no endpoints: the
-/// channel is EP0 vendor requests) with its WebUSB capability and MS OS 2.0
-/// descriptors. `alone`: it is the device's only interface (device-level MS
-/// OS features); otherwise it is one function of a composite device. Call
-/// before any other function is added.
-pub fn dev_interface<'d, D: Driver<'d>>(b: &mut Builder<'d, D>, alone: bool) {
+/// Add the developer-channel interface (vendor class; the channel is EP0
+/// vendor requests) with its WebUSB capability and MS OS 2.0 descriptors.
+/// `alone`: it is the device's only interface (device-level MS OS
+/// features) and gets the bulk OUT endpoint of uploads
+/// (`orpheus_proto::devchan::upload::BULK_CMD`, returned); otherwise it is
+/// one function of a composite device, without endpoints. Call before any
+/// other function is added.
+pub fn dev_interface<'d, D: Driver<'d>>(b: &mut Builder<'d, D>, alone: bool) -> Option<D::EndpointOut> {
     b.msos_descriptor(windows_version::WIN8_1, dc::MSOS_VENDOR_CODE);
     if alone {
         b.msos_feature(msos::CompatibleIdFeatureDescriptor::new("WINUSB", ""));
@@ -95,6 +97,7 @@ pub fn dev_interface<'d, D: Driver<'d>>(b: &mut Builder<'d, D>, alone: bool) {
     let mut iface = func.interface();
     let mut alt = iface.alt_setting(0xFF, 0, 0, None);
     alt.bos_capability(capability_type::PLATFORM, &platform_capability());
+    alone.then(|| alt.endpoint_bulk_out(Some(dc::upload::BULK_EP.into()), 512))
 }
 
 #[cfg(test)]
@@ -299,7 +302,7 @@ mod tests {
         config.max_packet_size_0 = 64;
         let mut b = Builder::new(FakeDriver(wire.clone()), config, &mut cfg, &mut bos, &mut msos, &mut ctl);
         b.handler(&mut chan);
-        dev_interface(&mut b, alone);
+        let _ = dev_interface(&mut b, alone);
         if !alone {
             let mut f = b.function(0x03, 1, 1);
             let mut i = f.interface();

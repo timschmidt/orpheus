@@ -112,6 +112,22 @@ resident_panic_sites = 0
 # free, 2026-11-24): 2 KiB is the margin a fuzz session may not eat into.
 stack_free_min_bytes = 2048
 
+[msc]
+# The card reader's throughput on the player (PERF-SD, owner's priority
+# 2026-11-27; 06 §2.4 targets ≥ 10 MB/s read, ≥ 5 MB/s write):
+# `cargo xtask dev msc-bench --check` fails below these floors (kB/s =
+# 1000 B/s, as `dd` counts; host direct I/O in 1 MiB pieces, Linux sends
+# READ/WRITE(10) of ≤ 120 KiB). `read` is an existing card file (the demo
+# set's 19 MB FLAC), `write` and `readback` the bench's own file.
+# 2026-11-27 (PERF-SD round 1, before these floors): 3,600 / 2,600 / 3,600.
+# 2026-11-28 (PERF-SD round 2, the default 64 MiB run, test card 58.2 GB):
+# 13,860 / 7,630 / 13,980 (1 GiB runs: read back 12,790–12,820; write
+# 7,170, once 2,740 on the card's first long write into fresh space). The
+# floors are 06 §2.4's targets.
+read_kbps_min = 10000
+write_kbps_min = 5000
+readback_kbps_min = 10000
+
 [soak]
 # Long soaks (VER-12, 07 §5.10: `cargo xtask dev soak`). First values,
 # from the measurements in docs/STATUS.md (2026-11-24): 48 kHz MP3

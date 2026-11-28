@@ -33,7 +33,7 @@ of every session. Newest entries first in §3.
 | PWR-5 (D-4) | Max level verified on the player (2026-11-24); **D-4 revision built 2026-11-26 (host + firmware build), not yet run on the player**: Settings › System › Performance removed (key `0x0C07` retired), the governor reaches 288 MHz by itself, Power mode as the owner defined it; battery logger and `xtask drain report` built (not yet run) | Lead's checks in the session entry "PWR-5: Performance removed …"; U-PWR-5 (USB at 24 MHz), U-PWR-6 (power per level, M13); user check 19 (drain per Power mode, unplugged) |
 | PWR-3a | mostly done (device) | Power-off: card flushed, Bluetooth 0x24, screen off, vendor PMU sequence (wake on long press or USB plug-in); in test mode a reboot instead (verified). Auto-off (setting, no key, nothing playing, no cable) and low-battery off (< 3.30 V for 10 s, no cable) through the same path — not testable with the cable in: user checks 11 and 15. Alarm wake not done |
 | RTC-1 | done (device) | set/read over the developer channel (`xtask dev time [--set]`); alarm untested; once lost after a ymon reset (U-RTC open) |
-| PERF-SD | **round 1 merged (2026-11-27), on the player**; round 2 open | Card reader 2.3 → 3.5 MB/s read, 2.5 MB/s write, 128 MiB integrity OK; dev-channel upload 24 → 45 KB/s; high-speed SD not working yet (session entry "PERF-SD") |
+| PERF-SD | **round 2 done, on the player (2026-11-28)**; 06 §2.4 targets met | Card reader 3.6 → **14.0 MB/s read, 7.6 MB/s write** (64 MiB; 1 GiB both ways identical twice, read back 12.8 MB/s, write 7.2 MB/s, once 2.7 on the card's first long write); 48 MHz high speed (U-SD-1 answered); dev-channel upload 45 KB/s → 1.3 MB/s (bulk endpoint); `dev msc-bench --check` and `budgets.toml [msc]` (session entry "PERF-SD … round 2") |
 | USB-4 | done (device) | Card-reader personality: card handed between the card task and USB; write-protected test mode; mid-track switch and hand-back verified. 2.3 MB/s read (open) |
 | FS-1 | done | `orpheus-fs` |
 | FS-2 / AU-5 firmware | first cut on the player; **`orpheus-player` wired in; gapless hand-over and queue edits (built, not yet run on the player)** | Files lists the card (sorted through the directory index since AU-12 firmware), text viewer window, Now Playing. The card task drives `orpheus_player::Player`: folder queue in RAM and `/.orpheus/queue.bin`, resume record and bookmarks in `/.orpheus/player.bin`, seek, shuffle/repeat (settings), A–B, sleep timer, Up next. Gapless read-ahead (`orpheus_audio::StreamRing`) and decoder re-open with the DAC running; Up next remove/move, Play next, Add to queue (256 max). Not done: fades. User checks 13, 17 |
@@ -88,6 +88,122 @@ of every session. Newest entries first in §3.
 | VER-4 (settings store keys) | **done, on the player** (store mounts on every boot since the 2026-11-26 read-race fix; owner's settings intact) | Store index 128 → 192 keys at 4 B a slot (was 8), same NOR format both ways (fixture from the old code, byte-equal images); cache write marks unlimited; 131 keys in use with every app (61 free), firmware 129; sector ceiling ≈ 209 settings keys (256 cannot fit one sector); .bss −1,248 B, stack margin 5,664 B; compaction no longer re-blesses a rotted value (session entry 2026-11-26 "VER-4: settings store index") |
 
 ## 3. Session log
+
+### 2026-11-28 — PERF-SD: SD and USB mass storage throughput, round 2 (worker, player)
+
+Owner's priority (PLAN §1). Exclusive use of the player; test card
+58.2 GB FAT32 (`FF7D-276D`); `dev backup-verify` ok before the first NOR
+write; images installed with `dev update` only. Owner's settings
+unchanged (`701=1 d50=10470 e80=20992`) after every install.
+
+* **Where the time went** (new `cargo xtask dev msc-bench`, `usb msc
+  stats`, `dev prof --faults --during "msc-bench …" --only "read back"`):
+  the card reader spent ≈ 90 % of its time **loading code lines**
+  (≈ 5,000 NOR line loads/s, 1,300–2,100 per MiB moved). Every SD or USB
+  DMA wait slept (`Timer` 20–50 µs) and sent the USB task back through the
+  executor and its `select` (the device's `run`, the mode signal, the
+  transport), whose code lines evicted each other and the card path's.
+  Not CPU-bound, which is why 288 MHz did not help. Linux sends
+  READ/WRITE(10) of ≤ 120 KiB (`max_sectors_kb` = hw 120; `dd` 1–16 MiB
+  blocks give the same rate). Each 32 KiB card read also waited a fixed
+  500 µs after CMD12.
+* **Changes** (each measured on the player, card reader read / write in
+  MB/s, `msc-bench` 32 MiB, measurement image with Books off):
+  | Step | Read | Write | Loads/MiB |
+  |---|---|---|---|
+  | Round 1 (main) | 3.6 | 2.6 | 1,550–2,140 |
+  | Card waits spin in the card reader (`card::set_spin`), DAT0 busy wait instead of 500 µs after CMD12 (U-SD-4), host data before the card write in the `join` | 4.4 | 3.8 | 660 |
+  | A data phase in one poll: the bulk DMA started (`EndpointIn/Out::start`, `InFlight` guard), the card spun beside it, then the DMA waited for (`BulkIn::send_while`, `BulkOut::receive_while`); the next CBW waited for spinning ≤ 2 ms; a return to the executor every 8 ms | 6.6 | 4.7 | 240 |
+  | … every 30 ms; the host bench checks on a thread of its own | 7.1 | 4.9 | 170 |
+  | `hot.toml` cluster `usb-msc` (physical lines 19–31, clear of `play-fill`), no waker for a CBW already there, a return every 100 ms | 8.2 | 5.8 | 54 |
+  | 48 MHz high speed (below) | 14.0 | fails | 35 |
+  | … with the core capped at Mid while the card is at 48 MHz | 14.2 | 6.7 | 25–150 |
+  | **Default image** (speech + Books, `77e6dccd`), 64 MiB | **14.0** | **7.6** | 29–49 |
+* **High-speed SD (U-SD-1 answered)**: round 1's failure was the port's
+  delay chains (`SD_CTL` `0x8F`, WDELAY 15) at 48 MHz. `card timing`
+  (new, read only: 64 settings, 4 × 32 KiB compared with the 24 MHz read)
+  passed WDELAY 0/4/8 with RDELAY 0–13; Orpheus uses `0x74`
+  (`orpheus_sdcard::HS_DELAYS`). The switch is checked by re-reading three
+  blocks (24 MHz fallback, `HS_FALLBACKS`); on by default for the card
+  reader and USB Drive (`card hs off` to test without). **With the card at
+  48 MHz, card writes overlapped with the USB OUT DMA fail at Max
+  (288 MHz)** (the SD DMA still busy 500 ms after the controller's end;
+  host I/O errors) and work at Turbo/High/Mid/Base: the governor now has a
+  ceiling (`governor::Input::cap`, `CARD_HS_CAP` = Mid; `crate::CLOCK_CAP`).
+  A CPU-only pause between register polls (`delay::pause`) did not cure it
+  (kept, harmless). Facts in 01 §9.
+* **Developer-channel upload**: a bulk OUT endpoint (`0x01`) on the
+  developer interface; `fput N` after `fcreate` DMAs the data straight into
+  the staging halves (`orpheus_proto::devchan::upload::pieces`); `dev put`
+  uses it when present. 8 MiB in 6.5 s = **1.3 MB/s** (was ≈ 45 KB/s),
+  read back through the card reader identical (SHA-256).
+* **Gate tool**: `cargo xtask dev msc-bench [--mib N] [--file P] [--check]`
+  (the lead's script in Rust: direct I/O through files only, a
+  deterministic pattern written to `/.orpheus/test/perf/`, every byte
+  compared, deleted; stage counters and line loads per phase;
+  `prof --during "msc-bench …" --only <phase>`); floors in
+  `budgets.toml [msc]` = the 06 §2.4 targets (10 / 5 / 10 MB/s). `dev log`
+  prints the log ring.
+* **Code room**: the default image did not fit (first the code window, then
+  "33 groups of 16 KiB (21 + 12)"): pagelink now shares the constants'
+  group with the most room with cold code when the window is full
+  (`pack_cold_sharing`; one group, 8.9 KB free); the keyboard personality
+  and `card_fast`, the stats reply, the upload pump are cold; the never
+  taken DMA fallbacks are sequential, not `join`. Now 128/128 code pages
+  (2 B free), 64/64 rodata pages (24 of them cold code), ≈ 12.9 KB free in
+  the rodata window. Resident 60,672 → 60,696 B; `.bss` +496 B; static
+  stack margin 5,556 → 4,788 B (budget 4,096).
+* **Measured on the player (final image)**:
+  | Path | Round 1 | Round 2 | Target |
+  |---|---|---|---|
+  | Card reader read, existing 19 MB file | 3.6 MB/s | **13.9** (1 GiB runs 12.8–13.0) | ≥ 10 |
+  | Card reader write, 64 MiB | 2.6 | **7.6** | ≥ 5 |
+  | Card reader read back, 64 MiB | 3.6 | **14.0** | ≥ 10 |
+  | 1 GiB written and read back | — | identical, twice (write 2.74 then 7.17 MB/s, read back 12.79 / 12.82) | identical |
+  | `card bench 16`, 24 MHz, Base (same tree rebuilt as baseline) | w 3,025 / r 3,328 KB/s | w 3,331 / r 3,425 | |
+  | `card bench 16 hs` (48 MHz) | failed | w 4,944 / r 5,678 KB/s | |
+  | Developer-channel upload | ≈ 45 KB/s | **≈ 1,290 KB/s** | several hundred |
+* **Regression tests**: `regress_high_speed_failed_with_the_port_delay_chains`
+  (`orpheus-sdcard`), `regress_card_reader_writes_failed_at_max_with_the_card_at_48_mhz`
+  (`orpheus-power`), `regress_window_full_with_room_in_the_constants_groups`
+  (`xtask` pagelink); `bulk_upload_pieces` (`orpheus-proto`); round 1's
+  transport tests unchanged (the write `join` order test updated).
+* **Playback check (found before merge)**: the first soak of the final
+  layout failed nothing but showed **2,035 → 3,303 line loads/s, CPU idle
+  59 → 38 %** (soak `music` seed 1 on the rebuilt baseline vs round 2,
+  same actions): round 2's added constants had pushed settings constants
+  that the UI's Now Playing reads with `settings::LISTS` (`Setting::
+  validate`, `settings::def`) from group 1 into group 9, onto the same
+  rodata lines. They are packed with LISTS in `idle-home` now (anonymous
+  names: renumbered when the firmware crate changes; the fault profiler
+  names them). After: **1,952 loads/s, idle 60 %**, 0 underruns.
+* **Gate**: fmt, clippy (root, fw) pass; `cargo test --workspace` 2,314
+  pass; `settings-matrix --check` 0 errors; `xtask build` ok;
+  `size --check`, `check-resident`, `stack --check` (margin 4,788 B) and
+  `xtask test pagelink` pass. `xtask gate --no-dev`'s `test all` **failed
+  in the `books_convert` fuzz target** (60 s random run): "a line wider
+  than the page" (`crates/orpheus-books/fuzz/src/lib.rs:255`, the page
+  layout's width check), input `crash-bb6358a9dea997c204f03825fb6e696bc861746a`
+  (318 B, a UTF-16LE text "Title: A Tale…") in
+  `crates/orpheus-books/fuzz/artifacts/books_convert/` — Books' layout,
+  not touched by this package: **open finding for the Books owner** (not
+  fixed here). On the player (final image `4c82f55c`): `dev msc-bench
+  --check` 13.3 / 7.8 / 13.7 MB/s, integrity ok; `dev suite` **28/28** (also 28/28 on `629f4cca`, before the settings-constants fix);
+  the `/MIDI` folder (one file, 142 s) 0 underruns; `dev soak music
+  --minutes 15` PASS (stack free min 5,768 B, 0 underruns, 0 card errors,
+  headroom min 959 frames, CPU idle 60 %, loads 1,952/s mean). The
+  owner's settings unchanged after every install.
+* **Left for later**: the sustained write is the card's (9.8 ms per
+  32 KiB on its first long write into fresh space): larger card writes
+  per command (CMD23 with a whole SCSI WRITE, or an open-ended CMD25
+  across DMA pieces, needs the controller's FIFO flow control proven);
+  write caching with SYNCHRONIZE CACHE (deferred errors); why Max breaks
+  48 MHz writes; other cards' timing windows (`card timing` on the
+  reference card would tell); the file system's read path at 48 MHz in
+  the card task (only the USB personalities switch; DEVPLL costs power);
+  `usb msc stats`' "waiting for CBWs" includes the time from the reset to
+  the first command. Left on the card: nothing of this package
+  (`/.orpheus/test/up.bin` from round 1 overwritten and removed).
 
 ### 2026-11-27 — PERF-SD: SD and USB mass storage throughput, first round (worker, finished by the lead, player)
 

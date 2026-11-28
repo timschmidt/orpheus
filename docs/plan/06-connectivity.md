@@ -136,6 +136,24 @@ mode pool:
 
 Targets on the reference card: ≥ 10 MB/s sequential read, ≥ 5 MB/s write,
 data-integrity test of 1 GiB random data in both directions without error.
+
+**As built (PERF-SD rounds 1–2, 2026-11-27).** Two 32 KiB halves of the
+mode pool (64 KiB); the host sends READ/WRITE(10) of ≤ 120 KiB. A data
+phase runs in one poll of the USB task: the bulk DMA of one half starts
+(`EndpointIn::start`/`EndpointOut::start`), the card reads or writes the
+other half spinning (no executor round trip: those reloaded the code lines
+of the USB task's `select` each time, ≈ 90 % of the time in round 1), then
+the bulk DMA is waited for; the next CBW is waited for spinning (≤ 2 ms),
+and the transport returns to the executor once every 100 ms of commands
+(the UI and the watchdog run then). A sequential READ is read ahead by
+one half. The card runs at 48 MHz high speed (U-SD-1, checked by a
+read-back, 24 MHz if a card refuses) with the core capped at Mid
+(`governor::CARD_HS_CAP`: writes fail at Max); its busy waits poll DAT0
+(U-SD-4). The code is the `usb-msc` cluster of `hot.toml`. Measured with
+`cargo xtask dev msc-bench` (host direct I/O through files, floors in
+`budgets.toml [msc]`): **14.0 MB/s read, 7.6 MB/s write**, 1 GiB written
+and read back identical. No pre-declared block counts (CMD23) yet: each
+32 KiB is one CMD18/CMD25 with CMD12.
 Medium removal mid-transfer returns NOT READY / MEDIUM NOT PRESENT and never
 hangs the bus. "Read-only card reader" setting reports write-protect in MODE
 SENSE and rejects writes.
@@ -177,6 +195,17 @@ pieces (a screenshot is then 512 requests, about half a second).
 A Microsoft OS 2.0 descriptor set (WinUSB) is included so the channel works on
 Windows without a driver; on Linux a udev rule for the product id goes into
 `tools/udev/`.
+
+**File uploads (as built, PERF-SD round 2, 2026-11-27).** In the developer
+personality the vendor interface has one bulk OUT endpoint (`0x01`,
+`orpheus_proto::devchan::upload::BULK_EP`). An upload is `fcreate PATH`
+(reply `put 0`; only under `/.orpheus/`, or the demo tree with
+`fcreate-demo`), then `fput N` (reply `fput N`): the next `N` bytes on the
+endpoint go by DMA straight into the two 16 KiB staging halves while the
+card task writes the other half (`upload::pieces`); the host waits for
+`put N` and sends `fclose` (`closed N`). `cargo xtask dev put` uses it when
+the endpoint is there and the 1 KiB `REQ_PUT` control chunks otherwise.
+8 MiB in 6.5 s (1.3 MB/s, card-bound) against ≈ 45 KB/s with chunks.
 
 ### 2.6 Robustness and recovery (bug USB-W1, as built 2026-11-25)
 

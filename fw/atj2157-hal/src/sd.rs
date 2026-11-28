@@ -19,7 +19,7 @@ use embassy_time::{Duration, Instant, Timer};
 macro_rules! nap {
     ($self:ident, $us:expr) => {
         if $self.flags & NO_SLEEP != 0 {
-            crate::delay::wait_us($us);
+            crate::delay::wait_us_gently($us);
         } else {
             Timer::after_micros($us).await;
         }
@@ -31,6 +31,10 @@ use orpheus_sdcard::{self as card, Cid, Csd, Ocr, R128, Status, cmd};
 /// default; [`Sd::set_timing`] changes them for the high-speed trials
 /// (U-SD-1, PERF-SD). One word for the one SD host.
 static TIMING: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(sd::VENDOR_CTL_TIMING);
+
+/// The port's delay chains as [`Sd::set_timing`] takes them (RDELAY 8,
+/// WDELAY 15; [`sd::VENDOR_CTL_TIMING`]): good at 24 MHz, not at 48 MHz.
+pub const VENDOR_TIMING: u8 = (sd::VENDOR_CTL_TIMING >> 16) as u8;
 
 fn timing() -> u32 {
     TIMING.load(core::sync::atomic::Ordering::Relaxed)
@@ -102,6 +106,9 @@ const HIGH_CAPACITY: u8 = 1;
 /// index session and the watchdog reset the player (last PC in
 /// `Sd::wait_ts`).
 const NO_SLEEP: u8 = 2;
+/// `Sd::flags`: `STATE.DAT0S` reads the card's DAT0 line (high on an idle
+/// card after `init_card`'s select), so busy waits poll it (U-SD-4).
+const DAT0_OK: u8 = 4;
 
 /// Identification clock and fast clock words of `CMU_SD0CLK` [HW].
 pub const CLK_IDENT: u32 = 0x41;
@@ -141,17 +148,25 @@ impl Sd {
 
     async fn wait_ts(&self, timeout: Duration) -> bool {
         let end = Instant::now() + timeout;
-        // Commands finish in tens of µs: spin briefly, then yield.
-        for _ in 0..2000 {
+        // Commands finish in tens of µs: poll for ≈ 200 µs, then sleep
+        // between polls (or, spinning, keep polling). Every poll leaves
+        // the bus to the DMAs for ≈ 1 µs (`delay::pause`, PERF-SD round 2:
+        // a tight loop at 288 MHz starved the SD write DMA).
+        for _ in 0..200 {
             if sd::CTL.read() & sd::ctl::TS == 0 {
                 return true;
             }
+            crate::delay::pause();
         }
         while Instant::now() < end {
             if sd::CTL.read() & sd::ctl::TS == 0 {
                 return true;
             }
-            nap!(self, 50);
+            if self.flags & NO_SLEEP != 0 {
+                crate::delay::pause();
+            } else {
+                Timer::after_micros(50).await;
+            }
         }
         false
     }
@@ -210,10 +225,30 @@ impl Sd {
         }
         self.check_state(resp)?;
         if resp == Resp::R1b {
-            // Give the card time to release DAT0, then confirm via CMD13.
-            nap!(self, 500);
+            self.wait_dat0().await;
         }
         Ok(if resp == Resp::None { 0 } else { Self::short_resp() })
+    }
+
+    /// The card's busy signal after an R1b command or a write: wait until
+    /// `STATE.DAT0S` reads high (the card released DAT0), at most 1 s; the
+    /// caller confirms with CMD13 as before. With [`DAT0_OK`] clear (DAT0
+    /// read low on an idle card at `init_card`) a fixed 500 µs as before
+    /// PERF-SD round 2: a CMD12 after every 32 KiB read cost 0.5 ms of
+    /// 3 ms (U-SD-4).
+    async fn wait_dat0(&mut self) {
+        // (A count of naps, not a deadline: the `Instant` arithmetic took
+        // ≈ 250 B of the full code window.)
+        if self.flags & DAT0_OK == 0 {
+            nap!(self, 500);
+            return;
+        }
+        // At most ≈ 1 s.
+        let mut naps = 25_000u32;
+        while naps > 0 && sd::STATE.read() & sd::state::DAT0S == 0 {
+            nap!(self, 40);
+            naps -= 1;
+        }
     }
 
     async fn app_command(&mut self, index: u8, arg: u32, resp: Resp) -> Result<u32, Error> {
@@ -269,6 +304,9 @@ impl Sd {
         self.csd = Csd::parse(&Self::long_resp());
         self.command(cmd::SELECT_CARD, self.rca, Resp::R1b).await?;
         self.wait_ready().await?;
+        // The card is idle in `tran`: DAT0 must read high if `DAT0S` is
+        // the line (U-SD-4).
+        self.set_flag(DAT0_OK, sd::STATE.read() & sd::state::DAT0S != 0);
         self.app_command(cmd::ACMD_SET_BUS_WIDTH, 2, Resp::R1).await?;
         sd::EN.modify(|v| sd::en::DATAWID.set(v, sd::en::DATAWID_4BIT));
         if self.flags & HIGH_CAPACITY == 0 {
@@ -406,6 +444,7 @@ impl Sd {
                 r?;
                 stop?;
             }
+            self.wait_dat0().await;
             self.wait_ready().await?;
             self.stats.blocks_written += n;
             done += n;
@@ -443,6 +482,16 @@ impl Sd {
     /// RDELAY `[23:20]`); the port's `0x8F` by default.
     pub fn set_timing(delays: u8) {
         TIMING.store(u32::from(delays) << 16, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// `SD_EN.CLKS` (bit 8, "clock select" in the SDK header, meaning
+    /// unknown): for the high-speed trials (U-SD-1). `Sd::new` clears it.
+    pub fn set_clks(on: bool) {
+        if on {
+            sd::EN.set_bits(sd::en::CLKS);
+        } else {
+            sd::EN.clear_bits(sd::en::CLKS);
+        }
     }
 
     /// Capacity in blocks (0 before init).

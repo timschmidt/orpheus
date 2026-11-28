@@ -56,6 +56,23 @@ pub fn switched_high_speed(status: &[u8; 64]) -> bool {
     status[16] & 0x0F == 1 && (status[0] != 0 || status[1] != 0)
 }
 
+/// The SD host's delay chains at 48 MHz high speed (`SD_CTL` bits 23:16:
+/// RDELAY in the high nibble, WDELAY in the low; U-SD-1, PERF-SD round 2):
+/// RDELAY 7, WDELAY 4, the middle of [`hs_delays_good`]'s window.
+pub const HS_DELAYS: u8 = 0x74;
+
+/// Whether delay chains `d` read correctly at 48 MHz high speed on the
+/// test card (`card timing`, 2026-11-27, 4 × 32 KiB compared with the
+/// default clock's per setting): WDELAY 0, 4 and 8 with RDELAY 0–13 did
+/// (RDELAY 14 failed, 15 passed); with the port's WDELAY 15 every setting
+/// but RDELAY 15 got no response ("no response", `STATE` `0xCB8`). The
+/// untried WDELAY values between 0 and 8 are taken as good too.
+#[must_use]
+pub const fn hs_delays_good(d: u8) -> bool {
+    let (r, w) = (d >> 4, d & 0xF);
+    w <= 8 && r <= 13
+}
+
 /// The `CMU_SD0CLK` word for the fastest card clock at most `max_khz`
 /// from a source of `src_khz`, with the clock it gives (kHz): `source`
 /// is the register's source code (\[DS\] §4.3.3.3: 0 CK24M, 1 COREPLL, 2
@@ -306,6 +323,20 @@ mod tests {
         assert!(!switched_high_speed(&st));
         assert_eq!(SWITCH_HIGH_SPEED >> 31, 1);
         assert_eq!(SWITCH_HIGH_SPEED & 0xF, 1);
+    }
+
+    /// U-SD-1 (PERF-SD round 2, 2026-11-27): round 1's 50 MHz mode kept
+    /// the port's delay chains (`0x8F`, WDELAY 15) and failed at the first
+    /// command after the switch (`card bench 16 hs`: "bench failed create
+    /// state=3256 cmd=88", no response to CMD24).
+    #[test]
+    fn regress_high_speed_failed_with_the_port_delay_chains() {
+        assert!(!hs_delays_good(0x8F), "the port's chains fail at 48 MHz");
+        assert!(hs_delays_good(HS_DELAYS));
+        // Inside the window with a margin of a step at least each way.
+        for d in [HS_DELAYS - 0x10, HS_DELAYS + 0x10, HS_DELAYS - 1, HS_DELAYS + 1] {
+            assert!(hs_delays_good(d), "{d:#x}");
+        }
     }
 
     #[test]

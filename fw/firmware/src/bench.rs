@@ -124,3 +124,95 @@ pub async fn card_bench(vol: &mut Volume<'static, Card>, arena: &mut [u8], args:
             .u(u64::from(khz));
     });
 }
+
+/// Blocks read per trial of [`hs_scan`], at each of [`SCAN_LBAS`].
+const SCAN_BLOCKS: usize = 64;
+/// Where [`hs_scan`] reads (spread over the card; read only).
+const SCAN_LBAS: [u32; 4] = [0, 32_768, 1_048_576, 8_000_000];
+
+/// A word hash of `buf` (FNV-1a over words).
+fn hash(buf: &[u8]) -> u32 {
+    buf.chunks_exact(4).fold(0x811C_9DC5u32, |h, w| {
+        (h ^ u32::from_le_bytes([w[0], w[1], w[2], w[3]])).wrapping_mul(0x0100_0193)
+    })
+}
+
+/// `card timing [kHz] [clks]` (U-SD-1, PERF-SD round 2): read-only
+/// trials of the card's high-speed timing. The blocks at [`SCAN_LBAS`] are
+/// read at the default clock first; then for every delay chain setting
+/// (`SD_CTL` bits 23:16, RDELAY 0–15 × WDELAY 15, 8, 4, 0) the card is
+/// re-initialised, switched to high speed at the fastest clock ≤ `kHz`
+/// (default 50,000: 48 MHz), and the same blocks read again and compared.
+/// With `clks`, `SD_EN.CLKS` is set too. The card ends re-initialised at
+/// the default clock.
+///
+/// Reply: `hs scan sd=<kHz> clks=<0|1> w<W>:<16 marks>…` with one mark
+/// per RDELAY: `.` same data, `x` different data, `e` a failed command,
+/// `-` the card refused the switch, `r` the re-initialisation failed; then
+/// `best=<delays> <KB/s>` for the first setting whose reads all matched
+/// (the time of its reads).
+pub async fn hs_scan(vol: &mut Volume<'static, Card>, arena: &mut [u8], args: &str) {
+    let mut it = args.split_whitespace();
+    let max_khz: u32 = it.next().and_then(|a| a.parse().ok()).unwrap_or(50_000);
+    let clks = it.next() == Some("clks");
+    let Some(buf) = arena.get_mut(..SCAN_BLOCKS * 512) else { return };
+    let card = vol.device();
+    let mut want = [0u32; SCAN_LBAS.len()];
+    for (w, &lba) in want.iter_mut().zip(&SCAN_LBAS) {
+        let (s, _) = buf.as_chunks_mut::<512>();
+        if orpheus_fs::BlockDevice::read(card, lba, s).await.is_err() {
+            reply(|w| {
+                w.s(b"hs scan failed: reference read");
+            });
+            return;
+        }
+        *w = hash(buf);
+    }
+    const WDELAYS: [u8; 4] = [15, 8, 4, 0];
+    let mut marks = [[b'?'; 16]; WDELAYS.len()];
+    let (mut khz, mut best) = (0u32, None::<(u8, u64)>);
+    for (row, &wd) in marks.iter_mut().zip(&WDELAYS) {
+        for (rd, m) in row.iter_mut().enumerate() {
+            let delays = (rd as u8) << 4 | wd;
+            if card.reinit().await.is_err() {
+                *m = b'r';
+                continue;
+            }
+            khz = match card.high_speed(max_khz).await {
+                Ok(k) if k > 25_000 => k,
+                _ => {
+                    *m = b'-';
+                    continue;
+                }
+            };
+            Card::set_timing(delays);
+            Card::set_clks(clks);
+            *m = b'.';
+            let t0 = time::now_us();
+            for (&w, &lba) in want.iter().zip(&SCAN_LBAS) {
+                let (s, _) = buf.as_chunks_mut::<512>();
+                if orpheus_fs::BlockDevice::read(card, lba, s).await.is_err() {
+                    *m = b'e';
+                    break;
+                }
+                if hash(buf) != w {
+                    *m = b'x';
+                }
+            }
+            if *m == b'.' && best.is_none() {
+                best = Some((delays, time::now_us() - t0));
+            }
+            embassy_time::Timer::after_millis(2).await;
+        }
+    }
+    let _ = card.reinit().await;
+    reply(|w| {
+        w.s(b"hs scan sd=").u(u64::from(khz)).s(b" clks=").u(u64::from(clks));
+        for (row, &wd) in marks.iter().zip(&WDELAYS) {
+            w.s(b" w").u(u64::from(wd)).s(b":").s(row);
+        }
+        if let Some((d, us)) = best {
+            w.s(b" best=").u(u64::from(d)).s(b" ").u(kbps((SCAN_LBAS.len() * SCAN_BLOCKS * 512) as u64, us));
+        }
+    });
+}

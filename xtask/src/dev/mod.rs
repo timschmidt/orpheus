@@ -9,6 +9,7 @@
 mod fuzz;
 mod hil;
 mod mask;
+mod mscbench;
 mod player;
 pub mod prof;
 mod ram;
@@ -48,6 +49,12 @@ cargo xtask dev <subcommand>
   usbtest [--cycles N]          USB-1 acceptance: enumerate, control sizes, re-enumeration
   usb-cancel [--rounds N]       USB-W1: provoke abandoned control transfers (firmware held
                                 2.5 s, host cuts after 1 ms); the player must answer again
+  log                           the firmware's log ring (developer channel), oldest first
+  msc-bench [--mib N] [--file PATH] [--check]
+                                PERF-SD: card reader throughput through files (direct I/O):
+                                read a card file, write N MiB (default 64) to
+                                /.orpheus/test/perf/, read it back and compare, delete;
+                                --check against budgets.toml [msc]
   usbimage-test [--img F] [--iso F] [--rw] [--qemu]
                                 USB-6: put images into /.orpheus/images/, present each,
                                 read the whole block device, compare hashes, detach
@@ -292,6 +299,14 @@ fn dispatch(sub: &str, args: &mut Args) -> Result<String> {
         }
         "usbtest" => usbtest::cmd(args),
         "usb-cancel" => usbtest::cancel_cmd(args),
+        "msc-bench" => mscbench::cmd(args),
+        "log" => {
+            let d = orpheus_host::devchan::DevChannel::open(Duration::from_secs(3))?;
+            for l in prof::log_lines(&d)? {
+                println!("{l}");
+            }
+            Ok("log printed".into())
+        }
         "keys" => {
             let script = key_script(args)?;
             keys(&script)
@@ -667,6 +682,17 @@ fn upload_with(d: &orpheus_host::devchan::DevChannel, cmd: &str, data: &[u8]) ->
     };
     d.control_out(REQ_TEST, 0, 0, cmd.as_bytes())?;
     wait_for("put 0")?;
+    // PERF-SD round 2: the developer interface's bulk endpoint when the
+    // firmware has it (`orpheus_proto::devchan::upload::BULK_CMD`).
+    if d.has_bulk_upload() && !data.is_empty() {
+        let n = data.len();
+        d.control_out(REQ_TEST, 0, 0, format!("{}{n}", orpheus_proto::devchan::upload::BULK_CMD).as_bytes())?;
+        wait_for(&format!("fput {n}"))?;
+        d.bulk_upload(data, Duration::from_secs(10))?;
+        wait_for(&format!("put {n}"))?;
+        d.control_out(REQ_TEST, 0, 0, b"fclose")?;
+        return wait_for(&format!("closed {n}"));
+    }
     // Chunks numbered in `wValue`, sent back to back: the player stages
     // them (`orpheus_proto::devchan::upload`) and refuses one while both
     // halves wait for the card; a refused chunk is sent again (PERF-SD:

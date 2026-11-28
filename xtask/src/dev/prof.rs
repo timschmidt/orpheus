@@ -42,8 +42,9 @@ use crate::util::{log, out_dir, root};
 /// and write no NOR — and `update` (UPD-1's approved path: the inactive
 /// slot only; give it `--no-reboot` or `--stop-after BYTES`, or the reboot
 /// loses the capture; PG-2b).
-const DURING_OK: [&str; 15] = [
+const DURING_OK: [&str; 16] = [
     "soak",
+    "msc-bench",
     "update",
     "keys",
     "cmd",
@@ -246,7 +247,8 @@ fn finish(d: &DevChannel, w0: [u32; 5]) -> Result<Captured> {
     Ok((block, Totals { loads: d(0), code_faults: d(1), ro_faults: d(2), evictions: d(3), ms: d(4) }, log))
 }
 
-fn log_lines(d: &DevChannel) -> Result<Vec<String>> {
+/// The firmware's log ring, oldest line first (also `dev log`).
+pub fn log_lines(d: &DevChannel) -> Result<Vec<String>> {
     let area = d.log_area()?;
     let mut out = vec![0u8; area.len()];
     let Some((n, _)) = orpheus_proto::logring::unroll(&area, &mut out) else { return Ok(Vec::new()) };
@@ -342,9 +344,9 @@ pub fn cmd(args: &mut Args) -> Result<String> {
             if !DURING_OK.contains(&sub.as_str()) {
                 bail!("--during: not `{sub}` (allowed: {})", DURING_OK.join(", "));
             }
-            let hooked = sub == "soak";
+            let hooked = sub == "soak" || sub == "msc-bench";
             if only.is_some() && !hooked {
-                bail!("--only works with `--during \"soak …\"` (it names a soak action)");
+                bail!("--only works with `--during \"soak …\"` or `msc-bench` (it names an action or phase)");
             }
             *SESSION.lock().map_err(|_| anyhow!("lock"))? = Some(Session {
                 arm: arm.clone(),

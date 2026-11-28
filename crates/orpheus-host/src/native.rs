@@ -333,6 +333,35 @@ impl DevChannel {
     pub fn stats(&self, group: u16) -> Result<Vec<u32>> {
         self.with(|l| block_on(l.stats(group)))
     }
+    /// Whether the developer interface has the bulk OUT endpoint of
+    /// uploads (`orpheus_proto::devchan::upload::BULK_EP`, PERF-SD round 2).
+    pub fn has_bulk_upload(&self) -> bool {
+        let Ok(c) = self.link.t.dev.active_configuration() else { return false };
+        c.interface_alt_settings().any(|a| {
+            a.interface_number() == 0
+                && a.endpoints().any(|e| e.address() == orpheus_proto::devchan::upload::BULK_EP)
+        })
+    }
+
+    /// Send `data` to the bulk OUT endpoint of uploads, in transfers of at
+    /// most 64 KiB (the player takes it as `upload::pieces`).
+    pub fn bulk_upload(&self, data: &[u8], timeout: Duration) -> Result<()> {
+        let iface = self.link.t.dev.detach_and_claim_interface(0).wait().context("claim interface 0")?;
+        let mut ep = iface
+            .endpoint::<Bulk, Out>(orpheus_proto::devchan::upload::BULK_EP)
+            .context("open the upload endpoint")?;
+        for piece in data.chunks(64 * 1024) {
+            let mut buf = Buffer::new(piece.len());
+            buf.extend_from_slice(piece);
+            let c = ep.transfer_blocking(buf, timeout);
+            c.status.map_err(|e| anyhow!("bulk upload: {e:?}"))?;
+            if c.actual_len != piece.len() {
+                bail!("bulk upload short: {} of {}", c.actual_len, piece.len());
+            }
+        }
+        Ok(())
+    }
+
     /// Firmware update through the running firmware (UPD-1).
     pub fn update(&mut self, file: &[u8], progress: crate::transport::Progress<'_>) -> Result<u8> {
         block_on(self.link.update(file, progress))

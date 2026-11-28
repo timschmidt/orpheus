@@ -283,6 +283,25 @@ pub struct Input {
     pub floor: Level,
     /// The peripherals in use ([`periph`] bits).
     pub active: u8,
+    /// Highest level allowed, whatever the mode or the demand ([`Level::Max`]
+    /// for none): the USB card reader with the card at 48 MHz asks
+    /// [`CARD_HS_CAP`].
+    pub cap: Level,
+}
+
+/// The core's ceiling while the card runs at its 48 MHz high-speed clock
+/// and a USB card reader moves data (PERF-SD round 2, 2026-11-27): at Max
+/// (288 MHz, `SYSCLK` bit 8) the card's writes failed whenever the USB
+/// OUT DMA ran beside the SD write DMA (≈ every write op hung 500 ms, the
+/// host saw I/O errors); at Turbo, High, Mid and Base they worked (16 MiB
+/// each, integrity checked), Mid as fast as any (reads 14.3 MB/s, writes
+/// 6.7 MB/s). Mid also spends the least on the transport's spinning waits.
+pub const CARD_HS_CAP: Level = Level::Mid;
+
+/// `want` limited to `cap`.
+#[must_use]
+pub fn capped(want: Level, cap: Level) -> Level {
+    want.min(cap)
 }
 
 /// The governor's memory between steps: the run of steps asking for a
@@ -312,6 +331,7 @@ impl Governor {
             PowerMode::High => Level::Max,
             PowerMode::Auto => self.auto(i),
         };
+        let want = capped(want, i.cap);
         if mode != PowerMode::Auto {
             self.calm = 0;
         }
@@ -351,7 +371,28 @@ mod tests {
     }
 
     fn input(demand: u32, cur: Level, floor: Level, active: u8) -> Input {
-        Input { idle_pct: idle_at(demand, cur), current: cur, floor, active }
+        Input { idle_pct: idle_at(demand, cur), current: cur, floor, active, cap: Max }
+    }
+
+    /// PERF-SD round 2, 2026-11-27: with the card at its 48 MHz clock, the
+    /// card reader's writes failed at Max (the governor climbed there: the
+    /// transport's waits spin, the executor is never idle; Power mode High
+    /// asks Max outright). The ceiling holds in every mode. (The audio
+    /// floor, `raise_for_floor`, never applies then: the card is with the
+    /// USB task, nothing plays.)
+    #[test]
+    fn regress_card_reader_writes_failed_at_max_with_the_card_at_48_mhz() {
+        for mode in [PowerMode::Auto, PowerMode::High, PowerMode::Saver] {
+            let mut g = Governor::new();
+            let mut cur = Base;
+            for _ in 0..10 {
+                let i = Input { cap: CARD_HS_CAP, ..input(1_000, cur, Low, periph::ALWAYS | periph::USB) };
+                if let Some(l) = g.step(i, mode) {
+                    cur = l;
+                }
+                assert!(cur <= CARD_HS_CAP, "{mode:?}: {cur:?}");
+            }
+        }
     }
 
     /// Run a demand per step (MHz) from `start`; the level after each step.
@@ -556,7 +597,7 @@ mod tests {
         // `clock` pin, a mode just changed).
         let mut g = Governor::new();
         for l in Level::ALL {
-            let i = Input { idle_pct: 50, current: l, floor: Max, active: periph::ALWAYS };
+            let i = Input { idle_pct: 50, current: l, floor: Max, active: periph::ALWAYS, cap: Max };
             assert_eq!(g.step(i, PowerMode::Saver), (l != Low).then_some(Low));
             assert_eq!(g.step(i, PowerMode::High), (l != Max).then_some(Max));
         }

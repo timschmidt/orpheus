@@ -166,6 +166,11 @@ callers = [
     "*TaskStorage<firmware::__power_task::*>::poll",
     "firmware::usbdev::next_mode::{closure#0}",
     "firmware::usbdev::request_recovery",
+    # PERF-SD round 2: the bulk upload's pump (its `Signal` wait), and the
+    # developer channel's `fput N` (the test command, inlined into the
+    # control handler, signals the pump).
+    "<firmware::frame::Own<firmware::usbdev::upload_pump::*",
+    "<orpheus_usb::devchan::DevChannel<firmware::usbdev::Fw> as embassy_usb::Handler>::control_out",
     # (PERF-SD: the USB task's closure is inlined into its poll.)
     "*TaskStorage<firmware::usbdev::__usb_task::*>::poll",
     "firmware::media::play",

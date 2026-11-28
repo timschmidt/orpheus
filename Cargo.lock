@@ -2077,6 +2077,7 @@ dependencies = [
  "anyhow",
  "bytemuck",
  "flate2",
+ "libc",
  "object",
  "orpheus-apps",
  "orpheus-host",
