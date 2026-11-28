@@ -311,6 +311,11 @@ impl Target for Fw {
             crate::CHARGE_PAUSE.store(data == b"charge pause", Ordering::Relaxed);
             return true;
         }
+        if data == b"dac vendor" || data == b"dac default" {
+            // AQ-0 listening A/B: the vendor's DAC bias and PA bit 27, live.
+            atj2157_hal::dac::vendor_bias(data == b"dac vendor");
+            return true;
+        }
         if data == b"crc on" || data == b"crc off" {
             crate::audio::CRC_ON.store(data == b"crc on", Ordering::Relaxed);
             return true;

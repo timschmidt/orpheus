@@ -22,6 +22,7 @@ const VOL_L: Reg = r(0x14);
 const VOL_R: Reg = r(0x18);
 const PA_CTL: Reg = r(0x28);
 const PA_ANTIPOP: Reg = r(0x2C);
+const DAC_BIAS: Reg = r(0x30);
 
 /// FIFO0 data register address (DMA destination).
 pub const FIFO0_ADDR: u32 = (BASE + 0x0C) as u32;
@@ -204,6 +205,30 @@ pub fn fm_release() {
 /// off, which the music path here keeps on).
 pub fn fm_disconnect() {
     PA_ANTIPOP.clear_bits(1 << 20);
+}
+
+/// The two writes the vendor makes that Orpheus does not (AQ-0, owner's
+/// A/B listening check; audio.md §2.1, §2.4, §2.6): `DAC_BIAS` (`+0x30`,
+/// not in the datasheet) `[14:12]` = 4 and `[26:24]` = 6 at every stream
+/// start (the player reads 2 and 3 there without them), and `PA_CTL`
+/// bit 27 at the amplifier's enable. Meanings unknown; `vendor` false
+/// puts back what the player has without them. Test command only until
+/// the owner has listened.
+/// VERBATIM(vendor AUD_DEV B0:0x0D800856 and B0:0x0D800606)
+pub fn vendor_bias(vendor: bool) {
+    let (b, c) = if vendor { (4, 6) } else { (2, 3) };
+    DAC_BIAS.modify(|v| (v & !0x0700_7000) | (c << 24) | (b << 12));
+    if vendor {
+        PA_CTL.set_bits(1 << 27);
+    } else {
+        PA_CTL.clear_bits(1 << 27);
+    }
+}
+
+/// `DAC_BIAS` (developer status).
+#[must_use]
+pub fn bias() -> u32 {
+    DAC_BIAS.read()
 }
 
 /// `PA_ANTIPOP` (developer status).
