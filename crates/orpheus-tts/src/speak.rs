@@ -435,6 +435,12 @@ impl Synth {
         self.channels
     }
 
+    /// Units (phones and pauses) that are final and not yet rendered: how
+    /// far the queue is ahead of the renderer.
+    pub fn ahead(&self) -> u32 {
+        self.fin.saturating_sub(self.head)
+    }
+
     /// Free queue slots: [`Synth::push`] of a phone or a break needs one.
     pub fn space(&self) -> usize {
         if matches!(self.state, State::Fade(_) | State::StopAtWord) {
@@ -1096,6 +1102,9 @@ impl Synth {
     }
 }
 
+/// Final units [`Speaker`] keeps the renderer ahead by (about two words).
+pub const AHEAD: u32 = 12;
+
 /// Text in, audio out: a [`Converter`] feeding a [`Synth`].
 pub struct Speaker {
     conv: Converter,
@@ -1177,9 +1186,14 @@ impl Speaker {
         !self.active
     }
 
+    /// Converts text until the renderer has [`AHEAD`] final units in hand
+    /// (or its queue is full): a word or two at a time as it speaks, not
+    /// the queue's whole 64 units at the start of an utterance (TTS-3b,
+    /// 2026-11-28: on the player over music that first conversion took up
+    /// to 0.5 s and the speech ring ran dry; the output is the same).
     fn pump(&mut self) -> bool {
         let mut any = false;
-        while self.synth.space() > 0 {
+        while self.synth.space() > 0 && self.synth.ahead() < AHEAD {
             match self.conv.next_token() {
                 Some(t) => {
                     let text = if matches!(t, Token::Word(_)) { self.conv.word_text() } else { &[] };
@@ -1275,6 +1289,56 @@ mod tests {
     use super::*;
     use crate::convert::{Pause, Seg, Word};
     use crate::phoneme::Phone;
+
+    /// TTS-3b, 2026-11-28, on the player: the first render of an utterance
+    /// converted text until the renderer's whole queue (64 units, ≈ 10
+    /// words) was full; over music, with the converter's code and the
+    /// lexicon paged in, that one step took up to 0.5 s and the 128 ms
+    /// speech ring ran dry (`late=` gaps). The converter now stays about
+    /// two words ahead; the speech is the same samples.
+    #[test]
+    fn regress_first_render_converted_ten_words() {
+        extern crate std;
+        use std::{vec, vec::Vec};
+        let text = b"The quick brown fox jumps over the lazy dog while the band plays on and on.";
+        let cfg = Config { rate: 16_000, channels: 1, ..Config::default() };
+        let mut sp = Speaker::new(cfg, Options::default());
+        sp.feed(text);
+        sp.finish();
+        let mut block = [0i16; 16];
+        assert_eq!(sp.render(&mut block, |_, _| {}), 16);
+        let queued = QUEUE - sp.synth().space();
+        assert!(queued < 32, "{queued} units queued after the first render");
+        // The same samples as with the whole queue converted at once.
+        let mut all = Vec::new();
+        let mut more = vec![0i16; 4096];
+        loop {
+            let n = sp.render(&mut more, |_, _| {});
+            all.extend_from_slice(&more[..n]);
+            if n < more.len() {
+                break;
+            }
+        }
+        let mut whole = Synth::new(cfg);
+        let mut conv = Converter::new(Options::default(), Speed::NORMAL);
+        conv.convert(text, |w, t| {
+            let txt: &[u8] = if let Token::Word(_) = t { w.word_text() } else { &[] };
+            assert!(whole.push_with_text(t, txt));
+        });
+        whole.finish();
+        let mut ref_all = vec![0i16; 16];
+        assert_eq!(whole.render(&mut ref_all, |_, _| {}), 16);
+        assert_eq!(ref_all[..], block[..]);
+        let mut rest = Vec::new();
+        loop {
+            let n = whole.render(&mut more, |_, _| {});
+            rest.extend_from_slice(&more[..n]);
+            if n < more.len() {
+                break;
+            }
+        }
+        assert_eq!(rest, all);
+    }
 
     #[test]
     fn function_words() {

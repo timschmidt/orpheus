@@ -838,6 +838,40 @@ mod tests {
         }
     }
 
+    /// TTS-3b (2026-11-28, the player, build `a0ecaf5b`): the owner's
+    /// "pronunciation was too choppy to be usable, seems like it's paging
+    /// too much". The speech render (per sample and per 1 ms tick) was in
+    /// no cluster, scattered over four code groups under the card task's,
+    /// the input tick's and the UI's lines: 6,400 line loads/s while the
+    /// reader spoke alone, more than real time, `late=` 4–5 an utterance.
+    /// Now `speech-render` (checked by `xtask stack --check` from the
+    /// speech task's step), with the card task's mixer over music beside
+    /// the resampler it shares, and `exp2` (every tick) at the start of
+    /// `synth-render`, clear of it.
+    #[test]
+    fn regress_speech_render_in_no_cluster() {
+        let hot = rules::load_hot(&root().join("hot.toml"), "firmware").unwrap();
+        let at = |n: &str| hot.iter().position(|c| c.name == n).unwrap();
+        let r = &hot[at("speech-render")];
+        assert!(r.from.iter().any(|f| f.ends_with("firmware::speech::step")), "{:?}", r.from);
+        assert!(r.budget_lines.is_some_and(|b| b < CACHE_LINES), "{:?}", r.budget_lines);
+        let pos = |s: &str| r.symbols.iter().position(|p| p == s).unwrap_or_else(|| panic!("{s}"));
+        for s in [
+            "firmware::speech::step",
+            "firmware::speech::render",
+            "<orpheus_tts::klatt::Dsp>::render",
+            "<orpheus_tts::klatt::Dsp>::set_frame",
+            "<orpheus_tts::speak::Synth>::frame",
+        ] {
+            pos(s);
+        }
+        // The mixer right after the resampler.
+        assert!(pos("<orpheus_tts::resample::Resampler>::pull") < pos("firmware::audio::speech::mix_i16"));
+        assert!(pos("firmware::audio::speech::mix_i16") < pos("<orpheus_tts::klatt::Dsp>::render"));
+        assert!(at("speech-render") < at("speech-out"));
+        assert_eq!(hot[at("synth-render")].symbols[0], "orpheus_dsp::math::exp2");
+    }
+
     /// Regression (2026-11-26, the player, build `b694ac61`: "Etude" 18
     /// underruns at a render load of 24–46 %): the main executor's loop
     /// was inlined into `MainExecutor::run`, on physical lines 9–10 (the
