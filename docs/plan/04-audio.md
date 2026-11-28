@@ -349,7 +349,11 @@ The tuner's audio path (analogue into the SoC mixer versus through the ADC)
 is specified by docs/hw/fm-i2c-imu.md and docs/hw/audio.md. Preferred: the
 analogue bypass with hardware volume — no CPU, the core sleeps at `Low`
 while the radio plays. Recording from FM and FM over Bluetooth use the ADC
-path.
+path. Recording the radio is the Radio app's tape (05 §7.3.1, owner
+2026-11-28): the ADC capture goes as PCM into a ring file on the card and
+songs are cut from the ring by RDS and level, then encoded by the card task
+in the background; the capture holds the clock floor the ADC needs, the
+analogue bypass keeps the listening path CPU-free.
 
 ## 6. Indexes on the card
 

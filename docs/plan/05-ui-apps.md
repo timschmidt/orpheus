@@ -521,7 +521,10 @@ and the queue; long names, Unicode names, 8.3-only names; exFAT and FAT32 cards.
   radio (powers the tuner down).
 * Menu: Save preset / Remove preset · Presets… (list, rename, reorder, delete)
   · Auto-scan (fills up to 30 presets, strongest first, asks before replacing)
-  · Record (opens the recorder with FM as the source) · Force mono · Region
+  · **Record** / **Stop recording** (§7.3.1; owner 2026-11-28: recording the
+  radio lives here, not in the Recorder) · **Recording settings…** (Format,
+  Quality, Automatic gain as in the Recorder, plus the tape options of
+  §7.3.1) · Force mono · Region
   (Europe/US/World 87.5–108, Japan 76–95, wide 65–108; de-emphasis follows) ·
   ~~Output~~ (none: the radio's analogue bypass reaches the headphones and a
   connected Bluetooth sink alike, U-BT-2; §6.4).
@@ -549,10 +552,156 @@ order (Move up/down, Remove). Auto-scan asks only when presets exist; its
 stations replace them strongest first and a toast gives the count. Region
 Wide is 65–108 MHz (tuner limit). RDS clock time (group 4A) sets the clock
 when Settings › Date & time › Set from RDS is on (VER-13, 2026-11-26).
-Not built: preset rename (no text entry yet), the menu's Record item (the
-Recorder records FM with Source = FM radio), Output (none to choose,
-§6.4). (Checked against the code 2026-11-27, VER-13: Down is the next
+Not built: preset rename (no text entry yet), the menu's Record item and
+recording settings (§7.3.1, package UI-5e; until then the Recorder records
+FM with Source = FM radio), Output (none to choose, §6.4). (Checked against the code 2026-11-27, VER-13: Down is the next
 preset, Up the previous; steps and seeks wrap at the region's limits.)
+
+#### 7.3.1 Recording the radio: mixtapes (owner's requirement 2026-11-28)
+
+The owner's words: move recording from FM radio from the Recorder to the
+Radio app, with a Record item in the Radio menu; Format, Quality and
+Automatic gain as in the Recorder; record to a buffer on the card while
+taking song and artist from RDS; use RDS to split and name the tracks
+automatically; never keep two copies of the same song; re-create recording
+mixtapes from the radio with a cassette deck; and have the recordings
+indexed by Orpheus's other tools for playback.
+
+**The deck.** Menu › Record starts the "tape": the radio keeps playing as
+before and everything it plays is captured. The Radio screen shows a red
+● and the tape counter (elapsed, `mm:ss`) in the top line, and in the text
+line the song being taken ("● Artist – Title", or "● recording" while RDS
+names nothing). OK still mutes (the recording continues; muting the
+output never mutes the capture); OK held asks "Stop recording?" (Stop
+focused: everything finished is kept). **Pause** (Menu › Pause tape, and
+Next held while recording) works like the deck's pause button: the buffer
+keeps running, the song in progress is not cut and is dropped unless it is
+resumed before it ends. Tuning to another station ends the song in
+progress (kept if complete, §"What is kept"). Leaving the app, the screen
+turning off and locking do not stop the tape (status bar: ● FM). Starting
+music, the Recorder or a USB personality stops it after "Stop recording?".
+
+**Buffer on the card.** The capture (the Recorder's ADC path, 04 §5.3,
+`orpheus-rec`) is written as plain PCM (the chosen sample rate, stereo) to a
+ring file, `/.orpheus/radio/tape.ring`, sized by Settings (default 15 min
+of audio, 2–60 min; 44.1 kHz stereo ≈ 10.6 MB/min). Songs are cut from the
+ring, not from the live stream, because RDS names a song only after it has
+started and stops naming it late or early; the ring keeps the minutes
+needed to place both ends. A finished song is extracted from the ring and
+encoded into its file in the chosen Format by the card task in the
+background (the encoders of AU-13; the next song keeps filling the ring
+meanwhile). The ring is checked against the clock: if extraction falls
+behind (a slow card, FLAC at a high rate) the oldest unextracted audio is
+the one lost, and the deck says so ("Tape too short: one song lost") rather
+than glitching the radio. Card writes follow the owner's storage priority
+(PLAN §1): one sequential stream, large writes, no seeks while capturing.
+
+**Song and artist from RDS.**
+* **RadioText Plus** (RT+, IEC 62106 ODA `0x4BD7`, group 3A announcing it,
+  then its own group type, usually 11A or 12A): content types ITEM.TITLE (1)
+  and ITEM.ARTIST (4) point into the RadioText; the *item toggle* bit marks
+  a new item and the *item running* bit says whether a song is on. This is
+  the primary source. Decoder work in `orpheus-fm::rds` (package FM-2),
+  host-tested against recorded group sequences.
+* **RadioText patterns** when a station sends no RT+: "Artist - Title",
+  "Title by Artist", "Now playing: …", with the station's own repeating
+  slogans learnt and ignored (a text seen across several items is not a
+  song). Matches are lower confidence: they name and split, but a song is
+  kept only if the text stayed the same for most of its length.
+* **PTY** (programme type) goes into the genre tag; **PS** (station name)
+  and the frequency into the album/comment tags.
+* No RDS (or nothing parseable) on a station: the tape still records, cut
+  at the gaps between songs found by level (a quiet stretch ≥ 0.6 s under
+  −45 dBFS after ≥ 90 s of programme) and named "Station name – YYYY-MM-DD
+  HH-MM" ("FM 101.90 – …" without PS). The duplicate rule cannot apply to
+  unnamed pieces.
+
+**Splitting.** A song's provisional span runs from the RT+ toggle (or the
+pattern's change) that announced it to the one that ended it. Both ends are
+then moved to the real boundary: the quietest point (short-term RMS minimum
+over 20 ms windows) within a search window around the RDS edge (default −8 s
+… +3 s for the start, since RDS lags; −3 s … +8 s for the end), preferring
+a gap under the song's own level by ≥ 12 dB; with none (a DJ talking over
+the fade, a crossfade) the cut is at the RDS edge with a 1 s fade. Talk,
+jingles and adverts between songs (RT+ item not running, or no title) are
+not songs: Settings › Keep decides (Songs only — the default, the mixtape;
+Everything — the talk becomes its own pieces named "Station – talk HH-MM").
+Pieces shorter than 45 s are not songs (jingles), longer than 15 min are
+cut at the ring's length (a live set; kept as parts "(part 2)").
+
+**What is kept: one copy of each song.** Every kept song is entered in
+`/.orpheus/radio/songs.idx`: normalised artist and title (case and
+punctuation folded, "feat."/"&" parts and bracketed remix/edit notes kept
+as part of the title, so a remix is a different song), length, file path,
+and a completeness mark. A song already in the index is not saved again
+("Already on tape: Artist – Title" toast, the tape counter keeps running);
+except when the new copy is **complete and the old one was not** (missed
+start or end, or cut by a station change): then the new copy replaces the
+old file in place (same name, same position in its tape). A song whose
+start the ring had already lost (the tape began mid-song) is marked
+incomplete and kept only if Settings › Partial songs is on (default off: a
+deck that missed the start is rewound and taped over). Deleting a recording
+in Files or Recordings removes its index entry (the index is checked
+against the files when the Radio app opens, so a file deleted on a
+computer is forgotten too).
+
+**Files, tags and the library.** Each tape is a folder named like a
+cassette label, `/Recordings/Radio/YYYY-MM-DD Station (FM 101.90)/`, its
+songs `NN Artist - Title.ext` in recording order (characters a FAT name
+cannot hold replaced, names cut at 120 bytes with the title kept), and a
+playlist `Tape.m3u8` (the songs in order: plays as the mixtape; the
+"Side A / Side B" split follows Settings › Tape length C60/C90/C120: a
+side ends when its minutes are full and the deck "turns the tape" with a
+toast). Tags, in the format's own place (WAV `LIST`/INFO and an `id3 `
+chunk, FLAC/Ogg Vorbis comments, MP3 ID3v2 when that encoder exists):
+Title, Artist, Album = the tape folder's name, Track number = NN, Date
+= the recording date, Genre = PTY name, Comment = "Recorded from FM
+101.90 Station on YYYY-MM-DD HH:MM", Album artist = "Radio mixtapes". The
+library (AU-12) indexes them like any other music: Artists, Albums (one per
+tape), Genres; Now Playing shows them like any track; the playlist opens in
+Music when playlists are built. A song that RDS named but the tags cannot
+fully hold keeps its full text in the comment.
+
+**Recording settings** (Radio menu › Recording settings…; new keys in the
+Radio's `0x07xx` group after Region `0x0701`, Force mono `0x0702` and Seek
+sensitivity `0x0703`; effects and differential tests, VER-13):
+Format (as the Recorder: WAV PCM, WAV ADPCM, FLAC; MP3/Opus when built) ·
+Quality (44.1 / 48 kHz stereo, or 16 kHz for talk) · Automatic gain
+(off by default here: broadcast audio is already levelled; on, the
+Recorder's AGC) · Keep (Songs only / Everything) · Partial songs (off/on) ·
+Tape length (C60 / C90 / C120 / unlimited) · Buffer (2–60 min, default
+15) · Split search (the windows above, as a "tighter / normal / looser"
+choice). Format, Quality and Automatic gain offer the same choices as
+the Recorder's, on the Radio's own keys (the Recorder keeps its own for
+the microphone).
+
+**Power and load.** The tape keeps the clock floor the ADC capture needs
+(04 §5.3; the analogue bypass alone lets the core sleep at `Low`); the
+ring write is one card stream; extraction and encoding run as card-task
+chores (they yield to the live capture, never the reverse). Measured on the
+player as part of the package: card write rate, CPU idle with the screen
+off, battery drain per hour of tape (M13 method).
+
+**Acceptance.**
+* Host: the RT+ decoder on recorded and synthetic group streams (toggle,
+  running bit, content types, a lost group, a station change); the
+  RadioText pattern parser and slogan learning; the splitter on synthetic
+  programmes (songs with gaps, crossfades, talk-over, jingles, adverts, a
+  live set) with the cut within 50 ms of the real boundary where a gap
+  exists; the duplicate rule (same song twice; incomplete then complete;
+  remix vs original; a file deleted outside the app); ring overrun; card
+  full (the tape stops cleanly at 1 MiB free, finished songs kept); tags
+  read back by `orpheus-meta` and the library building Artists/Albums from
+  a recorded tape; `ffprobe` validity.
+* Simulator: a scripted station (fake tuner with RT+ and RadioText,
+  audio from the demo card with talk between songs) records a tape;
+  goldens of the Radio screen recording, the toasts, the settings, the tape
+  folder in Files and its album in Music.
+* **[HIL]** 30 minutes from a local station with RT+ (and one without):
+  songs split and named, no duplicate after a song repeats, the tape
+  plays in Music as an album; no audio glitch on the radio output while
+  recording and extracting; card and CPU numbers recorded. User check:
+  listen to the cuts.
 
 ### 7.4 Bluetooth
 
@@ -591,16 +740,18 @@ per role, defined in 06.
   asks "Stop and save?" (Back again discards nothing — recordings are always
   saved).
 * Up/Down: input gain (manual), shown in dB with the meter responding live.
-* Menu: Source (Microphone / FM radio; the YM03 has no line input) ·
+* Menu: ~~Source~~ (the microphone is the only source: recording the radio
+  moved to the Radio app, §7.3.1, owner 2026-11-28; the YM03 has no line
+  input) ·
   Format (WAV PCM · WAV ADPCM · FLAC · MP3 · Opus voice — those built, see 04)
   · Quality (sample rate, channels, bitrate) · Gain mode (manual / automatic) ·
   Voice activation (threshold, hang time) · Auto split (off, 15/30/60 min,
   2 GiB) · Pre-record 2 s · Monitor through headphones · Low-cut filter ·
   Recordings… (list in `/Recordings`, newest first, OK plays, Menu deletes/
   renames).
-* Files: `/Recordings/REC-YYYYMMDD-HHMMSS.ext`, FM: `/Recordings/
-  FM-101.90-YYYYMMDD-HHMMSS.ext` (one folder; `-2`… for a second file in the
-  same second; `REC-0001.ext`… while the clock is not set). The header is
+* Files: `/Recordings/REC-YYYYMMDD-HHMMSS.ext` (`-2`… for a second file in
+  the same second; `REC-0001.ext`… while the clock is not set). Radio tapes
+  go to `/Recordings/Radio/` (§7.3.1); Recordings… lists both, newest first. The header is
   rewritten every 10 s so a power loss costs at most 10 s.
 * The key click is forced off while the microphone is live. Playback of other
   audio is stopped when recording starts.
@@ -622,6 +773,10 @@ YM03 has none (01 §2, U-AUD-4), so Source is Microphone or FM radio and a
 stored Line-in reads as Microphone; the developer command keeps `rec start
 line` for probing. Not built: split on mark,
 rename, pre-record, the 2 GiB split, monitoring on the device.
+**Planned change (2026-11-28, package UI-5e):** Source and its FM radio
+choice leave the Recorder (key `0x0801` retired; a stored FM reads as
+Microphone); the FM capture path, its stereo Quality and the FM file
+naming move to the Radio's tape (§7.3.1).
 
 **Acceptance**: state machine incl. pause, mark, split, card-full (stops and
 saves cleanly at 1 MiB free) and card-removed; file validity checked with
