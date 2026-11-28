@@ -416,6 +416,10 @@ fn build() -> Vec<u8> {
     write(&mut vol, "/Pictures/Lake.bmp", &pictures::bmp(160, 96, &pictures::lake(160, 96)));
     write(&mut vol, "/Pictures/Sunset.qoi", &pictures::qoi(72, 120, &pictures::tree(72, 120)));
     write(&mut vol, "/Pictures/Москва.png", b"\x89PNG\r\n\x1a\n");
+    // A computer's AppleDouble file beside a picture: hidden (a dot name)
+    // unless Show hidden is on (Pictures opens here since UI-PIC: the
+    // setting's effect in Pictures and its viewer, 07 §5.12).
+    write(&mut vol, "/Pictures/._Aurora.png", b"\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X        ");
     write(&mut vol, "/Images/rescue.iso", &[0u8; 2048]);
     write(&mut vol, "/Images/boot.img", &[0u8; 512]);
     write(&mut vol, "/README.TXT", b"Orpheus simulated card.\nThis file has an 8.3 name only.\n");

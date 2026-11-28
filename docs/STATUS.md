@@ -41,7 +41,7 @@ of every session. Newest entries first in §3.
 | AU-1…AU-4, AU-7, AU-8, AU-9 | done (host); on the player: MP3/FLAC/WAV and Speex at 48 MHz, Vorbis at 144 MHz (clock floor), **Opus too slow (fix built, not yet run on the player)** | Opus fix (AU-8, 2026-11-24): Ogg pages above 8 KiB read packet by packet (16 KiB ring); Opus frame code and tables packed in `hot.toml` clusters `opus-celt`/`opus-frame`/`opus-silk` and compacted: decoder alone 61.5 → 0 NOR line loads per CELT frame (emulator + pager replay). Hybrid (SILK + CELT) still pages (~17–52 loads per frame). `status` shows `dec:` (decoder µs and line loads per track) |
 | AU-6 | done (host); **working on the player** | `orpheus-dsp` chain between decoder and DAC, fed by the Sound settings; works on a scratch copy of the decoder output; while any stage is active during playback the clock floor is 96 MHz (EQ + bass + crossfeed: 0 underruns, ≈ 90 % idle). WSOLA not done; Levels meter not wired |
 | AU-12 (directory index, music library) | host done; **firmware wired in (built, not yet run on the player)** | `orpheus-index` + its `card` adapters over `orpheus-fs` (host-tested on FAT32/exFAT images). Files/Music › Folders sorted (Name/Date/Size, hidden per setting), letter jump from the index's letter runs, play queue in listing order. **Music library** (`orpheus-library`) built in the card task's idle loop, Music › Artists/Albums/Songs/Genres/Recently added, Play/Shuffle, Shuffle all from the library, Go to album/artist. Playlists, Favourites: not started. User check 16 |
-| AU-14 | done (host); **device: Pictures app and album art (built, not yet run on the player)** | `orpheus-img`. Pictures (folders + pictures, list mode), viewer (fit/fill, rotate, next/prev, slideshow), album art made at track open and cached in `/.orpheus/cache/art`. Not done: thumbnail grid, 100 % + pan, wallpaper, delete, per-file rotation memory. User check 14 |
+| AU-14 | done (host); **device: Pictures app and album art (built, not yet run on the player)** | `orpheus-img`. Pictures (folders + pictures, list mode), viewer (fit/fill, rotate, next/prev, slideshow), album art made at track open and cached in `/.orpheus/cache/art`. Not done: thumbnail grid, 100 % + pan, wallpaper, delete, per-file rotation memory. User check 14. **UI-PIC (2026-11-28, built, not yet on the player): Pictures opens at `/Pictures`, `/Photos` or `/DCIM` (case-insensitive), Back → Home** |
 | OTP-1, BT-1 | done (host) | `orpheus-otp`, `orpheus-bt` |
 | USB-6 | **built (host + firmware), not yet run on the player** | MMC/CD-ROM and the extent mapper (host, earlier); export rules and `map_file` (`orpheus_usb::msc::image`); firmware `crate::drive` + image personality (`usb image <path> [cd\|disk\|fixed] [ro\|rw]`, `usb image status`); card hand-over as the card reader; read-only always for CD, writable only for `/.orpheus/` images in test mode; `xtask dev usbimage-test` (put → present → read the block device → SHA-256 → detach; `--rw`, `--qemu`). User check 26 |
 | UI-6 (USB Drive) | **built (host + firmware), not yet run on the player** | USB Drive app (Images / Test images / Choose file…, options, status with counters, Back disconnects, refusal reasons), Files and the USB dialog open it; simulator back end with a fake computer; 94 goldens; no app is "not available yet" any more |
@@ -88,6 +88,84 @@ of every session. Newest entries first in §3.
 | VER-4 (settings store keys) | **done, on the player** (store mounts on every boot since the 2026-11-26 read-race fix; owner's settings intact) | Store index 128 → 192 keys at 4 B a slot (was 8), same NOR format both ways (fixture from the old code, byte-equal images); cache write marks unlimited; 131 keys in use with every app (61 free), firmware 129; sector ceiling ≈ 209 settings keys (256 cannot fit one sector); .bss −1,248 B, stack margin 5,664 B; compaction no longer re-blesses a rotted value (session entry 2026-11-26 "VER-4: settings store index") |
 
 ## 3. Session log
+
+### 2026-11-28 — UI-PIC: Pictures opens at the card's pictures folder (worker, no hardware)
+
+Owner's request (2026-11-28): "the Pictures app doesn't improve on Files
+UX because they both open to the root folder. Either the Pictures app
+should go away, or it should open to the Pictures folder by default." The
+lead chose the second. Host, simulator and firmware build only (no
+`xtask dev`).
+
+* **Behaviour** (05 §7.6 "Start folder" and "As built (UI-PIC)"): Home ›
+  Pictures opens at the first of `/Pictures`, `/Photos`, `/DCIM` on the
+  card (`orpheus_apps::browse::PICTURE_DIRS`), names compared without
+  case (`/PICTURES`, `/photos` match), else the root. Back from it is
+  Home, as Music's root; no "up" entry (Files browses the rest). Folders
+  inside go in and out as before. There was no "remember last folder" to
+  keep: Home always pushed the root; every open now starts at the
+  pictures folder.
+* **How**: `PictureService::pictures_dir()`; the firmware finds the
+  folder with `Volume::stat` (case-insensitive) in `drive::find_dirs`,
+  which already ran at mount, after the card reader and after a format,
+  and now also keeps each found folder's own entry (`drive::entry`).
+  `Fw::entry_of` answers ids it has not browsed to from there: without
+  that, the card task lists the card's **root** for a folder opened by id
+  (the 2026-11-25 Recordings bug). **USB Drive › Images / Test images
+  pushed their folders by id the same way and had no such entry, so they
+  most likely listed the root unless the last listing happened to contain
+  the folder** (read from the code, not seen on the player; fixed by the
+  same lookup). The simulator stats the same paths over its card image
+  (`Media::find_root_dir`).
+* **What Pictures does that Files does not** (the owner thinks it is all
+  duplicated): now the start folder; it lists only folders and pictures
+  (Files lists everything); its list menu has Slideshow (from the focused
+  picture) instead of Play/Shuffle folder (from Files you open a picture
+  first, then the viewer's Menu › Slideshow). The viewer, its keys and
+  its menu are the same screen from both apps. The thumbnail grid of 05
+  §7.6, which would be the real difference, is not built (AU-14 "Not
+  done").
+* **Tests**: `sim/tests/pictures.rs` on FAT32 and exFAT images made in
+  the test: the first of the list wins whatever the card's order,
+  `/PICTURES` and `/photos` match, `/DCIM` as the last fallback, the root
+  with folders and pictures when none exists, a *file* named `Pictures` is
+  skipped, Back from the folder is Home and a sub-folder comes back to it.
+  Simulator card: `/Pictures/._Aurora.png` (an AppleDouble file, hidden)
+  so Show hidden still has an effect in Pictures and the viewer
+  (settings matrix 0x0D02; effects.toml oracle updated). Goldens:
+  `pictures_root_*` (2) removed (the root is no longer what Pictures
+  shows); the other 20 Pictures goldens unchanged with the shorter
+  journeys (`busy` waits 1 s before OK, as the old journey's pace);
+  `app_check_card_*` (6) re-blessed: Files 5036 → 5037 (the new file).
+  Screen-reader and settings-matrix journeys shortened (no `down*3 ok`).
+  Looked at: `pictures_folder_*`, `pictures_folder_menu_*`, the busy
+  frames, `app_check_card_dark_latin`, the suite frames.
+* **On-device suite** (`tests/suite/journeys.toml` `pictures`): opens
+  Pictures, shot (listing masked), then `dev: down` (the player's
+  `/Pictures` from the demo card starts with the folder `Full size`; the
+  simulator's with a picture), Menu shot: a picture's menu (Slideshow,
+  Properties, Delete…, Sort). At the root the second row is a folder (no
+  Delete…), so the menu shot also catches a wrong listing. Expected
+  frames re-made (`ORPHEUS_BLESS=1 cargo test -p xtask
+  expected_frames_are_current`; `storage/check_result` too, its counts
+  masked).
+* **Firmware**: GATE_NUMBERS
+* **Docs**: 05 §7.6, `docs/user/pictures.md` (which folder, Back, the
+  list menu; screenshot `pictures_folder_dark_latin`), shots re-made.
+
+**Lead, on the player** (card with the demo set): `cargo xtask dev suite
+--only pictures` (expected: both shots pass; the menu shot needs the
+demo card's `/Pictures/Full size` as the first row); by hand: Home ›
+Pictures shows `/Pictures` (Full size, Corot…), Back → Home; Pictures ›
+Full size › Back → `/Pictures`; USB Drive › Images (if `/Images` exists)
+lists `/Images`, not the card's root. Card reader on and off, then
+Pictures again (the folder found after the card came back).
+
+Not done: the thumbnail grid and the rest of AU-14's list; no regression
+test on the host for the USB Drive listing (the bug, if the player shows
+it, is in `Fw::entry_of`, firmware only; the suite's `pictures` menu shot
+is the on-device check of the shared lookup); no setting for the start
+folder (the lead: none).
 
 ### 2026-11-28 — PERF-SD: SD and USB mass storage throughput, round 2 (worker, player)
 

@@ -112,8 +112,8 @@ fn lint_journeys() -> Vec<(&'static str, String)> {
         ("files big", "next ok down*2 ok ok wait:600".into()),
         ("properties", "next ok wait:100 menu down*2 ok wait:100 expect-screen:Properties".into()),
         ("text", "next ok ok wait:100 ok wait:200 expect-screen:TextViewer".into()),
-        ("pictures", "next*5 ok wait:100 down*3 ok wait:100 expect-screen:Pictures".into()),
-        ("picture", "next*5 ok wait:100 down*3 ok wait:100 ok wait:100 expect-screen:PictureViewer".into()),
+        ("pictures", "next*5 ok wait:100 expect-screen:Pictures".into()),
+        ("picture", "next*5 ok wait:100 ok wait:100 expect-screen:PictureViewer".into()),
         ("radio", "next*2 ok wait:1100 expect-screen:Radio".into()),
         (
             "presets",

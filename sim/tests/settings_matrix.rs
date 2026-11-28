@@ -61,8 +61,8 @@ fn context_scripts() -> Vec<(&'static str, String)> {
         ("Files.Big", "next ok down*2 ok ok wait:600".into()),
         ("Files.Menu", "next ok wait:100 menu".into()),
         ("TextViewer", "next ok ok wait:100 ok wait:200 expect-screen:TextViewer".into()),
-        ("Pictures", "next*5 ok wait:100 down*3 ok wait:100".into()),
-        ("PictureViewer", "next*5 ok wait:100 down*3 ok wait:100 ok wait:100 expect-screen:PictureViewer".into()),
+        ("Pictures", "next*5 ok wait:100".into()),
+        ("PictureViewer", "next*5 ok wait:100 ok wait:100 expect-screen:PictureViewer".into()),
         ("Radio", "next*2 ok wait:1100 expect-screen:Radio".into()),
         (
             "RadioPresets",

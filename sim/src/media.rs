@@ -1393,6 +1393,20 @@ impl Media {
         self.dir_paths.iter().find(|(_, p)| p.as_str() == path).map(|(k, _)| DirId(*k))
     }
 
+    /// A folder at the card's root looked up as the firmware does
+    /// (`Volume::stat`: the name compared without case), known from then
+    /// on under its own name; `None` if there is none.
+    pub fn find_root_dir(&mut self, path: &str) -> Option<DirId> {
+        let mut e = DirEntry::new();
+        block_on(self.vol.as_mut()?.stat(path, &mut e)).ok()?;
+        if !e.is_dir() || e.first_cluster() == 0 {
+            return None;
+        }
+        let d = DirId(e.first_cluster());
+        self.dir_paths.insert(d.0, format!("/{}", e.name()));
+        Some(d)
+    }
+
     /// The path of a file listed before (USB Drive).
     #[must_use]
     pub fn file_path(&self, f: FileRef) -> Option<String> {

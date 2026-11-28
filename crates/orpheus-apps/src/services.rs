@@ -2442,6 +2442,11 @@ pub trait PictureService {
     /// The outcome of the last `show_picture` (after `Event::Data(PICTURE)`;
     /// `Pending` before).
     fn picture_state(&self) -> PicState;
+    /// The folder Pictures opens at (05 §7.6): the first of
+    /// [`crate::browse::PICTURE_DIRS`] on the card, [`DirId::ROOT`] when
+    /// there is none. The firmware looks them up when the card mounts and
+    /// when it comes back from the computer or a format.
+    fn pictures_dir(&mut self) -> DirId;
 }
 
 #[cfg(test)]

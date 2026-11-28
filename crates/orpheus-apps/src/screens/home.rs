@@ -201,7 +201,8 @@ impl<S: Services + ?Sized> Screen<S> for HomeScreen {
                         _ => match app {
                             App::Music => return Nav::Push(MUSIC, Arg(0)),
                             App::Files => return Nav::Push(FILES, Arg(0)),
-                            App::Pictures => return Nav::Push(PICTURES, Arg(0)),
+                            // The card's pictures folder (UI-PIC); Back from it is Home.
+                            App::Pictures => return Nav::Push(PICTURES, Arg(cx.svc.pictures_dir().0)),
                             // Also while the card is lent: the export's status.
                             App::UsbDrive => return Nav::Push(super::USB_DRIVE, Arg(0)),
                             _ => Notice::NotYet(app),

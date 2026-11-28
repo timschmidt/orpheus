@@ -106,6 +106,12 @@ pub fn is_hidden_name(name: &str) -> bool {
     name.starts_with('.') || name.eq_ignore_ascii_case("System Volume Information")
 }
 
+/// Where Pictures opens (05 §7.6, UI-PIC 2026-11-28): the first of these
+/// folders the card has, else the root. The look-up ignores case as the
+/// file system does (FAT and exFAT names are case-insensitive), so
+/// `/PICTURES` and `/pictures` are `/Pictures`.
+pub const PICTURE_DIRS: [&str; 3] = ["/Pictures", "/Photos", "/DCIM"];
+
 /// Simple case folding for Latin, Greek and Cyrillic (04 §6.1).
 #[must_use]
 pub fn fold(c: char) -> char {
