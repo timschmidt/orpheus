@@ -629,21 +629,31 @@ Everything — the talk becomes its own pieces named "Station – talk HH-MM").
 Pieces shorter than 45 s are not songs (jingles), longer than 15 min are
 cut at the ring's length (a live set; kept as parts "(part 2)").
 
-**What is kept: one copy of each song.** Every kept song is entered in
-`/.orpheus/radio/songs.idx`: normalised artist and title (case and
-punctuation folded, "feat."/"&" parts and bracketed remix/edit notes kept
-as part of the title, so a remix is a different song), length, file path,
-and a completeness mark. A song already in the index is not saved again
-("Already on tape: Artist – Title" toast, the tape counter keeps running);
-except when the new copy is **complete and the old one was not** (missed
-start or end, or cut by a station change): then the new copy replaces the
-old file in place (same name, same position in its tape). A song whose
-start the ring had already lost (the tape began mid-song) is marked
-incomplete and kept only if Settings › Partial songs is on (default off: a
-deck that missed the start is rewound and taped over). Deleting a recording
-in Files or Recordings removes its index entry (the index is checked
-against the files when the Radio app opens, so a file deleted on a
-computer is forgotten too).
+**What is kept: one copy of each song, checked against the library.** The
+duplicate check uses the player's canonical song index, the music library
+(`library.ydb`, 04 §6.4; owner 2026-11-28), not an index of its own: a song
+is "already there" if the library holds a track with the same normalised
+artist and title (case and punctuation folded, "feat."/"&" parts and
+bracketed remix/edit notes kept as part of the title, so a remix is a
+different song), whether it came from an album copied to the card, an
+earlier tape or this one. Such a song is not saved again ("Already in your
+library: Artist – Title" toast; the tape counter keeps running). Except when
+the new copy is **complete and the library's is an incomplete radio
+recording** (missed start or end, or cut by a station change; marked in its
+tags, `ORPHEUS_PARTIAL=1` / its INFO comment, and carried as a flag in the
+library's track row): then the new copy replaces that file in place (same
+name, same position in its tape). A song whose start the ring had already
+lost (the tape began mid-song) is marked incomplete and kept only if
+Settings › Partial songs is on (default off: a deck that missed the start
+is rewound and taped over). So that repeats inside one tape are caught
+before the next library scan, every kept song is added to the library at
+once through its additions journal (04 §6.4); deleting a recording in Files
+or Recordings removes it from the library the same way, and a file deleted
+on a computer drops out at the next scan, as for any track. Without a
+library yet (none built, or the card's first scan still running) the check
+uses the journal and the tapes' own folders, and says so in the deck's
+first toast ("Checking repeats in this tape only until the library is
+ready").
 
 **Files, tags and the library.** Each tape is a folder named like a
 cassette label, `/Recordings/Radio/YYYY-MM-DD Station (FM 101.90)/`, its
@@ -689,7 +699,9 @@ off, battery drain per hour of tape (M13 method).
   programmes (songs with gaps, crossfades, talk-over, jingles, adverts, a
   live set) with the cut within 50 ms of the real boundary where a gap
   exists; the duplicate rule (same song twice; incomplete then complete;
-  remix vs original; a file deleted outside the app); ring overrun; card
+  remix vs original; a song already on the card from an album; a
+  repeat inside one tape before any rescan; a file deleted outside the
+  app; no library yet); ring overrun; card
   full (the tape stops cleanly at 1 MiB free, finished songs kept); tags
   read back by `orpheus-meta` and the library building Artists/Albums from
   a recorded tape; `ffprobe` validity.
