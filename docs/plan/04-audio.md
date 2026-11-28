@@ -349,7 +349,11 @@ The tuner's audio path (analogue into the SoC mixer versus through the ADC)
 is specified by docs/hw/fm-i2c-imu.md and docs/hw/audio.md. Preferred: the
 analogue bypass with hardware volume — no CPU, the core sleeps at `Low`
 while the radio plays. Recording from FM and FM over Bluetooth use the ADC
-path.
+path. Recording the radio is the Radio app's tape (05 §7.3.1, owner
+2026-11-28): the ADC capture goes as PCM into a ring file on the card and
+songs are cut from the ring by RDS and level, then encoded by the card task
+in the background; the capture holds the clock floor the ADC needs, the
+analogue bypass keeps the listening path CPU-free.
 
 ## 6. Indexes on the card
 
@@ -401,6 +405,20 @@ and index rows store locators; exported playlists store paths.
   A header checksum and a "complete" flag guard against using a partial file.
 * **Queries** from the UI are `(table, first row, count)` reads; results are
   cached per page by the `ListView`.
+* **The canonical song index** (owner 2026-11-28): other features ask the
+  library, not their own lists, whether a song is on the card. `find_song
+  (artist, title)` normalises both (case and punctuation folded; "feat."/
+  "&" parts and bracketed remix/edit notes kept) and searches the by-title
+  ids, then compares the artist; a track row carries flags, among them
+  "incomplete radio recording" (from the `ORPHEUS_PARTIAL` tag). Used by the
+  Radio's tapes to avoid recording a repeat (05 §7.3.1).
+* **Additions journal** (`library.add`, owner 2026-11-28): a file saved by
+  the player itself (a radio tape's song, a recording) is appended at once
+  as a track row with its strings, and a delete through Files or Recordings
+  appends a removal; queries and `find_song` consult the journal (a few
+  hundred rows, scanned linearly) until the next scan merges it into
+  `library.ydb` and empties it. A journal row whose file no longer exists
+  is dropped at that merge.
 
 ### 6.5 Queue and shuffle
 

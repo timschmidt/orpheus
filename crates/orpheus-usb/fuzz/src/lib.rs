@@ -67,7 +67,16 @@ fn info(dir: Direction, mps: u16) -> EndpointInfo {
 pub struct In {
     info: EndpointInfo,
     pub sent: Vec<Vec<u8>>,
+    /// Bytes taken so far: past [`HOST_PATIENCE`] the host gives up and
+    /// resets the bus, as a real one does long before (Linux after 30 s);
+    /// a CBW may ask for an IN phase of 4 GiB, which the transport pads
+    /// with zeros (BOT §6.7) — 3.5 GB of packets exhausted the fuzzer's
+    /// memory (`usb_scsi` OOM, 2026-11-28).
+    taken: usize,
 }
+
+/// What the fake host takes before it resets the bus.
+const HOST_PATIENCE: usize = 64 << 20;
 
 impl Endpoint for In {
     fn info(&self) -> &EndpointInfo {
@@ -79,6 +88,10 @@ impl Endpoint for In {
 impl EndpointIn for In {
     async fn write(&mut self, buf: &[u8]) -> Result<(), EndpointError> {
         assert!(buf.len() <= usize::from(self.info.max_packet_size), "IN packet over the packet size");
+        self.taken += buf.len();
+        if self.taken > HOST_PATIENCE {
+            return Err(EndpointError::Disabled);
+        }
         self.sent.push(buf.to_vec());
         Ok(())
     }
@@ -286,7 +299,7 @@ pub fn usb_scsi(data: &[u8]) {
     };
     let mut buf = vec![0u8; 4096];
     let mut bot = Bot::new(
-        In { info: info(Direction::In, mps), sent: Vec::new() },
+        In { info: info(Direction::In, mps), sent: Vec::new(), taken: 0 },
         Out { info: info(Direction::Out, mps), queue },
         ram,
         unit,
