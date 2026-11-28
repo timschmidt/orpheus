@@ -809,6 +809,24 @@ impl orpheus_usb::msc::bot::BulkIn for BulkIn {
         msc_add(T_IN, N_IN, t0);
         r
     }
+    /// The DMA starts, `work` (the card, spinning) runs, then the DMA is
+    /// waited for: one poll per piece (PERF-SD round 2).
+    async fn send_while<W: core::future::Future>(
+        &mut self,
+        buf: &[u8],
+        work: W,
+    ) -> (Result<(), embassy_usb_driver::EndpointError>, W::Output) {
+        let t0 = time::now_us() as u32;
+        // SAFETY: the guard lives in this future, which holds the borrow
+        // of `buf` for its whole life, and is never forgotten.
+        let Some(dma) = (unsafe { self.0.start(buf) }) else {
+            return embassy_futures::join::join(self.send(buf), work).await;
+        };
+        let out = work.await;
+        let r = dma.wait().await;
+        msc_add(T_IN, N_IN, t0);
+        (r, out)
+    }
 }
 impl embassy_usb_driver::Endpoint for BulkOut {
     fn info(&self) -> &embassy_usb_driver::EndpointInfo {
@@ -834,6 +852,47 @@ impl orpheus_usb::msc::bot::BulkOut for BulkOut {
         msc_add(T_OUT, N_OUT, t0);
         r
     }
+    /// As [`BulkIn::send_while`]: the host's next half arrives by DMA
+    /// while the card writes this one.
+    async fn receive_while<W: core::future::Future>(
+        &mut self,
+        buf: &mut [u8],
+        work: W,
+    ) -> (Result<usize, embassy_usb_driver::EndpointError>, W::Output) {
+        let t0 = time::now_us() as u32;
+        let n = buf.len();
+        if n > 65536 {
+            return embassy_futures::join::join(self.receive(buf), work).await;
+        }
+        // SAFETY: as in `send_while`; `buf` is not touched until the
+        // guard's wait returns.
+        let Some(dma) = (unsafe { self.0.start(buf) }) else {
+            return embassy_futures::join::join(self.receive(buf), work).await;
+        };
+        let out = work.await;
+        let r = dma.wait().await.map(|()| n);
+        msc_add(T_OUT, N_OUT, t0);
+        (r, out)
+    }
+}
+
+/// The card reader's waits spin up to this long before they sleep (µs;
+/// `usb::set_spin`): the next CBW, a DMA's end.
+const MSC_SPIN_US: u32 = 2_000;
+/// Longest stretch of card reader commands without a return to the
+/// executor (µs): its other tasks (the UI, the watchdog's feed) run then.
+const MSC_RUN_US: u32 = 8_000;
+
+/// After a command: when the transport has run [`MSC_RUN_US`] since the
+/// last return to the executor, return to it once (the waits spin, so
+/// otherwise a long transfer never does). The time of that return.
+async fn msc_yield(last: u32) -> u32 {
+    let now = time::now_us() as u32;
+    if now.wrapping_sub(last) < MSC_RUN_US {
+        return last;
+    }
+    embassy_futures::yield_now().await;
+    time::now_us() as u32
 }
 
 /// The card reader asks for the card's high-speed clock (CMD6, 48 MHz from
@@ -942,6 +1001,7 @@ async fn run_msc() -> Personality {
     CARD_WITH_USB.store(true, Ordering::Relaxed);
     let mut card = crate::audio::CARD_OUT.receive().await;
     yoton_bsp::card::set_spin(true);
+    usb::set_spin(MSC_SPIN_US);
     atj2157_hal::log::line(b"usb: card reader on");
     let blocks = u64::from(yoton_bsp::card::BlockDevice::sector_count(&card));
     let next = 'msc: {
@@ -993,10 +1053,12 @@ async fn run_msc() -> Personality {
         let pump = async {
             loop {
                 embassy_usb_driver::Endpoint::wait_enabled(&mut bot.ep_in).await;
+                let mut last = time::now_us() as u32;
                 while bot.serve_one().await.is_ok() {
                     if bot.scsi.events.eject {
                         return Personality::Dev;
                     }
+                    last = msc_yield(last).await;
                 }
             }
         };
@@ -1016,6 +1078,7 @@ async fn run_msc() -> Personality {
         atj2157_hal::log::line(b"usb: card re-init failed");
     }
     yoton_bsp::card::set_spin(false);
+    usb::set_spin(0);
     crate::audio::CARD_BACK.send(card).await;
     CARD_WITH_USB.store(false, Ordering::Relaxed);
     atj2157_hal::log::line(b"usb: card returned");
@@ -1060,6 +1123,7 @@ async fn run_image() -> Personality {
     };
     let mut card = crate::audio::CARD_OUT.receive().await;
     yoton_bsp::card::set_spin(true);
+    usb::set_spin(MSC_SPIN_US);
     let e = mapped.export;
     crate::drive::update(|i| {
         i.phase = DrivePhase::Attached;
@@ -1103,7 +1167,9 @@ async fn run_image() -> Personality {
                     loop {
                         embassy_usb_driver::Endpoint::wait_enabled(&mut bot.ep_in).await;
                         crate::drive::update(|i| i.host = true);
+                        let mut last = time::now_us() as u32;
                         while bot.serve_one().await.is_ok() {
+                            last = msc_yield(last).await;
                             let st = bot.stats;
                             crate::drive::update(|i| {
                                 i.bytes_read = st.bytes_read;
@@ -1135,6 +1201,7 @@ async fn run_image() -> Personality {
         atj2157_hal::log::line(b"usb: card re-init failed");
     }
     yoton_bsp::card::set_spin(false);
+    usb::set_spin(0);
     crate::audio::CARD_BACK.send(card).await;
     CARD_WITH_USB.store(false, Ordering::Relaxed);
     crate::drive::update(|i| {

@@ -9,6 +9,8 @@
 //! data phase surface as CHECK CONDITION with sense data, and the host's
 //! data phase is completed first (padding / draining, BOT §6.7).
 
+use core::future::Future;
+
 use embassy_futures::join::join;
 use embassy_usb_driver::{EndpointError, EndpointIn, EndpointOut};
 
@@ -77,6 +79,15 @@ pub trait BulkIn: EndpointIn {
         }
         Ok(())
     }
+
+    /// Send `buf` while `work` runs (the double buffer's overlap). The
+    /// default joins the two futures, which overlap only where they yield;
+    /// an endpoint whose DMA runs by itself starts it, runs `work` to its
+    /// end and then waits for the DMA, all in one poll when `work` does not
+    /// yield (PERF-SD round 2: the card reader's card spins).
+    async fn send_while<W: Future>(&mut self, buf: &[u8], work: W) -> (Result<(), EndpointError>, W::Output) {
+        join(self.send(buf), work).await
+    }
 }
 
 /// A bulk OUT endpoint that receives a data piece of known length (a data
@@ -97,6 +108,15 @@ pub trait BulkOut: EndpointOut {
             }
         }
         Ok(got)
+    }
+
+    /// Receive into `buf` while `work` runs: as [`BulkIn::send_while`].
+    async fn receive_while<W: Future>(
+        &mut self,
+        buf: &mut [u8],
+        work: W,
+    ) -> (Result<usize, EndpointError>, W::Output) {
+        join(self.receive(buf), work).await
     }
 }
 
@@ -343,7 +363,7 @@ impl<'b, I: BulkIn, O: BulkOut, B: BlockDevice> Bot<'b, I, O, B> {
             let (cur, nxt): (&[u8], &mut [u8]) = if c == 0 { (a, b) } else { (b, a) };
             let piece = &cur[..n as usize * bs];
             let (sent, got) = if m > 0 {
-                join(ep_in.send(piece), dev.read(next, &mut nxt[..m as usize * bs])).await
+                ep_in.send_while(piece, dev.read(next, &mut nxt[..m as usize * bs])).await
             } else {
                 (ep_in.send(piece).await, Ok(()))
             };
@@ -387,12 +407,8 @@ impl<'b, I: BulkIn, O: BulkOut, B: BlockDevice> Bot<'b, I, O, B> {
             let piece = &cur[..n as usize * bs];
             let skip = failed.is_some();
             let write = async { skip || dev.write(lba + u64::from(done), piece).await.is_ok() };
-            // The endpoint first: its DMA starts at its first poll, and a
-            // device that does not yield (the card reader's card spins,
-            // PERF-SD round 2) then writes while the host's next half
-            // arrives.
             let (got, ok) = if m > 0 {
-                join(ep_out.receive(&mut nxt[..m as usize * bs]), write).await
+                ep_out.receive_while(&mut nxt[..m as usize * bs], write).await
             } else {
                 (Ok(0), write.await)
             };

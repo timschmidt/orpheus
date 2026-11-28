@@ -313,13 +313,29 @@ async fn dma_wait(done: u32, err: u32, watch_setup: bool, limit_ms: u16) -> Resu
         }
         spins += 1;
         if spins > 200 {
-            if start.elapsed() > Duration::from_millis(u64::from(limit_ms)) {
+            let waited = start.elapsed();
+            if waited > Duration::from_millis(u64::from(limit_ms)) {
                 DMA_ERRORS.fetch_add(1, Ordering::Relaxed);
                 return Err(Fail::Timeout);
             }
-            Timer::after_micros(20).await;
+            if waited.as_micros() >= u64::from(SPIN_US.load(Ordering::Relaxed)) {
+                Timer::after_micros(20).await;
+            }
         }
     }
+}
+
+/// How long a bulk wait spins before it sleeps (µs; 0 = the 200 polls of
+/// before): the card reader's transport sets it for its session (PERF-SD
+/// round 2). A sleeping wait sends the task back through the executor and
+/// everything its `select` polls, whose code lines then load again: at a
+/// few hundred µs per round trip, more than the transfer itself.
+static SPIN_US: AtomicU32 = AtomicU32::new(0);
+
+/// See [`SPIN_US`]: bulk DMA waits and the wait for OUT data spin up to
+/// `us` µs before they sleep.
+pub fn set_spin(us: u32) {
+    SPIN_US.store(us, Ordering::Relaxed);
 }
 
 /// Abort a USB DMA channel the vendor's way [UD 0x10b27c, ROM 0x4c06]:
@@ -988,6 +1004,72 @@ impl drv::EndpointIn for EndpointIn {
     }
 }
 
+impl EndpointIn {
+    /// Start sending `buf` as one transfer (the controller packetises
+    /// it) and return at once; [`InFlight::wait`] waits for its end.
+    /// `None` (nothing started): not configured, empty, longer than
+    /// 64 KiB, or not DMA-reachable: send it with `write` instead. PERF-SD
+    /// round 2: the card reader's transport starts a piece, reads the next
+    /// one from the card meanwhile, then waits, all in one poll.
+    ///
+    /// # Safety
+    /// The returned guard must not be forgotten (`mem::forget`): dropping
+    /// it stops the DMA, which reads `buf` until then.
+    pub unsafe fn start<'a>(&'a mut self, buf: &'a [u8]) -> Option<InFlight<'a>> {
+        if !CONFIGURED.load(Ordering::Acquire)
+            || buf.is_empty()
+            || buf.len() > 65536
+            || !dma_reachable(buf.as_ptr(), buf.len())
+        {
+            return None;
+        }
+        let k = self.k;
+        dmak_ctl(k).write(((buf.len() as u32) << 8) | UDMA_IN);
+        dmak_addr(k).write(buf.as_ptr() as u32);
+        DMA_EN.write(1);
+        dmak_ctl(k).set_bits(UDMA_START);
+        Some(InFlight { k, limit_ms: DMA_MS, out: false, done: false, _buf: core::marker::PhantomData })
+    }
+}
+
+/// A bulk DMA started by [`EndpointIn::start`] or [`EndpointOut::start`]:
+/// [`Self::wait`] for its end; dropped before that, it stops the DMA.
+pub struct InFlight<'a> {
+    k: usize,
+    limit_ms: u16,
+    out: bool,
+    done: bool,
+    _buf: core::marker::PhantomData<&'a mut ()>,
+}
+
+impl InFlight<'_> {
+    /// Wait for the transfer's end (a failure is aborted and recorded).
+    pub async fn wait(mut self) -> Result<(), EndpointError> {
+        let k = self.k;
+        let r = dma_wait(1 << (1 + k), 1 << (17 + k), false, self.limit_ms).await;
+        self.done = true;
+        if r.is_err() {
+            let e = bulk_fail(k);
+            if self.out {
+                fibc(k).set_bits(FIBC_FFRST);
+            }
+            return Err(e);
+        }
+        Ok(())
+    }
+}
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        if !self.done {
+            abort_dma(dmak_ctl(self.k), 0x0002_0002 << self.k);
+            if self.out {
+                fibc(self.k).set_bits(FIBC_FFRST);
+            }
+        }
+    }
+}
+
 /// A DMA's time limit (IN data, EP0, one OUT packet).
 const DMA_MS: u16 = 500;
 /// The time limit of an OUT data phase's DMA ([`EndpointOut::read_exact`]):
@@ -1021,6 +1103,16 @@ impl drv::EndpointOut for EndpointOut {
         // Unmask this FIFO's OUT/short-packet interrupts and wait for data.
         FIFO_OUT_READY.fetch_and(!(1 << k), Ordering::AcqRel);
         GIMR1.clear_bits(3 << (2 * k));
+        // In the card reader the next CBW follows the CSW within ≈ 0.1–
+        // 0.3 ms: wait for it here rather than through the executor
+        // ([`SPIN_US`]).
+        let spin = SPIN_US.load(Ordering::Relaxed);
+        if spin > 0 {
+            let t0 = crate::time::now_us_raw();
+            while FIFO_OUT_READY.load(Ordering::Acquire) & (1 << k) == 0
+                && crate::time::now_us_raw().wrapping_sub(t0) < spin
+            {}
+        }
         poll_fn(|cx| {
             FIFO_WAKERS[k].register(cx.waker());
             if !CONFIGURED.load(Ordering::Acquire) {
@@ -1104,6 +1196,32 @@ impl EndpointOut {
             }
         }
         Ok(buf.len())
+    }
+}
+
+impl EndpointOut {
+    /// Start receiving exactly `buf.len()` bytes (≤ 64 KiB, a data phase
+    /// of known length as [`Self::read_exact`]) and return at once;
+    /// [`InFlight::wait`] waits for its end. `None`: nothing started (as
+    /// [`EndpointIn::start`]); use `read_exact`.
+    ///
+    /// # Safety
+    /// As [`EndpointIn::start`]: the guard must not be forgotten (the DMA
+    /// writes `buf` until it ends or the guard is dropped).
+    pub unsafe fn start<'a>(&'a mut self, buf: &'a mut [u8]) -> Option<InFlight<'a>> {
+        if !CONFIGURED.load(Ordering::Acquire)
+            || buf.is_empty()
+            || buf.len() > 65536
+            || !dma_reachable(buf.as_ptr(), buf.len())
+        {
+            return None;
+        }
+        let k = self.k;
+        dmak_ctl(k).write((buf.len() as u32) << 8);
+        dmak_addr(k).write(buf.as_mut_ptr() as u32);
+        DMA_EN.write(1);
+        dmak_ctl(k).set_bits(UDMA_START);
+        Some(InFlight { k, limit_ms: OUT_DATA_MS, out: true, done: false, _buf: core::marker::PhantomData })
     }
 }
 
