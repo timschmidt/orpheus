@@ -228,7 +228,8 @@ mod reader {
     /// speech render's lines).
     pub(super) fn deadline(ui: &Ui, t: u64) -> Option<u64> {
         let mut d = ui.a11y.chords.next_deadline(ui.mapper.timing.hold).map(|d| d.0.max(t + 1));
-        if ui.a11y.on && crate::speech::speaking() && ui.a11y.pause.needs_ticks(reader_cfg(ui.fw).music == 1) {
+        if ui.a11y.on && crate::speech::speaking() && ui.a11y.pause.needs_ticks(reader_cfg(ui.fw).music == 1)
+        {
             d = Some(d.map_or(t + 100, |d| d.min(t + 100)));
         }
         d

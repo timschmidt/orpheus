@@ -476,6 +476,7 @@ fn step(sp: &mut Speaker, st: &mut State) -> Next {
     // until `HEAD` moves past them (Release, below).
     let mut n = render(sp, st, unsafe { core::slice::from_raw_parts_mut(base.add(at), first) });
     if n == first && want > first {
+        // SAFETY: the ring's start, the rest of the same free room (above).
         n += render(sp, st, unsafe { core::slice::from_raw_parts_mut(base, want - first) });
     }
     HEAD.store(head.wrapping_add(n as u32), Ordering::Release);
