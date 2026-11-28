@@ -1047,8 +1047,10 @@ async fn run_dev() -> Personality {
 
 /// A bulk upload asked for (`fput N`, `orpheus_proto::devchan::upload::
 /// BULK_CMD`): its byte count.
-static BULK_UP: embassy_sync::signal::Signal<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, u32> =
-    embassy_sync::signal::Signal::new();
+static BULK_UP: embassy_sync::signal::Signal<
+    embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
+    u32,
+> = embassy_sync::signal::Signal::new();
 
 /// The developer interface's bulk uploads (PERF-SD round 2): each `fput N`
 /// takes `N` bytes from the endpoint into the upload's staging halves

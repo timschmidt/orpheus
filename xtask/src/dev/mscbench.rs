@@ -263,7 +263,11 @@ fn floors() -> Result<Floors> {
             .map(|v| v as f64 / 1000.0)
             .ok_or_else(|| anyhow!("budgets.toml: [msc] {k} missing"))
     };
-    Ok(Floors { read_mbps: g("read_kbps_min")?, write_mbps: g("write_kbps_min")?, readback_mbps: g("readback_kbps_min")? })
+    Ok(Floors {
+        read_mbps: g("read_kbps_min")?,
+        write_mbps: g("write_kbps_min")?,
+        readback_mbps: g("readback_kbps_min")?,
+    })
 }
 
 /// The firmware's card reader stage counters (`usb msc stats`), labelled.
@@ -328,7 +332,8 @@ pub fn cmd(args: &mut Args) -> Result<String> {
     switch("usb msc")?;
     let dev = wait_for("the card reader's block device", Duration::from_secs(30), find_block)?;
     let sys = PathBuf::from("/sys/block").join(&dev);
-    let q = |f: &str| std::fs::read_to_string(sys.join("queue").join(f)).unwrap_or_default().trim().to_string();
+    let q =
+        |f: &str| std::fs::read_to_string(sys.join("queue").join(f)).unwrap_or_default().trim().to_string();
     log(&format!(
         "   /dev/{dev}: max_sectors_kb {} (hw {}), {} sectors",
         q("max_sectors_kb"),

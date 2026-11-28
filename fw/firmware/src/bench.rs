@@ -132,8 +132,9 @@ const SCAN_LBAS: [u32; 4] = [0, 32_768, 1_048_576, 8_000_000];
 
 /// A word hash of `buf` (FNV-1a over words).
 fn hash(buf: &[u8]) -> u32 {
-    buf.chunks_exact(4)
-        .fold(0x811C_9DC5u32, |h, w| (h ^ u32::from_le_bytes([w[0], w[1], w[2], w[3]])).wrapping_mul(0x0100_0193))
+    buf.chunks_exact(4).fold(0x811C_9DC5u32, |h, w| {
+        (h ^ u32::from_le_bytes([w[0], w[1], w[2], w[3]])).wrapping_mul(0x0100_0193)
+    })
 }
 
 /// `card timing [kHz] [clks]` (U-SD-1, PERF-SD round 2): read-only

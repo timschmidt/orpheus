@@ -154,13 +154,10 @@ impl Card {
 /// DEVPLL for the card's high-speed clock: 24 × 6 = 144 MHz, ÷3 = 48 MHz.
 pub const DEVPLL_N: u32 = 24;
 
-/// The delay chains at 48 MHz high speed (`SD_CTL` bits 23:16: RDELAY 7,
-/// WDELAY 4): the middle of the window `card timing` found on the test
-/// card (2026-11-27, U-SD-1): WDELAY 0, 4 and 8 read correctly with
-/// RDELAY 0–13 (14 failed, 15 passed); the port's WDELAY 15 failed every
-/// command but one (RDELAY 15), the first file create of round 1's `card
-/// bench hs` ("no response", `STATE` `0xCB8`).
-pub const HS_TIMING: u8 = 0x74;
+/// The delay chains at 48 MHz high speed: [`orpheus_sdcard::HS_DELAYS`]
+/// (the window `card timing` found, U-SD-1; the port's `0x8F` failed every
+/// command after the switch).
+pub const HS_TIMING: u8 = orpheus_sdcard::HS_DELAYS;
 
 /// High-speed switches whose read-back differed from the default clock's
 /// (the card went back to 24 MHz).
@@ -168,8 +165,9 @@ pub static HS_FALLBACKS: core::sync::atomic::AtomicU32 = core::sync::atomic::Ato
 
 /// A word hash (FNV-1a) of a block, for [`Card::high_speed`]'s check.
 fn hash(b: &[u8; 512]) -> u32 {
-    b.chunks_exact(4)
-        .fold(0x811C_9DC5u32, |h, w| (h ^ u32::from_le_bytes([w[0], w[1], w[2], w[3]])).wrapping_mul(0x0100_0193))
+    b.chunks_exact(4).fold(0x811C_9DC5u32, |h, w| {
+        (h ^ u32::from_le_bytes([w[0], w[1], w[2], w[3]])).wrapping_mul(0x0100_0193)
+    })
 }
 
 /// Card work with a deadline running now ([`Urgent`]): no rests.

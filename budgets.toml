@@ -120,9 +120,13 @@ stack_free_min_bytes = 2048
 # READ/WRITE(10) of ≤ 120 KiB). `read` is an existing card file (the demo
 # set's 19 MB FLAC), `write` and `readback` the bench's own file.
 # 2026-11-27 (PERF-SD round 1, before these floors): 3,600 / 2,600 / 3,600.
-read_kbps_min = 3000
-write_kbps_min = 2200
-readback_kbps_min = 3000
+# 2026-11-28 (PERF-SD round 2, the default 64 MiB run, test card 58.2 GB):
+# 13,860 / 7,630 / 13,980 (1 GiB runs: read back 12,790–12,820; write
+# 7,170, once 2,740 on the card's first long write into fresh space). The
+# floors are 06 §2.4's targets.
+read_kbps_min = 10000
+write_kbps_min = 5000
+readback_kbps_min = 10000
 
 [soak]
 # Long soaks (VER-12, 07 §5.10: `cargo xtask dev soak`). First values,

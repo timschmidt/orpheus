@@ -682,9 +682,10 @@ fn place_cold_reserving(
     reserve: u32,
     share: bool,
 ) -> Result<(Plan, BTreeSet<usize>)> {
-    let pack_cold = |g: &Graph, places: &[Place], hot: &[Cluster], crates: &[String], cold: &BTreeSet<usize>| {
-        pack_cold_sharing(g, places, hot, crates, cold, share)
-    };
+    let pack_cold =
+        |g: &Graph, places: &[Place], hot: &[Cluster], crates: &[String], cold: &BTreeSet<usize>| {
+            pack_cold_sharing(g, places, hot, crates, cold, share)
+        };
     let mut plan = pack_cold(g, places, hot, crates, cold)?;
     let cap = (MAX_CODE_PAGES - reserve) * PAGE_SIZE;
     let rank = |n: usize| rules.cold.symbol_rank(&g.nodes[n]).unwrap_or(0);
@@ -750,7 +751,9 @@ fn place_cold_reserving(
 pub fn check_rodata(plan: &Plan) -> Result<()> {
     let ngroups = (plan.groups.len() + plan.cold.len()) as u32;
     if ngroups > MAX_RO_GROUPS {
-        let used = |g: &[(Vec<(usize, u32)>, u32)]| g.iter().map(|(_, u)| u.to_string()).collect::<Vec<_>>().join(" ");
+        let used = |g: &[(Vec<(usize, u32)>, u32)]| {
+            g.iter().map(|(_, u)| u.to_string()).collect::<Vec<_>>().join(" ")
+        };
         bail!(
             "paged rodata and cold code need {ngroups} groups of 16 KiB ({} + {}; used {} | {}), the window holds {MAX_RO_GROUPS}",
             plan.groups.len(),
@@ -2021,12 +2024,71 @@ sections = [".rodata.cst4"]
         let (all, _) = cold_set(&g, &p, &r, &[]);
         assert_eq!(all.len(), 2);
         // Kept, the reserve leaves both cold: 31 + 2 groups.
-        let (kept, _) = place_cold_reserving(&g, &p, &[], &crates(&g), &r, &all, CODE_RESERVE_PAGES, false).unwrap();
+        let (kept, _) =
+            place_cold_reserving(&g, &p, &[], &crates(&g), &r, &all, CODE_RESERVE_PAGES, false).unwrap();
         assert!(check_rodata(&kept).is_err());
         let (plan, cold) = place_cold(&g, &p, &[], &crates(&g), &r, &all).unwrap();
         assert_eq!(cold.len(), 1);
         assert_eq!(plan.code_size, 1_045_000);
         assert!(check_rodata(&plan).is_ok());
+    }
+
+    /// PERF-SD round 2 (2026-11-27): with both windows full the build
+    /// failed ("need 33 groups of 16 KiB (21 + 12)") for 5.6 KB of cold
+    /// code while the constants' groups had 20 KB free. Now the constants'
+    /// group with the most room is shared: it moves last and becomes the
+    /// first cold group, its constants in an output section of their own
+    /// (`.pr_gN`), the cold code after them (`.px_gN`).
+    #[test]
+    fn regress_window_full_with_room_in_the_constants_groups() {
+        let mut nodes = vec![
+            node(".text", ".text.big", 1_040_000, 2, Some("app::big")),
+            node(".text", ".text.a", 16_000, 2, Some("books::a")),
+            node(".text", ".text.b", 10_000, 2, Some("books::b")),
+            // First in order: group 0, the emptiest.
+            node(".rodata", ".rodata.small", 4_000, 4, Some("app::SMALL")),
+        ];
+        let names: Vec<String> = (0..MAX_RO_GROUPS - 2).map(|i| format!(".rodata.t{i}")).collect();
+        for n in &names {
+            nodes.push(node(".rodata", n, RO_GROUP_SIZE, 4, None));
+        }
+        let g = Graph::from_parts(nodes, &[]);
+        let r = Rules::parse("roots = []\n[cold]\nsymbols = [\"books::*\"]\n", "t").unwrap();
+        let (p, _) = classify(&g, &r, &[]);
+        let (all, _) = cold_set(&g, &p, &r, &[]);
+        assert_eq!(all.len(), 2);
+        // Without sharing: 31 constants' groups + 2 cold ones.
+        let (plain, _) = place_cold_reserving(&g, &p, &[], &crates(&g), &r, &all, 0, false).unwrap();
+        assert!(check_rodata(&plain).is_err());
+        let (plan, cold) = place_cold(&g, &p, &[], &crates(&g), &r, &all).unwrap();
+        assert_eq!(cold.len(), 2);
+        assert!(check_rodata(&plan).is_ok());
+        assert_eq!(plan.groups.len(), MAX_RO_GROUPS as usize - 2);
+        assert_eq!(plan.shared, 4_000);
+        let gi = plan.groups.len();
+        assert!(plan.is_shared(gi));
+        // `a` did not fit after the constants (a group of its own), `b` did.
+        assert_eq!(plan.cold[0].0, vec![(3, 0), (2, 4_000)]);
+        assert_eq!(plan.cold[1].0, vec![(1, 0)]);
+        // The emptiest group moved last: the full ones keep 0..30.
+        let a = plan.addresses();
+        assert_eq!(a[&3], ro_page_va(2 * gi as u32));
+        let s = script(&g, &plan, Path::new("/l"), "t");
+        let base = ro_page_va(2 * gi as u32);
+        assert!(
+            s.contains(&format!(".pr_g{gi} {base:#010x} :\n    {{\n        *(\".rodata.small\")")),
+            "{s}"
+        );
+        assert!(
+            s.contains(&format!(
+                ".px_g{gi} {:#010x} :\n    {{\n        . = {:#010x};\n        *(\".text.b\")",
+                base + 4_000,
+                base + 4_000
+            )),
+            "{s}"
+        );
+        assert!(s.contains(&format!("ASSERT(SIZEOF(.pr_g{gi}) == 0xfa0")), "{s}");
+        assert!(s.contains(&format!("ASSERT(SIZEOF(.px_g{gi}) == {:#x}", 10_000)), "{s}");
     }
 
     /// BOOK-1/2 (2026-11-27): speech and Books did not fit (33 of the 32
