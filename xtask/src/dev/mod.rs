@@ -49,6 +49,7 @@ cargo xtask dev <subcommand>
   usbtest [--cycles N]          USB-1 acceptance: enumerate, control sizes, re-enumeration
   usb-cancel [--rounds N]       USB-W1: provoke abandoned control transfers (firmware held
                                 2.5 s, host cuts after 1 ms); the player must answer again
+  log                           the firmware's log ring (developer channel), oldest first
   msc-bench [--mib N] [--file PATH] [--check]
                                 PERF-SD: card reader throughput through files (direct I/O):
                                 read a card file, write N MiB (default 64) to
@@ -299,6 +300,13 @@ fn dispatch(sub: &str, args: &mut Args) -> Result<String> {
         "usbtest" => usbtest::cmd(args),
         "usb-cancel" => usbtest::cancel_cmd(args),
         "msc-bench" => mscbench::cmd(args),
+        "log" => {
+            let d = orpheus_host::devchan::DevChannel::open(Duration::from_secs(3))?;
+            for l in prof::log_lines(&d)? {
+                println!("{l}");
+            }
+            Ok("log printed".into())
+        }
         "keys" => {
             let script = key_script(args)?;
             keys(&script)

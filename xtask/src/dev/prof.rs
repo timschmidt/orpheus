@@ -247,7 +247,8 @@ fn finish(d: &DevChannel, w0: [u32; 5]) -> Result<Captured> {
     Ok((block, Totals { loads: d(0), code_faults: d(1), ro_faults: d(2), evictions: d(3), ms: d(4) }, log))
 }
 
-fn log_lines(d: &DevChannel) -> Result<Vec<String>> {
+/// The firmware's log ring, oldest line first (also `dev log`).
+pub fn log_lines(d: &DevChannel) -> Result<Vec<String>> {
     let area = d.log_area()?;
     let mut out = vec![0u8; area.len()];
     let Some((n, _)) = orpheus_proto::logring::unroll(&area, &mut out) else { return Ok(Vec::new()) };

@@ -275,7 +275,7 @@ fn stages(reset: bool) -> Option<String> {
     }
     let ms = |x: u64| x as f64 / 1000.0;
     Some(format!(
-        "wall {} ms: waiting for CBWs {:.0} ms ({}), IN data {:.0} ms ({}), OUT data {:.0} ms ({}), CSWs {:.0} ms, card {:.0} ms ({} ops, max {} us), {} line loads, {} SD commands, {} busy polls",
+        "wall {} ms: waiting for CBWs {:.0} ms ({}), IN data {:.0} ms ({}), OUT data {:.0} ms ({}), CSWs {:.0} ms, card {:.0} ms ({} ops, max {} us), {} line loads, {} SD commands, {} busy polls{}",
         v[0],
         ms(v[1]),
         v[6],
@@ -289,7 +289,12 @@ fn stages(reset: bool) -> Option<String> {
         v[10],
         v[11],
         v[12],
-        v[13]
+        v[13],
+        if v.len() >= 18 && (v[14] | v[15]) != 0 {
+            format!(", SD timeouts {} CRC errors {} (last STATE {:#x} CMD {:#x})", v[14], v[15], v[16], v[17])
+        } else {
+            String::new()
+        }
     ))
 }
 

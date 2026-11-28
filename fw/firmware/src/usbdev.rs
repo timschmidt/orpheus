@@ -162,6 +162,10 @@ impl Target for Fw {
             MODE.signal(Personality::FileTransfer);
             return true;
         }
+        if let Some(on) = data.strip_prefix(b"usb msc serial ") {
+            MSC_SERIAL.store(on == b"on", Ordering::Relaxed);
+            return true;
+        }
         if let Some(rest) = data.strip_prefix(b"usb msc stats") {
             if rest == b" reset" {
                 msc_reset();
@@ -759,12 +763,12 @@ fn msc_add(t: usize, n: usize, t0: u32) -> u32 {
 
 /// `msc <wall ms> <cbw> <in> <out> <csw> <card> (µs sums) <cbws> <ins>
 /// <outs> <cards> (counts) <card max µs> <loads> <sd commands> <busy
-/// polls>`: numbers only (the rodata window is full); `xtask dev
+/// polls> <timeouts> <crc errors> <last error STATE> <its CMD>`: numbers only (the rodata window is full); `xtask dev
 /// msc-bench` labels them.
 fn msc_stats_reply() {
     let now = time::now_us() as u32;
     let sd = critical_section::with(|cs| MSC_SD.borrow(cs).get());
-    let mut v = [0u32; 14];
+    let mut v = [0u32; 18];
     v[0] = now.wrapping_sub(MSC_T[T_START].load(Ordering::Relaxed)) / 1000;
     for (o, i) in v[1..10].iter_mut().zip([T_CBW, T_IN, T_OUT, T_CSW, T_CARD, N_CBW, N_IN, N_OUT, N_CARD]) {
         *o = MSC_T[i].load(Ordering::Relaxed);
@@ -773,6 +777,10 @@ fn msc_stats_reply() {
     v[11] = atj2157_hal::pager::stats().loads.wrapping_sub(MSC_T[T_LOADS].load(Ordering::Relaxed));
     v[12] = sd.commands;
     v[13] = sd.busy_polls;
+    v[14] = sd.timeouts;
+    v[15] = sd.crc_errors;
+    v[16] = sd.last_err_state;
+    v[17] = sd.last_err_cmd;
     crate::audio::reply(|w| {
         w.s(b"msc");
         for x in v {
@@ -861,6 +869,11 @@ impl orpheus_usb::msc::bot::BulkOut for BulkOut {
     ) -> (Result<usize, embassy_usb_driver::EndpointError>, W::Output) {
         let t0 = time::now_us() as u32;
         let n = buf.len();
+        if MSC_SERIAL.load(Ordering::Relaxed) {
+            // Test: the host's data first, then the card (no overlap).
+            let r = self.receive(buf).await;
+            return (r, work.await);
+        }
         if n > 65536 {
             return embassy_futures::join::join(self.receive(buf), work).await;
         }
@@ -875,6 +888,10 @@ impl orpheus_usb::msc::bot::BulkOut for BulkOut {
         (r, out)
     }
 }
+
+/// Test (`usb msc serial on|off`): a WRITE's host data and card writes
+/// one after the other, not overlapped.
+static MSC_SERIAL: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// The card's high-speed clock for a USB session ([`CARD_HS`]); logged.
 async fn card_fast(card: &mut yoton_bsp::card::Card) {
