@@ -842,6 +842,13 @@ length (± 0.1 %) and no dropped blocks (encoder block counter contiguous).
 
 ### 7.6 Pictures
 
+* Start folder (owner's request 2026-11-28, UI-PIC): Pictures opens at the
+  card's pictures folder, the first of `/Pictures`, `/Photos`, `/DCIM` on
+  the card, names compared without case as FAT and exFAT do (`/PICTURES`
+  is `/Pictures`); the card's root when there is none. Back from that
+  folder leaves the app (Home), as Back from Music's root does; there is no
+  "up" entry above it (the rest of the card is Files' job). Within the
+  folder, OK on a folder goes in and Back comes out, as in Files.
 * Browser: 3 × 3 thumbnail grid (40 × 30 cells) with a name line in the strip,
   or list mode; thumbnails are generated lazily (JPEG DC-only decode is used
   for speed), cached under `.orpheus/cache/thumbs/`, and never block navigation.
@@ -861,6 +868,22 @@ length (± 0.1 %) and no dropped blocks (encoder block counter contiguous).
 **Acceptance**: golden-image tests for each format/scale mode against a host
 reference downscale (PSNR ≥ 30 dB); corrupt files produce the error toast, not
 a panic (fuzzed on host).
+
+**As built (UI-PIC, 2026-11-28; host, simulator and firmware).** Home
+pushes the browser with `PictureService::pictures_dir()`: the firmware's
+card task looks the folders of `orpheus_apps::browse::PICTURE_DIRS` up in
+order with `Volume::stat` (case-insensitive) when the card mounts and when
+it comes back from the computer or a format (`drive::find_dirs`, beside
+USB Drive's folders), and keeps each found folder's own entry, so the
+listing is made from that folder although nothing browsed to it
+(`Fw::entry_of` → `drive::entry`; without it the card task lists the root,
+as Recordings did before 2026-11-25). The simulator does the same over its
+card image. No "last folder" memory existed and none was added: every
+open starts at the pictures folder. The browser is still the Files screen
+in its Pictures mode (list mode; no thumbnail grid yet). What Pictures
+has over Files today: the folder start above, only folders and pictures
+listed, and Menu › Slideshow from the list (from the focused picture);
+the viewer, its menu and its keys are the same from both apps.
 
 ### 7.7 Steps (pedometer)
 

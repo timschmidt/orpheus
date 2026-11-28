@@ -861,14 +861,17 @@ impl Fw {
         }
         let w = &*self.browse;
         let Some(row) = w.rows[..w.n as usize].iter().find(|r| r.child == dir) else {
-            // Recorder › Recordings… opens its folder without browsing to it.
-            if dir.0 == crate::rec::rec_dir()
+            // Recorder › Recordings…, Pictures and USB Drive's folders open
+            // without browsing to them.
+            let f = if dir.0 == crate::rec::rec_dir()
                 && let Some((d, index)) = crate::rec::rec_entry()
             {
-                self.depth = 0;
-                return Some(FileRef { dir: d, index });
-            }
-            return None;
+                FileRef { dir: d, index }
+            } else {
+                crate::drive::entry(dir.0)?
+            };
+            self.depth = 0;
+            return Some(f);
         };
         let (file, name) = (row.file, row.name);
         if self.depth == self.path.len() {
@@ -1399,6 +1402,9 @@ impl PictureService for Fw {
     }
     fn picture_state(&self) -> PicState {
         self.pic_state.get()
+    }
+    fn pictures_dir(&mut self) -> DirId {
+        DirId(crate::drive::pictures_dir())
     }
 }
 

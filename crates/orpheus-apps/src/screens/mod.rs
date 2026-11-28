@@ -107,7 +107,8 @@ pub const EQUALISER: ScreenId = ScreenId(21);
 /// Arg: row in the current listing.
 pub const PROPERTIES: ScreenId = ScreenId(22);
 pub const BOOKMARKS: ScreenId = ScreenId(23);
-/// Pictures (folders and pictures). Arg: `DirId`.
+/// Pictures (folders and pictures). Arg: `DirId` (from Home: the card's
+/// pictures folder, `PictureService::pictures_dir`).
 pub const PICTURES: ScreenId = ScreenId(24);
 /// The picture viewer. Arg: [`PictureScreen::arg`].
 pub const PICTURE_VIEW: ScreenId = ScreenId(25);

@@ -907,13 +907,12 @@ fn library_cases(add: &mut dyn FnMut(String, String)) {
     }
 }
 
-/// AU-14: Pictures (folders and pictures only) and the viewer, on the
-/// card's /Pictures: Aurora.png, Iceland.jpg (damaged), Lake.bmp,
-/// Sunset.qoi (portrait), Москва.png (damaged).
+/// AU-14: Pictures (folders and pictures only) and the viewer. Pictures
+/// opens at the card's /Pictures (UI-PIC): Aurora.png, Iceland.jpg
+/// (damaged), Lake.bmp, Sunset.qoi (portrait), Москва.png (damaged).
 fn pictures_cases(add: &mut dyn FnMut(String, String)) {
-    let open = "next*5 ok wait:100 down*3 ok wait:100";
+    let open = "next*5 ok wait:100 expect-screen:Pictures";
     let journeys: &[(&str, String)] = &[
-        ("root", "next*5 ok wait:100 expect-screen:Pictures".into()),
         ("folder", open.into()),
         ("folder_menu", format!("{open} menu")),
         ("png", format!("{open} ok wait:100 expect-screen:PictureViewer")),
@@ -923,7 +922,9 @@ fn pictures_cases(add: &mut dyn FnMut(String, String)) {
         ("portrait", format!("{open} ok wait:100 next*3 wait:100")),
         ("fill", format!("{open} ok wait:100 next*3 ok wait:100")),
         ("menu", format!("{open} ok wait:100 menu")),
-        ("busy", format!("set:queue=takk {open} ok wait:100")),
+        // OK a second after the folder opened, as the journey through the
+        // root did: the strip's transient label has gone by then.
+        ("busy", format!("set:queue=takk {open} wait:1000 ok wait:100")),
     ];
     for (t, l) in [("dark", "latin"), ("light", "cjk")] {
         for (name, script) in journeys {

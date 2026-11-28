@@ -1581,6 +1581,12 @@ impl PictureService for HostServices {
     fn picture_state(&self) -> PicState {
         self.picture.get()
     }
+    fn pictures_dir(&mut self) -> DirId {
+        orpheus_apps::browse::PICTURE_DIRS
+            .iter()
+            .find_map(|p| self.media.find_root_dir(p))
+            .unwrap_or(DirId::ROOT)
+    }
 }
 
 impl HostServices {

@@ -91,9 +91,13 @@ static NAME: Mutex<Cell<([u8; NAME_LEN], u8)>> = Mutex::new(Cell::new(([0; NAME_
 pub static GEN: AtomicU32 = AtomicU32::new(0);
 /// The card task's answer to `Req::Image`.
 pub static MAPPED: Signal<CriticalSectionRawMutex, Result<Mapped, DriveRefusal>> = Signal::new();
-/// First clusters of `/Images` and `/.orpheus/images` (0: none), found at
-/// mount.
-static DIRS: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
+/// First clusters of `/Images`, `/.orpheus/images` and Pictures' folder
+/// (0: none), found at mount.
+static DIRS: [AtomicU32; 3] = [AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)];
+/// Their own entries (parent's first cluster, entry index): the apps open
+/// them by id without browsing to them, and the card task lists a folder
+/// from its entry (`Fw::entry_of`; without it, the card's root).
+static ENTRIES: [[AtomicU32; 2]; 3] = [const { [AtomicU32::new(0), AtomicU32::new(0)] }; 3];
 
 /// The export as the UI sees it.
 #[must_use]
@@ -141,12 +145,36 @@ pub fn dirs() -> (u32, u32) {
     (DIRS[0].load(Relaxed), DIRS[1].load(Relaxed))
 }
 
-/// At mount and after the card came back: where the image folders are.
+/// Pictures' folder (UI-PIC, 05 §7.6): the first of
+/// `orpheus_apps::browse::PICTURE_DIRS` on the card (0: none, the root).
+#[must_use]
+pub fn pictures_dir() -> u32 {
+    DIRS[2].load(Relaxed)
+}
+
+/// The entry of a folder [`find_dirs`] found, by its id.
+#[must_use]
+pub fn entry(dir: u32) -> Option<FileRef> {
+    let k = (0..3).find(|&k| dir != 0 && DIRS[k].load(Relaxed) == dir)?;
+    Some(FileRef { dir: ENTRIES[k][0].load(Relaxed), index: ENTRIES[k][1].load(Relaxed) })
+}
+
+/// At mount and after the card came back: where the image folders are,
+/// and Pictures' folder (the first of its candidates found; `stat`
+/// compares names without case).
 pub async fn find_dirs(vol: &mut Vol) {
     let mut e = DirEntry::new();
-    for (i, p) in [USER_DIR, TEST_DIR].iter().enumerate() {
+    let [p0, p1, p2] = orpheus_apps::browse::PICTURE_DIRS;
+    for (i, p) in [USER_DIR, TEST_DIR, p0, p1, p2].iter().enumerate() {
+        let k = i.min(2);
+        if i > 2 && DIRS[k].load(Relaxed) != 0 {
+            continue;
+        }
         let c = if vol.stat(p, &mut e).await.is_ok() && e.is_dir() { e.first_cluster() } else { 0 };
-        DIRS[i].store(c, Relaxed);
+        let l = e.locator();
+        ENTRIES[k][0].store(l.dir, Relaxed);
+        ENTRIES[k][1].store(l.index, Relaxed);
+        DIRS[k].store(c, Relaxed);
     }
 }
 

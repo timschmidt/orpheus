@@ -1035,7 +1035,7 @@ values = ["off", "on"]
 default = 0
 contexts = ["Folders", "Files", "Files.Big", "Files.Menu", "TextViewer", "Pictures", "PictureViewer"]
 unaffected = ["@screens", "@services", "audio"]
-oracle = "Files, Folders, Pictures: hidden entries (dot names) listed or not, so the rows below them move; Files' menu shows the switch."
+oracle = "Files, Folders, Pictures: hidden entries (dot names; in Pictures, which opens at /Pictures since UI-PIC, the card's /Pictures/._Aurora.png) listed or not, so the rows below them move; Files' menu shows the switch."
 tests = ["sim/tests/settings_matrix.rs::matrix::s0d02", "sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"]
 cover = { "@screens" = ["sim/tests/settings_matrix.rs::matrix::s0d02"], "@services" = ["sim/tests/settings_matrix.rs::matrix::s0d02"], "audio" = ["sim/web/src/audio.rs::tests::settings_effects::nothing_else_reaches_the_chain"] }
 

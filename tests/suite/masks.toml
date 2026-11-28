@@ -25,7 +25,7 @@ rects = [
 rects = [{ x = 0, y = 14, w = 128, h = 96, why = "card listing" }]
 
 [screen.Pictures]
-rects = [{ x = 0, y = 14, w = 128, h = 96, why = "card listing" }]
+rects = [{ x = 0, y = 14, w = 128, h = 96, why = "the pictures folder's listing (the player's card)" }]
 
 [screen.Folders]
 rects = [{ x = 0, y = 14, w = 128, h = 96, why = "card listing" }]

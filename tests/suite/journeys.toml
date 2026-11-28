@@ -167,12 +167,19 @@ rects = [
     { x = 88, y = 48, w = 40, h = 19, why = "Shuffle switch (a setting)" },
 ]
 
+# Pictures opens at the card's /Pictures (UI-PIC). The player's (the demo
+# card's) starts with the folder "Full size", the simulator's with a
+# picture: Down on the player puts the focus on a picture in both, so the
+# menu is a picture's (with Delete…). At the card's root (Pictures not
+# found, or listed from the wrong entry) the second row is a folder and
+# the menu has no Delete…: the shot fails.
 [[journey]]
 name = "pictures"
-about = "Pictures at the card root (listing masked) and its menu"
+about = "Pictures at the card's pictures folder (listing masked) and a picture's menu"
 card = true
 script = """
 next*5 ok expect-screen:Pictures wait:300 shot:pictures
+dev: down
 menu shot:pictures_menu back
 """
 
@@ -180,8 +187,7 @@ menu shot:pictures_menu back
 defaults = false
 rects = [
     { x = 0, y = 0, w = 128, h = 14, why = "status bar" },
-    { x = 0, y = 14, w = 128, h = 29, why = "card listing behind the sheet (its scroll bar beside the sheet's corners)" },
-    { x = 88, y = 105, w = 40, h = 19, why = "Show hidden switch (a setting)" },
+    { x = 0, y = 14, w = 128, h = 29, why = "folder listing behind the sheet (its scroll bar beside the sheet's corners)" },
 ]
 
 [[journey]]
