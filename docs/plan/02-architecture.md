@@ -629,7 +629,17 @@ now runs from the rodata window instead:
   pages; the linker script still gets each group's sections in address
   order). When the rodata window cannot hold what is left cold with the
   code window's reserve page kept, the reserve goes too (`place_cold`):
-  the two windows share the free room, and when there is none the code
+  the two windows share the free room. When even that does not fit,
+  constants' groups with room are **shared** with cold code
+  (`pack_cold_sharing`): they move after the other constants and become
+  the first cold groups, constants first, cold code after them (their
+  pages executable with the other cold pages). Since TTS-3b (2026-11-28)
+  every group with ≥ 1 KiB left is shared, not only the emptiest
+  (`SHARE_MIN_FREE`; one 1,112 B cold section needed a 33rd group while
+  four constants' groups had 1.9–3.9 KB free:
+  `regress_cold_code_needed_a_group_with_room_in_several`): the default
+  image went from 64/64 rodata pages and 2 B of code window free to 63/64
+  and 1.5 KB. And when there is none the code
   window takes what it can.
 * **What must never be cold** (PG-2b, 2026-11-27): code that runs per
   byte or per block over large data. An update's data path (the

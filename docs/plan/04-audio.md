@@ -864,6 +864,58 @@ voice. **Off by default: it does not fit the code window** (below).
   golden hashes on the player; first-sound latency and cycles measured on
   the player.
 
+**As built (TTS-3b, 2026-11-28, on the player): continuous speech.** The
+owner found the speech "too choppy to be usable, … paging too much".
+Measured on `a0ecaf5b`: ≈ 6,400 NOR line loads/s while the reader spoke
+alone (more than real time at 180 µs a load), `late=` 4–5 an utterance.
+Causes and changes:
+
+* **The render in no cluster.** Its per-sample and per-tick code was over
+  four code groups, under the lines of the card task's paused loop, the
+  input tick and the UI. `hot.toml` `speech-render` (17 lines, physical
+  31–15; `from` the speech task's step, `budget_lines` 22, checked by
+  `xtask stack --check`): the task's poll, `step`, `render`, the
+  resampler, **the card task's mixer over music** (every output frame; on
+  `play-fill`'s lines, which a song uses a few times a second — at the end
+  of `speech-out` it had shared line 20 with `PcmOut::reading` and every
+  64-frame piece reloaded both), the formant synthesiser and the tick's
+  parameters; its small constants resident (`resident_constants`: the
+  switch tables of `Ph::class` and `Synth::frame`, the loci). `speech-out`
+  (5 lines): the alone path's per-wake code and the rare paths. `exp2`
+  (every resonator, every tick) moved to the first line of
+  `synth-render` (23), clear of `speech-render`.
+* **Batches.** The speech task rendered 256 samples a step and woke the
+  card task after each (62 a second, each reloading the lines evicted in
+  between): now a batch of up to `BATCH` = 1,024 samples (64 ms) straight
+  into the ring, one wake-up after it; the card task's alone top-up timer
+  10 → 32 ms (`TOP_UP_MS`).
+* **The UI loop at 10 Hz.** While speech sounded the reader asked a 100 ms
+  deadline for its pause policy even with Music while speaking › Lowered
+  (the default): 8 UI loops/s, each a screen's description. Now only with
+  Paused or while it holds the music (`SpeechPause::needs_ticks`).
+* **Alarm reads.** `tools::alarm` (three setting reads, twice a UI loop)
+  shared line 4 with `settings-get`: ≈ 50 loads a UI loop; now in that
+  cluster (1,022 B, one line), whose small constants are resident too.
+* **The converter two words ahead.** `Speaker::pump` converted text until
+  the renderer's 64-unit queue was full (≈ 10 words) at an utterance's
+  start; over music that first step took up to 0.5 s. Now it keeps
+  `speak::AHEAD` = 12 final units in hand; the samples are the same
+  (`regress_first_render_converted_ten_words`, the speech goldens).
+* **Over music `late=`** also counts the times the mixer found the ring
+  empty in the middle of an utterance (`RingSource::paced`).
+
+Numbers (the reader's toggle, "Screen reader on. Home. Music, button,
+1 of 13", 3.9 s, in an 11–12 s window): line loads in the window
+27,702 → **7,301** (≈ 6,300/s → ≈ 1,200/s while speaking), `late=` 5 →
+**0**; where-am-I's time and battery (3.3 s) `late=` 0; idle Home
+353 → 265 loads/s. Over an MP3 (Mid 96 MHz): 3–5 `late=` per
+announcement, all at the joins (the tone → the first word, one
+announcement → the next): a diagnostic build showed every batch in the
+middle of an utterance starting with ≥ 512 samples (32 ms) in the ring,
+and the slowest batch (the first of a text, its words converted with the
+music's lines in the cache) 205 ms (246 ms before). Open: a pre-roll or
+a faster first batch for those joins.
+
 ## 9. Synthesis and MIDI (M17; owner's requirement 2026-11-25)
 
 One synthesis crate, `orpheus-synth` (no_std, no alloc, host-tested, in
