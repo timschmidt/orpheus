@@ -32,6 +32,10 @@ use orpheus_sdcard::{self as card, Cid, Csd, Ocr, R128, Status, cmd};
 /// (U-SD-1, PERF-SD). One word for the one SD host.
 static TIMING: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(sd::VENDOR_CTL_TIMING);
 
+/// The port's delay chains as [`Sd::set_timing`] takes them (RDELAY 8,
+/// WDELAY 15; [`sd::VENDOR_CTL_TIMING`]): good at 24 MHz, not at 48 MHz.
+pub const VENDOR_TIMING: u8 = (sd::VENDOR_CTL_TIMING >> 16) as u8;
+
 fn timing() -> u32 {
     TIMING.load(core::sync::atomic::Ordering::Relaxed)
 }

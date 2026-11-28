@@ -876,6 +876,16 @@ impl orpheus_usb::msc::bot::BulkOut for BulkOut {
     }
 }
 
+/// The card's high-speed clock for a USB session ([`CARD_HS`]); logged.
+async fn card_fast(card: &mut yoton_bsp::card::Card) {
+    if CARD_HS.load(Ordering::Relaxed) {
+        let khz = card.high_speed(50_000).await.unwrap_or(0);
+        let mut l = log::LineBuf::new();
+        l.push_str("usb: card clock ").push_u32(khz).push_str(" kHz");
+        l.emit();
+    }
+}
+
 /// The card reader's waits spin up to this long before they sleep (µs;
 /// `usb::set_spin`): the next CBW, a DMA's end.
 const MSC_SPIN_US: u32 = 2_000;
@@ -895,9 +905,11 @@ async fn msc_yield(last: u32) -> u32 {
     time::now_us() as u32
 }
 
-/// The card reader asks for the card's high-speed clock (CMD6, 48 MHz from
-/// DEVPLL; PERF-SD, U-SD-1). Test command `card hs on|off`.
-pub static CARD_HS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// The card reader and USB Drive ask for the card's high-speed clock (CMD6,
+/// 48 MHz from DEVPLL, checked by a read-back; PERF-SD, U-SD-1): on by
+/// default since round 2 (the timing works, `yoton_bsp::card::HS_TIMING`).
+/// Test command `card hs on|off`.
+pub static CARD_HS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
 
 /// Card as the MSC block device (512-byte blocks).
 struct CardDev<'a>(&'a mut yoton_bsp::card::Card);
@@ -1015,12 +1027,7 @@ async fn run_msc() -> Personality {
         let ep_out = BulkOut(alt.endpoint_bulk_out(None, 512));
         drop(func);
         let mut dev = b.build();
-        if CARD_HS.load(Ordering::Relaxed) {
-            let khz = card.high_speed(50_000).await.unwrap_or(0);
-            let mut l = log::LineBuf::new();
-            l.push_str("usb: card clock ").push_u32(khz).push_str(" kHz");
-            l.emit();
-        }
+        card_fast(&mut card).await;
         let unit = orpheus_usb::msc::scsi::Unit {
             kind: orpheus_usb::msc::scsi::DeviceKind::Disk,
             removable: true,
@@ -1144,6 +1151,7 @@ async fn run_image() -> Personality {
         let ep_out = BulkOut(alt.endpoint_bulk_out(None, 512));
         drop(func);
         let mut dev = b.build();
+        card_fast(&mut card).await;
         // SAFETY: the card is with this task until `CARD_BACK.send` below,
         // after this scope (and these borrows) end; the card task filled
         // the extents before handing the card over.

@@ -96,28 +96,47 @@ impl Card {
     }
 
     /// The card's high-speed clock (PERF-SD, U-SD-1): DEVPLL at
-    /// [`DEVPLL_N`] × 6 MHz, CMD6 to high speed, then the fastest divider
-    /// at most `max_khz` (≤ 50 MHz). The clock it runs at (kHz): 24,000
-    /// when the card stays at default speed (it cannot switch, or
-    /// `max_khz` ≤ 25 MHz needs no switch). [`Self::reinit`] goes back
-    /// (the card leaves high speed only by CMD0) and stops DEVPLL.
+    /// [`DEVPLL_N`] × 6 MHz, CMD6 to high speed, the delay chains
+    /// [`HS_TIMING`], then the fastest divider at most `max_khz` (≤ 50 MHz).
+    /// Blocks read before the switch are read again after it and compared;
+    /// a difference or a failed read re-initialises the card at the
+    /// default clock. The clock it runs at (kHz): 24,000 when the card
+    /// stays at default speed (it cannot switch, failed the check, or
+    /// `max_khz` ≤ 25 MHz needs no switch). [`Self::reinit`] goes back (the
+    /// card leaves high speed only by CMD0) and stops DEVPLL.
     pub async fn high_speed(&mut self, max_khz: u32) -> Result<u32, Error> {
         const DEFAULT: u32 = 24_000;
         let Some((word, khz)) = orpheus_sdcard::clock_word(2, DEVPLL_N * 6_000, max_khz.min(50_000)) else {
             return Ok(DEFAULT);
         };
-        if khz <= 25_000 {
+        if khz <= 25_000 || self.blocks < 4 {
             return Ok(DEFAULT);
+        }
+        let lbas = [0, self.blocks / 3, self.blocks / 3 * 2];
+        let mut want = [0u32; 3];
+        for (w, &lba) in want.iter_mut().zip(&lbas) {
+            self.sd.read(lba, &mut self.bounce.0).await?;
+            *w = hash(&self.bounce.0);
         }
         atj2157_hal::clock::set_devpll(DEVPLL_N);
         let Some(status) = self.bounce.0.first_chunk_mut::<64>() else { return Ok(DEFAULT) };
+        Sd::set_timing(HS_TIMING);
         match self.sd.high_speed(status, word).await {
-            Ok(true) => Ok(khz),
+            Ok(true) => {}
             r => {
+                Sd::set_timing(sd::VENDOR_TIMING);
                 atj2157_hal::clock::set_devpll(0);
-                r.map(|_| DEFAULT)
+                return r.map(|_| DEFAULT);
             }
         }
+        for (&w, &lba) in want.iter().zip(&lbas) {
+            if self.sd.read(lba, &mut self.bounce.0).await.is_err() || hash(&self.bounce.0) != w {
+                HS_FALLBACKS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                self.reinit().await?;
+                return Ok(DEFAULT);
+            }
+        }
+        Ok(khz)
     }
 
     /// The command delay chains (`SD_CTL` bits 23:16, `0x8F` the port's),
@@ -134,6 +153,24 @@ impl Card {
 
 /// DEVPLL for the card's high-speed clock: 24 × 6 = 144 MHz, ÷3 = 48 MHz.
 pub const DEVPLL_N: u32 = 24;
+
+/// The delay chains at 48 MHz high speed (`SD_CTL` bits 23:16: RDELAY 7,
+/// WDELAY 4): the middle of the window `card timing` found on the test
+/// card (2026-11-27, U-SD-1): WDELAY 0, 4 and 8 read correctly with
+/// RDELAY 0–13 (14 failed, 15 passed); the port's WDELAY 15 failed every
+/// command but one (RDELAY 15), the first file create of round 1's `card
+/// bench hs` ("no response", `STATE` `0xCB8`).
+pub const HS_TIMING: u8 = 0x74;
+
+/// High-speed switches whose read-back differed from the default clock's
+/// (the card went back to 24 MHz).
+pub static HS_FALLBACKS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// A word hash (FNV-1a) of a block, for [`Card::high_speed`]'s check.
+fn hash(b: &[u8; 512]) -> u32 {
+    b.chunks_exact(4)
+        .fold(0x811C_9DC5u32, |h, w| (h ^ u32::from_le_bytes([w[0], w[1], w[2], w[3]])).wrapping_mul(0x0100_0193))
+}
 
 /// Card work with a deadline running now ([`Urgent`]): no rests.
 static URGENT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
