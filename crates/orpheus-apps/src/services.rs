@@ -2636,11 +2636,12 @@ mod setting_effects {
     }
 
     /// Backlight timeout (0x0302), Lock delay (0x0303), Screen saver
-    /// (0x0307): every value; the defaults are 15 s, Immediately, Off.
+    /// (0x0307): every value; the defaults are 30 s, 60 s, Off (owner
+    /// 2026-11-28; were 15 s and Immediately).
     #[test]
     fn screen_timer_values() {
         let d = screen_timeouts(&with(&[]));
-        assert_eq!(d, Timeouts { screen_off_ms: Some(15_000), lock_ms: Some(0), saver: false });
+        assert_eq!(d, Timeouts { screen_off_ms: Some(30_000), lock_ms: Some(60_000), saver: false });
         let off = [Some(5_000), Some(10_000), Some(15_000), Some(30_000), Some(60_000), Some(120_000), None];
         for (v, want) in off.iter().enumerate() {
             let t = screen_timeouts(&with(&[(id::BACKLIGHT, v as i16)]));
@@ -2691,9 +2692,9 @@ mod setting_effects {
         h.test_set(id::BACKLIGHT, 0);
         assert_eq!(h.timeouts(&s), screen_timeouts(&s));
         h.test_set(id::LOCK_DELAY, 1);
-        h.test_set(id::BACKLIGHT, 2);
+        h.test_set(id::BACKLIGHT, 3);
         assert_eq!(h.timeouts(&s), screen_timeouts(&s), "Lock delay still armed");
-        h.test_set(id::LOCK_DELAY, 0);
+        h.test_set(id::LOCK_DELAY, 3);
         assert_eq!(h.timeouts(&s), Timeouts::HELD);
         assert_eq!(TimerHold::from_bits(h.bits()), h);
     }

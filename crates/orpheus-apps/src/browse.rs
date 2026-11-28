@@ -62,11 +62,43 @@ fn ext_is(name: &str, exts: &[&str]) -> bool {
 /// Audio extensions the player opens (04 §4.1).
 pub const AUDIO_EXTS: &[&str] = &[
     "mp3", "mp2", "flac", "ogg", "oga", "opus", "spx", "wav", "aif", "aiff", "m4a", "mp4", "aac", "alac",
-    "wv", "ape", "wma", "au",
+    "wv", "ape", "wma", "au", "snd", "aifc",
 ];
 
 /// MIDI extensions, audio with the `midi` feature (MIDI-1).
 pub const MIDI_EXTS: &[&str] = &["mid", "midi", "kar", "rmi"];
+
+/// The short format name Now Playing shows for a file extension (any
+/// case); "?" for none. Every extension in [`AUDIO_EXTS`] and
+/// [`MIDI_EXTS`] has one (2026-11-28: a Sun AU file showed "?").
+#[must_use]
+pub fn codec_label(ext: &[u8]) -> &'static str {
+    let mut e = [0u8; 4];
+    if ext.len() > e.len() {
+        return "?";
+    }
+    for (d, s) in e.iter_mut().zip(ext) {
+        *d = s.to_ascii_lowercase();
+    }
+    match &e {
+        b"mp3\0" => "MP3",
+        b"mp2\0" => "MP2",
+        b"flac" => "FLAC",
+        b"wav\0" => "WAV",
+        b"ogg\0" | b"oga\0" => "Vorbis",
+        b"opus" => "Opus",
+        b"spx\0" => "Speex",
+        b"aif\0" | b"aiff" | b"aifc" => "AIFF",
+        b"au\0\0" | b"snd\0" => "AU",
+        b"m4a\0" | b"mp4\0" | b"aac\0" => "AAC",
+        b"alac" => "ALAC",
+        b"wv\0\0" => "WavPack",
+        b"ape\0" => "APE",
+        b"wma\0" => "WMA",
+        b"mid\0" | b"midi" | b"kar\0" | b"rmi\0" => "MIDI",
+        _ => "?",
+    }
+}
 
 /// Whether `name` is an audio file the player opens.
 #[must_use]
@@ -182,6 +214,25 @@ pub fn letter_of(name: &str) -> Option<char> {
 
 #[cfg(test)]
 mod tests {
+
+    /// Regression (owner's check, 2026-11-28): Sousa's "Stars and
+    /// Stripes Forever" (a Sun `.au` file on the demo card) showed "?" as
+    /// its format on Now Playing: the firmware's name table missed `au`.
+    #[test]
+    fn regress_every_audio_extension_has_a_format_name() {
+        for e in AUDIO_EXTS.iter().chain(MIDI_EXTS) {
+            assert_ne!(codec_label(e.as_bytes()), "?", "{e}");
+            assert_eq!(
+                codec_label(e.to_ascii_uppercase().as_bytes()),
+                codec_label(e.as_bytes()),
+                "{e} in capitals"
+            );
+        }
+        assert_eq!(codec_label(b"au"), "AU");
+        assert_eq!(codec_label(b"txt"), "?");
+        assert_eq!(codec_label(b"flacc"), "?");
+    }
+
     use super::*;
 
     #[test]

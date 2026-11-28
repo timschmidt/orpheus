@@ -813,10 +813,13 @@ mod tests {
         p.sleep(30_000);
         assert!(top(&mut p).screen_on, "held");
         p.send("settings test-set 0x0302 0").unwrap();
+        p.send("settings test-set 0x0303 0").unwrap();
         p.sleep(5_500);
         let t = top(&mut p);
         assert!(!t.screen_on && t.locked, "5 s, then locked at once");
-        p.send("settings test-set 0x0302 2").unwrap();
+        // Back at the defaults (30 s, lock 60 s after; 2026-11-28).
+        p.send("settings test-set 0x0302 3").unwrap();
+        p.send("settings test-set 0x0303 3").unwrap();
         let t = top(&mut p);
         assert!(t.screen_on && !t.locked, "set back: on and free");
         p.sleep(30_000);

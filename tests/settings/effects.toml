@@ -471,7 +471,7 @@ id = "0x0302"
 name = "Settings › Display › Backlight timeout"
 scope = "global"
 values = ["5 s", "10 s", "15 s", "30 s", "60 s", "120 s", "Always"]
-default = 2
+default = 3
 contexts = ["Settings.Display", "backlight"]
 unaffected = ["@screens", "@services", "audio"]
 na = { "governor" = "review: the governor's only setting input is Power mode 0x0401 (fw ui.rs POWER_MODE → orpheus-power Governor::step)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's only setting input is Power mode 0x0401 (fw ui.rs POWER_MODE)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date, Correction 0x0506 and Set from RDS 0x0507", "keys" = "review: the keys lock by Lock delay 0x0303 after this timeout; the first key after it only wakes the screen (backlight context)" }
@@ -486,7 +486,7 @@ id = "0x0303"
 name = "Settings › Display › Lock delay"
 scope = "global"
 values = ["Immediately", "5 s", "30 s", "60 s", "Never"]
-default = 0
+default = 3
 contexts = ["Settings.Display", "keys"]
 unaffected = ["@screens", "@services", "audio"]
 na = { "governor" = "review: the governor's only setting input is Power mode 0x0401 (fw ui.rs POWER_MODE → orpheus-power Governor::step)", "audio-player" = "review: the audio task takes only media::Sound, built from 0x0101–0x0106 and the custom bands (fw ui.rs)", "governor-player" = "review: the governor's only setting input is Power mode 0x0401 (fw ui.rs POWER_MODE)", "library" = "review: the library builder reads only Tag code page 0x0208 (fw services setting_to_library)", "recording-player" = "review: the recorder takes only rec_settings() (0x0801–0x080A)", "steps-player" = "review: the step counter takes only 0x0D24 and 0x0D25 (fw services)", "backlight" = "review: the screen goes off by Backlight timeout 0x0302; this delay counts from then", "power" = "review: the player switches itself off only for Auto-off 0x0403 (fw ui.rs) and the sleep timer 0x0402", "clock" = "review: the RTC is set only by Set time / Set date, Correction 0x0506 and Set from RDS 0x0507" }

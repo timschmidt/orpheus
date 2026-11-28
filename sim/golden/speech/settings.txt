@@ -16,9 +16,9 @@
    8460 earcon enter
    8460 say Display. Brightness, 6, submenu, 1 of 12
   11000 stop
-  11000 say Backlight, 15 s, submenu, 2 of 12
+  11000 say Backlight, 30 s, submenu, 2 of 12
   11100 stop
-  11100 say Auto-lock, At once, submenu, 3 of 12
+  11100 say Auto-lock, 1 min, submenu, 3 of 12
   11200 stop
   11200 say Theme, Dark, submenu, 4 of 12
   11300 stop

@@ -462,9 +462,12 @@ const DISPLAY: &[Setting] = &[
         0x0302,
         Str::BacklightTimeout,
         ch![Secs(5), Secs(10), Secs(15), Secs(30), Secs(60), Secs(120), S(Str::Always)],
-        2,
+        // 30 s (owner 2026-11-28: "Screen off and lock timers should be
+        // longer"; was 15 s).
+        3,
     ),
-    c(0x0303, Str::LockDelay, ch![S(Str::Immediately), Secs(5), Secs(30), Secs(60), S(Str::Never)], 0),
+    // 60 s after the screen goes off (owner 2026-11-28; was Immediately).
+    c(0x0303, Str::LockDelay, ch![S(Str::Immediately), Secs(5), Secs(30), Secs(60), S(Str::Never)], 3),
     c(
         0x0304,
         Str::Theme,

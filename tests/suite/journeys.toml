@@ -496,8 +496,8 @@ cmd: ui top ~ locked=0 screen=1
 cmd: settings test-set 0x0303 1 ~ ^test-set 771=1 ok
 wait:11500
 cmd: ui top ~ locked=1 screen=0
-cmd: settings test-set 0x0302 2 ~ ^test-set 770=2 ok
-cmd: settings test-set 0x0303 0 ~ ^test-set 771=0 ok
+cmd: settings test-set 0x0302 3 ~ ^test-set 770=3 ok
+cmd: settings test-set 0x0303 3 ~ ^test-set 771=3 ok
 cmd: ui top ~ locked=0 screen=1
 expect-screen:Home shot:home_after
 """
@@ -516,9 +516,9 @@ wait:6500
 cmd: ui top ~ screen=0 .*saver=1
 back wait:300
 cmd: ui top ~ screen=1
-cmd: settings test-set 0x0302 2 ~ ^test-set 770=2 ok
+cmd: settings test-set 0x0302 3 ~ ^test-set 770=3 ok
 cmd: settings test-set 0x0307 0 ~ ^test-set 775=0 ok
-cmd: settings test-set 0x0303 0 ~ ^test-set 771=0 ok
+cmd: settings test-set 0x0303 3 ~ ^test-set 771=3 ok
 cmd: ui test-look on ~ ^test-look on
 cmd: ui top ~ locked=0 screen=1
 expect-screen:Home shot:home_after

@@ -1360,24 +1360,7 @@ async fn play_path(
 }
 
 fn codec_name(ext: Option<&[u8]>) -> &'static str {
-    let mut e = [0u8; 4];
-    if let Some(x) = ext {
-        for (d, s) in e.iter_mut().zip(x) {
-            *d = s.to_ascii_lowercase();
-        }
-    }
-    match &e {
-        b"mp3\0" => "MP3",
-        b"mp2\0" => "MP2",
-        b"flac" => "FLAC",
-        b"wav\0" => "WAV",
-        b"ogg\0" | b"oga\0" => "Vorbis",
-        b"opus" => "Opus",
-        b"spx\0" => "Speex",
-        b"aif\0" | b"aiff" => "AIFF",
-        b"mid\0" | b"midi" | b"kar\0" | b"rmi\0" => "MIDI",
-        _ => "?",
-    }
+    ext.map_or("?", orpheus_apps::browse::codec_label)
 }
 
 /// Serve at most one media request from inside playback. False: a request
