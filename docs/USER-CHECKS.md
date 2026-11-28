@@ -52,6 +52,8 @@ the result and date. "Blocking" entries hold up the package named.
 | 36 | TTS-3 | **yes, for the screen reader on the player** | A decision, then a listen: see §36 below | | **2026-11-28 (owner)**: "Speech enabled successfully but pronunciation was too choppy to be usable, seems like it's paging too much." (open: speech paging) |
 | 37 | WEB-2 (demo card) | no | On the **test card** only, after the lead copied the demo card (`cargo xtask demo-card`, then `cargo xtask dev demo-card --outside-orpheus` or File transfer): Files › Music, play one track of each folder, excerpt and complete (MP3, FLAC 96 kHz/24 bit, Ogg Vorbis, Opus, AIFF, WAV 24 bit, Sun AU, Speex); Caruso with Now Playing's lyrics; MIDI › the Bach prelude; Pictures: each picture, also the *Full size* ones (the 7195 × 5897 Corot JPEG is the stress case); Books: both books open; `CREDITS.txt` opens in Files | Every file plays or shows; the lyrics follow the singing roughly (the timing is the Commons subtitle file's); report any file that fails with its name and the message | **2026-11-28 (owner)**: "music all plays and sounds right, pictures and books open." Sousa (.au) showed "?" as the format: fixed in `2b5069f9`. Pop/hiss clicking heard in playback (see 13) |
 | 38 | VER-13 (Storage) | no | **Only with the card you said is safe to format** (2026-11-27), in the player. (a) Settings › Storage › Check card: wait for the dialog. (b) Settings › Storage › Clear caches › Clear. (c) Settings › Storage › Format card…: read the question, Cancel first (nothing happens), then again and **Format**. Then Settings › Storage › Card info; Files; connect to a computer (File transfer) and look at the card; copy a song on, eject, play it. Finally Settings › System › Diagnostics, and the Authenticator still opens with your PIN | (a) "No problems found" with folder and file counts after a while (music stops first). (b) "Done"; album art and big folders take a moment the first time after. (c) The question says all music and files are erased, Cancel is selected first; after Format: "Card formatted"; Card info shows FAT32 (cards up to 32 GB) or exFAT (larger); Files is empty; the computer shows an empty card named ORPHEUS; the copied song plays; your settings and the Authenticator's accounts are unchanged. Diagnostics shows uptime, processor MHz and the other figures. Report the card's size, how long Check and Format took, and any error | |
+| 39 | TTS-3b | no | Listen to the screen reader alone and over a song: see §39 below | Continuous speech alone; over music no break inside words | |
+| 40 | AQ-0 | no | Clicks A/B with the lead running commands: FLAC before/after, silence and 1 kHz tone, the vendor DAC bias, the clock held, the DSP off: see §40 below | No clicks in FLAC; report what remains per step | |
 
 ## Template for workers
 
@@ -268,3 +270,54 @@ while speaking (Lowered, Paused) with a song playing; Back + Menu again
 (off). Report: understandable at 1×? the tones helpful? speech too loud or
 quiet against the music, the lowered music level, the pause's resume
 delay; any crackle, gap or delay before the first word.
+
+## 39. Speech again, after TTS-3b (2026-11-28)
+
+The speech was choppy because its code paged in more than real time
+(6,400 line loads a second while the reader spoke; now ≈ 1,200). On the
+lead's build from TTS-3b, with headphones, unplugged if you can: hold
+**Back + Menu** 2 s on Home and move through Home, Settings › Accessibility
+and Files with the reader on; hold **Back + OK** 2 s (time and battery).
+Then play a song (Files › Music › Bach › Goldberg Variations › *01 Aria
+(complete)*) and move through Home again while it plays (the music is
+lowered under the speech).
+
+Expect: continuous speech alone, no stutter inside words. Over music the
+words themselves should be continuous too; a short pause can still come
+between the tone and the first word, or between two announcements (the
+player measures 3–5 such pauses per announcement over music, none alone).
+Report: alone, choppy or smooth? over music, any break **inside** a word or
+sentence, or only between the tone and the speech?
+
+## 40. Clicks in playback: what is left, A/B (AQ-0, 2026-11-28)
+
+Found and fixed on the player: FLAC played at the lowest clock and ran
+out of samples about ten times a second (each a click); the clock
+governor counted the decoder's time as idle. FLAC, MP3, WAV and AU now
+play with 0 underruns; Opus still has a few (it pages; separate work).
+What remains audible is for your ears. The lead runs the commands
+(`cargo xtask dev cmd '…'`) while you listen with headphones, at your
+usual volume, preferably unplugged between steps if the cable matters
+to you (say whether it was in).
+
+1. **FLAC, before/after**: Files › Music › Bach › Goldberg Variations ›
+   *05 Variatio 4*. Clicks or pops? (Before TTS-3b this file clicked many
+   times a second.)
+2. **Silence and tone**: `playdir /.orpheus/test/aq0/silence.wav`
+   (20 s of digital silence), then `playdir /.orpheus/test/aq0/tone1k.wav`
+   (20 s, 1 kHz at −20 dBFS). In the silence: steady hiss, ticking at
+   regular intervals (how often?), or both? In the tone: crackle, ticks?
+3. **The vendor's DAC bias** (the stock firmware writes two DAC settings
+   Orpheus does not): during the silence file, the lead sends
+   `dac vendor`, waits 10 s, then `dac default`, 10 s, `dac vendor`
+   again. Does the hiss or the ticking change between them? (Expect a
+   faint click at the switch itself.)
+4. **Clock switches**: during *01 Aria (complete)*, the lead sends
+   `gov off` and `clock 144` (the clock held), 30 s, then `gov on`.
+   Do clicks come and go with that (more with the governor on)?
+5. **Sound processing**: `dsp off` for 30 s, then `dsp on`, during the
+   same song. Any difference?
+
+Report per step: clicks yes/no, how often, louder or quieter than with
+the stock firmware. The lead notes the `status` and `dev stats` lines
+(underruns, clock level and switches) at each step.

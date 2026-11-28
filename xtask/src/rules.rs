@@ -409,6 +409,19 @@ exclude = ["toy::settings::hot"]
         }
     }
 
+    /// TTS-3b (2026-11-28, the player): `orpheus_apps::tools::alarm` (three
+    /// setting reads per alarm, twice a UI loop) was on physical line 4
+    /// with `settings-get`: each read reloaded both, ≈ 50 line loads a UI
+    /// loop (12 of 121 sampled loads while the reader spoke). It is in the
+    /// cluster now.
+    #[test]
+    fn regress_alarm_reads_evicted_the_setting_lookup() {
+        let hot = load_hot(&crate::util::root().join("hot.toml"), "firmware").unwrap();
+        let c = hot.iter().find(|c| c.name == "settings-get").expect("cluster settings-get");
+        let sym = "orpheus_apps::tools::alarm::<firmware::services::Fw>";
+        assert!(c.rank(&sec(".text.x", "f.o", &[sym])).is_some(), "{sym} not in settings-get");
+    }
+
     #[test]
     fn cluster_rank_follows_pattern_order() {
         let c = Cluster {

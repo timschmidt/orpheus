@@ -735,7 +735,8 @@ fn upload_with(d: &orpheus_host::devchan::DevChannel, cmd: &str, data: &[u8]) ->
 const KEY_NAMES: [&str; 10] =
     ["power", "back", "menu", "ok", "prev", "next", "up", "down", "volup", "voldown"];
 
-/// `ok`, `down*3`, `hold:menu` (800 ms), `long:power` (4.5 s), `wait:300`.
+/// `ok`, `down*3`, `hold:menu` (800 ms), `long:power` (4.5 s), `wait:300`,
+/// a chord `back+ok` (all down, all up), a hold of its own `hold2500:back+ok`.
 /// The key script: every remaining word (a shell passes one quoted
 /// argument; `prof --during "keys …"` splits on whitespace).
 fn key_script(args: &mut Args) -> Result<String> {
@@ -762,6 +763,8 @@ fn keys(script: &str) -> Result<String> {
             (800, k)
         } else if let Some(k) = tok.strip_prefix("long:") {
             (4500, k)
+        } else if let Some((ms, k)) = tok.strip_prefix("hold").and_then(|r| r.split_once(':')) {
+            (num(ms)?, k)
         } else {
             (60, tok)
         };
@@ -769,11 +772,18 @@ fn keys(script: &str) -> Result<String> {
             Some((k, t)) => (k, num(t)?),
             None => (name, 1),
         };
-        let k = idx(name).ok_or_else(|| anyhow::anyhow!("unknown key `{name}` (one of {KEY_NAMES:?})"))?;
+        let chord = name
+            .split('+')
+            .map(|k| idx(k).ok_or_else(|| anyhow::anyhow!("unknown key `{k}` (one of {KEY_NAMES:?})")))
+            .collect::<Result<Vec<u8>>>()?;
         for _ in 0..times {
-            send(k, true)?;
-            std::thread::sleep(Duration::from_millis(hold_ms));
-            send(k, false)?;
+            for &k in &chord {
+                send(k, true)?;
+            }
+            std::thread::sleep(Duration::from_millis(hold_ms.into()));
+            for &k in chord.iter().rev() {
+                send(k, false)?;
+            }
             std::thread::sleep(Duration::from_millis(120));
             n += 1;
         }

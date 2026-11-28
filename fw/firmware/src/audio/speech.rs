@@ -67,6 +67,7 @@ fn rate() -> u32 {
 pub(super) fn mix_i16(s: &mut [i16], n: usize, ch: usize) {
     let rt = rt();
     rt.mix.set_rate(rate());
+    rt.src.paced = true;
     let n = n.min(s.len());
     rt.mix.mix_i16(&mut s[..n], ch, crate::speech::gains(), &mut rt.src);
     DUCK.store(rt.mix.music_gain(), Ordering::Relaxed);
@@ -77,6 +78,7 @@ pub(super) fn mix_i16(s: &mut [i16], n: usize, ch: usize) {
 pub(super) fn mix_i32(s: &mut [i32], n: usize, ch: usize) {
     let rt = rt();
     rt.mix.set_rate(rate());
+    rt.src.paced = true;
     let n = n.min(s.len());
     rt.mix.mix_i32(&mut s[..n], ch, crate::speech::gains(), &mut rt.src);
     DUCK.store(rt.mix.music_gain(), Ordering::Relaxed);
@@ -153,6 +155,7 @@ fn hush(rt: &mut Rt) {
 #[inline(never)]
 pub(super) fn alone() -> bool {
     let rt = rt();
+    rt.src.paced = false;
     let live = mix::Source::sounding(&rt.src);
     if !rt.out.running && rt.out.book.written == 0 && rt.out.book.fill == 0 {
         // A stop with nothing written: drop the stopped speech.
@@ -250,8 +253,16 @@ pub(super) fn end_alone() {
     }
 }
 
+/// How long the alone output waits at most between two top-ups (it is
+/// woken after each batch of the speech task as well): well inside the
+/// half (96 ms) cleared ahead of the writer. TTS-3b, 2026-11-28: 10 ms
+/// before, 100 wake-ups of the card task a second while speaking alone,
+/// each one through the paused or idle loop's code.
+const TOP_UP_MS: u64 = 32;
+const _: () = assert!(TOP_UP_MS * mix::RATE as u64 / 1000 < HALF as u64 / 2);
+
 /// Wait for speech to take or a stop; while the alone output runs, at most
-/// 10 ms (it tops up and clears ahead).
+/// [`TOP_UP_MS`] (it tops up and clears ahead).
 pub(super) async fn wait() {
     let woken = core::future::poll_fn(|cx| {
         RT_WAKER.register(cx.waker());
@@ -262,7 +273,7 @@ pub(super) async fn wait() {
         }
     });
     if alone_running() {
-        let _ = embassy_futures::select::select(woken, embassy_time::Timer::after_millis(10)).await;
+        let _ = embassy_futures::select::select(woken, embassy_time::Timer::after_millis(TOP_UP_MS)).await;
     } else {
         woken.await;
     }

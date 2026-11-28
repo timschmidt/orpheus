@@ -369,6 +369,10 @@ service_ram_bytes = 10240
 # 10.8 M), over 44.1 kHz ≈ 14.3 M (15 % of Mid; TTS-2: ≈ 13 M). Paging
 # not counted: the speech's per-sample code (≈ 12 KB, 12 lines) evicts
 # that many of the music's 32 lines per speech chunk (≈ 8 a second).
+# Measured on the player (TTS-3b, 2026-11-28): alone ≈ 6,300 line loads/s
+# before the `speech-render` cluster and the 1,024-sample batches (more
+# than real time: the owner's "choppy"), ≈ 1,200/s after; over an MP3
+# ≈ 1,100 loads/s for the whole system while speaking.
 est_cycles_per_s_alone = 6000000
 est_cycles_per_s_48k = 11900000
 est_cycles_per_s_44k = 14300000

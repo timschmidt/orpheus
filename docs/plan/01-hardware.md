@@ -356,6 +356,7 @@ that. Added:
 | U-AUD-14 | DAC and ADC running at once at the same rate family (full duplex) | Playback and microphone capture together without glitches | UAC-3 (M16) |
 | U-AUD-15 | Low-frequency and DC behaviour of the direct-drive output: how long a constant level holds (any DC servo or blocking), the swing at maximum PA gain into a light load and into an IR LED pair (~tens of Ω), the output impedance | Measured through the line input with USB disconnected (M13 rig), then with the owner's IR adapter | JACK-0 (M18) |
 | U-AUD-16 | DAC at 96 kHz (U-AUD-2) for IR carriers above 24 kHz (36–40 kHz directly); otherwise the anti-phase stereo method (each LED driven at half the carrier) at 48 kHz | Tone at 19 kHz anti-phase on L/R seen at 38 kHz across the adapter; 96 kHz rate test | JACK-0 (M18) |
+| U-AUD-17 | Does the vendor's `DAC_BIAS` (`+0x30`) `[14:12]` = 4, `[26:24]` = 6 (written at every stream start, B0:0x0D800856) and `PA_CTL` bit 27 (set at the amplifier's enable) change hiss or ticking? Read on the player 2026-11-28 without them: `DAC_BIAS` = `0x9B022544` (fields 2 and 3), `PA_CTL` = `0x000573FF` (bit 27 clear), `DIGCTL` = `0x0008031B` (OSR 64× as the vendor, dither and SDM on), `FIFOCTL` = `0x13` (DMA width bit 7 = 32-bit while the DMA writes 16-bit, as the Rockbox port; plays correctly) [HW] | `dev cmd 'dac vendor'` / `'dac default'` live during silence and a tone: **user check 40** (listen); then a capture with the M13 rig | AQ-0 / AQ-2 |
 
 ### Audio, radio, sensor, Bluetooth
 

@@ -161,6 +161,12 @@ the player, but not yet tried by a person; the open checks are in
 
 ### Fixed
 
+- The screen reader's speech was choppy on the player (its code paged in
+  faster than it played); it is continuous alone, and over music the words
+  are (TTS-3b). FLAC clicked many times a second: the clock governor took
+  the audio task's decoding for idle time and left the processor at its
+  lowest speed; FLAC now plays without underruns, and sources above
+  48 kHz get the speed they need from their first block (AQ-0).
 - Authenticator › Time check showed local time labelled UTC; it shows
   UTC.
 - Music › Shuffle all restarted the player on a large library (the

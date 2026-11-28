@@ -70,6 +70,8 @@ of every session. Newest entries first in §3.
 | TTS-1 | **done (host)**; not in the firmware, simulator or apps (TTS-2, A11Y-1, BOOK-3) | `orpheus-tts`: incremental converter (1,408 B, any feed sizes), English normaliser, NRL letter-to-sound rules + stress heuristic + stems, CMUdict exception lexicon (4,487 entries in 32,766 B; `cargo xtask tts-lexicon`), duration model for 0.25×–10×; rules alone 79.8 % of tokens, with the lexicon 98.1 % (session entry 2026-11-25 "TTS-1") |
 | TTS-2 | **done (host)**; not in the firmware, simulator or apps (A11Y-1, BOOK-3, firmware integration) | `orpheus-tts`: cascade/parallel formant synthesiser after Klatt 1980 (KLGLOTT88-like source with polyBLEP, F1–F6 cascade, nasal pole/zero, parallel frication/bursts), phoneme targets and loci from the phonetics literature, intonation (declination, accents, 5 contours, asides), voices Neutral/Low/Bright, exact TTS-1 durations at 0.25×–10×, resampler to 8–48 kHz, `Synth` (1,936 B) and `Speaker` (3,352 B with the converter), events and stop; WER (whisper base.en) 13.9 / 30.5 / 93 % at 1/2/4× (espeak-ng 5.9 / 63 / 89 %); player estimate ≈ 22 % of Base at 48 kHz (over the 20 % budget), code ≈ 70 KB without the lexicon (over 64 KiB) (session entry 2026-11-25 "TTS-2") |
 | TTS-3 | **built (host + simulator + firmware feature `speech`); in the default image since PG-2 (2026-11-27); on the player: suite `screen_reader` passes (`said=Home. Music, button, 1 of 12`, ducking with music); owner's listening check open** (was: 133 of 128 code pages; user check 36 settled by PG-2) | Speech voice: `orpheus_tts::mix` (resampler, speech volume, ducking, stop fade; host-tested), the speech task (thread mode, `Speaker` at 16 kHz into a 128 ms ring), the card task mixing after the DSP chain or running the DAC at 16 kHz alone (`Book::rewind` on a stop), clock floor Mid while speaking (`governor::with_speech`), Music while speaking › Paused (`services::SpeechPause`), lexicon in three ≤ 16 KiB pieces, `ui speech`, journey `screen_reader` (skipped without the feature: journey field `needs`) (session entry 2026-11-27 "TTS-3") |
+| TTS-3b | **done on the player (2026-11-28)**: speech alone continuous (`late=` 0, ≈ 1,200 line loads/s while speaking, was ≈ 6,300); over music 3–5 short gaps per announcement at its joins; owner's listen open (user check 39) | `hot.toml` `speech-render` (with the over-music mixer) and `speech-out`, 1,024-sample batches, the reader's 10 Hz UI tick only with Music while speaking › Paused, the alarms' setting reads in `settings-get`, the converter two words ahead, `exp2` first in `synth-render`; pagelink shares every constants' group with room (session entry 2026-11-28 "TTS-3b / AQ-0") |
+| AQ-0 | **cause found and fixed on the player (2026-11-28)**; owner's A/B listen open (user check 40) | Underruns were the clicks found: the governor counted the RT executor's time as idle (FLAC at Base, ≈ 10 underruns/s); FLAC asks Mid. FLAC, MP3, WAV, AU 0 underruns; Opus still 9–11 in 6 s (paging, AU-8); the 96 kHz/24-bit FLAC is given up even at 288 MHz (open). PCM writer bit-exact for WAV (`crc`); `dac vendor\|default` A/B for the vendor's DAC bias (U-AUD-17) |
 | VER-13 | **tool and matrix done (host + simulator); second round: six settings wired (host + simulator + firmware built), journeys `settings_sound`/`settings_playback` pass on the player (2026-11-27)** | `cargo xtask settings-matrix [--check] [--strict]` (alias `settings coverage`; in `test all`, `--strict` in `gate --m11`); manifest for all 162 settings of the tree; simulator matrix over 59 screen + 11 service contexts (`sim/tests/settings_matrix.rs`), host tests for sound, governor, steps, recorder split, persistence/defaults/clamping/migration per kind; journeys `settings_shuffle` (passes on the player), `settings_sound`, `settings_playback` (RAM-only session). Key click, Fade on pause, Gapless, Resume at start-up, Seek step, Auto-bookmark have their effect; 9,927 / 9,974 cells; 16 settings without an effect (Speed: time stretch not built, spec change proposed), 63 reviewed exclusions (session entries 2026-11-26 "VER-13") |
 | VER-13 | **tool and matrix done (host + simulator); device journeys pass on the player (2026-11-27)** | `cargo xtask settings-matrix [--check] [--strict]` (alias `settings coverage`; in `test all`, `--strict` in `gate --m11`); manifest for all 162 settings of the tree; simulator matrix over 59 screen + 10 service contexts (`sim/tests/settings_matrix.rs`), host tests for sound, governor, steps, recorder split, persistence/defaults/clamping/migration per kind; journey `settings_shuffle` (RAM-only session). 9,365 / 9,412 matrix cells covered; 22 settings have no effect to show (not wired) and 47 contexts are reviewed exclusions (session entry 2026-11-26 "VER-13") |
 | VER-13 (Display, Power, Date & time, USB) | **on the player** (suites `settings_screen_timers`, `settings_screen_saver` pass 2026-11-27) | Backlight timeout, Lock delay, Screen saver, Animations, Rotate (software 180°), Power mode, Keys when locked (transport to playback), Time zone, Correction, Set from RDS (group 4A), Read-only card, Developer channel (held on under any host test; the session refuses it) have their effects; journeys `settings_screen_timers`, `settings_screen_saver`; Brightness (missing stock duty values, U-PWM-3) and Wallpaper (Set as wallpaper not built) left; stack margin 4,568 B, .bss 125,352 B. User check 30 (session entry 2026-11-26 "VER-13: Display, Power, Date & time and USB") |
@@ -89,6 +91,156 @@ of every session. Newest entries first in §3.
 | UI-NP | **done (host + simulator + firmware built), not yet on the player** (2026-11-28) | Now Playing (owner 2026-11-28): the file's type and properties (codec + queue place, sample rate, bit depth, bit rate) right of the art; "Artist – Title" on one full-width line above the progress bar, a marquee when too wide (still, with "…", under reduced motion); album no longer on the normal-size Standard view. 12 new and 24 changed goldens; code window 10 B free |
 
 ## 3. Session log
+
+### 2026-11-28 — TTS-3b / AQ-0: continuous speech; the clicks were underruns the governor caused (worker, player)
+
+Brief: the owner's two findings of 2026-11-28 — "Speech enabled
+successfully but pronunciation was too choppy to be usable, seems like it's
+paging too much" and "Pop/hiss type clicking still heard in audio playback
+which is not present in original firmware". The player was mine from the
+lead's message on (main `a0ecaf5b` in slot B); `dev backup-verify` ok
+before the first write; every install with `dev update`; RAM-only test
+session throughout, `settings changed` `701=1 d50=10470 e80=20992` at the
+start and at the end. The player runs `5e49778e` from slot A.
+
+**Speech (TTS-3b).**
+
+* **Measured first** (`a0ecaf5b`, reader alone, its toggle "Screen reader
+  on. Home. Music, button, 1 of 13", 3.9 s of speech in an 11.4 s window):
+  27,702 line loads in the window (≈ 6,300/s while speaking: more than
+  real time at 180 µs a load), `late=` 4–5 per utterance; the fault
+  profile (`dev prof --faults 10` during list moves) 5,051 loads/s:
+  `speech::step`, `Synth::frame`, `Resampler::push`, `Ph::class`, the card
+  task's paused loop, the UI.
+* **Causes and fixes** (as built in 04 §8 "As built (TTS-3b)"): the render
+  in no cluster (now `hot.toml` `speech-render`, 17 lines, physical
+  31–15, `from` the step, `budget_lines` 22, resident small constants;
+  `speech-out` 5 lines); 256-sample chunks with a card-task wake-up after
+  each (now 1,024-sample batches straight into the ring; the alone top-up
+  timer 10 → 32 ms); the reader's 100 ms UI deadline while speaking even
+  with Music while speaking › Lowered (`SpeechPause::needs_ticks`);
+  `tools::alarm`'s setting reads on `settings-get`'s physical line (now in
+  that cluster); `exp2` (every resonator, every tick) inside
+  `synth-render` on line 4 (now its first symbol, line 23); the
+  converter filling the renderer's whole queue at an utterance's start
+  (now two words ahead, `speak::AHEAD`, same samples); the over-music
+  mixer at the end of `speech-out` on `PcmOut::reading`'s line (every
+  64-frame piece reloaded both; now beside the resampler in
+  `speech-render`, on `play-fill`'s lines).
+* **Numbers on the player** (same toggle, same window): line loads
+  27,702 → 15,159 (`3351737e`: batches + cluster) → 7,034 (`d18fc4d4`: +
+  UI tick, alarm, 32 ms) → **7,301 in 12.4 s** on the final build
+  (≈ 1,200/s while speaking), `late=` **0**; where-am-I's time and battery
+  (Back + OK held 2.3 s, new `dev keys` chord `hold2300:back+ok`, 3.3 s of
+  speech) `late=` 0; list moves profile 5,051 → 1,820 loads/s; idle Home
+  353 → 265 loads/s (`dev stats`), 156/s in the suite's idle check.
+* **Over music** (MP3, Mid 96 MHz): `late=` now also counts the mixer
+  finding the ring empty mid-utterance. 3–5 per announcement on the final
+  build (8–16 for the on/off pair on `a98089cb`); a diagnostic build
+  (instrumented step, not committed) showed every batch in the middle of
+  an utterance starting with ≥ 512 samples in the ring and the slowest
+  batch, the first of a text, 205 ms (246 ms before the converter and
+  mixer changes): the gaps are at the joins (tone → first word, one
+  announcement → the next). Open: a pre-roll or a faster first batch.
+  Whole-system loads while speaking over the MP3 ≈ 1,100/s, 0 underruns.
+
+**Clicks (AQ-0).**
+
+* **Found: underruns, and the governor's idle share.** With the cable in,
+  the demo card's FLACs played at Base 48 MHz with ≈ 10 underruns a
+  second (`ub: dec=`), each a click, while `dev stats` said 74 % idle: the
+  main executor counted all of each WFE as idle, also the time the RT
+  executor (the audio task, an interrupt) decoded meanwhile, so the
+  governor never raised the clock. Fix: the RT executor's handler times
+  itself (`atj2157_hal::executor`, `RT_US`) and a sleep's idle part is its
+  time less that (`governor::sleep_idle_us`,
+  `regress_rt_executor_counted_as_idle`). FLAC still underran ≈ 30 times
+  in its first seconds before the once-a-second steps rose: FLAC asks Mid
+  from its first block (`governor::Decoding::Blocky`,
+  `regress_flac_underran_at_base_before_the_governor_rose`); sources above
+  48 kHz ask High (`regress_hires_flac_given_up_at_base`).
+* **Per format** (`playdir` 7 s each, cable in; underruns before → after):
+  MP3 0 → 0 (Base); FLAC 44.1 kHz excerpt 101 → **0** (Mid); FLAC
+  "complete" 62 → **0**; Opus 21 → 9 (Max 288 MHz, 4,300 loads/s: its
+  paging, AU-8's open item); WAV 16 bit 0 → 0; WAV 24 bit 0 → 0 (but Max
+  288 MHz and 4,000 loads/s: worth a look); AU 0 → 0. `dev stats` idle
+  during an MP3 at Base: 83 % → 36 % (the true share).
+* **Still open**: the demo card's *05 Variatio 4 (complete, 96 kHz 24
+  bit).flac* is given up ("decoder too slow for this player") even with
+  the clock pinned at 288 MHz (`ub: fill=28 dec=45` in 2 s: the card
+  refill and the decode with decimation): it never played on the player
+  (`playdir` skips to the next file). A package of its own.
+* **The digital path is bit-exact**: `dsp off`, `crc on`, `play` of a
+  1 kHz tone WAV: the player's CRC 3,811,441,911 equals the host's over
+  the file's 882,000 frames plus the 4,272 frames of silence the writer
+  pads to whole halves (the silence file likewise): no discontinuity in
+  the decoder → PCM ring writer.
+* **Analogue, for the owner's ears**: Orpheus does not write two values
+  the vendor writes — `DAC_BIAS` (`+0x30`) `[14:12]` = 4, `[26:24]` = 6 at
+  every stream start (the player reads 2 and 3) and `PA_CTL` bit 27 at the
+  amplifier's enable (U-AUD-17, 01 §9; live registers there). New test
+  command `dac vendor` / `dac default` (`atj2157_hal::dac::vendor_bias`,
+  VERBATIM) for an A/B; test files `/.orpheus/test/aq0/silence.wav` and
+  `tone1k.wav` (20 s each, 44.1 kHz mono; the tone at −20 dBFS) are on the
+  card. **User check 40** (FLAC before/after, silence and tone, the DAC
+  bias, the clock held, `dsp off`). OSR (64×), dither and SDM match the
+  vendor's stream start already.
+
+**The failed update** (the lead's question). `dev update` of a diagnostic
+image failed at chunk 261 ("control IN 0xd: Cancelled"): the player
+stopped answering, then reset by itself (no fault record: the watchdog)
+and came back on slot B; the log shows the update begin, then a 20 MB
+FLAC's cover-art decode (590 ms) — the playlist had moved from the MP3 to
+the hi-res FLAC during the update, and that FLAC was then underrunning at
+Base (the AQ-0 bug). Afterwards I ran `dev slots`, which goes through ADFU
+and left the player in ymon; the owner's OK for one `dev reset` brought it
+back (slot B, healthy). **Not reproduced** on the fixed builds: a partial
+update with an MP3 playing (700 KB, 28.5 KB/s), one with a FLAC
+underrunning at a pinned Base (600 KB, 29.1 KB/s, 109 underruns, no
+fault), and a full update with the reader on and the playlist moving from
+the MP3 excerpt to the FLACs (written and verified in **117.7 s**, against
+≈ 45 s with nothing playing). Likely contributors, fixed here: the
+decoder behind at Base (the RT executor busy) during the masked NOR
+erases. Not proven; an update while music plays is 2.6× slower.
+
+**Room.** Both windows were full (code 2 B free, rodata 64/64); a few
+bytes more and the image did not link ("33 groups of 16 KiB (20 + 13)").
+pagelink now shares every constants' group with ≥ 1 KiB left with cold
+code, not only the emptiest (02 §3.6,
+`regress_cold_code_needed_a_group_with_room_in_several`; the reports now
+count shared groups' constants as rodata, not cold code). Final image:
+code 128/128 with **1,322 B free**, rodata **63/64**, resident 61,172 B
+(budget 61,440), `.bss` 146,708 B, static stack margin 4,268 B (budget
+4,096; was 4,788 before: the batch's ring slices and `RT_US`).
+
+**Tests** (each fails without its fix): `orpheus-power`
+`regress_rt_executor_counted_as_idle`,
+`regress_flac_underran_at_base_before_the_governor_rose`,
+`regress_hires_flac_given_up_at_base`; `orpheus-apps`
+`regress_reader_ticked_ten_times_a_second_while_speaking`; `orpheus-tts`
+`regress_first_render_converted_ten_words` (also: the same samples);
+`xtask` `regress_speech_render_in_no_cluster`,
+`regress_alarm_reads_evicted_the_setting_lookup`,
+`regress_cold_code_needed_a_group_with_room_in_several`. Rows in
+`docs/regressions.md`.
+
+**Gate**: host `cargo fmt --all --check`, `cargo clippy --workspace
+--all-targets -- -D warnings`, `cargo test --workspace` **2,329 passed, 0
+failed, 14 ignored**, `cargo xtask settings-matrix --check` (184
+settings, 0 errors); fw `cargo fmt --all --check`, `cargo clippy
+--workspace --release -- -D warnings` (also `-p firmware
+--no-default-features`), `cargo xtask build`, `check-resident` (ok, 64
+sections from 21 roots), `size --check`, `stack --check` (margin 4,268 B;
+`speech-render` 22 of 22 lines), `cargo xtask test pagelink` passed.
+**On the player**: `cargo xtask dev suite` **28 journeys, 0 failed** (idle Home 147 line loads/s; `screen_reader`: `said=Home. Music, button, 1 of 13`, `late=0` alone, `duck=16462` over the fixtures; a first run failed 8 journeys after `settings_sound` because my RAM test session still had the reader on from earlier measurements — after a reboot those 8 passed alone, then the whole suite); MIDI: the suite's folder Etude 2 / Hill
+Song 0 / Sound tour 0 underruns (`ub: dec=2`, `pg=` 2–7, 288 MHz), the
+demo card's `/MIDI` (Bach prelude) **0**; soak: `cargo xtask dev soak music --minutes 15` **PASS** (18.3 min; on `ac96720a`, the same firmware): line loads/s mean 2,088 / max 3,834 (baseline 1,952 / 4,270), evictions/s max 3,669, underruns 0, DAC headroom min 756 frames, card errors 0, stack free min 5,256 B, CPU idle mean 46 % (baseline 60 %: the idle share no longer counts the audio task's time, so the two are not comparable).
+
+**For the owner / lead**: user checks 39 (speech) and 40 (clicks A/B).
+Open: speech gaps at the joins over music; Opus underruns; the 96 kHz
+FLAC; WAV 24 bit needing Max; why the UI loop runs ≈ 10 times a second
+during MIDI and Opus (`ui loops`, not touched here); an update during
+playback takes ≈ 2 min.
 
 ### 2026-11-28 — UI-NP: Now Playing's names over the whole width (worker, no hardware)
 

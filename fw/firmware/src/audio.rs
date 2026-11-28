@@ -2486,9 +2486,16 @@ async fn play_file(
         })
         .map_err(|_| &b"rate not supported"[..])?;
     let sound_gen = media::SOUND_GEN.load(Ordering::Acquire);
-    // Vorbis and Opus need High at the moment (paged decoders).
-    let heavy = matches!(codec_name(ext), "Vorbis" | "Opus");
-    CODEC_FLOOR.store(if heavy { 2 } else { 0 }, Ordering::Relaxed);
+    // Vorbis and Opus need High at the moment (paged decoders), and so do
+    // the sources the chain decimates (TTS-3b: a 96 kHz FLAC was given up
+    // at Base); FLAC needs Mid (AQ-0: it underran at Base).
+    use orpheus_power::governor::{Decoding, track_floor};
+    let d = match codec_name(ext) {
+        "Vorbis" | "Opus" => Decoding::Paged,
+        "FLAC" => Decoding::Blocky,
+        _ => Decoding::Light,
+    };
+    CODEC_FLOOR.store(track_floor(d, info.rate), Ordering::Relaxed);
     dsp_clock_floor(sound_active());
     // Start inside the track (resume, bookmark): before any output.
     let mut pos = 0u64;

@@ -18,9 +18,17 @@ pub const RT_IRQ: u16 = 9;
 
 static RT: InterruptExecutor = InterruptExecutor::new();
 
+/// Microseconds the RT executor ran (its interrupt handler): taken out of
+/// the main executor's sleeps (AQ-0).
+static RT_US: AtomicU32 = AtomicU32::new(0);
+
 fn on_rt() {
+    let t0 = crate::time::now_us_raw();
     // SAFETY: called only from the RT line's handler, after `start_rt`.
     unsafe { RT.on_interrupt() };
+    // Only this handler writes it, and it does not nest.
+    let dt = crate::time::now_us_raw().wrapping_sub(t0);
+    RT_US.store(RT_US.load(Ordering::Relaxed).wrapping_add(dt), Ordering::Relaxed);
 }
 
 /// Start the RT executor; returns its spawner.
@@ -31,7 +39,9 @@ pub fn start_rt() -> SendSpawner {
     RT.start(Irq(RT_IRQ))
 }
 
-/// Microseconds the main executor spent in WFE (statistics).
+/// Microseconds the main executor spent in WFE with nothing running (the
+/// RT executor's time in it taken out, AQ-0): statistics and the
+/// governor's idle share.
 static IDLE_US: AtomicU32 = AtomicU32::new(0);
 static POLLS: AtomicU32 = AtomicU32::new(0);
 
@@ -91,12 +101,15 @@ fn main_loop(inner: &'static raw::Executor) -> ! {
         // (`wake`: the resting task looks again shortly).
         crate::wake::thread_sleeps();
         let t0 = crate::time::now_us_raw();
+        let rt0 = RT_US.load(Ordering::Relaxed);
         // Not `cortex_m::asm::wfe` (`nomem`): the asleep mark's stores
         // before and after must stay on their side of the sleep.
         // SAFETY: WFE only waits for an event; no memory or stack effect.
         unsafe { core::arch::asm!("wfe", options(nostack, preserves_flags)) };
         crate::wake::thread_woke();
         let dt = crate::time::now_us_raw().wrapping_sub(t0);
-        IDLE_US.store(IDLE_US.load(Ordering::Relaxed).wrapping_add(dt), Ordering::Relaxed);
+        let rt = RT_US.load(Ordering::Relaxed).wrapping_sub(rt0);
+        let idle = orpheus_power::governor::sleep_idle_us(dt, rt);
+        IDLE_US.store(IDLE_US.load(Ordering::Relaxed).wrapping_add(idle), Ordering::Relaxed);
     }
 }
