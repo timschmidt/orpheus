@@ -246,6 +246,8 @@ pub struct Liner {
     n: u16,
     brk: Option<Brk>,
     prev_wide: bool,
+    /// The last item was a space: its break chance stands (2026-11-28).
+    after_space: bool,
     /// The next byte's offset and the bytes of a character cut between
     /// two pieces.
     pos: u32,
@@ -267,6 +269,7 @@ impl Liner {
             n: 0,
             brk: None,
             prev_wide: false,
+            after_space: false,
             pos: mark.offset,
             pend: [0; 4],
             pend_n: 0,
@@ -302,6 +305,7 @@ impl Liner {
         self.n = 0;
         self.brk = None;
         self.prev_wide = false;
+        self.after_space = false;
     }
 
     fn item(&mut self, it: Item, o: u32, len: u32, m: &dyn Metrics, out: &mut impl FnMut(&Line) -> bool) {
@@ -345,11 +349,16 @@ impl Liner {
                 style_next: self.style,
             });
             self.w = self.w.saturating_add(a);
+            // The space is the break chance: no wide-character break right
+            // after it (it would carry the space's width; 2026-11-28).
+            self.prev_wide = false;
+            self.after_space = true;
             return;
         }
         let a = m.advance(c, st);
         let wide = breaks_around(c);
-        if self.n > 0 && (wide || self.prev_wide) && !no_line_start(c) {
+        let after_space = core::mem::take(&mut self.after_space);
+        if self.n > 0 && (wide || self.prev_wide) && !no_line_start(c) && !after_space {
             self.brk = Some(Brk {
                 end: o,
                 w_end: self.w,
@@ -747,6 +756,47 @@ pub(crate) mod tests {
     }
 
     /// All pages' marks, fed in pieces of `piece` bytes.
+    /// Regression (VER-3 fuzz finding, `books_convert`, 2026-11-28): a line
+    /// of wide characters followed by a space came out wider than the page
+    /// (70 px on 67): the space did not clear "the last character was
+    /// wide", so the next character set a break chance after the space,
+    /// with the space's width, over the space's own break before it.
+    #[test]
+    fn regress_wide_characters_then_a_space_overflowed_the_line() {
+        let text = "夜に駆ける沈\u{2000}むよ うに溶けてゆく ように abc 夜に駆ける沈む def\n\n";
+        // A letter after a space still lets the next wide character break
+        // before itself (the flag is the last item's, not the line's).
+        let more = stream("ab cd夜夜夜夜夜夜夜夜\n\n");
+        let mut l = Liner::new(Params { width: 60, ..P }, Mark::START);
+        let mut ends = std::vec::Vec::new();
+        l.feed(&more, &Mono, &mut |line: &Line| {
+            ends.push(line.width);
+            true
+        });
+        l.finish(&Mono, &mut |line: &Line| {
+            ends.push(line.width);
+            true
+        });
+        assert!(ends.iter().all(|&w| w <= 60), "{ends:?}");
+        assert!(ends.len() >= 2 && ends[0] > 30, "cd and wide characters share the first line: {ends:?}");
+        let b = stream(text);
+        for width in 40..140u16 {
+            let p = Params { width, ..P };
+            let mut l = Liner::new(p, Mark::START);
+            let mut check = |line: &Line| {
+                assert!(
+                    line.width <= p.avail(line.mark.kind, line.mark.first) || line.width <= 12,
+                    "width {width}: a line of {} px, {} available",
+                    line.width,
+                    p.avail(line.mark.kind, line.mark.first)
+                );
+                true
+            };
+            l.feed(&b, &Mono, &mut check);
+            l.finish(&Mono, &mut check);
+        }
+    }
+
     pub fn pages(b: &[u8], p: Params, piece: usize) -> Vec<Mark> {
         let mut pg = Paginator::new(p);
         let mut marks = std::vec![Mark::START];
