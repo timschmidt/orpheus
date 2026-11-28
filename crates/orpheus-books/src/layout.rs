@@ -299,6 +299,15 @@ impl Liner {
         self.p.avail(self.mark.kind, self.mark.first)
     }
 
+    /// The current line's width without its trailing spaces (they take no
+    /// room at a paragraph's or the text's end; 2026-11-28).
+    fn natural(&self) -> u16 {
+        match self.brk {
+            Some(b) if self.after_space => b.w_end,
+            _ => self.w,
+        }
+    }
+
     fn new_line(&mut self, offset: u32, style: u8, first: bool) {
         self.mark = Mark { offset, kind: self.kind, style, first };
         self.w = 0;
@@ -312,11 +321,7 @@ impl Liner {
         match it {
             Item::Para(k) => {
                 if self.n > 0 {
-                    // Trailing spaces take no width (2026-11-28).
-                    let w = match self.brk {
-                        Some(b) if self.after_space => b.w_end,
-                        _ => self.w,
-                    };
+                    let w = self.natural();
                     self.emit(o, true, w, out);
                 }
                 self.kind = k;
@@ -388,6 +393,12 @@ impl Liner {
             });
         }
         let too_long = o + len - self.mark.offset > MAX_LINE_BYTES;
+        // The width so far without trailing spaces (a cut here does not
+        // carry them; 2026-11-28).
+        let natural = match self.brk {
+            Some(b) if after_space => b.w_end,
+            _ => self.w,
+        };
         if self.n > 0 && (self.w.saturating_add(a) > self.avail() || too_long) {
             match self.brk.take().filter(|b| b.next > self.mark.offset && !too_long) {
                 Some(b) => {
@@ -403,7 +414,7 @@ impl Liner {
                     }
                 }
                 None => {
-                    self.emit(o, false, self.w, out);
+                    self.emit(o, false, natural, out);
                     self.new_line(o, self.style, false);
                 }
             }
@@ -485,7 +496,8 @@ impl Liner {
         }
         if self.n > 0 && !self.stop {
             let end = self.pos;
-            self.emit(end, true, self.w, out);
+            let w = self.natural();
+            self.emit(end, true, w, out);
             self.n = 0;
         }
     }
