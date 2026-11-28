@@ -52,7 +52,7 @@ critical-section = "1.2"
 # (2026-11-27): with cold code in the rodata window (02 §3.6, 7 pages) the
 # image takes 127 of the 128 code pages (one kept free) and 45 of the 64
 # rodata pages; `.bss` +9.9 KB, stack margin 17 KB.
-default = ["speech"] # PERF-SD WIP: books off for the measurement builds
+default = ["speech", "books"]
 speech = ["orpheus-ui/screen-reader", "orpheus-apps/screen-reader", "dep:orpheus-tts"]
 # Books on the player (M15, 05 §7.15; the BOOK-1/2 wiring): the Books app,
 # its card work in the card task (`src/books.rs`). On by default since

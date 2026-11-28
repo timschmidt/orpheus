@@ -227,8 +227,7 @@ pub const fn climb(l: Level) -> Level {
 /// (Battery saver stays at the peripherals' minimum whatever the audio
 /// needs; High performance is at `Max` already).
 #[must_use]
-pub fn raise_for_floor(mode: PowerMode, current: Level, floor: Level, cap: Level) -> Option<Level> {
-    let floor = capped(floor, cap);
+pub fn raise_for_floor(mode: PowerMode, current: Level, floor: Level) -> Option<Level> {
     (mode == PowerMode::Auto && current < floor).then_some(floor)
 }
 
@@ -378,8 +377,9 @@ mod tests {
     /// PERF-SD round 2, 2026-11-27: with the card at its 48 MHz clock, the
     /// card reader's writes failed at Max (the governor climbed there: the
     /// transport's waits spin, the executor is never idle; Power mode High
-    /// asks Max outright). The ceiling holds in every mode and against the
-    /// audio floor.
+    /// asks Max outright). The ceiling holds in every mode. (The audio
+    /// floor, `raise_for_floor`, never applies then: the card is with the
+    /// USB task, nothing plays.)
     #[test]
     fn regress_card_reader_writes_failed_at_max_with_the_card_at_48_mhz() {
         for mode in [PowerMode::Auto, PowerMode::High, PowerMode::Saver] {
@@ -393,9 +393,6 @@ mod tests {
                 assert!(cur <= CARD_HS_CAP, "{mode:?}: {cur:?}");
             }
         }
-        assert_eq!(raise_for_floor(PowerMode::Auto, Base, Max, CARD_HS_CAP), Some(Mid));
-        assert_eq!(raise_for_floor(PowerMode::Auto, Mid, Max, CARD_HS_CAP), None);
-        assert_eq!(raise_for_floor(PowerMode::Auto, Base, Max, Max), Some(Max));
     }
 
     /// Run a demand per step (MHz) from `start`; the level after each step.
@@ -508,11 +505,11 @@ mod tests {
             let l = run(PowerMode::Auto, Low, floor, &[0; 3]);
             assert_eq!(l[0], floor, "a floor above the level raises it at once");
         }
-        assert_eq!(raise_for_floor(PowerMode::Auto, Base, Max, Max), Some(Max));
-        assert_eq!(raise_for_floor(PowerMode::Auto, High, Turbo, Max), Some(Turbo));
-        assert_eq!(raise_for_floor(PowerMode::Auto, Max, High, Max), None, "never down");
-        assert_eq!(raise_for_floor(PowerMode::Saver, Low, Max, Max), None, "Battery saver");
-        assert_eq!(raise_for_floor(PowerMode::High, Max, Max, Max), None);
+        assert_eq!(raise_for_floor(PowerMode::Auto, Base, Max), Some(Max));
+        assert_eq!(raise_for_floor(PowerMode::Auto, High, Turbo), Some(Turbo));
+        assert_eq!(raise_for_floor(PowerMode::Auto, Max, High), None, "never down");
+        assert_eq!(raise_for_floor(PowerMode::Saver, Low, Max), None, "Battery saver");
+        assert_eq!(raise_for_floor(PowerMode::High, Max, Max), None);
     }
 
     /// PWR-5: with the screen off the UI does not draw; whatever moderate
@@ -639,7 +636,7 @@ mod tests {
         let on_cable = run_with(PowerMode::Auto, Mid, fl, periph::ALWAYS | periph::USB, &[1; 6]);
         assert_eq!(*on_cable.last().unwrap(), Base);
         // Play again: back to Mid at once, not a governor step later.
-        assert_eq!(raise_for_floor(PowerMode::Auto, Low, floor_level(playing, true, false), Max), Some(Mid));
+        assert_eq!(raise_for_floor(PowerMode::Auto, Low, floor_level(playing, true, false)), Some(Mid));
         // Every track floor (Vorbis High, the synth up to Max) likewise.
         for t in 1..=4 {
             assert_eq!(audio_floor(t, false, true, false), 0);
@@ -673,10 +670,10 @@ mod tests {
         assert_eq!(floor_level(with_speech(0, true), false, false), Mid);
         assert_eq!(floor_level(with_speech(0, true), true, true), Mid);
         assert_eq!(
-            raise_for_floor(PowerMode::Auto, Base, Level::from_floor(with_speech(0, true)), Max),
+            raise_for_floor(PowerMode::Auto, Base, Level::from_floor(with_speech(0, true))),
             Some(Mid)
         );
-        assert_eq!(raise_for_floor(PowerMode::Saver, Low, Level::from_floor(with_speech(0, true)), Max), None);
+        assert_eq!(raise_for_floor(PowerMode::Saver, Low, Level::from_floor(with_speech(0, true))), None);
     }
 
     #[test]

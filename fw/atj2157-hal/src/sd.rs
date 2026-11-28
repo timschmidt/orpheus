@@ -237,21 +237,17 @@ impl Sd {
     /// PERF-SD round 2: a CMD12 after every 32 KiB read cost 0.5 ms of
     /// 3 ms (U-SD-4).
     async fn wait_dat0(&mut self) {
+        // (A count of naps, not a deadline: the `Instant` arithmetic took
+        // ≈ 250 B of the full code window.)
         if self.flags & DAT0_OK == 0 {
             nap!(self, 500);
             return;
         }
-        let end = Instant::now() + Duration::from_secs(1);
-        let mut spins = 0u32;
-        while sd::STATE.read() & sd::state::DAT0S == 0 {
-            crate::delay::pause();
-            spins += 1;
-            if spins > 64 {
-                if Instant::now() > end {
-                    return;
-                }
-                nap!(self, 20);
-            }
+        // At most ≈ 1 s.
+        let mut naps = 25_000u32;
+        while naps > 0 && sd::STATE.read() & sd::state::DAT0S == 0 {
+            nap!(self, 40);
+            naps -= 1;
         }
     }
 

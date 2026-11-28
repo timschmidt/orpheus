@@ -252,7 +252,7 @@ pub fn raise_to_floor(floor: u8) {
     if !GOV_ON.load(core::sync::atomic::Ordering::Relaxed) {
         return;
     }
-    if let Some(l) = governor::raise_for_floor(power_mode(), clock::current(), Level::from_floor(floor), clock_cap()) {
+    if let Some(l) = governor::raise_for_floor(power_mode(), clock::current(), Level::from_floor(floor)) {
         clock::set_level(l);
     }
 }

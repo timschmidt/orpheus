@@ -484,6 +484,9 @@ pub struct Plan {
     /// Bytes of unclustered code placed in the line before a cluster's
     /// start.
     pub filler: u32,
+    /// Bytes of constants at the start of the first cold group (a shared
+    /// constants' group, [`pack_cold_sharing`]); 0 for none.
+    pub shared: u32,
 }
 
 impl Plan {
@@ -509,6 +512,12 @@ impl Plan {
     /// Output section name of window group `gi` (`.pr_gN` constants,
     /// `.px_gN` cold code).
     #[must_use]
+    /// Whether group `gi` is a shared constants' group (constants, then
+    /// cold code; [`pack_cold_sharing`]).
+    pub fn is_shared(&self, gi: usize) -> bool {
+        self.shared > 0 && gi == self.groups.len()
+    }
+
     pub fn group_name(&self, gi: usize) -> String {
         if gi < self.groups.len() { format!(".pr_g{gi}") } else { format!(".px_g{gi}") }
     }
@@ -631,6 +640,12 @@ pub const CODE_RESERVE_PAGES: u32 = 1;
 /// 3,714 B over, with the code window at 127 pages): the two windows
 /// share the free room, and when there is none the code window takes
 /// what it can.
+///
+/// When even that does not fit, the constants' group with the most room
+/// is shared: it becomes the first cold group and cold code fills the room
+/// after its constants ([`pack_cold_sharing`]; PERF-SD round 2,
+/// 2026-11-27: the 32 groups were full, the 33rd would have held 5.6 KB of
+/// cold code, while the constants' groups had 20 KB free, 8.9 KB in one).
 pub fn place_cold(
     g: &Graph,
     places: &[Place],
@@ -639,16 +654,24 @@ pub fn place_cold(
     rules: &Rules,
     cold: &BTreeSet<usize>,
 ) -> Result<(Plan, BTreeSet<usize>)> {
-    let kept = place_cold_reserving(g, places, hot, crates, rules, cold, CODE_RESERVE_PAGES)?;
-    if check_rodata(&kept.0).is_ok() {
-        return Ok(kept);
+    let mut last = None;
+    for share in [false, true] {
+        for reserve in [CODE_RESERVE_PAGES, 0] {
+            let p = place_cold_reserving(g, places, hot, crates, rules, cold, reserve, share)?;
+            if check_rodata(&p.0).is_ok() {
+                return Ok(p);
+            }
+            last = Some(p);
+        }
     }
-    let all = place_cold_reserving(g, places, hot, crates, rules, cold, 0)?;
-    check_rodata(&all.0)?;
-    Ok(all)
+    let Some(p) = last else { unreachable!() };
+    check_rodata(&p.0)?;
+    Ok(p)
 }
 
-/// [`place_cold`] with `reserve` code pages kept free.
+/// [`place_cold`] with `reserve` code pages kept free (and a constants'
+/// group shared with cold code when `share`).
+#[allow(clippy::too_many_arguments)]
 fn place_cold_reserving(
     g: &Graph,
     places: &[Place],
@@ -657,7 +680,11 @@ fn place_cold_reserving(
     rules: &Rules,
     cold: &BTreeSet<usize>,
     reserve: u32,
+    share: bool,
 ) -> Result<(Plan, BTreeSet<usize>)> {
+    let pack_cold = |g: &Graph, places: &[Place], hot: &[Cluster], crates: &[String], cold: &BTreeSet<usize>| {
+        pack_cold_sharing(g, places, hot, crates, cold, share)
+    };
     let mut plan = pack_cold(g, places, hot, crates, cold)?;
     let cap = (MAX_CODE_PAGES - reserve) * PAGE_SIZE;
     let rank = |n: usize| rules.cold.symbol_rank(&g.nodes[n]).unwrap_or(0);
@@ -749,6 +776,24 @@ pub fn pack_cold(
     hot: &[Cluster],
     crates: &[String],
     cold: &BTreeSet<usize>,
+) -> Result<Plan> {
+    pack_cold_sharing(g, places, hot, crates, cold, false)
+}
+
+/// [`pack_cold`]; with `share`, the constants' group with the most room
+/// moves to the end of the constants and is the first cold group: cold
+/// code goes after its constants. Its pages become executable with the
+/// other cold pages (`nro_code`); the script gives its constants and its
+/// code an output section each (`.pr_gN`, `.px_gN`, [`Plan::shared`]).
+/// Constants and code of one group never share a physical line, so this
+/// adds no kind of line conflict.
+pub fn pack_cold_sharing(
+    g: &Graph,
+    places: &[Place],
+    hot: &[Cluster],
+    crates: &[String],
+    cold: &BTreeSet<usize>,
+    share: bool,
 ) -> Result<Plan> {
     let paged = |k: Kind| -> Vec<usize> {
         (0..g.nodes.len())
@@ -876,6 +921,19 @@ pub fn pack_cold(
     // executable code), first fit in crate and link order. Of the groups
     // with room, the first where the section shares no physical line with
     // a constant it refers to (such a read would bounce, 02 §3.6).
+    let mut holes: Vec<Vec<(u32, u32)>> = Vec::new();
+    if share
+        && !cold.is_empty()
+        && let Some((i, _)) = plan.groups.iter().enumerate().min_by_key(|(_, (_, used))| *used)
+    {
+        let last = plan.groups.len() - 1;
+        plan.groups.swap(i, last);
+        if let Some(gr) = plan.groups.pop() {
+            plan.shared = gr.1;
+            plan.cold.push(gr);
+            holes.push(Vec::new());
+        }
+    }
     let ro_at = plan.addresses();
     let data_lines = |n: usize| -> u32 {
         g.edges[n]
@@ -893,10 +951,10 @@ pub fn pack_cold(
     let mut cold_order: Vec<usize> = cold.iter().copied().collect();
     cold_order.sort_by(|&a, &b| crates[a].cmp(&crates[b]).then(g.nodes[a].addr.cmp(&g.nodes[b].addr)));
     // The padding left before a section moved to a clear line, per cold
-    // group: (start, end) of each hole. Later sections fill them first
-    // (BOOK-1/2, 2026-11-27: with Books the holes were 32 KB of the 23
-    // cold pages, and the code window had to take the rest).
-    let mut holes: Vec<Vec<(u32, u32)>> = Vec::new();
+    // group: (start, end) of each hole (`holes`, above). Later sections
+    // fill them first (BOOK-1/2, 2026-11-27: with Books the holes were
+    // 32 KB of the 23 cold pages, and the code window had to take the
+    // rest).
     for n in cold_order {
         let s = &g.nodes[n];
         let want = data_lines(n);
@@ -1013,12 +1071,28 @@ pub fn script(g: &Graph, plan: &Plan, script_dir: &Path, bin: &str) -> String {
         s.push_str("    } > PAGED_CODE\n");
     }
     for (gi, (secs, _)) in plan.all_groups().enumerate() {
-        let _ = writeln!(s, "    {} {:#010x} :\n    {{", plan.group_name(gi), ro_page_va(2 * gi as u32));
+        let base = ro_page_va(2 * gi as u32);
+        let shared = plan.is_shared(gi);
+        if shared {
+            // The constants of a shared group: an output section of their
+            // own, so the pass-2 graph sees them as constants.
+            let _ = writeln!(s, "    .pr_g{gi} {base:#010x} :\n    {{");
+            for &(n, _) in secs.iter().filter(|&&(n, _)| g.kinds[n] != Kind::Code) {
+                let _ = writeln!(s, "        *(\"{}\")", g.nodes[n].name);
+            }
+            s.push_str("    } > PAGED_RO\n");
+        }
+        let code_at = secs.iter().find(|&&(n, _)| g.kinds[n] == Kind::Code).map_or(0, |&(_, o)| o);
+        let start = if shared { base + code_at } else { base };
+        let _ = writeln!(s, "    {} {start:#010x} :\n    {{", plan.group_name(gi));
         for &(n, off) in secs {
+            if shared && g.kinds[n] != Kind::Code {
+                continue;
+            }
             // Cold code keeps the offset the plan gave it (it may have
             // skipped lines of a constant it uses).
             if gi >= plan.groups.len() {
-                let _ = writeln!(s, "        . = {:#010x};", ro_page_va(2 * gi as u32) + off);
+                let _ = writeln!(s, "        . = {:#010x};", base + off);
             }
             let _ = writeln!(s, "        *(\"{}\")", g.nodes[n].name);
         }
@@ -1033,8 +1107,17 @@ pub fn script(g: &Graph, plan: &Plan, script_dir: &Path, bin: &str) -> String {
             plan.code_size
         );
     }
-    for (gi, (_, used)) in plan.all_groups().enumerate() {
+    for (gi, (secs, used)) in plan.all_groups().enumerate() {
         let name = plan.group_name(gi);
+        let mut used = *used;
+        if plan.is_shared(gi) {
+            let _ = writeln!(
+                s,
+                "ASSERT(SIZEOF(.pr_g{gi}) == {:#x}, \"pagelink: .pr_g{gi} differs from the plan\");",
+                plan.shared
+            );
+            used -= secs.iter().find(|&&(n, _)| g.kinds[n] == Kind::Code).map_or(0, |&(_, o)| o);
+        }
         let _ =
             writeln!(s, "ASSERT(SIZEOF({name}) == {used:#x}, \"pagelink: {name} differs from the plan\");");
     }
@@ -1083,7 +1166,16 @@ pub fn extract(elf: &Path) -> Result<Extracted> {
         } else if name == CODE_OUT {
             x.code = sec.data()?.to_vec();
         } else if let Some(gi) = name.strip_prefix(".pr_g").or_else(|| name.strip_prefix(".px_g")) {
-            x.groups.insert(gi.parse().context("group index")?, sec.data()?.to_vec());
+            // A shared group (`pack_cold_sharing`) comes as two sections,
+            // its constants and its code: each at its offset in the group.
+            let gi: u32 = gi.parse().context("group index")?;
+            let off = addr.checked_sub(ro_page_va(2 * gi)).context("group section below its group")? as usize;
+            let data = sec.data()?;
+            let v = x.groups.entry(gi).or_default();
+            if v.len() < off + data.len() {
+                v.resize(off + data.len(), 0xFF);
+            }
+            v[off..off + data.len()].copy_from_slice(data);
         } else if !nobits
             && matches!(sec.kind(), SectionKind::Text | SectionKind::Data | SectionKind::ReadOnlyData)
         {
@@ -1928,7 +2020,7 @@ sections = [".rodata.cst4"]
         let (all, _) = cold_set(&g, &p, &r, &[]);
         assert_eq!(all.len(), 2);
         // Kept, the reserve leaves both cold: 31 + 2 groups.
-        let (kept, _) = place_cold_reserving(&g, &p, &[], &crates(&g), &r, &all, CODE_RESERVE_PAGES).unwrap();
+        let (kept, _) = place_cold_reserving(&g, &p, &[], &crates(&g), &r, &all, CODE_RESERVE_PAGES, false).unwrap();
         assert!(check_rodata(&kept).is_err());
         let (plan, cold) = place_cold(&g, &p, &[], &crates(&g), &r, &all).unwrap();
         assert_eq!(cold.len(), 1);

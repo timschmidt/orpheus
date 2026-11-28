@@ -162,10 +162,6 @@ impl Target for Fw {
             MODE.signal(Personality::FileTransfer);
             return true;
         }
-        if let Some(on) = data.strip_prefix(b"usb msc serial ") {
-            MSC_SERIAL.store(on == b"on", Ordering::Relaxed);
-            return true;
-        }
         if let Some(rest) = data.strip_prefix(b"usb msc stats") {
             if rest == b" reset" {
                 msc_reset();
@@ -804,10 +800,7 @@ impl embassy_usb_driver::Endpoint for BulkIn {
 }
 impl embassy_usb_driver::EndpointIn for BulkIn {
     async fn write(&mut self, buf: &[u8]) -> Result<(), embassy_usb_driver::EndpointError> {
-        let t0 = time::now_us() as u32;
-        let r = embassy_usb_driver::EndpointIn::write(&mut self.0, buf).await;
-        msc_add(T_CSW, N_CBW, t0);
-        r
+        embassy_usb_driver::EndpointIn::write(&mut self.0, buf).await
     }
 }
 impl orpheus_usb::msc::bot::BulkIn for BulkIn {
@@ -827,8 +820,11 @@ impl orpheus_usb::msc::bot::BulkIn for BulkIn {
         let t0 = time::now_us() as u32;
         // SAFETY: the guard lives in this future, which holds the borrow
         // of `buf` for its whole life, and is never forgotten.
+        // (Never: the transport's halves are word-aligned SRAM0 pieces of
+        // ≤ 64 KiB. One after the other then: a `join` here cost the code
+        // window ≈ 0.5 KB.)
         let Some(dma) = (unsafe { self.0.start(buf) }) else {
-            return embassy_futures::join::join(self.send(buf), work).await;
+            return (self.send(buf).await, work.await);
         };
         let out = work.await;
         let r = dma.wait().await;
@@ -849,7 +845,7 @@ impl embassy_usb_driver::EndpointOut for BulkOut {
         // The CBW (the transport reads its data with `receive`).
         let t0 = time::now_us() as u32;
         let r = embassy_usb_driver::EndpointOut::read(&mut self.0, buf).await;
-        MSC_T[T_CBW].fetch_add((time::now_us() as u32).wrapping_sub(t0), Ordering::Relaxed);
+        msc_add(T_CBW, N_CBW, t0);
         r
     }
 }
@@ -869,18 +865,11 @@ impl orpheus_usb::msc::bot::BulkOut for BulkOut {
     ) -> (Result<usize, embassy_usb_driver::EndpointError>, W::Output) {
         let t0 = time::now_us() as u32;
         let n = buf.len();
-        if MSC_SERIAL.load(Ordering::Relaxed) {
-            // Test: the host's data first, then the card (no overlap).
-            let r = self.receive(buf).await;
-            return (r, work.await);
-        }
-        if n > 65536 {
-            return embassy_futures::join::join(self.receive(buf), work).await;
-        }
         // SAFETY: as in `send_while`; `buf` is not touched until the
         // guard's wait returns.
         let Some(dma) = (unsafe { self.0.start(buf) }) else {
-            return embassy_futures::join::join(self.receive(buf), work).await;
+            // (Never, as in `send_while`.)
+            return (self.receive(buf).await, work.await);
         };
         let out = work.await;
         let r = dma.wait().await.map(|()| n);
@@ -888,10 +877,6 @@ impl orpheus_usb::msc::bot::BulkOut for BulkOut {
         (r, out)
     }
 }
-
-/// Test (`usb msc serial on|off`): a WRITE's host data and card writes
-/// one after the other, not overlapped.
-static MSC_SERIAL: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// The card's high-speed clock for a USB session ([`CARD_HS`]); logged.
 /// With the card at 48 MHz the core stays at or below
