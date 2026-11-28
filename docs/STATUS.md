@@ -168,7 +168,31 @@ unchanged (`701=1 d50=10470 e80=20992`) after every install.
   (`orpheus-power`), `regress_window_full_with_room_in_the_constants_groups`
   (`xtask` pagelink); `bulk_upload_pieces` (`orpheus-proto`); round 1's
   transport tests unchanged (the write `join` order test updated).
-* **Gate**: GATE_RESULTS
+* **Playback check (found before merge)**: the first soak of the final
+  layout failed nothing but showed **2,035 → 3,303 line loads/s, CPU idle
+  59 → 38 %** (soak `music` seed 1 on the rebuilt baseline vs round 2,
+  same actions): round 2's added constants had pushed settings constants
+  that the UI's Now Playing reads with `settings::LISTS` (`Setting::
+  validate`, `settings::def`) from group 1 into group 9, onto the same
+  rodata lines. They are packed with LISTS in `idle-home` now (anonymous
+  names: renumbered when the firmware crate changes; the fault profiler
+  names them). After: **1,952 loads/s, idle 60 %**, 0 underruns.
+* **Gate**: fmt, clippy (root, fw) pass; `cargo test --workspace` 2,314
+  pass; `settings-matrix --check` 0 errors; `xtask build` ok;
+  `size --check`, `check-resident`, `stack --check` (margin 4,788 B) and
+  `xtask test pagelink` pass. `xtask gate --no-dev`'s `test all` **failed
+  in the `books_convert` fuzz target** (60 s random run): "a line wider
+  than the page" (`crates/orpheus-books/fuzz/src/lib.rs:255`, the page
+  layout's width check), input `crash-bb6358a9dea997c204f03825fb6e696bc861746a`
+  (318 B, a UTF-16LE text "Title: A Tale…") in
+  `crates/orpheus-books/fuzz/artifacts/books_convert/` — Books' layout,
+  not touched by this package: **open finding for the Books owner** (not
+  fixed here). On the player (final image `4c82f55c`): `dev msc-bench
+  --check` 13.3 / 7.8 / 13.7 MB/s, integrity ok; `dev suite` **28/28** (also 28/28 on `629f4cca`, before the settings-constants fix);
+  the `/MIDI` folder (one file, 142 s) 0 underruns; `dev soak music
+  --minutes 15` PASS (stack free min 5,768 B, 0 underruns, 0 card errors,
+  headroom min 959 frames, CPU idle 60 %, loads 1,952/s mean). The
+  owner's settings unchanged after every install.
 * **Left for later**: the sustained write is the card's (9.8 ms per
   32 KiB on its first long write into fresh space): larger card writes
   per command (CMD23 with a whole SCSI WRITE, or an open-ended CMD25
