@@ -708,6 +708,10 @@ symbols = [
     "orpheus_apps::settings::def",
     "firmware::ui::reader::reader_cfg",
     "orpheus_apps::services::screen_timeouts::<firmware::services::Fw>",
+    # TTS-3b, 2026-11-28: the alarms' three reads each (twice a UI loop,
+    # `services::alarm_due` and the next alarm), on line 4 with this
+    # cluster: each read reloaded both (≈ 50 line loads a loop).
+    "orpheus_apps::tools::alarm::<firmware::services::Fw>",
 ]
 
 # The paged toy: three functions spread over the generated code, packed

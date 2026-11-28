@@ -1510,6 +1510,16 @@ impl SpeechPause {
         self.state == PauseState::Holding
     }
 
+    /// Whether the policy needs [`step`](Self::step) on a timer (its
+    /// quiet time, the player's answer) while speech sounds: only with
+    /// `pause` (Music while speaking › Paused) or while it holds the music.
+    /// Otherwise a step on the next key or screen change is soon enough
+    /// (TTS-3b: the UI loop ran every 100 ms through every utterance).
+    #[must_use]
+    pub fn needs_ticks(&self, pause: bool) -> bool {
+        pause || self.state == PauseState::Holding
+    }
+
     /// One step: `pause` (the reader on and Music while speaking Paused),
     /// `speaking` (speech sounds or waits), `source` (the player's). The
     /// command to send, if any (always [`PlayerCmd::PlayPause`]).
@@ -2604,6 +2614,29 @@ mod speech_pause {
         p.step(true, false, Some(Playing), 0);
         p.step(true, true, Some(Playing), 10);
         assert_eq!(p.step(false, true, Some(Paused), 20), Some(PlayerCmd::PlayPause));
+    }
+
+    /// TTS-3b, 2026-11-28, on the player: with Music while speaking ›
+    /// Lowered (the default) the UI loop still ran every 100 ms while the
+    /// reader spoke (8 loops/s against ≈ 1 at rest, each a screen's
+    /// description); its code evicted the speech render's lines and the
+    /// speech went choppy. The policy needs a timer only with Paused or
+    /// while it holds the music (then it must resume it after the quiet
+    /// time even when nothing else happens).
+    #[test]
+    fn regress_reader_ticked_ten_times_a_second_while_speaking() {
+        let mut p = SpeechPause::new();
+        // Lowered or Unchanged: no ticks, before or during speech.
+        assert!(!p.needs_ticks(false));
+        assert_eq!(p.step(false, true, Some(Playing), 0), None);
+        assert!(!p.needs_ticks(false));
+        // Paused: ticks, and while held even after the setting changed.
+        assert!(p.needs_ticks(true));
+        p.step(true, false, Some(Playing), 100);
+        assert_eq!(p.step(true, true, Some(Playing), 110), Some(PlayerCmd::PlayPause));
+        assert!(p.needs_ticks(false));
+        assert_eq!(p.step(false, true, Some(Paused), 120), Some(PlayerCmd::PlayPause));
+        assert!(!p.needs_ticks(false));
     }
 }
 

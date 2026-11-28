@@ -220,10 +220,15 @@ mod reader {
     }
 
     /// The loop's next deadline for the reader: a chord's, and while it
-    /// speaks the pause policy's quiet time.
+    /// speaks the pause policy's quiet time — only with Music while
+    /// speaking › Paused or while the policy holds the music (TTS-3b,
+    /// 2026-11-28: with the default Lowered the UI loop ran ten times a
+    /// second for nothing while the reader spoke, each loop a screen's
+    /// description and the timers' setting reads, and its code evicted the
+    /// speech render's lines).
     pub(super) fn deadline(ui: &Ui, t: u64) -> Option<u64> {
         let mut d = ui.a11y.chords.next_deadline(ui.mapper.timing.hold).map(|d| d.0.max(t + 1));
-        if ui.a11y.on && crate::speech::speaking() {
+        if ui.a11y.on && crate::speech::speaking() && ui.a11y.pause.needs_ticks(reader_cfg(ui.fw).music == 1) {
             d = Some(d.map_or(t + 100, |d| d.min(t + 100)));
         }
         d

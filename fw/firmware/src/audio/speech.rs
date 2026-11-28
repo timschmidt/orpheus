@@ -250,8 +250,16 @@ pub(super) fn end_alone() {
     }
 }
 
+/// How long the alone output waits at most between two top-ups (it is
+/// woken after each batch of the speech task as well): well inside the
+/// half (96 ms) cleared ahead of the writer. TTS-3b, 2026-11-28: 10 ms
+/// before, 100 wake-ups of the card task a second while speaking alone,
+/// each one through the paused or idle loop's code.
+const TOP_UP_MS: u64 = 32;
+const _: () = assert!(TOP_UP_MS * mix::RATE as u64 / 1000 < HALF as u64 / 2);
+
 /// Wait for speech to take or a stop; while the alone output runs, at most
-/// 10 ms (it tops up and clears ahead).
+/// [`TOP_UP_MS`] (it tops up and clears ahead).
 pub(super) async fn wait() {
     let woken = core::future::poll_fn(|cx| {
         RT_WAKER.register(cx.waker());
@@ -262,7 +270,7 @@ pub(super) async fn wait() {
         }
     });
     if alone_running() {
-        let _ = embassy_futures::select::select(woken, embassy_time::Timer::after_millis(10)).await;
+        let _ = embassy_futures::select::select(woken, embassy_time::Timer::after_millis(TOP_UP_MS)).await;
     } else {
         woken.await;
     }
