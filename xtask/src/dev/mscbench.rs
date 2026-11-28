@@ -248,12 +248,43 @@ fn floors() -> Result<Floors> {
     Ok(Floors { read_mbps: g("read_kbps_min")?, write_mbps: g("write_kbps_min")?, readback_mbps: g("readback_kbps_min")? })
 }
 
+/// The firmware's card reader stage counters (`usb msc stats`), labelled.
+fn stages(reset: bool) -> Option<String> {
+    let r = test_cmd(if reset { "usb msc stats reset" } else { "usb msc stats" }).ok()?;
+    let v: Vec<u64> = r.strip_prefix("msc ")?.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+    if v.len() < 14 {
+        return None;
+    }
+    let ms = |x: u64| x as f64 / 1000.0;
+    Some(format!(
+        "wall {} ms: waiting for CBWs {:.0} ms ({}), IN data {:.0} ms ({}), OUT data {:.0} ms ({}), CSWs {:.0} ms, card {:.0} ms ({} ops, max {} us), {} line loads, {} SD commands, {} busy polls",
+        v[0],
+        ms(v[1]),
+        v[6],
+        ms(v[2]),
+        v[7],
+        ms(v[3]),
+        v[8],
+        ms(v[4]),
+        ms(v[5]),
+        v[9],
+        v[10],
+        v[11],
+        v[12],
+        v[13]
+    ))
+}
+
 /// One phase: run it between profiler hooks and pager counters.
 fn phase<T>(i: usize, name: &str, f: impl FnOnce() -> Result<T>) -> Result<(T, Option<u32>)> {
     let c0 = counters();
+    let _ = stages(true);
     prof::hook(false, Phase::Before(i, name));
     let r = f();
     prof::hook(false, Phase::After(i, name));
+    if let Some(s) = stages(false) {
+        log(&format!("   {name} stages: {s}"));
+    }
     let c1 = counters();
     let loads = c0.zip(c1).map(|((a, _), (b, _))| b.wrapping_sub(a));
     Ok((r?, loads))

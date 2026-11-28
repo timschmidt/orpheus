@@ -102,6 +102,9 @@ const HIGH_CAPACITY: u8 = 1;
 /// index session and the watchdog reset the player (last PC in
 /// `Sd::wait_ts`).
 const NO_SLEEP: u8 = 2;
+/// `Sd::flags`: `STATE.DAT0S` reads the card's DAT0 line (high on an idle
+/// card after `init_card`'s select), so busy waits poll it (U-SD-4).
+const DAT0_OK: u8 = 4;
 
 /// Identification clock and fast clock words of `CMU_SD0CLK` [HW].
 pub const CLK_IDENT: u32 = 0x41;
@@ -210,10 +213,33 @@ impl Sd {
         }
         self.check_state(resp)?;
         if resp == Resp::R1b {
-            // Give the card time to release DAT0, then confirm via CMD13.
-            nap!(self, 500);
+            self.wait_dat0().await;
         }
         Ok(if resp == Resp::None { 0 } else { Self::short_resp() })
+    }
+
+    /// The card's busy signal after an R1b command or a write: wait until
+    /// `STATE.DAT0S` reads high (the card released DAT0), at most 1 s; the
+    /// caller confirms with CMD13 as before. With [`DAT0_OK`] clear (DAT0
+    /// read low on an idle card at `init_card`) a fixed 500 µs as before
+    /// PERF-SD round 2: a CMD12 after every 32 KiB read cost 0.5 ms of
+    /// 3 ms (U-SD-4).
+    async fn wait_dat0(&mut self) {
+        if self.flags & DAT0_OK == 0 {
+            nap!(self, 500);
+            return;
+        }
+        let end = Instant::now() + Duration::from_secs(1);
+        let mut spins = 0u32;
+        while sd::STATE.read() & sd::state::DAT0S == 0 {
+            spins += 1;
+            if spins > 64 {
+                if Instant::now() > end {
+                    return;
+                }
+                nap!(self, 20);
+            }
+        }
     }
 
     async fn app_command(&mut self, index: u8, arg: u32, resp: Resp) -> Result<u32, Error> {
@@ -269,6 +295,9 @@ impl Sd {
         self.csd = Csd::parse(&Self::long_resp());
         self.command(cmd::SELECT_CARD, self.rca, Resp::R1b).await?;
         self.wait_ready().await?;
+        // The card is idle in `tran`: DAT0 must read high if `DAT0S` is
+        // the line (U-SD-4).
+        self.set_flag(DAT0_OK, sd::STATE.read() & sd::state::DAT0S != 0);
         self.app_command(cmd::ACMD_SET_BUS_WIDTH, 2, Resp::R1).await?;
         sd::EN.modify(|v| sd::en::DATAWID.set(v, sd::en::DATAWID_4BIT));
         if self.flags & HIGH_CAPACITY == 0 {
@@ -406,6 +435,7 @@ impl Sd {
                 r?;
                 stop?;
             }
+            self.wait_dat0().await;
             self.wait_ready().await?;
             self.stats.blocks_written += n;
             done += n;

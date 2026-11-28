@@ -154,6 +154,25 @@ impl Drop for Urgent {
     }
 }
 
+/// The card's waits spin instead of sleeping (PERF-SD round 2): set by
+/// the USB card reader for its session. Its transport starts the USB DMA
+/// of one piece and then reads or writes the card: a card wait that slept
+/// sent the USB task back through the executor every 20–50 µs, and with
+/// it the select of the device, the transport and the mode signal, whose
+/// code lines evicted each other (≈ 1,300 line loads per MiB moved,
+/// 2026-11-27). Spinning, the card transfer runs to its end and the USB
+/// DMA beside it, one return to the executor per piece.
+static SPIN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// See [`SPIN`].
+pub fn set_spin(on: bool) {
+    SPIN.store(on, core::sync::atomic::Ordering::Relaxed);
+}
+
+fn no_sleep() -> bool {
+    orpheus_fs::SyncPoll::active() || SPIN.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 /// End of the card task's last rest ([`pace`]), µs counter.
 static LAST_REST: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
@@ -183,7 +202,7 @@ impl BlockDevice for Card {
 
     async fn read(&mut self, lba: u32, buf: &mut [[u8; 512]]) -> Result<(), Error> {
         pace().await;
-        self.sd.set_no_sleep(orpheus_fs::SyncPoll::active());
+        self.sd.set_no_sleep(no_sleep());
         count_io();
         let flat = buf.as_flattened_mut();
         if dma_ok(flat.as_ptr(), flat.len()) {
@@ -199,7 +218,7 @@ impl BlockDevice for Card {
 
     async fn write(&mut self, lba: u32, buf: &[[u8; 512]]) -> Result<(), Error> {
         pace().await;
-        self.sd.set_no_sleep(orpheus_fs::SyncPoll::active());
+        self.sd.set_no_sleep(no_sleep());
         count_io();
         let flat = buf.as_flattened();
         if dma_ok(flat.as_ptr(), flat.len()) {

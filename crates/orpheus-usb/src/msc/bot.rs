@@ -387,10 +387,14 @@ impl<'b, I: BulkIn, O: BulkOut, B: BlockDevice> Bot<'b, I, O, B> {
             let piece = &cur[..n as usize * bs];
             let skip = failed.is_some();
             let write = async { skip || dev.write(lba + u64::from(done), piece).await.is_ok() };
-            let (ok, got) = if m > 0 {
-                join(write, ep_out.receive(&mut nxt[..m as usize * bs])).await
+            // The endpoint first: its DMA starts at its first poll, and a
+            // device that does not yield (the card reader's card spins,
+            // PERF-SD round 2) then writes while the host's next half
+            // arrives.
+            let (got, ok) = if m > 0 {
+                join(ep_out.receive(&mut nxt[..m as usize * bs]), write).await
             } else {
-                (write.await, Ok(0))
+                (Ok(0), write.await)
             };
             if !ok {
                 failed = Some(done * bs as u32);
@@ -893,7 +897,7 @@ mod tests {
         assert_eq!((c[12], residue(&c)), (0, 0));
         assert_eq!(bot.dev.data[10 * 512..22 * 512], data[..]);
         let l = log.borrow();
-        assert_eq!(&l[..4], ["recv 2048 start", "recv end", "write 10 start", "recv 2048 start"]);
+        assert_eq!(&l[..4], ["recv 2048 start", "recv end", "recv 2048 start", "write 10 start"]);
         assert_eq!(bot.stats.bytes_written, 12 * 512);
     }
 

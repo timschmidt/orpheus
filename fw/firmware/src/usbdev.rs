@@ -941,6 +941,7 @@ async fn run_msc() -> Personality {
     crate::media::REQS.send(crate::media::Req::Release).await;
     CARD_WITH_USB.store(true, Ordering::Relaxed);
     let mut card = crate::audio::CARD_OUT.receive().await;
+    yoton_bsp::card::set_spin(true);
     atj2157_hal::log::line(b"usb: card reader on");
     let blocks = u64::from(yoton_bsp::card::BlockDevice::sector_count(&card));
     let next = 'msc: {
@@ -1014,6 +1015,7 @@ async fn run_msc() -> Personality {
     if card.reinit().await.is_err() {
         atj2157_hal::log::line(b"usb: card re-init failed");
     }
+    yoton_bsp::card::set_spin(false);
     crate::audio::CARD_BACK.send(card).await;
     CARD_WITH_USB.store(false, Ordering::Relaxed);
     atj2157_hal::log::line(b"usb: card returned");
@@ -1057,6 +1059,7 @@ async fn run_image() -> Personality {
         }
     };
     let mut card = crate::audio::CARD_OUT.receive().await;
+    yoton_bsp::card::set_spin(true);
     let e = mapped.export;
     crate::drive::update(|i| {
         i.phase = DrivePhase::Attached;
@@ -1131,6 +1134,7 @@ async fn run_image() -> Personality {
     if card.reinit().await.is_err() {
         atj2157_hal::log::line(b"usb: card re-init failed");
     }
+    yoton_bsp::card::set_spin(false);
     crate::audio::CARD_BACK.send(card).await;
     CARD_WITH_USB.store(false, Ordering::Relaxed);
     crate::drive::update(|i| {
